@@ -35,6 +35,10 @@ A platform independent file lock that supports the with-statement.
 import time
 import atexit
 import os
+try:
+    import warnings
+except ImportError:
+    warnings = None
 
 try:
     import msvcrt
@@ -58,7 +62,7 @@ except NameError:
 # Data
 # ------------------------------------------------
 __all__ = ["Timeout", "FileLock"]
-
+__version__ = "0.2.0"
 
 # Exceptions
 # ------------------------------------------------
@@ -228,10 +232,33 @@ elif fcntl:
                 pass
             return None
 
-# Lock is not available
+# The "hard" lock is not available. But we can watch the existence of a file.
 else:
-    raise ImportError("The file lock is not available for your OS")
-        
+    class FileLock(BaseFileLock):
+
+        def _acquire(self):
+            open_mode = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC            
+            try:
+                fd = os.open(self._lock_file, open_mode)
+            except (IOError, OSError):
+                pass
+            else:
+                self._lock_file_fd = fd
+            return None
+
+        def _release(self):
+            os.close(self._lock_file_fd)
+            self._lock_file_fd = None
+            
+            try:
+                os.remove(self._lock_file)
+            # The file is already deleted and that's what we want.
+            except OSError:
+                pass
+            return None
+
+    if warnings is not None:
+        warnings.warn("only soft file lock is available")        
     
 # Main
 # ------------------------------------------------

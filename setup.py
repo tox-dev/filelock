@@ -29,19 +29,41 @@
 # Modules
 # ------------------------------------------------
 from distutils.core import setup
-
+from filelock import __version__
 
 # Main
 # ------------------------------------------------
+try:
+    long_description = open("README.md").read()
+except OSError:
+    long_description = "not available"
+
+try:
+    license_ = open("LICENSE.md").read()
+except OSError:
+    license_ = "not available"
+
 setup(
     name = "filelock",
+    version = __version__,
     description = "A platform independent file lock.",
-    long_description = open("README.md").read(),
+    long_description = long_description,
     author = "Benedikt Schmitt",
     author_email = "benedikt@benediktschmitt.de",
     url = "https://github.com/benediktschmitt/py-filelock",
     download_url = "https://github.com/benediktschmitt/py-filelock/archive/master.zip",
     py_modules = ["filelock"],
-    license = open("LICENSE.md").read(),
+    data_files = [("", ["LICENSE.md", "README.md"])],
+    license = license_,
+    classifiers = [
+        "License :: Public Domain",
+        "Development Status :: 5 - Production/Stable",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Intended Audience :: Developers",
+        "Topic :: System",
+        "Topic :: Internet",
+        "Topic :: Software Development :: Libraries"
+        ],
     )
     
