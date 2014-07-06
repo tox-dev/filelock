@@ -35,8 +35,7 @@ except TimeoutError as err:
 # If you don't want to use or if you can't use the *with-statement*, the 
 # example above is equal to this one:
 try:
-	if lock.is_locked():
-		lock.acquire(timeout=10)
+	lock.acquire(timeout=10)
 except filelock.Timeout as err:
 	print("Could not acquire the file lock. Leaving here!")
 	exit(1)
