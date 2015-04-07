@@ -35,6 +35,7 @@ A platform independent file lock that supports the with-statement.
 import time
 import atexit
 import os
+import threading
 try:
     import warnings
 except ImportError:
@@ -62,7 +63,7 @@ except NameError:
 # Data
 # ------------------------------------------------
 __all__ = ["Timeout", "FileLock"]
-__version__ = "0.2.2"
+__version__ = "1.0.0"
 
 # Exceptions
 # ------------------------------------------------
@@ -88,19 +89,42 @@ class BaseFileLock(object):
     """
     Implements the base class of a file lock.
 
+    The file lock counts how often your acquired the filelock and will
+    release it only if *release* has been called as often as *acquire*.
+
     Usage:
-    >>> with BaseFileLock("afile"):
+
+    .. code-block:: python
+
+        with BaseFileLock("afile"):
             pass
 
     or if you need to specify a timeout:
 
-    >>> with BaseFileLock("afile").acquire(5):
+    .. code-block:: python
+
+        with BaseFileLock("afile").acquire(5):
             pass
+
+    The lock counter works like this:
+
+    .. code-block:: python
+
+        lock = BaseFileLock("afile")
+        with lock:
+            with lock:
+                pass
+            assert lock.is_locked()
     """
 
     def __init__(self, lock_file):
         self._lock_file = lock_file
         self._lock_file_fd = None
+
+        # We use this lock primarily for the lock counter.
+        self._thread_lock = threading.Lock()
+
+        self._lock_counter = 0
 
         atexit.register(self.release)
         return None
@@ -140,25 +164,44 @@ class BaseFileLock(object):
         a Timeout exception will be raised.
         If *timeout* is ``None``, there's no time limit.
         """
-        # Breaks if waited timeout seconds for the lock
-        # or if the lock has been acquired.
-        start_time = time.time()
+        # Increment the number right at the beginning.
+        # We can still undo it, if something fails.
+        with self._thread_lock:
+            self._lock_counter += 1
 
-        while not self.is_locked():
-            self._acquire()
+        try:
+            start_time = time.time()
+            while not self.is_locked():
+                self._acquire()
 
-            if timeout is not None and time.time() - start_time > timeout:
-                raise Timeout(self._lock_file)
-            else:
+                if timeout is not None and time.time() - start_time > timeout:
+                    raise Timeout(self._lock_file)
+
                 time.sleep(poll_intervall)
+        except:
+            # Something did go wrong, so decrement the counter.
+            with self._thread_lock:
+                self._lock_counter = max(0, self._lock_counter - 1)
+
+            raise
         return self
 
-    def release(self):
+    def release(self, force = False):
         """
         Releases the file lock.
+
+        :arg bool force:
+            If true, the lock counter is ignored and the lock is released in
+            every case.
         """
-        if self.is_locked():
-            self._release()
+        with self._thread_lock:
+
+            if self.is_locked():
+                self._lock_counter -= 1
+
+                if self._lock_counter == 0 or force:
+                    self._release()
+                    self._lock_counter = 0
         return None
 
     def __enter__(self):
@@ -259,14 +302,3 @@ else:
 
     if warnings is not None:
         warnings.warn("only soft file lock is available")
-
-# Main
-# ------------------------------------------------
-if __name__ == "__main__":
-    # Run multiple instances of this script to test it.
-    lock = FileLock("lock")
-    print("entering")
-    with lock.acquire():
-        print("entered")
-        time.sleep(5)
-    print("left")

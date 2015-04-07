@@ -4,6 +4,10 @@ Py-FileLock
 This package contains a single module, which implements a platform independent
 file locking mechanism for Python.
 
+The lock includes a lock counter and is thread safe. This means, that when
+you lock the same lock object (in the same application) twice, you will get
+no timeout error.
+
 
 Examples
 --------
@@ -49,6 +53,15 @@ Examples
 	finally:
 		lock.release()
 
+	# You can even nest the lock or acquiring it multiple times in the same
+	# application.
+	with lock:
+		assert lock.is_locked()
+		with lock:
+			assert lock.is_locked()
+		assert lock.is_locked()
+	assert (not lock.is_locked())
+	
 
 License
 -------
