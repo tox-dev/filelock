@@ -63,7 +63,7 @@ except NameError:
 # Data
 # ------------------------------------------------
 __all__ = ["Timeout", "FileLock"]
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 
 # Exceptions
@@ -170,15 +170,13 @@ class BaseFileLock(object):
         with self._thread_lock:
             self._lock_counter += 1
 
-        # We can stop here, if the lock is already locked.
-        if self.is_locked():
-            return None
-
-        # Try to acquire the lock within the timeout.
         try:
             start_time = time.time()
             while True:
-                self._acquire()
+
+                with self._thread_lock:
+                    if not self.is_locked():
+                        self._acquire()
 
                 if self.is_locked():
                     break
@@ -231,14 +229,18 @@ if msvcrt:
 
         def _acquire(self):
             open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
-            fd = os.open(self._lock_file, open_mode)
 
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                fd = os.open(self._lock_file, open_mode)
             except OSError:
-                os.close(fd)
+                pass
             else:
-                self._lock_file_fd = fd
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                except OSError:
+                    os.close(fd)
+                else:
+                    self._lock_file_fd = fd
             return None
 
         def _release(self):

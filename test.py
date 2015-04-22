@@ -98,13 +98,53 @@ class TestFileLock(unittest.TestCase):
                     self.assertTrue(self.lock.is_locked())
             return None
 
-        threads = [threading.Thread(target = my_thread) for i in range(100)]
+        NUM_THREADS = 250
+
+        threads = [threading.Thread(target = my_thread) for i in range(NUM_THREADS)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
 
         self.assertFalse(self.lock.is_locked())
+        return None
+
+    def test_threaded1(self):
+        """
+        """
+        if 0:
+            return None
+
+        def my_thread(lock, other_lock):
+            for i in range(random.randint(10, 50)):
+                with lock:
+                    self.assertTrue(lock.is_locked())
+                    self.assertFalse(other_lock.is_locked())
+            return None
+
+        NUM_THREADS =  250
+
+        lock1 = filelock.FileLock(self.lock.lock_file)
+        lock2 = filelock.FileLock(self.lock.lock_file)
+
+        threads1 = [
+            threading.Thread(target = my_thread, args = (lock1, lock2)) \
+            for i in range(NUM_THREADS)
+        ]
+        threads2 = [
+            threading.Thread(target = my_thread, args = (lock2, lock1))\
+            for i in range(NUM_THREADS)
+        ]
+
+        for i in range(NUM_THREADS):
+            threads1[i].start()
+            threads2[i].start()
+        for i in range(NUM_THREADS):
+            threads1[i].join()
+            threads2[i].join()
+
+        self.assertFalse(lock1.is_locked())
+        self.assertFalse(lock2.is_locked())
         return None
 
     def test_timeout(self):
