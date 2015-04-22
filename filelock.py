@@ -176,8 +176,8 @@ class BaseFileLock(object):
 
                 if timeout is not None and time.time() - start_time > timeout:
                     raise Timeout(self._lock_file)
-
-                time.sleep(poll_intervall)
+                elif not self.is_locked():
+                    time.sleep(poll_intervall)
         except:
             # Something did go wrong, so decrement the counter.
             with self._thread_lock:
