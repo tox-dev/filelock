@@ -63,7 +63,8 @@ except NameError:
 # Data
 # ------------------------------------------------
 __all__ = ["Timeout", "FileLock"]
-__version__ = "1.0.1"
+__version__ = "1.0.2"
+
 
 # Exceptions
 # ------------------------------------------------
@@ -169,14 +170,21 @@ class BaseFileLock(object):
         with self._thread_lock:
             self._lock_counter += 1
 
+        # We can stop here, if the lock is already locked.
+        if self.is_locked():
+            return None
+
+        # Try to acquire the lock within the timeout.
         try:
             start_time = time.time()
-            while not self.is_locked():
+            while True:
                 self._acquire()
 
-                if timeout is not None and time.time() - start_time > timeout:
+                if self.is_locked():
+                    break
+                elif timeout is not None and time.time() - start_time > timeout:
                     raise Timeout(self._lock_file)
-                elif not self.is_locked():
+                else:
                     time.sleep(poll_intervall)
         except:
             # Something did go wrong, so decrement the counter.
