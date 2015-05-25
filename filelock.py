@@ -33,7 +33,6 @@ A platform independent file lock that supports the with-statement.
 # Modules
 # ------------------------------------------------
 import time
-import atexit
 import os
 import threading
 try:
@@ -63,7 +62,7 @@ except NameError:
 # Data
 # ------------------------------------------------
 __all__ = ["Timeout", "FileLock"]
-__version__ = "1.0.3"
+__version__ = "2.0.0"
 
 
 # Exceptions
@@ -104,33 +103,82 @@ class BaseFileLock(object):
 
     .. code-block:: python
 
-        with BaseFileLock("afile").acquire(5):
+        lock = BaseFileLock("afile")
+        with lock.acquire_(5):
             pass
 
-    The lock counter works like this:
+    You can also specify a default timeout:
+
+    .. code-block:: python
+
+        lock = BaseFileLock("afile", timeout=5)
+        with lock: # timeout == 5
+            pass
+
+        lock = BaseFileLock("afile")
+        with lock: # no timeout
+            pass
+
+    The lock counter allows you to nest the file lock in this way:
 
     .. code-block:: python
 
         lock = BaseFileLock("afile")
         with lock:
             with lock:
-                pass
-            assert lock.is_locked()
+                assert lock.is_locked
+            assert lock.is_locked
     """
 
-    def __init__(self, lock_file):
+    def __init__(self, lock_file, timeout = -1):
+        """
+        """
+        # The path to the lock file.
         self._lock_file = lock_file
+
+        # The file descriptor for the *_lock_file* as it is returned by the
+        # os.open() function.
+        # This file lock is only NOT None, if the object currently holds the
+        # lock.
         self._lock_file_fd = None
+
+        # The default timeout value.
+        self.timeout = timeout
 
         # We use this lock primarily for the lock counter.
         self._thread_lock = threading.Lock()
 
+        # The lock counter is used for implementing the nested locking
+        # mechanism. Whenever the lock is acquired, the counter is increased and
+        # the lock is only released, when this value is 0 again.
         self._lock_counter = 0
-
-        atexit.register(self.release)
         return None
 
-    lock_file = property(lambda self: self._lock_file)
+    @property
+    def lock_file(self):
+        """
+        The path to the lock file.
+        """
+        return self._lock_file
+
+    @property
+    def timeout(self):
+        """
+        You can set a default timeout for the filelock. It will be used as
+        fallback value in the acquire method.
+
+        A negative timeout, that there is no timeout.
+
+        .. versionadded:: 2.0.0
+        """
+        return self._timeout
+
+    @timeout.setter
+    def timeout(self, value):
+        """
+        """
+        self._timeout = float(value)
+        return None
 
     # Platform dependent locking
     # --------------------------------------------
@@ -152,19 +200,41 @@ class BaseFileLock(object):
     # Platform independent methods
     # --------------------------------------------
 
+    @property
     def is_locked(self):
         """
         Returns true, if the object holds the file lock.
+
+        .. versionchanged:: 2.0.0
+
+            This was previously a method and is now a property.
         """
         return self._lock_file_fd is not None
 
     def acquire(self, timeout=None, poll_intervall=0.05):
         """
-        Tries every *poll_intervall* seconds to acquire the lock.
-        If the lock could not be acquired after *timeout* seconds,
-        a Timeout exception will be raised.
-        If *timeout* is ``None``, there's no time limit.
+        Acquires the file lock or fails with a :exc:`TimeoutError`.
+
+        :arg float timeout:
+            The maximum time waited for the file lock. If this value is <= 0,
+            there is no timeout and this method will block until the lock
+            could be acquired.
+            If the *timeout* is ``None``, the default :attr:`timeout` will
+            be used.
+
+        :arg float poll_intervall:
+            The time between this method tries to acquire the file lock.
+
+        :raises TimeoutError:
+            Raised if the lock could not be acquired in *timeout* seconds.
+
+        .. versionchanged:: 2.0.0
+
+            The method returns no ``None`` instead of self.
         """
+        if timeout is None:
+            timeout = self.timeout
+
         # Increment the number right at the beginning.
         # We can still undo it, if something fails.
         with self._thread_lock:
@@ -173,14 +243,13 @@ class BaseFileLock(object):
         try:
             start_time = time.time()
             while True:
-
                 with self._thread_lock:
-                    if not self.is_locked():
+                    if not self.is_locked:
                         self._acquire()
 
-                if self.is_locked():
+                if self.is_locked:
                     break
-                elif timeout is not None and time.time() - start_time > timeout:
+                elif timeout >= 0 and time.time() - start_time > timeout:
                     raise Timeout(self._lock_file)
                 else:
                     time.sleep(poll_intervall)
@@ -190,7 +259,38 @@ class BaseFileLock(object):
                 self._lock_counter = max(0, self._lock_counter - 1)
 
             raise
-        return self
+        return None
+
+    def acquire_(self, timeout=None, poll_intervall=0.05):
+        """
+        Works exactly like the :meth:`acquire` method, but differes in the
+        return behavior.
+
+        This method must be used if you need to call the *acquire* method
+        explicitly in a with statement:
+
+        .. code-block:: python
+
+            with lock.acquire_(timeout = 20):
+                pass
+        """
+        # This class wraps the lock to make sure __enter__ is not called
+        # twiced when entering the with statement.
+        class _(object):
+
+            def __init__(self, lock):
+                self.lock = lock
+                return None
+
+            def __enter__(self):
+                return self.lock
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self.lock.release()
+                return None
+
+        self.acquire(timeout = timeout, poll_intervall = poll_intervall)
+        return _(self)
 
     def release(self, force = False):
         """
@@ -202,7 +302,7 @@ class BaseFileLock(object):
         """
         with self._thread_lock:
 
-            if self.is_locked():
+            if self.is_locked:
                 self._lock_counter -= 1
 
                 if self._lock_counter == 0 or force:
@@ -219,7 +319,7 @@ class BaseFileLock(object):
         return None
 
     def __del__(self):
-        self.release()
+        self.release(force = True)
         return None
 
 
