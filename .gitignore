@@ -35,3 +35,9 @@ nosetests.xml
 .mr.developer.cfg
 .project
 .pydevproject
+
+# py-filelock
+# -----------
+
+# Docs
+docs/build
