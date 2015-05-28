@@ -91,46 +91,6 @@ class Timeout(TimeoutError):
 class BaseFileLock(object):
     """
     Implements the base class of a file lock.
-
-    The file lock counts how often your acquired the filelock and will
-    release it only if *release* has been called as often as *acquire*.
-
-    Usage:
-
-    .. code-block:: python
-
-        with BaseFileLock("afile"):
-            pass
-
-    or if you need to specify a timeout:
-
-    .. code-block:: python
-
-        lock = BaseFileLock("afile")
-        with lock.acquire_(5):
-            pass
-
-    You can also specify a default timeout:
-
-    .. code-block:: python
-
-        lock = BaseFileLock("afile", timeout=5)
-        with lock: # timeout == 5
-            pass
-
-        lock = BaseFileLock("afile")
-        with lock: # no timeout
-            pass
-
-    The lock counter allows you to nest the file lock in this way:
-
-    .. code-block:: python
-
-        lock = BaseFileLock("afile")
-        with lock:
-            with lock:
-                assert lock.is_locked
-            assert lock.is_locked
     """
 
     def __init__(self, lock_file, timeout = -1):
