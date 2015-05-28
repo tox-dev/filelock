@@ -83,13 +83,13 @@ class TestFileLock(unittest.TestCase):
     def test_nested1(self):
         """
         """
-        with self.lock.acquire_():
+        with self.lock.acquire():
             self.assertTrue(self.lock.is_locked)
 
-            with self.lock.acquire_():
+            with self.lock.acquire():
                 self.assertTrue(self.lock.is_locked)
 
-                with self.lock.acquire_():
+                with self.lock.acquire():
                     self.assertTrue(self.lock.is_locked)
 
                 self.assertTrue(self.lock.is_locked)
@@ -240,7 +240,7 @@ class TestFileLock(unittest.TestCase):
         """
         """
         try:
-            with self.lock.acquire_() as lock:
+            with self.lock.acquire() as lock:
                 self.assertIs(self.lock, lock)
 
                 self.assertTrue(self.lock.is_locked)
