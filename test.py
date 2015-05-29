@@ -133,6 +133,9 @@ class TestFileLock(unittest.TestCase):
 
     def test_threaded1(self):
         """
+        .. todo::
+
+            This test does not work ...
         """
         if True:
             return None
