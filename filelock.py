@@ -310,7 +310,7 @@ if msvcrt:
             else:
                 try:
                     msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                except OSError:
+                except (IOError, OSError):
                     os.close(fd)
                 else:
                     self._lock_file_fd = fd
