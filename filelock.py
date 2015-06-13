@@ -62,7 +62,7 @@ except NameError:
 # Data
 # ------------------------------------------------
 __all__ = ["Timeout", "FileLock"]
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 
 # Exceptions
