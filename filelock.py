@@ -63,6 +63,7 @@ except NameError:
 # ------------------------------------------------
 __all__ = [
     "Timeout",
+    "BaseFileLock",
     "WindowsFileLock",
     "UnixFileLock",
     "SoftFileLock",
@@ -404,8 +405,14 @@ class SoftFileLock(BaseFileLock):
         return None
 
 
-# For backwards compatibility and platform independence, we
-# give the lock, which is associated to the current platform a new name.
+# Platform filelock
+# ~~~~~~~~~~~~~~~~~
+
+#: Alias for the lock, which should be used for the current platform. On
+#: Windows, this is an alias for :class:`WindowsFileLock`, on Unix for
+#: :class:`UnixFileLock` and otherwise for :class:`SoftFileLock`.
+FileLock = None
+
 if msvcrt:
     FileLock = WindowsFileLock
 elif fcntl:

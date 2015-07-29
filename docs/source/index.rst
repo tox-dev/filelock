@@ -116,12 +116,9 @@ Examples
 API
 ---
 
-.. autoclass:: filelock.Timeout
-    :show-inheritance:
-
-.. autoclass:: filelock.FileLock
+.. automodule:: filelock
     :members:
-    :inherited-members:
+    :show-inheritance:
 
 
 License
