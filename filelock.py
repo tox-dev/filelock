@@ -62,7 +62,7 @@ except NameError:
 # Data
 # ------------------------------------------------
 __all__ = ["Timeout", "FileLock"]
-__version__ = "2.0.1"
+__version__ = "2.0.2"
 
 
 # Exceptions
@@ -297,91 +297,114 @@ class BaseFileLock(object):
 
 
 # Windows locking mechanism
-if msvcrt:
-    class FileLock(BaseFileLock):
+# ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-        def _acquire(self):
-            open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
+class WindowsFileLock(BaseFileLock):
+    """
+    Uses the :func:`msvcrt.locking` function to hard lock the lock file on
+    windows systems.
+    """
 
-            try:
-                fd = os.open(self._lock_file, open_mode)
-            except OSError:
-                pass
-            else:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                except (IOError, OSError):
-                    os.close(fd)
-                else:
-                    self._lock_file_fd = fd
-            return None
+    def _acquire(self):
+        open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
 
-        def _release(self):
-            msvcrt.locking(self._lock_file_fd, msvcrt.LK_UNLCK, 1)
-            os.close(self._lock_file_fd)
-            self._lock_file_fd = None
-
-            try:
-                os.remove(self._lock_file)
-            # Probably another instance of the application
-            # that acquired the file lock.
-            except OSError:
-                pass
-            return None
-
-# Unix locking mechanism
-elif fcntl:
-    class FileLock(BaseFileLock):
-
-        def _acquire(self):
-            open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
+        try:
             fd = os.open(self._lock_file, open_mode)
-
+        except OSError:
+            pass
+        else:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             except (IOError, OSError):
                 os.close(fd)
             else:
                 self._lock_file_fd = fd
-            return None
+        return None
 
-        def _release(self):
-            fcntl.flock(self._lock_file_fd, fcntl.LOCK_UN)
-            os.close(self._lock_file_fd)
-            self._lock_file_fd = None
+    def _release(self):
+        msvcrt.locking(self._lock_file_fd, msvcrt.LK_UNLCK, 1)
+        os.close(self._lock_file_fd)
+        self._lock_file_fd = None
 
-            try:
-                os.remove(self._lock_file)
-            # Probably another instance of the application
-            # that acquired the file lock.
-            except OSError:
-                pass
-            return None
+        try:
+            os.remove(self._lock_file)
+        # Probably another instance of the application
+        # that acquired the file lock.
+        except OSError:
+            pass
+        return None
 
-# The "hard" lock is not available. But we can watch the existence of a file.
+# Unix locking mechanism
+# ~~~~~~~~~~~~~~~~~~~~~~
+
+class UnixFileLock(BaseFileLock):
+    """
+    Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems.
+    """
+
+    def _acquire(self):
+        open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
+        fd = os.open(self._lock_file, open_mode)
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, OSError):
+            os.close(fd)
+        else:
+            self._lock_file_fd = fd
+        return None
+
+    def _release(self):
+        fcntl.flock(self._lock_file_fd, fcntl.LOCK_UN)
+        os.close(self._lock_file_fd)
+        self._lock_file_fd = None
+
+        try:
+            os.remove(self._lock_file)
+        # Probably another instance of the application
+        # that acquired the file lock.
+        except OSError:
+            pass
+        return None
+
+# Soft lock
+# ~~~~~~~~~
+
+class SoftFileLock(BaseFileLock):
+    """
+    Simply watches the existence of the lock file.
+    """
+
+    def _acquire(self):
+        open_mode = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
+        try:
+            fd = os.open(self._lock_file, open_mode)
+        except (IOError, OSError):
+            pass
+        else:
+            self._lock_file_fd = fd
+        return None
+
+    def _release(self):
+        os.close(self._lock_file_fd)
+        self._lock_file_fd = None
+
+        try:
+            os.remove(self._lock_file)
+        # The file is already deleted and that's what we want.
+        except OSError:
+            pass
+        return None
+
+
+# For backwards compatibility and platform independence, we
+# give the lock, which is associated to the current platform a new name.
+if msvcrt:
+    FileLock = WindowsFileLock
+elif fcntl:
+    FileLock = UnixFileLock
 else:
-    class FileLock(BaseFileLock):
-
-        def _acquire(self):
-            open_mode = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
-            try:
-                fd = os.open(self._lock_file, open_mode)
-            except (IOError, OSError):
-                pass
-            else:
-                self._lock_file_fd = fd
-            return None
-
-        def _release(self):
-            os.close(self._lock_file_fd)
-            self._lock_file_fd = None
-
-            try:
-                os.remove(self._lock_file)
-            # The file is already deleted and that's what we want.
-            except OSError:
-                pass
-            return None
+    FileLock = SoftFileLock
 
     if warnings is not None:
         warnings.warn("only soft file lock is available")
