@@ -61,8 +61,15 @@ except NameError:
 
 # Data
 # ------------------------------------------------
-__all__ = ["Timeout", "FileLock"]
-__version__ = "2.0.3"
+__all__ = [
+    "Timeout",
+    "WindowsFileLock",
+    "UnixFileLock",
+    "SoftFileLock",
+    "FileLock"
+]
+
+__version__ = "2.0.4"
 
 
 # Exceptions
