@@ -159,7 +159,6 @@ class BaseTest(object):
         self.assertFalse(self.lock.is_locked)
         return None
 
-    @unittest.skip("Fails and I don't know why...")
     def test_threaded1(self):
         """
         Runs multiple threads, which acquire the same lock file with a different

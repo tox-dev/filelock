@@ -70,7 +70,7 @@ __all__ = [
     "FileLock"
 ]
 
-__version__ = "2.0.4"
+__version__ = "2.0.5"
 
 
 # Exceptions
@@ -277,6 +277,8 @@ class BaseFileLock(object):
         Please note, that the lock is only completly released, if the lock
         counter is 0.
 
+        Also note, that the lock file itself is not automatically deleted.
+
         :arg bool force:
             If true, the lock counter is ignored and the lock is released in
             every case.
@@ -366,7 +368,6 @@ class UnixFileLock(BaseFileLock):
         fcntl.flock(self._lock_file_fd, fcntl.LOCK_UN)
         os.close(self._lock_file_fd)
         self._lock_file_fd = None
-
         return None
 
 # Soft lock

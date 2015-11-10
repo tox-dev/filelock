@@ -41,3 +41,5 @@ nosetests.xml
 
 # Docs
 docs/build
+
+test.lock
