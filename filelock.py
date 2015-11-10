@@ -367,12 +367,6 @@ class UnixFileLock(BaseFileLock):
         os.close(self._lock_file_fd)
         self._lock_file_fd = None
 
-        try:
-            os.remove(self._lock_file)
-        # Probably another instance of the application
-        # that acquired the file lock.
-        except OSError:
-            pass
         return None
 
 # Soft lock
