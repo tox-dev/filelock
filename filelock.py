@@ -107,23 +107,44 @@ class BaseFileLock(object):
         # The path to the lock file.
         self._lock_file = lock_file
 
+        self._local = threading.local()  # Creates thread-local data so lock is thread and process independent
+
         # The file descriptor for the *_lock_file* as it is returned by the
         # os.open() function.
         # This file lock is only NOT None, if the object currently holds the
         # lock.
-        self._lock_file_fd = None
+        self._local.lock_file_fd = None
 
         # The default timeout value.
         self.timeout = timeout
 
         # We use this lock primarily for the lock counter.
-        self._thread_lock = threading.Lock()
+        self._local.thread_lock = threading.Lock()
 
         # The lock counter is used for implementing the nested locking
         # mechanism. Whenever the lock is acquired, the counter is increased and
         # the lock is only released, when this value is 0 again.
-        self._lock_counter = 0
+        self._local.lock_counter = 0
         return None
+
+    def _thread_check(self):
+        """ Initialize new, thread-local variables, if needed.
+
+            This checks if we already have thread-local variables for the current thread
+            (won't if lock is being used by a new thread that's different than the one that
+            initialized this Lock instance) and creates new thread-local variables if they don't exist.
+        """
+        # thread = threading.currentThread().getName()
+        if not hasattr(self._local, 'lock_file_fd'):
+            # print "Creating new local variables for %s" % thread
+
+            # Being used by a different thread than the one that created the lock, create new thread-local variables
+            # logging.debug("Different thread than Lock initializer, initializing thread-local variables")
+            self._local.lock_file_fd = None
+            self._local.thread_lock = threading.Lock()
+            self._local.lock_counter = 0
+        # else:
+        #     print "%s already has local variables" % thread
 
     @property
     def lock_file(self):
@@ -161,14 +182,14 @@ class BaseFileLock(object):
     def _acquire(self):
         """
         Platform dependent. If the file lock could be
-        acquired, self._lock_file_fd holds the file descriptor
+        acquired, self._local.lock_file_fd holds the file descriptor
         of the lock file.
         """
         raise NotImplementedError()
 
     def _release(self):
         """
-        Releases the lock and sets self._lock_file_fd to None.
+        Releases the lock and sets self._local.lock_file_fd to None.
         """
         raise NotImplementedError()
 
@@ -184,7 +205,8 @@ class BaseFileLock(object):
 
             This was previously a method and is now a property.
         """
-        return self._lock_file_fd is not None
+        self._thread_check()
+        return self._local.lock_file_fd is not None
 
     def acquire(self, timeout=None, poll_intervall=0.05):
         """
@@ -221,19 +243,21 @@ class BaseFileLock(object):
             This method returns now a *proxy* object instead of *self*,
             so that it can be used in a with statement without side effects.
         """
+        self._thread_check()
+
         # Use the default timeout, if no timeout is provided.
         if timeout is None:
             timeout = self.timeout
 
         # Increment the number right at the beginning.
         # We can still undo it, if something fails.
-        with self._thread_lock:
-            self._lock_counter += 1
+        with self._local.thread_lock:
+            self._local.lock_counter += 1
 
         try:
             start_time = time.time()
             while True:
-                with self._thread_lock:
+                with self._local.thread_lock:
                     if not self.is_locked:
                         self._acquire()
 
@@ -245,8 +269,8 @@ class BaseFileLock(object):
                     time.sleep(poll_intervall)
         except:
             # Something did go wrong, so decrement the counter.
-            with self._thread_lock:
-                self._lock_counter = max(0, self._lock_counter - 1)
+            with self._local.thread_lock:
+                self._local.lock_counter = max(0, self._local.lock_counter - 1)
 
             raise
 
@@ -283,14 +307,16 @@ class BaseFileLock(object):
             If true, the lock counter is ignored and the lock is released in
             every case.
         """
-        with self._thread_lock:
+        self._thread_check()
+
+        with self._local.thread_lock:
 
             if self.is_locked:
-                self._lock_counter -= 1
+                self._local.lock_counter -= 1
 
-                if self._lock_counter == 0 or force:
+                if self._local.lock_counter == 0 or force:
                     self._release()
-                    self._lock_counter = 0
+                    self._local.lock_counter = 0
         return None
 
     def __enter__(self):
@@ -316,6 +342,8 @@ class WindowsFileLock(BaseFileLock):
     """
 
     def _acquire(self):
+        self._thread_check()
+
         open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
 
         try:
@@ -328,13 +356,15 @@ class WindowsFileLock(BaseFileLock):
             except (IOError, OSError):
                 os.close(fd)
             else:
-                self._lock_file_fd = fd
+                self._local.lock_file_fd = fd
         return None
 
     def _release(self):
-        msvcrt.locking(self._lock_file_fd, msvcrt.LK_UNLCK, 1)
-        os.close(self._lock_file_fd)
-        self._lock_file_fd = None
+        self._thread_check()
+
+        msvcrt.locking(self._local.lock_file_fd, msvcrt.LK_UNLCK, 1)
+        os.close(self._local.lock_file_fd)
+        self._local.lock_file_fd = None
 
         try:
             os.remove(self._lock_file)
@@ -353,6 +383,8 @@ class UnixFileLock(BaseFileLock):
     """
 
     def _acquire(self):
+        self._thread_check()
+
         open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
         fd = os.open(self._lock_file, open_mode)
 
@@ -361,13 +393,15 @@ class UnixFileLock(BaseFileLock):
         except (IOError, OSError):
             os.close(fd)
         else:
-            self._lock_file_fd = fd
+            self._local.lock_file_fd = fd
         return None
 
     def _release(self):
-        fcntl.flock(self._lock_file_fd, fcntl.LOCK_UN)
-        os.close(self._lock_file_fd)
-        self._lock_file_fd = None
+        self._thread_check()
+
+        fcntl.flock(self._local.lock_file_fd, fcntl.LOCK_UN)
+        os.close(self._local.lock_file_fd)
+        self._local.lock_file_fd = None
         return None
 
 # Soft lock
@@ -379,18 +413,22 @@ class SoftFileLock(BaseFileLock):
     """
 
     def _acquire(self):
+        self._thread_check()
+
         open_mode = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
         try:
             fd = os.open(self._lock_file, open_mode)
         except (IOError, OSError):
             pass
         else:
-            self._lock_file_fd = fd
+            self._local.lock_file_fd = fd
         return None
 
     def _release(self):
-        os.close(self._lock_file_fd)
-        self._lock_file_fd = None
+        self._thread_check()
+
+        os.close(self._local.lock_file_fd)
+        self._local.lock_file_fd = None
 
         try:
             os.remove(self._lock_file)
