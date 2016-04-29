@@ -30,6 +30,7 @@
 Some tests for the file lock.
 """
 
+import os
 import time
 import unittest
 import threading
@@ -63,6 +64,10 @@ class BaseTest(object):
         Asserts that the lock file *self.lock* is not locked.
         """
         self.assertFalse(self.lock.is_locked)
+        try:
+            os.remove(self.lock.lock_file)
+        except OSError:
+            pass
         return None
 
     def test_simple(self):
