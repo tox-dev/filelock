@@ -332,9 +332,10 @@ class WindowsFileLock(BaseFileLock):
         return None
 
     def _release(self):
-        msvcrt.locking(self._lock_file_fd, msvcrt.LK_UNLCK, 1)
-        os.close(self._lock_file_fd)
+        fd = self._lock_file_fd
         self._lock_file_fd = None
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        os.close(fd)
 
         try:
             os.remove(self._lock_file)
@@ -365,9 +366,10 @@ class UnixFileLock(BaseFileLock):
         return None
 
     def _release(self):
-        fcntl.flock(self._lock_file_fd, fcntl.LOCK_UN)
-        os.close(self._lock_file_fd)
+        fd = self._lock_file_fd
         self._lock_file_fd = None
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
         return None
 
 # Soft lock
