@@ -31,12 +31,35 @@ Some tests for the file lock.
 """
 
 import os
+import sys
 import time
 import unittest
 import threading
 import random
 
 import filelock
+
+
+class ExThread(threading.Thread):
+
+    def __init__(self, *args, **kargs):
+        threading.Thread.__init__(self, *args, **kargs)
+        self.ex = None
+        return None
+
+    def run(self):
+        try:
+            threading.Thread.run(self)
+        except:
+            self.ex = sys.exc_info()
+        return None
+
+    def join(self):
+        threading.Thread.join(self)
+        if self.ex is not None:
+            wrapper_ex = self.ex[1]
+            raise (wrapper_ex.__class__, wrapper_ex, self.ex[2])
+        return None
 
 
 class BaseTest(object):
@@ -155,7 +178,7 @@ class BaseTest(object):
 
         NUM_THREADS = 250
 
-        threads = [threading.Thread(target = my_thread) for i in range(NUM_THREADS)]
+        threads = [ExThread(target = my_thread) for i in range(NUM_THREADS)]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -195,8 +218,8 @@ class BaseTest(object):
         lock1 = self.LOCK_TYPE(self.lock.lock_file)
         lock2 = self.LOCK_TYPE(self.lock.lock_file)
 
-        threads1 = [threading.Thread(target = thread1) for i in range(NUM_THREADS)]
-        threads2 = [threading.Thread(target = thread2) for i in range(NUM_THREADS)]
+        threads1 = [ExThread(target = thread1) for i in range(NUM_THREADS)]
+        threads2 = [ExThread(target = thread2) for i in range(NUM_THREADS)]
 
         for i in range(NUM_THREADS):
             threads1[i].start()
