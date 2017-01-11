@@ -32,6 +32,7 @@ A platform independent file lock that supports the with-statement.
 
 # Modules
 # ------------------------------------------------
+import logging
 import os
 import threading
 import time
@@ -71,6 +72,8 @@ __all__ = [
 ]
 
 __version__ = "2.0.7"
+
+logger = logging.getLogger(__name__)
 
 
 # Exceptions
@@ -233,15 +236,25 @@ class BaseFileLock(object):
         try:
             start_time = time.time()
             while True:
+                lock_id = id(self)
+                lock_filename = self._lock_file
+
                 with self._thread_lock:
                     if not self.is_locked:
+                        logger.debug('Attempting to acquire lock %s on %s', lock_id, lock_filename)
                         self._acquire()
 
                 if self.is_locked:
+                    logger.info('Lock %s acquired on %s', lock_id, lock_filename)
                     break
                 elif timeout >= 0 and time.time() - start_time > timeout:
+                    logger.debug('Timeout on aquiring lock %s on %s', lock_id, lock_filename)
                     raise Timeout(self._lock_file)
                 else:
+                    logger.debug(
+                        'Lock %s not acquired on %s, waiting %s seconds ...',
+                        lock_id, lock_filename, poll_intervall
+                    )
                     time.sleep(poll_intervall)
         except:
             # Something did go wrong, so decrement the counter.
@@ -289,8 +302,14 @@ class BaseFileLock(object):
                 self._lock_counter -= 1
 
                 if self._lock_counter == 0 or force:
+                    lock_id = id(self)
+                    lock_filename = self._lock_file
+
+                    logger.debug('Attempting to release lock %s on %s', lock_id, lock_filename)
                     self._release()
                     self._lock_counter = 0
+                    logger.info('Lock %s released on %s', lock_id, lock_filename)
+
         return None
 
     def __enter__(self):
