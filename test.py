@@ -32,10 +32,8 @@ Some tests for the file lock.
 
 import os
 import sys
-import time
 import unittest
 import threading
-import random
 
 import filelock
 
