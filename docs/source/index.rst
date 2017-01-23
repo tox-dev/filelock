@@ -98,7 +98,6 @@ Examples
     # instead:
     try:
         lock.acquire()
-        pass
     finally:
         lock.release()
 
