@@ -27,7 +27,7 @@ Documentation
 -------------
 
 The full documentation is available on
-`readthedocs.org <https://filelock.readthedocs.org/>`_.
+`readthedocs.org <https://filelock.readthedocs.io/>`_.
 
 
 Contributions
