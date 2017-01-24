@@ -88,9 +88,8 @@ Examples
 
     # If you can not use the *with* statement, use a try-finally construct
     # instead:
-    lock.acquire()
     try:
-        pass
+        lock.acquire()
     finally:
         lock.release()
 
