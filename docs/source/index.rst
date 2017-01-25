@@ -102,6 +102,18 @@ Examples
     except filelock.Timeout:
         pass
 
+    # If you can not use the with statement, you can again use a try-final
+    # construct instead.
+    try:
+        lock.acquire()
+    except filelock.Timeout:
+        pass
+    else:
+        try:
+            pass
+        finally:
+            lock.release()    
+
     # Please note, that you can acquire the lock multiple times without
     # blocking. The lock will count, how often it has been acquired and releases
     # the lock, as soon as the counter is 0.
