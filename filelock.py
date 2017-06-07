@@ -71,7 +71,7 @@ __all__ = [
     "FileLock"
 ]
 
-__version__ = "2.0.8"
+__version__ = "2.0.9"
 
 logger = logging.getLogger(__name__)
 
