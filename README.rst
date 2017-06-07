@@ -32,7 +32,7 @@ that files, directories or other resources are currently used or manipulated
 (Think of a sync.lock file). Only the existence of the lockfile is watched for
 this purpose. The file itself can not be written and is always empty.
 
- Perhaps you are looking for something like
+Perhaps you are looking for something like
 
 *	https://pypi.python.org/pypi/pid/2.1.1
 * https://docs.python.org/3.6/library/msvcrt.html#msvcrt.locking
