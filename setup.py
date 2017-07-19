@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python
 
 # This is free and unencumbered software released into the public domain.
 #
@@ -58,7 +58,7 @@ setup(
         "License :: Public Domain",
         "Development Status :: 5 - Production/Stable",
         "Operating System :: OS Independent",
-        "Programming Language :: Python :: 3",
+        "Programming Language :: Python",
         "Intended Audience :: Developers",
         "Topic :: System",
         "Topic :: Internet",

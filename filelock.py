@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python
 
 # This is free and unencumbered software released into the public domain.
 #
@@ -71,7 +71,7 @@ __all__ = [
     "FileLock"
 ]
 
-__version__ = "2.0.10"
+__version__ = "2.0.11"
 
 logger = logging.getLogger(__name__)
 
