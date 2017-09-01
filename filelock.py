@@ -248,7 +248,7 @@ class BaseFileLock(object):
                     logger.info('Lock %s acquired on %s', lock_id, lock_filename)
                     break
                 elif timeout >= 0 and time.time() - start_time > timeout:
-                    logger.debug('Timeout on aquiring lock %s on %s', lock_id, lock_filename)
+                    logger.debug('Timeout on acquiring lock %s on %s', lock_id, lock_filename)
                     raise Timeout(self._lock_file)
                 else:
                     logger.debug(
