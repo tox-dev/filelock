@@ -395,6 +395,11 @@ class UnixFileLock(BaseFileLock):
         self._lock_file_fd = None
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+        try:
+            os.remove(self._lock_file)
+        except OSError:
+            pass
         return None
 
 # Soft lock

@@ -38,6 +38,10 @@ import threading
 import filelock
 
 
+PY2 = sys.version_info[0] == 2
+PY3 = sys.version_info[0] == 3
+
+
 class ExThread(threading.Thread):
 
     def __init__(self, *args, **kargs):
@@ -55,8 +59,11 @@ class ExThread(threading.Thread):
     def join(self):
         threading.Thread.join(self)
         if self.ex is not None:
-            wrapper_ex = self.ex[1]
-            raise (wrapper_ex.__class__, wrapper_ex, self.ex[2])
+            if PY3:
+                raise self.ex[0].with_traceback(self.ex[1], self.ex[2])
+            elif PY2:
+                wrapper_ex = self.ex[1]
+                raise (wrapper_ex.__class__, wrapper_ex, self.ex[2])
         return None
 
 
