@@ -205,7 +205,7 @@ class BaseFileLock(object):
             with lock.acquire():
                 pass
 
-            # Or you use an equal try-finally construct:
+            # Or use an equivalent try-finally construct:
             lock.acquire()
             try:
                 pass

@@ -1,49 +1,115 @@
-Py-FileLock
+py-filelock
 ===========
 
 This package contains a single module, which implements a platform independent
-file lock in Python.
-
-The lock includes a lock counter and is thread safe. This means, when locking
-the same lock object twice, it will not block.
+file lock in Python, which provides a simple way of inter-process communication:
 
 .. code-block:: python
 
-	import filelock
+	from filelock import Timeout, FileLock
 
-	lock = filelock.FileLock("my_lock_file")
-
+	lock = FileLock("high_ground.txt.lock")
 	with lock:
-		pass
+		open("high_ground.txt", "a").write("You were the chosen one.")
 
-	try:
-		with lock.acquire(timeout = 10):
-			pass
-	except filelock.Timeout:
-		pass
+**Don't use** a *FileLock* to lock the file you want to write too, instead create a separate
+*.lock* file as shown above.
 
-
-What this *filelock* is not
----------------------------
-
-A *filelock* provides a synchronisation mechanism between different instances
-of your application, similar to a thread lock. It can be used to *signalize*
-that files, directories or other resources are currently used or manipulated
-(Think of a sync.lock file). Only the existence of the lockfile is watched for
-this purpose. The file itself can not be written and is always empty.
+Similar libraries
+-----------------
 
 Perhaps you are looking for something like
 
 *	https://pypi.python.org/pypi/pid/2.1.1
-* https://docs.python.org/3.6/library/msvcrt.html#msvcrt.locking
-* or https://docs.python.org/3/library/fcntl.html#fcntl.flock
+*	https://docs.python.org/3.6/library/msvcrt.html#msvcrt.locking
+*	or https://docs.python.org/3/library/fcntl.html#fcntl.flock
 
+Installation
+------------
+
+*py-filelock* is available via PyPi:
+
+.. code-block:: bash
+
+	$ pip3 install filelock
 
 Documentation
 -------------
 
-The full documentation is available on
+The documentation for the API is available on
 `readthedocs.org <https://filelock.readthedocs.io/>`_.
+
+Examples
+^^^^^^^^
+
+A *FileLock* is used to indicate another process of your application that a resource or working
+directory is currently used. To do so, create a *FileLock* first:
+
+.. code-block:: python
+
+	from filelock import Timeout, FileLock
+
+	file_path = "high_ground.txt"
+	lock_path = "high_ground.txt.lock"
+
+	lock = FileLock(lock_path, timeout=1)
+
+The lock object supports multiple ways for acquiring the lock, including the ones used to acquire
+standard Python thread locks:
+
+.. code-block:: python
+
+	with lock:
+		open(file_path, "a").write("Hello there!")
+
+	try:
+		lock.acquire()
+	else:
+		open(file_path, "a").write("General Kenobi!")
+	finally:
+		lock.release()
+
+The *acquire()* method accepts also a *timeout* parameter. If the lock cannot be acquired
+within *timeout* seconds, a *Timeout* exception is raised.:
+
+.. code-block:: python
+
+	try:
+		with lock.acquire(timeout=10):
+			open(file_path, "a").write("I have a bad feeling about this.")
+	except Timeout:
+		print("Another instance of this application currently holds the lock.")
+
+The lock objects are recursive locks, which means that once acquired, they will not block on
+successive lock requests:
+
+.. code-block:: python
+
+	def cite1():
+		with lock:
+			open(file_path, "a").write("I hat it when he does that.")
+
+	def cite2():
+		with lock:
+			open(file_path, "a").write("You don't want to sell me death sticks.")
+
+	# The lock is acquired here.
+	with lock:
+		cite1()
+		cite2()
+
+	# And released here.
+
+
+FileLock vs SoftFileLock
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+The *FileLock* is platform dependent while the *SoftFileLock* is not. Use the *FileLock* if all
+instances of your application are running on the same host and a *SoftFileLock* otherwise.
+
+The *SoftFileLock* only watches the existence of the lock file. This makes it ultra portable, but
+also more prone to dead locks if the application crashes. You can simply delete the lock file in
+such cases.
 
 
 Contributions
