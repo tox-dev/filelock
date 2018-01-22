@@ -75,25 +75,21 @@ class BaseTest(object):
     # The filelock type (class), which is tested.
     LOCK_TYPE = None
 
+    # The path to the lockfile.
+    LOCK_PATH = "test.lock"
+
     def setUp(self):
-        """
-        Creates a new lock file:
-
-            self.lock
-
-        and asserts, that it is not locked.
-        """
-        self.lock = self.LOCK_TYPE("test.lock")
-        self.assertFalse(self.lock.is_locked)
+        """Deletes the potential lock file at :attr:`LOCK_PATH`."""
+        try:
+            os.remove(self.LOCK_PATH)
+        except FileNotFoundError:
+            pass
         return None
 
     def tearDown(self):
-        """
-        Asserts that the lock file *self.lock* is not locked.
-        """
-        self.assertFalse(self.lock.is_locked)
+        """Deletes the potential lock file at :attr:`LOCK_PATH`."""
         try:
-            os.remove(self.lock.lock_file)
+            os.remove(self.LOCK_PATH)
         except OSError:
             pass
         return None
@@ -103,10 +99,12 @@ class BaseTest(object):
         Asserts that the lock is locked in a context statement and that the
         return value of the *__enter__* method is the lock.
         """
-        with self.lock as l:
-            self.assertTrue(self.lock.is_locked)
-            self.assertTrue(self.lock is l)
-        self.assertFalse(self.lock.is_locked)
+        lock = self.LOCK_TYPE(self.LOCK_PATH)
+
+        with lock as l:
+            self.assertTrue(lock.is_locked)
+            self.assertTrue(lock is l)
+        self.assertFalse(lock.is_locked)
         return None
 
     def test_nested(self):
@@ -114,21 +112,23 @@ class BaseTest(object):
         Asserts, that the lock is not released before the most outer with
         statement that locked the lock, is left.
         """
-        with self.lock as l1:
-            self.assertTrue(self.lock.is_locked)
-            self.assertTrue(self.lock is l1)
+        lock = self.LOCK_TYPE(self.LOCK_PATH)
 
-            with self.lock as l2:
-                self.assertTrue(self.lock.is_locked)
-                self.assertTrue(self.lock is l2)
+        with lock as l1:
+            self.assertTrue(lock.is_locked)
+            self.assertTrue(lock is l1)
 
-                with self.lock as l3:
-                    self.assertTrue(self.lock.is_locked)
-                    self.assertTrue(self.lock is l3)
+            with lock as l2:
+                self.assertTrue(lock.is_locked)
+                self.assertTrue(lock is l2)
 
-                self.assertTrue(self.lock.is_locked)
-            self.assertTrue(self.lock.is_locked)
-        self.assertFalse(self.lock.is_locked)
+                with lock as l3:
+                    self.assertTrue(lock.is_locked)
+                    self.assertTrue(lock is l3)
+
+                self.assertTrue(lock.is_locked)
+            self.assertTrue(lock.is_locked)
+        self.assertFalse(lock.is_locked)
         return None
 
     def test_nested1(self):
@@ -136,21 +136,23 @@ class BaseTest(object):
         The same as *test_nested*, but this method uses the *acquire()* method
         to create the lock, rather than the implicit *__enter__* method.
         """
-        with self.lock.acquire() as l1:
-            self.assertTrue(self.lock.is_locked)
-            self.assertTrue(self.lock is l1)
+        lock = self.LOCK_TYPE(self.LOCK_PATH)
 
-            with self.lock.acquire() as l2:
-                self.assertTrue(self.lock.is_locked)
-                self.assertTrue(self.lock is l2)
+        with lock.acquire() as l1:
+            self.assertTrue(lock.is_locked)
+            self.assertTrue(lock is l1)
 
-                with self.lock.acquire() as l3:
-                    self.assertTrue(self.lock.is_locked)
-                    self.assertTrue(self.lock is l3)
+            with lock.acquire() as l2:
+                self.assertTrue(lock.is_locked)
+                self.assertTrue(lock is l2)
 
-                self.assertTrue(self.lock.is_locked)
-            self.assertTrue(self.lock.is_locked)
-        self.assertFalse(self.lock.is_locked)
+                with lock.acquire() as l3:
+                    self.assertTrue(lock.is_locked)
+                    self.assertTrue(lock is l3)
+
+                self.assertTrue(lock.is_locked)
+            self.assertTrue(lock.is_locked)
+        self.assertFalse(lock.is_locked)
         return None
 
     def test_nested_forced_release(self):
@@ -158,15 +160,17 @@ class BaseTest(object):
         Acquires the lock using a with-statement and releases the lock
         before leaving the with-statement.
         """
-        with self.lock:
-            self.assertTrue(self.lock.is_locked)
+        lock = self.LOCK_TYPE(self.LOCK_PATH)
 
-            self.lock.acquire()
-            self.assertTrue(self.lock.is_locked)
+        with lock:
+            self.assertTrue(lock.is_locked)
 
-            self.lock.release(force = True)
-            self.assertFalse(self.lock.is_locked)
-        self.assertFalse(self.lock.is_locked)
+            lock.acquire()
+            self.assertTrue(lock.is_locked)
+
+            lock.release(force = True)
+            self.assertFalse(lock.is_locked)
+        self.assertFalse(lock.is_locked)
         return None
 
     def test_threaded(self):
@@ -175,10 +179,12 @@ class BaseTest(object):
         if at least one thread required it and released, as soon as all threads
         stopped.
         """
+        lock = self.LOCK_TYPE(self.LOCK_PATH)
+
         def my_thread():
             for i in range(100):
-                with self.lock:
-                    self.assertTrue(self.lock.is_locked)
+                with lock:
+                    self.assertTrue(lock.is_locked)
             return None
 
         NUM_THREADS = 250
@@ -189,7 +195,7 @@ class BaseTest(object):
         for thread in threads:
             thread.join()
 
-        self.assertFalse(self.lock.is_locked)
+        self.assertFalse(lock.is_locked)
         return None
 
     def test_threaded1(self):
@@ -205,7 +211,7 @@ class BaseTest(object):
             for i in range(1000):
                 with lock1:
                     self.assertTrue(lock1.is_locked)
-                    self.assertFalse(lock2.is_locked)
+                    self.assertFalse(lock2.is_locked) # FIXME (Filelock)
             return None
 
         def thread2():
@@ -214,14 +220,14 @@ class BaseTest(object):
             """
             for i in range(1000):
                 with lock2:
-                    self.assertFalse(lock1.is_locked)
+                    self.assertFalse(lock1.is_locked) # FIXME (FileLock)
                     self.assertTrue(lock2.is_locked)
             return None
 
         NUM_THREADS =  10
 
-        lock1 = self.LOCK_TYPE(self.lock.lock_file)
-        lock2 = self.LOCK_TYPE(self.lock.lock_file)
+        lock1 = self.LOCK_TYPE(self.LOCK_PATH)
+        lock2 = self.LOCK_TYPE(self.LOCK_PATH)
 
         threads1 = [ExThread(target = thread1) for i in range(NUM_THREADS)]
         threads2 = [ExThread(target = thread2) for i in range(NUM_THREADS)]
@@ -241,8 +247,8 @@ class BaseTest(object):
         """
         Tests if the lock raises a TimeOut error, when it can not be acquired.
         """
-        lock1 = self.LOCK_TYPE(self.lock.lock_file)
-        lock2 = self.LOCK_TYPE(self.lock.lock_file)
+        lock1 = self.LOCK_TYPE(self.LOCK_PATH)
+        lock2 = self.LOCK_TYPE(self.LOCK_PATH)
 
         # Acquire lock 1.
         lock1.acquire()
@@ -250,7 +256,7 @@ class BaseTest(object):
         self.assertFalse(lock2.is_locked)
 
         # Try to acquire lock 2.
-        self.assertRaises(filelock.Timeout, lock2.acquire, timeout=1)
+        self.assertRaises(filelock.Timeout, lock2.acquire, timeout=1) # FIXME (Filelock)
         self.assertFalse(lock2.is_locked)
         self.assertTrue(lock1.is_locked)
 
@@ -264,8 +270,8 @@ class BaseTest(object):
         """
         Test if the default timeout parameter works.
         """
-        lock1 = self.LOCK_TYPE(self.lock.lock_file)
-        lock2 = self.LOCK_TYPE(self.lock.lock_file, timeout = 1)
+        lock1 = self.LOCK_TYPE(self.LOCK_PATH)
+        lock2 = self.LOCK_TYPE(self.LOCK_PATH, timeout = 1)
 
         self.assertEqual(lock2.timeout, 1)
 
@@ -275,7 +281,7 @@ class BaseTest(object):
         self.assertFalse(lock2.is_locked)
 
         # Try to acquire lock 2.
-        self.assertRaises(filelock.Timeout, lock2.acquire)
+        self.assertRaises(filelock.Timeout, lock2.acquire) # FIXME (SoftFileLock)
         self.assertFalse(lock2.is_locked)
         self.assertTrue(lock1.is_locked)
 
@@ -297,34 +303,38 @@ class BaseTest(object):
         Tests, if the filelock is released, when an exception is thrown in
         a with-statement.
         """
+        lock = self.LOCK_TYPE(self.LOCK_PATH)
+
         try:
-            with self.lock as lock:
-                self.assertIs(self.lock, lock)
-                self.assertTrue(self.lock.is_locked)
+            with lock as lock1:
+                self.assertIs(lock, lock1)
+                self.assertTrue(lock.is_locked)
                 raise Exception()
         except:
-            self.assertFalse(self.lock.is_locked)
+            self.assertFalse(lock.is_locked)
         return None
 
     def test_context1(self):
         """
         The same as *test_context1()*, but uses the *acquire()* method.
         """
+        lock = self.LOCK_TYPE(self.LOCK_PATH)
+
         try:
-            with self.lock.acquire() as lock:
-                self.assertIs(self.lock, lock)
-                self.assertTrue(self.lock.is_locked)
+            with lock.acquire() as lock1:
+                self.assertIs(lock, lock1)
+                self.assertTrue(lock.is_locked)
                 raise Exception()
         except:
-            self.assertFalse(self.lock.is_locked)
+            self.assertFalse(lock.is_locked)
         return None
 
     def test_del(self):
         """
         Tests, if the lock is released, when the object is deleted.
         """
-        lock1 = self.LOCK_TYPE(self.lock.lock_file)
-        lock2 = self.LOCK_TYPE(self.lock.lock_file)
+        lock1 = self.LOCK_TYPE(self.LOCK_PATH)
+        lock2 = self.LOCK_TYPE(self.LOCK_PATH)
 
         # Acquire lock 1.
         lock1.acquire()
@@ -332,7 +342,7 @@ class BaseTest(object):
         self.assertFalse(lock2.is_locked)
 
         # Try to acquire lock 2.
-        self.assertRaises(filelock.Timeout, lock2.acquire, timeout = 1)
+        self.assertRaises(filelock.Timeout, lock2.acquire, timeout = 1) # FIXME (SoftFileLock)
 
         # Delete lock 1 and try to acquire lock 2 again.
         del lock1
@@ -350,6 +360,7 @@ class FileLockTest(BaseTest, unittest.TestCase):
     """
 
     LOCK_TYPE = filelock.FileLock
+    LOCK_PATH = "test.lock"
 
 
 class SoftFileLockTest(BaseTest, unittest.TestCase):
@@ -358,6 +369,18 @@ class SoftFileLockTest(BaseTest, unittest.TestCase):
     """
 
     LOCK_TYPE = filelock.SoftFileLock
+    LOCK_PATH = "test.softlock"
+
+    def test_cleanup(self):
+        """
+        Tests if the lock file is removed after use.
+        """
+        lock = self.LOCK_TYPE(self.LOCK_PATH)
+
+        with lock:
+            self.assertTrue(os.path.exists(self.LOCK_PATH))
+        self.assertFalse(os.path.exists(self.LOCK_PATH))
+        return None
 
 
 if __name__ == "__main__":
