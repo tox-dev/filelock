@@ -391,15 +391,14 @@ class UnixFileLock(BaseFileLock):
         return None
 
     def _release(self):
+        # Do not remove the lockfile:
+        #
+        #   https://github.com/benediktschmitt/py-filelock/issues/31
+        #   https://stackoverflow.com/questions/17708885/flock-removing-locked-file-without-race-condition
         fd = self._lock_file_fd
         self._lock_file_fd = None
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
-
-        try:
-            os.remove(self._lock_file)
-        except OSError:
-            pass
         return None
 
 # Soft lock
