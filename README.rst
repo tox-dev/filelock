@@ -6,11 +6,11 @@ file lock in Python, which provides a simple way of inter-process communication:
 
 .. code-block:: python
 
-	from filelock import Timeout, FileLock
+    from filelock import Timeout, FileLock
 
-	lock = FileLock("high_ground.txt.lock")
-	with lock:
-		open("high_ground.txt", "a").write("You were the chosen one.")
+    lock = FileLock("high_ground.txt.lock")
+    with lock:
+        open("high_ground.txt", "a").write("You were the chosen one.")
 
 **Don't use** a *FileLock* to lock the file you want to write too, instead create a separate
 *.lock* file as shown above.
@@ -31,7 +31,7 @@ Installation
 
 .. code-block:: bash
 
-	$ pip3 install filelock
+    $ pip3 install filelock
 
 Documentation
 -------------
@@ -47,59 +47,57 @@ directory is currently used. To do so, create a *FileLock* first:
 
 .. code-block:: python
 
-	from filelock import Timeout, FileLock
+    from filelock import Timeout, FileLock
 
-	file_path = "high_ground.txt"
-	lock_path = "high_ground.txt.lock"
+    file_path = "high_ground.txt"
+    lock_path = "high_ground.txt.lock"
 
-	lock = FileLock(lock_path, timeout=1)
+    lock = FileLock(lock_path, timeout=1)
 
 The lock object supports multiple ways for acquiring the lock, including the ones used to acquire
 standard Python thread locks:
 
 .. code-block:: python
 
-	with lock:
-		open(file_path, "a").write("Hello there!")
+    with lock:
+        open(file_path, "a").write("Hello there!")
 
-	try:
-		lock.acquire()
-	else:
-		open(file_path, "a").write("General Kenobi!")
-	finally:
-		lock.release()
+    lock.acquire()
+    try:
+        open(file_path, "a").write("General Kenobi!")
+    finally:
+        lock.release()
 
 The *acquire()* method accepts also a *timeout* parameter. If the lock cannot be acquired
 within *timeout* seconds, a *Timeout* exception is raised.:
 
 .. code-block:: python
 
-	try:
-		with lock.acquire(timeout=10):
-			open(file_path, "a").write("I have a bad feeling about this.")
-	except Timeout:
-		print("Another instance of this application currently holds the lock.")
+    try:
+        with lock.acquire(timeout=10):
+            open(file_path, "a").write("I have a bad feeling about this.")
+    except Timeout:
+        print("Another instance of this application currently holds the lock.")
 
 The lock objects are recursive locks, which means that once acquired, they will not block on
 successive lock requests:
 
 .. code-block:: python
 
-	def cite1():
-		with lock:
-			open(file_path, "a").write("I hat it when he does that.")
+    def cite1():
+        with lock:
+            open(file_path, "a").write("I hat it when he does that.")
 
-	def cite2():
-		with lock:
-			open(file_path, "a").write("You don't want to sell me death sticks.")
+    def cite2():
+        with lock:
+            open(file_path, "a").write("You don't want to sell me death sticks.")
 
-	# The lock is acquired here.
-	with lock:
-		cite1()
-		cite2()
+    # The lock is acquired here.
+    with lock:
+        cite1()
+        cite2()
 
-	# And released here.
-
+    # And released here.
 
 FileLock vs SoftFileLock
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -111,12 +109,10 @@ The *SoftFileLock* only watches the existence of the lock file. This makes it ul
 also more prone to dead locks if the application crashes. You can simply delete the lock file in
 such cases.
 
-
 Contributions
 -------------
 
 Contributions are always welcome. Never hesitate to open a new issue.
-
 
 License
 -------
