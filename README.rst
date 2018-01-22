@@ -17,7 +17,7 @@ file lock in Python, which provides a simple way of inter-process communication:
 
 .. image:: ./example/example_sm.gif
 
-`Large version <https://github.com/benediktschmitt/py-filelock/blob/master/example/example.gif>`_
+Animated example: https://github.com/benediktschmitt/py-filelock/blob/master/example/example.gif
 
 Similar libraries
 -----------------
