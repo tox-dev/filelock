@@ -21,9 +21,9 @@ file lock in Python, which provides a simple way of inter-process communication:
 **Don't use** a *FileLock* to lock the file you want to write too, instead create a separate
 *.lock* file as shown above.
 
-.. image:: ./example/example_sm.gif
+.. image:: https://github.com/benediktschmitt/py-filelock/blob/master/example/example.gif
 
-Animated example: https://github.com/benediktschmitt/py-filelock/blob/master/example/example.gif
+`Animated example <https://github.com/benediktschmitt/py-filelock/blob/master/example/example.gif>`_
 
 Similar libraries
 -----------------
