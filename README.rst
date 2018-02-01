@@ -18,7 +18,7 @@ file lock in Python, which provides a simple way of inter-process communication:
     with lock:
         open("high_ground.txt", "a").write("You were the chosen one.")
 
-**Don't use** a *FileLock* to lock the file you want to write too, instead create a separate
+**Don't use** a *FileLock* to lock the file you want to write to, instead create a separate
 *.lock* file as shown above.
 
 .. image:: https://raw.githubusercontent.com/benediktschmitt/py-filelock/master/example/example.gif
