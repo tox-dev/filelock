@@ -96,7 +96,7 @@ successive lock requests:
 
     def cite1():
         with lock:
-            open(file_path, "a").write("I hat it when he does that.")
+            open(file_path, "a").write("I hate it when he does that.")
 
     def cite2():
         with lock:
