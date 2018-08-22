@@ -1,7 +1,7 @@
 py-filelock
 ===========
 
-[![Build Status](https://travis-ci.org/expobrain/py-filelock.svg?branch=master)](https://travis-ci.org/expobrain/py-filelock)
+[![Build Status](https://travis-ci.org/benediktschmitt/py-filelock.svg?branch=master)](https://travis-ci.org/benediktschmitt/py-filelock)
 
 `Similar Libraries <#similar-libraries>`_
 ~ `Installation <#installation>`_
