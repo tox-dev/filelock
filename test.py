@@ -34,6 +34,7 @@ import os
 import sys
 import unittest
 import threading
+import errno
 
 import filelock
 
@@ -80,28 +81,22 @@ class BaseTest(object):
 
     def setUp(self):
         """Deletes the potential lock file at :attr:`LOCK_PATH`."""
-        if PY3:
-            try:
-                os.remove(self.LOCK_PATH)
-            except FileNotFoundError:
-                pass
-        else:
-            import errno
-
-            try:
-                os.remove(self.LOCK_PATH)
-            except OSError as e:
-                if e.errno != errno.ENOENT:
-                    raise
-
+        try:
+            os.remove(self.LOCK_PATH)
+        except OSError as e:
+            # FileNotFound
+            if e.errno != errno.ENOENT:
+                raise
         return None
 
     def tearDown(self):
         """Deletes the potential lock file at :attr:`LOCK_PATH`."""
         try:
             os.remove(self.LOCK_PATH)
-        except OSError:
-            pass
+        except OSError as e:
+            # FileNotFound
+            if e.errno != errno.ENOENT:
+                raise
         return None
 
     def test_simple(self):
