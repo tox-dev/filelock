@@ -80,10 +80,20 @@ class BaseTest(object):
 
     def setUp(self):
         """Deletes the potential lock file at :attr:`LOCK_PATH`."""
-        try:
-            os.remove(self.LOCK_PATH)
-        except FileNotFoundError:
-            pass
+        if PY3:
+            try:
+                os.remove(self.LOCK_PATH)
+            except FileNotFoundError:
+                pass
+        else:
+            import errno
+
+            try:
+                os.remove(self.LOCK_PATH)
+            except OSError as e:
+                if e.errno != errno.ENOENT:
+                    raise
+
         return None
 
     def tearDown(self):
