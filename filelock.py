@@ -71,7 +71,7 @@ __all__ = [
     "FileLock"
 ]
 
-__version__ = "3.0.7"
+__version__ = "3.0.8"
 
 
 _logger = None

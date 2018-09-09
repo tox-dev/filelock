@@ -28,7 +28,7 @@
 
 # Modules
 # ------------------------------------------------
-from distutils.core import setup
+from setuptools import setup
 from filelock import __version__
 
 # Main
