@@ -3,12 +3,6 @@ py-filelock
 
 .. image:: https://travis-ci.org/benediktschmitt/py-filelock.svg?branch=master
     :target: https://travis-ci.org/benediktschmitt/py-filelock
-    
-`Similar Libraries <#similar-libraries>`_
-~ `Installation <#installation>`_
-~ `Documentation <#documentation>`_
-~ `Contributions <#contributions>`_
-~ `License <#license>`_
 
 This package contains a single module, which implements a platform independent
 file lock in Python, which provides a simple way of inter-process communication:
