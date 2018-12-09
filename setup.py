@@ -54,6 +54,7 @@ setup(
     download_url = "https://github.com/benediktschmitt/py-filelock/archive/master.zip",
     py_modules = ["filelock"],
     license = license_,
+    python_requires=">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*",
     classifiers = [
         "License :: Public Domain",
         "Development Status :: 5 - Production/Stable",
