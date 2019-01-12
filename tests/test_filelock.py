@@ -366,6 +366,28 @@ class FileLockTest(BaseTest, unittest.TestCase):
 
     LOCK_TYPE = filelock.FileLock
     LOCK_PATH = "test.lock"
+    LOCK_PATH_UNWRITABLE = "test.lock.unwritable"
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            os.mkdir(cls.LOCK_PATH_UNWRITABLE, 0)
+        except:
+            cls.fail("Could not create unwritable directory")
+
+    def test_write_fail(self):
+        """Ensures graceful failure of lock when path not writable."""
+        lock1 = self.LOCK_TYPE("{}/test".format(self.LOCK_PATH_UNWRITABLE))
+        with self.assertRaises(OSError):
+            lock1.acquire()
+
+    @classmethod
+    def tearDownClass(cls):
+        """Clean up."""
+        try:
+            os.rmdir(cls.LOCK_PATH_UNWRITABLE)
+        except:
+            pass
 
 
 class SoftFileLockTest(BaseTest, unittest.TestCase):

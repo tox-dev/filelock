@@ -334,7 +334,7 @@ class WindowsFileLock(BaseFileLock):
         try:
             fd = os.open(self._lock_file, open_mode)
         except OSError:
-            pass
+            raise
         else:
             try:
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
