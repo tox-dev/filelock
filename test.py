@@ -334,6 +334,8 @@ class BaseTest(object):
             self.assertFalse(lock.is_locked)
         return None
 
+    @unittest.skipIf(hasattr(sys, 'pypy_version_info'),
+                     'del() does not trigger GC in PyPy')
     def test_del(self):
         """
         Tests, if the lock is released, when the object is deleted.
