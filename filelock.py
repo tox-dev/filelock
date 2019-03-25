@@ -235,7 +235,7 @@ class BaseFileLock(object):
 
         :arg float timeout:
             The maximum time waited for the file lock.
-            If ``timeout <= 0``, there is no timeout and this method will
+            If ``timeout < 0``, there is no timeout and this method will
             block until the lock could be acquired.
             If ``timeout`` is None, the default :attr:`~timeout` is used.
 
