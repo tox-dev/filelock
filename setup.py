@@ -35,12 +35,12 @@ from filelock import __version__
 # ------------------------------------------------
 try:
     long_description = open("README.md").read()
-except OSError:
+except (OSError, IOError):
     long_description = "not available"
 
 try:
-    license_ = open("LICENSE.rst").read()
-except OSError:
+    license_ = open("LICENSE").read()
+except (OSError, IOError):
     license_ = "not available"
 
 setup(
