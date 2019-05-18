@@ -38,11 +38,6 @@ try:
 except (OSError, IOError):
     long_description = "not available"
 
-try:
-    license_ = open("LICENSE").read()
-except (OSError, IOError):
-    license_ = "not available"
-
 setup(
     name = "filelock",
     version = __version__,
@@ -54,7 +49,7 @@ setup(
     url = "https://github.com/benediktschmitt/py-filelock",
     download_url = "https://github.com/benediktschmitt/py-filelock/archive/master.zip",
     py_modules = ["filelock"],
-    license = license_,
+    license = "Public Domain <http://unlicense.org>",
     test_suite="test",
     classifiers = [
         "License :: Public Domain",
