@@ -34,7 +34,7 @@ from filelock import __version__
 # Main
 # ------------------------------------------------
 try:
-    long_description = open("README.rst").read()
+    long_description = open("README.md").read()
 except OSError:
     long_description = "not available"
 
@@ -48,12 +48,14 @@ setup(
     version = __version__,
     description = "A platform independent file lock.",
     long_description = long_description,
+    long_description_content_type = "text/markdown",
     author = "Benedikt Schmitt",
     author_email = "benedikt@benediktschmitt.de",
     url = "https://github.com/benediktschmitt/py-filelock",
     download_url = "https://github.com/benediktschmitt/py-filelock/archive/master.zip",
     py_modules = ["filelock"],
     license = license_,
+    test_suite="test",
     classifiers = [
         "License :: Public Domain",
         "Development Status :: 5 - Production/Stable",
