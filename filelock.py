@@ -71,6 +71,8 @@ __all__ = [
 
 __version__ = "3.0.12"
 
+_DEFAULT_TIMEOUT = -1
+
 
 _logger = None
 def logger():
@@ -131,7 +133,7 @@ class BaseFileLock(object):
     Implements the base class of a file lock.
     """
 
-    def __init__(self, lock_file, timeout = -1):
+    def __init__(self, lock_file, timeout=_DEFAULT_TIMEOUT):
         """
         """
         # The path to the lock file.
@@ -182,8 +184,9 @@ class BaseFileLock(object):
     def timeout(self, value):
         """
         """
-        self._timeout = float(value)
-        return None
+        self._timeout = (
+            float(value) if value is not None else _DEFAULT_TIMEOUT
+        )
 
     # Platform dependent locking
     # --------------------------------------------
