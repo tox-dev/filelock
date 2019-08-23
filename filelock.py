@@ -290,7 +290,7 @@ class BaseFileLock(object):
             raise
         return _Acquire_ReturnProxy(lock = self)
 
-    def release(self, force = False):
+    def release(self, force = False, log = True):
         """
         Releases the file lock.
 
@@ -309,13 +309,17 @@ class BaseFileLock(object):
                 self._lock_counter -= 1
 
                 if self._lock_counter == 0 or force:
-                    lock_id = id(self)
-                    lock_filename = self._lock_file
+                    if log:
+                        lock_id = id(self)
+                        lock_filename = self._lock_file
 
-                    logger().debug('Attempting to release lock %s on %s', lock_id, lock_filename)
+                        logger().debug('Attempting to release lock %s on %s', lock_id, lock_filename)
+
                     self._release()
                     self._lock_counter = 0
-                    logger().info('Lock %s released on %s', lock_id, lock_filename)
+
+                    if log:
+                        logger().info('Lock %s released on %s', lock_id, lock_filename)
 
         return None
 
@@ -328,7 +332,7 @@ class BaseFileLock(object):
         return None
 
     def __del__(self):
-        self.release(force = True)
+        self.release(force = True, log = False)
         return None
 
 
