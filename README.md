@@ -124,4 +124,4 @@ take some time for me to respond.
 
 ## License
 
-This package is [public domain](./LICENSE.rst).
+This package is [public domain](./LICENSE).
