@@ -41,6 +41,7 @@ except ImportError:
 
 try:
     import msvcrt
+    from ctypes import windll, wintypes, WinError
 except ImportError:
     msvcrt = None
 
@@ -335,11 +336,62 @@ class BaseFileLock(object):
 # Windows locking mechanism
 # ~~~~~~~~~~~~~~~~~~~~~~~~~
 
+def _get_winapi_lock_func():
+        
+    # BOOL LockFile(
+    #   HANDLE hFile,
+    #   DWORD  dwFileOffsetLow,
+    #   DWORD  dwFileOffsetHigh,
+    #   DWORD  nNumberOfBytesToUnlockLow,
+    #   DWORD  nNumberOfBytesToUnlockHigh
+    # );
+
+    kernel32 = windll.kernel32
+    def errcheck(res, func, args):
+        if not res:
+            raise WinError()
+
+        return res
+
+    win_lock_file = kernel32.LockFile
+    win_lock_file.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD)
+    win_lock_file.restype = wintypes.BOOL
+    win_lock_file.errcheck = errcheck
+
+    return win_lock_file
+
+def _get_winapi_unlock_func():
+        
+    # BOOL UnlockFile(
+    #   HANDLE hFile,
+    #   DWORD  dwFileOffsetLow,
+    #   DWORD  dwFileOffsetHigh,
+    #   DWORD  nNumberOfBytesToUnlockLow,
+    #   DWORD  nNumberOfBytesToUnlockHigh
+    # );
+
+    kernel32 = windll.kernel32
+    def errcheck(res, func, args):
+        if not res:
+            raise WinError()
+
+        return res
+
+    win_unlock_file = kernel32.UnlockFile
+    win_unlock_file.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD)
+    win_unlock_file.restype = wintypes.BOOL
+    win_unlock_file.errcheck = errcheck
+
+    return win_unlock_file
+
 class WindowsFileLock(BaseFileLock):
     """
-    Uses the :func:`msvcrt.locking` function to hard lock the lock file on
+    Uses the :func:`LockFile` winapi function to hard lock the lock file on
     windows systems.
     """
+
+    _WINAPI_LOCK_FUNC = _get_winapi_lock_func() if msvcrt else None
+    _WINAPI_UNLOCK_FUNC = _get_winapi_lock_func() if msvcrt else None
 
     def _acquire(self):
         open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
@@ -350,7 +402,7 @@ class WindowsFileLock(BaseFileLock):
             pass
         else:
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                self._WINAPI_LOCK_FUNC(msvcrt.get_osfhandle(fd), 0, 0, 1, 0)
             except (IOError, OSError):
                 os.close(fd)
             else:
@@ -360,7 +412,7 @@ class WindowsFileLock(BaseFileLock):
     def _release(self):
         fd = self._lock_file_fd
         self._lock_file_fd = None
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        self._WINAPI_UNLOCK_FUNC(msvcrt.get_osfhandle(fd), 0, 0, 1, 0)
         os.close(fd)
 
         try:
