@@ -18,10 +18,6 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
         architecture: 'x64'
-    - name: Install poetry
-      uses: abatilo/actions-poetry@v2.0.0
-      with:
-        poetry-version: ${{ matrix.poetry-version }}
     - name: Install pip dependencies
       run: pip install -r requirements-test.txt
     - name: Test
