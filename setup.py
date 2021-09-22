@@ -33,16 +33,15 @@ from filelock import __version__
 
 # Main
 # ------------------------------------------------
-try:
-    long_description = open("README.md").read()
-except (OSError, IOError):
-    long_description = "not available"
+def get_long_descrption():
+    with open("README.md") as fh:
+        return fh.read()
 
 setup(
     name = "filelock",
     version = __version__,
     description = "A platform independent file lock.",
-    long_description = long_description,
+    long_description = get_long_descrption(),
     long_description_content_type = "text/markdown",
     author = "Benedikt Schmitt",
     author_email = "benedikt@benediktschmitt.de",
@@ -51,18 +50,16 @@ setup(
     py_modules = ["filelock"],
     license = "Public Domain <http://unlicense.org>",
     test_suite="test",
+    python_requires='>=3.6',
     classifiers = [
         "License :: Public Domain",
         "Development Status :: 5 - Production/Stable",
         "Operating System :: OS Independent",
         "Programming Language :: Python",
-        "Programming Language :: Python :: 2",
-        "Programming Language :: Python :: 2.7",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.4",
-        "Programming Language :: Python :: 3.5",
         "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
         "Intended Audience :: Developers",
         "Topic :: System",
         "Topic :: Internet",
