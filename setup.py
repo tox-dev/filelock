@@ -33,7 +33,7 @@ from filelock import __version__
 
 # Main
 # ------------------------------------------------
-def get_long_descrption():
+def get_long_description():
     with open("README.md") as fh:
         return fh.read()
 
@@ -41,7 +41,7 @@ setup(
     name = "filelock",
     version = __version__,
     description = "A platform independent file lock.",
-    long_description = get_long_descrption(),
+    long_description = get_long_description(),
     long_description_content_type = "text/markdown",
     author = "Benedikt Schmitt",
     author_email = "benedikt@benediktschmitt.de",
