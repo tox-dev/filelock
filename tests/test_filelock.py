@@ -30,21 +30,19 @@
 Some tests for the file lock.
 """
 
+import errno
 import os
 import sys
-import unittest
 import threading
-import errno
+import unittest
 
 import filelock
-
 
 PY2 = sys.version_info[0] == 2
 PY3 = sys.version_info[0] == 3
 
 
 class ExThread(threading.Thread):
-
     def __init__(self, *args, **kargs):
         threading.Thread.__init__(self, *args, **kargs)
         self.ex = None
@@ -173,7 +171,7 @@ class BaseTest(object):
             lock.acquire()
             self.assertTrue(lock.is_locked)
 
-            lock.release(force = True)
+            lock.release(force=True)
             self.assertFalse(lock.is_locked)
         self.assertFalse(lock.is_locked)
         return None
@@ -194,7 +192,7 @@ class BaseTest(object):
 
         NUM_THREADS = 250
 
-        threads = [ExThread(target = my_thread) for i in range(NUM_THREADS)]
+        threads = [ExThread(target=my_thread) for i in range(NUM_THREADS)]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -209,6 +207,7 @@ class BaseTest(object):
         FileLock object. When thread group 1 acquired the lock, thread group 2
         must not hold their lock.
         """
+
         def thread1():
             """
             Requires lock1.
@@ -216,7 +215,7 @@ class BaseTest(object):
             for i in range(1000):
                 with lock1:
                     self.assertTrue(lock1.is_locked)
-                    self.assertFalse(lock2.is_locked) # FIXME (Filelock)
+                    self.assertFalse(lock2.is_locked)  # FIXME (Filelock)
             return None
 
         def thread2():
@@ -225,17 +224,17 @@ class BaseTest(object):
             """
             for i in range(1000):
                 with lock2:
-                    self.assertFalse(lock1.is_locked) # FIXME (FileLock)
+                    self.assertFalse(lock1.is_locked)  # FIXME (FileLock)
                     self.assertTrue(lock2.is_locked)
             return None
 
-        NUM_THREADS =  10
+        NUM_THREADS = 10
 
         lock1 = self.LOCK_TYPE(self.LOCK_PATH)
         lock2 = self.LOCK_TYPE(self.LOCK_PATH)
 
-        threads1 = [ExThread(target = thread1) for i in range(NUM_THREADS)]
-        threads2 = [ExThread(target = thread2) for i in range(NUM_THREADS)]
+        threads1 = [ExThread(target=thread1) for i in range(NUM_THREADS)]
+        threads2 = [ExThread(target=thread2) for i in range(NUM_THREADS)]
 
         for i in range(NUM_THREADS):
             threads1[i].start()
@@ -261,7 +260,7 @@ class BaseTest(object):
         self.assertFalse(lock2.is_locked)
 
         # Try to acquire lock 2.
-        self.assertRaises(filelock.Timeout, lock2.acquire, timeout=1) # FIXME (Filelock)
+        self.assertRaises(filelock.Timeout, lock2.acquire, timeout=1)  # FIXME (Filelock)
         self.assertFalse(lock2.is_locked)
         self.assertTrue(lock1.is_locked)
 
@@ -276,7 +275,7 @@ class BaseTest(object):
         Test if the default timeout parameter works.
         """
         lock1 = self.LOCK_TYPE(self.LOCK_PATH)
-        lock2 = self.LOCK_TYPE(self.LOCK_PATH, timeout = 1)
+        lock2 = self.LOCK_TYPE(self.LOCK_PATH, timeout=1)
 
         self.assertEqual(lock2.timeout, 1)
 
@@ -286,7 +285,7 @@ class BaseTest(object):
         self.assertFalse(lock2.is_locked)
 
         # Try to acquire lock 2.
-        self.assertRaises(filelock.Timeout, lock2.acquire) # FIXME (SoftFileLock)
+        self.assertRaises(filelock.Timeout, lock2.acquire)  # FIXME (SoftFileLock)
         self.assertFalse(lock2.is_locked)
         self.assertTrue(lock1.is_locked)
 
@@ -334,8 +333,7 @@ class BaseTest(object):
             self.assertFalse(lock.is_locked)
         return None
 
-    @unittest.skipIf(hasattr(sys, 'pypy_version_info'),
-                     'del() does not trigger GC in PyPy')
+    @unittest.skipIf(hasattr(sys, "pypy_version_info"), "del() does not trigger GC in PyPy")
     def test_del(self):
         """
         Tests, if the lock is released, when the object is deleted.
@@ -349,7 +347,7 @@ class BaseTest(object):
         self.assertFalse(lock2.is_locked)
 
         # Try to acquire lock 2.
-        self.assertRaises(filelock.Timeout, lock2.acquire, timeout = 1) # FIXME (SoftFileLock)
+        self.assertRaises(filelock.Timeout, lock2.acquire, timeout=1)  # FIXME (SoftFileLock)
 
         # Delete lock 1 and try to acquire lock 2 again.
         del lock1

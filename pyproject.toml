@@ -1,0 +1,18 @@
+[build-system]
+requires = [
+    "setuptools >= 41.0.0",
+    "wheel >= 0.30.0",
+    "setuptools_scm >= 2",
+]
+build-backend = 'setuptools.build_meta'
+
+[tool.black]
+line-length = 120
+
+[tool.isort]
+line_length = 120
+profile = "black"
+known_first_party = ["filelock", "tests"]
+
+[tool.setuptools_scm]
+write_to = "src/filelock/version.py"
