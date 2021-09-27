@@ -14,7 +14,7 @@ with lock:
 **Don't use** a *FileLock* to lock the file you want to write to, instead create
 a separate *.lock* file as shown above.
 
-![animated example](https://raw.githubusercontent.com/benediktschmitt/py-filelock/master/example/example.gif)
+![animated example](https://raw.githubusercontent.com/tox-dev/py-filelock/main/example/example.gif)
 
 
 ## Similar libraries
