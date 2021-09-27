@@ -1,16 +1,14 @@
 # py-filelock
 
-![travis-ci](https://travis-ci.org/benediktschmitt/py-filelock.svg?branch=master)
-
 This package contains a single module, which implements a platform independent
 file lock in Python, which provides a simple way of inter-process communication:
 
 ```Python
-from filelock import Timeout, FileLock
+from src.filelock import Timeout, FileLock
 
 lock = FileLock("high_ground.txt.lock")
 with lock:
-    open("high_ground.txt", "a").write("You were the chosen one.")        
+    open("high_ground.txt", "a").write("You were the chosen one.")
 ```
 
 **Don't use** a *FileLock* to lock the file you want to write to, instead create
@@ -50,7 +48,7 @@ resource or working
 directory is currently used. To do so, create a *FileLock* first:
 
 ```Python
-from filelock import Timeout, FileLock
+from src.filelock import Timeout, FileLock
 
 file_path = "high_ground.txt"
 lock_path = "high_ground.txt.lock"
