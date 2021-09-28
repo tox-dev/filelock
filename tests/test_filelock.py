@@ -182,32 +182,32 @@ def test_timeout(lock_type, tmp_path):
 def test_default_timeout(lock_type, tmp_path):
     # test if the default timeout parameter works
     lock_path = tmp_path / "a"
-    lock1, lock2 = lock_type(str(lock_path)), lock_type(str(lock_path), timeout=0.1)
-    assert lock2.timeout == 0.1
+    lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path), timeout=0.1)
+    assert lock_2.timeout == 0.1
 
     # acquire lock 1
-    lock1.acquire()
-    assert lock1.is_locked
-    assert not lock2.is_locked
+    lock_1.acquire()
+    assert lock_1.is_locked
+    assert not lock_2.is_locked
 
     # try to acquire lock 2
     with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
-        lock2.acquire()
-    assert not lock2.is_locked
-    assert lock1.is_locked
+        lock_2.acquire()
+    assert not lock_2.is_locked
+    assert lock_1.is_locked
 
-    lock2.timeout = 0
-    assert lock2.timeout == 0
+    lock_2.timeout = 0
+    assert lock_2.timeout == 0
 
     with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
-        lock2.acquire()
-    assert not lock2.is_locked
-    assert lock1.is_locked
+        lock_2.acquire()
+    assert not lock_2.is_locked
+    assert lock_1.is_locked
 
     # release lock 1
-    lock1.release()
-    assert not lock1.is_locked
-    assert not lock2.is_locked
+    lock_1.release()
+    assert not lock_1.is_locked
+    assert not lock_2.is_locked
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -217,8 +217,8 @@ def test_context_release_on_exc(lock_type, tmp_path):
     lock = lock_type(str(lock_path))
 
     try:
-        with lock as lock1:
-            assert lock is lock1
+        with lock as lock_1:
+            assert lock is lock_1
             assert lock.is_locked
             raise Exception
     except Exception:
@@ -232,8 +232,8 @@ def test_acquire_release_on_exc(lock_type, tmp_path):
     lock = lock_type(str(lock_path))
 
     try:
-        with lock.acquire() as lock1:
-            assert lock is lock1
+        with lock.acquire() as lock_1:
+            assert lock is lock_1
             assert lock.is_locked
             raise Exception
     except Exception:
