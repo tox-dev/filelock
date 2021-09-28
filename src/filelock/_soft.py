@@ -1,24 +1,27 @@
 import os
-import sys
-from errno import EACCES, ENOENT, EPERM
+from errno import ENOENT
 
 from ._api import BaseFileLock
-
-PermissionError = PermissionError if sys.version_info[0] == 3 else OSError
+from ._util import raise_on_ro_file
 
 
 class SoftFileLock(BaseFileLock):
     """Simply watches the existence of the lock file."""
 
     def _acquire(self):
-        open_mode = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
+        raise_on_ro_file(self._lock_file)
+        # first check for exists and read-only mode as the open will mask this case as EEXIST
+        mode = (
+            os.O_WRONLY  # open for writing only
+            | os.O_CREAT
+            | os.O_EXCL  # together with above raise EEXIST if the file specified by filename exists
+            | os.O_TRUNC  # truncate the file to zero byte
+        )
         try:
-            fd = os.open(self._lock_file, open_mode)
+            fd = os.open(self._lock_file, mode)
         except OSError as exception:
-            if exception.errno in (EPERM, EACCES, ENOENT):
+            if exception.errno == ENOENT:  # No such file or directory
                 raise
-            if sys.platform == "win32" and not os.access(self._lock_file, os.W_OK):
-                raise PermissionError("Permission denied")
         else:
             self._lock_file_fd = fd
 
@@ -27,8 +30,7 @@ class SoftFileLock(BaseFileLock):
         self._lock_file_fd = None
         try:
             os.remove(self._lock_file)
-        # The file is already deleted and that's what we want.
-        except OSError:
+        except OSError:  # the file is already deleted and that's what we want
             pass
 
 

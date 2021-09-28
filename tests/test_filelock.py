@@ -9,8 +9,7 @@ from stat import S_IWGRP, S_IWOTH, S_IWUSR
 import pytest
 
 from filelock import FileLock, SoftFileLock, Timeout
-
-PermissionError = PermissionError if sys.version_info[0] == 3 else OSError
+from filelock._util import PermissionError
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])

@@ -1,7 +1,8 @@
 import os
-from errno import EACCES, ENOENT, EPERM
+from errno import ENOENT
 
 from ._api import BaseFileLock
+from ._util import raise_on_ro_file
 
 try:
     import msvcrt
@@ -13,11 +14,16 @@ class WindowsFileLock(BaseFileLock):
     """Uses the :func:`msvcrt.locking` function to hard lock the lock file on windows systems."""
 
     def _acquire(self):
-        open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
+        raise_on_ro_file(self._lock_file)
+        mode = (
+            os.O_RDWR  # open for read and write
+            | os.O_CREAT  # create file if not exists
+            | os.O_TRUNC  # truncate file  if not empty
+        )
         try:
-            fd = os.open(self._lock_file, open_mode)
+            fd = os.open(self._lock_file, mode)
         except OSError as exception:
-            if exception.errno in (EPERM, EACCES, ENOENT):
+            if exception.errno == ENOENT:  # No such file or directory
                 raise
         else:
             try:

@@ -3,9 +3,8 @@ autodoc
 autosectionlabel
 caplog
 creat
-eacces
+eexist
 enoent
-eperm
 exc
 fcntl
 filelock
@@ -31,4 +30,5 @@ tmp
 trunc
 typehints
 unlck
+util
 wronly
