@@ -136,7 +136,7 @@ class BaseFileLock(object):
                         self._acquire()
 
                 if self.is_locked:
-                    _LOGGER.info("Lock %s acquired on %s", lock_id, lock_filename)
+                    _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
                 elif 0 <= timeout < time.time() - start_time:
                     _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
@@ -175,7 +175,7 @@ class BaseFileLock(object):
                     _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                     self._release()
                     self._lock_counter = 0
-                    _LOGGER.info("Lock %s released on %s", lock_id, lock_filename)
+                    _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def __enter__(self):
         self.acquire()
