@@ -20,7 +20,7 @@ class WindowsFileLock(BaseFileLock):
         else:
             try:
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            except (OSError, IOError):
+            except (OSError, IOError):  # noqa: B014 # IOError is not OSError on python 2
                 os.close(fd)
             else:
                 self._lock_file_fd = fd

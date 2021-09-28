@@ -94,7 +94,7 @@ class ExThread(threading.Thread):
             self.ex = sys.exc_info()
 
     def join(self, timeout=None):
-        super(ExThread, self).join()
+        super(ExThread, self).join(timeout=timeout)
         if self.ex is not None:
             if sys.version_info[0] == 2:
                 wrapper_ex = self.ex[1]
@@ -114,7 +114,7 @@ def test_threaded_shared_lock_obj(lock_type, tmp_path):
             with lock:
                 assert lock.is_locked
 
-    threads = [ExThread(target=thread_work) for i in range(100)]
+    threads = [ExThread(target=thread_work) for _ in range(100)]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -129,13 +129,13 @@ def test_threaded_lock_different_lock_obj(lock_type, tmp_path):
     # acquired the lock, thread group 2 must not hold their lock.
 
     def thread_work_one():
-        for i in range(1000):
+        for _ in range(1000):
             with lock_1:
                 assert lock_1.is_locked
                 assert not lock_2.is_locked
 
     def thread_work_two():
-        for i in range(1000):
+        for _ in range(1000):
             with lock_2:
                 assert not lock_1.is_locked
                 assert lock_2.is_locked

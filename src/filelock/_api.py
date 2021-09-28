@@ -17,7 +17,7 @@ class AcquireReturnProxy(object):
     def __enter__(self):
         return self.lock
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type, exc_value, traceback):  # noqa: U100
         self.lock.release()
 
 
@@ -181,7 +181,7 @@ class BaseFileLock(object):
         self.acquire()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type, exc_value, traceback):  # noqa: U100
         self.release()
 
     def __del__(self):

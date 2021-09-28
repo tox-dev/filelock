@@ -19,7 +19,7 @@ class UnixFileLock(BaseFileLock):
         fd = os.open(self._lock_file, open_mode)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (OSError, IOError):
+        except (OSError, IOError):  # noqa: B014 # IOError is not OSError on python 2
             os.close(fd)
         else:
             self._lock_file_fd = fd
