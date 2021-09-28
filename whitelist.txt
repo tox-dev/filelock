@@ -1,6 +1,7 @@
 autoclass
 autodoc
 autosectionlabel
+caplog
 creat
 exc
 fcntl
@@ -8,6 +9,7 @@ filelock
 fmt
 intersphinx
 intervall
+levelno
 lk
 lockfile
 msvcrt

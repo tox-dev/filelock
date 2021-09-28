@@ -1,5 +1,6 @@
 from __future__ import unicode_literals
 
+import logging
 import sys
 import threading
 
@@ -9,7 +10,8 @@ from filelock import FileLock, SoftFileLock, Timeout
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_simple(lock_type, tmp_path):
+def test_simple(lock_type, tmp_path, caplog):
+    caplog.set_level(logging.DEBUG)
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
@@ -17,6 +19,14 @@ def test_simple(lock_type, tmp_path):
         assert lock.is_locked
         assert lock is locked
     assert not lock.is_locked
+
+    assert caplog.messages == [
+        "Attempting to acquire lock {} on {}".format(id(lock), lock_path),
+        "Lock {} acquired on {}".format(id(lock), lock_path),
+        "Attempting to release lock {} on {}".format(id(lock), lock_path),
+        "Lock {} released on {}".format(id(lock), lock_path),
+    ]
+    assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.DEBUG]
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
