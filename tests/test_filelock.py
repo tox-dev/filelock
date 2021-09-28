@@ -3,10 +3,14 @@ from __future__ import unicode_literals
 import logging
 import sys
 import threading
+from contextlib import contextmanager
+from stat import S_IWGRP, S_IWOTH, S_IWUSR
 
 import pytest
 
 from filelock import FileLock, SoftFileLock, Timeout
+
+PermissionError = PermissionError if sys.version_info[0] == 3 else OSError
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -27,6 +31,52 @@ def test_simple(lock_type, tmp_path, caplog):
         "Lock {} released on {}".format(id(lock), lock_path),
     ]
     assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.DEBUG]
+
+
+@contextmanager
+def make_ro(path):
+    write = S_IWUSR | S_IWGRP | S_IWOTH
+    path.chmod(path.stat().st_mode & ~write)
+    yield
+    path.chmod(path.stat().st_mode | write)
+
+
+@pytest.fixture()
+def tmp_path_ro(tmp_path):
+    with make_ro(tmp_path):
+        yield tmp_path
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only folders")
+def test_ro_folder(lock_type, tmp_path_ro):
+    lock = lock_type(str(tmp_path_ro / "a"))
+    with pytest.raises(PermissionError, match="Permission denied"):
+        lock.acquire()
+
+
+@pytest.fixture()
+def tmp_file_ro(tmp_path):
+    filename = tmp_path / "a"
+    filename.write_text("")
+    with make_ro(filename):
+        yield filename
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_ro_file(lock_type, tmp_file_ro):
+    lock = lock_type(str(tmp_file_ro))
+    with pytest.raises(PermissionError, match="Permission denied"):
+        lock.acquire()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_missing_directory(lock_type, tmp_path_ro):
+    lock_path = tmp_path_ro / "a" / "b"
+    lock = lock_type(str(lock_path))
+
+    with pytest.raises(OSError, match="No such file or directory:"):
+        lock.acquire()
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])

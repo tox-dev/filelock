@@ -1,4 +1,5 @@
 import os
+from errno import EACCES, ENOENT, EPERM
 
 from ._api import BaseFileLock
 
@@ -15,8 +16,9 @@ class WindowsFileLock(BaseFileLock):
         open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
         try:
             fd = os.open(self._lock_file, open_mode)
-        except OSError:
-            pass
+        except OSError as exception:
+            if exception.errno in (EPERM, EACCES, ENOENT):
+                raise
         else:
             try:
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)

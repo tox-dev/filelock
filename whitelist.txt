@@ -3,12 +3,18 @@ autodoc
 autosectionlabel
 caplog
 creat
+eacces
+enoent
+eperm
 exc
 fcntl
 filelock
 fmt
 intersphinx
 intervall
+iwgrp
+iwoth
+iwusr
 levelno
 lk
 lockfile
@@ -18,6 +24,7 @@ nitpicky
 param
 pygments
 rdwr
+ro
 skipif
 src
 tmp
