@@ -1,5 +1,6 @@
 import os
-from errno import EACCES, ENOENT
+import sys
+from errno import EACCES, EEXIST, ENOENT
 
 from ._api import BaseFileLock
 from ._util import raise_on_exist_ro_file
@@ -20,11 +21,12 @@ class SoftFileLock(BaseFileLock):
         try:
             fd = os.open(self._lock_file, mode)
         except OSError as exception:
-            if exception.errno in (
-                ENOENT,  # No such file or directory
-                EACCES,  # Permission denied - this can happen on Linux where the parent folder might be ro
-            ):
+            if exception.errno == EEXIST:  # expected if cannot lock
+                pass
+            elif exception.errno == ENOENT:  # No such file or directory - parent directory is missing
                 raise
+            elif exception.errno == EACCES and sys.platform != "win32":  # Permission denied - parent dir is R/O
+                raise  # note windows does not allow you to make a folder r/o only files
         else:
             self._lock_file_fd = fd
 

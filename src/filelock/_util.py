@@ -9,15 +9,11 @@ def raise_on_exist_ro_file(filename):
     try:
         file_stat = os.stat(filename)  # use stat to do exists + can write to check without race condition
     except OSError:
-        pass  # swallow does not exist or other errors
-    else:
+        return None  # swallow does not exist or other errors
+
+    if file_stat.st_mtime != 0:  # if os.stat returns but modification is zero that's an invalid os.stat - ignore it
         if not (file_stat.st_mode & stat.S_IWUSR):
-            info = {
-                k: getattr(file_stat, k)
-                for k in dir(file_stat)
-                if not k.startswith("__") and not callable(getattr(file_stat, k))
-            }
-            raise PermissionError("Permission denied: {!r} with {}".format(filename, info))
+            raise PermissionError("Permission denied: {!r}".format(filename))
 
 
 __all__ = [
