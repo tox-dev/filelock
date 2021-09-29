@@ -2,7 +2,7 @@ import os
 from errno import ENOENT
 
 from ._api import BaseFileLock
-from ._util import raise_on_ro_file
+from ._util import raise_on_exist_ro_file
 
 try:
     import msvcrt
@@ -14,7 +14,7 @@ class WindowsFileLock(BaseFileLock):
     """Uses the :func:`msvcrt.locking` function to hard lock the lock file on windows systems."""
 
     def _acquire(self):
-        raise_on_ro_file(self._lock_file)
+        raise_on_exist_ro_file(self._lock_file)
         mode = (
             os.O_RDWR  # open for read and write
             | os.O_CREAT  # create file if not exists

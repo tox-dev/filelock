@@ -5,7 +5,7 @@ import sys
 PermissionError = PermissionError if sys.version_info[0] == 3 else OSError
 
 
-def raise_on_ro_file(filename):
+def raise_on_exist_ro_file(filename):
     try:
         file_stat = os.stat(filename)  # use stat to do exists + can write to check without race condition
     except OSError:
@@ -16,6 +16,6 @@ def raise_on_ro_file(filename):
 
 
 __all__ = [
-    "raise_on_ro_file",
+    "raise_on_exist_ro_file",
     "PermissionError",
 ]

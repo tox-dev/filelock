@@ -3,6 +3,7 @@ autodoc
 autosectionlabel
 caplog
 creat
+eacces
 eexist
 enoent
 exc
