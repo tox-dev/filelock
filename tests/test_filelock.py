@@ -3,10 +3,13 @@ from __future__ import unicode_literals
 import logging
 import sys
 import threading
+from contextlib import contextmanager
+from stat import S_IWGRP, S_IWOTH, S_IWUSR
 
 import pytest
 
 from filelock import FileLock, SoftFileLock, Timeout
+from filelock._util import PermissionError
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -27,6 +30,52 @@ def test_simple(lock_type, tmp_path, caplog):
         "Lock {} released on {}".format(id(lock), lock_path),
     ]
     assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.DEBUG]
+
+
+@contextmanager
+def make_ro(path):
+    write = S_IWUSR | S_IWGRP | S_IWOTH
+    path.chmod(path.stat().st_mode & ~write)
+    yield
+    path.chmod(path.stat().st_mode | write)
+
+
+@pytest.fixture()
+def tmp_path_ro(tmp_path):
+    with make_ro(tmp_path):
+        yield tmp_path
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only folders")
+def test_ro_folder(lock_type, tmp_path_ro):
+    lock = lock_type(str(tmp_path_ro / "a"))
+    with pytest.raises(PermissionError, match="Permission denied"):
+        lock.acquire()
+
+
+@pytest.fixture()
+def tmp_file_ro(tmp_path):
+    filename = tmp_path / "a"
+    filename.write_text("")
+    with make_ro(filename):
+        yield filename
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_ro_file(lock_type, tmp_file_ro):
+    lock = lock_type(str(tmp_file_ro))
+    with pytest.raises(PermissionError, match="Permission denied"):
+        lock.acquire()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_missing_directory(lock_type, tmp_path_ro):
+    lock_path = tmp_path_ro / "a" / "b"
+    lock = lock_type(str(lock_path))
+
+    with pytest.raises(OSError, match="No such file or directory:"):
+        lock.acquire()
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -93,8 +142,8 @@ def test_nested_forced_release(lock_type, tmp_path):
 
 
 class ExThread(threading.Thread):
-    def __init__(self, target):
-        super(ExThread, self).__init__(target=target)
+    def __init__(self, target, name):
+        super(ExThread, self).__init__(target=target, name=name)
         self.ex = None
 
     def run(self):
@@ -106,6 +155,7 @@ class ExThread(threading.Thread):
     def join(self, timeout=None):
         super(ExThread, self).join(timeout=timeout)
         if self.ex is not None:
+            print("fail from thread {}".format(self.name))
             if sys.version_info[0] == 2:
                 wrapper_ex = self.ex[1]
                 raise (wrapper_ex.__class__, wrapper_ex, self.ex[2])
@@ -124,7 +174,7 @@ def test_threaded_shared_lock_obj(lock_type, tmp_path):
             with lock:
                 assert lock.is_locked
 
-    threads = [ExThread(target=thread_work) for _ in range(100)]
+    threads = [ExThread(target=thread_work, name="t{}".format(i)) for i in range(100)]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -138,13 +188,13 @@ def test_threaded_lock_different_lock_obj(lock_type, tmp_path):
     # Runs multiple threads, which acquire the same lock file with a different FileLock object. When thread group 1
     # acquired the lock, thread group 2 must not hold their lock.
 
-    def thread_work_one():
+    def t_1():
         for _ in range(1000):
             with lock_1:
                 assert lock_1.is_locked
                 assert not lock_2.is_locked
 
-    def thread_work_two():
+    def t_2():
         for _ in range(1000):
             with lock_2:
                 assert not lock_1.is_locked
@@ -152,7 +202,7 @@ def test_threaded_lock_different_lock_obj(lock_type, tmp_path):
 
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
-    threads = [(ExThread(target=thread_work_one), ExThread(target=thread_work_two)) for i in range(10)]
+    threads = [(ExThread(t_1, "t1_{}".format(i)), ExThread(t_2, "t2_{}".format(i))) for i in range(10)]
 
     for thread_1, thread_2 in threads:
         thread_1.start()
