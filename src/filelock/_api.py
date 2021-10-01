@@ -4,7 +4,7 @@ from threading import Lock
 
 from ._error import Timeout
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = logging.getLogger("filelock")
 
 
 # This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__

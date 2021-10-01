@@ -30,6 +30,7 @@ def test_simple(lock_type, tmp_path, caplog):
         "Lock {} released on {}".format(id(lock), lock_path),
     ]
     assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.DEBUG]
+    assert [r.name for r in caplog.records] == ["filelock", "filelock", "filelock", "filelock"]
 
 
 @contextmanager
@@ -333,3 +334,14 @@ def test_cleanup_soft_lock(tmp_path):
     with lock:
         assert lock_path.exists()
     assert not lock_path.exists()
+
+
+def test_logger_name():
+    # need to check both that the filelock logger exists and is not created as
+    # a logging.PlaceHolder as a side-effect of creating a filelock child
+    # logger
+    #
+    # e.g. filelock._api creates a logger.PlaceHolder for "filelock" and a
+    # logger.Logger for "filelock._api"
+    assert "filelock" in logging.root.manager.loggerDict
+    assert isinstance(logging.root.manager.loggerDict["filelock"], logging.Logger)
