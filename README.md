@@ -111,8 +111,8 @@ with lock:
 # And released here.
 ```
 
-All log messages by this library are made using the *DEBUG* level. On how to
-control displaying/hiding that please consult the
+All log messages by this library are made using the *DEBUG* level, under the
+`filelock` name. On how to control displaying/hiding that please consult the
 [logging documentation of the standard library](https://docs.python.org/3/howto/logging.html).
 
 E.g. to hide these messages you can use
