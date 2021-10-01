@@ -112,6 +112,18 @@ with lock:
 ```
 
 
+### Adjusting the Log Level
+
+By default, the logger name is *"filelock"* and the logging level is set to
+*logging.WARNING*. This can be adjusted using the *logging* module.
+
+```Python
+import logging
+
+logging.getLogger("filelock").setLevel(logging.ERROR)
+```
+
+
 ## FileLock vs SoftFileLock
 
 The *FileLock* is platform dependent while the *SoftFileLock* is not. Use the
