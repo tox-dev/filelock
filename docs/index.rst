@@ -41,8 +41,6 @@ Installation
 Tutorial
 --------
 
-### Examples
-
 A :class:`FileLock <filelock.FileLock>` is used to indicate another process of your application that a resource or
 working directory is currently used. To do so, create a :class:`FileLock <filelock.FileLock>` first:
 
@@ -122,6 +120,12 @@ and a :class:`SoftFileLock <filelock.SoftFileLock>` otherwise.
 The :class:`SoftFileLock <filelock.SoftFileLock>` only watches the existence of the lock file. This makes it ultra
 portable, but also more prone to dead locks if the application crashes. You can simply delete the lock file in such
 cases.
+
+Asyncio support
+---------------
+
+This library currently does not support asyncio. We'd recommend adding an asyncio variant though if someone can make a
+pull request for it, `see here <https://github.com/tox-dev/py-filelock/issues/99>`_.
 
 Contributions and issues
 ------------------------
