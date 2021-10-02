@@ -7,6 +7,7 @@ eacces
 eexist
 enoent
 exc
+favicon
 fcntl
 filelock
 fmt
@@ -26,7 +27,6 @@ pygments
 rdwr
 ro
 skipif
-src
 tmp
 trunc
 typehints

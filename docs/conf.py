@@ -5,7 +5,7 @@ from datetime import date, datetime
 from filelock import __version__
 
 company = "tox-dev"
-name = "py-filelock"
+name = "filelock"
 version = ".".join(__version__.split(".")[:2])
 release = __version__
 copyright = f"2014-{date.today().year}, {company}"
@@ -30,10 +30,12 @@ project = name
 today_fmt = "%B %d, %Y"
 
 html_theme = "furo"
+html_favicon = "logo.svg"
+html_logo = "logo.svg"
 html_theme_options = {
     "navigation_with_keys": True,
 }
-html_title = "py-filelock"
+html_title = name
 html_last_updated_fmt = datetime.now().isoformat()
 
 autoclass_content = "class"
