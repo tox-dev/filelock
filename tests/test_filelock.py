@@ -30,6 +30,7 @@ def test_simple(lock_type, tmp_path, caplog):
         "Lock {} released on {}".format(id(lock), lock_path),
     ]
     assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.DEBUG]
+    assert [r.name for r in caplog.records] == ["filelock", "filelock", "filelock", "filelock"]
 
 
 @contextmanager
