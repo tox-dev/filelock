@@ -1,11 +1,8 @@
 import os
 import stat
-import sys
-
-PermissionError = PermissionError if sys.version_info[0] == 3 else OSError
 
 
-def raise_on_exist_ro_file(filename):
+def raise_on_exist_ro_file(filename: str) -> None:
     try:
         file_stat = os.stat(filename)  # use stat to do exists + can write to check without race condition
     except OSError:
@@ -13,10 +10,9 @@ def raise_on_exist_ro_file(filename):
 
     if file_stat.st_mtime != 0:  # if os.stat returns but modification is zero that's an invalid os.stat - ignore it
         if not (file_stat.st_mode & stat.S_IWUSR):
-            raise PermissionError("Permission denied: {!r}".format(filename))
+            raise PermissionError(f"Permission denied: {filename!r}")
 
 
 __all__ = [
     "raise_on_exist_ro_file",
-    "PermissionError",
 ]

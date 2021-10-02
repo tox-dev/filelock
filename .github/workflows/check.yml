@@ -29,16 +29,13 @@ jobs:
           - 3.8
           - 3.7
           - 3.6
-          - 3.5
           - pypy3
-          - 2.7
-          - pypy2
 
     steps:
       - name: Setup python for tox
         uses: actions/setup-python@v2
         with:
-          python-version: 3.9
+          python-version: 3.10.0-rc.2
       - name: Install tox
         run: python -m pip install tox
       - uses: actions/checkout@v2
@@ -87,6 +84,7 @@ jobs:
           - windows-latest
         tox_env:
           - dev
+          - type
           - docs
           - readme
         exclude:
@@ -95,10 +93,10 @@ jobs:
       - uses: actions/checkout@v2
         with:
           fetch-depth: 0
-      - name: Setup Python 3.9
+      - name: Setup Python 3.10.0-rc.2
         uses: actions/setup-python@v2
         with:
-          python-version: 3.9
+          python-version: 3.10.0-rc.2
       - name: Install tox
         run: python -m pip install tox
       - name: Setup test suite
@@ -114,7 +112,7 @@ jobs:
       - name: Setup python to build package
         uses: actions/setup-python@v2
         with:
-          python-version: 3.9
+          python-version: 3.10.0-rc.2
       - name: Install https://pypi.org/project/build
         run: python -m pip install build
       - uses: actions/checkout@v2

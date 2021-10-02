@@ -1,6 +1,9 @@
 import logging
 import time
+from abc import ABC, abstractmethod
 from threading import Lock
+from types import TracebackType
+from typing import Optional, Type, Union
 
 from ._error import Timeout
 
@@ -11,23 +14,28 @@ _LOGGER.setLevel(logging.DEBUG)
 # This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__
 # is not called twice when entering the with statement. If we would simply return *self*, the lock would be acquired
 # again in the *__enter__* method of the BaseFileLock, but not released again automatically. issue #37 (memory leak)
-class AcquireReturnProxy(object):
+class AcquireReturnProxy:
     """A context aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock):
+    def __init__(self, lock: "BaseFileLock") -> None:
         self.lock = lock
 
-    def __enter__(self):
+    def __enter__(self) -> "BaseFileLock":
         return self.lock
 
-    def __exit__(self, exc_type, exc_value, traceback):  # noqa: U100
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],  # noqa: U100
+        exc_value: Optional[BaseException],  # noqa: U100
+        traceback: Optional[TracebackType],  # noqa: U100
+    ) -> None:
         self.lock.release()
 
 
-class BaseFileLock(object):
+class BaseFileLock(ABC):
     """Abstract base class for a file lock object."""
 
-    def __init__(self, lock_file, timeout=-1):
+    def __init__(self, lock_file: str, timeout: float = -1) -> None:
         """
         Create a new lock object.
 
@@ -37,29 +45,29 @@ class BaseFileLock(object):
          A timeout of 0 means, that there is exactly one attempt to acquire the file lock.
         """
         # The path to the lock file.
-        self._lock_file = lock_file
+        self._lock_file: str = lock_file
 
         # The file descriptor for the *_lock_file* as it is returned by the os.open() function.
         # This file lock is only NOT None, if the object currently holds the lock.
-        self._lock_file_fd = None
+        self._lock_file_fd: Optional[int] = None
 
         # The default timeout value.
-        self.timeout = timeout
+        self.timeout: float = timeout
 
         # We use this lock primarily for the lock counter.
-        self._thread_lock = Lock()
+        self._thread_lock: Lock = Lock()
 
         # The lock counter is used for implementing the nested locking mechanism. Whenever the lock is acquired, the
         # counter is increased and the lock is only released, when this value is 0 again.
-        self._lock_counter = 0
+        self._lock_counter: int = 0
 
     @property
-    def lock_file(self):
+    def lock_file(self) -> str:
         """:return: path to the lock file"""
         return self._lock_file
 
     @property
-    def timeout(self):
+    def timeout(self) -> float:
         """
         :return: the default timeout value
 
@@ -68,7 +76,7 @@ class BaseFileLock(object):
         return self._timeout
 
     @timeout.setter
-    def timeout(self, value):
+    def timeout(self, value: Union[float, str]) -> None:
         """
         Change the default timeout value.
 
@@ -76,16 +84,18 @@ class BaseFileLock(object):
         """
         self._timeout = float(value)
 
-    def _acquire(self):
+    @abstractmethod
+    def _acquire(self) -> None:
         """If the file lock could be acquired, self._lock_file_fd holds the file descriptor of the lock file."""
         raise NotImplementedError
 
-    def _release(self):
+    @abstractmethod
+    def _release(self) -> None:
         """Releases the lock and sets self._lock_file_fd to None."""
         raise NotImplementedError
 
     @property
-    def is_locked(self):
+    def is_locked(self) -> bool:
         """
 
         :return: A boolean indicating if the lock file is holding the lock currently.
@@ -96,7 +106,7 @@ class BaseFileLock(object):
         """
         return self._lock_file_fd is not None
 
-    def acquire(self, timeout=None, poll_intervall=0.05):
+    def acquire(self, timeout: Optional[float] = None, poll_intervall: float = 0.05) -> AcquireReturnProxy:
         """
         Try to acquire the file lock.
 
@@ -160,7 +170,7 @@ class BaseFileLock(object):
             raise
         return AcquireReturnProxy(lock=self)
 
-    def release(self, force=False):
+    def release(self, force: bool = False) -> None:
         """
         Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0. Also
         note, that the lock file itself is not automatically deleted.
@@ -180,7 +190,7 @@ class BaseFileLock(object):
                     self._lock_counter = 0
                     _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
-    def __enter__(self):
+    def __enter__(self) -> "BaseFileLock":
         """
         Acquire the lock.
 
@@ -189,7 +199,12 @@ class BaseFileLock(object):
         self.acquire()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):  # noqa: U100
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],  # noqa: U100
+        exc_value: Optional[BaseException],  # noqa: U100
+        traceback: Optional[TracebackType],  # noqa: U100
+    ) -> None:
         """
         Release the lock.
 
@@ -199,7 +214,7 @@ class BaseFileLock(object):
         """
         self.release()
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Called when the lock object is deleted."""
         self.release(force=True)
 

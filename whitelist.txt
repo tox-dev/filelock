@@ -23,13 +23,16 @@ msvcrt
 nblck
 nitpicky
 param
+pathlib
 pygments
 rdwr
 ro
+runtime
 skipif
 tmp
 trunc
 typehints
 unlck
 util
+win32
 wronly
