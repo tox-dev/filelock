@@ -10,55 +10,48 @@ black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://gith
 [![Downloads](https://pepy.tech/badge/filelock/month)](https://pepy.tech/project/filelock/month)
 [![check](https://github.com/tox-dev/py-filelock/actions/workflows/check.yml/badge.svg)](https://github.com/tox-dev/py-filelock/actions/workflows/check.yml)
 
-This package contains a single module, which implements a platform independent
-file lock in Python, which provides a simple way of inter-process communication:
+This package contains a single module, which implements a platform independent file lock in Python, which provides a
+simple way of inter-process communication:
 
 ```Python
-from src.filelock import Timeout, FileLock
+from filelock import Timeout, FileLock
 
 lock = FileLock("high_ground.txt.lock")
 with lock:
     open("high_ground.txt", "a").write("You were the chosen one.")
 ```
 
-**Don't use** a *FileLock* to lock the file you want to write to, instead create
-a separate *.lock* file as shown above.
+**Don't use** a _FileLock_ to lock the file you want to write to, instead create a separate _.lock_ file as shown above.
 
 ![animated example](https://raw.githubusercontent.com/tox-dev/py-filelock/main/example/example.gif)
 
-
 ## Similar libraries
 
-Perhaps you are looking for something like
+Perhaps you are looking for something like:
 
-*   https://pypi.python.org/pypi/pid/2.1.1
-*   https://docs.python.org/3.6/library/msvcrt.html#msvcrt.locking
-*   or https://docs.python.org/3/library/fcntl.html#fcntl.flock
-
+- the [pid](https://pypi.python.org/pypi/pid) 3rd party library,
+- for Windows the [msvcrt](https://docs.python.org/3/library/msvcrt.html#msvcrt.locking) module in the standar library,
+- for UNIX the [fcntl](https://docs.python.org/3/library/fcntl.html#fcntl.flock) module in the standard library.
 
 ## Installation
 
-*py-filelock* is available via PyPi:
+_py-filelock_ is available via PyPi:
 
+```bash
+python -m pip install filelock
 ```
-$ pip3 install filelock
-```
-
 
 ## Documentation
 
-The documentation for the API is available on
-[readthedocs.org](https://filelock.readthedocs.io/).
-
+The documentation for the API is available on [readthedocs.org](https://filelock.readthedocs.io/).
 
 ### Examples
 
-A *FileLock* is used to indicate another process of your application that a
-resource or working
-directory is currently used. To do so, create a *FileLock* first:
+A _FileLock_ is used to indicate another process of your application that a resource or working directory is currently
+used. To do so, create a _FileLock_ first:
 
-```Python
-from src.filelock import Timeout, FileLock
+```python
+from filelock import Timeout, FileLock
 
 file_path = "high_ground.txt"
 lock_path = "high_ground.txt.lock"
@@ -66,10 +59,10 @@ lock_path = "high_ground.txt.lock"
 lock = FileLock(lock_path, timeout=1)
 ```
 
-The lock object supports multiple ways for acquiring the lock, including the
-ones used to acquire standard Python thread locks:
+The lock object supports multiple ways for acquiring the lock, including the ones used to acquire standard Python thread
+locks:
 
-```Python
+```python
 with lock:
     open(file_path, "a").write("Hello there!")
 
@@ -80,10 +73,10 @@ finally:
     lock.release()
 ```
 
-The *acquire()* method accepts also a *timeout* parameter. If the lock cannot be
-acquired within *timeout* seconds, a *Timeout* exception is raised:
+The _acquire()_ method accepts also a _timeout_ parameter. If the lock cannot be acquired within _timeout_ seconds, a
+_Timeout_ exception is raised:
 
-```Python
+```python
 try:
     with lock.acquire(timeout=10):
         open(file_path, "a").write("I have a bad feeling about this.")
@@ -91,10 +84,9 @@ except Timeout:
     print("Another instance of this application currently holds the lock.")
 ```
 
-The lock objects are recursive locks, which means that once acquired, they will
-not block on successive lock requests:
+The lock objects are recursive locks, which means that once acquired, they will not block on successive lock requests:
 
-```Python
+```python
 def cite1():
     with lock:
         open(file_path, "a").write("I hate it when he does that.")
@@ -111,31 +103,24 @@ with lock:
 # And released here.
 ```
 
-All log messages by this library are made using the *DEBUG* level, under the
-`filelock` name. On how to control displaying/hiding that please consult the
+All log messages by this library are made using the _DEBUG_ level, under the `filelock` name. On how to control
+displaying/hiding that please consult the
 [logging documentation of the standard library](https://docs.python.org/3/howto/logging.html).
 
-E.g. to hide these messages you can use
-`logging.getLogger("filelock").setLevel(logging.INFO)`.
-
+E.g. to hide these messages you can use `logging.getLogger("filelock").setLevel(logging.INFO)`.
 
 ## FileLock vs SoftFileLock
 
-The *FileLock* is platform dependent while the *SoftFileLock* is not. Use the
-*FileLock* if all instances of your application are running on the same host and
-a *SoftFileLock* otherwise.
+The _FileLock_ is platform dependent while the _SoftFileLock_ is not. Use the _FileLock_ if all instances of your
+application are running on the same host and a _SoftFileLock_ otherwise.
 
-The *SoftFileLock* only watches the existence of the lock file. This makes it
-ultra portable, but also more prone to dead locks if the application crashes.
-You can simply delete the lock file in such cases.
-
+The _SoftFileLock_ only watches the existence of the lock file. This makes it ultra portable, but also more prone to
+dead locks if the application crashes. You can simply delete the lock file in such cases.
 
 ## Contributions
 
-Contributions are always welcome, please make sure they pass all tests before
-creating a pull request. Never hesitate to open a new issue, although it may
-take some time for me to respond.
-
+Contributions are always welcome, please make sure they pass all tests before creating a pull request. Never hesitate to
+open a new issue, although it may take some time for me to respond.
 
 ## License
 
