@@ -32,7 +32,7 @@ Perhaps you are looking for something like:
 Installation
 ------------
 
-``filelock`` is available via PyPi, so you can pip install it:
+``filelock`` is available via PyPI, so you can pip install it:
 
 .. code-block:: bash
 
