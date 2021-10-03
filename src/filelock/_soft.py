@@ -9,7 +9,7 @@ from ._util import raise_on_exist_ro_file
 class SoftFileLock(BaseFileLock):
     """Simply watches the existence of the lock file."""
 
-    def _acquire(self):
+    def _acquire(self) -> None:
         raise_on_exist_ro_file(self._lock_file)
         # first check for exists and read-only mode as the open will mask this case as EEXIST
         mode = (
@@ -25,13 +25,14 @@ class SoftFileLock(BaseFileLock):
                 pass
             elif exception.errno == ENOENT:  # No such file or directory - parent directory is missing
                 raise
-            elif exception.errno == EACCES and sys.platform != "win32":  # Permission denied - parent dir is R/O
+            elif exception.errno == EACCES and sys.platform != "win32":  # pragma: win32 no cover
+                # Permission denied - parent dir is R/O
                 raise  # note windows does not allow you to make a folder r/o only files
         else:
             self._lock_file_fd = fd
 
-    def _release(self):
-        os.close(self._lock_file_fd)
+    def _release(self) -> None:
+        os.close(self._lock_file_fd)  # type: ignore # the lock file is definitely not None
         self._lock_file_fd = None
         try:
             os.remove(self._lock_file)
