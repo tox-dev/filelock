@@ -32,6 +32,7 @@ def test_simple(lock_type: Type[BaseFileLock], tmp_path: Path, caplog: LogCaptur
     ]
     assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.DEBUG]
     assert [r.name for r in caplog.records] == ["filelock", "filelock", "filelock", "filelock"]
+    assert logging.getLogger("filelock").level == logging.NOTSET
 
 
 @contextmanager

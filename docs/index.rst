@@ -140,3 +140,4 @@ to open a new issue 😊. There's no bad question, just a missed opportunity to 
    self
    api
    license
+   changelog
