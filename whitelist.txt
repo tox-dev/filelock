@@ -7,6 +7,7 @@ eacces
 eexist
 enoent
 exc
+extlinks
 favicon
 fcntl
 filelock
@@ -22,6 +23,7 @@ lockfile
 msvcrt
 nblck
 nitpicky
+notset
 param
 pathlib
 pygments
