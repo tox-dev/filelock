@@ -1,7 +1,7 @@
 Changelog
 =========
 
-v3.4.0 (2021-10-15)
+v3.3.1 (2021-10-15)
 -------------------
 - Add changelog to the documentation :pr:`108` - by :user:`gaborbernat`
 - Leave the log level of the ``filelock`` logger as not set (previously was set to warning) :pr:`108` - by
