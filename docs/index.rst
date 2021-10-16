@@ -114,8 +114,8 @@ FileLock vs SoftFileLock
 ------------------------
 
 The :class:`FileLock <filelock.FileLock>` is platform dependent while the :class:`SoftFileLock <filelock.SoftFileLock>`
-is not. Use the :class:`FileLock <filelock.FileLock>` if all instances of your application are running on the same host
-and a :class:`SoftFileLock <filelock.SoftFileLock>` otherwise.
+is not. Use the :class:`FileLock <filelock.FileLock>` if all instances of your application are running on the same
+platform and a :class:`SoftFileLock <filelock.SoftFileLock>` otherwise.
 
 The :class:`SoftFileLock <filelock.SoftFileLock>` only watches the existence of the lock file. This makes it ultra
 portable, but also more prone to dead locks if the application crashes. You can simply delete the lock file in such
