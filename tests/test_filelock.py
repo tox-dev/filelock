@@ -16,13 +16,22 @@ from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_simple(lock_type: Type[BaseFileLock], tmp_path: Path, caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG)
+
+    # test lock creation by passing a `str`
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
-
     with lock as locked:
         assert lock.is_locked
         assert lock is locked
     assert not lock.is_locked
+
+    # test creation by passing a `pathlib.Path`
+    lock_path_2 = tmp_path / "b"
+    lock_2 = lock_type(lock_path_2)
+    with lock_2 as locked:
+        assert lock_2.is_locked
+        assert lock_2 is locked
+    assert not lock_2.is_locked
 
     assert caplog.messages == [
         f"Attempting to acquire lock {id(lock)} on {lock_path}",
