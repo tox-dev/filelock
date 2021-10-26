@@ -4,7 +4,7 @@ import time
 from abc import ABC, abstractmethod
 from threading import Lock
 from types import TracebackType
-from typing import Optional, Type, Union
+from typing import Any, Optional, Type, Union
 
 from ._error import Timeout
 
@@ -35,7 +35,7 @@ class AcquireReturnProxy:
 class BaseFileLock(ABC):
     """Abstract base class for a file lock object."""
 
-    def __init__(self, lock_file: Union[str, os.PathLike], timeout: float = -1) -> None:
+    def __init__(self, lock_file: Union[str, "os.PathLike[Any]"], timeout: float = -1) -> None:
         """
         Create a new lock object.
 
