@@ -25,8 +25,9 @@ else:  # pragma: win32 no cover
         """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
 
         def _acquire(self) -> None:
-            open_mode = os.O_RDWR | os.O_CREAT | os.O_TRUNC
-            fd = os.open(self._lock_file, open_mode)
+            open_flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC
+            open_mode = 0o660
+            fd = os.open(self._lock_file, open_flags, open_mode)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
