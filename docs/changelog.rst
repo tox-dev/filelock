@@ -1,6 +1,10 @@
 Changelog
 =========
 
+v3.3.2 (2021-10-28)
+-------------------
+- Ensure that newly created lockfiles have 660 permissions :pr:`113` - by :user:`kbojens`
+
 v3.3.1 (2021-10-15)
 -------------------
 - Add changelog to the documentation :pr:`108` - by :user:`gaborbernat`
