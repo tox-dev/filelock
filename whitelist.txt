@@ -39,4 +39,4 @@ unlck
 util
 win32
 wronly
-IMODE
+imode
