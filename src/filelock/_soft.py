@@ -18,8 +18,9 @@ class SoftFileLock(BaseFileLock):
             | os.O_EXCL  # together with above raise EEXIST if the file specified by filename exists
             | os.O_TRUNC  # truncate the file to zero byte
         )
+        mode = 0o660
         try:
-            fd = os.open(self._lock_file, flags)
+            fd = os.open(self._lock_file, flags, mode)
         except OSError as exception:
             if exception.errno == EEXIST:  # expected if cannot lock
                 pass
