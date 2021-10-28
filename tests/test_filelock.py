@@ -48,6 +48,11 @@ def test_simple(
     assert [r.name for r in caplog.records] == ["filelock", "filelock", "filelock", "filelock"]
     assert logging.getLogger("filelock").level == logging.NOTSET
 
+    lock.acquire()
+    mode = oct(S_IMODE(os.stat(lock_path).st_mode))
+    assert mode == oct(0o660)
+    lock.release()
+
 
 @contextmanager
 def make_ro(path: Path) -> Iterator[None]:
@@ -351,15 +356,3 @@ def test_cleanup_soft_lock(tmp_path: Path) -> None:
     with lock:
         assert lock_path.exists()
     assert not lock_path.exists()
-
-
-@pytest.mark.parametrize("lock_type", [FileLock])
-def test_file_permissions(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
-    # test if the lock file has 660 permissions
-    lock_path = tmp_path / "a"
-    lock = lock_type(str(lock_path))
-
-    lock.acquire()
-    mode = oct(S_IMODE(os.stat(lock_path).st_mode))
-    assert mode == oct(0o660)
-    lock.release()
