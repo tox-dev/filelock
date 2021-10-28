@@ -1,9 +1,10 @@
 import logging
+import os
 import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path, PurePath
-from stat import S_IWGRP, S_IWOTH, S_IWUSR
+from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR
 from types import TracebackType
 from typing import Callable, Iterator, Optional, Tuple, Type, Union
 
@@ -350,3 +351,15 @@ def test_cleanup_soft_lock(tmp_path: Path) -> None:
     with lock:
         assert lock_path.exists()
     assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock])
+def test_file_permissions(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+    # test if the lock file has 660 permissions
+    lock_path = tmp_path / "a"
+    lock = lock_type(str(lock_path))
+
+    lock.acquire()
+    mode = oct(S_IMODE(os.stat(lock_path).st_mode))
+    assert mode == oct(0o660)
+    lock.release()
