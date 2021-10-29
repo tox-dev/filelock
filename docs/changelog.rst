@@ -3,7 +3,8 @@ Changelog
 
 v3.3.3 (2021-10-28)
 -------------------
-- Ensure that newly created lockfiles now have ``-rw-rw----`` permissions and not ``-rwxr-xr-x`` as before :pr:`113` - by :user:`kbojens`
+- Ensure that newly created lockfiles now have ``-rw-rw----`` permissions and not ``-rwxr-xr-x`` as before :pr:`113` -
+  by :user:`kbojens`
 
 v3.3.2 (2021-10-29)
 -------------------

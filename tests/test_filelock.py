@@ -36,6 +36,7 @@ def test_simple(
     with lock as locked:
         assert lock.is_locked
         assert lock is locked
+        assert oct(S_IMODE(os.stat(lock_path).st_mode)) == oct(0o660)
     assert not lock.is_locked
 
     assert caplog.messages == [
@@ -47,11 +48,6 @@ def test_simple(
     assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.DEBUG]
     assert [r.name for r in caplog.records] == ["filelock", "filelock", "filelock", "filelock"]
     assert logging.getLogger("filelock").level == logging.NOTSET
-
-    lock.acquire()
-    mode = oct(S_IMODE(os.stat(lock_path).st_mode))
-    assert mode == oct(0o660)
-    lock.release()
 
 
 @contextmanager
