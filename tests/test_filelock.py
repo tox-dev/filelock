@@ -2,7 +2,7 @@ import logging
 import sys
 import threading
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR
 from types import TracebackType
 from typing import Callable, Iterator, Optional, Tuple, Type, Union
@@ -13,12 +13,25 @@ from _pytest.logging import LogCaptureFixture
 from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout
 
 
-@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_simple(lock_type: Type[BaseFileLock], tmp_path: Path, caplog: LogCaptureFixture) -> None:
+@pytest.mark.parametrize(
+    ("lock_type", "path_type"),
+    [
+        (FileLock, str),
+        (FileLock, PurePath),
+        (FileLock, Path),
+        (SoftFileLock, str),
+        (SoftFileLock, PurePath),
+        (SoftFileLock, Path),
+    ],
+)
+def test_simple(
+    lock_type: Type[BaseFileLock], path_type: Union[Type[str], Type[Path]], tmp_path: Path, caplog: LogCaptureFixture
+) -> None:
     caplog.set_level(logging.DEBUG)
-    lock_path = tmp_path / "a"
-    lock = lock_type(str(lock_path))
 
+    # test lock creation by passing a `str`
+    lock_path = tmp_path / "a"
+    lock = lock_type(path_type(lock_path))
     with lock as locked:
         assert lock.is_locked
         assert lock is locked
