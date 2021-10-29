@@ -1,7 +1,7 @@
 Changelog
 =========
 
-v3.3.2 (2021-10-26)
+v3.3.2 (2021-10-29)
 -------------------
 - Accept path types (like ``pathlib.Path`` and ``pathlib.PurePath``) in the constructor for ``FileLock`` objects.
 
