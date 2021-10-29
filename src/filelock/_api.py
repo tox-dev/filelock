@@ -45,7 +45,7 @@ class BaseFileLock(ABC):
          A timeout of 0 means, that there is exactly one attempt to acquire the file lock.
         """
         # The path to the lock file.
-        self._lock_file: str = os.fspath(lock_file)  # noqa: SC200
+        self._lock_file: str = os.fspath(lock_file)
 
         # The file descriptor for the *_lock_file* as it is returned by the os.open() function.
         # This file lock is only NOT None, if the object currently holds the lock.

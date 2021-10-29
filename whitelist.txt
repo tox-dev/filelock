@@ -12,6 +12,7 @@ favicon
 fcntl
 filelock
 fmt
+fspath
 intersphinx
 intervall
 iwgrp
