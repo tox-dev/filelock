@@ -36,7 +36,7 @@ def test_simple(
     with lock as locked:
         assert lock.is_locked
         assert lock is locked
-        assert oct(S_IMODE(os.stat(lock_path).st_mode)) == oct(0o660) if sys.platform != "win32" else True
+        assert oct(S_IMODE(os.stat(lock_path).st_mode)) == oct(0o660)
     assert not lock.is_locked
 
     assert caplog.messages == [
