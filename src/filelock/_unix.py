@@ -27,6 +27,8 @@ else:  # pragma: win32 no cover
         def _acquire(self) -> None:
             open_flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC
             open_mode = 0o660
+            umask = 0o002
+            original_umask = os.umask(umask)  # change to temp umask and store original umask
             fd = os.open(self._lock_file, open_flags, open_mode)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -34,6 +36,8 @@ else:  # pragma: win32 no cover
                 os.close(fd)
             else:
                 self._lock_file_fd = fd
+            finally:
+                os.umask(original_umask)  # restore umask
 
         def _release(self) -> None:
             # Do not remove the lockfile:

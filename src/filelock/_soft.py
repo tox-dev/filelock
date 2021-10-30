@@ -19,6 +19,8 @@ class SoftFileLock(BaseFileLock):
             | os.O_TRUNC  # truncate the file to zero byte
         )
         mode = 0o660
+        umask = 0o002
+        original_umask = os.umask(umask)  # change to temp umask and store original umask
         try:
             fd = os.open(self._lock_file, flags, mode)
         except OSError as exception:
@@ -31,6 +33,8 @@ class SoftFileLock(BaseFileLock):
                 raise  # note windows does not allow you to make a folder r/o only files
         else:
             self._lock_file_fd = fd
+        finally:
+            os.umask(original_umask)  # restore umask
 
     def _release(self) -> None:
         os.close(self._lock_file_fd)  # type: ignore # the lock file is definitely not None
