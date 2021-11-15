@@ -1,6 +1,10 @@
 Changelog
 =========
 
+v3.3.3 (2021-11-15)
+-------------------
+- Fix misspelled keyword argument ``poll_interval`` for method ``acquire`` :pr:`119` - by :user:`XuehaiPan`.
+
 v3.3.2 (2021-10-29)
 -------------------
 - Accept path types (like ``pathlib.Path`` and ``pathlib.PurePath``) in the constructor for ``FileLock`` objects.
