@@ -350,3 +350,12 @@ def test_cleanup_soft_lock(tmp_path: Path) -> None:
     with lock:
         assert lock_path.exists()
     assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_poll_intervall_deprecated(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a"
+    lock = lock_type(str(lock_path))
+
+    with pytest.deprecated_call(match="use poll_interval instead of poll_intervall"):
+        lock.acquire(poll_intervall=0.05)

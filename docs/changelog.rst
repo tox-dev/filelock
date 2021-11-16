@@ -1,6 +1,11 @@
 Changelog
 =========
 
+v3.4.0 (2021-11-16)
+-------------------
+- Add correct spelling of poll interval parameter for :meth:`acquire <filelock.BaseFileLock.acquire>` method, raise
+  deprecation warning when using the misspelled form :pr:`119` - by :user:`XuehaiPan`.
+
 v3.3.2 (2021-10-29)
 -------------------
 - Accept path types (like ``pathlib.Path`` and ``pathlib.PurePath``) in the constructor for ``FileLock`` objects.
