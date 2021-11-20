@@ -111,6 +111,7 @@ class BaseFileLock(ABC):
         self,
         timeout: Optional[float] = None,
         poll_interval: float = 0.05,
+        *,
         poll_intervall: Optional[float] = None,
     ) -> AcquireReturnProxy:
         """
@@ -138,8 +139,8 @@ class BaseFileLock(ABC):
 
         .. versionchanged:: 2.0.0
 
-            This method returns now a *proxy* object instead of *self*, so that it can be used in a with statement \
-            without side effects.
+            This method returns now a *proxy* object instead of *self*,
+            so that it can be used in a with statement without side effects.
 
         """
         # Use the default timeout, if no timeout is provided.
@@ -148,7 +149,7 @@ class BaseFileLock(ABC):
 
         if poll_intervall is not None:
             msg = "use poll_interval instead of poll_intervall"
-            warnings.warn(msg, DeprecationWarning)
+            warnings.warn(msg, DeprecationWarning, stacklevel=2)
             poll_interval = poll_intervall
 
         # Increment the number right at the beginning. We can still undo it, if something fails.
