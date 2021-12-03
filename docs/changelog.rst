@@ -1,10 +1,15 @@
 Changelog
 =========
 
-v3.3.3 (2021-10-28)
+v3.5.9 (2021-12-04)
 -------------------
 - Ensure that newly created lockfiles now have ``-rw-rw----`` permissions and not ``-rwxr-xr-x`` as before :pr:`113` -
   by :user:`kbojens`
+
+v3.4.0 (2021-11-16)
+-------------------
+- Add correct spelling of poll interval parameter for :meth:`acquire <filelock.BaseFileLock.acquire>` method, raise
+  deprecation warning when using the misspelled form :pr:`119` - by :user:`XuehaiPan`.
 
 v3.3.2 (2021-10-29)
 -------------------
