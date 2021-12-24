@@ -1,9 +1,10 @@
 import logging
+import os
 import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path, PurePath
-from stat import S_IWGRP, S_IWOTH, S_IWUSR
+from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR
 from types import TracebackType
 from typing import Callable, Iterator, Optional, Tuple, Type, Union
 
@@ -35,6 +36,7 @@ def test_simple(
     with lock as locked:
         assert lock.is_locked
         assert lock is locked
+        assert oct(S_IMODE(os.stat(lock_path).st_mode)) == oct(0o660)
     assert not lock.is_locked
 
     assert caplog.messages == [
