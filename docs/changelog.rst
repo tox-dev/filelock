@@ -1,7 +1,11 @@
 Changelog
 =========
 
-v3.4.1 (2021-13-16)
+v3.4.2 (2021-12-16)
+-------------------
+- Drop support for python ``3.6``
+
+v3.4.1 (2021-12-16)
 -------------------
 - Add ``stacklevel`` to deprecation warnings for argument name change
 

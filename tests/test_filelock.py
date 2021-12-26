@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import sys
 import threading
@@ -6,7 +8,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR
 from types import TracebackType
-from typing import Callable, Iterator, Optional, Tuple, Type, Union
+from typing import Callable, Iterator, Tuple, Type, Union
 
 import pytest
 from _pytest.logging import LogCaptureFixture
@@ -26,7 +28,7 @@ from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout
     ],
 )
 def test_simple(
-    lock_type: Type[BaseFileLock], path_type: Union[Type[str], Type[Path]], tmp_path: Path, caplog: LogCaptureFixture
+    lock_type: type[BaseFileLock], path_type: type[str] | type[Path], tmp_path: Path, caplog: LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
 
@@ -65,7 +67,7 @@ def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only folders")
-def test_ro_folder(lock_type: Type[BaseFileLock], tmp_path_ro: Path) -> None:
+def test_ro_folder(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:
     lock = lock_type(str(tmp_path_ro / "a"))
     with pytest.raises(PermissionError, match="Permission denied"):
         lock.acquire()
@@ -80,14 +82,14 @@ def tmp_file_ro(tmp_path: Path) -> Iterator[Path]:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_ro_file(lock_type: Type[BaseFileLock], tmp_file_ro: Path) -> None:
+def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
     lock = lock_type(str(tmp_file_ro))
     with pytest.raises(PermissionError, match="Permission denied"):
         lock.acquire()
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_missing_directory(lock_type: Type[BaseFileLock], tmp_path_ro: Path) -> None:
+def test_missing_directory(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:
     lock_path = tmp_path_ro / "a" / "b"
     lock = lock_type(str(lock_path))
 
@@ -96,7 +98,7 @@ def test_missing_directory(lock_type: Type[BaseFileLock], tmp_path_ro: Path) -> 
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_nested_context_manager(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_nested_context_manager(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # lock is not released before the most outer with statement that locked the lock, is left
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
@@ -119,7 +121,7 @@ def test_nested_context_manager(lock_type: Type[BaseFileLock], tmp_path: Path) -
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_nested_acquire(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_nested_acquire(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # lock is not released before the most outer with statement that locked the lock, is left
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
@@ -142,7 +144,7 @@ def test_nested_acquire(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_nested_forced_release(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_nested_forced_release(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # acquires the lock using a with-statement and releases the lock before leaving the with-statement
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
@@ -164,7 +166,7 @@ _ExcInfoType = Union[Tuple[Type[BaseException], BaseException, TracebackType], T
 class ExThread(threading.Thread):
     def __init__(self, target: Callable[[], None], name: str) -> None:
         super().__init__(target=target, name=name)
-        self.ex: Optional[_ExcInfoType] = None
+        self.ex: _ExcInfoType | None = None
 
     def run(self) -> None:
         try:
@@ -172,7 +174,7 @@ class ExThread(threading.Thread):
         except Exception:  # pragma: no cover
             self.ex = sys.exc_info()  # pragma: no cover
 
-    def join(self, timeout: Optional[float] = None) -> None:
+    def join(self, timeout: float | None = None) -> None:
         super().join(timeout=timeout)
         if self.ex is not None:
             print(f"fail from thread {self.name}")  # pragma: no cover
@@ -180,7 +182,7 @@ class ExThread(threading.Thread):
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_threaded_shared_lock_obj(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # Runs 100 threads, which need the filelock. The lock must be acquired if at least one thread required it and
     # released, as soon as all threads stopped.
     lock_path = tmp_path / "a"
@@ -202,7 +204,7 @@ def test_threaded_shared_lock_obj(lock_type: Type[BaseFileLock], tmp_path: Path)
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.skipif(hasattr(sys, "pypy_version_info") and sys.platform == "win32", reason="deadlocks randomly")
-def test_threaded_lock_different_lock_obj(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # Runs multiple threads, which acquire the same lock file with a different FileLock object. When thread group 1
     # acquired the lock, thread group 2 must not hold their lock.
 
@@ -234,7 +236,7 @@ def test_threaded_lock_different_lock_obj(lock_type: Type[BaseFileLock], tmp_pat
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_timeout(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # raises Timeout error when the lock cannot be acquired
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
@@ -257,7 +259,7 @@ def test_timeout(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_default_timeout(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_default_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # test if the default timeout parameter works
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path), timeout=0.1)
@@ -289,7 +291,7 @@ def test_default_timeout(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_context_release_on_exc(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_context_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # lock is released when an exception is thrown in a with-statement
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
@@ -304,7 +306,7 @@ def test_context_release_on_exc(lock_type: Type[BaseFileLock], tmp_path: Path) -
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_acquire_release_on_exc(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_acquire_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # lock is released when an exception is thrown in a acquire statement
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
@@ -320,7 +322,7 @@ def test_acquire_release_on_exc(lock_type: Type[BaseFileLock], tmp_path: Path) -
 
 @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_del(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # lock is released when the object is deleted
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
@@ -354,7 +356,7 @@ def test_cleanup_soft_lock(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_poll_intervall_deprecated(lock_type: Type[BaseFileLock], tmp_path: Path) -> None:
+def test_poll_intervall_deprecated(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
