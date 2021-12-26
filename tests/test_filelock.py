@@ -2,6 +2,7 @@ import logging
 import sys
 import threading
 from contextlib import contextmanager
+from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR
 from types import TracebackType
@@ -357,5 +358,11 @@ def test_poll_intervall_deprecated(lock_type: Type[BaseFileLock], tmp_path: Path
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
-    with pytest.deprecated_call(match="use poll_interval instead of poll_intervall"):
-        lock.acquire(poll_intervall=0.05)
+    with pytest.deprecated_call(match="use poll_interval instead of poll_intervall") as checker:
+        lock.acquire(poll_intervall=0.05)  # the deprecation warning will be captured by the checker
+        frameinfo = getframeinfo(stack()[0][0])  # get frameinfo of current file and lineno (+1 than the above lineno)
+        for warning in checker:
+            if warning.filename == frameinfo.filename and warning.lineno + 1 == frameinfo.lineno:  # pragma: no cover
+                break
+        else:  # pragma: no cover
+            pytest.fail("No warnings of stacklevel=2 matching.")

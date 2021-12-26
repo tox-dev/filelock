@@ -39,3 +39,7 @@ unlck
 util
 win32
 wronly
+stacklevel
+frameinfo
+getframeinfo
+lineno
