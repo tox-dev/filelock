@@ -25,11 +25,11 @@ jobs:
       matrix:
         py:
           - "3.10"
+          - "pypy-3.7-v7.3.7"  # ahead to start it earlier because takes longer
           - "3.9"
           - "3.8"
           - "3.7"
-          - "3.6"
-          - "pypy-3.7-v7.3.7"
+          - "3.11-dev"  # as is not yet released do it at the end
         os:
           - ubuntu-20.04
           - windows-2022
@@ -51,7 +51,10 @@ jobs:
           python-version: ${{ matrix.py }}
       - name: Pick environment to run
         run: |
-          import codecs; import os; import platform; import sys
+          import codecs
+          import os
+          import platform
+          import sys
           cpy = platform.python_implementation() == "CPython"
           base =("{}{}{}" if cpy else "{}{}").format("py" if cpy else "pypy", *sys.version_info[0:2])
           env = "TOXENV={}\n".format(base)
@@ -106,7 +109,7 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: html-report
-          path: htmlcov
+          path: .tox/htmlcov
 
   check:
     name: ${{ matrix.tox_env }} - ${{ matrix.os }}
