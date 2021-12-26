@@ -3,7 +3,7 @@ Changelog
 
 v3.4.1 (2021-13-16)
 -------------------
-- Add `stacklevel` to deprecation warnings for argument name change
+- Add ``stacklevel`` to deprecation warnings for argument name change
 
 v3.4.0 (2021-11-16)
 -------------------
