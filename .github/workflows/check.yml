@@ -29,7 +29,6 @@ jobs:
           - "3.9"
           - "3.8"
           - "3.7"
-          - "3.11-dev"  # as is not yet released do it at the end
         os:
           - ubuntu-20.04
           - windows-2022
