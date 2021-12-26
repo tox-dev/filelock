@@ -102,7 +102,7 @@ jobs:
           path: .tox
       - name: Combine and report coverage
         run: tox -e coverage
-      - name: Upload HTML report if check failed
+      - name: Upload HTML report
         uses: actions/upload-artifact@v2
         with:
           name: html-report
