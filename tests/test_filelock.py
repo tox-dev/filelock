@@ -376,7 +376,7 @@ def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> Non
     lock = lock_type(str(lock_path))
 
     @lock
-    def decorated_method():
+    def decorated_method() -> None:
         assert lock.is_locked
 
     assert not lock.is_locked
