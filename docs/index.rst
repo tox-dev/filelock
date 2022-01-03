@@ -67,9 +67,11 @@ locks:
     finally:
         lock.release()
 
+
     @lock
     def decorated():
         open(file_path, "a").write("You're a decorated Jedi!")
+
 
     decorated()
 
