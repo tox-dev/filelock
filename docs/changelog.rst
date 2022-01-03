@@ -1,6 +1,10 @@
 Changelog
 =========
 
+v3.5.0 (2022-01-03)
+-------------------
+- Enable use as context decorator
+
 v3.4.2 (2021-12-16)
 -------------------
 - Drop support for python ``3.6``
