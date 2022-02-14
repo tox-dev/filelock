@@ -67,6 +67,14 @@ locks:
     finally:
         lock.release()
 
+
+    @lock
+    def decorated():
+        print("You're a decorated Jedi!")
+
+
+    decorated()
+
 The :meth:`acquire <filelock.BaseFileLock.acquire>` method accepts also a ``timeout`` parameter. If the lock cannot be
 acquired within ``timeout`` seconds, a :class:`Timeout <filelock.Timeout>` exception is raised:
 
