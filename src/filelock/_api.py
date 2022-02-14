@@ -14,6 +14,10 @@ from ._error import Timeout
 _LOGGER = logging.getLogger("filelock")
 
 
+class PlatformMismatchError(Exception):
+    """Exception raised when attempting Unix locks on Windows, or vice versa."""
+
+
 # This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__
 # is not called twice when entering the with statement. If we would simply return *self*, the lock would be acquired
 # again in the *__enter__* method of the BaseFileLock, but not released again automatically. issue #37 (memory leak)
@@ -236,4 +240,5 @@ class BaseFileLock(ABC):
 __all__ = [
     "BaseFileLock",
     "AcquireReturnProxy",
+    "PlatformMismatchError",
 ]

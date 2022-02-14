@@ -5,14 +5,20 @@ import sys
 from abc import ABC
 from typing import cast
 
-from ._api import BaseFileLock
+from ._api import BaseFileLock, PlatformMismatchError
 
 #: a flag to indicate if the fcntl API is available
 has_fcntl = False
 if sys.platform == "win32":  # pragma: win32 cover
 
-    class UnixFileLock(BaseFileLock, ABC):
+    class UnixFileLock(BaseFileLock):
         """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
+
+        def _acquire(self) -> None:
+            raise PlatformMismatchError()
+
+        def _release(self) -> None:
+            raise PlatformMismatchError()
 
 else:  # pragma: win32 no cover
     try:
