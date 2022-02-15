@@ -1,7 +1,7 @@
 Changelog
 =========
 
-v3.5.0 (2022-01-03)
+v3.5.0 (2022-02-15)
 -------------------
 - Enable use as context decorator
 
