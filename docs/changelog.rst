@@ -1,6 +1,10 @@
 Changelog
 =========
 
+v3.5.1 (2022-02-16)
+-------------------
+- Use ``time.monotonic`` instead of ``time.time`` for calculating timeouts.
+
 v3.5.0 (2022-02-15)
 -------------------
 - Enable use as context decorator
