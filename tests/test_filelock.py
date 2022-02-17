@@ -389,10 +389,10 @@ def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> Non
 def test_unix_lock_on_windows(tmp_path: Path) -> None:
     lock = UnixFileLock(str(tmp_path / "lockfile"))
 
-    assert not inspect.isabstract(
+    assert not inspect.isabstract(  # noqa: SC200
         UnixFileLock
     ), "UnixFileLock must not be an abstract class, or pylint will complain in client code"
-    assert inspect.isabstract(BaseFileLock)
+    assert inspect.isabstract(BaseFileLock)  # noqa: SC200
 
     with pytest.raises(NotImplementedError):
         lock.acquire()
@@ -405,10 +405,10 @@ def test_unix_lock_on_windows(tmp_path: Path) -> None:
 def test_windows_lock_on_unix(tmp_path: Path) -> None:
     lock = WindowsFileLock(str(tmp_path / "lockfile"))
 
-    assert not inspect.isabstract(
+    assert not inspect.isabstract(  # noqa: SC200
         WindowsFileLock
     ), "WindowsFileLock must not be an abstract class, or pylint will complain in client code"
-    assert inspect.isabstract(BaseFileLock)
+    assert inspect.isabstract(BaseFileLock)  # noqa: SC200
 
     with pytest.raises(NotImplementedError):
         lock.acquire()
