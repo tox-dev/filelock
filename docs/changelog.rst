@@ -1,6 +1,13 @@
 Changelog
 =========
 
+Future
+------
+- Fix pylint warning "Abstract class :class:`WindowsFileLock <filelock.WindowsFileLock>` with abstract methods instantiated"
+  :pr:`135` - by :user:`vonschultz`
+- Fix pylint warning "Abstract class :class:`UnixFileLock <filelock.UnixFileLock>` with abstract methods instantiated"
+  :pr:`135` - by :user:`vonschultz`
+
 v3.4.2 (2021-12-16)
 -------------------
 - Drop support for python ``3.6``

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 import threading
@@ -13,7 +14,7 @@ from typing import Callable, Iterator, Tuple, Type, Union
 import pytest
 from _pytest.logging import LogCaptureFixture
 
-from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout
+from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
 
 
 @pytest.mark.parametrize(
@@ -368,3 +369,35 @@ def test_poll_intervall_deprecated(lock_type: type[BaseFileLock], tmp_path: Path
                 break
         else:  # pragma: no cover
             pytest.fail("No warnings of stacklevel=2 matching.")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Tests behavior of UnixFileLock on Windows systems")
+def test_unix_lock_on_windows(tmp_path: Path) -> None:
+    lock = UnixFileLock(str(tmp_path / "lockfile"))
+
+    assert not inspect.isabstract(
+        UnixFileLock
+    ), "UnixFileLock must not be an abstract class, or pylint will complain in client code"
+    assert inspect.isabstract(BaseFileLock)
+
+    with pytest.raises(NotImplementedError):
+        lock.acquire()
+
+    with pytest.raises(NotImplementedError):
+        lock._release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Tests behavior of WindowsFileLock on non-Windows systems")
+def test_windows_lock_on_unix(tmp_path: Path) -> None:
+    lock = WindowsFileLock(str(tmp_path / "lockfile"))
+
+    assert not inspect.isabstract(
+        WindowsFileLock
+    ), "WindowsFileLock must not be an abstract class, or pylint will complain in client code"
+    assert inspect.isabstract(BaseFileLock)
+
+    with pytest.raises(NotImplementedError):
+        lock.acquire()
+
+    with pytest.raises(NotImplementedError):
+        lock._release()
