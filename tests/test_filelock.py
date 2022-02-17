@@ -386,19 +386,14 @@ def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> Non
 
 
 def test_wrong_platform(tmp_path: Path) -> None:
-    assert not inspect.isabstract(  # noqa: SC200
-        UnixFileLock
-    ), "UnixFileLock must not be an abstract class, or pylint will complain in client code"
-    assert not inspect.isabstract(  # noqa: SC200
-        WindowsFileLock
-    ), "WindowsFileLock must not be an abstract class, or pylint will complain in client code"
-    assert inspect.isabstract(BaseFileLock)  # noqa: SC200
+    assert not inspect.isabstract(UnixFileLock)
+    assert not inspect.isabstract(WindowsFileLock)
+    assert inspect.isabstract(BaseFileLock)
 
     lock_type = UnixFileLock if sys.platform == "win32" else WindowsFileLock
     lock = lock_type(str(tmp_path / "lockfile"))
 
     with pytest.raises(NotImplementedError):
         lock.acquire()
-
     with pytest.raises(NotImplementedError):
         lock._release()
