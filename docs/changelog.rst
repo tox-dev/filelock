@@ -1,8 +1,8 @@
 Changelog
 =========
 
-Future
-------
+v3.6.0 (2022-02-17)
+-------------------
 - Fix pylint warning "Abstract class :class:`WindowsFileLock <filelock.WindowsFileLock>` with abstract methods instantiated"
   :pr:`135` - by :user:`vonschultz`
 - Fix pylint warning "Abstract class :class:`UnixFileLock <filelock.UnixFileLock>` with abstract methods instantiated"
