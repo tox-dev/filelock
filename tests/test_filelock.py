@@ -371,7 +371,6 @@ def test_poll_intervall_deprecated(lock_type: type[BaseFileLock], tmp_path: Path
             pytest.fail("No warnings of stacklevel=2 matching.")
 
 
-
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
