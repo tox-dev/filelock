@@ -5,7 +5,7 @@ import sys
 from errno import ENOENT
 from typing import cast
 
-from ._api import BaseFileLock, PlatformMismatchError
+from ._api import BaseFileLock
 from ._util import raise_on_exist_ro_file
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -52,10 +52,10 @@ else:  # pragma: win32 no cover
         """Uses the :func:`msvcrt.locking` function to hard lock the lock file on windows systems."""
 
         def _acquire(self) -> None:
-            raise PlatformMismatchError()
+            raise NotImplementedError
 
         def _release(self) -> None:
-            raise PlatformMismatchError()
+            raise NotImplementedError
 
 
 __all__ = [
