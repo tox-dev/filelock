@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 import threading
@@ -13,7 +14,7 @@ from typing import Callable, Iterator, Tuple, Type, Union
 import pytest
 from _pytest.logging import LogCaptureFixture
 
-from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout
+from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
 
 
 @pytest.mark.parametrize(
@@ -382,3 +383,17 @@ def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> Non
     assert not lock.is_locked
     decorated_method()
     assert not lock.is_locked
+
+
+def test_wrong_platform(tmp_path: Path) -> None:
+    assert not inspect.isabstract(UnixFileLock)
+    assert not inspect.isabstract(WindowsFileLock)
+    assert inspect.isabstract(BaseFileLock)
+
+    lock_type = UnixFileLock if sys.platform == "win32" else WindowsFileLock
+    lock = lock_type(str(tmp_path / "lockfile"))
+
+    with pytest.raises(NotImplementedError):
+        lock.acquire()
+    with pytest.raises(NotImplementedError):
+        lock._release()

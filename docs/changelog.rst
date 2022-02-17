@@ -1,6 +1,13 @@
 Changelog
 =========
 
+v3.6.0 (2022-02-17)
+-------------------
+- Fix pylint warning "Abstract class :class:`WindowsFileLock <filelock.WindowsFileLock>` with abstract methods instantiated"
+  :pr:`135` - by :user:`vonschultz`
+- Fix pylint warning "Abstract class :class:`UnixFileLock <filelock.UnixFileLock>` with abstract methods instantiated"
+  :pr:`135` - by :user:`vonschultz`
+
 v3.5.1 (2022-02-16)
 -------------------
 - Use ``time.monotonic`` instead of ``time.time`` for calculating timeouts.
