@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import time
@@ -35,7 +36,7 @@ class AcquireReturnProxy:
         self.lock.release()
 
 
-class BaseFileLock(ABC):
+class BaseFileLock(ABC, contextlib.ContextDecorator):
     """Abstract base class for a file lock object."""
 
     def __init__(self, lock_file: str | os.PathLike[Any], timeout: float = -1) -> None:
@@ -160,7 +161,7 @@ class BaseFileLock(ABC):
 
         lock_id = id(self)
         lock_filename = self._lock_file
-        start_time = time.time()
+        start_time = time.monotonic()
         try:
             while True:
                 with self._thread_lock:
@@ -171,7 +172,7 @@ class BaseFileLock(ABC):
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
-                elif 0 <= timeout < time.time() - start_time:
+                elif 0 <= timeout < time.monotonic() - start_time:
                     _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
                     raise Timeout(self._lock_file)
                 else:

@@ -8,6 +8,14 @@ Future
 - Fix pylint warning "Abstract class :class:`UnixFileLock <filelock.UnixFileLock>` with abstract methods instantiated"
   :pr:`135` - by :user:`vonschultz`
 
+v3.5.1 (2022-02-16)
+-------------------
+- Use ``time.monotonic`` instead of ``time.time`` for calculating timeouts.
+
+v3.5.0 (2022-02-15)
+-------------------
+- Enable use as context decorator
+
 v3.4.2 (2021-12-16)
 -------------------
 - Drop support for python ``3.6``

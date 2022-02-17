@@ -10,7 +10,8 @@ simple way of inter-process communication:
 
     lock = FileLock("high_ground.txt.lock")
     with lock:
-        open("high_ground.txt", "a").write("You were the chosen one.")
+        with open("high_ground.txt", "a") as f:
+            f.write("You were the chosen one.")
 
 **Don't use** a :class:`FileLock <filelock.FileLock>` to lock the file you want to write to, instead create a separate
 ``.lock`` file as shown above.
@@ -59,13 +60,23 @@ locks:
 .. code-block:: python
 
     with lock:
-        open(file_path, "a").write("Hello there!")
+        with open(file_path, "a") as f:
+            f.write("Hello there!")
 
     lock.acquire()
     try:
-        open(file_path, "a").write("General Kenobi!")
+        with open(file_path, "a") as f:
+            f.write("General Kenobi!")
     finally:
         lock.release()
+
+
+    @lock
+    def decorated():
+        print("You're a decorated Jedi!")
+
+
+    decorated()
 
 The :meth:`acquire <filelock.BaseFileLock.acquire>` method accepts also a ``timeout`` parameter. If the lock cannot be
 acquired within ``timeout`` seconds, a :class:`Timeout <filelock.Timeout>` exception is raised:
@@ -74,7 +85,8 @@ acquired within ``timeout`` seconds, a :class:`Timeout <filelock.Timeout>` excep
 
     try:
         with lock.acquire(timeout=10):
-            open(file_path, "a").write("I have a bad feeling about this.")
+            with open(file_path, "a") as f:
+                f.write("I have a bad feeling about this.")
     except Timeout:
         print("Another instance of this application currently holds the lock.")
 
@@ -84,12 +96,14 @@ The lock objects are recursive locks, which means that once acquired, they will 
 
     def cite1():
         with lock:
-            open(file_path, "a").write("I hate it when he does that.")
+            with open(file_path, "a") as f:
+                f.write("I hate it when he does that.")
 
 
     def cite2():
         with lock:
-            open(file_path, "a").write("You don't want to sell me death sticks.")
+            with open(file_path, "a") as f:
+                f.write("You don't want to sell me death sticks.")
 
 
     # The lock is acquired here.
