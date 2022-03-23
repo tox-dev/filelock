@@ -35,7 +35,7 @@ else:  # pragma: win32 no cover
             fd = os.open(self._lock_file, open_mode)
             try:
                 if os.fstat(fd).st_size == 0:
-                    os.write(fd, "Lock files must not be empty, or the Google Drive app will replace them.".encode("UTF-8"))
+                    os.write(fd, b"Lock files must not be empty, or the Google Drive app will replace them.")
                     os.fsync(fd)
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
