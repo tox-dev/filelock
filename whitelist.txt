@@ -44,3 +44,4 @@ stacklevel
 frameinfo
 getframeinfo
 lineno
+fstat
