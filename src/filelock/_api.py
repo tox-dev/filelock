@@ -10,7 +10,7 @@ from threading import Lock
 from types import TracebackType
 from typing import Any
 
-from ._error import Timeout, ImmediateAquireError
+from ._error import ImmediateAquireError, Timeout
 
 _LOGGER = logging.getLogger("filelock")
 
@@ -116,7 +116,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         poll_interval: float = 0.05,
         *,
         poll_intervall: float | None = None,
-        return_immediately = False
+        return_immediately=False,
     ) -> AcquireReturnProxy:
         """
         Try to acquire the file lock.

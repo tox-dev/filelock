@@ -11,6 +11,7 @@ class Timeout(TimeoutError):
     def __str__(self) -> str:
         return f"The file lock '{self.lock_file}' could not be acquired."
 
+
 class ImmediateAquireError(TimeoutError):
     """Raised when the lock could not be acquired immediately"""
 

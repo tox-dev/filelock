@@ -14,7 +14,7 @@ from typing import Callable, Iterator, Tuple, Type, Union
 import pytest
 from _pytest.logging import LogCaptureFixture
 
-from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock, ImmediateAquireError
+from filelock import BaseFileLock, FileLock, ImmediateAquireError, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
 
 
 @pytest.mark.parametrize(
@@ -257,7 +257,6 @@ def test_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_1.release()
     assert not lock_1.is_locked
     assert not lock_2.is_locked
-
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
