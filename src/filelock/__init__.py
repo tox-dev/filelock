@@ -11,7 +11,7 @@ import sys
 import warnings
 
 from ._api import AcquireReturnProxy, BaseFileLock
-from ._error import ImmediateAquireError, Timeout
+from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock, has_fcntl
 from ._windows import WindowsFileLock
@@ -45,5 +45,4 @@ __all__ = [
     "WindowsFileLock",
     "BaseFileLock",
     "AcquireReturnProxy",
-    "ImmediateAquireError",
 ]

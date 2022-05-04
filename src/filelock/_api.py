@@ -10,7 +10,7 @@ from threading import Lock
 from types import TracebackType
 from typing import Any
 
-from ._error import ImmediateAquireError, Timeout
+from ._error import Timeout
 
 _LOGGER = logging.getLogger("filelock")
 
@@ -116,7 +116,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         poll_interval: float = 0.05,
         *,
         poll_intervall: float | None = None,
-        return_immediately=False,
+        blocking=True,
     ) -> AcquireReturnProxy:
         """
         Try to acquire the file lock.
@@ -125,8 +125,8 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
          if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file
         :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
-        :param return_immediately: defaults to False. If True, function will return immediately if it cannot obtain
-         a lock on the first attempt.
+        :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
+         first attempt. Otherwise this method will block until the timeout expires or the lock is acquired.
         :raises Timeout: if fails to acquire lock within the timeout period
         :return: a context object that will unlock the file when the context is exited
 
@@ -175,9 +175,9 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
-                elif return_immediately:
+                elif blocking == False:
                     _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
-                    raise ImmediateAquireError(self._lock_file)
+                    raise Timeout(self._lock_file)
                 elif 0 <= timeout < time.monotonic() - start_time:
                     _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
                     raise Timeout(self._lock_file)
