@@ -175,7 +175,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
-                elif blocking == False:
+                elif blocking is False:
                     _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
                     raise Timeout(self._lock_file)
                 elif 0 <= timeout < time.monotonic() - start_time:
