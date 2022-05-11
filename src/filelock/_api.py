@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from threading import Lock
 from types import TracebackType
 from typing import Any
+from xmlrpc.client import Boolean
 
 from ._error import Timeout
 
@@ -116,7 +117,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         poll_interval: float = 0.05,
         *,
         poll_intervall: float | None = None,
-        blocking=True,
+        blocking: bool = True,
     ) -> AcquireReturnProxy:
         """
         Try to acquire the file lock.
