@@ -9,7 +9,6 @@ from abc import ABC, abstractmethod
 from threading import Lock
 from types import TracebackType
 from typing import Any
-from xmlrpc.client import Boolean
 
 from ._error import Timeout
 
