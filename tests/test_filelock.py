@@ -260,6 +260,29 @@ def test_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_non_blocking(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    # raises Timeout error when the lock cannot be acquired
+    lock_path = tmp_path / "a"
+    lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
+
+    # acquire lock 1
+    lock_1.acquire()
+    assert lock_1.is_locked
+    assert not lock_2.is_locked
+
+    # try to acquire lock 2
+    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+        lock_2.acquire(blocking=False)
+    assert not lock_2.is_locked
+    assert lock_1.is_locked
+
+    # release lock 1
+    lock_1.release()
+    assert not lock_1.is_locked
+    assert not lock_2.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_default_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # test if the default timeout parameter works
     lock_path = tmp_path / "a"
