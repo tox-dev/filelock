@@ -28,7 +28,9 @@ Perhaps you are looking for something like:
 - the `pid <https://pypi.python.org/pypi/pid>`_ 3rd party library,
 - for Windows the `msvcrt <https://docs.python.org/3/library/msvcrt.html#msvcrt.locking>`_ module in the standard
   library,
-- for UNIX the `fcntl <https://docs.python.org/3/library/fcntl.html#fcntl.flock>`_ module in the standard library.
+- for UNIX the `fcntl <https://docs.python.org/3/library/fcntl.html#fcntl.flock>`_ module in the standard library,
+- the `flufl.lock <https://pypi.org/project/flufl.lock/>`_ 3rd party library.
+
 
 Installation
 ------------
