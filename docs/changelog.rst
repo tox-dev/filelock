@@ -1,6 +1,24 @@
 Changelog
 =========
 
+v3.8.1 (2022-12-04)
+-------------------
+- Fix mypy does not accept ``filelock.FileLock`` as a valid type
+
+v3.8.0 (2022-12-04)
+-------------------
+- Bump project dependencies
+- Add timeout unit to docstrings
+- Support 3.11
+
+v3.7.1 (2022-05-31)
+-------------------
+- Make the readme documentation point to the index page
+
+v3.7.0 (2022-05-13)
+-------------------
+- Add ability to return immediately when a lock cannot be obtained
+
 v3.6.0 (2022-02-17)
 -------------------
 - Fix pylint warning "Abstract class :class:`WindowsFileLock <filelock.WindowsFileLock>` with abstract methods instantiated"
