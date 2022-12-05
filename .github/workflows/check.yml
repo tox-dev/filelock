@@ -27,6 +27,8 @@ jobs:
           - ubuntu-22.04
           - windows-2022
           - macos-12
+        exclude:
+          - { os: windows-2022, py: "pypy3.9" }
 
     steps:
       - name: Setup python for tox
