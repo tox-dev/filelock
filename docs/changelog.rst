@@ -1,5 +1,8 @@
 Changelog
 =========
+v3.9.0 (2022-12-28)
+-------------------
+- Move build backend to ``hatchling`` :pr:`185 - by :user:`gaborbernat`.
 
 v3.8.1 (2022-12-04)
 -------------------

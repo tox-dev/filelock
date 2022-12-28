@@ -14,7 +14,14 @@ from typing import Callable, Iterator, Tuple, Type, Union
 import pytest
 from _pytest.logging import LogCaptureFixture
 
-from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
+from filelock import (
+    BaseFileLock,
+    FileLock,
+    SoftFileLock,
+    Timeout,
+    UnixFileLock,
+    WindowsFileLock,
+)
 
 
 @pytest.mark.parametrize(
@@ -29,7 +36,10 @@ from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock
     ],
 )
 def test_simple(
-    lock_type: type[BaseFileLock], path_type: type[str] | type[Path], tmp_path: Path, caplog: LogCaptureFixture
+    lock_type: type[BaseFileLock],
+    path_type: type[str] | type[Path],
+    tmp_path: Path,
+    caplog: LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.DEBUG)
 
