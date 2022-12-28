@@ -4,7 +4,6 @@ autosectionlabel
 caplog
 eacces
 extlinks
-favicon
 filelock
 frameinfo
 fspath

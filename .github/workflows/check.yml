@@ -61,7 +61,9 @@ jobs:
           CI_RUN: "yes"
           DIFF_AGAINST: HEAD
       - name: Rename coverage report file
-        run: import os; import sys; os.rename(f".tox/.coverage.{os.environ['TOXENV']}", f".tox/.coverage.{os.environ['TOXENV']}-{sys.platform}")
+        run: |
+          import os; import sys
+          os.rename(f".tox/.coverage.{os.environ['TOXENV']}", f".tox/.coverage.{os.environ['TOXENV']}-{sys.platform}")
         shell: python
       - name: Upload coverage data
         uses: actions/upload-artifact@v3
@@ -134,7 +136,7 @@ jobs:
 
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
-    needs: [ check, coverage ]
+    needs: [check, coverage]
     runs-on: ubuntu-22.04
     steps:
       - name: Setup python to build package
