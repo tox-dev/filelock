@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import inspect
 import logging
-import sys
 import os
+import sys
 import threading
 from contextlib import contextmanager
 from inspect import getframeinfo, stack

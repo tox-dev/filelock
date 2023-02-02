@@ -43,7 +43,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         self,
         lock_file: str | os.PathLike[Any],
         timeout: float = -1,
-        multiuser: bool = False
+        multiuser: bool = False,
     ) -> None:
         """
         Create a new lock object.
