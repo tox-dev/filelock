@@ -39,7 +39,12 @@ class AcquireReturnProxy:
 class BaseFileLock(ABC, contextlib.ContextDecorator):
     """Abstract base class for a file lock object."""
 
-    def __init__(self, lock_file: str | os.PathLike[Any], timeout: float = -1) -> None:
+    def __init__(
+        self,
+        lock_file: str | os.PathLike[Any],
+        timeout: float = -1,
+        multiuser: bool = False
+    ) -> None:
         """
         Create a new lock object.
 
@@ -47,6 +52,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in
         the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it
         to a negative value. A timeout of 0 means, that there is exactly one attempt to acquire the file lock.
+        : param multiuser: if True, make the lock file permissions rw/rw/rw for all users
         """
         # The path to the lock file.
         self._lock_file: str = os.fspath(lock_file)
@@ -57,6 +63,9 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
 
         # The default timeout value.
         self._timeout: float = timeout
+
+        # The multiuser flag
+        self._multiuser: bool = multiuser
 
         # We use this lock primarily for the lock counter.
         self._thread_lock: Lock = Lock()

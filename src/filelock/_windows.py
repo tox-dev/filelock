@@ -16,13 +16,18 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         def _acquire(self) -> None:
             raise_on_exist_ro_file(self._lock_file)
-            mode = (
+            flags = (
                 os.O_RDWR  # open for read and write
                 | os.O_CREAT  # create file if not exists
                 | os.O_TRUNC  # truncate file  if not empty
             )
+            if self._multiuser is True:
+                os.umask(0)
+                mode = 0o666
+            else:
+                mode = 511
             try:
-                fd = os.open(self._lock_file, mode)
+                fd = os.open(self._lock_file, mode, flags)
             except OSError as exception:
                 if exception.errno == ENOENT:  # No such file or directory
                     raise
