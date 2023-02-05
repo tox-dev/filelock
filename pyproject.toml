@@ -1,27 +1,24 @@
 [build-system]
 build-backend = "hatchling.build"
-requires = ["hatchling>=1.11.1", "hatch-vcs>=0.3"]
+requires = [
+  "hatch-vcs>=0.3",
+  "hatchling>=1.12.2",
+]
 
 [project]
 name = "filelock"
 description = "A platform independent file lock."
 readme = "README.md"
+keywords = [
+  "application",
+  "cache",
+  "directory",
+  "log",
+  "user",
+]
 license = "Unlicense"
 maintainers = [{ name = "Bernát Gábor", email = "gaborjbernat@gmail.com" }]
-urls.Documentation = "https://py-filelock.readthedocs.io"
-urls.Homepage = "https://github.com/tox-dev/py-filelock"
-urls.Source = "https://github.com/tox-dev/py-filelock"
-urls.Tracker = "https://github.com/tox-dev/py-filelock/issues"
 requires-python = ">=3.7"
-optional-dependencies.testing = [
-  "covdefaults>=2.2.2",
-  "coverage>=7.0.1",
-  "pytest>=7.2",
-  "pytest-cov>=4",
-  "pytest-timeout>=2.1",
-]
-optional-dependencies.docs = ["furo>=2022.12.7", "sphinx>=5.3", "sphinx-autodoc-typehints>=1.19.5"]
-keywords = ["application", "cache", "directory", "log", "user"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
@@ -34,7 +31,25 @@ classifiers = [
   "Topic :: Software Development :: Libraries",
   "Topic :: System",
 ]
-dynamic = ["version"]
+dynamic = [
+  "version",
+]
+optional-dependencies.docs = [
+  "furo>=2022.12.7",
+  "sphinx>=6.1.3",
+  "sphinx-autodoc-typehints!=1.23.4,>=1.22",
+]
+optional-dependencies.testing = [
+  "covdefaults>=2.2.2",
+  "coverage>=7.1",
+  "pytest>=7.2.1",
+  "pytest-cov>=4",
+  "pytest-timeout>=2.1",
+]
+urls.Documentation = "https://py-filelock.readthedocs.io"
+urls.Homepage = "https://github.com/tox-dev/py-filelock"
+urls.Source = "https://github.com/tox-dev/py-filelock"
+urls.Tracker = "https://github.com/tox-dev/py-filelock/issues"
 
 [tool.hatch]
 build.hooks.vcs.version-file = "src/filelock/version.py"
