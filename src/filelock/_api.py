@@ -199,7 +199,6 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param force: If true, the lock counter is ignored and the lock is released in every case/
         """
         with self._thread_lock:
-
             if self.is_locked:
                 self._lock_counter -= 1
 
