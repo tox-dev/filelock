@@ -164,7 +164,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
 
         lock_id = id(self)
         lock_filename = self._lock_file
-        start_time = time.monotonic()
+        start_time = time.perf_counter()
         try:
             while True:
                 with self._thread_lock:
@@ -178,7 +178,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                 elif blocking is False:
                     _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
                     raise Timeout(self._lock_file)
-                elif 0 <= timeout < time.monotonic() - start_time:
+                elif 0 <= timeout < time.perf_counter() - start_time:
                     _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
                     raise Timeout(self._lock_file)
                 else:

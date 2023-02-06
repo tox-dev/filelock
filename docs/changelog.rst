@@ -1,5 +1,9 @@
 Changelog
 =========
+in progress
+-----------
+- Use ``time.perf_counter`` instead of ``time.monotonic`` for calculating timeouts.
+
 v3.9.0 (2022-12-28)
 -------------------
 - Move build backend to ``hatchling`` :pr:`185 - by :user:`gaborbernat`.
