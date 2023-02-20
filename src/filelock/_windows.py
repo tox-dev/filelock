@@ -25,9 +25,9 @@ if sys.platform == "win32":  # pragma: win32 cover
                 os.umask(0)
                 mode = 0o666
             else:
-                mode = 511
+                mode = 0o511
             try:
-                fd = os.open(self._lock_file, mode, flags)
+                fd = os.open(self._lock_file, flags, mode)
             except OSError as exception:
                 if exception.errno == ENOENT:  # No such file or directory
                     raise
