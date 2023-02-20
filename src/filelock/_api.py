@@ -43,7 +43,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         self,
         lock_file: str | os.PathLike[Any],
         timeout: float = -1,
-        multiuser: bool = False,
+        multi_user: bool = False,
     ) -> None:
         """
         Create a new lock object.
@@ -64,8 +64,8 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         # The default timeout value.
         self._timeout: float = timeout
 
-        # The multiuser flag
-        self._multiuser: bool = multiuser
+        # The multi_user flag
+        self._multi_user: bool = multi_user
 
         # We use this lock primarily for the lock counter.
         self._thread_lock: Lock = Lock()

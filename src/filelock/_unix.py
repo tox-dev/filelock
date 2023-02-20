@@ -32,7 +32,7 @@ else:  # pragma: win32 no cover
 
         def _acquire(self) -> None:
             open_flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC
-            if self._multiuser is True:
+            if self._multi_user is True:
                 os.umask(0)
                 open_mode = 0o666
             else:

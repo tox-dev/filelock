@@ -419,9 +419,9 @@ def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> Non
     assert not lock.is_locked
 
 
-def test_multuser(tmp_path: Path) -> None:
+def test_multi_user(tmp_path: Path) -> None:
     lock_path = tmp_path / "a.lock"
-    lock = FileLock(str(lock_path), multiuser=True)
+    lock = FileLock(str(lock_path), multi_user=True)
 
     lock.acquire()
     assert lock.is_locked
@@ -432,9 +432,9 @@ def test_multuser(tmp_path: Path) -> None:
     lock.release()
 
 
-def test_multuser_soft(tmp_path: Path) -> None:
+def test_multi_user_soft(tmp_path: Path) -> None:
     lock_path = tmp_path / "a.lock"
-    lock = SoftFileLock(str(lock_path), multiuser=True)
+    lock = SoftFileLock(str(lock_path), multi_user=True)
 
     lock.acquire()
     assert lock.is_locked

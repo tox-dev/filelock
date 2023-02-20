@@ -21,7 +21,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 | os.O_CREAT  # create file if not exists
                 | os.O_TRUNC  # truncate file  if not empty
             )
-            if self._multiuser is True:
+            if self._multi_user is True:
                 os.umask(0)
                 mode = 0o666
             else:
