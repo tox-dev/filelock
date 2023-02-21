@@ -5,6 +5,7 @@ caplog
 eacces
 extlinks
 filelock
+filemode
 frameinfo
 fspath
 getframeinfo
