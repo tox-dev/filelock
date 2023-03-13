@@ -1,5 +1,9 @@
 Changelog
 =========
+v3.10.0 (2023-03-15)
+-------------------
+- Add support for lockfile file mode :pr:`192 - by :user:`jahrules`.
+
 v3.9.1 (2023-03-14)
 -------------------
 - Use ``time.perf_counter`` instead of ``time.monotonic`` for calculating timeouts.
