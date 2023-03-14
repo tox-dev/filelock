@@ -1,7 +1,7 @@
 Changelog
 =========
 v3.9.1 (2023-03-14)
------------
+-------------------
 - Use ``time.perf_counter`` instead of ``time.monotonic`` for calculating timeouts.
 
 v3.9.0 (2022-12-28)
