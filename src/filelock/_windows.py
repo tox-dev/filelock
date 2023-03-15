@@ -21,13 +21,8 @@ if sys.platform == "win32":  # pragma: win32 cover
                 | os.O_CREAT  # create file if not exists
                 | os.O_TRUNC  # truncate file  if not empty
             )
-            if self._multi_user is True:
-                os.umask(0)
-                mode = 0o666
-            else:
-                mode = 0o511
             try:
-                fd = os.open(self._lock_file, flags, mode)
+                fd = os.open(self._lock_file, flags, self._mode)
             except OSError as exception:
                 if exception.errno == ENOENT:  # No such file or directory
                     raise

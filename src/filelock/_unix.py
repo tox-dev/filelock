@@ -32,13 +32,7 @@ else:  # pragma: win32 no cover
 
         def _acquire(self) -> None:
             open_flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC
-            if self._multi_user is True:
-                os.umask(0)
-                open_mode = 0o666
-            else:
-                # This is the default mode
-                open_mode = 511
-            fd = os.open(self._lock_file, open_flags, open_mode)
+            fd = os.open(self._lock_file, open_flags, self._mode)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:

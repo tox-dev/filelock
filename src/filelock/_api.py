@@ -43,7 +43,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         self,
         lock_file: str | os.PathLike[Any],
         timeout: float = -1,
-        multi_user: bool = False,
+        mode: int = 0o644,
     ) -> None:
         """
         Create a new lock object.
@@ -64,8 +64,8 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         # The default timeout value.
         self._timeout: float = timeout
 
-        # The multi_user flag
-        self._multi_user: bool = multi_user
+        # The mode for the lock files
+        self._mode: int = mode
 
         # We use this lock primarily for the lock counter.
         self._thread_lock: Lock = Lock()
@@ -179,7 +179,9 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                 with self._thread_lock:
                     if not self.is_locked:
                         _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
+                        previous_umask = os.umask(0)
                         self._acquire()
+                        os.umask(previous_umask)  # reset umask to initial value
 
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
