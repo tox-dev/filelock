@@ -52,7 +52,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in
         the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it
         to a negative value. A timeout of 0 means, that there is exactly one attempt to acquire the file lock.
-        : param mode: file permissions for the lockfile to have. default: 0o644 (-rw-r--r--)
+        : param mode: file permissions for the lockfile.
         """
         # The path to the lock file.
         self._lock_file: str = os.fspath(lock_file)
@@ -182,7 +182,6 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                         previous_umask = os.umask(0)
                         self._acquire()
                         os.umask(previous_umask)  # reset umask to initial value
-
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
