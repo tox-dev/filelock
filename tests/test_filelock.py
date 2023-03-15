@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import sys
 import threading
 from contextlib import contextmanager
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
-from stat import S_IWGRP, S_IWOTH, S_IWUSR
+from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
 from typing import Callable, Iterator, Tuple, Type, Union
 
@@ -416,6 +417,66 @@ def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> Non
     assert not lock.is_locked
     decorated_method()
     assert not lock.is_locked
+
+
+def test_lock_mode(tmp_path: Path) -> None:
+    lock_path = tmp_path / "a.lock"
+    lock = FileLock(str(lock_path), mode=0o666)
+
+    lock.acquire()
+    assert lock.is_locked
+
+    mode = filemode(os.stat(lock_path).st_mode)
+    assert mode == "-rw-rw-rw-"
+
+    lock.release()
+
+
+def test_lock_mode_soft(tmp_path: Path) -> None:
+    lock_path = tmp_path / "a.lock"
+    lock = SoftFileLock(str(lock_path), mode=0o666)
+
+    lock.acquire()
+    assert lock.is_locked
+
+    mode = filemode(os.stat(lock_path).st_mode)
+    assert mode == "-rw-rw-rw-"
+
+    lock.release()
+
+
+def test_umask(tmp_path: Path) -> None:
+    lock_path = tmp_path / "a.lock"
+    lock = FileLock(str(lock_path), mode=0o666)
+
+    initial_umask = os.umask(0)
+    os.umask(initial_umask)
+
+    lock.acquire()
+    assert lock.is_locked
+
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    assert initial_umask == current_umask
+
+    lock.release()
+
+
+def test_umask_soft(tmp_path: Path) -> None:
+    lock_path = tmp_path / "a.lock"
+    lock = SoftFileLock(str(lock_path), mode=0o666)
+
+    initial_umask = os.umask(0)
+    os.umask(initial_umask)
+
+    lock.acquire()
+    assert lock.is_locked
+
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    assert initial_umask == current_umask
+
+    lock.release()
 
 
 def test_wrong_platform(tmp_path: Path) -> None:
