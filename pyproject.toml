@@ -41,7 +41,7 @@ optional-dependencies.docs = [
 ]
 optional-dependencies.testing = [
   "covdefaults>=2.3",
-  "coverage>=7.2.1",
+  "coverage>=7.2.2",
   "pytest>=7.2.2",
   "pytest-cov>=4",
   "pytest-timeout>=2.1",
