@@ -23,7 +23,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             )
             try:
                 fd = os.open(self._lock_file, flags)
-                os.fchmod(fd, self._mode)
+                os.chmod(fd, self._mode)
             except OSError as exception:
                 if exception.errno == ENOENT:  # No such file or directory
                     raise
