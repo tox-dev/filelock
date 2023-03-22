@@ -440,7 +440,10 @@ def test_lock_mode_soft(tmp_path: Path) -> None:
     assert lock.is_locked
 
     mode = filemode(os.stat(lock_path).st_mode)
-    assert mode == "-rw-r--r--"
+    if sys.platform == "win32":
+        assert mode == "-rw-rw-rw-"
+    else:
+        assert mode == "-rw-r--r--"
 
     lock.release()
 

@@ -4,7 +4,6 @@ autosectionlabel
 caplog
 eacces
 extlinks
-fchmod
 filelock
 filemode
 frameinfo
