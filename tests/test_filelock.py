@@ -4,6 +4,7 @@ import inspect
 import logging
 import os
 import sys
+import pickle
 import threading
 from contextlib import contextmanager
 from inspect import getframeinfo, stack
@@ -268,6 +269,39 @@ def test_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_1.release()
     assert not lock_1.is_locked
     assert not lock_2.is_locked
+
+
+def test_timeout_attributes() -> None:
+    # test Timeout error attributes
+    timeout = Timeout("/path/to/lock")
+
+    # Test string representation
+    assert str(timeout) == "The file lock '/path/to/lock' could not be acquired."
+    assert timeout.args == ("The file lock '/path/to/lock' could not be acquired.",)
+
+    # Test repr
+    assert repr(timeout) == 'Timeout("The file lock \'/path/to/lock\' could not be acquired.")'
+
+    # filename / lock_file attribute
+    assert timeout.filename == "/path/to/lock"
+    assert timeout.lock_file == "/path/to/lock"
+
+
+def test_timeout_pickle() -> None:
+    # test Timeout error pickles correctly
+    timeout = Timeout("/path/to/lock")
+
+    # Test pickled object
+    timeout2 = pickle.loads(pickle.dumps(timeout))
+
+    # Make sure the attributes are the same
+    # (Can't compare exceptions directly: https://stackoverflow.com/questions/15844131)
+    assert type(timeout) is type(timeout2)
+    assert str(timeout) == str(timeout2)
+    assert repr(timeout) == repr(timeout2)
+    assert timeout.args == timeout2.args
+    assert timeout.filename == timeout2.filename
+    assert timeout.lock_file == timeout2.lock_file
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])

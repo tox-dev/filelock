@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, Tuple, Union
 
 
 class Timeout(TimeoutError):
@@ -6,12 +7,22 @@ class Timeout(TimeoutError):
 
     def __init__(self, lock_file: str) -> None:
         #: The path of the file lock.
-        self.lock_file = lock_file
+        super().__init__(f"The file lock '{lock_file}' could not be acquired.")
+
+        # Set filename so name of lock file is visible
+        self.filename = lock_file
+
+    def __reduce__(self) -> Union[str, Tuple[Any, ...]]:
+        # Properly pickle the exception
+        return self.__class__, (self.filename,)
 
     def __str__(self) -> str:
-        return f"The file lock '{self.lock_file}' could not be acquired."
+        return self.args[0]
+
+    @property
+    def lock_file(self) -> str:
+        # For compatibility
+        return self.filename
 
 
-__all__ = [
-    "Timeout",
-]
+__all__ = ["Timeout"]
