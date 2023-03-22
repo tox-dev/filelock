@@ -71,6 +71,7 @@ line-length = 120
 [tool.isort]
 profile = "black"
 known_first_party = ["filelock"]
+add_imports = ["from __future__ import annotations"]
 
 [tool.mypy]
 python_version = "3.11"
