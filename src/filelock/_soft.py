@@ -22,6 +22,7 @@ class SoftFileLock(BaseFileLock):
         )
         try:
             fd = os.open(self._lock_file, flags, self._mode)
+            os.fchmod(fd, self._mode)
         except OSError as exception:
             if exception.errno == EEXIST:  # expected if cannot lock
                 pass

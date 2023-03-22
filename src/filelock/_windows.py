@@ -22,7 +22,8 @@ if sys.platform == "win32":  # pragma: win32 cover
                 | os.O_TRUNC  # truncate file  if not empty
             )
             try:
-                fd = os.open(self._lock_file, flags, self._mode)
+                fd = os.open(self._lock_file, flags)
+                os.fchmod(fd, self._mode)
             except OSError as exception:
                 if exception.errno == ENOENT:  # No such file or directory
                     raise

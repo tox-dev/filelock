@@ -1,5 +1,9 @@
 Changelog
 =========
+v3.10.2 (2023-03-22)
+--------------------
+- Bug fix for using filelock with threaded programs causing undesired file permissions - by :user:`jahrules`.
+
 v3.10.1 (2023-03-22)
 --------------------
 - Handle pickle for :class:`filelock.Timeout` :pr:`203` - by :user:`TheMatt2`.
