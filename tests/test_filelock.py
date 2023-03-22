@@ -289,19 +289,19 @@ def test_timeout_attributes() -> None:
 
 def test_timeout_pickle() -> None:
     # test Timeout error pickles correctly
-    timeout = Timeout("/path/to/lock")
+    timeout_1 = Timeout("/path/to/lock")
 
     # Test pickled object
-    timeout2 = pickle.loads(pickle.dumps(timeout))
+    timeout_2 = pickle.loads(pickle.dumps(timeout_1))
 
     # Make sure the attributes are the same
     # (Can't compare exceptions directly: https://stackoverflow.com/questions/15844131)
-    assert type(timeout) is type(timeout2)
-    assert str(timeout) == str(timeout2)
-    assert repr(timeout) == repr(timeout2)
-    assert timeout.args == timeout2.args
-    assert timeout.filename == timeout2.filename
-    assert timeout.lock_file == timeout2.lock_file
+    assert type(timeout_1) is type(timeout_2)
+    assert str(timeout_1) == str(timeout_2)
+    assert repr(timeout_1) == repr(timeout_2)
+    assert timeout_1.args == timeout_2.args
+    assert timeout_1.filename == timeout_2.filename
+    assert timeout_1.lock_file == timeout_2.lock_file
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
