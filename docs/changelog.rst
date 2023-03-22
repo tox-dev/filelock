@@ -1,8 +1,12 @@
 Changelog
 =========
+v3.10.1 (2023-03-22)
+--------------------
+- Handle pickle for :class:`filelock.Timeout` :pr:`203` - by :user:`TheMatt2`.
+
 v3.10.0 (2023-03-15)
--------------------
-- Add support for explicit file modes for lockfiles :pr:`192 - by :user:`jahrules`.
+--------------------
+- Add support for explicit file modes for lockfiles :pr:`192` - by :user:`jahrules`.
 
 v3.9.1 (2023-03-14)
 -------------------
@@ -10,7 +14,7 @@ v3.9.1 (2023-03-14)
 
 v3.9.0 (2022-12-28)
 -------------------
-- Move build backend to ``hatchling`` :pr:`185 - by :user:`gaborbernat`.
+- Move build backend to ``hatchling`` :pr:`185` - by :user:`gaborbernat`.
 
 v3.8.1 (2022-12-04)
 -------------------
