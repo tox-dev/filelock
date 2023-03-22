@@ -35,7 +35,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 else:
                     self._lock_file_fd = fd
             finally:
-                os.umask(current_mask) # revert mask
+                os.umask(current_mask)  # revert mask
 
         def _release(self) -> None:
             fd = cast(int, self._lock_file_fd)
