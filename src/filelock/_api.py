@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import time
 import warnings
 from abc import ABC, abstractmethod
-from threading import Lock
+from contextlib import ContextDecorator, contextmanager
+from threading import Lock as ThreadLock
 from types import TracebackType
-from typing import Any
+from typing import Any, Iterator
 
 from ._error import Timeout
 
@@ -36,7 +36,7 @@ class AcquireReturnProxy:
         self.lock.release()
 
 
-class BaseFileLock(ABC, contextlib.ContextDecorator):
+class BaseFileLock(ABC, ContextDecorator):
     """Abstract base class for a file lock object."""
 
     def __init__(
@@ -68,7 +68,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         self._mode: int = mode
 
         # We use this lock primarily for the lock counter.
-        self._thread_lock: Lock = Lock()
+        self._thread_lock: ThreadLock = ThreadLock()
 
         # The lock counter is used for implementing the nested locking mechanism. Whenever the lock is acquired, the
         # counter is increased and the lock is only released, when this value is 0 again.
@@ -179,11 +179,8 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                 with self._thread_lock:
                     if not self.is_locked:
                         _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                        previous_umask = os.umask(0)
-                        try:
+                        with _u_mask():
                             self._acquire()
-                        finally:
-                            os.umask(previous_umask)  # reset umask to initial value
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
@@ -249,6 +246,19 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
     def __del__(self) -> None:
         """Called when the lock object is deleted."""
         self.release(force=True)
+
+
+_U_MASK_THREAD_SAFE = ThreadLock()
+
+
+@contextmanager
+def _u_mask() -> Iterator[None]:
+    with _U_MASK_THREAD_SAFE:
+        previous_umask = os.umask(0)
+        try:
+            yield
+        finally:
+            os.umask(previous_umask)  # reset umask to initial value
 
 
 __all__ = [

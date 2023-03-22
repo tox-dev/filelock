@@ -1,5 +1,9 @@
 Changelog
 =========
+v3.10.2 (2023-03-22)
+--------------------
+- Ensure lock files permission is thread safe :pr:`205` - by :user:`gaborbernat`.
+
 v3.10.1 (2023-03-22)
 --------------------
 - Handle pickle for :class:`filelock.Timeout` :pr:`203` - by :user:`TheMatt2`.
