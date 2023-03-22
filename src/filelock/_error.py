@@ -7,23 +7,24 @@ class Timeout(TimeoutError):
     """Raised when the lock could not be acquired in *timeout* seconds."""
 
     def __init__(self, lock_file: str) -> None:
-        #: The path of the file lock.
-        super().__init__(f"The file lock '{lock_file}' could not be acquired.")
-
-        # Set filename so name of lock file is visible
-        self.filename = lock_file
+        super().__init__()
+        self._lock_file = lock_file
 
     def __reduce__(self) -> str | tuple[Any, ...]:
-        # Properly pickle the exception
-        return self.__class__, (self.filename,)
+        return self.__class__, (self._lock_file,)  # Properly pickle the exception
 
     def __str__(self) -> str:
-        return self.args[0]  # type: ignore[no-any-return] # args[0] is explicitly set to str in __init__
+        return f"The file lock '{self._lock_file}' could not be acquired."
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self.lock_file!r})"
 
     @property
     def lock_file(self) -> str:
-        # For compatibility
-        return self.filename  # type: ignore[no-any-return] # OSError.filename is str
+        """:return: The path of the file lock."""
+        return self._lock_file
 
 
-__all__ = ["Timeout"]
+__all__ = [
+    "Timeout",
+]
