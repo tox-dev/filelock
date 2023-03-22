@@ -21,8 +21,7 @@ class SoftFileLock(BaseFileLock):
             | os.O_TRUNC  # truncate the file to zero byte
         )
         try:
-            fd = os.open(self._lock_file, flags, self._mode)
-            os.chmod(fd, self._mode)
+            fd = os.open(self._lock_file, flags)
         except OSError as exception:
             if exception.errno == EEXIST:  # expected if cannot lock
                 pass

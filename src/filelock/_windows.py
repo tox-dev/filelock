@@ -21,9 +21,9 @@ if sys.platform == "win32":  # pragma: win32 cover
                 | os.O_CREAT  # create file if not exists
                 | os.O_TRUNC  # truncate file  if not empty
             )
+            current_mask = os.umask(0)
             try:
                 fd = os.open(self._lock_file, flags)
-                os.chmod(fd, self._mode)
             except OSError as exception:
                 if exception.errno == ENOENT:  # No such file or directory
                     raise
@@ -34,6 +34,8 @@ if sys.platform == "win32":  # pragma: win32 cover
                     os.close(fd)
                 else:
                     self._lock_file_fd = fd
+            finally:
+                os.umask(current_mask) # revert mask
 
         def _release(self) -> None:
             fd = cast(int, self._lock_file_fd)
