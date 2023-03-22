@@ -18,8 +18,7 @@ class Timeout(TimeoutError):
         return self.__class__, (self.filename,)
 
     def __str__(self) -> str:
-        return self.args[0]  # type: ignore[no-any-return]
-                             # args[0] is explicitly set to str in __init__
+        return self.args[0]  # type: ignore[no-any-return] # args[0] is explicitly set to str in __init__
 
     @property
     def lock_file(self) -> str:
