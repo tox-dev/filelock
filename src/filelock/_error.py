@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from typing import Any, Tuple, Union
 
 
@@ -12,7 +13,7 @@ class Timeout(TimeoutError):
         # Set filename so name of lock file is visible
         self.filename = lock_file
 
-    def __reduce__(self) -> Union[str, Tuple[Any, ...]]:
+    def __reduce__(self) -> str | tuple[Any, ...]:
         # Properly pickle the exception
         return self.__class__, (self.filename,)
 

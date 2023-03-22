@@ -3,8 +3,8 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-import sys
 import pickle
+import sys
 import threading
 from contextlib import contextmanager
 from inspect import getframeinfo, stack
@@ -280,7 +280,7 @@ def test_timeout_attributes() -> None:
     assert timeout.args == ("The file lock '/path/to/lock' could not be acquired.",)
 
     # Test repr
-    assert repr(timeout) == 'Timeout("The file lock \'/path/to/lock\' could not be acquired.")'
+    assert repr(timeout) == "Timeout(\"The file lock '/path/to/lock' could not be acquired.\")"
 
     # filename / lock_file attribute
     assert timeout.filename == "/path/to/lock"
