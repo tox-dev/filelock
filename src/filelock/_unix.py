@@ -36,7 +36,7 @@ else:  # pragma: win32 no cover
             try:
                 os.chmod(fd, self._mode)
             except PermissionError:
-                pass # This locked is not owned by this UID
+                pass  # This locked is not owned by this UID
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
