@@ -1,5 +1,9 @@
 Changelog
 =========
+v3.10.3 (2023-03-23)
+--------------------
+- Fix permission issue - by :user:`jahrules`.
+
 v3.10.2 (2023-03-22)
 --------------------
 - Bug fix for using filelock with threaded programs causing undesired file permissions - by :user:`jahrules`.
