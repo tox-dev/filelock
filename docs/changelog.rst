@@ -1,5 +1,9 @@
 Changelog
 =========
+v3.10.4 (2023-03-24)
+--------------------
+- Update os.open to preserve mode= for certain edge cases. by :user:`jahrules`.
+
 v3.10.3 (2023-03-23)
 --------------------
 - Fix permission issue - by :user:`jahrules`.
