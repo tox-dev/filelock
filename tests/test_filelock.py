@@ -510,5 +510,5 @@ def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("os.open", side_effect=OSError(ENOSYS, "mock error"))
     lock_path = tmp_path / "a.lock"
     lock = SoftFileLock(str(lock_path))
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="mock error"):
         lock.acquire()
