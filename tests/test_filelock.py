@@ -509,7 +509,8 @@ def test_flock_not_implemented_unix(tmp_path: Path) -> None:
     try:
         fcntl.flock = dummy_flock
         with pytest.raises(NotImplementedError):
-            with FileLock(str(lock_path)): pass
+            with FileLock(str(lock_path)):
+                pass
 
     finally:
         fcntl.flock = _fcntl_flock
