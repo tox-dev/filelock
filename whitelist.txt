@@ -7,7 +7,6 @@ enosys
 extlinks
 filelock
 filemode
-fileno
 frameinfo
 fspath
 getframeinfo
@@ -31,6 +30,5 @@ skipif
 stacklevel
 trunc
 typehints
-typeshed
 unlck
 win32

@@ -11,10 +11,11 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import TYPE_CHECKING, Callable, Iterator, Tuple, Type, Union
+from typing import Callable, Iterator, Tuple, Type, Union
 
 import pytest
 from _pytest.logging import LogCaptureFixture
+from pytest_mock import MockerFixture
 
 from filelock import (
     BaseFileLock,
@@ -24,9 +25,6 @@ from filelock import (
     UnixFileLock,
     WindowsFileLock,
 )
-
-if TYPE_CHECKING:
-    from _typeshed import HasFileno
 
 
 @pytest.mark.parametrize(
@@ -500,23 +498,9 @@ def test_wrong_platform(tmp_path: Path) -> None:
         lock._release()
 
 
-def test_flock_not_implemented_unix(tmp_path: Path) -> None:
-    if sys.platform == "win32":
-        pytest.skip("Windows filesystems support flock")
-
-    def dummy_flock(fd: int | HasFileno, operation: int) -> None:
-        raise OSError(ENOSYS, "mock error")
-        return fd, operation  # needed for strict type checker
-
-    import fcntl
-
-    lock_path = tmp_path / "a.lock"
-    _fcntl_flock = fcntl.flock
-    try:
-        fcntl.flock = dummy_flock
-        with pytest.raises(NotImplementedError):
-            with FileLock(str(lock_path)):
-                pass
-
-    finally:
-        fcntl.flock = _fcntl_flock
+@pytest.mark.skipif(sys.platform == "win32", reason="flock not run on windows")
+def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("fcntl.flock", side_effect=OSError(ENOSYS, "mock error"))
+    with pytest.raises(NotImplementedError):
+        with FileLock(str(tmp_path / "a.lock")):
+            pass
