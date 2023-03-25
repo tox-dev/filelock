@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from errno import EACCES, EEXIST, ENOENT
+from errno import EACCES, EEXIST
 
 from ._api import BaseFileLock
 from ._util import raise_on_exist_ro_file
@@ -23,13 +23,13 @@ class SoftFileLock(BaseFileLock):
         try:
             fd = os.open(self._lock_file, flags, self._mode)
         except OSError as exception:
-            if exception.errno == EEXIST:  # expected if cannot lock
+            if (
+                (exception.errno == EEXIST) or  # expected if cannot lock
+                (exception.errno == EACCES and sys.platform == "win32")  # pragma: win32 no cover
+            ):
                 pass
-            elif exception.errno == ENOENT:  # No such file or directory - parent directory is missing
+            else:
                 raise
-            elif exception.errno == EACCES and sys.platform != "win32":  # pragma: win32 no cover
-                # Permission denied - parent dir is R/O
-                raise  # note windows does not allow you to make a folder r/o only files
         else:
             self._lock_file_fd = fd
 
