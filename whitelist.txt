@@ -3,7 +3,7 @@ autodoc
 autosectionlabel
 caplog
 eacces
-enoent
+enosys
 extlinks
 filelock
 filemode
