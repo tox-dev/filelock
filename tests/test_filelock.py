@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import inspect
 import logging
 import os
@@ -12,7 +11,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import Callable, Iterator, Tuple, Type, Union
+from typing import Callable, IO, Iterator, Tuple, Type, Union
 
 import pytest
 from _pytest.logging import LogCaptureFixture
@@ -500,7 +499,8 @@ def test_wrong_platform(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows filesystems support flock")
 def test_flock_not_implemented_unix(tmp_path: Path) -> None:
-    def dummy_flock(fd, operation):
+    import fcntl
+    def dummy_flock(fd: IO, operation: str) -> None:
         if fd != operation:  # fd and operation will never be equal
             raise OSError(ENOSYS, "mock error")
 
