@@ -501,7 +501,7 @@ def test_wrong_platform(tmp_path: Path) -> None:
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows filesystems support flock")
 def test_flock_not_implemented_unix(tmp_path: Path) -> None:
     def dummy_flock(fd, operation):
-        fd, operation = ""  # added so the linter will be happy
+        fd = operation = ""  # added so the linter will be happy
         raise OSError(ENOSYS, "mock error")
 
     lock_path = tmp_path / "a.lock"
