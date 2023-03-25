@@ -503,7 +503,7 @@ def test_wrong_platform(tmp_path: Path) -> None:
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows filesystems support flock")
 def test_flock_not_implemented_unix(tmp_path: Path) -> None:
     import fcntl
-    def dummy_flock(fd: Union[int, HasFileno], operation: str) -> None:
+    def dummy_flock(fd: Union[int, HasFileno], operation: int) -> None:
         raise OSError(ENOSYS, "mock error")
         return fd, operation  # needed for strict type checker
 
