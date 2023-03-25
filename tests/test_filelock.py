@@ -11,7 +11,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import Callable, Iterator, Tuple, Type, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Callable, Iterator, Tuple, Type, Union
 
 import pytest
 from _pytest.logging import LogCaptureFixture
@@ -504,7 +504,7 @@ def test_flock_not_implemented_unix(tmp_path: Path) -> None:
     if sys.platform == "win32":
         pytest.skip("Windows filesystems support flock")
 
-    def dummy_flock(fd: Union[int, HasFileno], operation: int) -> None:
+    def dummy_flock(fd: int | HasFileno, operation: int) -> None:
         raise OSError(ENOSYS, "mock error")
         return fd, operation  # needed for strict type checker
 
