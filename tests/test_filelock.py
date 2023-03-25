@@ -504,3 +504,11 @@ def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> No
     with pytest.raises(NotImplementedError):
         with FileLock(str(tmp_path / "a.lock")):
             pass
+
+
+def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("os.open", side_effect=OSError(ENOSYS, "mock error"))
+    lock_path = tmp_path / "a.lock"
+    lock = SoftFileLock(str(lock_path))
+    with pytest.raises(OSError):
+        lock.acquire()
