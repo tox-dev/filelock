@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import inspect
 import logging
 import os
@@ -12,7 +11,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import Callable, Iterator, Tuple, Type, Union
+from typing import Callable, IO, Iterator, Tuple, Type, Union
 
 import pytest
 from _pytest.logging import LogCaptureFixture
