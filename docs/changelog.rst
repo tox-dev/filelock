@@ -2,7 +2,7 @@ Changelog
 =========
 v3.10.6 (2023-03-25)
 --------------------
-- Enhance the robustness of the try/catch block in _soft.py. by :user: `jahrules`.
+- Enhance the robustness of the try/catch block in _soft.py. by :user:`jahrules`.
 
 v3.10.5 (2023-03-25)
 --------------------
