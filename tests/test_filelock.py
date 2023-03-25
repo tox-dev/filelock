@@ -500,20 +500,23 @@ def test_wrong_platform(tmp_path: Path) -> None:
         lock._release()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows filesystems support flock")
 def test_flock_not_implemented_unix(tmp_path: Path) -> None:
-    import fcntl
+    if sys.platform == "win32":
+        pytest.skip("Windows filesystems support flock")
+
     def dummy_flock(fd: Union[int, HasFileno], operation: int) -> None:
         raise OSError(ENOSYS, "mock error")
         return fd, operation  # needed for strict type checker
 
+    import fcntl
+
     lock_path = tmp_path / "a.lock"
-    _fcntl_flock = fcntl.flock  # type: ignore[attr-defined]
+    _fcntl_flock = fcntl.flock
     try:
-        fcntl.flock = dummy_flock  # type: ignore[attr-defined]
+        fcntl.flock = dummy_flock
         with pytest.raises(NotImplementedError):
             with FileLock(str(lock_path)):
                 pass
 
     finally:
-        fcntl.flock = _fcntl_flock  # type: ignore[attr-defined]
+        fcntl.flock = _fcntl_flock
