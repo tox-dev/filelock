@@ -7,10 +7,10 @@ enosys
 extlinks
 filelock
 filemode
+fileno
 frameinfo
 fspath
 getframeinfo
-hasfileno
 intersphinx
 intervall
 isabstract
