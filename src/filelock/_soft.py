@@ -23,10 +23,9 @@ class SoftFileLock(BaseFileLock):
         try:
             fd = os.open(self._lock_file, flags, self._mode)
         except OSError as exception:
-            if (
-                (exception.errno == EEXIST) or  # expected if cannot lock
-                (exception.errno == EACCES and sys.platform == "win32")  # pragma: win32 no cover
-            ):
+            if (exception.errno == EEXIST) or (  # expected if cannot lock
+                exception.errno == EACCES and sys.platform == "win32"
+            ):  # pragma: win32 no cover
                 pass
             else:
                 raise
