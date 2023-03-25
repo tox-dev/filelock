@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 from contextlib import contextmanager
+from errno import ENOSYS
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
@@ -14,6 +15,7 @@ from typing import Callable, Iterator, Tuple, Type, Union
 
 import pytest
 from _pytest.logging import LogCaptureFixture
+from pytest_mock import MockerFixture
 
 from filelock import (
     BaseFileLock,
@@ -494,3 +496,11 @@ def test_wrong_platform(tmp_path: Path) -> None:
         lock.acquire()
     with pytest.raises(NotImplementedError):
         lock._release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock not run on windows")
+def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("fcntl.flock", side_effect=OSError(ENOSYS, "mock error"))
+    with pytest.raises(NotImplementedError):
+        with FileLock(str(tmp_path / "a.lock")):
+            pass
