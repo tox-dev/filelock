@@ -501,8 +501,8 @@ def test_wrong_platform(tmp_path: Path) -> None:
 def test_flock_not_implemented_unix(tmp_path: Path) -> None:
     import fcntl
     def dummy_flock(fd: IO[str], operation: str) -> None:
-        if operation not in fd:  # fd and operation will never be equal
-            raise OSError(ENOSYS, "mock error")
+        raise OSError(ENOSYS, "mock error")
+        return fd, operation  # needed for strict type checker
 
     lock_path = tmp_path / "a.lock"
     _fcntl_flock = fcntl.flock
