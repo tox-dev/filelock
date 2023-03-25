@@ -39,8 +39,10 @@ else:  # pragma: win32 no cover
                 pass  # This locked is not owned by this UID
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+            except OSError as err:
                 os.close(fd)
+                if err.errno == 38:  # NotImplemented error number
+                    raise NotImplementedError("FileSystem does not appear to support flock; user SoftFileLock instead")
             else:
                 self._lock_file_fd = fd
 
