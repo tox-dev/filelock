@@ -1,5 +1,9 @@
 Changelog
 =========
+v3.10.5 (2023-03-25)
+--------------------
+- Add explicit error check as certain UNIX filesystems do not support flock. by :user:`jahrules`.
+
 v3.10.4 (2023-03-24)
 --------------------
 - Update os.open to preserve mode= for certain edge cases. by :user:`jahrules`.

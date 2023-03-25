@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import fcntl
 import inspect
 import logging
 import os
 import sys
 import threading
 from contextlib import contextmanager
+from errno import ENOSYS
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
@@ -494,3 +496,19 @@ def test_wrong_platform(tmp_path: Path) -> None:
         lock.acquire()
     with pytest.raises(NotImplementedError):
         lock._release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows filesystems support flock")
+def test_flock_not_implemented_UNIX(tmp_path: Path) -> None:
+    def dummy_flock(fd, operation):
+        raise OSError(ENOSYS, "mock error")
+
+    lock_path = tmp_path / "a.lock"
+    _fcntl_flock = fcntl.flock
+    try:
+        fcntl.flock = dummy_flock
+        with pytest.raises(NotImplementedError):
+            with FileLock(str(lock_path)): pass
+
+    finally:
+        fcntl.flock = _fcntl_flock
