@@ -508,12 +508,12 @@ def test_flock_not_implemented_unix(tmp_path: Path) -> None:
         return fd, operation  # needed for strict type checker
 
     lock_path = tmp_path / "a.lock"
-    _fcntl_flock = fcntl.flock
+    _fcntl_flock = fcntl.flock  # type: ignore[attr-defined]
     try:
-        fcntl.flock = dummy_flock
+        fcntl.flock = dummy_flock  # type: ignore[attr-defined]
         with pytest.raises(NotImplementedError):
             with FileLock(str(lock_path)):
                 pass
 
     finally:
-        fcntl.flock = _fcntl_flock
+        fcntl.flock = _fcntl_flock  # type: ignore[attr-defined]
