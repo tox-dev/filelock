@@ -21,16 +21,15 @@ class SoftFileLock(BaseFileLock):
             | os.O_TRUNC  # truncate the file to zero byte
         )
         try:
-            fd = os.open(self._lock_file, flags, self._mode)
-        except OSError as exception:
-            if (exception.errno == EEXIST) or (  # expected if cannot lock
-                exception.errno == EACCES and sys.platform == "win32"
+            file_handler = os.open(self._lock_file, flags, self._mode)
+        except OSError as exception:  # re-raise unless expected exception
+            if not (
+                exception.errno == EEXIST  # lock already exist
+                or (exception.errno == EACCES and sys.platform == "win32")  # has no access to this lock
             ):  # pragma: win32 no cover
-                pass
-            else:
                 raise
         else:
-            self._lock_file_fd = fd
+            self._lock_file_fd = file_handler
 
     def _release(self) -> None:
         os.close(self._lock_file_fd)  # type: ignore # the lock file is definitely not None
