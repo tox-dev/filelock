@@ -7,7 +7,6 @@ enosys
 extlinks
 filelock
 filemode
-frameinfo
 fspath
 getframeinfo
 intersphinx
