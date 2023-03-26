@@ -185,7 +185,7 @@ class ExThread(threading.Thread):
     def run(self) -> None:
         try:
             super().run()
-        except Exception:  # pragma: no cover
+        except RuntimeError:  # pragma: no cover
             self.ex = sys.exc_info()  # pragma: no cover
 
     def join(self, timeout: float | None = None) -> None:
@@ -337,8 +337,8 @@ def test_context_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         with lock as lock_1:
             assert lock is lock_1
             assert lock.is_locked
-            raise Exception
-    except Exception:
+            raise ValueError
+    except ValueError:
         assert not lock.is_locked
 
 
@@ -352,8 +352,8 @@ def test_acquire_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         with lock.acquire() as lock_1:
             assert lock is lock_1
             assert lock.is_locked
-            raise Exception
-    except Exception:
+            raise ValueError
+    except ValueError:
         assert not lock.is_locked
 
 
@@ -385,9 +385,8 @@ def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
 def test_cleanup_soft_lock(tmp_path: Path) -> None:
     # tests if the lock file is removed after use
     lock_path = tmp_path / "a"
-    lock = SoftFileLock(str(lock_path))
 
-    with lock:
+    with SoftFileLock(lock_path):
         assert lock_path.exists()
     assert not lock_path.exists()
 
@@ -399,9 +398,9 @@ def test_poll_intervall_deprecated(lock_type: type[BaseFileLock], tmp_path: Path
 
     with pytest.deprecated_call(match="use poll_interval instead of poll_intervall") as checker:
         lock.acquire(poll_intervall=0.05)  # the deprecation warning will be captured by the checker
-        frameinfo = getframeinfo(stack()[0][0])  # get frameinfo of current file and lineno (+1 than the above lineno)
+        frame_info = getframeinfo(stack()[0][0])  # get frame info of current file and lineno (+1 than the above lineno)
         for warning in checker:
-            if warning.filename == frameinfo.filename and warning.lineno + 1 == frameinfo.lineno:  # pragma: no cover
+            if warning.filename == frame_info.filename and warning.lineno + 1 == frame_info.lineno:  # pragma: no cover
                 break
         else:  # pragma: no cover
             pytest.fail("No warnings of stacklevel=2 matching.")
@@ -490,7 +489,7 @@ def test_wrong_platform(tmp_path: Path) -> None:
     assert inspect.isabstract(BaseFileLock)
 
     lock_type = UnixFileLock if sys.platform == "win32" else WindowsFileLock
-    lock = lock_type(str(tmp_path / "lockfile"))
+    lock = lock_type(tmp_path / "lockfile")
 
     with pytest.raises(NotImplementedError):
         lock.acquire()
@@ -502,13 +501,11 @@ def test_wrong_platform(tmp_path: Path) -> None:
 def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("fcntl.flock", side_effect=OSError(ENOSYS, "mock error"))
     with pytest.raises(NotImplementedError):
-        with FileLock(str(tmp_path / "a.lock")):
+        with FileLock(tmp_path / "a.lock"):
             pass
 
 
 def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("os.open", side_effect=OSError(ENOSYS, "mock error"))
-    lock_path = tmp_path / "a.lock"
-    lock = SoftFileLock(str(lock_path))
     with pytest.raises(OSError, match="mock error"):
-        lock.acquire()
+        SoftFileLock(tmp_path / "a.lock").acquire()
