@@ -5,6 +5,7 @@ caplog
 eacces
 enosys
 extlinks
+fchmod
 filelock
 filemode
 fspath
