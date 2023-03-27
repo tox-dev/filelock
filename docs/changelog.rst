@@ -1,5 +1,9 @@
 Changelog
 =========
+v3.10.7 (2023-03-27)
+--------------------
+- Use ``fchmod`` instead of ``chmod`` to work around bug in PyPy via Anaconda.
+
 v3.10.6 (2023-03-25)
 --------------------
 - Enhance the robustness of the try/catch block in _soft.py. by :user:`jahrules`.
