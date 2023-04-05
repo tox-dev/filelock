@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import ENOSYS
 from inspect import getframeinfo, stack
@@ -12,6 +13,7 @@ from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
 from typing import Callable, Iterator, Tuple, Type, Union
+from uuid import uuid4
 
 import pytest
 from _pytest.logging import LogCaptureFixture
@@ -509,3 +511,75 @@ def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("os.open", side_effect=OSError(ENOSYS, "mock error"))
     with pytest.raises(OSError, match="mock error"):
         SoftFileLock(tmp_path / "a.lock").acquire()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_thrashing_with_threadpool_passing_lock_to_threads(tmp_path: Path, lock_type: BaseFileLock) -> None:
+    lock_file = tmp_path / "test.txt.lock"
+    txt_file = tmp_path / "test.txt"
+
+    # notice how lock is passed to the function below
+    lock = lock_type(lock_file)
+
+    def mess_with_file(lock, txt_file):
+        with lock:
+            for _ in range (3):
+                u = str(uuid4())
+                txt_file.write_text(u)
+                assert txt_file.read_text() == u
+
+        return True
+
+    results = []
+    with ThreadPoolExecutor() as executor:
+        for _ in range(100):
+            results.append(executor.submit(mess_with_file, lock, txt_file))
+
+    assert all([r.result() for r in results])
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_thrashing_with_threadpool_global_lock(tmp_path: Path, lock_type: BaseFileLock) -> None:
+    lock_file = tmp_path / "test.txt.lock"
+    txt_file = tmp_path / "test.txt"
+
+    # Notice how lock is scoped to be allowed in the nested function below
+    lock = lock_type(lock_file)
+
+    def mess_with_file(txt_file):
+        with lock:
+            for _ in range (3):
+                u = str(uuid4())
+                txt_file.write_text(u)
+                assert txt_file.read_text() == u
+
+        return True
+
+    results = []
+    with ThreadPoolExecutor() as executor:
+        for _ in range(100):
+            results.append(executor.submit(mess_with_file, txt_file))
+
+    assert all([r.result() for r in results])
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_thrashing_with_threadpool_lock_recreated_in_each_thread(tmp_path: Path, lock_type: BaseFileLock) -> None:
+    lock_file = tmp_path / "test.txt.lock"
+    txt_file = tmp_path / "test.txt"
+
+    def mess_with_file(lock_type, lock_file, txt_file):
+        with lock_type(lock_file):
+            for _ in range (3):
+                u = str(uuid4())
+                txt_file.write_text(u)
+                assert txt_file.read_text() == u
+
+        return True
+
+    results = []
+    with ThreadPoolExecutor() as executor:
+        for _ in range(100):
+            results.append(executor.submit(mess_with_file, lock_type, lock_file, txt_file))
+
+    assert all([r.result() for r in results])
