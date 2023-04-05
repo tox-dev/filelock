@@ -6,7 +6,7 @@ import os
 import time
 import warnings
 from abc import ABC, abstractmethod
-from threading import local, Lock
+from threading import Lock, local
 from types import TracebackType
 from typing import Any
 
