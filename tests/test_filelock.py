@@ -185,7 +185,7 @@ class ExThread(threading.Thread):
     def run(self) -> None:
         try:
             super().run()
-        except:  # pragma: no cover
+        except BaseException:  # pragma: no cover
             self.ex = sys.exc_info()  # pragma: no cover
 
     def join(self, timeout: float | None = None) -> None:
