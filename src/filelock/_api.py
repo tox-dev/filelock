@@ -6,7 +6,7 @@ import os
 import time
 import warnings
 from abc import ABC, abstractmethod
-from threading import Lock
+from threading import local, Lock
 from types import TracebackType
 from typing import Any
 
@@ -36,7 +36,7 @@ class AcquireReturnProxy:
         self.lock.release()
 
 
-class BaseFileLock(ABC, contextlib.ContextDecorator):
+class BaseFileLock(ABC, contextlib.ContextDecorator, local):
     """Abstract base class for a file lock object."""
 
     def __init__(

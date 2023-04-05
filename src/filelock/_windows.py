@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import sys
 from errno import ENOENT
-from threading import local
 from typing import cast
 
 from ._api import BaseFileLock
@@ -12,7 +11,7 @@ from ._util import raise_on_exist_ro_file
 if sys.platform == "win32":  # pragma: win32 cover
     import msvcrt
 
-    class WindowsFileLock(BaseFileLock, local):
+    class WindowsFileLock(BaseFileLock):
         """Uses the :func:`msvcrt.locking` function to hard lock the lock file on windows systems."""
 
         def _acquire(self) -> None:
