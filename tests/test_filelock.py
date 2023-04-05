@@ -514,16 +514,16 @@ def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_thrashing_with_threadpool_passing_lock_to_threads(tmp_path: Path, lock_type: BaseFileLock) -> None:
+def test_thrashing_with_thread_pool_passing_lock_to_threads(tmp_path: Path, lock_type: BaseFileLock) -> None:
     lock_file = tmp_path / "test.txt.lock"
     txt_file = tmp_path / "test.txt"
 
     # notice how lock is passed to the function below
     lock = lock_type(lock_file)
 
-    def mess_with_file(lock, txt_file):
+    def mess_with_file(lock: BaseFileLock, txt_file: Path):
         with lock:
-            for _ in range (3):
+            for _ in range(3):
                 u = str(uuid4())
                 txt_file.write_text(u)
                 assert txt_file.read_text() == u
@@ -539,16 +539,16 @@ def test_thrashing_with_threadpool_passing_lock_to_threads(tmp_path: Path, lock_
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_thrashing_with_threadpool_global_lock(tmp_path: Path, lock_type: BaseFileLock) -> None:
+def test_thrashing_with_thread_pool_global_lock(tmp_path: Path, lock_type: BaseFileLock) -> None:
     lock_file = tmp_path / "test.txt.lock"
     txt_file = tmp_path / "test.txt"
 
     # Notice how lock is scoped to be allowed in the nested function below
     lock = lock_type(lock_file)
 
-    def mess_with_file(txt_file):
+    def mess_with_file(txt_file: Path):
         with lock:
-            for _ in range (3):
+            for _ in range(3):
                 u = str(uuid4())
                 txt_file.write_text(u)
                 assert txt_file.read_text() == u
@@ -564,13 +564,13 @@ def test_thrashing_with_threadpool_global_lock(tmp_path: Path, lock_type: BaseFi
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_thrashing_with_threadpool_lock_recreated_in_each_thread(tmp_path: Path, lock_type: BaseFileLock) -> None:
+def test_thrashing_with_thread_pool_lock_recreated_in_each_thread(tmp_path: Path, lock_type: BaseFileLock) -> None:
     lock_file = tmp_path / "test.txt.lock"
     txt_file = tmp_path / "test.txt"
 
-    def mess_with_file(lock_type, lock_file, txt_file):
+    def mess_with_file(lock_type: type, lock_file: Path, txt_file: Path):
         with lock_type(lock_file):
-            for _ in range (3):
+            for _ in range(3):
                 u = str(uuid4())
                 txt_file.write_text(u)
                 assert txt_file.read_text() == u
