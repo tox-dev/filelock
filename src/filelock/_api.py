@@ -6,7 +6,7 @@ import os
 import time
 import warnings
 from abc import ABC, abstractmethod
-from threading import Lock
+from threading import local
 from types import TracebackType
 from typing import Any
 
@@ -36,7 +36,7 @@ class AcquireReturnProxy:
         self.lock.release()
 
 
-class BaseFileLock(ABC, contextlib.ContextDecorator):
+class BaseFileLock(ABC, contextlib.ContextDecorator, local):
     """Abstract base class for a file lock object."""
 
     def __init__(
@@ -66,9 +66,6 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
 
         # The mode for the lock files
         self._mode: int = mode
-
-        # We use this lock primarily for the lock counter.
-        self._thread_lock: Lock = Lock()
 
         # The lock counter is used for implementing the nested locking mechanism. Whenever the lock is acquired, the
         # counter is increased and the lock is only released, when this value is 0 again.
@@ -168,18 +165,16 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             poll_interval = poll_intervall
 
         # Increment the number right at the beginning. We can still undo it, if something fails.
-        with self._thread_lock:
-            self._lock_counter += 1
+        self._lock_counter += 1
 
         lock_id = id(self)
         lock_filename = self._lock_file
         start_time = time.perf_counter()
         try:
             while True:
-                with self._thread_lock:
-                    if not self.is_locked:
-                        _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                        self._acquire()
+                if not self.is_locked:
+                    _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
+                    self._acquire()
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
@@ -194,8 +189,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                     _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
                     time.sleep(poll_interval)
         except BaseException:  # Something did go wrong, so decrement the counter.
-            with self._thread_lock:
-                self._lock_counter = max(0, self._lock_counter - 1)
+            self._lock_counter = max(0, self._lock_counter - 1)
             raise
         return AcquireReturnProxy(lock=self)
 
@@ -206,17 +200,16 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
 
         :param force: If true, the lock counter is ignored and the lock is released in every case/
         """
-        with self._thread_lock:
-            if self.is_locked:
-                self._lock_counter -= 1
+        if self.is_locked:
+            self._lock_counter -= 1
 
-                if self._lock_counter == 0 or force:
-                    lock_id, lock_filename = id(self), self._lock_file
+            if self._lock_counter == 0 or force:
+                lock_id, lock_filename = id(self), self._lock_file
 
-                    _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
-                    self._release()
-                    self._lock_counter = 0
-                    _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+                _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
+                self._release()
+                self._lock_counter = 0
+                _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def __enter__(self) -> BaseFileLock:
         """

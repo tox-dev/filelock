@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import ENOSYS
 from inspect import getframeinfo, stack
@@ -12,6 +13,7 @@ from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
 from typing import Callable, Iterator, Tuple, Type, Union
+from uuid import uuid4
 
 import pytest
 from _pytest.logging import LogCaptureFixture
@@ -81,6 +83,10 @@ def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only folders")
+@pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0,  # noqa: SC200
+    reason="Cannot make a read only file (that the current user: root can't read)",
+)
 def test_ro_folder(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:
     lock = lock_type(str(tmp_path_ro / "a"))
     with pytest.raises(PermissionError, match="Permission denied"):
@@ -96,6 +102,10 @@ def tmp_file_ro(tmp_path: Path) -> Iterator[Path]:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0,  # noqa: SC200
+    reason="Cannot make a read only file (that the current user: root can't read)",
+)
 def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
     lock = lock_type(str(tmp_file_ro))
     with pytest.raises(PermissionError, match="Permission denied"):
@@ -509,3 +519,60 @@ def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("os.open", side_effect=OSError(ENOSYS, "mock error"))
     with pytest.raises(OSError, match="mock error"):
         SoftFileLock(tmp_path / "a.lock").acquire()
+
+
+def _check_file_read_write(txt_file: Path) -> None:
+    for _ in range(3):
+        uuid = str(uuid4())
+        txt_file.write_text(uuid)
+        assert txt_file.read_text() == uuid
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_thrashing_with_thread_pool_passing_lock_to_threads(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
+    def mess_with_file(lock_: BaseFileLock) -> None:
+        with lock_:
+            _check_file_read_write(txt_file)
+
+    lock_file, txt_file = tmp_path / "test.txt.lock", tmp_path / "test.txt"
+    lock = lock_type(lock_file)
+    results = []
+    with ThreadPoolExecutor() as executor:
+        for _ in range(100):
+            results.append(executor.submit(mess_with_file, lock))
+
+    assert all(r.result() is None for r in results)
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_thrashing_with_thread_pool_global_lock(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
+    def mess_with_file() -> None:
+        with lock:
+            _check_file_read_write(txt_file)
+
+    lock_file, txt_file = tmp_path / "test.txt.lock", tmp_path / "test.txt"
+    lock = lock_type(lock_file)
+    results = []
+    with ThreadPoolExecutor() as executor:
+        for _ in range(100):
+            results.append(executor.submit(mess_with_file))
+
+    assert all(r.result() is None for r in results)
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_thrashing_with_thread_pool_lock_recreated_in_each_thread(
+    tmp_path: Path,
+    lock_type: type[BaseFileLock],
+) -> None:
+    def mess_with_file() -> None:
+        with lock_type(lock_file):
+            _check_file_read_write(txt_file)
+
+    lock_file, txt_file = tmp_path / "test.txt.lock", tmp_path / "test.txt"
+    results = []
+    with ThreadPoolExecutor() as executor:
+        for _ in range(100):
+            results.append(executor.submit(mess_with_file))
+
+    assert all(r.result() is None for r in results)
