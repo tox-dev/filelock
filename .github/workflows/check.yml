@@ -19,16 +19,16 @@ jobs:
         py:
           - "3.11"
           - "3.10"
-          - "pypy3.9"
           - "3.9"
           - "3.8"
           - "3.7"
+          - "pypy3.9"
+          - "pypy3.8"
+          - "pypy3.7"
         os:
           - ubuntu-22.04
           - windows-2022
           - macos-12
-        exclude:
-          - { os: windows-2022, py: "pypy3.9" }
 
     steps:
       - name: Setup python for tox
@@ -53,19 +53,28 @@ jobs:
               file_handler.write(env)
         shell: python
       - name: Setup test suite
-        run: tox -vv --notest
-      - name: Run test suite
-        run: tox --skip-pkg-install
+        run: tox r -vv --notest
+      - if: ${{ startsWith(matrix.py, 'pypy') }}
+        name: Run test suite
+        run: tox r --skip-pkg-install --
+        env:
+          PYTEST_ADDOPTS: "-vv --durations=20"
+          CI_RUN: "yes"
+      - if: ${{ !startsWith(matrix.py, 'pypy')}}
+        name: Run test suite
+        run: tox r --skip-pkg-install
         env:
           PYTEST_ADDOPTS: "-vv --durations=20"
           CI_RUN: "yes"
           DIFF_AGAINST: HEAD
-      - name: Rename coverage report file
+      - if: ${{ !startsWith(matrix.py, 'pypy')}}
+        name: Rename coverage report file
         run: |
           import os; import sys
           os.rename(f".tox/.coverage.{os.environ['TOXENV']}", f".tox/.coverage.{os.environ['TOXENV']}-{sys.platform}")
         shell: python
-      - name: Upload coverage data
+      - if: ${{ !startsWith(matrix.py, 'pypy')}}
+        name: Upload coverage data
         uses: actions/upload-artifact@v3
         with:
           name: coverage-data
