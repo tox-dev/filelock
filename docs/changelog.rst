@@ -1,5 +1,9 @@
 Changelog
 =========
+v3.11.0 (2023-04-06)
+--------------------
+- Make the lock thread local.
+
 v3.10.7 (2023-03-27)
 --------------------
 - Use ``fchmod`` instead of ``chmod`` to work around bug in PyPy via Anaconda.
