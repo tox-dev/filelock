@@ -83,6 +83,10 @@ def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only folders")
+@pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0,  # noqa: SC200
+    reason="Cannot make a read only file (that the current user: root can't read)",
+)
 def test_ro_folder(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:
     lock = lock_type(str(tmp_path_ro / "a"))
     with pytest.raises(PermissionError, match="Permission denied"):
@@ -98,6 +102,10 @@ def tmp_file_ro(tmp_path: Path) -> Iterator[Path]:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0,  # noqa: SC200
+    reason="Cannot make a read only file (that the current user: root can't read)",
+)
 def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
     lock = lock_type(str(tmp_file_ro))
     with pytest.raises(PermissionError, match="Permission denied"):
