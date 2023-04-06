@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+from docutils.nodes import Element, Text
+from sphinx.addnodes import pending_xref
+from sphinx.application import Sphinx
+from sphinx.builders import Builder
+from sphinx.domains.python import PythonDomain
+from sphinx.environment import BuildEnvironment
+
 from filelock import __version__
 
 name, company = "filelock", "tox-dev"
@@ -30,3 +37,25 @@ extlinks = {
     "pr": ("https://github.com/tox-dev/py-filelock/issues/%s", "PR #%s"),
     "user": ("https://github.com/%s", "@%s"),
 }
+
+
+def setup(app: Sphinx) -> None:
+    class PatchedPythonDomain(PythonDomain):
+        def resolve_xref(
+            self,
+            env: BuildEnvironment,
+            fromdocname: str,
+            builder: Builder,
+            type: str,
+            target: str,
+            node: pending_xref,
+            contnode: Element,
+        ) -> Element:
+            mapping = {"_thread._local": ("threading.local", "local")}
+            if target in mapping:
+                of_type, with_name = mapping[target]
+                target = node["reftarget"] = of_type
+                contnode.children[0] = Text(with_name, with_name)
+            return super().resolve_xref(env, fromdocname, builder, type, target, node, contnode)
+
+    app.add_domain(PatchedPythonDomain, override=True)

@@ -1,13 +1,17 @@
+addnodes
 autoclass
 autodoc
 autosectionlabel
 caplog
+contnode
+docutils
 eacces
 enosys
 extlinks
 fchmod
 filelock
 filemode
+fromdocname
 fspath
 getframeinfo
 intersphinx
