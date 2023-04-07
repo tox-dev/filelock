@@ -2,7 +2,7 @@
 build-backend = "hatchling.build"
 requires = [
   "hatch-vcs>=0.3",
-  "hatchling>=1.13",
+  "hatchling>=1.14",
 ]
 
 [project]
@@ -41,7 +41,7 @@ optional-dependencies.docs = [
 ]
 optional-dependencies.testing = [
   "covdefaults>=2.3",
-  "coverage>=7.2.2",
+  "coverage>=7.2.3",
   "diff-cover>=7.5",
   "pytest>=7.2.2",
   "pytest-cov>=4",
