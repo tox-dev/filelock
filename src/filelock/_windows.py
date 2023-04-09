@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import os
 import sys
-from errno import ENOENT
+from errno import EACCES
 from typing import cast
 
 from ._api import BaseFileLock
-from ._util import raise_on_exist_ro_file
+from ._util import raise_unwritable_file
 
 if sys.platform == "win32":  # pragma: win32 cover
     import msvcrt
@@ -15,22 +15,24 @@ if sys.platform == "win32":  # pragma: win32 cover
         """Uses the :func:`msvcrt.locking` function to hard lock the lock file on windows systems."""
 
         def _acquire(self) -> None:
-            raise_on_exist_ro_file(self._lock_file)
+            raise_unwritable_file(self._lock_file)
             flags = (
                 os.O_RDWR  # open for read and write
                 | os.O_CREAT  # create file if not exists
-                | os.O_TRUNC  # truncate file  if not empty
+                | os.O_TRUNC  # truncate file if not empty
             )
             try:
                 fd = os.open(self._lock_file, flags, self._mode)
             except OSError as exception:
-                if exception.errno == ENOENT:  # No such file or directory
+                if exception.errno != EACCES:  # has no access to this lock
                     raise
             else:
                 try:
                     msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                except OSError:
-                    os.close(fd)
+                except OSError as exception:
+                    os.close(fd)  # close file first
+                    if exception.errno != EACCES:  # file is already locked
+                        raise
                 else:
                     self._lock_file_fd = fd
 

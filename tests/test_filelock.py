@@ -112,12 +112,36 @@ def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
         lock.acquire()
 
 
-@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_missing_directory(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:
-    lock_path = tmp_path_ro / "a" / "b"
-    lock = lock_type(str(lock_path))
+if sys.platform == "win32":
+    # filenames that will raise errors
+    bad_lock_file_errors: list[Tuple[Type[Exception], str, str]] = [
+        (FileNotFoundError, "No such file or directory:", "a/b"),       # non-existent directory
+        (FileNotFoundError, "No such file or directory:", ""),          # blank filename
+        (PermissionError, "Permission denied:", "."),                   # current directory
+        (PermissionError, "Permission denied:", "/"),                   # root directory
+        (OSError, "Invalid argument", '<>:"/\\|?*\a'),                  # invalid characters
+        (ValueError, "embedded null character", "\0")                   # null character
+    ]
+else:
+    # filenames that will raise errors
+    bad_lock_file_errors: list[Tuple[Type[Exception], str, str]] = [
+        (FileNotFoundError, "No such file or directory:", "a/b"),       # non-existent directory
+        (FileNotFoundError, "No such file or directory:", ""),          # blank filename
+        (IsADirectoryError, "Is a directory", "."),                     # current directory
+        (IsADirectoryError, "Is a directory", "/"),                     # root directory
+        (ValueError, "embedded null character", "\0")                   # null character
+    ]
 
-    with pytest.raises(OSError, match="No such file or directory:"):
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize("expected_error,match,bad_lock_file", bad_lock_file_errors,
+                         ids=[e[0].__name__ for e in bad_lock_file_errors])
+@pytest.mark.timeout(5)  # timeout in case of infinite loop
+def test_bad_lock_file(lock_type: type[BaseFileLock],
+                       expected_error: Type[Exception], match: str, bad_lock_file: str) -> None:
+    lock = lock_type(bad_lock_file)
+
+    with pytest.raises(expected_error, match=match):
         lock.acquire()
 
 
