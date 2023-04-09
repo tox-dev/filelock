@@ -120,7 +120,7 @@ if sys.platform == "win32":
         (PermissionError, "Permission denied:", "."),                   # current directory
         (PermissionError, "Permission denied:", "/"),                   # root directory
         (OSError, "Invalid argument", '<>:"/\\|?*\a'),                  # invalid characters
-        (ValueError, "embedded null character", "\0")                   # null character
+        (ValueError, "embedded null (byte|character)", "\0")            # null character
     ]
 else:
     # filenames that will raise errors
@@ -129,7 +129,7 @@ else:
         (FileNotFoundError, "No such file or directory:", ""),          # blank filename
         (IsADirectoryError, "Is a directory", "."),                     # current directory
         (IsADirectoryError, "Is a directory", "/"),                     # root directory
-        (ValueError, "embedded null character", "\0")                   # null character
+        (ValueError, "embedded null (byte|character)", "\0")            # null byte
     ]
 
 
