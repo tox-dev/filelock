@@ -135,7 +135,7 @@ else:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize(
-    "expected_error,match,bad_lock_file",
+    ("expected_error", "match", "bad_lock_file"),
     bad_lock_file_errors,
     ids=[e[0].__name__ for e in bad_lock_file_errors],
 )
