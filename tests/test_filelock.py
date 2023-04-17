@@ -114,31 +114,38 @@ def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
 
 if sys.platform == "win32":
     # filenames that will raise errors
-    bad_lock_file_errors: list[Tuple[Type[Exception], str, str]] = [
-        (FileNotFoundError, "No such file or directory:", "a/b"),       # non-existent directory
-        (FileNotFoundError, "No such file or directory:", ""),          # blank filename
-        (PermissionError, "Permission denied:", "."),                   # current directory
-        (PermissionError, "Permission denied:", "/"),                   # root directory
-        (OSError, "Invalid argument", '<>:"/\\|?*\a'),                  # invalid characters
-        (ValueError, "embedded null (byte|character)", "\0")            # null character
+    bad_lock_file_errors: list[tuple[type[Exception], str, str]] = [
+        (FileNotFoundError, "No such file or directory:", "a/b"),  # non-existent directory
+        (FileNotFoundError, "No such file or directory:", ""),  # blank filename
+        (PermissionError, "Permission denied:", "."),  # current directory
+        (PermissionError, "Permission denied:", "/"),  # root directory
+        (OSError, "Invalid argument", '<>:"/\\|?*\a'),  # invalid characters
+        (ValueError, "embedded null (byte|character)", "\0"),  # null character
     ]
 else:
     # filenames that will raise errors
-    bad_lock_file_errors: list[Tuple[Type[Exception], str, str]] = [
-        (FileNotFoundError, "No such file or directory:", "a/b"),       # non-existent directory
-        (FileNotFoundError, "No such file or directory:", ""),          # blank filename
-        (IsADirectoryError, "Is a directory", "."),                     # current directory
-        (IsADirectoryError, "Is a directory", "/"),                     # root directory
-        (ValueError, "embedded null (byte|character)", "\0")            # null byte
+    bad_lock_file_errors: list[tuple[type[Exception], str, str]] = [
+        (FileNotFoundError, "No such file or directory:", "a/b"),  # non-existent directory
+        (FileNotFoundError, "No such file or directory:", ""),  # blank filename
+        (IsADirectoryError, "Is a directory", "."),  # current directory
+        (IsADirectoryError, "Is a directory", "/"),  # root directory
+        (ValueError, "embedded null (byte|character)", "\0"),  # null byte
     ]
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-@pytest.mark.parametrize("expected_error,match,bad_lock_file", bad_lock_file_errors,
-                         ids=[e[0].__name__ for e in bad_lock_file_errors])
+@pytest.mark.parametrize(
+    "expected_error,match,bad_lock_file",
+    bad_lock_file_errors,
+    ids=[e[0].__name__ for e in bad_lock_file_errors],
+)
 @pytest.mark.timeout(5)  # timeout in case of infinite loop
-def test_bad_lock_file(lock_type: type[BaseFileLock],
-                       expected_error: Type[Exception], match: str, bad_lock_file: str) -> None:
+def test_bad_lock_file(
+    lock_type: type[BaseFileLock],
+    expected_error: type[Exception],
+    match: str,
+    bad_lock_file: str,
+) -> None:
     lock = lock_type(bad_lock_file)
 
     with pytest.raises(expected_error, match=match):
