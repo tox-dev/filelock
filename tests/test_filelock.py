@@ -431,11 +431,11 @@ def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> Non
 
 
 def test_lock_mode(tmp_path: Path) -> None:
-    # test file lock does not consider umask
+    # test file lock permissions are independent of umask
     lock_path = tmp_path / "a.lock"
     lock = FileLock(str(lock_path), mode=0o666)
 
-    # set umask to test umask does not effect permissions
+    # set umask so permissions can be anticipated
     initial_umask = os.umask(0o022)
     try:
         lock.acquire()
@@ -450,11 +450,11 @@ def test_lock_mode(tmp_path: Path) -> None:
 
 
 def test_lock_mode_soft(tmp_path: Path) -> None:
-    # test soft lock does consider umask
+    # test soft lock permissions are dependent of umask
     lock_path = tmp_path / "a.lock"
     lock = SoftFileLock(str(lock_path), mode=0o666)
 
-    # set umask to make sure it sets permissions as expected
+    # set umask so permissions can be anticipated
     initial_umask = os.umask(0o022)
     try:
         lock.acquire()
