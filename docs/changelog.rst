@@ -1,5 +1,11 @@
 Changelog
 =========
+v3.12.0 (2023-04-18)
+--------------------
+- Make the thread local behaviour something the caller can enable/disable via a flag during the lock creation, it's on
+  by default.
+- Better error handling on Windows.
+
 v3.11.0 (2023-04-06)
 --------------------
 - Make the lock thread local.

@@ -143,6 +143,29 @@ Asyncio support
 This library currently does not support asyncio. We'd recommend adding an asyncio variant though if someone can make a
 pull request for it, `see here <https://github.com/tox-dev/py-filelock/issues/99>`_.
 
+FileLocks and threads
+---------------------
+
+By default the :class:`FileLock <filelock.FileLock>` internally uses :class:`threading.local <threading.local>`
+to ensure that the lock is thread-local. If you have a use case where you'd like an instance of ``FileLock`` to be shared
+across threads, you can set the ``thread_local`` parameter to ``False`` when creating a lock. For example:
+
+.. code-block:: python
+
+    lock = FileLock("test.lock", thread_local=False)
+    # lock will be re-entrant across threads
+
+    # The same behavior would also work with other instances of BaseFileLock like SoftFileLock:
+    soft_lock = SoftFileLock("soft_test.lock", thread_local=False)
+    # soft_lock will be re-entrant across threads.
+
+
+Behavior where :class:`FileLock <filelock.FileLock>` is thread-local started in version 3.11.0. Previous versions,
+were not thread-local by default.
+
+Note: If disabling thread-local, be sure to remember that locks are re-entrant: You will be able to
+:meth:`acquire <filelock.BaseFileLock.acquire>` the same lock multiple times across multiple threads.
+
 Contributions and issues
 ------------------------
 
