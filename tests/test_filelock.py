@@ -431,30 +431,42 @@ def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> Non
 
 
 def test_lock_mode(tmp_path: Path) -> None:
+    # test file lock permissions are independent of umask
     lock_path = tmp_path / "a.lock"
     lock = FileLock(str(lock_path), mode=0o666)
 
-    lock.acquire()
-    assert lock.is_locked
+    # set umask so permissions can be anticipated
+    initial_umask = os.umask(0o022)
+    try:
+        lock.acquire()
+        assert lock.is_locked
 
-    mode = filemode(os.stat(lock_path).st_mode)
-    assert mode == "-rw-rw-rw-"
+        mode = filemode(os.stat(lock_path).st_mode)
+        assert mode == "-rw-rw-rw-"
+    finally:
+        os.umask(initial_umask)
 
     lock.release()
 
 
 def test_lock_mode_soft(tmp_path: Path) -> None:
+    # test soft lock permissions are dependent of umask
     lock_path = tmp_path / "a.lock"
     lock = SoftFileLock(str(lock_path), mode=0o666)
 
-    lock.acquire()
-    assert lock.is_locked
+    # set umask so permissions can be anticipated
+    initial_umask = os.umask(0o022)
+    try:
+        lock.acquire()
+        assert lock.is_locked
 
-    mode = filemode(os.stat(lock_path).st_mode)
-    if sys.platform == "win32":
-        assert mode == "-rw-rw-rw-"
-    else:
-        assert mode == "-rw-r--r--"
+        mode = filemode(os.stat(lock_path).st_mode)
+        if sys.platform == "win32":
+            assert mode == "-rw-rw-rw-"
+        else:
+            assert mode == "-rw-r--r--"
+    finally:
+        os.umask(initial_umask)
 
     lock.release()
 
