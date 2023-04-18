@@ -6,6 +6,7 @@ caplog
 contnode
 docutils
 eacces
+eisdir
 enosys
 extlinks
 fchmod
