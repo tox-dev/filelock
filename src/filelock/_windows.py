@@ -15,14 +15,14 @@ if sys.platform == "win32":  # pragma: win32 cover
         """Uses the :func:`msvcrt.locking` function to hard lock the lock file on windows systems."""
 
         def _acquire(self) -> None:
-            raise_on_not_writable_file(self._lock_file)
+            raise_on_not_writable_file(self.lock_file)
             flags = (
                 os.O_RDWR  # open for read and write
                 | os.O_CREAT  # create file if not exists
                 | os.O_TRUNC  # truncate file if not empty
             )
             try:
-                fd = os.open(self._lock_file, flags, self._mode)
+                fd = os.open(self.lock_file, flags, self._context.mode)
             except OSError as exception:
                 if exception.errno != EACCES:  # has no access to this lock
                     raise
@@ -34,16 +34,16 @@ if sys.platform == "win32":  # pragma: win32 cover
                     if exception.errno != EACCES:  # file is already locked
                         raise
                 else:
-                    self._lock_file_fd = fd
+                    self._context.lock_file_fd = fd
 
         def _release(self) -> None:
-            fd = cast(int, self._lock_file_fd)
-            self._lock_file_fd = None
+            fd = cast(int, self._context.lock_file_fd)
+            self._context.lock_file_fd = None
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             os.close(fd)
 
             try:
-                os.remove(self._lock_file)
+                os.remove(self.lock_file)
             # Probably another instance of the application hat acquired the file lock.
             except OSError:
                 pass

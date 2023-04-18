@@ -612,3 +612,20 @@ def test_thrashing_with_thread_pool_lock_recreated_in_each_thread(
             results.append(executor.submit(mess_with_file))
 
     assert all(r.result() is None for r in results)
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_lock_can_be_non_thread_local(
+    tmp_path: Path,
+    lock_type: type[BaseFileLock],
+) -> None:
+    lock = lock_type(tmp_path / "test.lock", thread_local=False)
+
+    for _ in range(2):
+        thread = threading.Thread(target=lock.acquire, kwargs={"timeout": 2})
+        thread.start()
+        thread.join()
+
+    assert lock.lock_counter == 2
+
+    lock.release(force=True)

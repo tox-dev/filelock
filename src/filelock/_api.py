@@ -6,6 +6,7 @@ import os
 import time
 import warnings
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from threading import local
 from types import TracebackType
 from typing import Any
@@ -36,7 +37,42 @@ class AcquireReturnProxy:
         self.lock.release()
 
 
-class BaseFileLock(ABC, contextlib.ContextDecorator, local):
+@dataclass
+class FileLockContext:
+    """
+    A dataclass which holds the context for a ``BaseFileLock`` object.
+
+    The context is held in a separate class to allow optional use of thread local storage
+    via the ``ThreadLocalFileContext`` class.
+    """
+
+    # The path to the lock file.
+    lock_file: str
+
+    # The default timeout value.
+    timeout: float
+
+    # The mode for the lock files
+    mode: int
+
+    # The file descriptor for the *_lock_file* as it is returned by the os.open() function.
+    # This file lock is only NOT None, if the object currently holds the lock.
+    lock_file_fd: int | None = None
+
+    # The lock counter is used for implementing the nested locking mechanism. Whenever the lock is acquired, the
+    # counter is increased and the lock is only released, when this value is 0 again.
+    lock_counter: int = 0
+
+
+class ThreadLocalFileContext(FileLockContext, local):
+    """
+    A thread local version of the ``FileLockContext`` class.
+    """
+
+    pass
+
+
+class BaseFileLock(ABC, contextlib.ContextDecorator):
     """Abstract base class for a file lock object."""
 
     def __init__(
@@ -44,6 +80,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator, local):
         lock_file: str | os.PathLike[Any],
         timeout: float = -1,
         mode: int = 0o644,
+        thread_local: bool = True,
     ) -> None:
         """
         Create a new lock object.
@@ -52,29 +89,30 @@ class BaseFileLock(ABC, contextlib.ContextDecorator, local):
         :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in
         the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it
         to a negative value. A timeout of 0 means, that there is exactly one attempt to acquire the file lock.
-        : param mode: file permissions for the lockfile.
+        :param mode: file permissions for the lockfile.
+        :param thread_local: Whether this object's internal context should be thread local or not.
+        If this is set to ``False`` then the lock will be rentrant across threads.
         """
-        # The path to the lock file.
-        self._lock_file: str = os.fspath(lock_file)
+        # Whether or not this object is thread local or not
+        self.thread_local = thread_local
 
-        # The file descriptor for the *_lock_file* as it is returned by the os.open() function.
-        # This file lock is only NOT None, if the object currently holds the lock.
-        self._lock_file_fd: int | None = None
-
-        # The default timeout value.
-        self._timeout: float = timeout
-
-        # The mode for the lock files
-        self._mode: int = mode
-
-        # The lock counter is used for implementing the nested locking mechanism. Whenever the lock is acquired, the
-        # counter is increased and the lock is only released, when this value is 0 again.
-        self._lock_counter: int = 0
+        # Create the context. Note that external code should not work with the context directly
+        # and should instead use properties of this class.
+        context_kwargs: dict[str, Any] = {
+            "lock_file": os.fspath(lock_file),
+            "timeout": timeout,
+            "mode": mode,
+        }
+        self._context: FileLockContext | ThreadLocalFileContext
+        if thread_local:
+            self._context = ThreadLocalFileContext(**context_kwargs)
+        else:
+            self._context = FileLockContext(**context_kwargs)
 
     @property
     def lock_file(self) -> str:
         """:return: path to the lock file"""
-        return self._lock_file
+        return self._context.lock_file
 
     @property
     def timeout(self) -> float:
@@ -83,7 +121,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator, local):
 
         .. versionadded:: 2.0.0
         """
-        return self._timeout
+        return self._context.timeout
 
     @timeout.setter
     def timeout(self, value: float | str) -> None:
@@ -92,16 +130,16 @@ class BaseFileLock(ABC, contextlib.ContextDecorator, local):
 
         :param value: the new value, in seconds
         """
-        self._timeout = float(value)
+        self._context.timeout = float(value)
 
     @abstractmethod
     def _acquire(self) -> None:
-        """If the file lock could be acquired, self._lock_file_fd holds the file descriptor of the lock file."""
+        """If the file lock could be acquired, self._context.lock_file_fd holds the file descriptor of the lock file."""
         raise NotImplementedError
 
     @abstractmethod
     def _release(self) -> None:
-        """Releases the lock and sets self._lock_file_fd to None."""
+        """Releases the lock and sets self._context.lock_file_fd to None."""
         raise NotImplementedError
 
     @property
@@ -114,7 +152,14 @@ class BaseFileLock(ABC, contextlib.ContextDecorator, local):
 
             This was previously a method and is now a property.
         """
-        return self._lock_file_fd is not None
+        return self._context.lock_file_fd is not None
+
+    @property
+    def lock_counter(self) -> int:
+        """
+        :return: The number of times this lock has been acquired (but not yet released).
+        """
+        return self._context.lock_counter
 
     def acquire(
         self,
@@ -157,7 +202,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator, local):
         """
         # Use the default timeout, if no timeout is provided.
         if timeout is None:
-            timeout = self.timeout
+            timeout = self._context.timeout
 
         if poll_intervall is not None:
             msg = "use poll_interval instead of poll_intervall"
@@ -165,10 +210,10 @@ class BaseFileLock(ABC, contextlib.ContextDecorator, local):
             poll_interval = poll_intervall
 
         # Increment the number right at the beginning. We can still undo it, if something fails.
-        self._lock_counter += 1
+        self._context.lock_counter += 1
 
         lock_id = id(self)
-        lock_filename = self._lock_file
+        lock_filename = self.lock_file
         start_time = time.perf_counter()
         try:
             while True:
@@ -180,16 +225,16 @@ class BaseFileLock(ABC, contextlib.ContextDecorator, local):
                     break
                 elif blocking is False:
                     _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
-                    raise Timeout(self._lock_file)
+                    raise Timeout(lock_filename)
                 elif 0 <= timeout < time.perf_counter() - start_time:
                     _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
-                    raise Timeout(self._lock_file)
+                    raise Timeout(lock_filename)
                 else:
                     msg = "Lock %s not acquired on %s, waiting %s seconds ..."
                     _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
                     time.sleep(poll_interval)
         except BaseException:  # Something did go wrong, so decrement the counter.
-            self._lock_counter = max(0, self._lock_counter - 1)
+            self._context.lock_counter = max(0, self._context.lock_counter - 1)
             raise
         return AcquireReturnProxy(lock=self)
 
@@ -201,10 +246,10 @@ class BaseFileLock(ABC, contextlib.ContextDecorator, local):
         :param force: If true, the lock counter is ignored and the lock is released in every case/
         """
         if self.is_locked:
-            self._lock_counter -= 1
+            self._context.lock_counter -= 1
 
-            if self._lock_counter == 0 or force:
-                lock_id, lock_filename = id(self), self._lock_file
+            if self._context.lock_counter == 0 or force:
+                lock_id, lock_filename = id(self), self.lock_file
 
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                 self._release()
