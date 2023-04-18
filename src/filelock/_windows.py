@@ -12,7 +12,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     import msvcrt
 
     class WindowsFileLock(BaseFileLock):
-        """Uses the :func:`msvcrt.locking` function to hard lock the lock file on windows systems."""
+        """Uses the :func:`msvcrt.locking` function to hard lock the lock file on Windows systems."""
 
         def _acquire(self) -> None:
             raise_on_not_writable_file(self.lock_file)
@@ -51,7 +51,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 else:  # pragma: win32 no cover
 
     class WindowsFileLock(BaseFileLock):
-        """Uses the :func:`msvcrt.locking` function to hard lock the lock file on windows systems."""
+        """Uses the :func:`msvcrt.locking` function to hard lock the lock file on Windows systems."""
 
         def _acquire(self) -> None:
             raise NotImplementedError

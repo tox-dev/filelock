@@ -41,35 +41,31 @@ class AcquireReturnProxy:
 class FileLockContext:
     """
     A dataclass which holds the context for a ``BaseFileLock`` object.
-
-    The context is held in a separate class to allow optional use of thread local storage
-    via the ``ThreadLocalFileContext`` class.
     """
 
-    # The path to the lock file.
+    # The context is held in a separate class to allow optional use of thread local storage via the
+    # ThreadLocalFileContext class.
+
+    #: The path to the lock file.
     lock_file: str
 
-    # The default timeout value.
+    #: The default timeout value.
     timeout: float
 
-    # The mode for the lock files
+    #: The mode for the lock files
     mode: int
 
-    # The file descriptor for the *_lock_file* as it is returned by the os.open() function.
-    # This file lock is only NOT None, if the object currently holds the lock.
+    #: The file descriptor for the *_lock_file* as it is returned by the os.open() function, not None when lock held
     lock_file_fd: int | None = None
 
-    # The lock counter is used for implementing the nested locking mechanism. Whenever the lock is acquired, the
-    # counter is increased and the lock is only released, when this value is 0 again.
-    lock_counter: int = 0
+    #: The lock counter is used for implementing the nested locking mechanism.
+    lock_counter: int = 0  # When the lock is acquired is increased and the lock is only released, when this value is 0
 
 
 class ThreadLocalFileContext(FileLockContext, local):
     """
     A thread local version of the ``FileLockContext`` class.
     """
-
-    pass
 
 
 class BaseFileLock(ABC, contextlib.ContextDecorator):
@@ -91,23 +87,22 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         to a negative value. A timeout of 0 means, that there is exactly one attempt to acquire the file lock.
         :param mode: file permissions for the lockfile.
         :param thread_local: Whether this object's internal context should be thread local or not.
-        If this is set to ``False`` then the lock will be rentrant across threads.
+        If this is set to ``False`` then the lock will be reentrant across threads.
         """
-        # Whether or not this object is thread local or not
-        self.thread_local = thread_local
+        self._is_thread_local = thread_local
 
-        # Create the context. Note that external code should not work with the context directly
-        # and should instead use properties of this class.
-        context_kwargs: dict[str, Any] = {
+        # Create the context. Note that external code should not work with the context directly  and should instead use
+        # properties of this class.
+        kwargs: dict[str, Any] = {
             "lock_file": os.fspath(lock_file),
             "timeout": timeout,
             "mode": mode,
         }
-        self._context: FileLockContext | ThreadLocalFileContext
-        if thread_local:
-            self._context = ThreadLocalFileContext(**context_kwargs)
-        else:
-            self._context = FileLockContext(**context_kwargs)
+        self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(**kwargs)
+
+    def is_thread_local(self) -> bool:
+        """:return: a flag indicating if this lock is thread local or not"""
+        return self._is_thread_local
 
     @property
     def lock_file(self) -> str:
@@ -177,7 +172,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param poll_interval: interval of trying to acquire the lock file
         :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
-         first attempt. Otherwise this method will block until the timeout expires or the lock is acquired.
+         first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
         :raises Timeout: if fails to acquire lock within the timeout period
         :return: a context object that will unlock the file when the context is exited
 
@@ -253,7 +248,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
 
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                 self._release()
-                self._lock_counter = 0
+                self._context.lock_counter = 0
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def __enter__(self) -> BaseFileLock:
