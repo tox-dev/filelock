@@ -36,5 +36,4 @@ stacklevel
 trunc
 typehints
 unlck
-unwritable
 win32

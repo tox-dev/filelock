@@ -6,7 +6,7 @@ from errno import EACCES
 from typing import cast
 
 from ._api import BaseFileLock
-from ._util import raise_unwritable_file
+from ._util import raise_on_not_writable_file
 
 if sys.platform == "win32":  # pragma: win32 cover
     import msvcrt
@@ -15,7 +15,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         """Uses the :func:`msvcrt.locking` function to hard lock the lock file on windows systems."""
 
         def _acquire(self) -> None:
-            raise_unwritable_file(self._lock_file)
+            raise_on_not_writable_file(self._lock_file)
             flags = (
                 os.O_RDWR  # open for read and write
                 | os.O_CREAT  # create file if not exists

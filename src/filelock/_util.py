@@ -6,7 +6,7 @@ import sys
 from errno import EACCES, EISDIR
 
 
-def raise_unwritable_file(filename: str) -> None:
+def raise_on_not_writable_file(filename: str) -> None:
     """
     Raise an exception if attempting to open the file for writing would fail.
     This is done so files that will never be writable can be separated from
@@ -24,14 +24,14 @@ def raise_unwritable_file(filename: str) -> None:
             raise PermissionError(EACCES, "Permission denied", filename)
 
         if stat.S_ISDIR(file_stat.st_mode):
-            if sys.platform == "win32":
+            if sys.platform == "win32":  # pragma: win32 cover
                 # On Windows, this is PermissionError
                 raise PermissionError(EACCES, "Permission denied", filename)
-            else:
+            else:  # pragma: win32 no cover
                 # On linux / macOS, this is IsADirectoryError
                 raise IsADirectoryError(EISDIR, "Is a directory", filename)
 
 
 __all__ = [
-    "raise_unwritable_file",
+    "raise_on_not_writable_file",
 ]

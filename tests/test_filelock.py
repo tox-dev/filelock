@@ -112,32 +112,25 @@ def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
         lock.acquire()
 
 
-if sys.platform == "win32":
-    # filenames that will raise errors
-    bad_lock_file_errors: list[tuple[type[Exception], str, str]] = [
-        (FileNotFoundError, "No such file or directory:", "a/b"),  # non-existent directory
-        (FileNotFoundError, "No such file or directory:", ""),  # blank filename
-        (PermissionError, "Permission denied:", "."),  # current directory
-        (PermissionError, "Permission denied:", "/"),  # root directory
-        (OSError, "Invalid argument", '<>:"/\\|?*\a'),  # invalid characters
-        (ValueError, "embedded null (byte|character)", "\0"),  # null character
-    ]
-else:
-    # filenames that will raise errors
-    bad_lock_file_errors: list[tuple[type[Exception], str, str]] = [
-        (FileNotFoundError, "No such file or directory:", "a/b"),  # non-existent directory
-        (FileNotFoundError, "No such file or directory:", ""),  # blank filename
-        (IsADirectoryError, "Is a directory", "."),  # current directory
-        (IsADirectoryError, "Is a directory", "/"),  # root directory
-        (ValueError, "embedded null (byte|character)", "\0"),  # null byte
-    ]
+WindowsOnly = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize(
     ("expected_error", "match", "bad_lock_file"),
-    bad_lock_file_errors,
-    ids=[e[0].__name__ for e in bad_lock_file_errors],
+    [
+        pytest.param(FileNotFoundError, "No such file or directory:", "a/b", id="non_existent_directory"),
+        pytest.param(FileNotFoundError, "No such file or directory:", "", id="blank_filename"),
+        pytest.param(ValueError, "embedded null (byte|character)", "\0", id="null_byte"),
+        pytest.param(
+            PermissionError if sys.platform == "win32" else IsADirectoryError,
+            "Permission denied:" if sys.platform == "win32" else "Is a directory",
+            ".",
+            id="current_directory",
+        ),
+    ]
+    + [pytest.param(OSError, "Invalid argument", i, id=f"invalid_{i}", marks=WindowsOnly) for i in '<>:"|?*\a']
+    + [pytest.param(PermissionError, "Permission denied:", i, id=f"permission_{i}", marks=WindowsOnly) for i in "/\\"],
 )
 @pytest.mark.timeout(5)  # timeout in case of infinite loop
 def test_bad_lock_file(

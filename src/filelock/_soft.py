@@ -5,14 +5,14 @@ import sys
 from errno import EACCES, EEXIST
 
 from ._api import BaseFileLock
-from ._util import raise_unwritable_file
+from ._util import raise_on_not_writable_file
 
 
 class SoftFileLock(BaseFileLock):
     """Simply watches the existence of the lock file."""
 
     def _acquire(self) -> None:
-        raise_unwritable_file(self._lock_file)
+        raise_on_not_writable_file(self._lock_file)
         # first check for exists and read-only mode as the open will mask this case as EEXIST
         flags = (
             os.O_WRONLY  # open for writing only
