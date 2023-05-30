@@ -123,7 +123,7 @@ WindowsOnly = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
             pytest.param(IsADirectoryError, "Is a directory", ".", id="current_directory")
             if sys.platform in ["darwin", "linux"]
             else
-            # Should be some type of OSError at least on other OSes
+            # Should be some type of OSError at least on other operating systems
             pytest.param(OSError, None, ".", id="current_directory")
         ),
     ]
