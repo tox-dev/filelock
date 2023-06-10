@@ -12,21 +12,14 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import Callable, Iterator, Tuple, Type, Union
+from typing import TYPE_CHECKING, Callable, Iterator, Tuple, Type, Union
 from uuid import uuid4
 
 import pytest
-from _pytest.logging import LogCaptureFixture
-from pytest_mock import MockerFixture
+from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
 
-from filelock import (
-    BaseFileLock,
-    FileLock,
-    SoftFileLock,
-    Timeout,
-    UnixFileLock,
-    WindowsFileLock,
-)
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
 
 
 @pytest.mark.parametrize(
@@ -44,7 +37,7 @@ def test_simple(
     lock_type: type[BaseFileLock],
     path_type: type[str] | type[Path],
     tmp_path: Path,
-    caplog: LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.DEBUG)
 
@@ -84,7 +77,7 @@ def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only folders")
 @pytest.mark.skipif(
-    sys.platform != "win32" and os.geteuid() == 0,  # noqa: SC200
+    sys.platform != "win32" and os.geteuid() == 0,
     reason="Cannot make a read only file (that the current user: root can't read)",
 )
 def test_ro_folder(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:
@@ -103,7 +96,7 @@ def tmp_file_ro(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.skipif(
-    sys.platform != "win32" and os.geteuid() == 0,  # noqa: SC200
+    sys.platform != "win32" and os.geteuid() == 0,
     reason="Cannot make a read only file (that the current user: root can't read)",
 )
 def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
@@ -219,13 +212,12 @@ class ExThread(threading.Thread):
     def run(self) -> None:
         try:
             super().run()
-        except Exception:  # pragma: no cover
+        except Exception:  # noqa: BLE001 # pragma: no cover
             self.ex = sys.exc_info()  # pragma: no cover
 
     def join(self, timeout: float | None = None) -> None:
         super().join(timeout=timeout)
         if self.ex is not None:
-            print(f"fail from thread {self.name}")  # pragma: no cover
             raise RuntimeError from self.ex[1]  # pragma: no cover
 
 
@@ -371,7 +363,7 @@ def test_context_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         with lock as lock_1:
             assert lock is lock_1
             assert lock.is_locked
-            raise ValueError
+            raise ValueError  # noqa: TRY301
     except ValueError:
         assert not lock.is_locked
 
@@ -386,7 +378,7 @@ def test_acquire_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         with lock.acquire() as lock_1:
             assert lock is lock_1
             assert lock.is_locked
-            raise ValueError
+            raise ValueError  # noqa: TRY301
     except ValueError:
         assert not lock.is_locked
 
@@ -465,7 +457,7 @@ def test_lock_mode(tmp_path: Path) -> None:
         lock.acquire()
         assert lock.is_locked
 
-        mode = filemode(os.stat(lock_path).st_mode)
+        mode = filemode(lock_path.stat().st_mode)
         assert mode == "-rw-rw-rw-"
     finally:
         os.umask(initial_umask)
@@ -484,7 +476,7 @@ def test_lock_mode_soft(tmp_path: Path) -> None:
         lock.acquire()
         assert lock.is_locked
 
-        mode = filemode(os.stat(lock_path).st_mode)
+        mode = filemode(lock_path.stat().st_mode)
         if sys.platform == "win32":
             assert mode == "-rw-rw-rw-"
         else:
@@ -540,15 +532,14 @@ def test_wrong_platform(tmp_path: Path) -> None:
     with pytest.raises(NotImplementedError):
         lock.acquire()
     with pytest.raises(NotImplementedError):
-        lock._release()
+        lock._release()  # noqa: SLF001
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="flock not run on windows")
 def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("fcntl.flock", side_effect=OSError(ENOSYS, "mock error"))
-    with pytest.raises(NotImplementedError):
-        with FileLock(tmp_path / "a.lock"):
-            pass
+    with pytest.raises(NotImplementedError), FileLock(tmp_path / "a.lock"):
+        pass
 
 
 def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:

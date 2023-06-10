@@ -22,7 +22,7 @@ def test_timeout_lock_file() -> None:
 
 def test_timeout_pickle() -> None:
     timeout = Timeout("/path/to/lock")
-    timeout_loaded = pickle.loads(pickle.dumps(timeout))
+    timeout_loaded = pickle.loads(pickle.dumps(timeout))  # noqa: S301
 
     assert timeout.__class__ == timeout_loaded.__class__
     assert str(timeout) == str(timeout_loaded)
