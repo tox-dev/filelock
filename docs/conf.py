@@ -1,19 +1,24 @@
+# noqa: INP001
+"""Configuration for Sphinx."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from docutils.nodes import Element, Text
-from sphinx.addnodes import pending_xref
-from sphinx.application import Sphinx
-from sphinx.builders import Builder
-from sphinx.domains.python import PythonDomain
-from sphinx.environment import BuildEnvironment
-
 from filelock import __version__
+from sphinx.domains.python import PythonDomain
+
+if TYPE_CHECKING:
+    from sphinx.addnodes import pending_xref
+    from sphinx.application import Sphinx
+    from sphinx.builders import Builder
+    from sphinx.environment import BuildEnvironment
 
 name, company = "filelock", "tox-dev"
+now = datetime.now(tz=timezone.utc)
 version, release = ".".join(__version__.split(".")[:2]), __version__
-copyright = f"2014-{date.today().year}, {company}"
+copyright = f"2014-{now.date().year}, {company}"  # noqa: A001
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosectionlabel",
@@ -23,7 +28,7 @@ extensions = [
     "sphinx_autodoc_typehints",
 ]
 html_theme = "furo"
-html_title, html_last_updated_fmt = name, datetime.now().isoformat()
+html_title, html_last_updated_fmt = name, now.isoformat()
 pygments_style, pygments_dark_style = "sphinx", "monokai"
 autoclass_content, autodoc_member_order, autodoc_typehints = "class", "bysource", "none"
 autodoc_default_options = {"member-order": "bysource", "undoc-members": True, "show-inheritance": True}
@@ -40,13 +45,19 @@ extlinks = {
 
 
 def setup(app: Sphinx) -> None:
+    """
+    Setup app.
+
+    :param app: the app
+    """
+
     class PatchedPythonDomain(PythonDomain):
-        def resolve_xref(
+        def resolve_xref(  # noqa: PLR0913
             self,
             env: BuildEnvironment,
             fromdocname: str,
             builder: Builder,
-            type: str,
+            type: str,  # noqa: A002
             target: str,
             node: pending_xref,
             contnode: Element,
