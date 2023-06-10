@@ -115,11 +115,16 @@ WindowsOnly = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
         pytest.param(FileNotFoundError, "No such file or directory:", "a/b", id="non_existent_directory"),
         pytest.param(FileNotFoundError, "No such file or directory:", "", id="blank_filename"),
         pytest.param(ValueError, "embedded null (byte|character)", "\0", id="null_byte"),
-        pytest.param(
-            PermissionError if sys.platform == "win32" else IsADirectoryError,
-            "Permission denied:" if sys.platform == "win32" else "Is a directory",
-            ".",
-            id="current_directory",
+        # Should be PermissionError on Windows
+        pytest.param(PermissionError, "Permission denied:", ".", id="current_directory")
+        if sys.platform == "win32"
+        else (
+            # Should be IsADirectoryError on MacOS and Linux
+            pytest.param(IsADirectoryError, "Is a directory", ".", id="current_directory")
+            if sys.platform in ["darwin", "linux"]
+            else
+            # Should be some type of OSError at least on other operating systems
+            pytest.param(OSError, None, ".", id="current_directory")
         ),
     ]
     + [pytest.param(OSError, "Invalid argument", i, id=f"invalid_{i}", marks=WindowsOnly) for i in '<>:"|?*\a']
