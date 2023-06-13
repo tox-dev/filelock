@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from docutils.nodes import Element, Text
-from filelock import __version__
 from sphinx.domains.python import PythonDomain
+
+from filelock import __version__
 
 if TYPE_CHECKING:
     from sphinx.addnodes import pending_xref

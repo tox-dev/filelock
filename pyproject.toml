@@ -85,7 +85,7 @@ overrides = [{ module = ["appdirs.*", "jnius.*"], ignore_missing_imports = true 
 select = ["ALL"]
 line-length = 120
 target-version = "py37"
-isort = {known-first-party = ["platformdirs", "tests"], required-imports = ["from __future__ import annotations"]}
+isort = {known-first-party = ["filelock"], required-imports = ["from __future__ import annotations"]}
 ignore = [
     "ANN101",  # Missing type annotation for `self` in method
     "D301",  #  Use `r"""` if any backslashes in a docstring
