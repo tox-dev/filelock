@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Callable, Iterator, Tuple, Type, Union
 from uuid import uuid4
 
 import pytest
+
 from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
 
 if TYPE_CHECKING:
