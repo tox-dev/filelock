@@ -569,11 +569,8 @@ def test_thrashing_with_thread_pool_passing_lock_to_threads(tmp_path: Path, lock
 
     lock_file, txt_file = tmp_path / "test.txt.lock", tmp_path / "test.txt"
     lock = lock_type(lock_file)
-    results = []
     with ThreadPoolExecutor() as executor:
-        for _ in range(100):
-            results.append(executor.submit(mess_with_file, lock))
-
+        results = [executor.submit(mess_with_file, lock) for _ in range(100)]
     assert all(r.result() is None for r in results)
 
 
@@ -585,10 +582,8 @@ def test_thrashing_with_thread_pool_global_lock(tmp_path: Path, lock_type: type[
 
     lock_file, txt_file = tmp_path / "test.txt.lock", tmp_path / "test.txt"
     lock = lock_type(lock_file)
-    results = []
     with ThreadPoolExecutor() as executor:
-        for _ in range(100):
-            results.append(executor.submit(mess_with_file))
+        results = [executor.submit(mess_with_file) for _ in range(100)]
 
     assert all(r.result() is None for r in results)
 
@@ -603,10 +598,8 @@ def test_thrashing_with_thread_pool_lock_recreated_in_each_thread(
             _check_file_read_write(txt_file)
 
     lock_file, txt_file = tmp_path / "test.txt.lock", tmp_path / "test.txt"
-    results = []
     with ThreadPoolExecutor() as executor:
-        for _ in range(100):
-            results.append(executor.submit(mess_with_file))
+        results = [executor.submit(mess_with_file) for _ in range(100)]
 
     assert all(r.result() is None for r in results)
 
