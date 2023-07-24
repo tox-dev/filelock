@@ -7,7 +7,7 @@ from errno import EACCES, EEXIST
 from pathlib import Path
 
 from ._api import BaseFileLock
-from ._util import raise_on_not_writable_file, ensure_directory_exists
+from ._util import ensure_directory_exists, raise_on_not_writable_file
 
 
 class SoftFileLock(BaseFileLock):

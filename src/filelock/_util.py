@@ -35,9 +35,10 @@ def raise_on_not_writable_file(filename: str) -> None:
 def ensure_directory_exists(filename: str) -> None:
     """
     Ensure the directory containing the file exists (create it if necessary)
-    :param filename: file
+    :param filename: file.
     """
     os.makedirs(os.path.dirname(os.path.abspath(filename)), exist_ok=True)
+
 
 __all__ = [
     "raise_on_not_writable_file",
