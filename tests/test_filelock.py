@@ -23,27 +23,20 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
-@pytest.mark.parametrize(
-    ("lock_type", "path_type"),
-    [
-        (FileLock, str),
-        (FileLock, PurePath),
-        (FileLock, Path),
-        (SoftFileLock, str),
-        (SoftFileLock, PurePath),
-        (SoftFileLock, Path),
-    ],
-)
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize("path_type", [str, PurePath, Path])
+@pytest.mark.parametrize("filename", ["a", "new/b", "new2/new3/c"])
 def test_simple(
     lock_type: type[BaseFileLock],
     path_type: type[str] | type[Path],
+    filename: str,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.DEBUG)
 
     # test lock creation by passing a `str`
-    lock_path = tmp_path / "a"
+    lock_path = tmp_path / filename
     lock = lock_type(path_type(lock_path))
     with lock as locked:
         assert lock.is_locked
@@ -113,7 +106,6 @@ WindowsOnly = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 @pytest.mark.parametrize(
     ("expected_error", "match", "bad_lock_file"),
     [
-        pytest.param(FileNotFoundError, "No such file or directory:", "a/b", id="non_existent_directory"),
         pytest.param(FileNotFoundError, "No such file or directory:", "", id="blank_filename"),
         pytest.param(ValueError, "embedded null (byte|character)", "\0", id="null_byte"),
         # Should be PermissionError on Windows
