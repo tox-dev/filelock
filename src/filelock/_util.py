@@ -43,4 +43,5 @@ def ensure_directory_exists(filename: Path | str) -> None:
 
 __all__ = [
     "raise_on_not_writable_file",
+    "ensure_directory_exists",
 ]
