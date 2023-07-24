@@ -4,6 +4,8 @@ import os
 import stat
 import sys
 from errno import EACCES, EISDIR
+from pathlib import Path
+from typing import Union
 
 
 def raise_on_not_writable_file(filename: str) -> None:
@@ -32,12 +34,12 @@ def raise_on_not_writable_file(filename: str) -> None:
                 raise IsADirectoryError(EISDIR, "Is a directory", filename)
 
 
-def ensure_directory_exists(filename: str) -> None:
+def ensure_directory_exists(filename: Union[Path, str]) -> None:
     """
     Ensure the directory containing the file exists (create it if necessary)
     :param filename: file.
     """
-    os.makedirs(os.path.dirname(os.path.abspath(filename)), exist_ok=True)
+    Path(filename).parent.mkdir(parents=True, exist_ok=True)
 
 
 __all__ = [
