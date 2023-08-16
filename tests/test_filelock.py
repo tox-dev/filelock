@@ -611,3 +611,17 @@ def test_lock_can_be_non_thread_local(
     assert lock.lock_counter == 2
 
     lock.release(force=True)
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_lock_acquire(
+    tmp_path: Path,
+    lock_type: type[BaseFileLock],
+) -> None:
+    lock = lock_type(tmp_path / "test.lock", thread_local=False)
+    lock.acquire()
+    with pytest.raises(TimeoutError):
+        lock.acquire(timeout=0.1)
+    lock.release(force=True)
+    lock.acquire()
+    assert lock.is_locked
+

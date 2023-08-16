@@ -218,7 +218,6 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                 if not self.is_locked:
                     _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
                     self._acquire()
-                if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
                 if blocking is False:
