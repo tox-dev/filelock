@@ -612,6 +612,7 @@ def test_lock_can_be_non_thread_local(
 
     lock.release(force=True)
 
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_lock_acquire(
     tmp_path: Path,
@@ -624,4 +625,3 @@ def test_lock_acquire(
     lock.release(force=True)
     lock.acquire()
     assert lock.is_locked
-
