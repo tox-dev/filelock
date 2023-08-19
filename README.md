@@ -1,4 +1,4 @@
-# py-filelock
+# filelock
 
 [![PyPI](https://img.shields.io/pypi/v/filelock)](https://pypi.org/project/filelock/)
 [![Supported Python
