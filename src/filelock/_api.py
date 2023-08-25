@@ -8,7 +8,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, AnyStr
 
 from ._error import Timeout
 
@@ -78,7 +78,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
 
     def __init__(
         self,
-        lock_file: str | bytes | os.PathLike[Any],
+        lock_file: str | bytes | os.PathLike[AnyStr],
         timeout: float = -1,
         mode: int = 0o644,
         thread_local: bool = True,  # noqa: FBT001, FBT002
@@ -95,11 +95,13 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         If this is set to ``False`` then the lock will be reentrant across threads.
         """
         self._is_thread_local = thread_local
+        path = os.fspath(lock_file)
+        path_str = path.decode() if isinstance(path, bytes) else path
 
         # Create the context. Note that external code should not work with the context directly  and should instead use
         # properties of this class.
         kwargs: dict[str, Any] = {
-            "lock_file": os.fspath(lock_file),
+            "lock_file": path_str,
             "timeout": timeout,
             "mode": mode,
         }

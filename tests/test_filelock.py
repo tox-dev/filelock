@@ -24,11 +24,11 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-@pytest.mark.parametrize("path_type", [str, PurePath, Path])
+@pytest.mark.parametrize("path_type", [str, PurePath, Path, bytes])
 @pytest.mark.parametrize("filename", ["a", "new/b", "new2/new3/c"])
 def test_simple(
     lock_type: type[BaseFileLock],
-    path_type: type[str | Path],
+    path_type: type[str | bytes | Path],
     filename: str,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
