@@ -78,7 +78,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
 
     def __init__(
         self,
-        lock_file: str | os.PathLike[Any],
+        lock_file: str | bytes | os.PathLike[Any],
         timeout: float = -1,
         mode: int = 0o644,
         thread_local: bool = True,  # noqa: FBT001, FBT002
