@@ -8,7 +8,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, AnyStr
 
 from ._error import Timeout
 
@@ -78,7 +78,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
 
     def __init__(
         self,
-        lock_file: str | os.PathLike[Any],
+        lock_file: str | os.PathLike[AnyStr],
         timeout: float = -1,
         mode: int = 0o644,
         thread_local: bool = True,  # noqa: FBT001, FBT002
