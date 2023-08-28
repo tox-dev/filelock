@@ -92,7 +92,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install tox
-        run: python -m pip install tox
+        run: python -m pip install tox build
       - name: Setup coverage tool
         run: tox -e coverage --notest
       - name: Install package builder
@@ -104,6 +104,10 @@ jobs:
         with:
           name: coverage-data
           path: .tox
+      - name: Show contents
+        run: ls -alth *
+      - name: pwd
+        run: pwd
       - name: Combine and report coverage
         run: tox -e coverage
       - name: Upload HTML report
