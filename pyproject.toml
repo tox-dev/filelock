@@ -62,7 +62,7 @@ urls.Tracker = "https://github.com/tox-dev/py-filelock/issues"
 
 [tool.hatch]
 build.hooks.vcs.version-file = "src/filelock/version.py"
-build.targets.sdist.include = ["/src", "/tests"]
+build.targets.sdist.include = ["/src", "/tests", "/tox.ini"]
 version.source = "vcs"
 
 [tool.black]
