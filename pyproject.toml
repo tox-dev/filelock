@@ -39,7 +39,7 @@ dynamic = [
   "version",
 ]
 dependencies = [
-  'typing-extensions>=4.7.1; python_version < "3.11"',
+  'typing-extensions>=4; python_version < "3.11"',
 ]
 optional-dependencies.docs = [
   "furo>=2023.7.26",
