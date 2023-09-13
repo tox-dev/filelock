@@ -38,9 +38,6 @@ classifiers = [
 dynamic = [
   "version",
 ]
-dependencies = [
-  'typing-extensions>=4.7.1; python_version < "3.11"',
-]
 optional-dependencies.docs = [
   "furo>=2023.7.26",
   "sphinx>=7.1.2",
@@ -54,6 +51,9 @@ optional-dependencies.testing = [
   "pytest-cov>=4.1",
   "pytest-mock>=3.11.1",
   "pytest-timeout>=2.1",
+]
+optional-dependencies.typing = [
+  'typing-extensions>=4.7.1; python_version < "3.11"',
 ]
 urls.Documentation = "https://py-filelock.readthedocs.io"
 urls.Homepage = "https://github.com/tox-dev/py-filelock"
