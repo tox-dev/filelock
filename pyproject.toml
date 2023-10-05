@@ -51,6 +51,7 @@ optional-dependencies.testing = [
   "pytest-cov>=4.1",
   "pytest-mock>=3.11.1",
   "pytest-timeout>=2.1",
+  "pytest-asyncio>=0.21.1",
 ]
 optional-dependencies.typing = [
   'typing-extensions>=4.7.1; python_version < "3.11"',
@@ -106,3 +107,6 @@ python_version = "3.11"
 show_error_codes = true
 strict = true
 overrides = [{ module = ["appdirs.*", "jnius.*"], ignore_missing_imports = true }]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

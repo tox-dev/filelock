@@ -13,6 +13,7 @@ dist
 /pip-wheel-metadata
 /src/filelock/version.py
 venv*
+.venv*
 .python-version
 test.lock
 test.softlock
