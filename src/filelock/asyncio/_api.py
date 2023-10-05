@@ -42,7 +42,7 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 
-_LOGGER = logging.getLogger("filelock")
+_LOGGER = logging.getLogger("filelock.asyncio")
 
 
 # This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__
