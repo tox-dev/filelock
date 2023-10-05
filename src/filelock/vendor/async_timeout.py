@@ -8,7 +8,6 @@ import warnings
 from types import TracebackType
 from typing import Optional, Type
 
-
 if sys.version_info >= (3, 8):
     from typing import final
 else:
@@ -100,9 +99,7 @@ class Timeout:
 
     __slots__ = ("_deadline", "_loop", "_state", "_timeout_handler", "_task")
 
-    def __init__(
-        self, deadline: Optional[float], loop: asyncio.AbstractEventLoop
-    ) -> None:
+    def __init__(self, deadline: Optional[float], loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
         self._state = _State.INIT
 
