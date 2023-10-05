@@ -17,7 +17,7 @@ from ._error import Timeout
 if sys.version_info >= (3, 11):
     from asyncio import timeout as atimeout
 else:
-    from ..vendor.async_timeout import timeout as atimeout
+    from filelock.vendor.async_timeout import timeout as atimeout
 
 
 @asynccontextmanager

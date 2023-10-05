@@ -48,10 +48,10 @@ optional-dependencies.testing = [
   "coverage>=7.3",
   "diff-cover>=7.7",
   "pytest>=7.4",
+  "pytest-asyncio>=0.21.1",
   "pytest-cov>=4.1",
   "pytest-mock>=3.11.1",
   "pytest-timeout>=2.1",
-  "pytest-asyncio>=0.21.1",
 ]
 optional-dependencies.typing = [
   'typing-extensions>=4.7.1; python_version < "3.11"',
@@ -93,6 +93,9 @@ ignore = [
     "PLR2004",  # Magic value used in comparison, consider replacing with a constant variable
 ]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 [tool.coverage]
 html.show_contexts = true
 html.skip_covered = false
@@ -107,6 +110,3 @@ python_version = "3.11"
 show_error_codes = true
 strict = true
 overrides = [{ module = ["appdirs.*", "jnius.*"], ignore_missing_imports = true }]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
