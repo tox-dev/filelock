@@ -17,11 +17,11 @@ from ._error import Timeout
 if sys.version_info >= (3, 11):
     from asyncio import timeout as atimeout
 else:
-    from async_timeout import timeout as atimeout
+    from ..vendor.async_timeout import timeout as atimeout
 
 
 @asynccontextmanager
-async def wrapped_timeout(timeout: float | None, lock_filename: str) -> None:
+async def async_timeout(timeout: float | None, lock_filename: str) -> None:
     try:
         async with atimeout(timeout):
             yield
@@ -229,7 +229,7 @@ class BaseFileLock(ABC, contextlib.AsyncContextDecorator):
         lock_id = id(self)
         lock_filename = self.lock_file
         try:
-            async with wrapped_timeout(timeout, lock_filename):
+            async with async_timeout(timeout, lock_filename):
                 while True:
                     if not self.is_locked:
                         _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
