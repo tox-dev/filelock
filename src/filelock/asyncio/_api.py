@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import sys
@@ -22,7 +21,7 @@ else:
 if sys.version_info >= (3, 10):
     from contextlib import AsyncContextDecorator
 else:
-    from ..vendor.contextlib import AsyncContextDecorator
+    from filelock.vendor.contextlib import AsyncContextDecorator
 
 
 @asynccontextmanager
