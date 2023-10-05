@@ -19,6 +19,11 @@ if sys.version_info >= (3, 11):
 else:
     from ..vendor.async_timeout import timeout as atimeout
 
+if sys.version_info >= (3, 10):
+    from contextlib import AsyncContextDecorator
+else:
+    from ..vendor.contextlib import AsyncContextDecorator
+
 
 @asynccontextmanager
 async def async_timeout(timeout: float | None, lock_filename: str) -> None:
@@ -89,7 +94,7 @@ class ThreadLocalFileContext(FileLockContext, local):
     """A thread local version of the ``FileLockContext`` class."""
 
 
-class BaseFileLock(ABC, contextlib.AsyncContextDecorator):
+class BaseFileLock(ABC, AsyncContextDecorator):
     """Abstract base class for a file lock object."""
 
     def __init__(
