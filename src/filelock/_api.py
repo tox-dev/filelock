@@ -5,15 +5,16 @@ import logging
 import os
 import time
 import warnings
-from abc import ABC, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ._error import Timeout
 
 if TYPE_CHECKING:
     import sys
+    from collections.abc import Mapping, Sequence
     from types import TracebackType
 
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
@@ -73,15 +74,33 @@ class ThreadLocalFileContext(FileLockContext, local):
     """A thread local version of the ``FileLockContext`` class."""
 
 
-class BaseFileLock(ABC, contextlib.ContextDecorator):
+class SingletonPerLockFileMeta(ABCMeta):
+    """
+    Metaclass for the ``BaseFileLock`` class which ensures that only one instance of the class is created per
+    lock (when specified).
+    """
+
+    _instances: ClassVar[dict[str, object]] = {}
+
+    def __call__(cls, lock_file: str, *args: Sequence, **kwargs: Mapping) -> object:
+        if not kwargs.get("singleton_per_lock_file", False):
+            return super().__call__(lock_file, *args, **kwargs)
+
+        if lock_file not in cls._instances:
+            cls._instances[lock_file] = super().__call__(lock_file, *args, **kwargs)
+        return cls._instances[lock_file]
+
+
+class BaseFileLock(ABC, contextlib.ContextDecorator, metaclass=SingletonPerLockFileMeta):
     """Abstract base class for a file lock object."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = 0o644,
         thread_local: bool = True,  # noqa: FBT001, FBT002
+        singleton_per_lock_file: bool = False,  # noqa: FBT001, FBT002
     ) -> None:
         """
         Create a new lock object.
@@ -93,8 +112,12 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param mode: file permissions for the lockfile.
         :param thread_local: Whether this object's internal context should be thread local or not.
         If this is set to ``False`` then the lock will be reentrant across threads.
+        :param singleton_per_lock_file: If this is set to ``True`` then only one instance of this class will be created
+        per lock file. This is useful if you want to use the lock object for reentrant locking without needing
+        to pass the same object around.
         """
         self._is_thread_local = thread_local
+        self._singleton_per_lock_file = singleton_per_lock_file
 
         # Create the context. Note that external code should not work with the context directly  and should instead use
         # properties of this class.
@@ -108,6 +131,10 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
     def is_thread_local(self) -> bool:
         """:return: a flag indicating if this lock is thread local or not"""
         return self._is_thread_local
+
+    def is_singleton_per_lock_file(self) -> bool:
+        """:return: a flag indicating if this lock is singleton per lock file or not"""
+        return self._singleton_per_lock_file
 
     @property
     def lock_file(self) -> str:
