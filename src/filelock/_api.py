@@ -9,6 +9,7 @@ from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import local
 from typing import TYPE_CHECKING, Any, ClassVar
+from weakref import WeakValueDictionary
 
 from ._error import Timeout
 
@@ -80,15 +81,18 @@ class SingletonPerLockFileMeta(ABCMeta):
     lock (when specified).
     """
 
-    _instances: ClassVar[dict[str, object]] = {}
+    _instances: ClassVar[WeakValueDictionary] = WeakValueDictionary()
 
-    def __call__(cls, lock_file: str, *args: Sequence, **kwargs: Mapping) -> object:
+    def __call__(cls, lock_file: str | os.PathLike[str], *args: Sequence, **kwargs: Mapping) -> object:
         if not kwargs.get("singleton_per_lock_file", False):
             return super().__call__(lock_file, *args, **kwargs)
 
-        if lock_file not in cls._instances:
-            cls._instances[lock_file] = super().__call__(lock_file, *args, **kwargs)
-        return cls._instances[lock_file]
+        instance = cls._instances.get(str(lock_file))
+        if not instance:
+            instance = super().__call__(lock_file, *args, **kwargs)
+            cls._instances[str(lock_file)] = instance
+
+        return instance
 
 
 class BaseFileLock(ABC, contextlib.ContextDecorator, metaclass=SingletonPerLockFileMeta):

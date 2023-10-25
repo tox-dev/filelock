@@ -614,7 +614,7 @@ def test_lock_can_be_non_thread_local(
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_lock_singleton_and_non_singleton_locks_are_distinct(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+def test_singleton_and_non_singleton_locks_are_distinct(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock_1 = lock_type(str(lock_path), singleton_per_lock_file=False)
     assert lock_1.is_singleton_per_lock_file() is False
@@ -625,7 +625,7 @@ def test_lock_singleton_and_non_singleton_locks_are_distinct(lock_type: type[Bas
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_lock_singleton_locks_are_the_same(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+def test_singleton_locks_are_the_same(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock_1 = lock_type(str(lock_path), singleton_per_lock_file=True)
 
@@ -634,7 +634,7 @@ def test_lock_singleton_locks_are_the_same(lock_type: type[BaseFileLock], tmp_pa
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_lock_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+def test_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path_1 = tmp_path / "a"
     lock_1 = lock_type(str(lock_path_1), singleton_per_lock_file=True)
 
@@ -642,3 +642,16 @@ def test_lock_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFil
     lock_2 = lock_type(str(lock_path_2), singleton_per_lock_file=True)
 
     assert lock_1 is not lock_2
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_singleton_locks_are_deleted_when_no_external_references_exist(
+    lock_type: type[BaseFileLock],
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "a"
+    lock = lock_type(str(lock_path), singleton_per_lock_file=True)
+
+    assert lock_type._instances[str(lock_path)] == lock  # noqa: SLF001
+    del lock
+    assert lock_type._instances == {}  # noqa: SLF001
