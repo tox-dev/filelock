@@ -18,7 +18,7 @@ This page lists the steps needed to set up a development environment and contrib
    tox run -f py311
    ```
 
-4. Running other tox commands (ex. linting):
+4. Running other tox commands (eg. linting):
 
    ```shell
    tox -e fix
