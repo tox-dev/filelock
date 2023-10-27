@@ -4,13 +4,7 @@ This page lists the steps needed to set up a development environment and contrib
 
 1. Fork and clone this repo
 
-2. Install initial dependencies in a virtual environment:
-
-   ```shell
-   python -m venv venv
-   source venv/bin/activate
-   python -m pip install --upgrade pip 'tox>=4.2'
-   ```
+2. Install `tox` via `pipx`: https://tox.wiki/en/4.11.3/installation.html#via-pipx
 
 3. Run tests
 
