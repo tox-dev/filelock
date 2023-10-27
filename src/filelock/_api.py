@@ -5,7 +5,7 @@ import logging
 import os
 import time
 import warnings
-from abc import ABC, ABCMeta, abstractmethod
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from threading import local
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -75,28 +75,28 @@ class ThreadLocalFileContext(FileLockContext, local):
     """A thread local version of the ``FileLockContext`` class."""
 
 
-class SingletonPerLockFileMeta(ABCMeta):
-    """
-    Metaclass for the ``BaseFileLock`` class which ensures that only one instance of the class is created per
-    lock (when specified).
-    """
+class BaseFileLock(ABC, contextlib.ContextDecorator):
+    """Abstract base class for a file lock object."""
 
     _instances: ClassVar[WeakValueDictionary] = WeakValueDictionary()
 
-    def __call__(cls, lock_file: str | os.PathLike[str], *args: Sequence, **kwargs: Mapping) -> object:
+    def __new__(cls, lock_file: str | os.PathLike[str], *args: Sequence, **kwargs: Mapping) -> Self:  # noqa: ARG003
+        """
+        Create a new instance of the class or if specified return an existing instance for the same lock file.
+
+        :param lock_file: path to the file
+        :param args: additional positional arguments
+        :param kwargs: additional keyword arguments
+        """
         if not kwargs.get("singleton_per_lock_file", False):
-            return super().__call__(lock_file, *args, **kwargs)
+            return super().__new__(cls)
 
         instance = cls._instances.get(str(lock_file))
         if not instance:
-            instance = super().__call__(lock_file, *args, **kwargs)
+            instance = super().__new__(cls)
             cls._instances[str(lock_file)] = instance
 
         return instance
-
-
-class BaseFileLock(ABC, contextlib.ContextDecorator, metaclass=SingletonPerLockFileMeta):
-    """Abstract base class for a file lock object."""
 
     def __init__(  # noqa: PLR0913
         self,

@@ -640,7 +640,6 @@ def test_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFileLock
 
     lock_path_2 = tmp_path / "b"
     lock_2 = lock_type(str(lock_path_2), singleton_per_lock_file=True)
-
     assert lock_1 is not lock_2
 
 
@@ -652,6 +651,6 @@ def test_singleton_locks_are_deleted_when_no_external_references_exist(
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path), singleton_per_lock_file=True)
 
-    assert lock_type._instances[str(lock_path)] == lock  # noqa: SLF001
+    assert lock_type._instances == {str(lock_path): lock}  # noqa: SLF001
     del lock
     assert lock_type._instances == {}  # noqa: SLF001
