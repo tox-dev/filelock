@@ -8,14 +8,13 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping, Sequence
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
 
 if TYPE_CHECKING:
     import sys
-    from collections.abc import Mapping, Sequence
     from types import TracebackType
 
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
@@ -78,9 +77,14 @@ class ThreadLocalFileContext(FileLockContext, local):
 class BaseFileLock(ABC, contextlib.ContextDecorator):
     """Abstract base class for a file lock object."""
 
-    _instances: ClassVar[WeakValueDictionary] = WeakValueDictionary()
+    _instances: ClassVar[WeakValueDictionary[str, BaseFileLock]] = WeakValueDictionary()
 
-    def __new__(cls, lock_file: str | os.PathLike[str], *args: Sequence, **kwargs: Mapping) -> Self:  # noqa: ARG003
+    def __new__(  # noqa: PYI034
+        cls,
+        lock_file: str | os.PathLike[str],
+        *args: Sequence[Any],  # noqa: ARG003
+        **kwargs: Mapping[str, Any],
+    ) -> BaseFileLock:
         """
         Create a new instance of the class or if specified return an existing instance for the same lock file.
 
