@@ -611,3 +611,47 @@ def test_lock_can_be_non_thread_local(
     assert lock.lock_counter == 2
 
     lock.release(force=True)
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_singleton_and_non_singleton_locks_are_distinct(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a"
+    lock_1 = lock_type(str(lock_path), is_singleton=False)
+    assert lock_1.is_singleton is False
+
+    lock_2 = lock_type(str(lock_path), is_singleton=True)
+    assert lock_2.is_singleton is True
+    assert lock_2 is not lock_1
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_singleton_locks_are_the_same(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a"
+    lock_1 = lock_type(str(lock_path), is_singleton=True)
+
+    lock_2 = lock_type(str(lock_path), is_singleton=True)
+    assert lock_2 is lock_1
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path_1 = tmp_path / "a"
+    lock_1 = lock_type(str(lock_path_1), is_singleton=True)
+
+    lock_path_2 = tmp_path / "b"
+    lock_2 = lock_type(str(lock_path_2), is_singleton=True)
+    assert lock_1 is not lock_2
+
+
+@pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_singleton_locks_are_deleted_when_no_external_references_exist(
+    lock_type: type[BaseFileLock],
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "a"
+    lock = lock_type(str(lock_path), is_singleton=True)
+
+    assert lock_type._instances == {str(lock_path): lock}  # noqa: SLF001
+    del lock
+    assert lock_type._instances == {}  # noqa: SLF001
