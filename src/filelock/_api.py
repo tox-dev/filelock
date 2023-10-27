@@ -88,7 +88,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param args: additional positional arguments
         :param kwargs: additional keyword arguments
         """
-        if not kwargs.get("singleton_per_lock_file", False):
+        if not kwargs.get("is_singleton", False):
             return super().__new__(cls)
 
         instance = cls._instances.get(str(lock_file))
@@ -104,7 +104,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         timeout: float = -1,
         mode: int = 0o644,
         thread_local: bool = True,  # noqa: FBT001, FBT002
-        singleton_per_lock_file: bool = False,  # noqa: FBT001, FBT002
+        is_singleton: bool = False,  # noqa: FBT001, FBT002
     ) -> None:
         """
         Create a new lock object.
@@ -116,12 +116,12 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param mode: file permissions for the lockfile.
         :param thread_local: Whether this object's internal context should be thread local or not.
         If this is set to ``False`` then the lock will be reentrant across threads.
-        :param singleton_per_lock_file: If this is set to ``True`` then only one instance of this class will be created
+        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created
         per lock file. This is useful if you want to use the lock object for reentrant locking without needing
         to pass the same object around.
         """
         self._is_thread_local = thread_local
-        self._singleton_per_lock_file = singleton_per_lock_file
+        self._is_singleton = is_singleton
 
         # Create the context. Note that external code should not work with the context directly  and should instead use
         # properties of this class.
@@ -136,9 +136,10 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         """:return: a flag indicating if this lock is thread local or not"""
         return self._is_thread_local
 
-    def is_singleton_per_lock_file(self) -> bool:
-        """:return: a flag indicating if this lock is singleton per lock file or not"""
-        return self._singleton_per_lock_file
+    @property
+    def is_singleton(self) -> bool:
+        """:return: a flag indicating if this lock is singleton or not"""
+        return self._is_singleton
 
     @property
     def lock_file(self) -> str:
