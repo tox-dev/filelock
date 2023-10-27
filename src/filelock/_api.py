@@ -8,7 +8,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, ClassVar, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
@@ -79,22 +79,16 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
 
     _instances: ClassVar[WeakValueDictionary[str, BaseFileLock]] = WeakValueDictionary()
 
-    def __new__(  # noqa: PYI034
+    def __new__(  # noqa: PLR0913
         cls,
         lock_file: str | os.PathLike[str],
-        is_singleton: bool = False,  # noqa: FBT001, FBT002
-        *args: Sequence[Any],  # noqa: ARG003
-        **kwargs: Mapping[str, Any],  # noqa: ARG003
-    ) -> BaseFileLock:
-        """
-        Create a new lock object or if specified return the singleton instance for the lock file.
-
-        :param lock_file: path to the file
-        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per
-        lock file.
-        :param args: additional positional arguments
-        :param kwargs: additional keyword arguments
-        """
+        timeout: float = -1,  # noqa: ARG003
+        mode: int = 0o644,  # noqa: ARG003
+        thread_local: bool = True,  # noqa: ARG003, FBT001, FBT002
+        *,
+        is_singleton: bool = False,
+    ) -> Self:
+        """Create a new lock object or if specified return the singleton instance for the lock file."""
         if not is_singleton:
             return super().__new__(cls)
 
@@ -103,7 +97,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             instance = super().__new__(cls)
             cls._instances[str(lock_file)] = instance
 
-        return instance
+        return instance  # type: ignore[return-value] # https://github.com/python/mypy/issues/15322
 
     def __init__(  # noqa: PLR0913
         self,
@@ -111,21 +105,22 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         timeout: float = -1,
         mode: int = 0o644,
         thread_local: bool = True,  # noqa: FBT001, FBT002
-        is_singleton: bool = False,  # noqa: FBT001, FBT002
+        *,
+        is_singleton: bool = False,
     ) -> None:
         """
         Create a new lock object.
 
         :param lock_file: path to the file
-        :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in
-        the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it
-        to a negative value. A timeout of 0 means, that there is exactly one attempt to acquire the file lock.
-        :param mode: file permissions for the lockfile.
-        :param thread_local: Whether this object's internal context should be thread local or not.
-        If this is set to ``False`` then the lock will be reentrant across threads.
-        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created
-        per lock file. This is useful if you want to use the lock object for reentrant locking without needing
-        to pass the same object around.
+        :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in \
+            the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it \
+            to a negative value. A timeout of 0 means, that there is exactly one attempt to acquire the file lock.
+        :param mode: file permissions for the lockfile
+        :param thread_local: Whether this object's internal context should be thread local or not. If this is set to \
+            ``False`` then the lock will be reentrant across threads.
+        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created \
+            per lock file. This is useful if you want to use the lock object for reentrant locking without needing \
+            to pass the same object around.
         """
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton

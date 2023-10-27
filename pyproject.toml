@@ -39,21 +39,21 @@ dynamic = [
   "version",
 ]
 optional-dependencies.docs = [
-  "furo>=2023.7.26",
-  "sphinx>=7.1.2",
+  "furo>=2023.9.10",
+  "sphinx>=7.2.6",
   "sphinx-autodoc-typehints!=1.23.4,>=1.24",
 ]
 optional-dependencies.testing = [
   "covdefaults>=2.3",
-  "coverage>=7.3",
-  "diff-cover>=7.7",
-  "pytest>=7.4",
+  "coverage>=7.3.2",
+  "diff-cover>=8",
+  "pytest>=7.4.3",
   "pytest-cov>=4.1",
-  "pytest-mock>=3.11.1",
-  "pytest-timeout>=2.1",
+  "pytest-mock>=3.12",
+  "pytest-timeout>=2.2",
 ]
 optional-dependencies.typing = [
-  'typing-extensions>=4.7.1; python_version < "3.11"',
+  'typing-extensions>=4.8; python_version < "3.11"',
 ]
 urls.Documentation = "https://py-filelock.readthedocs.io"
 urls.Homepage = "https://github.com/tox-dev/py-filelock"
