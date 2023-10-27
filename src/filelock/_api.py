@@ -87,7 +87,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         **kwargs: Mapping[str, Any],  # noqa: ARG003
     ) -> BaseFileLock:
         """
-        Create a new instance of the class or if specified return an existing instance for the same lock file.
+        Create a new lock object or if specified return the singleton instance for the lock file.
 
         :param lock_file: path to the file
         :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per
