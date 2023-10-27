@@ -82,17 +82,20 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
     def __new__(  # noqa: PYI034
         cls,
         lock_file: str | os.PathLike[str],
+        is_singleton: bool = False,  # noqa: FBT001, FBT002
         *args: Sequence[Any],  # noqa: ARG003
-        **kwargs: Mapping[str, Any],
+        **kwargs: Mapping[str, Any],  # noqa: ARG003
     ) -> BaseFileLock:
         """
         Create a new instance of the class or if specified return an existing instance for the same lock file.
 
         :param lock_file: path to the file
+        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per
+        lock file.
         :param args: additional positional arguments
         :param kwargs: additional keyword arguments
         """
-        if not kwargs.get("is_singleton", False):
+        if not is_singleton:
             return super().__new__(cls)
 
         instance = cls._instances.get(str(lock_file))
