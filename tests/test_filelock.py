@@ -614,6 +614,21 @@ def test_lock_can_be_non_thread_local(
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_subclass_compatibility(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    class MyFileLock(lock_type):
+        def __init__(
+            self,
+            *args,  # noqa: ANN002
+            my_param: int = 0,
+            **kwargs,  # noqa: ANN003
+        ) -> None:
+            pass
+
+    lock_path = tmp_path / "a"
+    MyFileLock(str(lock_path), my_param=1)
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_and_non_singleton_locks_are_distinct(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock_1 = lock_type(str(lock_path), is_singleton=False)
