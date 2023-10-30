@@ -12,7 +12,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import TYPE_CHECKING, Callable, Iterator, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Tuple, Type, Union
 from uuid import uuid4
 
 import pytest
@@ -611,6 +611,37 @@ def test_lock_can_be_non_thread_local(
     assert lock.lock_counter == 2
 
     lock.release(force=True)
+
+
+def test_subclass_compatibility(tmp_path: Path) -> None:
+    class MyFileLock(FileLock):
+        def __init__(  # noqa: PLR0913 Too many arguments to function call (6 > 5)
+            self,
+            lock_file: str | os.PathLike[str],
+            timeout: float = -1,
+            mode: int = 0o644,
+            thread_local: bool = True,
+            my_param: int = 0,
+            **kwargs: dict[str, Any],
+        ) -> None:
+            pass
+
+    lock_path = tmp_path / "a"
+    MyFileLock(str(lock_path), my_param=1)
+
+    class MySoftFileLock(SoftFileLock):
+        def __init__(  # noqa: PLR0913 Too many arguments to function call (6 > 5)
+            self,
+            lock_file: str | os.PathLike[str],
+            timeout: float = -1,
+            mode: int = 0o644,
+            thread_local: bool = True,
+            my_param: int = 0,
+            **kwargs: dict[str, Any],
+        ) -> None:
+            pass
+
+    MySoftFileLock(str(lock_path), my_param=1)
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
