@@ -1,7 +1,7 @@
 [build-system]
 build-backend = "hatchling.build"
 requires = [
-  "hatch-vcs>=0.3",
+  "hatch-vcs>=0.4",
   "hatchling>=1.18",
 ]
 
@@ -41,12 +41,12 @@ dynamic = [
 optional-dependencies.docs = [
   "furo>=2023.9.10",
   "sphinx>=7.2.6",
-  "sphinx-autodoc-typehints!=1.23.4,>=1.24",
+  "sphinx-autodoc-typehints!=1.23.4,>=1.25.2",
 ]
 optional-dependencies.testing = [
   "covdefaults>=2.3",
   "coverage>=7.3.2",
-  "diff-cover>=8",
+  "diff-cover>=8.0.1",
   "pytest>=7.4.3",
   "pytest-cov>=4.1",
   "pytest-mock>=3.12",
