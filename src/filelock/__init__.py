@@ -5,6 +5,7 @@ A platform independent file lock that supports the with-statement.
    :no-value:
 
 """
+
 from __future__ import annotations
 
 import sys
