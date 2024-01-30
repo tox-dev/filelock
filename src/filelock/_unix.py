@@ -44,7 +44,7 @@ else:  # pragma: win32 no cover
             except OSError as exception:
                 os.close(fd)
                 if exception.errno == ENOSYS:  # NotImplemented error
-                    msg = "FileSystem does not appear to support flock; user SoftFileLock instead"
+                    msg = "FileSystem does not appear to support flock; use SoftFileLock instead"
                     raise NotImplementedError(msg) from exception
             else:
                 self._context.lock_file_fd = fd
