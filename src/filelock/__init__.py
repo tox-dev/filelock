@@ -41,12 +41,12 @@ else:
 
 
 __all__ = [
-    "__version__",
+    "AcquireReturnProxy",
+    "BaseFileLock",
     "FileLock",
     "SoftFileLock",
     "Timeout",
     "UnixFileLock",
     "WindowsFileLock",
-    "BaseFileLock",
-    "AcquireReturnProxy",
+    "__version__",
 ]
