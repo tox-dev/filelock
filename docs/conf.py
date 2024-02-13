@@ -1,5 +1,6 @@
 # noqa: INP001
 """Configuration for Sphinx."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -50,10 +51,11 @@ def setup(app: Sphinx) -> None:
     Setup app.
 
     :param app: the app
+
     """
 
     class PatchedPythonDomain(PythonDomain):
-        def resolve_xref(  # noqa: PLR0913
+        def resolve_xref(  # noqa: PLR0913, PLR0917
             self,
             env: BuildEnvironment,
             fromdocname: str,

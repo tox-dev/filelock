@@ -60,6 +60,6 @@ else:  # pragma: win32 no cover
 
 
 __all__ = [
-    "has_fcntl",
     "UnixFileLock",
+    "has_fcntl",
 ]

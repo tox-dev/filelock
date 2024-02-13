@@ -112,13 +112,12 @@ WindowsOnly = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
         (
             pytest.param(PermissionError, "Permission denied:", ".", id="current_directory")
             if sys.platform == "win32"
+            # Should be IsADirectoryError on MacOS and Linux
             else (
-                # Should be IsADirectoryError on MacOS and Linux
                 pytest.param(IsADirectoryError, "Is a directory", ".", id="current_directory")
-                if sys.platform in ["darwin", "linux"]
-                else
+                if sys.platform in {"darwin", "linux"}
                 # Should be some type of OSError at least on other operating systems
-                pytest.param(OSError, None, ".", id="current_directory")
+                else pytest.param(OSError, None, ".", id="current_directory")
             )
         ),
     ]

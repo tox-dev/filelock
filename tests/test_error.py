@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pickle
+import pickle  # noqa: S403
 
 from filelock import Timeout
 
