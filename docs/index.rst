@@ -49,6 +49,7 @@ working directory is currently used. To do so, create a :class:`FileLock <filelo
 
 .. code-block:: python
 
+    import os
     from filelock import Timeout, FileLock
 
     file_path = "high_ground.txt"
@@ -62,16 +63,19 @@ locks:
 .. code-block:: python
 
     with lock:
-        with open(file_path, "a") as f:
-            f.write("Hello there!")
+        if not os.path.exists(file_path):
+            with open(file_path, "w") as f:
+                f.write("Hello there!")
+    # here, all processes can see consistent content in the file
 
     lock.acquire()
     try:
-        with open(file_path, "a") as f:
-            f.write("General Kenobi!")
+        if not os.path.exists(file_path):
+            with open(file_path, "w") as f:
+                f.write("General Kenobi!")
     finally:
         lock.release()
-
+    # here, all processes can see consistent content in the file
 
     @lock
     def decorated():
@@ -79,6 +83,11 @@ locks:
 
 
     decorated()
+
+Note: When a process gets the lock (i.e. within the `with lock:` region), it is usually good to check what has
+already been done by other processes. For example, each process above first check the existence of the file. If
+it is already created, we should not destroy the work of other processes. This is typically the case when we want
+just one process to write content into a file, and let every process to read the content.
 
 The :meth:`acquire <filelock.BaseFileLock.acquire>` method accepts also a ``timeout`` parameter. If the lock cannot be
 acquired within ``timeout`` seconds, a :class:`Timeout <filelock.Timeout>` exception is raised:
