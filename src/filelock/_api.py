@@ -8,7 +8,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
@@ -77,7 +77,7 @@ class ThreadLocalFileContext(FileLockContext, local):
 class BaseFileLock(ABC, contextlib.ContextDecorator):
     """Abstract base class for a file lock object."""
 
-    _instances: ClassVar[WeakValueDictionary[str, BaseFileLock]] = WeakValueDictionary()
+    _instances: WeakValueDictionary[str, BaseFileLock]
 
     def __new__(  # noqa: PLR0913
         cls,
@@ -99,6 +99,11 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             cls._instances[str(lock_file)] = instance
 
         return instance  # type: ignore[return-value] # https://github.com/python/mypy/issues/15322
+
+    def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
+        """Setup unique state for lock subclasses."""
+        super().__init_subclass__(**kwargs)
+        cls._instances = WeakValueDictionary()
 
     def __init__(  # noqa: PLR0913
         self,
