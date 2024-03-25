@@ -35,7 +35,9 @@ else:  # pragma: win32 no cover
 
         def _acquire(self) -> None:
             ensure_directory_exists(self.lock_file)
-            open_flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC
+            open_flags = os.O_RDWR | os.O_TRUNC
+            if not os.path.exists(self.lock_file):
+                open_flags |= os.O_CREAT
             fd = os.open(self.lock_file, open_flags, self._context.mode)
             with suppress(PermissionError):  # This locked is not owned by this UID
                 os.fchmod(fd, self._context.mode)
