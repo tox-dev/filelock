@@ -4,6 +4,7 @@ import os
 import sys
 from contextlib import suppress
 from errno import ENOSYS
+from pathlib import Path
 from typing import cast
 
 from ._api import BaseFileLock
@@ -36,7 +37,7 @@ else:  # pragma: win32 no cover
         def _acquire(self) -> None:
             ensure_directory_exists(self.lock_file)
             open_flags = os.O_RDWR | os.O_TRUNC
-            if not os.path.exists(self.lock_file):
+            if not Path(self.lock_file).exists():
                 open_flags |= os.O_CREAT
             fd = os.open(self.lock_file, open_flags, self._context.mode)
             with suppress(PermissionError):  # This locked is not owned by this UID
