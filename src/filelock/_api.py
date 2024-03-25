@@ -8,7 +8,7 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
@@ -77,7 +77,7 @@ class ThreadLocalFileContext(FileLockContext, local):
 class BaseFileLock(ABC, contextlib.ContextDecorator):
     """Abstract base class for a file lock object."""
 
-    _instances: ClassVar[WeakValueDictionary[str, BaseFileLock]]
+    _instances: WeakValueDictionary[str, BaseFileLock]
 
     def __new__(  # noqa: PLR0913
         cls,
