@@ -676,7 +676,7 @@ def test_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFileLock
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_singleton_locks_must_be_initialized_with_the__same_args(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+def test_singleton_locks_must_be_initialized_with_the_same_args(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path), is_singleton=True)  # noqa: F841
 
