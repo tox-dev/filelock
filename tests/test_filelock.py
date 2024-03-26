@@ -675,6 +675,17 @@ def test_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFileLock
     assert lock_1 is not lock_2
 
 
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_singleton_locks_must_be_initialized_with_the__same_args(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a"
+    lock = lock_type(str(lock_path), is_singleton=True)  # noqa: F841
+
+    with pytest.raises(ValueError, match="Singleton lock instances cannot be initialized with differing arguments"):
+        lock_type(str(lock_path), timeout=10, is_singleton=True)
+    with pytest.raises(ValueError, match="Singleton lock instances cannot be initialized with differing arguments"):
+        lock_type(str(lock_path), mode=0, is_singleton=True)
+
+
 @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_locks_are_deleted_when_no_external_references_exist(
