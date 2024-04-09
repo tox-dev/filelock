@@ -14,6 +14,7 @@ from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Tuple, Type, Union
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 import pytest
 
@@ -698,3 +699,17 @@ def test_singleton_locks_are_deleted_when_no_external_references_exist(
     assert lock_type._instances == {str(lock_path): lock}  # noqa: SLF001
     del lock
     assert lock_type._instances == {}  # noqa: SLF001
+
+
+@pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_singleton_instance_tracking_is_unique_per_subclass(lock_type: type[BaseFileLock]) -> None:
+    class Lock1(lock_type):  # type: ignore[valid-type, misc]
+        pass
+
+    class Lock2(lock_type):  # type: ignore[valid-type, misc]
+        pass
+
+    assert isinstance(Lock1._instances, WeakValueDictionary)  # noqa: SLF001
+    assert isinstance(Lock2._instances, WeakValueDictionary)  # noqa: SLF001
+    assert Lock1._instances is not Lock2._instances  # noqa: SLF001
