@@ -113,7 +113,7 @@ The lock objects are recursive locks, which means that once acquired, they will 
 
 
 Timeouts and non-blocking locks
--------
+-------------------------------
 The :meth:`acquire <filelock.BaseFileLock.acquire>` method accepts a ``timeout`` parameter. If the lock cannot be
 acquired within ``timeout`` seconds, a :class:`Timeout <filelock.Timeout>` exception is raised:
 
@@ -147,6 +147,7 @@ Meaning, if you set ``blocking=False`` while ``timeout > 0``, a :class:`Timeout 
 You can pre-parametrize both of these options when constructing the lock for ease-of-use.
 
 .. code-block:: python
+
     from filelock import Timeout, FileLock
 
     lock_1 = FileLock("high_ground.txt.lock", blocking = False)
