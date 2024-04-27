@@ -156,7 +156,7 @@ You can pre-parametrize both of these options when constructing the lock for eas
             # do some work
             pass
     except Timeout:
-        print("Well, we tried once and couldn't acquire")
+        print("Well, we tried once and couldn't acquire.")
 
     lock_2 = FileLock("high_ground.txt.lock", timeout = 10)
     try:
