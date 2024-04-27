@@ -345,7 +345,14 @@ def test_non_blocking(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with context manager to demonstrate `blocking` precedence
+    # blocking precedence over timeout
+    # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with `acquire`
+    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+        lock_5.acquire()
+    assert not lock_5.is_locked
+    assert lock_1.is_locked
+
+    # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with context manager
     with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."), lock_5:
         pass
     assert not lock_5.is_locked
