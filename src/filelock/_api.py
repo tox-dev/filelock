@@ -132,7 +132,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param mode: file permissions for the lockfile
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set to \
             ``False`` then the lock will be reentrant across threads.
-        :param blocking: Todo
+        :param blocking: whether the lock should be blocking or not
         :param is_singleton: If this is set to ``True`` then only one instance of this class will be created \
             per lock file. This is useful if you want to use the lock object for reentrant locking without needing \
             to pass the same object around.
