@@ -89,18 +89,6 @@ already been done by other processes. For example, each process above first chec
 it is already created, we should not destroy the work of other processes. This is typically the case when we want
 just one process to write content into a file, and let every process to read the content.
 
-The :meth:`acquire <filelock.BaseFileLock.acquire>` method accepts also a ``timeout`` parameter. If the lock cannot be
-acquired within ``timeout`` seconds, a :class:`Timeout <filelock.Timeout>` exception is raised:
-
-.. code-block:: python
-
-    try:
-        with lock.acquire(timeout=10):
-            with open(file_path, "a") as f:
-                f.write("I have a bad feeling about this.")
-    except Timeout:
-        print("Another instance of this application currently holds the lock.")
-
 The lock objects are recursive locks, which means that once acquired, they will not block on successive lock requests:
 
 .. code-block:: python
@@ -123,6 +111,60 @@ The lock objects are recursive locks, which means that once acquired, they will 
         cite2()
     # And released here.
 
+
+Timeouts and non-blocking locks
+-------------------------------
+The :meth:`acquire <filelock.BaseFileLock.acquire>` method accepts a ``timeout`` parameter. If the lock cannot be
+acquired within ``timeout`` seconds, a :class:`Timeout <filelock.Timeout>` exception is raised:
+
+.. code-block:: python
+
+    try:
+        with lock.acquire(timeout=10):
+            with open(file_path, "a") as f:
+                f.write("I have a bad feeling about this.")
+    except Timeout:
+        print("Another instance of this application currently holds the lock.")
+
+Using a ``timeout < 0`` makes the lock block until it can be acquired
+while ``timeout == 0`` results in only one attempt to acquire the lock before raising a :class:`Timeout <filelock.Timeout>` exception (-> non-blocking).
+
+You can also use the ``blocking`` parameter to attempt a non-blocking :meth:`acquire <filelock.BaseFileLock.acquire>`.
+
+.. code-block:: python
+
+    try:
+        with lock.acquire(blocking=False):
+            with open(file_path, "a") as f:
+                f.write("I have a bad feeling about this.")
+    except Timeout:
+        print("Another instance of this application currently holds the lock.")
+
+
+The ``blocking`` option takes precedence over ``timeout``.
+Meaning, if you set ``blocking=False`` while ``timeout > 0``, a :class:`Timeout <filelock.Timeout>` exception is raised without waiting for the lock to release.
+
+You can pre-parametrize both of these options when constructing the lock for ease-of-use.
+
+.. code-block:: python
+
+    from filelock import Timeout, FileLock
+
+    lock_1 = FileLock("high_ground.txt.lock", blocking = False)
+    try:
+        with lock_1:
+            # do some work
+            pass
+    except Timeout:
+        print("Well, we tried once and couldn't acquire.")
+
+    lock_2 = FileLock("high_ground.txt.lock", timeout = 10)
+    try:
+        with lock_2:
+            # do some other work
+            pass
+    except Timeout:
+        print("Ten seconds feel like forever sometimes.")
 
 Logging
 -------
