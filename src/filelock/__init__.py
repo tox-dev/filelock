@@ -17,7 +17,13 @@ from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock, has_fcntl
 from ._windows import WindowsFileLock
-from .asyncio import AsyncAcquireReturnProxy, BaseAsyncFileLock, AsyncSoftFileLock, AsyncUnixFileLock, AsyncWindowsFileLock
+from .asyncio import (
+    AsyncAcquireReturnProxy,
+    AsyncSoftFileLock,
+    AsyncUnixFileLock,
+    AsyncWindowsFileLock,
+    BaseAsyncFileLock,
+)
 from .version import version
 
 #: version of the project as a string
@@ -48,19 +54,17 @@ else:
 
 __all__ = [
     "AcquireReturnProxy",
+    "AsyncAcquireReturnProxy",
+    "AsyncFileLock",
+    "AsyncSoftFileLock",
+    "AsyncUnixFileLock",
+    "AsyncWindowsFileLock",
+    "BaseAsyncFileLock",
     "BaseFileLock",
     "FileLock",
     "SoftFileLock",
     "Timeout",
     "UnixFileLock",
     "WindowsFileLock",
-
-    "AsyncAcquireReturnProxy",
-    "BaseAsyncFileLock",
-    "AsyncFileLock",
-    "AsyncSoftFileLock",
-    "AsyncUnixFileLock",
-    "AsyncWindowsFileLock",
-
     "__version__",
 ]

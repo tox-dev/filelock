@@ -6,11 +6,9 @@ import logging
 import os
 import time
 import warnings
-from concurrent import futures
 from dataclasses import dataclass
 from threading import local
-from types import TracebackType
-from typing import Any, NoReturn, Optional
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from typing_extensions import Self
 
@@ -20,6 +18,9 @@ from ._soft import SoftFileLock
 from ._unix import UnixFileLock
 from ._windows import WindowsFileLock
 
+if TYPE_CHECKING:
+    from concurrent import futures
+    from types import TracebackType
 
 _LOGGER = logging.getLogger("filelock")
 
@@ -31,11 +32,11 @@ class AsyncFileLockContext(FileLockContext):
     #: Whether run in executor
     run_in_executor: bool = True
 
-    #： The executor
-    executor: Optional[futures.Executor] = None
+    # ： The executor
+    executor: futures.Executor | None = None
 
     #: The loop
-    loop: Optional[asyncio.AbstractEventLoop] = None
+    loop: asyncio.AbstractEventLoop | None = None
 
 
 class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
@@ -45,10 +46,10 @@ class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
 class AsyncAcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: "BaseAsyncFileLock") -> None:
+    def __init__(self, lock: BaseAsyncFileLock) -> None:
         self.lock = lock
 
-    async def __aenter__(self) -> "BaseAsyncFileLock":
+    async def __aenter__(self) -> BaseAsyncFileLock:
         return self.lock
 
     async def __aexit__(
@@ -111,30 +112,32 @@ class BaseAsyncFileLock(BaseFileLock):
             "run_in_executor": run_in_executor,
             "executor": executor,
         }
-        self._context: AsyncFileLockContext = (AsyncThreadLocalFileContext if thread_local else AsyncFileLockContext)(**kwargs)
+        self._context: AsyncFileLockContext = (AsyncThreadLocalFileContext if thread_local else AsyncFileLockContext)(
+            **kwargs
+        )
 
     @property
     def run_in_executor(self) -> bool:
         return self._context.run_in_executor
-    
+
     @run_in_executor.setter
     def run_in_executor(self, value: bool) -> None:
         self._context.run_in_executor = value
-    
+
     @property
-    def executor(self) -> Optional[futures.Executor]:
+    def executor(self) -> futures.Executor | None:
         return self._context.executor
-    
+
     @executor.setter
-    def executor(self, value: Optional[futures.Executor]) -> None:
+    def executor(self, value: futures.Executor | None) -> None:
         self._context.executor = value
-    
+
     @property
-    def loop(self) -> Optional[asyncio.AbstractEventLoop]:
+    def loop(self) -> asyncio.AbstractEventLoop | None:
         return self._context.loop
-    
+
     @loop.setter
-    def loop(self, value: Optional[asyncio.AbstractEventLoop]) -> None:
+    def loop(self, value: asyncio.AbstractEventLoop | None) -> None:
         self._context.loop = value
 
     async def acquire(
@@ -221,7 +224,7 @@ class BaseAsyncFileLock(BaseFileLock):
             self._context.lock_counter = max(0, self._context.lock_counter - 1)
             raise
         return AsyncAcquireReturnProxy(lock=self)
-    
+
     async def release(self, force: bool = False) -> None:
         """
         Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
@@ -246,10 +249,11 @@ class BaseAsyncFileLock(BaseFileLock):
                     self._release()
                 self._context.lock_counter = 0
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
-    
+
     def __enter__(self) -> NoReturn:
-        raise NotImplementedError("Use async with instead")
-    
+        msg = "Use async with instead"
+        raise NotImplementedError(msg)
+
     async def __aenter__(self) -> Self:
         """
         Acquire the lock.
@@ -259,7 +263,7 @@ class BaseAsyncFileLock(BaseFileLock):
         """
         await self.acquire()
         return self
-    
+
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
@@ -275,7 +279,7 @@ class BaseAsyncFileLock(BaseFileLock):
 
         """
         await self.release()
-    
+
     def __del__(self) -> None:
         """Called when the lock object is deleted."""
         with contextlib.suppress(RuntimeError):
@@ -295,12 +299,10 @@ class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):
     """Uses the :func:`msvcrt.locking` to hard lock the lock file on windows systems."""
 
 
-
-
 __all__ = [
     "AsyncAcquireReturnProxy",
-    "BaseAsyncFileLock",
     "AsyncSoftFileLock",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",
+    "BaseAsyncFileLock",
 ]
