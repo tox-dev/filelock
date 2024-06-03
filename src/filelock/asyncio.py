@@ -1,126 +1,80 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
 import time
 import warnings
-from abc import ABC, abstractmethod
+from concurrent import futures
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any
-from weakref import WeakValueDictionary
+from types import TracebackType
+from typing import Any, NoReturn, Optional
 
+from typing_extensions import Self
+
+from ._api import BaseFileLock, FileLockContext
 from ._error import Timeout
-
-if TYPE_CHECKING:
-    import sys
-    from types import TracebackType
-
-    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-        from typing import Self
-    else:  # pragma: no cover (<py311)
-        from typing_extensions import Self
+from ._soft import SoftFileLock
+from ._unix import UnixFileLock
+from ._windows import WindowsFileLock
 
 
 _LOGGER = logging.getLogger("filelock")
 
 
-# This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__
-# is not called twice when entering the with statement. If we would simply return *self*, the lock would be acquired
-# again in the *__enter__* method of the BaseFileLock, but not released again automatically. issue #37 (memory leak)
-class AcquireReturnProxy:
+@dataclass
+class AsyncFileLockContext(FileLockContext):
+    """A dataclass which holds the context for a ``BaseAsyncFileLock`` object."""
+
+    #: Whether run in executor
+    run_in_executor: bool = True
+
+    #： The executor
+    executor: Optional[futures.Executor] = None
+
+    #: The loop
+    loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
+    """A thread local version of the ``FileLockContext`` class."""
+
+
+class AsyncAcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseFileLock) -> None:
+    def __init__(self, lock: "BaseAsyncFileLock") -> None:
         self.lock = lock
 
-    def __enter__(self) -> BaseFileLock:
+    async def __aenter__(self) -> "BaseAsyncFileLock":
         return self.lock
 
-    def __exit__(
+    async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self.lock.release()
+        await self.lock.release()
 
 
-@dataclass
-class FileLockContext:
-    """A dataclass which holds the context for a ``BaseFileLock`` object."""
-
-    # The context is held in a separate class to allow optional use of thread local storage via the
-    # ThreadLocalFileContext class.
-
-    #: The path to the lock file.
-    lock_file: str
-
-    #: The default timeout value.
-    timeout: float
-
-    #: The mode for the lock files
-    mode: int
-
-    #: Whether the lock should be blocking or not
-    blocking: bool
-
-    #: The file descriptor for the *_lock_file* as it is returned by the os.open() function, not None when lock held
-    lock_file_fd: int | None = None
-
-    #: The lock counter is used for implementing the nested locking mechanism.
-    lock_counter: int = 0  # When the lock is acquired is increased and the lock is only released, when this value is 0
-
-
-class ThreadLocalFileContext(FileLockContext, local):
-    """A thread local version of the ``FileLockContext`` class."""
-
-
-class BaseFileLock(ABC, contextlib.ContextDecorator):
-    """Abstract base class for a file lock object."""
-
-    _instances: WeakValueDictionary[str, BaseFileLock]
-
-    def __new__(  # noqa: PLR0913
-        cls,
-        lock_file: str | os.PathLike[str],
-        timeout: float = -1,
-        mode: int = 0o644,
-        thread_local: bool = True,  # noqa: ARG003, FBT001, FBT002
-        *,
-        blocking: bool = True,  # noqa: ARG003
-        is_singleton: bool = False,
-        **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ARG003
-    ) -> Self:
-        """Create a new lock object or if specified return the singleton instance for the lock file."""
-        if not is_singleton:
-            return super().__new__(cls)
-
-        instance = cls._instances.get(str(lock_file))
-        if not instance:
-            instance = super().__new__(cls)
-            cls._instances[str(lock_file)] = instance
-        elif timeout != instance.timeout or mode != instance.mode:
-            msg = "Singleton lock instances cannot be initialized with differing arguments"
-            raise ValueError(msg)
-
-        return instance  # type: ignore[return-value] # https://github.com/python/mypy/issues/15322
-
-    def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
-        """Setup unique state for lock subclasses."""
-        super().__init_subclass__(**kwargs)
-        cls._instances = WeakValueDictionary()
+class BaseAsyncFileLock(BaseFileLock):
+    """Base class for asynchronous file locks."""
 
     def __init__(  # noqa: PLR0913
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = 0o644,
-        thread_local: bool = True,  # noqa: FBT001, FBT002
+        thread_local: bool = False,  # noqa: FBT001, FBT002
         *,
         blocking: bool = True,
         is_singleton: bool = False,
+        loop: asyncio.AbstractEventLoop | None = None,
+        run_in_executor: bool = True,
+        executor: futures.Executor | None = None,
     ) -> None:
         """
         Create a new lock object.
@@ -136,10 +90,15 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param is_singleton: If this is set to ``True`` then only one instance of this class will be created \
             per lock file. This is useful if you want to use the lock object for reentrant locking without needing \
             to pass the same object around.
+        :param loop: The event loop to use. If not specified, the running event loop will be used.
+        :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
+        :param executor: The executor to use. If not specified, the default executor will be used.
 
         """
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
+        if thread_local:
+            assert not run_in_executor, "run_in_executor is not supported when thread_local is True"
 
         # Create the context. Note that external code should not work with the context directly and should instead use
         # properties of this class.
@@ -148,97 +107,44 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             "timeout": timeout,
             "mode": mode,
             "blocking": blocking,
+            "loop": loop,
+            "run_in_executor": run_in_executor,
+            "executor": executor,
         }
-        self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(**kwargs)
-
-    def is_thread_local(self) -> bool:
-        """:return: a flag indicating if this lock is thread local or not"""
-        return self._is_thread_local
+        self._context: AsyncFileLockContext = (AsyncThreadLocalFileContext if thread_local else AsyncFileLockContext)(**kwargs)
 
     @property
-    def is_singleton(self) -> bool:
-        """:return: a flag indicating if this lock is singleton or not"""
-        return self._is_singleton
-
+    def run_in_executor(self) -> bool:
+        return self._context.run_in_executor
+    
+    @run_in_executor.setter
+    def run_in_executor(self, value: bool) -> None:
+        self._context.run_in_executor = value
+    
     @property
-    def lock_file(self) -> str:
-        """:return: path to the lock file"""
-        return self._context.lock_file
-
+    def executor(self) -> Optional[futures.Executor]:
+        return self._context.executor
+    
+    @executor.setter
+    def executor(self, value: Optional[futures.Executor]) -> None:
+        self._context.executor = value
+    
     @property
-    def timeout(self) -> float:
-        """
-        :return: the default timeout value, in seconds
+    def loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        return self._context.loop
+    
+    @loop.setter
+    def loop(self, value: Optional[asyncio.AbstractEventLoop]) -> None:
+        self._context.loop = value
 
-        .. versionadded:: 2.0.0
-        """
-        return self._context.timeout
-
-    @timeout.setter
-    def timeout(self, value: float | str) -> None:
-        """
-        Change the default timeout value.
-
-        :param value: the new value, in seconds
-
-        """
-        self._context.timeout = float(value)
-
-    @property
-    def blocking(self) -> bool:
-        """:return: whether the locking is blocking or not"""
-        return self._context.blocking
-
-    @blocking.setter
-    def blocking(self, value: bool) -> None:
-        """
-        Change the default blocking value.
-
-        :param value: the new value as bool
-
-        """
-        self._context.blocking = value
-
-    @property
-    def mode(self) -> int:
-        """:return: the file permissions for the lockfile"""
-        return self._context.mode
-
-    @abstractmethod
-    def _acquire(self) -> None:
-        """If the file lock could be acquired, self._context.lock_file_fd holds the file descriptor of the lock file."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def _release(self) -> None:
-        """Releases the lock and sets self._context.lock_file_fd to None."""
-        raise NotImplementedError
-
-    @property
-    def is_locked(self) -> bool:
-        """
-
-        :return: A boolean indicating if the lock file is holding the lock currently.
-
-        .. versionchanged:: 2.0.0
-
-            This was previously a method and is now a property.
-        """
-        return self._context.lock_file_fd is not None
-
-    @property
-    def lock_counter(self) -> int:
-        """:return: The number of times this lock has been acquired (but not yet released)."""
-        return self._context.lock_counter
-
-    def acquire(
+    async def acquire(
         self,
         timeout: float | None = None,
         poll_interval: float = 0.05,
         *,
         poll_intervall: float | None = None,
         blocking: bool | None = None,
-    ) -> AcquireReturnProxy:
+    ) -> AsyncAcquireReturnProxy:
         """
         Try to acquire the file lock.
 
@@ -292,7 +198,13 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             while True:
                 if not self.is_locked:
                     _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                    self._acquire()
+                    if asyncio.iscoroutinefunction(self._acquire):
+                        await self._acquire()
+                    elif self.run_in_executor:
+                        loop = self.loop or asyncio.get_running_loop()
+                        await loop.run_in_executor(self.executor, self._acquire)
+                    else:
+                        self._acquire()
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
@@ -304,13 +216,13 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                     raise Timeout(lock_filename)  # noqa: TRY301
                 msg = "Lock %s not acquired on %s, waiting %s seconds ..."
                 _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
-                time.sleep(poll_interval)
+                await asyncio.sleep(poll_interval)
         except BaseException:  # Something did go wrong, so decrement the counter.
             self._context.lock_counter = max(0, self._context.lock_counter - 1)
             raise
-        return AcquireReturnProxy(lock=self)
-
-    def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
+        return AsyncAcquireReturnProxy(lock=self)
+    
+    async def release(self, force: bool = False) -> None:
         """
         Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
         Also note, that the lock file itself is not automatically deleted.
@@ -325,21 +237,30 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                 lock_id, lock_filename = id(self), self.lock_file
 
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
-                self._release()
+                if asyncio.iscoroutinefunction(self._release):
+                    await self._release()
+                elif self.run_in_executor:
+                    loop = self.loop or asyncio.get_running_loop()
+                    await loop.run_in_executor(self.executor, self._release)
+                else:
+                    self._release()
                 self._context.lock_counter = 0
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
-
-    def __enter__(self) -> Self:
+    
+    def __enter__(self) -> NoReturn:
+        raise NotImplementedError("Use async with instead")
+    
+    async def __aenter__(self) -> Self:
         """
         Acquire the lock.
 
         :return: the lock object
 
         """
-        self.acquire()
+        await self.acquire()
         return self
-
-    def __exit__(
+    
+    async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
@@ -353,14 +274,33 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         :param traceback: the exception traceback if raised
 
         """
-        self.release()
-
+        await self.release()
+    
     def __del__(self) -> None:
         """Called when the lock object is deleted."""
-        self.release(force=True)
+        with contextlib.suppress(RuntimeError):
+            loop = self.loop or asyncio.get_running_loop()
+            loop.create_task(self.release(force=True))
+
+
+class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
+    """Simply watches the existence of the lock file."""
+
+
+class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):
+    """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
+
+
+class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):
+    """Uses the :func:`msvcrt.locking` to hard lock the lock file on windows systems."""
+
+
 
 
 __all__ = [
-    "AcquireReturnProxy",
-    "BaseFileLock",
+    "AsyncAcquireReturnProxy",
+    "BaseAsyncFileLock",
+    "AsyncSoftFileLock",
+    "AsyncUnixFileLock",
+    "AsyncWindowsFileLock",
 ]
