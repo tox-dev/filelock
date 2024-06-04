@@ -148,7 +148,7 @@ class BaseAsyncFileLock(BaseFileLock):
         """
         Try to acquire the file lock.
 
-        :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~timeout` is and
+        :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~BaseFileLock.timeout` is and
          if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file
         :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
