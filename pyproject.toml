@@ -50,10 +50,10 @@ optional-dependencies.testing = [
   "coverage>=7.3.2",
   "diff-cover>=8.0.1",
   "pytest>=7.4.3",
+  "pytest-asyncio",
   "pytest-cov>=4.1",
   "pytest-mock>=3.12",
   "pytest-timeout>=2.2",
-  "pytest-asyncio",
 ]
 optional-dependencies.typing = [
   "typing-extensions>=4.8; python_version<'3.11'",
