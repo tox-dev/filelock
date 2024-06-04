@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from threading import local
 from typing import TYPE_CHECKING, Any, NoReturn
 
-from typing_extensions import Self
-
 from ._api import BaseFileLock, FileLockContext
 from ._error import Timeout
 from ._soft import SoftFileLock
@@ -19,8 +17,15 @@ from ._unix import UnixFileLock
 from ._windows import WindowsFileLock
 
 if TYPE_CHECKING:
+    import sys
     from concurrent import futures
     from types import TracebackType
+
+    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
+        from typing import Self
+    else:  # pragma: no cover (<py311)
+        from typing_extensions import Self
+
 
 _LOGGER = logging.getLogger("filelock")
 
@@ -120,27 +125,19 @@ class BaseAsyncFileLock(BaseFileLock):
     def run_in_executor(self) -> bool:
         return self._context.run_in_executor
 
-    @run_in_executor.setter
-    def run_in_executor(self, value: bool) -> None:
-        self._context.run_in_executor = value
-
     @property
     def executor(self) -> futures.Executor | None:
         return self._context.executor
 
     @executor.setter
-    def executor(self, value: futures.Executor | None) -> None:
+    def executor(self, value: futures.Executor | None) -> None:  # pragma: no cover
         self._context.executor = value
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
         return self._context.loop
 
-    @loop.setter
-    def loop(self, value: asyncio.AbstractEventLoop | None) -> None:
-        self._context.loop = value
-
-    async def acquire(
+    async def acquire(  # type: ignore[override]
         self,
         timeout: float | None = None,
         poll_interval: float = 0.05,
@@ -186,7 +183,7 @@ class BaseAsyncFileLock(BaseFileLock):
         if blocking is None:
             blocking = self._context.blocking
 
-        if poll_intervall is not None:
+        if poll_intervall is not None:  # pragma: no cover
             msg = "use poll_interval instead of poll_intervall"
             warnings.warn(msg, DeprecationWarning, stacklevel=2)
             poll_interval = poll_intervall
@@ -225,7 +222,7 @@ class BaseAsyncFileLock(BaseFileLock):
             raise
         return AsyncAcquireReturnProxy(lock=self)
 
-    async def release(self, force: bool = False) -> None:
+    async def release(self, force: bool = False) -> None:  # type: ignore[override]
         """
         Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
         Also note, that the lock file itself is not automatically deleted.
@@ -284,7 +281,10 @@ class BaseAsyncFileLock(BaseFileLock):
         """Called when the lock object is deleted."""
         with contextlib.suppress(RuntimeError):
             loop = self.loop or asyncio.get_running_loop()
-            loop.create_task(self.release(force=True))
+            if not loop.is_running():  # pragma: no cover
+                loop.run_until_complete(self.release(force=True))
+            else:
+                loop.create_task(self.release(force=True))
 
 
 class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
