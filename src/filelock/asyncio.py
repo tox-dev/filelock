@@ -230,7 +230,7 @@ class BaseAsyncFileLock(BaseFileLock):
             raise
         return AsyncAcquireReturnProxy(lock=self)
 
-    async def release(self, force: bool = False) -> None:  # type: ignore[override]
+    async def release(self, force: bool = False) -> None:  # type: ignore[override]  # noqa: FBT001, FBT002
         """
         Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
         Also note, that the lock file itself is not automatically deleted.
