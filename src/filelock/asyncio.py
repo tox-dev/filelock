@@ -1,3 +1,7 @@
+"""
+An asyncio-based implementation of the file lock.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +12,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Callable, NoReturn
 
 from ._api import BaseFileLock, FileLockContext
 from ._error import Timeout
@@ -37,7 +41,7 @@ class AsyncFileLockContext(FileLockContext):
     #: Whether run in executor
     run_in_executor: bool = True
 
-    # ： The executor
+    #: The executor
     executor: futures.Executor | None = None
 
     #: The loop
@@ -51,13 +55,13 @@ class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
 class AsyncAcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseAsyncFileLock) -> None:
+    def __init__(self, lock: BaseAsyncFileLock) -> None:  # noqa: D107
         self.lock = lock
 
-    async def __aenter__(self) -> BaseAsyncFileLock:
+    async def __aenter__(self) -> BaseAsyncFileLock:  # noqa: D105
         return self.lock
 
-    async def __aexit__(
+    async def __aexit__(  # noqa: D105
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
@@ -103,8 +107,8 @@ class BaseAsyncFileLock(BaseFileLock):
         """
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
-        if thread_local:
-            assert not run_in_executor, "run_in_executor is not supported when thread_local is True"
+        if thread_local and run_in_executor:
+            raise ValueError("run_in_executor is not supported when thread_local is True")
 
         # Create the context. Note that external code should not work with the context directly and should instead use
         # properties of this class.
@@ -123,18 +127,28 @@ class BaseAsyncFileLock(BaseFileLock):
 
     @property
     def run_in_executor(self) -> bool:
+        """::return: whether run in executor"""
         return self._context.run_in_executor
 
     @property
     def executor(self) -> futures.Executor | None:
+        """::return: the executor"""
         return self._context.executor
 
     @executor.setter
     def executor(self, value: futures.Executor | None) -> None:  # pragma: no cover
+        """
+        Change the executor.
+
+        :param value: the new executor or ``None``
+        :type value: futures.Executor | None
+
+        """
         self._context.executor = value
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
+        """::return: the event loop"""
         return self._context.loop
 
     async def acquire(  # type: ignore[override]
@@ -148,8 +162,9 @@ class BaseAsyncFileLock(BaseFileLock):
         """
         Try to acquire the file lock.
 
-        :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~BaseFileLock.timeout` is and
-         if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
+        :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default
+            :attr:`~BaseFileLock.timeout` is and if ``timeout < 0``, there is no timeout and
+            this method will block until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file
         :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
@@ -198,13 +213,7 @@ class BaseAsyncFileLock(BaseFileLock):
             while True:
                 if not self.is_locked:
                     _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                    if asyncio.iscoroutinefunction(self._acquire):
-                        await self._acquire()
-                    elif self.run_in_executor:
-                        loop = self.loop or asyncio.get_running_loop()
-                        await loop.run_in_executor(self.executor, self._acquire)
-                    else:
-                        self._acquire()
+                    await self._run_internal_method(self._acquire)
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
@@ -237,18 +246,29 @@ class BaseAsyncFileLock(BaseFileLock):
                 lock_id, lock_filename = id(self), self.lock_file
 
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
-                if asyncio.iscoroutinefunction(self._release):
-                    await self._release()
-                elif self.run_in_executor:
-                    loop = self.loop or asyncio.get_running_loop()
-                    await loop.run_in_executor(self.executor, self._release)
-                else:
-                    self._release()
+                await self._run_internal_method(self._release)
                 self._context.lock_counter = 0
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+    
+    async def _run_internal_method(self, method: Callable[[], Any]) -> None:
+        if asyncio.iscoroutinefunction(method):
+            await method()
+        elif self.run_in_executor:
+            loop = self.loop or asyncio.get_running_loop()
+            await loop.run_in_executor(self.executor, method)
+        else:
+            method()
 
     def __enter__(self) -> NoReturn:
-        msg = "Use async with instead"
+        """
+        Replace old __enter__ method to avoid using it.
+
+        NOTE: DO NOT USE `with` FOR ASYNCIO LOCKS, USE `async with` INSTEAD.
+
+        :return: none
+        :rtype: NoReturn
+        """
+        msg = "Do not use `with` for asyncio locks, use `async with` instead."
         raise NotImplementedError(msg)
 
     async def __aenter__(self) -> Self:
