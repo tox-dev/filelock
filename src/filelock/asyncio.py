@@ -1,6 +1,4 @@
-"""
-An asyncio-based implementation of the file lock.
-"""
+"""An asyncio-based implementation of the file lock."""
 
 from __future__ import annotations
 
@@ -108,7 +106,8 @@ class BaseAsyncFileLock(BaseFileLock):
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         if thread_local and run_in_executor:
-            raise ValueError("run_in_executor is not supported when thread_local is True")
+            msg = "run_in_executor is not supported when thread_local is True"
+            raise ValueError(msg)
 
         # Create the context. Note that external code should not work with the context directly and should instead use
         # properties of this class.
@@ -127,12 +126,12 @@ class BaseAsyncFileLock(BaseFileLock):
 
     @property
     def run_in_executor(self) -> bool:
-        """::return: whether run in executor"""
+        """::return: whether run in executor."""
         return self._context.run_in_executor
 
     @property
     def executor(self) -> futures.Executor | None:
-        """::return: the executor"""
+        """::return: the executor."""
         return self._context.executor
 
     @executor.setter
@@ -148,7 +147,7 @@ class BaseAsyncFileLock(BaseFileLock):
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
-        """::return: the event loop"""
+        """::return: the event loop."""
         return self._context.loop
 
     async def acquire(  # type: ignore[override]
@@ -249,7 +248,7 @@ class BaseAsyncFileLock(BaseFileLock):
                 await self._run_internal_method(self._release)
                 self._context.lock_counter = 0
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
-    
+
     async def _run_internal_method(self, method: Callable[[], Any]) -> None:
         if asyncio.iscoroutinefunction(method):
             await method()
