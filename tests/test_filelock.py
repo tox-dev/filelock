@@ -201,6 +201,23 @@ def test_nested_forced_release(lock_type: type[BaseFileLock], tmp_path: Path) ->
     assert not lock.is_locked
 
 
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_nested_contruct(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    # lock is re-entrant for a given file even if it is constructed multiple times
+    lock_path = tmp_path / "a"
+
+    with lock_type(str(lock_path), is_singleton=True, timeout=2) as lock_1:
+        assert lock_1.is_locked
+
+        with lock_type(str(lock_path), is_singleton=True, timeout=2) as lock_2:
+            assert lock_2 is lock_1
+            assert lock_2.is_locked
+
+        assert lock_1.is_locked
+
+    assert not lock_1.is_locked
+
+
 _ExcInfoType = Union[Tuple[Type[BaseException], BaseException, TracebackType], Tuple[None, None, None]]
 
 
