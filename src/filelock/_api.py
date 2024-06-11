@@ -80,28 +80,33 @@ class ThreadLocalFileContext(FileLockContext, local):
 class BaseFileLock(ABC, contextlib.ContextDecorator):
     """Abstract base class for a file lock object."""
 
-    _instances: WeakValueDictionary[str, BaseFileLock]
+    _instances: WeakValueDictionary[str, Self]
 
     def __new__(  # noqa: PLR0913
         cls,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = 0o644,
-        thread_local: bool = True,  # noqa: ARG003, FBT001, FBT002
+        thread_local: bool = True,  # noqa: FBT001, FBT002
         *,
-        blocking: bool = True,  # noqa: ARG003
+        blocking: bool = True,
         is_singleton: bool = False,
         **kwargs: dict[str, Any],  # capture remaining kwargs for subclasses  # noqa: ARG003
     ) -> Self:
         """Create a new lock object or if specified return the singleton instance for the lock file."""
         if not is_singleton:
-            return super().__new__(cls)
+            self = super().__new__(cls)
+            self._initialize(lock_file, timeout, mode, thread_local, blocking=blocking, is_singleton=is_singleton)
+            return self
 
         instance = cls._instances.get(str(lock_file))
         if not instance:
-            instance = super().__new__(cls)
-            cls._instances[str(lock_file)] = instance
-        elif timeout != instance.timeout or mode != instance.mode:
+            self = super().__new__(cls)
+            self._initialize(lock_file, timeout, mode, thread_local, blocking=blocking, is_singleton=is_singleton)
+            cls._instances[str(lock_file)] = self
+            return self
+
+        if timeout != instance.timeout or mode != instance.mode:
             msg = "Singleton lock instances cannot be initialized with differing arguments"
             raise ValueError(msg)
 
@@ -112,7 +117,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
 
-    def __init__(  # noqa: PLR0913
+    def _initialize(  # noqa: PLR0913
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
