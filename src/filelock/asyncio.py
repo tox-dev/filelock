@@ -7,7 +7,6 @@ import contextlib
 import logging
 import os
 import time
-import warnings
 from dataclasses import dataclass
 from threading import local
 from typing import TYPE_CHECKING, Any, Callable, NoReturn
@@ -155,7 +154,6 @@ class BaseAsyncFileLock(BaseFileLock):
         timeout: float | None = None,
         poll_interval: float = 0.05,
         *,
-        poll_intervall: float | None = None,
         blocking: bool | None = None,
     ) -> AsyncAcquireReturnProxy:
         """
@@ -165,7 +163,6 @@ class BaseAsyncFileLock(BaseFileLock):
             :attr:`~BaseFileLock.timeout` is and if ``timeout < 0``, there is no timeout and
             this method will block until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file
-        :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
          first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
         :raises Timeout: if fails to acquire lock within the timeout period
@@ -184,11 +181,6 @@ class BaseAsyncFileLock(BaseFileLock):
             finally:
                 lock.release()
 
-        .. versionchanged:: 2.0.0
-
-            This method returns now a *proxy* object instead of *self*,
-            so that it can be used in a with statement without side effects.
-
         """
         # Use the default timeout, if no timeout is provided.
         if timeout is None:
@@ -196,11 +188,6 @@ class BaseAsyncFileLock(BaseFileLock):
 
         if blocking is None:
             blocking = self._context.blocking
-
-        if poll_intervall is not None:  # pragma: no cover
-            msg = "use poll_interval instead of poll_intervall"
-            warnings.warn(msg, DeprecationWarning, stacklevel=2)
-            poll_interval = poll_intervall
 
         # Increment the number right at the beginning. We can still undo it, if something fails.
         self._context.lock_counter += 1
