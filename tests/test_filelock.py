@@ -756,7 +756,7 @@ def test_singleton_locks_must_be_initialized_with_the_same_args(lock_type: type[
         with pytest.raises(ValueError, match=general_msg) as exc_info:
             lock_type(str(lock_path), is_singleton=True, **altered_args)
         exc_info.match(arg_name)  # ensure specific non-matching argument is included in exception text
-    del lock
+    del lock, exc_info
 
 
 @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
