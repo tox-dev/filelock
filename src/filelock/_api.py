@@ -117,7 +117,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         pass  # for backwards compatibility (don't break super().__init__ calls)
 
     def _initialize(  # noqa: PLR0913
