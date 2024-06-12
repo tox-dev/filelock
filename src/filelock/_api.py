@@ -143,7 +143,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                 raise RuntimeError(msg)
 
             params_to_check = {
-                "is_thread_local": (thread_local, self.is_thread_local()),
+                "thread_local": (thread_local, self.is_thread_local()),
                 "timeout": (timeout, self.timeout),
                 "mode": (mode, self.mode),
                 "blocking": (blocking, self.blocking),
