@@ -114,14 +114,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
 
-<<<<<<< HEAD
     def __init__(  # noqa: PLR0913
-=======
-    def __init__(self, *args, **kwargs) -> None:
-        pass  # for backwards compatibility (don't break super().__init__ calls)
-
-    def _initialize(  # noqa: PLR0913
->>>>>>> 0d3d1cbd7830a436223d4e93712e7116237de86b
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
