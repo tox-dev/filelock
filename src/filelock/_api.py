@@ -114,22 +114,22 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
 
-<<<<<<< HEAD
+
+<< << << < HEAD
     def __init__(  # noqa: PLR0913
-=======
-    def __init__(self, *args, **kwargs) -> None:
+== == ===def __init__(self, *args, **kwargs) -> None:
         pass  # for backwards compatibility (don't break super().__init__ calls)
 
     def _initialize(  # noqa: PLR0913
->>>>>>> 0d3d1cbd7830a436223d4e93712e7116237de86b
+>> >> >> > 0d3d1cbd7830a436223d4e93712e7116237de86b
         self,
         lock_file: str | os.PathLike[str],
-        timeout: float = -1,
-        mode: int = 0o644,
-        thread_local: bool = True,  # noqa: FBT001, FBT002
+        timeout: float=-1,
+        mode: int=0o644,
+        thread_local: bool=True,  # noqa: FBT001, FBT002
         *,
-        blocking: bool = True,
-        is_singleton: bool = False,
+        blocking: bool=True,
+        is_singleton: bool=False,
     ) -> None:
         """
         Create a new lock object.
@@ -167,17 +167,17 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         """:return: a flag indicating if this lock is thread local or not"""
         return self._is_thread_local
 
-    @property
+    @ property
     def is_singleton(self) -> bool:
         """:return: a flag indicating if this lock is singleton or not"""
         return self._is_singleton
 
-    @property
+    @ property
     def lock_file(self) -> str:
         """:return: path to the lock file"""
         return self._context.lock_file
 
-    @property
+    @ property
     def timeout(self) -> float:
         """
         :return: the default timeout value, in seconds
@@ -186,7 +186,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         """
         return self._context.timeout
 
-    @timeout.setter
+    @ timeout.setter
     def timeout(self, value: float | str) -> None:
         """
         Change the default timeout value.
@@ -196,12 +196,12 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         """
         self._context.timeout = float(value)
 
-    @property
+    @ property
     def blocking(self) -> bool:
         """:return: whether the locking is blocking or not"""
         return self._context.blocking
 
-    @blocking.setter
+    @ blocking.setter
     def blocking(self, value: bool) -> None:
         """
         Change the default blocking value.
@@ -211,22 +211,22 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         """
         self._context.blocking = value
 
-    @property
+    @ property
     def mode(self) -> int:
         """:return: the file permissions for the lockfile"""
         return self._context.mode
 
-    @abstractmethod
+    @ abstractmethod
     def _acquire(self) -> None:
         """If the file lock could be acquired, self._context.lock_file_fd holds the file descriptor of the lock file."""
         raise NotImplementedError
 
-    @abstractmethod
+    @ abstractmethod
     def _release(self) -> None:
         """Releases the lock and sets self._context.lock_file_fd to None."""
         raise NotImplementedError
 
-    @property
+    @ property
     def is_locked(self) -> bool:
         """
 
@@ -238,18 +238,18 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         """
         return self._context.lock_file_fd is not None
 
-    @property
+    @ property
     def lock_counter(self) -> int:
         """:return: The number of times this lock has been acquired (but not yet released)."""
         return self._context.lock_counter
 
     def acquire(
         self,
-        timeout: float | None = None,
-        poll_interval: float = 0.05,
+        timeout: float | None=None,
+        poll_interval: float=0.05,
         *,
-        poll_intervall: float | None = None,
-        blocking: bool | None = None,
+        poll_intervall: float | None=None,
+        blocking: bool | None=None,
     ) -> AcquireReturnProxy:
         """
         Try to acquire the file lock.
@@ -322,7 +322,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             raise
         return AcquireReturnProxy(lock=self)
 
-    def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
+    def release(self, force: bool=False) -> None:  # noqa: FBT001, FBT002
         """
         Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
         Also note, that the lock file itself is not automatically deleted.
@@ -334,11 +334,11 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             self._context.lock_counter -= 1
 
             if self._context.lock_counter == 0 or force:
-                lock_id, lock_filename = id(self), self.lock_file
+                lock_id, lock_filename=id(self), self.lock_file
 
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                 self._release()
-                self._context.lock_counter = 0
+                self._context.lock_counter=0
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def __enter__(self) -> Self:
