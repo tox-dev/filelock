@@ -687,9 +687,10 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             mode: int = 0o644,
             thread_local: bool = True,
             my_param: int = 0,
-            **kwargs: dict[str, Any],
+            **kwargs: dict[str, Any],  # noqa: ARG002
         ) -> None:
-            pass
+            super().__init__(lock_file, timeout, mode, thread_local, blocking=True, is_singleton=True)
+            self.my_param = my_param
 
     lock_path = tmp_path / "a"
     MyFileLock(str(lock_path), my_param=1)
@@ -702,9 +703,10 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             mode: int = 0o644,
             thread_local: bool = True,
             my_param: int = 0,
-            **kwargs: dict[str, Any],
+            **kwargs: dict[str, Any],  # noqa: ARG002
         ) -> None:
-            pass
+            super().__init__(lock_file, timeout, mode, thread_local, blocking=True, is_singleton=True)
+            self.my_param = my_param
 
     MySoftFileLock(str(lock_path), my_param=1)
 

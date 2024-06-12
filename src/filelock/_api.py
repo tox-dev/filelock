@@ -85,11 +85,11 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
     def __new__(  # noqa: PLR0913
         cls,
         lock_file: str | os.PathLike[str],
-        timeout: float = -1,
-        mode: int = 0o644,
-        thread_local: bool = True,  # noqa: FBT001, FBT002
+        timeout: float = -1,  # noqa: ARG003
+        mode: int = 0o644,  # noqa: ARG003
+        thread_local: bool = True,  # noqa: FBT001, FBT002, ARG003
         *,
-        blocking: bool = True,
+        blocking: bool = True,  # noqa: ARG003
         is_singleton: bool = False,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ARG003, ANN401
     ) -> Self:
@@ -102,10 +102,6 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             self = super().__new__(cls)
             cls._instances[str(lock_file)] = self
             return self
-
-        if timeout != instance.timeout or mode != instance.mode:
-            msg = "Singleton lock instances cannot be initialized with differing arguments"
-            raise ValueError(msg)
 
         return instance  # type: ignore[return-value] # https://github.com/python/mypy/issues/15322
 
@@ -140,7 +136,17 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             to pass the same object around.
 
         """
-        if hasattr(self, "_context"):
+        if is_singleton and hasattr(self, "_context"):
+            # test whether other parameters match existing instance.
+            if (
+                self.is_thread_local() != thread_local
+                or not self.is_singleton
+                or self._context.timeout != timeout
+                or self._context.mode != mode
+                or self._context.blocking != blocking
+            ):
+                msg = "Singleton lock instances cannot be initialized with differing arguments"
+                raise ValueError(msg)
             return  # bypass initialization because object is already initialized
 
         self._is_thread_local = thread_local
