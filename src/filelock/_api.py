@@ -139,7 +139,8 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         if is_singleton and hasattr(self, "_context"):
             # test whether other parameters match existing instance.
             if not self.is_singleton:
-                raise RuntimeError("__init__ should only be called on initialized object if it is a singleton")
+                msg = "__init__ should only be called on initialized object if it is a singleton"
+                raise RuntimeError(msg)
 
             params_to_check = {
                 "is_thread_local": (thread_local, self.is_thread_local()),
