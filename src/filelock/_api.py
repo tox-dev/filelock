@@ -85,30 +85,23 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
     def __new__(  # noqa: PLR0913
         cls,
         lock_file: str | os.PathLike[str],
-        timeout: float = -1,
-        mode: int = 0o644,
-        thread_local: bool = True,  # noqa: FBT001, FBT002
+        timeout: float = -1,  # noqa: ARG003
+        mode: int = 0o644,  # noqa: ARG003
+        thread_local: bool = True,  # noqa: FBT001, FBT002, ARG003
         *,
-        blocking: bool = True,
+        blocking: bool = True,  # noqa: ARG003
         is_singleton: bool = False,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ARG003, ANN401
     ) -> Self:
         """Create a new lock object or if specified return the singleton instance for the lock file."""
         if not is_singleton:
-            self = super().__new__(cls)
-            self._initialize(lock_file, timeout, mode, thread_local, blocking=blocking, is_singleton=is_singleton)
-            return self
+            return super().__new__(cls)
 
         instance = cls._instances.get(str(lock_file))
         if not instance:
             self = super().__new__(cls)
-            self._initialize(lock_file, timeout, mode, thread_local, blocking=blocking, is_singleton=is_singleton)
             cls._instances[str(lock_file)] = self
             return self
-
-        if timeout != instance.timeout or mode != instance.mode:
-            msg = "Singleton lock instances cannot be initialized with differing arguments"
-            raise ValueError(msg)
 
         return instance  # type: ignore[return-value] # https://github.com/python/mypy/issues/15322
 
@@ -117,7 +110,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
 
-    def _initialize(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -143,6 +136,34 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             to pass the same object around.
 
         """
+        if is_singleton and hasattr(self, "_context"):
+            # test whether other parameters match existing instance.
+            if not self.is_singleton:
+                msg = "__init__ should only be called on initialized object if it is a singleton"
+                raise RuntimeError(msg)
+
+            params_to_check = {
+                "thread_local": (thread_local, self.is_thread_local()),
+                "timeout": (timeout, self.timeout),
+                "mode": (mode, self.mode),
+                "blocking": (blocking, self.blocking),
+            }
+
+            non_matching_params = {
+                name: (passed_param, set_param)
+                for name, (passed_param, set_param) in params_to_check.items()
+                if passed_param != set_param
+            }
+            if not non_matching_params:
+                return  # bypass initialization because object is already initialized
+
+            # parameters do not match; raise error
+            msg = "Singleton lock instances cannot be initialized with differing arguments"
+            msg += "\nNon-matching arguments: "
+            for param_name, (passed_param, set_param) in non_matching_params.items():
+                msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
+            raise ValueError(msg)
+
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
 

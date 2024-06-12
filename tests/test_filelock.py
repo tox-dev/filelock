@@ -687,9 +687,10 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             mode: int = 0o644,
             thread_local: bool = True,
             my_param: int = 0,
-            **kwargs: dict[str, Any],
+            **kwargs: dict[str, Any],  # noqa: ARG002
         ) -> None:
-            pass
+            super().__init__(lock_file, timeout, mode, thread_local, blocking=True, is_singleton=True)
+            self.my_param = my_param
 
     lock_path = tmp_path / "a"
     MyFileLock(str(lock_path), my_param=1)
@@ -702,9 +703,10 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             mode: int = 0o644,
             thread_local: bool = True,
             my_param: int = 0,
-            **kwargs: dict[str, Any],
+            **kwargs: dict[str, Any],  # noqa: ARG002
         ) -> None:
-            pass
+            super().__init__(lock_file, timeout, mode, thread_local, blocking=True, is_singleton=True)
+            self.my_param = my_param
 
     MySoftFileLock(str(lock_path), my_param=1)
 
@@ -742,12 +744,19 @@ def test_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFileLock
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_locks_must_be_initialized_with_the_same_args(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
-    lock = lock_type(str(lock_path), is_singleton=True)  # noqa: F841
+    args: dict[str, Any] = {"timeout": -1, "mode": 0o644, "thread_local": True, "blocking": True}
+    alternate_args: dict[str, Any] = {"timeout": 10, "mode": 0, "thread_local": False, "blocking": False}
 
-    with pytest.raises(ValueError, match="Singleton lock instances cannot be initialized with differing arguments"):
-        lock_type(str(lock_path), timeout=10, is_singleton=True)
-    with pytest.raises(ValueError, match="Singleton lock instances cannot be initialized with differing arguments"):
-        lock_type(str(lock_path), mode=0, is_singleton=True)
+    lock = lock_type(str(lock_path), is_singleton=True, **args)
+
+    for arg_name in args:
+        general_msg = "Singleton lock instances cannot be initialized with differing arguments"
+        altered_args = args.copy()
+        altered_args[arg_name] = alternate_args[arg_name]
+        with pytest.raises(ValueError, match=general_msg) as exc_info:
+            lock_type(str(lock_path), is_singleton=True, **altered_args)
+        exc_info.match(arg_name)  # ensure specific non-matching argument is included in exception text
+    del lock, exc_info
 
 
 @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
