@@ -149,8 +149,12 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
                 "blocking": (blocking, self.blocking),
             }
 
-            non_matching_params = {name: vals for name, vals in params_to_check.items() if vals[0] != vals[1]}
-            if len(non_matching_params) == 0:
+            non_matching_params = {
+                name: (passed_param, set_param)
+                for name, (passed_param, set_param) in params_to_check.items()
+                if passed_param != set_param
+            }
+            if not non_matching_params:
                 return  # bypass initialization because object is already initialized
 
             # parameters do not match; raise error
