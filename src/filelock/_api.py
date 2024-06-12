@@ -138,16 +138,26 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         """
         if is_singleton and hasattr(self, "_context"):
             # test whether other parameters match existing instance.
-            if (
-                self.is_thread_local() != thread_local
-                or not self.is_singleton
-                or self._context.timeout != timeout
-                or self._context.mode != mode
-                or self._context.blocking != blocking
-            ):
-                msg = "Singleton lock instances cannot be initialized with differing arguments"
-                raise ValueError(msg)
-            return  # bypass initialization because object is already initialized
+            if not self.is_singleton:
+                raise RuntimeError("__init__ should only be called on initialized object if it is a singleton")
+
+            params_to_check = {
+                "is_thread_local": (thread_local, self.is_thread_local()),
+                "timeout": (timeout, self.timeout),
+                "mode": (mode, self.mode),
+                "blocking": (blocking, self.blocking),
+            }
+
+            non_matching_params = {name: vals for name, vals in params_to_check.items() if vals[0] != vals[1]}
+            if len(non_matching_params) == 0:
+                return  # bypass initialization because object is already initialized
+
+            # parameters do not match; raise error
+            msg = "Singleton lock instances cannot be initialized with differing arguments"
+            msg += "\nNon-matching arguments: "
+            for param_name, (passed_param, set_param) in non_matching_params.items():
+                msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
+            raise ValueError(msg)
 
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
