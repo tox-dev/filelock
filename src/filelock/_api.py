@@ -95,14 +95,11 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
     ) -> Self:
         """Create a new lock object or if specified return the singleton instance for the lock file."""
         if not is_singleton:
-            self = super().__new__(cls)
-            self._initialize(lock_file, timeout, mode, thread_local, blocking=blocking, is_singleton=is_singleton)
-            return self
+            return super().__new__(cls)
 
         instance = cls._instances.get(str(lock_file))
         if not instance:
             self = super().__new__(cls)
-            self._initialize(lock_file, timeout, mode, thread_local, blocking=blocking, is_singleton=is_singleton)
             cls._instances[str(lock_file)] = self
             return self
 
@@ -117,10 +114,7 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
 
-    def __init__(self, *args, **kwargs):
-        pass  # for backwards compatibility (don't break super().__init__ calls)
-
-    def _initialize(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -146,6 +140,9 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             to pass the same object around.
 
         """
+        if hasattr(self, '_context'):
+            return  # bypass initialization because object is already initialized
+
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
 
