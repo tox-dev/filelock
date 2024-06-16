@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from threading import local
 from typing import TYPE_CHECKING, Any, Callable, NoReturn
 
-from ._api import BaseFileLock, FileLockContext
+from ._api import BaseFileLock, FileLockContext, FileLockMeta
 from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock
@@ -67,7 +67,34 @@ class AsyncAcquireReturnProxy:
         await self.lock.release()
 
 
-class BaseAsyncFileLock(BaseFileLock):
+class AsyncFileLockMeta(FileLockMeta):
+    def __call__(
+        cls,
+        lock_file: str | os.PathLike[str],
+        timeout: float = -1,  # noqa: ARG003
+        mode: int = 0o644,  # noqa: ARG003
+        thread_local: bool = False,  # noqa: FBT001, FBT002, ARG003
+        *,
+        blocking: bool = True,  # noqa: ARG003
+        is_singleton: bool = False,
+        loop: asyncio.AbstractEventLoop | None = None,
+        run_in_executor: bool = True,
+        executor: futures.Executor | None = None,
+    ) -> BaseAsyncFileLock:
+        return super().__call__(
+            lock_file=lock_file,
+            timeout=timeout,
+            mode=mode,
+            thread_local=thread_local,
+            blocking=blocking,
+            is_singleton=is_singleton,
+            loop=loop,
+            run_in_executor=run_in_executor,
+            executor=executor,
+        )
+
+
+class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     """Base class for asynchronous file locks."""
 
     def __init__(  # noqa: PLR0913

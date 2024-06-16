@@ -5,7 +5,7 @@ import logging
 import os
 import time
 import warnings
-from abc import ABC, abstractmethod
+from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import local
 from typing import TYPE_CHECKING, Any
@@ -77,12 +77,8 @@ class ThreadLocalFileContext(FileLockContext, local):
     """A thread local version of the ``FileLockContext`` class."""
 
 
-class BaseFileLock(ABC, contextlib.ContextDecorator):
-    """Abstract base class for a file lock object."""
-
-    _instances: WeakValueDictionary[str, Self]
-
-    def __new__(  # noqa: PLR0913
+class FileLockMeta(ABCMeta):
+    def __call__(
         cls,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,  # noqa: ARG003
@@ -92,18 +88,52 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
         blocking: bool = True,  # noqa: ARG003
         is_singleton: bool = False,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ARG003, ANN401
-    ) -> Self:
-        """Create a new lock object or if specified return the singleton instance for the lock file."""
-        if not is_singleton:
-            return super().__new__(cls)
+    ) -> BaseFileLock:
+        if is_singleton:
+            instance = cls._instances.get(str(lock_file))
+            if instance:
+                params_to_check = {
+                    "thread_local": (thread_local, instance.is_thread_local()),
+                    "timeout": (timeout, instance.timeout),
+                    "mode": (mode, instance.mode),
+                    "blocking": (blocking, instance.blocking),
+                }
 
-        instance = cls._instances.get(str(lock_file))
-        if not instance:
-            self = super().__new__(cls)
-            cls._instances[str(lock_file)] = self
-            return self
+                non_matching_params = {
+                    name: (passed_param, set_param)
+                    for name, (passed_param, set_param) in params_to_check.items()
+                    if passed_param != set_param
+                }
+                if not non_matching_params:
+                    return instance
+
+                # parameters do not match; raise error
+                msg = "Singleton lock instances cannot be initialized with differing arguments"
+                msg += "\nNon-matching arguments: "
+                for param_name, (passed_param, set_param) in non_matching_params.items():
+                    msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
+                raise ValueError(msg)
+
+        instance = super().__call__(
+            lock_file=lock_file,
+            timeout=timeout,
+            mode=mode,
+            thread_local=thread_local,
+            blocking=blocking,
+            is_singleton=is_singleton,
+            **kwargs,
+        )
+
+        if is_singleton:
+            cls._instances[str(lock_file)] = instance
 
         return instance  # type: ignore[return-value] # https://github.com/python/mypy/issues/15322
+
+
+class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
+    """Abstract base class for a file lock object."""
+
+    _instances: WeakValueDictionary[str, Self]
 
     def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
         """Setup unique state for lock subclasses."""
@@ -136,34 +166,6 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             to pass the same object around.
 
         """
-        if is_singleton and hasattr(self, "_context"):
-            # test whether other parameters match existing instance.
-            if not self.is_singleton:
-                msg = "__init__ should only be called on initialized object if it is a singleton"
-                raise RuntimeError(msg)
-
-            params_to_check = {
-                "thread_local": (thread_local, self.is_thread_local()),
-                "timeout": (timeout, self.timeout),
-                "mode": (mode, self.mode),
-                "blocking": (blocking, self.blocking),
-            }
-
-            non_matching_params = {
-                name: (passed_param, set_param)
-                for name, (passed_param, set_param) in params_to_check.items()
-                if passed_param != set_param
-            }
-            if not non_matching_params:
-                return  # bypass initialization because object is already initialized
-
-            # parameters do not match; raise error
-            msg = "Singleton lock instances cannot be initialized with differing arguments"
-            msg += "\nNon-matching arguments: "
-            for param_name, (passed_param, set_param) in non_matching_params.items():
-                msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
-            raise ValueError(msg)
-
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
 
@@ -175,7 +177,8 @@ class BaseFileLock(ABC, contextlib.ContextDecorator):
             "mode": mode,
             "blocking": blocking,
         }
-        self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(**kwargs)
+        context_cls = ThreadLocalFileContext if thread_local else FileLockContext
+        self._context: FileLockContext = context_cls(**kwargs)
 
     def is_thread_local(self) -> bool:
         """:return: a flag indicating if this lock is thread local or not"""
