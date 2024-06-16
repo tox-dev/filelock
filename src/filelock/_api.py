@@ -78,16 +78,16 @@ class ThreadLocalFileContext(FileLockContext, local):
 
 
 class FileLockMeta(ABCMeta):
-    def __call__(
+    def __call__(  # noqa: PLR0913
         cls,
         lock_file: str | os.PathLike[str],
-        timeout: float = -1,  # noqa: ARG003
-        mode: int = 0o644,  # noqa: ARG003
-        thread_local: bool = True,  # noqa: FBT001, FBT002, ARG003
+        timeout: float = -1,
+        mode: int = 0o644,
+        thread_local: bool = True,  # noqa: FBT001, FBT002
         *,
-        blocking: bool = True,  # noqa: ARG003
+        blocking: bool = True,
         is_singleton: bool = False,
-        **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ARG003, ANN401
+        **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> BaseFileLock:
         if is_singleton:
             instance = cls._instances.get(str(lock_file))

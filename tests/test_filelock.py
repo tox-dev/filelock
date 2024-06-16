@@ -788,11 +788,10 @@ def test_singleton_instance_tracking_is_unique_per_subclass(lock_type: type[Base
 
 
 def test_singleton_locks_when_inheriting_init_is_called_once(tmp_path: Path) -> None:
-
     init_calls = 0
 
     class MyFileLock(FileLock):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
             super().__init__(*args, **kwargs)
             nonlocal init_calls
             init_calls += 1

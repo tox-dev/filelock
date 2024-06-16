@@ -68,14 +68,14 @@ class AsyncAcquireReturnProxy:
 
 
 class AsyncFileLockMeta(FileLockMeta):
-    def __call__(
-        cls,
+    def __call__(  # noqa: PLR0913
+        cls,  # noqa: N805
         lock_file: str | os.PathLike[str],
-        timeout: float = -1,  # noqa: ARG003
-        mode: int = 0o644,  # noqa: ARG003
-        thread_local: bool = False,  # noqa: FBT001, FBT002, ARG003
+        timeout: float = -1,
+        mode: int = 0o644,
+        thread_local: bool = False,  # noqa: FBT001, FBT002
         *,
-        blocking: bool = True,  # noqa: ARG003
+        blocking: bool = True,
         is_singleton: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
