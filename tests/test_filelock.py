@@ -785,3 +785,20 @@ def test_singleton_instance_tracking_is_unique_per_subclass(lock_type: type[Base
     assert isinstance(Lock1._instances, WeakValueDictionary)  # noqa: SLF001
     assert isinstance(Lock2._instances, WeakValueDictionary)  # noqa: SLF001
     assert Lock1._instances is not Lock2._instances  # noqa: SLF001
+
+
+def test_singleton_locks_when_inheriting_init_is_called_once(tmp_path: Path) -> None:
+
+    init_calls = 0
+
+    class MyFileLock(FileLock):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            nonlocal init_calls
+            init_calls += 1
+
+    lock_path = tmp_path / "a"
+    MyFileLock(str(lock_path), is_singleton=True)
+    MyFileLock(str(lock_path), is_singleton=True)
+
+    assert init_calls == 1
