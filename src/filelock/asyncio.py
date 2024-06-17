@@ -81,6 +81,9 @@ class AsyncFileLockMeta(FileLockMeta):
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
     ) -> BaseAsyncFileLock:
+        if thread_local and run_in_executor:
+            msg = "run_in_executor is not supported when thread_local is True"
+            raise ValueError(msg)
         return super().__call__(
             lock_file=lock_file,
             timeout=timeout,
@@ -131,9 +134,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
-        if thread_local and run_in_executor:
-            msg = "run_in_executor is not supported when thread_local is True"
-            raise ValueError(msg)
 
         # Create the context. Note that external code should not work with the context directly and should instead use
         # properties of this class.
