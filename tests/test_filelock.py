@@ -800,7 +800,5 @@ def test_singleton_locks_when_inheriting_init_is_called_once(tmp_path: Path) -> 
     lock1 = MyFileLock(str(lock_path), is_singleton=True)
     lock2 = MyFileLock(str(lock_path), is_singleton=True)
 
+    assert lock1 is lock2
     assert init_calls == 1
-
-    del lock1
-    del lock2
