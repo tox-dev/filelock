@@ -177,8 +177,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             "mode": mode,
             "blocking": blocking,
         }
-        context_cls = ThreadLocalFileContext if thread_local else FileLockContext
-        self._context: FileLockContext = context_cls(**kwargs)
+        self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(**kwargs)
 
     def is_thread_local(self) -> bool:
         """:return: a flag indicating if this lock is thread local or not"""
