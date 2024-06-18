@@ -9,7 +9,7 @@ import os
 import time
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, Callable, NoReturn
+from typing import TYPE_CHECKING, Any, Callable, NoReturn, cast
 
 from ._api import BaseFileLock, FileLockContext, FileLockMeta
 from ._error import Timeout
@@ -68,7 +68,7 @@ class AsyncAcquireReturnProxy:
 
 
 class AsyncFileLockMeta(FileLockMeta):
-    def __call__(  # noqa: PLR0913
+    def __call__(  # type: ignore[override] # noqa: PLR0913
         cls,  # noqa: N805
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -84,7 +84,7 @@ class AsyncFileLockMeta(FileLockMeta):
         if thread_local and run_in_executor:
             msg = "run_in_executor is not supported when thread_local is True"
             raise ValueError(msg)
-        return super().__call__(
+        instance = super().__call__(
             lock_file=lock_file,
             timeout=timeout,
             mode=mode,
@@ -95,6 +95,7 @@ class AsyncFileLockMeta(FileLockMeta):
             run_in_executor=run_in_executor,
             executor=executor,
         )
+        return cast(BaseAsyncFileLock, instance)
 
 
 class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):

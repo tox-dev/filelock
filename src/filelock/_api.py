@@ -8,7 +8,7 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
@@ -90,7 +90,7 @@ class FileLockMeta(ABCMeta):
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> BaseFileLock:
         if is_singleton:
-            instance = cls._instances.get(str(lock_file))
+            instance = cls._instances.get(str(lock_file))  # type: ignore[attr-defined]
             if instance:
                 params_to_check = {
                     "thread_local": (thread_local, instance.is_thread_local()),
@@ -105,7 +105,7 @@ class FileLockMeta(ABCMeta):
                     if passed_param != set_param
                 }
                 if not non_matching_params:
-                    return instance
+                    return cast(BaseFileLock, instance)
 
                 # parameters do not match; raise error
                 msg = "Singleton lock instances cannot be initialized with differing arguments"
@@ -125,15 +125,15 @@ class FileLockMeta(ABCMeta):
         )
 
         if is_singleton:
-            cls._instances[str(lock_file)] = instance
+            cls._instances[str(lock_file)] = instance  # type: ignore[attr-defined]
 
-        return instance  # type: ignore[return-value] # https://github.com/python/mypy/issues/15322
+        return cast(BaseFileLock, instance)
 
 
 class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     """Abstract base class for a file lock object."""
 
-    _instances: WeakValueDictionary[str, Self]
+    _instances: WeakValueDictionary[str, BaseFileLock]
 
     def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
         """Setup unique state for lock subclasses."""
