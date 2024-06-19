@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from virtualenv import cli_run
+from virtualenv import cli_run  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from pathlib import Path
