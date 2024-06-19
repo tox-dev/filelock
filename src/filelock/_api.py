@@ -129,7 +129,7 @@ class FileLockMeta(ABCMeta):
             **kwargs,
         }
 
-        present_params = set(inspect.signature(cls.__init__).parameters)
+        present_params = set(inspect.signature(cls.__init__).parameters)  # type: ignore[misc]
         init_params = {key: value for key, value in all_params.items() if key in present_params}
         # The `lock_file` parameter is required
         init_params["lock_file"] = lock_file
