@@ -54,6 +54,7 @@ optional-dependencies.testing = [
   "pytest-cov>=4.1",
   "pytest-mock>=3.12",
   "pytest-timeout>=2.2",
+  "virtualenv>=20.26.2",
 ]
 optional-dependencies.typing = [
   "typing-extensions>=4.8; python_version<'3.11'",
