@@ -116,7 +116,7 @@ class FileLockMeta(ABCMeta):
                 raise ValueError(msg)
 
         # Workaround to make `__init__`'s params optional in subclasses
-        # E.g. virtualenv changes the `__init__` signature of the `BaseFileLock` class
+        # E.g. virtualenv changes the signature of the `__init__` method in the `BaseFileLock` class descendant
         # (https://github.com/tox-dev/filelock/pull/340)
 
         all_params = {
@@ -131,6 +131,8 @@ class FileLockMeta(ABCMeta):
 
         present_params = set(inspect.signature(cls.__init__).parameters)
         init_params = {key: value for key, value in all_params.items() if key in present_params}
+        # The `lock_file` parameter is required
+        init_params["lock_file"] = lock_file
 
         instance = super().__call__(**init_params)
 
