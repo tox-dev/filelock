@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import logging
 import os
 import time
@@ -114,15 +115,24 @@ class FileLockMeta(ABCMeta):
                     msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
                 raise ValueError(msg)
 
-        instance = super().__call__(
-            lock_file=lock_file,
-            timeout=timeout,
-            mode=mode,
-            thread_local=thread_local,
-            blocking=blocking,
-            is_singleton=is_singleton,
+        # Workaround to make `__init__`'s params optional in subclasses
+        # E.g. virtualenv changes the `__init__` signature of the `BaseFileLock` class
+        # (https://github.com/tox-dev/filelock/pull/340)
+
+        all_params = {
+            "lock_file": lock_file,
+            "timeout": timeout,
+            "mode": mode,
+            "thread_local": thread_local,
+            "blocking": blocking,
+            "is_singleton": is_singleton,
             **kwargs,
-        )
+        }
+
+        present_params = set(inspect.signature(cls.__init__).parameters)
+        init_params = {key: value for key, value in all_params.items() if key in present_params}
+
+        instance = super().__call__(**init_params)
 
         if is_singleton:
             cls._instances[str(lock_file)] = instance  # type: ignore[attr-defined]
