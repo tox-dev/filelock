@@ -802,3 +802,13 @@ def test_singleton_locks_when_inheriting_init_is_called_once(tmp_path: Path) -> 
 
     assert lock1 is lock2
     assert init_calls == 1
+
+
+def test_file_lock_positional_argument(tmp_path: Path) -> None:
+    class FilePathLock(FileLock):
+        def __init__(self, file_path: str) -> None:
+            super().__init__(file_path + ".lock")
+
+    lock_path = tmp_path / "a"
+    lock = FilePathLock(str(lock_path))
+    assert lock.lock_file == str(lock_path) + ".lock"
