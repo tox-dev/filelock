@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from contextlib import suppress
@@ -9,6 +10,8 @@ from typing import cast
 
 from ._api import BaseFileLock
 from ._util import ensure_directory_exists, raise_on_not_writable_file
+
+_LOGGER = logging.getLogger("filelock")
 
 if sys.platform == "win32":  # pragma: win32 cover
     import msvcrt
@@ -33,6 +36,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 try:
                     msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 except OSError as exception:
+                    _LOGGER.debug("Failed to acquire lock: %s", exception)
                     os.close(fd)  # close file first
                     if exception.errno != EACCES:  # file is already locked
                         raise
@@ -45,7 +49,9 @@ if sys.platform == "win32":  # pragma: win32 cover
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             os.close(fd)
 
-            with suppress(OSError):  # Probably another instance of the application hat acquired the file lock.
+            with suppress(
+                OSError
+            ):  # Probably another instance of the application hat acquired the file lock.
                 Path(self.lock_file).unlink()
 
 else:  # pragma: win32 no cover

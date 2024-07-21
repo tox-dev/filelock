@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from contextlib import suppress
@@ -9,6 +10,8 @@ from typing import cast
 
 from ._api import BaseFileLock
 from ._util import ensure_directory_exists
+
+_LOGGER = logging.getLogger("filelock")
 
 #: a flag to indicate if the fcntl API is available
 has_fcntl = False
@@ -45,6 +48,7 @@ else:  # pragma: win32 no cover
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exception:
+                _LOGGER.debug("Failed to acquire lock: %s", exception)
                 os.close(fd)
                 if exception.errno == ENOSYS:  # NotImplemented error
                     msg = "FileSystem does not appear to support flock; use SoftFileLock instead"
