@@ -49,9 +49,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             os.close(fd)
 
-            with suppress(
-                OSError
-            ):  # Probably another instance of the application hat acquired the file lock.
+            with suppress(OSError):  # Probably another instance of the application hat acquired the file lock.
                 Path(self.lock_file).unlink()
 
 else:  # pragma: win32 no cover
