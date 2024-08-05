@@ -63,7 +63,7 @@ def make_ro(path: Path) -> Iterator[None]:
     path.chmod(path.stat().st_mode | write)
 
 
-@pytest.fixture()
+@pytest.fixture
 def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:
     with make_ro(tmp_path):
         yield tmp_path
@@ -81,7 +81,7 @@ def test_ro_folder(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:
         lock.acquire()
 
 
-@pytest.fixture()
+@pytest.fixture
 def tmp_file_ro(tmp_path: Path) -> Iterator[Path]:
     filename = tmp_path / "a"
     filename.write_text("")
@@ -680,7 +680,7 @@ def test_lock_can_be_non_thread_local(
 
 def test_subclass_compatibility(tmp_path: Path) -> None:
     class MyFileLock(FileLock):
-        def __init__(  # noqa: PLR0913 Too many arguments to function call (6 > 5)
+        def __init__(  # Too many arguments to function call (6 > 5)
             self,
             lock_file: str | os.PathLike[str],
             timeout: float = -1,
@@ -696,7 +696,7 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
     MyFileLock(str(lock_path), my_param=1)
 
     class MySoftFileLock(SoftFileLock):
-        def __init__(  # noqa: PLR0913 Too many arguments to function call (6 > 5)
+        def __init__(  # Too many arguments to function call (6 > 5)
             self,
             lock_file: str | os.PathLike[str],
             timeout: float = -1,
