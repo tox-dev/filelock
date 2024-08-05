@@ -11,7 +11,7 @@ from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, Timeou
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("path_type", [str, PurePath, Path])
 @pytest.mark.parametrize("filename", ["a", "new/b", "new2/new3/c"])
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_simple(
     lock_type: type[BaseAsyncFileLock],
     path_type: type[str | Path],
@@ -43,7 +43,7 @@ async def test_simple(
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("path_type", [str, PurePath, Path])
 @pytest.mark.parametrize("filename", ["a", "new/b", "new2/new3/c"])
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_acquire(
     lock_type: type[BaseAsyncFileLock],
     path_type: type[str | Path],
@@ -73,7 +73,7 @@ async def test_acquire(
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
     # raises Timeout error when the lock cannot be acquired
     lock_path = tmp_path / "a"
@@ -147,7 +147,7 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("thread_local", [True, False])
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_non_executor(lock_type: type[BaseAsyncFileLock], thread_local: bool, tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path), thread_local=thread_local, run_in_executor=False)
@@ -157,7 +157,7 @@ async def test_non_executor(lock_type: type[BaseAsyncFileLock], thread_local: bo
     assert not lock.is_locked
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_coroutine_function(tmp_path: Path) -> None:
     acquired = released = False
 
