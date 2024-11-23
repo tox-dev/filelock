@@ -264,4 +264,5 @@ class _DisabledReadWriteFileLock(BaseReadWriteFileLock):
 
 __all__ = [
     "BaseReadWriteFileLock",
+    "ReadWriteMode",
 ]

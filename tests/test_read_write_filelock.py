@@ -3,14 +3,14 @@ from __future__ import annotations
 import threading
 import time
 from queue import Queue
+import pytest
 
 from filelock.read_write import (
     BaseReadWriteFileLockWrapper,
     ReadWriteFileLockWrapper,
-    _DisabledReadWriteFileLockWrapper,
+    ReadWriteMode,
+    has_read_write_file_lock,
 )
-
-_has_read_write_lock = ReadWriteFileLockWrapper is not _DisabledReadWriteFileLockWrapper
 
 
 @pytest.mark.skipif(not _has_read_write_lock, reason="ReadWriteFileLock is not available")
@@ -59,7 +59,7 @@ def test_threaded_read_write_lock(
     for thread in read_threads:
         thread.start()
 
-    for thread in read_threads:
+    for _ in read_threads:
         is_ready_readers_queue.get()
 
     with num_readers_lock:
