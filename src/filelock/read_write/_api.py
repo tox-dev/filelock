@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from filelock._api import AcquireReturnProxy
+from .._api import BaseFileLock
 
 if TYPE_CHECKING:
     import os

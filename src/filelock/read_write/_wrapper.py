@@ -20,24 +20,24 @@ class BaseReadWriteFileLockWrapper(metaclass=ABCMeta):
 
         See filelock.read_write.ReadWriteFileLock for description of the parameters.
         """
-      self.read_lock = self._read_write_file_lock_cls(
-          lock_file_inner=lock_file_inner,
-          lock_file_outer=lock_file_outer,
-          read_write_mode=ReadWriteMode.READ,
-          timeout=timeout,
-          mode=mode,
-          thread_local=thread_local,
-          blocking=blocking,
-      )
-      self.write_lock = self._read_write_file_lock_cls(
-          lock_file_inner=lock_file_inner,
-          lock_file_outer=lock_file_outer,
-          read_write_mode=ReadWriteMode.WRITE,
-          timeout=timeout,
-          mode=mode,
-          thread_local=thread_local,
-          blocking=blocking,
-      )
+        self.read_lock = self._read_write_file_lock_cls(
+            lock_file_inner=lock_file_inner,
+            lock_file_outer=lock_file_outer,
+            read_write_mode=ReadWriteMode.READ,
+            timeout=timeout,
+            mode=mode,
+            thread_local=thread_local,
+            blocking=blocking,
+        )
+        self.write_lock = self._read_write_file_lock_cls(
+            lock_file_inner=lock_file_inner,
+            lock_file_outer=lock_file_outer,
+            read_write_mode=ReadWriteMode.WRITE,
+            timeout=timeout,
+            mode=mode,
+            thread_local=thread_local,
+            blocking=blocking,
+        )
 
     def __call__(self, read_write_mode: ReadWriteMode):
         """Get read/write lock object with the specified ``read_write_mode``.
