@@ -1,20 +1,23 @@
-import os
-import sys
+from __future__ import annotations
+
 import threading
 import time
-from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
-from types import TracebackType
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Tuple, Type, Union
 from queue import Queue
 
-from filelock.read_write import BaseReadWriteFileLockWrapper, ReadWriteFileLockWrapper, _DisabledReadWriteFileLockWrapper
+from filelock.read_write import (
+    BaseReadWriteFileLockWrapper,
+    ReadWriteFileLockWrapper,
+    _DisabledReadWriteFileLockWrapper,
+)
 
 _has_read_write_lock = ReadWriteFileLockWrapper is not _DisabledReadWriteFileLockWrapper
 
 
 @pytest.mark.skipif(not _has_read_write_lock, reason="ReadWriteFileLock is not available")
 @pytest.mark.parametrize("lock_wrapper_type", [ReadWriteFileLockWrapper])
-def test_threaded_read_write_lock(lock_wrapper_type: type[BaseReadWriteFileLockWrapper], tmp_path: Path, ex_thread_cls: threading.Thread) -> None:
+def test_threaded_read_write_lock(
+    lock_wrapper_type: type[BaseReadWriteFileLockWrapper], tmp_path: Path, ex_thread_cls: threading.Thread
+) -> None:
     # Runs 100 reader and 10 writer threads.
     # Ensure all readers can acquire the lock at the same time, while no writer can
     # acquire the lock.
@@ -79,7 +82,7 @@ def test_threaded_read_write_lock(lock_wrapper_type: type[BaseReadWriteFileLockW
     for thread in write_threads:
         is_ready_writers_queue.get()
         with num_writers_lock:
-            assert num_writers in [0, 1]
+            assert num_writers in {0, 1}
 
     for thread in write_threads:
         thread.join()

@@ -25,7 +25,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     class NonExclusiveUnixFileLock(UnixFileLock):
         """Uses the :func:`fcntl.flock` to non-exclusively lock the lock file on unix systems."""
-        ...
+
 
 else:  # pragma: win32 no cover
     try:
@@ -37,6 +37,7 @@ else:  # pragma: win32 no cover
 
     class UnixFileLock(BaseFileLock):
         """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
+
         _fcntl_mode: int = fcntl.LOCK_EX
 
         def _acquire(self) -> None:
@@ -68,11 +69,12 @@ else:  # pragma: win32 no cover
 
     class NonExclusiveUnixFileLock(UnixFileLock):
         """Uses the :func:`fcntl.flock` to non-exclusively lock the lock file on unix systems."""
+
         _fcntl_mode = fcntl.LOCK_SH
 
 
 __all__ = [
-    "UnixFileLock",
     "NonExclusiveUnixFileLock",
+    "UnixFileLock",
     "has_fcntl",
 ]

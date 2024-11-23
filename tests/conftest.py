@@ -1,5 +1,7 @@
-from typing import Union, Tuple, Type
+from __future__ import annotations
+
 from types import TracebackType
+from typing import Tuple, Type, Union
 
 import pytest
 

@@ -1,9 +1,12 @@
-from .._unix import has_fcntl, NonExclusiveUnixFileLock, UnixFileLock
+from __future__ import annotations
+
+from filelock._unix import NonExclusiveUnixFileLock, UnixFileLock, has_fcntl
+
 from ._api import BaseReadWriteFileLock, _DisabledReadWriteFileLock
 from ._wrapper import BaseReadWriteFileLockWrapper, _DisabledReadWriteFileLockWrapper
 
-
 if has_fcntl:
+
     class UnixReadWriteFileLock(BaseReadWriteFileLock):
         _shared_file_lock_cls: Type[BaseFileLock] = NonExclusiveUnixFileLock
         _exclusive_file_lock_cls: Type[BaseFileLock] = UnixFileLock

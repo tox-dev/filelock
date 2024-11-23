@@ -11,8 +11,7 @@ from errno import ENOSYS
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
-from types import TracebackType
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, Iterator
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -219,7 +218,9 @@ def test_nested_contruct(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path, ex_thread_cls: threading.Thread) -> None:
+def test_threaded_shared_lock_obj(
+    lock_type: type[BaseFileLock], tmp_path: Path, ex_thread_cls: threading.Thread
+) -> None:
     # Runs 100 threads, which need the filelock. The lock must be acquired if at least one thread required it and
     # released, as soon as all threads stopped.
     lock_path = tmp_path / "a"
@@ -241,7 +242,9 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path,
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.skipif(hasattr(sys, "pypy_version_info") and sys.platform == "win32", reason="deadlocks randomly")
-def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path, ex_thread_cls: threading.Thread) -> None:
+def test_threaded_lock_different_lock_obj(
+    lock_type: type[BaseFileLock], tmp_path: Path, ex_thread_cls: threading.Thread
+) -> None:
     # Runs multiple threads, which acquire the same lock file with a different FileLock object. When thread group 1
     # acquired the lock, thread group 2 must not hold their lock.
 

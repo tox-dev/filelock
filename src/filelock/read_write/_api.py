@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import contextlib
-import os
-from abc import ABCMeta, abstractmethod
-from typing import Type
+from abc import ABC
 from enum import Enum
-from filelock._api import AcquireReturnProxy
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from filelock._api import AcquireReturnProxy
+
+if TYPE_CHECKING:
+    import os
 
 if TYPE_CHECKING:
     import sys
@@ -21,11 +26,11 @@ class ReadWriteMode(Enum):
     WRITE = "write"
 
 
-class BaseReadWriteFileLock(contextlib.ContextDecorator, metaclass=ABCMeta):
+class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
     """Abstract base class for a writer-preferring read/write file lock object."""
 
-    _shared_file_lock_cls: Type[BaseFileLock]
-    _exclusive_file_lock_cls: Type[BaseFileLock]
+    _shared_file_lock_cls: type[BaseFileLock]
+    _exclusive_file_lock_cls: type[BaseFileLock]
 
     def __init__(  # noqa: PLR0913
         self,
@@ -61,18 +66,24 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, metaclass=ABCMeta):
 
         """
         if read_write_mode == ReadWriteMode.READ:
-          file_lock_cls = self._shared_file_lock_cls
+            file_lock_cls = self._shared_file_lock_cls
         elif read_write_mode == ReadWriteMode.WRITE:
-          file_lock_cls = self._exclusive_file_lock_cls
+            file_lock_cls = self._exclusive_file_lock_cls
 
         if not lock_file_inner:
             if not lock_file:
-                raise ValueError("If lock_file is unspecified, both lock_file_inner and lock_file_outer must be specified.")
-            lock_file_inner = Path(lock_file).with_suffix(".inner") 
+                msg = "If lock_file is unspecified, both lock_file_inner and lock_file_outer must be specified."
+                raise ValueError(
+                    msg
+                )
+            lock_file_inner = Path(lock_file).with_suffix(".inner")
         if not lock_file_outer:
             if not lock_file:
-                raise ValueError("If lock_file is unspecified, both lock_file_inner and lock_file_outer must be specified.")
-            lock_file_outer = Path(lock_file).with_suffix(".outer") 
+                msg = "If lock_file is unspecified, both lock_file_inner and lock_file_outer must be specified."
+                raise ValueError(
+                    msg
+                )
+            lock_file_outer = Path(lock_file).with_suffix(".outer")
 
         # is_singleton is always disabled, as I don't believe it will work
         # correctly with this setup.
@@ -115,9 +126,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, metaclass=ABCMeta):
 
     @property
     def timeout(self) -> float:
-        """
-        :return: the default timeout value, in seconds
-        """
+        """:return: the default timeout value, in seconds"""
         return self._inner_lock.timeout
 
     @timeout.setter
@@ -154,10 +163,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, metaclass=ABCMeta):
 
     @property
     def is_locked(self) -> bool:
-        """
-
-        :return: A boolean indicating if the lock file is holding the lock currently.
-        """
+        """:return: A boolean indicating if the lock file is holding the lock currently."""
         return self._inner_lock.is_locked
 
     @property
@@ -200,7 +206,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, metaclass=ABCMeta):
 
         """
         with self._outer_lock:
-          self._inner_lock.acquire()
+            self._inner_lock.acquire()
         return AcquireReturnProxy(lock=self)
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
@@ -246,7 +252,8 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, metaclass=ABCMeta):
 
 class _DisabledReadWriteFileLock(BaseReadWriteFileLock):
     def __new__(cls):
-        raise NotImplementedError("ReadWriteFileLock is unavailable.")
+        msg = "ReadWriteFileLock is unavailable."
+        raise NotImplementedError(msg)
 
 
 __all__ = [

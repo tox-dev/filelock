@@ -38,7 +38,7 @@ class BaseReadWriteFileLockWrapper(metaclass=ABCMeta):
           thread_local=thread_local,
           blocking=blocking,
       )
-    
+
     def __call__(self, read_write_mode: ReadWriteMode):
         """Get read/write lock object with the specified ``read_write_mode``.
 
