@@ -1,3 +1,11 @@
+"""
+Read/write file lock.
+
+.. autodata:: filelock.__version__
+   :no-value:
+
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

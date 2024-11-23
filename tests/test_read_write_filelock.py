@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from queue import Queue
 
 import pytest
@@ -10,10 +11,11 @@ from filelock.read_write import (
     BaseReadWriteFileLockWrapper,
     ReadWriteFileLockWrapper,
     ReadWriteMode,
+    has_read_write_lock,
 )
 
 
-@pytest.mark.skipif(not _has_read_write_lock, reason="ReadWriteFileLock is not available")
+@pytest.mark.skipif(not has_read_write_lock, reason="ReadWriteFileLock is not available")
 @pytest.mark.parametrize("lock_wrapper_type", [ReadWriteFileLockWrapper])
 def test_threaded_read_write_lock(
     lock_wrapper_type: type[BaseReadWriteFileLockWrapper], tmp_path: Path, ex_thread_cls: threading.Thread
@@ -79,7 +81,7 @@ def test_threaded_read_write_lock(
 
     should_proceed_event.set()
 
-    for thread in write_threads:
+    for _ in write_threads:
         is_ready_writers_queue.get()
         with num_writers_lock:
             assert num_writers in {0, 1}
