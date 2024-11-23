@@ -5,7 +5,7 @@ from abc import ABC
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
-
+import time
 from filelock._api import AcquireReturnProxy, BaseFileLock
 
 if TYPE_CHECKING:
@@ -50,7 +50,8 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         This object will use two lock files to ensure writers have priority over readers.
 
         :param read_write_mode: whether this object should be in WRITE mode or READ mode.
-        :param lock_file: path to the file. Note that two files will be created: ``{lock_file}.inner`` and ``{lock_file}.outer``. \
+        :param lock_file: path to the file. Note that two files will be created: \
+            ``{lock_file}.inner`` and ``{lock_file}.outer``. \
             If not specified, ``lock_file_inner`` and ``lock_file_outer`` must both be specified.
         :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in \
             the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it \
@@ -170,7 +171,6 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         timeout: float | None = None,
         poll_interval: float = 0.05,
         *,
-        poll_intervall: float | None = None,
         blocking: bool | None = None,
     ) -> AcquireReturnProxy:
         """
@@ -179,7 +179,6 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~timeout` is and
          if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file
-        :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
          first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
         :raises Timeout: if fails to acquire lock within the timeout period
@@ -199,12 +198,18 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
                 lock.release()
 
         """
+        start_time = time.monotonic()
+        self._outer_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
+        dur = time.monotonic() - start_time
+        if timeout:
+            timeout -= dur
         if self.read_write_mode == ReadWriteMode.READ:
-            with self._outer_lock:
-                self._inner_lock.acquire()
+            try:
+                self._inner_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
+            finally:
+                self._outer_lock.release()
         else:
-            self._outer_lock.acquire()
-            self._inner_lock.acquire()
+            self._inner_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
         return AcquireReturnProxy(lock=self)
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
@@ -251,7 +256,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
 
 
 class _DisabledReadWriteFileLock(BaseReadWriteFileLock):
-    def __new__(cls):
+    def __new__(cls) -> None:
         msg = "ReadWriteFileLock is unavailable."
         raise NotImplementedError(msg)
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
-
+import os
 from abc import ABC
+from typing import Type
+
+from ._api import ReadWriteMode
 
 
 class BaseReadWriteFileLockWrapper(ABC):
@@ -18,7 +21,7 @@ class BaseReadWriteFileLockWrapper(ABC):
         lock_file_outer: str | os.PathLike[str] | None = None,
     ) -> None:
         """
-        Convinience wrapper for read/write locks.
+        Convenience wrapper for read/write locks.
 
         See filelock.read_write.ReadWriteFileLock for description of the parameters.
         """
@@ -70,7 +73,7 @@ class BaseReadWriteFileLockWrapper(ABC):
 
 
 class _DisabledReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
-    def __new__(cls):
+    def __new__(cls) -> None:
         msg = "ReadWriteFileLock is unavailable."
         raise NotImplementedError(msg)
 

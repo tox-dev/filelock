@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 from filelock._unix import NonExclusiveUnixFileLock, UnixFileLock, has_fcntl
 
 from ._api import BaseReadWriteFileLock, _DisabledReadWriteFileLock
-from ._wrapper import BaseReadWriteFileLockWrapper, _DisabledReadWriteFileLockWrapper
 
 if TYPE_CHECKING:
     from filelock._api import BaseFileLock
@@ -20,15 +19,11 @@ if has_fcntl:
         _read_write_file_lock_cls = UnixReadWriteFileLock
 
     ReadWriteFileLock = UnixReadWriteFileLock
-    ReadWriteFileLockWrapper = UnixReadWriteFileLockWrapper
 else:
     ReadWriteFileLock = _DisabledReadWriteFileLock
-    ReadWriteFileLockWrapper = _DisabledReadWriteFileLockWrapper
 
 
 __all__ = [
     "BaseReadWriteFileLock",
-    "BaseReadWriteFileLockWrapper",
     "ReadWriteFileLock",
-    "ReadWriteFileLockWrapper",
 ]
