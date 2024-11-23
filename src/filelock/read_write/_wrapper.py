@@ -50,8 +50,7 @@ class BaseReadWriteFileLockWrapper(ABC):
         """
         if read_write_mode == ReadWriteMode.READ:
             return self.read_lock
-        else:
-            return self.write_lock
+        return self.write_lock
 
     def read(self):
         """
