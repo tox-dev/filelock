@@ -73,16 +73,12 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         if not lock_file_inner:
             if not lock_file:
                 msg = "If lock_file is unspecified, both lock_file_inner and lock_file_outer must be specified."
-                raise ValueError(
-                    msg
-                )
+                raise ValueError(msg)
             lock_file_inner = Path(lock_file).with_suffix(".inner")
         if not lock_file_outer:
             if not lock_file:
                 msg = "If lock_file is unspecified, both lock_file_inner and lock_file_outer must be specified."
-                raise ValueError(
-                    msg
-                )
+                raise ValueError(msg)
             lock_file_outer = Path(lock_file).with_suffix(".outer")
 
         # is_singleton is always disabled, as I don't believe it will work
@@ -209,12 +205,13 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             with self._outer_lock:
                 self._inner_lock.acquire()
             return AcquireReturnProxy(lock=self)
-        elif self.read_write_mode == ReadWriteMode.WRITE:
+        if self.read_write_mode == ReadWriteMode.WRITE:
             self._outer_lock.acquire()
             with self._inner_lock:
                 # Just acquire.
                 pass
             return AcquireReturnProxy(lock=self)
+        return None
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
         """
