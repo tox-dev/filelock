@@ -65,7 +65,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         """
         if read_write_mode == ReadWriteMode.READ:
             file_lock_cls = self._shared_file_lock_cls
-        elif read_write_mode == ReadWriteMode.WRITE:
+        else:
             file_lock_cls = self._exclusive_file_lock_cls
 
         if not lock_file_inner:
@@ -203,7 +203,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             with self._outer_lock:
                 self._inner_lock.acquire()
             return AcquireReturnProxy(lock=self)
-        if self.read_write_mode == ReadWriteMode.WRITE:
+        else:
             self._outer_lock.acquire()
             with self._inner_lock:
                 # Just acquire.
@@ -221,7 +221,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         """
         if self.read_write_mode == ReadWriteMode.READ:
             self._inner_lock.release(force=force)
-        elif self.read_write_mode == ReadWriteMode.WRITE:
+        else:
             self._outer_lock.release(force=force)
 
     def __enter__(self) -> Self:
