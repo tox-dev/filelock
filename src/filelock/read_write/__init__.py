@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Type
+
 from filelock._unix import NonExclusiveUnixFileLock, UnixFileLock, has_fcntl
 
+from .._api import BaseFileLock
 from ._api import BaseReadWriteFileLock, _DisabledReadWriteFileLock
 from ._wrapper import BaseReadWriteFileLockWrapper, _DisabledReadWriteFileLockWrapper
 
