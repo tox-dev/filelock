@@ -50,9 +50,24 @@ class BaseReadWriteFileLockWrapper(ABC):
         """
         if read_write_mode == ReadWriteMode.READ:
             return self.read_lock
-        if read_write_mode == ReadWriteMode.WRITE:
+        else:
             return self.write_lock
-        return None
+
+    def read(self):
+        """
+        Get read/write lock object in READ mode.
+
+        :return: a lock object in READ mode.
+        """
+        return self.__call__(ReadWriteMode.READ)
+
+    def write(self):
+        """
+        Get read/write lock object in WRITE mode.
+
+        :return: a lock object in WRITE mode.
+        """
+        return self.__call__(ReadWriteMode.WRITE)
 
 
 class _DisabledReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
