@@ -202,13 +202,10 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         if self.read_write_mode == ReadWriteMode.READ:
             with self._outer_lock:
                 self._inner_lock.acquire()
-            return AcquireReturnProxy(lock=self)
-        self._outer_lock.acquire()
-        with self._inner_lock:
-            # Just acquire.
-            pass
+        else:
+            self._outer_lock.acquire()
+            self._inner_lock.acquire()
         return AcquireReturnProxy(lock=self)
-        return None
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
         """
@@ -218,9 +215,8 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         :param force: If true, the lock counter is ignored and the lock is released in every case/
 
         """
-        if self.read_write_mode == ReadWriteMode.READ:
-            self._inner_lock.release(force=force)
-        else:
+        self._inner_lock.release(force=force)
+        if self.read_write_mode == ReadWriteMode.WRITE:
             self._outer_lock.release(force=force)
 
     def __enter__(self) -> Self:
