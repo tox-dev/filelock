@@ -117,8 +117,6 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, metaclass=ABCMeta):
     def timeout(self) -> float:
         """
         :return: the default timeout value, in seconds
-
-        .. versionadded:: 2.0.0
         """
         return self._inner_lock.timeout
 
@@ -159,10 +157,6 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, metaclass=ABCMeta):
         """
 
         :return: A boolean indicating if the lock file is holding the lock currently.
-
-        .. versionchanged:: 2.0.0
-
-            This was previously a method and is now a property.
         """
         return self._inner_lock.is_locked
 
@@ -203,11 +197,6 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, metaclass=ABCMeta):
                 pass
             finally:
                 lock.release()
-
-        .. versionchanged:: 2.0.0
-
-            This method returns now a *proxy* object instead of *self*,
-            so that it can be used in a with statement without side effects.
 
         """
         with self._outer_lock:
