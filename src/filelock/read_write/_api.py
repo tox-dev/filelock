@@ -6,10 +6,10 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .._api import BaseFileLock
-
 if TYPE_CHECKING:
     import os
+
+    from filelock._api import BaseFileLock
 
 if TYPE_CHECKING:
     import sys

@@ -1,7 +1,9 @@
-from abc import ABCMeta
+from __future__ import annotations
+
+from abc import ABC
 
 
-class BaseReadWriteFileLockWrapper(metaclass=ABCMeta):
+class BaseReadWriteFileLockWrapper(ABC):
     _read_write_file_lock_cls: Type[BaseReadWriteFileLock]
 
     def __init__(  # noqa: PLR0913
@@ -40,20 +42,23 @@ class BaseReadWriteFileLockWrapper(metaclass=ABCMeta):
         )
 
     def __call__(self, read_write_mode: ReadWriteMode):
-        """Get read/write lock object with the specified ``read_write_mode``.
+        """
+        Get read/write lock object with the specified ``read_write_mode``.
 
         :param read_write_mode: whether this object should be in WRITE mode or READ mode.
         :return: a lock object in specified ``read_write_mode``.
         """
         if read_write_mode == ReadWriteMode.READ:
             return self.read_lock
-        elif read_write_mode == ReadWriteMode.WRITE:
+        if read_write_mode == ReadWriteMode.WRITE:
             return self.write_lock
+        return None
 
 
 class _DisabledReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
     def __new__(cls):
-        raise NotImplementedError("ReadWriteFileLock is unavailable.")
+        msg = "ReadWriteFileLock is unavailable."
+        raise NotImplementedError(msg)
 
 
 __all__ = [
