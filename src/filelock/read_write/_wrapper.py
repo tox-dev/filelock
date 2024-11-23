@@ -1,13 +1,16 @@
 from __future__ import annotations
-import os
+
 from abc import ABC
-from typing import Type
+from typing import TYPE_CHECKING
 
 from ._api import ReadWriteMode
 
+if TYPE_CHECKING:
+    import os
+
 
 class BaseReadWriteFileLockWrapper(ABC):
-    _read_write_file_lock_cls: Type[BaseReadWriteFileLock]
+    _read_write_file_lock_cls: type[BaseReadWriteFileLock]
 
     def __init__(  # noqa: PLR0913
         self,
