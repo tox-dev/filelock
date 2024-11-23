@@ -23,6 +23,10 @@ if sys.platform == "win32":  # pragma: win32 cover
         def _release(self) -> None:
             raise NotImplementedError
 
+    class NonExclusiveUnixFileLock(UnixFileLock):
+        """Uses the :func:`fcntl.flock` to non-exclusively lock the lock file on unix systems."""
+        ...
+
 else:  # pragma: win32 no cover
     try:
         import fcntl
@@ -33,6 +37,7 @@ else:  # pragma: win32 no cover
 
     class UnixFileLock(BaseFileLock):
         """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
+        _fcntl_mode: int = fcntl.LOCK_EX
 
         def _acquire(self) -> None:
             ensure_directory_exists(self.lock_file)
@@ -43,7 +48,7 @@ else:  # pragma: win32 no cover
             with suppress(PermissionError):  # This locked is not owned by this UID
                 os.fchmod(fd, self._context.mode)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, self._fcntl_mode | fcntl.LOCK_NB)
             except OSError as exception:
                 os.close(fd)
                 if exception.errno == ENOSYS:  # NotImplemented error
@@ -61,8 +66,13 @@ else:  # pragma: win32 no cover
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 
+    class NonExclusiveUnixFileLock(UnixFileLock):
+        """Uses the :func:`fcntl.flock` to non-exclusively lock the lock file on unix systems."""
+        _fcntl_mode = fcntl.LOCK_SH
+
 
 __all__ = [
     "UnixFileLock",
+    "NonExclusiveUnixFileLock",
     "has_fcntl",
 ]
