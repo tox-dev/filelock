@@ -203,12 +203,11 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             with self._outer_lock:
                 self._inner_lock.acquire()
             return AcquireReturnProxy(lock=self)
-        else:
-            self._outer_lock.acquire()
-            with self._inner_lock:
-                # Just acquire.
-                pass
-            return AcquireReturnProxy(lock=self)
+        self._outer_lock.acquire()
+        with self._inner_lock:
+            # Just acquire.
+            pass
+        return AcquireReturnProxy(lock=self)
         return None
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
