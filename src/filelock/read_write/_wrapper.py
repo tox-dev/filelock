@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from typing import TYPE_CHECKING
 
-from ._api import ReadWriteMode, BaseReadWriteFileLock
+from ._api import BaseReadWriteFileLock, ReadWriteMode
 
 if TYPE_CHECKING:
     import os

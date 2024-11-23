@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import sys
+import threading
 from types import TracebackType
 from typing import Tuple, Type, Union
-import threading
+
 import pytest
 
 _ExcInfoType = Union[Tuple[Type[BaseException], BaseException, TracebackType], Tuple[None, None, None]]
