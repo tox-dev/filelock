@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import threading
 from types import TracebackType
-from typing import Tuple, Type, Union, Callable
+from typing import Callable, Tuple, Type, Union
 
 import pytest
 

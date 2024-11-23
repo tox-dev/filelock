@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
 from queue import Queue
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,6 +13,9 @@ from filelock.read_write import (
     ReadWriteMode,
     has_read_write_lock,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.mark.skipif(not has_read_write_lock, reason="ReadWriteFileLock is not available")
