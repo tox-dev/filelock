@@ -1,15 +1,13 @@
 from __future__ import annotations
 
+import os
 import contextlib
 from abc import ABC
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    import os
-
-    from filelock._api import BaseFileLock
+from .._api import AcquireReturnProxy, BaseFileLock
 
 if TYPE_CHECKING:
     import sys
