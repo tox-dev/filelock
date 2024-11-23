@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from typing import TYPE_CHECKING
 
-from ._api import ReadWriteMode
+from ._api import ReadWriteMode, BaseReadWriteFileLock
 
 if TYPE_CHECKING:
     import os
@@ -29,6 +29,7 @@ class BaseReadWriteFileLockWrapper(ABC):
         See filelock.read_write.ReadWriteFileLock for description of the parameters.
         """
         self.read_lock = self._read_write_file_lock_cls(
+            lock_file=lock_file,
             lock_file_inner=lock_file_inner,
             lock_file_outer=lock_file_outer,
             read_write_mode=ReadWriteMode.READ,
@@ -38,6 +39,7 @@ class BaseReadWriteFileLockWrapper(ABC):
             blocking=blocking,
         )
         self.write_lock = self._read_write_file_lock_cls(
+            lock_file=lock_file,
             lock_file_inner=lock_file_inner,
             lock_file_outer=lock_file_outer,
             read_write_mode=ReadWriteMode.WRITE,
@@ -47,7 +49,7 @@ class BaseReadWriteFileLockWrapper(ABC):
             blocking=blocking,
         )
 
-    def __call__(self, read_write_mode: ReadWriteMode):
+    def __call__(self, read_write_mode: ReadWriteMode) -> BaseReadWriteFileLock:
         """
         Get read/write lock object with the specified ``read_write_mode``.
 
@@ -58,21 +60,21 @@ class BaseReadWriteFileLockWrapper(ABC):
             return self.read_lock
         return self.write_lock
 
-    def read(self):
+    def read(self) -> BaseReadWriteFileLock:
         """
         Get read/write lock object in READ mode.
 
         :return: a lock object in READ mode.
         """
-        return self.__call__(ReadWriteMode.READ)
+        return self(ReadWriteMode.READ)
 
-    def write(self):
+    def write(self) -> BaseReadWriteFileLock:
         """
         Get read/write lock object in WRITE mode.
 
         :return: a lock object in WRITE mode.
         """
-        return self.__call__(ReadWriteMode.WRITE)
+        return self(ReadWriteMode.WRITE)
 
 
 class _DisabledReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
