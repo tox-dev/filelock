@@ -30,8 +30,8 @@ else:
 
 __all__ = [
     "BaseReadWriteFileLock",
-    "ReadWriteFileLockWrapper",
     "ReadWriteFileLock",
+    "ReadWriteFileLockWrapper",
     "ReadWriteMode",
     "has_read_write_file_lock",
 ]

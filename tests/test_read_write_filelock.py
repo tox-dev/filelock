@@ -3,13 +3,13 @@ from __future__ import annotations
 import threading
 import time
 from queue import Queue
+
 import pytest
 
 from filelock.read_write import (
     BaseReadWriteFileLockWrapper,
     ReadWriteFileLockWrapper,
     ReadWriteMode,
-    has_read_write_file_lock,
 )
 
 

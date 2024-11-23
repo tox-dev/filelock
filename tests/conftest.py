@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import sys
 from types import TracebackType
 from typing import Tuple, Type, Union
-import sys
 
 import pytest
 
@@ -27,5 +27,5 @@ class ExThread(threading.Thread):
 
 
 @pytest.fixture
-def ex_thread_cls() -> Type[ExThread]:
+def ex_thread_cls() -> type[ExThread]:
     return ExThread
