@@ -11,14 +11,14 @@ from filelock.read_write import (
     BaseReadWriteFileLockWrapper,
     ReadWriteFileLockWrapper,
     ReadWriteMode,
-    has_read_write_lock,
+    has_read_write_file_lock,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-@pytest.mark.skipif(not has_read_write_lock, reason="ReadWriteFileLock is not available")
+@pytest.mark.skipif(not has_read_write_file_lock, reason="ReadWriteFileLock is not available")
 @pytest.mark.parametrize("lock_wrapper_type", [ReadWriteFileLockWrapper])
 def test_threaded_read_write_lock(
     lock_wrapper_type: type[BaseReadWriteFileLockWrapper], tmp_path: Path, ex_thread_cls: threading.Thread
