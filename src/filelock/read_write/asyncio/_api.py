@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from filelock.asyncio import AsyncAcquireReturnProxy, BaseAsyncFileLock
 from filelock.read_write._api import BaseReadWriteFileLock, ReadWriteMode
 
 if TYPE_CHECKING:
+    import asyncio
     import os
     import sys
+    from concurrent import futures
     from types import TracebackType
 
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
@@ -35,10 +38,14 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock):
         lock_file: str | os.PathLike[str] | None = None,
         timeout: float = -1,
         mode: int = 0o644,
+        thread_local: bool = False,  # noqa: FBT001, FBT002
         *,
         blocking: bool = True,
         lock_file_inner: str | os.PathLike[str] | None = None,
         lock_file_outer: str | os.PathLike[str] | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+        run_in_executor: bool = True,
+        executor: futures.Executor | None = None,
     ) -> None:
         """
         Create a new async writer-preferring read/write lock object. Multiple READers can hold the lock
@@ -57,48 +64,56 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock):
             the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it \
             to a negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
         :param mode: file permissions for the lockfile
+        :param thread_local: Whether this object's internal context should be thread local or not. If this is set to \
+            ``False`` then the lock will be reentrant across threads. Note that misuse of the lock while this argument \
+            is set to ``False`` and run_in_executor is ``False`` may result in deadlocks due to the non-exclusive \
+            nature of the read/write lock.
         :param blocking: whether the lock should be blocking or not
         :param lock_file_inner: path to the inner lock file. Can be left unspecified if ``lock_file`` is specified.
         :param lock_file_outer: path to the outer lock file Can be left unspecified if ``lock_file`` is specified.
+        :param loop: The event loop to use. If not specified, the running event loop will be used.
+        :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
+        :param executor: The executor to use. If not specified, the default executor will be used.
         """
-        super().__init__(
-            read_write_mode=read_write_mode,
-            lock_file=lock_file,
+        if read_write_mode == ReadWriteMode.READ:
+            file_lock_cls = self._shared_file_lock_cls
+        else:
+            file_lock_cls = self._exclusive_file_lock_cls
+        self.read_write_mode = read_write_mode
+
+        if not lock_file_inner:
+            if not lock_file:
+                msg = "If lock_file is unspecified, both lock_file_inner and lock_file_outer must be specified."
+                raise ValueError(msg)
+            lock_file_inner = Path(lock_file).with_suffix(".inner")
+        if not lock_file_outer:
+            if not lock_file:
+                msg = "If lock_file is unspecified, both lock_file_inner and lock_file_outer must be specified."
+                raise ValueError(msg)
+            lock_file_outer = Path(lock_file).with_suffix(".outer")
+
+        self._inner_lock = file_lock_cls(
+            lock_file_inner,
             timeout=timeout,
             mode=mode,
-            thread_local=True,
+            thread_local=thread_local,
             blocking=blocking,
-            lock_file_inner=lock_file_inner,
-            lock_file_outer=lock_file_outer,
-        )
-
-        self._inner_lock = (
-            self._shared_file_lock_cls(
-                self.lock_file_inner,
-                timeout=self._inner_lock.timeout,
-                mode=self._inner_lock.mode,
-                thread_local=True,
-                blocking=self._inner_lock.blocking,
-                is_singleton=False,
-            )
-            if self.read_write_mode == ReadWriteMode.READ
-            else self._exclusive_file_lock_cls(
-                self.lock_file_inner,
-                timeout=self._inner_lock.timeout,
-                mode=self._inner_lock.mode,
-                thread_local=True,
-                blocking=self._inner_lock.blocking,
-                is_singleton=False,
-            )
-        )
-
-        self._outer_lock = self._exclusive_file_lock_cls(
-            self.lock_file_outer,
-            timeout=self._outer_lock.timeout,
-            mode=self._outer_lock.mode,
-            thread_local=True,
-            blocking=self._outer_lock.blocking,
             is_singleton=False,
+            loop=loop,
+            run_in_executor=run_in_executor,
+            executor=executor,
+        )
+
+        self._outer_lock = file_lock_cls(
+            lock_file_outer,
+            timeout=timeout,
+            mode=mode,
+            thread_local=thread_local,
+            blocking=blocking,
+            is_singleton=False,
+            loop=loop,
+            run_in_executor=run_in_executor,
+            executor=executor,
         )
 
     async def acquire(

@@ -37,6 +37,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         lock_file: str | os.PathLike[str] | None = None,
         timeout: float = -1,
         mode: int = 0o644,
+        thread_local: bool = True,  # noqa: FBT001, FBT002
         *,
         blocking: bool = True,
         lock_file_inner: str | os.PathLike[str] | None = None,
@@ -49,8 +50,6 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
 
         This object will use two lock files to ensure writers have priority over readers.
 
-        Note that this lock is always thread-local, to allow for non-exclusive access.
-
         :param read_write_mode: whether this object should be in WRITE mode or READ mode.
         :param lock_file: path to the file. Note that two files will be created: \
             ``{lock_file}.inner`` and ``{lock_file}.outer``. \
@@ -59,6 +58,9 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it \
             to a negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
         :param mode: file permissions for the lockfile
+        :param thread_local: Whether this object's internal context should be thread local or not. If this is set to \
+            ``False`` then the lock will be reentrant across threads. Note that misuse of the lock while this argument \
+            is set to ``False`` may result in deadlocks due to the non-exclusive nature of the read/write lock.
         :param blocking: whether the lock should be blocking or not
         :param lock_file_inner: path to the inner lock file. Can be left unspecified if ``lock_file`` is specified.
         :param lock_file_outer: path to the outer lock file Can be left unspecified if ``lock_file`` is specified.
@@ -68,6 +70,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             file_lock_cls = self._shared_file_lock_cls
         else:
             file_lock_cls = self._exclusive_file_lock_cls
+        self.read_write_mode = read_write_mode
 
         if not lock_file_inner:
             if not lock_file:
@@ -86,7 +89,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             lock_file_inner,
             timeout=timeout,
             mode=mode,
-            thread_local=True,
+            thread_local=thread_local,
             blocking=blocking,
             is_singleton=False,
         )
@@ -94,11 +97,10 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             lock_file_outer,
             timeout=timeout,
             mode=mode,
-            thread_local=True,
+            thread_local=thread_local,
             blocking=blocking,
             is_singleton=False,
         )
-        self.read_write_mode = read_write_mode
 
     def is_thread_local(self) -> bool:
         """:return: a flag indicating if this lock is thread local or not"""
