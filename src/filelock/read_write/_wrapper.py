@@ -17,7 +17,6 @@ class BaseReadWriteFileLockWrapper(ABC):
         lock_file: str | os.PathLike[str] | None = None,
         timeout: float = -1,
         mode: int = 0o644,
-        thread_local: bool = True,  # noqa: FBT001, FBT002
         *,
         blocking: bool = True,
         lock_file_inner: str | os.PathLike[str] | None = None,
@@ -35,7 +34,6 @@ class BaseReadWriteFileLockWrapper(ABC):
             read_write_mode=ReadWriteMode.READ,
             timeout=timeout,
             mode=mode,
-            thread_local=thread_local,
             blocking=blocking,
         )
         self.write_lock = self._read_write_file_lock_cls(
@@ -45,7 +43,6 @@ class BaseReadWriteFileLockWrapper(ABC):
             read_write_mode=ReadWriteMode.WRITE,
             timeout=timeout,
             mode=mode,
-            thread_local=thread_local,
             blocking=blocking,
         )
 

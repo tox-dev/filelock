@@ -37,7 +37,6 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
         lock_file: str | os.PathLike[str] | None = None,
         timeout: float = -1,
         mode: int = 0o644,
-        thread_local: bool = True,  # noqa: FBT001, FBT002
         *,
         blocking: bool = True,
         lock_file_inner: str | os.PathLike[str] | None = None,
@@ -50,6 +49,8 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
 
         This object will use two lock files to ensure writers have priority over readers.
 
+        Note that this lock is always thread-local, to allow for non-exclusive access.
+
         :param read_write_mode: whether this object should be in WRITE mode or READ mode.
         :param lock_file: path to the file. Note that two files will be created: \
             ``{lock_file}.inner`` and ``{lock_file}.outer``. \
@@ -58,8 +59,6 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it \
             to a negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
         :param mode: file permissions for the lockfile
-        :param thread_local: Whether this object's internal context should be thread local or not. If this is set to \
-            ``False`` then the lock will be reentrant across threads.
         :param blocking: whether the lock should be blocking or not
         :param lock_file_inner: path to the inner lock file. Can be left unspecified if ``lock_file`` is specified.
         :param lock_file_outer: path to the outer lock file Can be left unspecified if ``lock_file`` is specified.
@@ -87,7 +86,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             lock_file_inner,
             timeout=timeout,
             mode=mode,
-            thread_local=thread_local,
+            thread_local=True,
             blocking=blocking,
             is_singleton=False,
         )
@@ -95,7 +94,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
             lock_file_outer,
             timeout=timeout,
             mode=mode,
-            thread_local=thread_local,
+            thread_local=True,
             blocking=blocking,
             is_singleton=False,
         )
@@ -165,7 +164,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
     @property
     def lock_counter(self) -> int:
         """:return: The number of times this lock has been acquired (but not yet released)."""
-        return self._inner_lock.lock_counter + self._inner_lock_shared.lock_counter
+        return self._inner_lock.lock_counter + self._outer_lock.lock_counter
 
     def acquire(
         self,

@@ -36,7 +36,6 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock):
         timeout: float = -1,
         mode: int = 0o644,
         *,
-        thread_local: bool = True,
         blocking: bool = True,
         lock_file_inner: str | os.PathLike[str] | None = None,
         lock_file_outer: str | os.PathLike[str] | None = None,
@@ -48,6 +47,8 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock):
 
         This object will use two lock files to ensure writers have priority over readers.
 
+        Note that this lock is always thread-local, to allow for non-exclusive access.
+
         :param read_write_mode: whether this object should be in WRITE mode or READ mode.
         :param lock_file: path to the file. Note that two files will be created: \
             ``{lock_file}.inner`` and ``{lock_file}.outer``. \
@@ -56,8 +57,6 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock):
             the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it \
             to a negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
         :param mode: file permissions for the lockfile
-        :param thread_local: Whether this object's internal context should be thread local or not. If this is set to \
-            ``False`` then the lock will be reentrant across threads.
         :param blocking: whether the lock should be blocking or not
         :param lock_file_inner: path to the inner lock file. Can be left unspecified if ``lock_file`` is specified.
         :param lock_file_outer: path to the outer lock file Can be left unspecified if ``lock_file`` is specified.
@@ -67,7 +66,7 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock):
             lock_file=lock_file,
             timeout=timeout,
             mode=mode,
-            thread_local=thread_local,
+            thread_local=True,
             blocking=blocking,
             lock_file_inner=lock_file_inner,
             lock_file_outer=lock_file_outer,
@@ -78,7 +77,7 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock):
                 self.lock_file_inner,
                 timeout=self._inner_lock.timeout,
                 mode=self._inner_lock.mode,
-                thread_local=self._inner_lock.is_thread_local(),
+                thread_local=True,
                 blocking=self._inner_lock.blocking,
                 is_singleton=False,
             )
@@ -87,7 +86,7 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock):
                 self.lock_file_inner,
                 timeout=self._inner_lock.timeout,
                 mode=self._inner_lock.mode,
-                thread_local=self._inner_lock.is_thread_local(),
+                thread_local=True,
                 blocking=self._inner_lock.blocking,
                 is_singleton=False,
             )
@@ -97,7 +96,7 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock):
             self.lock_file_outer,
             timeout=self._outer_lock.timeout,
             mode=self._outer_lock.mode,
-            thread_local=self._outer_lock.is_thread_local(),
+            thread_local=True,
             blocking=self._outer_lock.blocking,
             is_singleton=False,
         )
