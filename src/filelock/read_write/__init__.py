@@ -11,9 +11,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from filelock._unix import NonExclusiveUnixFileLock, UnixFileLock, has_fcntl
-
-from ._api import BaseReadWriteFileLock, ReadWriteMode, _DisabledReadWriteFileLock
-from ._wrapper import BaseReadWriteFileLockWrapper, _DisabledReadWriteFileLockWrapper
+from filelock.read_write._api import BaseReadWriteFileLock, ReadWriteMode, _DisabledReadWriteFileLock
+from filelock.read_write._wrapper import BaseReadWriteFileLockWrapper, _DisabledReadWriteFileLockWrapper
+from filelock.read_write.asyncio import (
+    AsyncReadWriteFileLock,
+    AsyncReadWriteFileLockWrapper,
+    BaseAsyncReadWriteFileLock,
+)
 
 if TYPE_CHECKING:
     from filelock._api import BaseFileLock
@@ -33,10 +37,13 @@ if has_fcntl:
 else:
     ReadWriteFileLock = _DisabledReadWriteFileLock
     ReadWriteFileLockWrapper = _DisabledReadWriteFileLockWrapper
-    has_read_write_file_lock = True
+    has_read_write_file_lock = False
 
 
 __all__ = [
+    "AsyncReadWriteFileLock",
+    "AsyncReadWriteFileLockWrapper",
+    "BaseAsyncReadWriteFileLock",
     "BaseReadWriteFileLock",
     "ReadWriteFileLock",
     "ReadWriteFileLockWrapper",

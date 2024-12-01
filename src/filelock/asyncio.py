@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, NoReturn, cast
 from ._api import BaseFileLock, FileLockContext, FileLockMeta
 from ._error import Timeout
 from ._soft import SoftFileLock
-from ._unix import UnixFileLock
+from ._unix import NonExclusiveUnixFileLock, UnixFileLock
 from ._windows import WindowsFileLock
 
 if TYPE_CHECKING:
@@ -329,12 +329,17 @@ class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):
     """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
 
 
+class AsyncNonExclusiveUnixFileLock(NonExclusiveUnixFileLock, BaseAsyncFileLock):
+    """Uses the :func:`fcntl.flock` to non-exclusively lock the lock file on unix systems."""
+
+
 class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):
     """Uses the :func:`msvcrt.locking` to hard lock the lock file on windows systems."""
 
 
 __all__ = [
     "AsyncAcquireReturnProxy",
+    "AsyncNonExclusiveUnixFileLock",
     "AsyncSoftFileLock",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",
