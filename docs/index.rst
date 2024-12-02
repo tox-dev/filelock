@@ -191,8 +191,19 @@ cases.
 Asyncio support
 ---------------
 
-This library currently does not support asyncio. We'd recommend adding an asyncio variant though if someone can make a
-pull request for it, `see here <https://github.com/tox-dev/py-filelock/issues/99>`_.
+This library supports asyncio. See :class:`AsyncFileLock <filelock.AsyncFileLock>`.
+
+Read/write FileLock
+-------------------
+
+An implementation of a read/write FileLock is also available: and :class:`ReadWriteFileLockWrapper <filelock.read_write.ReadWriteFileLockWrapper>` and
+:class:`AsyncReadWriteFileLockWrapper <filelock.read_write.AsyncReadWriteFileLockWrapper>`.
+
+Multiple readers can hold the lock at the same time, but a writer is guaranteed to hold the lock exclusively across both readers and writers.
+
+The lock is writer-preferring on a best effort basis (there are no guarantees).
+
+Currently, this FileLock type is implemented only for Unix.
 
 FileLocks and threads
 ---------------------
