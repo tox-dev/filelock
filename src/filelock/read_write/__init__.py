@@ -1,10 +1,4 @@
-"""
-Read/write file lock.
-
-.. autodata:: filelock.__version__
-   :no-value:
-
-"""
+"""Read/write file lock."""
 
 from __future__ import annotations
 
