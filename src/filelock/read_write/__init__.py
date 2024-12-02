@@ -22,6 +22,9 @@ from filelock.read_write.asyncio import (
 if TYPE_CHECKING:
     from filelock._api import BaseFileLock
 
+ReadWriteFileLock: type[BaseReadWriteFileLock]
+ReadWriteFileLockWrapper: type[BaseReadWriteFileLockWrapper]
+
 if has_fcntl:
 
     class UnixReadWriteFileLock(BaseReadWriteFileLock):

@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import time
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from threading import local
 from typing import TYPE_CHECKING, Any, Callable, NoReturn, cast
@@ -31,6 +32,14 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger("filelock")
 
 
+class AsyncReleasable(ABC):
+    """Interface for async objects implementing ```release``` method."""
+
+    @abstractmethod
+    async def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
+        ...
+
+
 @dataclass
 class AsyncFileLockContext(FileLockContext):
     """A dataclass which holds the context for a ``BaseAsyncFileLock`` object."""
@@ -52,10 +61,10 @@ class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
 class AsyncAcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseAsyncFileLock) -> None:  # noqa: D107
+    def __init__(self, lock: AsyncReleasable) -> None:  # noqa: D107
         self.lock = lock
 
-    async def __aenter__(self) -> BaseAsyncFileLock:  # noqa: D105
+    async def __aenter__(self) -> AsyncReleasable:  # noqa: D105
         return self.lock
 
     async def __aexit__(  # noqa: D105
@@ -98,7 +107,7 @@ class AsyncFileLockMeta(FileLockMeta):
         return cast(BaseAsyncFileLock, instance)
 
 
-class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
+class BaseAsyncFileLock(BaseFileLock, AsyncReleasable, metaclass=AsyncFileLockMeta):
     """Base class for asynchronous file locks."""
 
     def __init__(  # noqa: PLR0913
@@ -321,19 +330,19 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 loop.create_task(self.release(force=True))
 
 
-class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
+class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):  # type: ignore[misc]
     """Simply watches the existence of the lock file."""
 
 
-class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):
+class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):  # type: ignore[misc]
     """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
 
 
-class AsyncNonExclusiveUnixFileLock(NonExclusiveUnixFileLock, BaseAsyncFileLock):
+class AsyncNonExclusiveUnixFileLock(NonExclusiveUnixFileLock, BaseAsyncFileLock):  # type: ignore[misc]
     """Uses the :func:`fcntl.flock` to non-exclusively lock the lock file on unix systems."""
 
 
-class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):
+class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):  # type: ignore[misc]
     """Uses the :func:`msvcrt.locking` to hard lock the lock file on windows systems."""
 
 

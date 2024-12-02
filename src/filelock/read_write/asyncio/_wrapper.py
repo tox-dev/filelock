@@ -65,7 +65,7 @@ class BaseAsyncReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
 
 
 class _DisabledAsyncReadWriteFileLockWrapper(BaseAsyncReadWriteFileLockWrapper):
-    def __new__(cls) -> None:
+    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN002, ANN003
         msg = "AsyncReadWriteFileLock is unavailable."
         raise NotImplementedError(msg)
 

@@ -78,7 +78,7 @@ class BaseReadWriteFileLockWrapper(ABC):
 
 
 class _DisabledReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
-    def __new__(cls) -> None:
+    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN002, ANN003
         msg = "ReadWriteFileLock is unavailable."
         raise NotImplementedError(msg)
 

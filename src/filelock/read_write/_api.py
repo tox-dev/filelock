@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from filelock._api import AcquireReturnProxy, BaseFileLock
+from filelock._api import AcquireReturnProxy, BaseFileLock, Releasable
 
 if TYPE_CHECKING:
     import os
@@ -25,7 +25,7 @@ class ReadWriteMode(Enum):
     WRITE = "write"
 
 
-class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
+class BaseReadWriteFileLock(contextlib.ContextDecorator, Releasable, ABC):
     """Abstract base class for a writer-preferring read/write file lock object."""
 
     _shared_file_lock_cls: type[BaseFileLock]
@@ -258,7 +258,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, ABC):
 
 
 class _DisabledReadWriteFileLock(BaseReadWriteFileLock):
-    def __new__(cls) -> None:
+    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN002, ANN003
         msg = "ReadWriteFileLock is unavailable."
         raise NotImplementedError(msg)
 

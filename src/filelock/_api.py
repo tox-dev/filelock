@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import warnings
-from abc import ABCMeta, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import local
 from typing import TYPE_CHECKING, Any, cast
@@ -27,16 +27,24 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger("filelock")
 
 
+class Releasable(ABC):
+    """Interface for objects implementing ```release``` method."""
+
+    @abstractmethod
+    def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
+        ...
+
+
 # This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__
 # is not called twice when entering the with statement. If we would simply return *self*, the lock would be acquired
 # again in the *__enter__* method of the BaseFileLock, but not released again automatically. issue #37 (memory leak)
 class AcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseFileLock) -> None:
+    def __init__(self, lock: Releasable) -> None:
         self.lock = lock
 
-    def __enter__(self) -> BaseFileLock:
+    def __enter__(self) -> Releasable:
         return self.lock
 
     def __exit__(
@@ -139,7 +147,7 @@ class FileLockMeta(ABCMeta):
         return cast(BaseFileLock, instance)
 
 
-class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
+class BaseFileLock(contextlib.ContextDecorator, Releasable, metaclass=FileLockMeta):
     """Abstract base class for a file lock object."""
 
     _instances: WeakValueDictionary[str, BaseFileLock]
