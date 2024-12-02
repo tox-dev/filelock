@@ -342,7 +342,7 @@ def test_threaded_read_write_lock(tmp_path: Path, ex_thread_cls: threading.Threa
 @pytest.mark.asyncio
 async def test_async_basic_read_lock(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    async with rw_wrapper.read_lock as lock:
+    async with rw_wrapper.read() as lock:
         assert lock.is_locked
         assert lock.read_write_mode == ReadWriteMode.READ
     assert not lock.is_locked
@@ -351,7 +351,7 @@ async def test_async_basic_read_lock(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_basic_write_lock(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    async with rw_wrapper.write_lock as lock:
+    async with rw_wrapper.write() as lock:
         assert lock.is_locked
         assert lock.read_write_mode == ReadWriteMode.WRITE
     assert not lock.is_locked
@@ -360,7 +360,7 @@ async def test_async_basic_write_lock(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_reentrant_read_lock(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    lock = rw_wrapper.read_lock
+    lock = rw_wrapper.read()
     async with lock:
         assert lock.is_locked
         async with lock:
@@ -372,7 +372,7 @@ async def test_async_reentrant_read_lock(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_reentrant_write_lock(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    lock = rw_wrapper.write_lock
+    lock = rw_wrapper.write()
     async with lock:
         assert lock.is_locked
         async with lock:
@@ -384,8 +384,8 @@ async def test_async_reentrant_write_lock(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_multiple_readers_shared_lock(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    lock1 = rw_wrapper.read_lock
-    lock2 = rw_wrapper.read_lock
+    lock1 = rw_wrapper.read()
+    lock2 = rw_wrapper.read()
 
     async with lock1:
         assert lock1.is_locked
@@ -400,8 +400,8 @@ async def test_async_multiple_readers_shared_lock(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_writer_excludes_readers(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    rlock = rw_wrapper.read_lock
-    wlock = rw_wrapper.write_lock
+    rlock = rw_wrapper.read()
+    wlock = rw_wrapper.write()
 
     async with wlock:
         assert wlock.is_locked
@@ -418,8 +418,8 @@ async def test_async_readers_blocked_by_writer_priority(tmp_path: Path) -> None:
     This ensures writer preference.
     """
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    rlock = rw_wrapper.read_lock
-    wlock = rw_wrapper.write_lock
+    rlock = rw_wrapper.read()
+    wlock = rw_wrapper.write()
 
     await rlock.acquire()
     try:
@@ -433,7 +433,7 @@ async def test_async_readers_blocked_by_writer_priority(tmp_path: Path) -> None:
         await asyncio.sleep(0.1)
 
         # Now attempt another read lock - should fail due to writer preference
-        another_r = rw_wrapper.read_lock
+        another_r = rw_wrapper.read()
         with pytest.raises(Timeout):
             await another_r.acquire(timeout=0.1, blocking=True)
 
@@ -447,8 +447,8 @@ async def test_async_readers_blocked_by_writer_priority(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_non_blocking_read_when_write_held(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    wlock = rw_wrapper.write_lock
-    rlock = rw_wrapper.read_lock
+    wlock = rw_wrapper.write()
+    rlock = rw_wrapper.read()
 
     await wlock.acquire()
     try:
@@ -461,8 +461,8 @@ async def test_async_non_blocking_read_when_write_held(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_timeout_read_lock(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    wlock = rw_wrapper.write_lock
-    rlock = rw_wrapper.read_lock
+    wlock = rw_wrapper.write()
+    rlock = rw_wrapper.read()
 
     await wlock.acquire()
     try:
@@ -475,8 +475,8 @@ async def test_async_timeout_read_lock(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_timeout_write_lock(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    rlock = rw_wrapper.read_lock
-    wlock = rw_wrapper.write_lock
+    rlock = rw_wrapper.read()
+    wlock = rw_wrapper.write()
 
     await rlock.acquire()
     try:
@@ -489,7 +489,7 @@ async def test_async_timeout_write_lock(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_forced_release(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-    rlock = rw_wrapper.read_lock
+    rlock = rw_wrapper.read()
     await rlock.acquire()
     assert rlock.is_locked
     await rlock.release(force=True)
@@ -507,7 +507,7 @@ async def test_async_stress_multiple_tasks_readers_and_writers(tmp_path: Path) -
 
     async def reader() -> None:
         rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-        async with rw_wrapper.read_lock:
+        async with rw_wrapper.read():
             # Multiple readers allowed
             await asyncio.sleep(0.01)
             # Just check/inspect shared_data under lock
@@ -517,7 +517,7 @@ async def test_async_stress_multiple_tasks_readers_and_writers(tmp_path: Path) -
 
     async def writer() -> None:
         rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-        async with rw_wrapper.write_lock:
+        async with rw_wrapper.write():
             async with data_lock:
                 old_len = len(shared_data)
             await asyncio.sleep(0.02)
@@ -545,13 +545,13 @@ async def test_async_asyncio_concurrent_readers_writers(tmp_path: Path) -> None:
 
     async def read_work() -> None:
         rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-        async with rw_wrapper.read_lock:
+        async with rw_wrapper.read():
             _ = txt_file.read_text()
             await asyncio.sleep(0.001)
 
     async def write_work() -> None:
         rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-        async with rw_wrapper.write_lock:
+        async with rw_wrapper.write():
             current = txt_file.read_text()
             txt_file.write_text(current + "x")
             await asyncio.sleep(0.002)
@@ -575,11 +575,11 @@ async def test_async_asyncio_concurrent_readers_writers(tmp_path: Path) -> None:
 def test_async_cannot_use_with_instead_of_async_with(tmp_path: Path) -> None:
     rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
     # Trying to use sync `with` should raise NotImplementedError
-    lock = rw_wrapper.read_lock
+    lock = rw_wrapper.read()
     with pytest.raises(NotImplementedError, match="Do not use `with` for asyncio locks"), lock:
         pass
 
-    lock = rw_wrapper.write_lock
+    lock = rw_wrapper.write()
     with pytest.raises(NotImplementedError, match="Do not use `with` for asyncio locks"), lock:
         pass
 
@@ -599,7 +599,7 @@ async def test_async_writer_priority_race_condition(tmp_path: Path) -> None:
     async def reader() -> None:
         nonlocal active_readers, active_writers
         rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-        read_lock = rw_wrapper.read_lock
+        read_lock = rw_wrapper.read()
         async with read_lock:
             async with lock:
                 active_readers += 1
@@ -612,7 +612,7 @@ async def test_async_writer_priority_race_condition(tmp_path: Path) -> None:
     async def writer() -> None:
         nonlocal active_readers, active_writers
         rw_wrapper = AsyncReadWriteFileLockWrapper(lock_file=str(tmp_path / "test_rw"))
-        write_lock = rw_wrapper.write_lock
+        write_lock = rw_wrapper.write()
         async with write_lock:
             async with lock:
                 active_writers += 1

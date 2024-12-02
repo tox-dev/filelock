@@ -18,6 +18,16 @@ class BaseAsyncReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
     Convenience wrapper class for async read/write locks.
 
     Provides `.read()` and `.write()` methods to easily access a read or write lock.
+
+    .. code-block:: python
+
+        # Acquire a non-exclusive reader lock
+        async with lock.read():
+            pass
+
+        # Acquire an exclusive writer lock
+        async with lock.write():
+            pass
     """
 
     _read_write_file_lock_cls: type[BaseAsyncReadWriteFileLock]
