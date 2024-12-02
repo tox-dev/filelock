@@ -10,6 +10,12 @@ if TYPE_CHECKING:
 
 
 class BaseReadWriteFileLockWrapper(ABC):
+    """
+    Convenience wrapper for read/write locks.
+
+    Provides `.read()` and `.write()` methods to easily access a read or write lock.
+    """
+
     _read_write_file_lock_cls: type[BaseReadWriteFileLock]
 
     def __init__(  # noqa: PLR0913
@@ -26,7 +32,7 @@ class BaseReadWriteFileLockWrapper(ABC):
         """
         Convenience wrapper for read/write locks.
 
-        See filelock.read_write.ReadWriteFileLock for description of the parameters.
+        See ReadWriteFileLock for description of the parameters.
         """
         self.read_lock = self._read_write_file_lock_cls(
             lock_file=lock_file,

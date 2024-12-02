@@ -127,7 +127,7 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncReleasable):
         Try to acquire the file lock.
 
         :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default
-            :attr:`~BaseFileLock.timeout` is and if ``timeout < 0``, there is no timeout and
+            :attr:`filelock.BaseFileLock.timeout` is and if ``timeout < 0``, there is no timeout and
             this method will block until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
@@ -237,5 +237,4 @@ class _DisabledAsyncReadWriteFileLock(BaseAsyncReadWriteFileLock):
 
 __all__ = [
     "BaseAsyncReadWriteFileLock",
-    "_DisabledAsyncReadWriteFileLock",
 ]

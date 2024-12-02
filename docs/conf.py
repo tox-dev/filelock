@@ -38,7 +38,7 @@ autosectionlabel_prefix_document = True
 
 intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
 nitpicky = True
-nitpick_ignore = [("py_class", "filelock.asyncio.AsyncReleasable"), ("py_class", "filelock._api.Releasable")]
+nitpick_ignore = [("py:class", "filelock.asyncio.AsyncReleasable"), ("py:class", "filelock._api.Releasable")]
 extlinks = {
     "issue": ("https://github.com/tox-dev/py-filelock/issues/%s", "issue #%s"),
     "pr": ("https://github.com/tox-dev/py-filelock/issues/%s", "PR #%s"),

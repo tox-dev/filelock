@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 class BaseAsyncReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
     """
     Convenience wrapper class for async read/write locks.
+
     Provides `.read()` and `.write()` methods to easily access a read or write lock.
     """
 

@@ -28,15 +28,26 @@ AsyncReadWriteFileLockWrapper: type[BaseAsyncReadWriteFileLockWrapper]
 if has_fcntl:
 
     class UnixAsyncReadWriteFileLock(BaseAsyncReadWriteFileLock):
+        """Unix implementation of an async read/write FileLock."""
+
         _shared_file_lock_cls: type[BaseAsyncFileLock] = AsyncNonExclusiveUnixFileLock
         _exclusive_file_lock_cls: type[BaseAsyncFileLock] = AsyncUnixFileLock
 
-    class UnixReadWriteFileLockWrapper(BaseAsyncReadWriteFileLockWrapper):
+    class UnixAsyncReadWriteFileLockWrapper(BaseAsyncReadWriteFileLockWrapper):
+        """Wrapper for a Unix implementation of an async read/write FileLock."""
+
         _read_write_file_lock_cls = UnixAsyncReadWriteFileLock
 
     AsyncReadWriteFileLock = UnixAsyncReadWriteFileLock
-    AsyncReadWriteFileLockWrapper = UnixReadWriteFileLockWrapper
+    AsyncReadWriteFileLockWrapper = UnixAsyncReadWriteFileLockWrapper
 else:
+
+    class UnixAsyncReadWriteFileLock(BaseAsyncReadWriteFileLock):
+        """Unix implementation of an async read/write FileLock."""
+
+    class UnixAsyncReadWriteFileLockWrapper(BaseAsyncReadWriteFileLockWrapper):
+        """Wrapper for a Unix implementation of an async read/write FileLock."""
+
     AsyncReadWriteFileLock = _DisabledAsyncReadWriteFileLock
     AsyncReadWriteFileLockWrapper = _DisabledAsyncReadWriteFileLockWrapper
 
@@ -45,4 +56,7 @@ __all__ = [
     "AsyncReadWriteFileLock",
     "AsyncReadWriteFileLockWrapper",
     "BaseAsyncReadWriteFileLock",
+    "BaseAsyncReadWriteFileLockWrapper",
+    "UnixAsyncReadWriteFileLock",
+    "UnixAsyncReadWriteFileLockWrapper",
 ]
