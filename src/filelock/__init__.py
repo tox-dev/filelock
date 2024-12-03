@@ -12,13 +12,14 @@ import sys
 import warnings
 from typing import TYPE_CHECKING
 
-from ._api import AcquireReturnProxy, BaseFileLock
+from ._api import AcquireReturnProxy, BaseFileLock, LockProtocol
 from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock, has_fcntl
 from ._windows import WindowsFileLock
 from .asyncio import (
     AsyncAcquireReturnProxy,
+    AsyncLockProtocol,
     AsyncSoftFileLock,
     AsyncUnixFileLock,
     AsyncWindowsFileLock,
@@ -56,12 +57,14 @@ __all__ = [
     "AcquireReturnProxy",
     "AsyncAcquireReturnProxy",
     "AsyncFileLock",
+    "AsyncLockProtocol",
     "AsyncSoftFileLock",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",
     "BaseFileLock",
     "FileLock",
+    "LockProtocol",
     "SoftFileLock",
     "Timeout",
     "UnixFileLock",
