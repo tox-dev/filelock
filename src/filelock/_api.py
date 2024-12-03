@@ -27,8 +27,18 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger("filelock")
 
 
-class Releasable(Protocol):
-    """Protocol for objects implementing ```release``` method."""
+class LockProtocol(Protocol):
+    """Protocol for objects implementing ```acquire``` and ```release``` methods."""
+
+    @abstractmethod
+    def acquire(
+        self,
+        timeout: float | None = None,
+        poll_interval: float = 0.05,
+        *,
+        poll_intervall: float | None = None,
+        blocking: bool | None = None,
+    ) -> AcquireReturnProxy: ...
 
     @abstractmethod
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
@@ -41,10 +51,10 @@ class Releasable(Protocol):
 class AcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: Releasable) -> None:
+    def __init__(self, lock: LockProtocol) -> None:
         self.lock = lock
 
-    def __enter__(self) -> Releasable:
+    def __enter__(self) -> LockProtocol:
         return self.lock
 
     def __exit__(

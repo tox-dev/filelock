@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, NoReturn, cast
 
-from filelock.asyncio import AsyncAcquireReturnProxy, AsyncReleasable, BaseAsyncFileLock
+from filelock.asyncio import AsyncAcquireReturnProxy, AsyncLockProtocol, BaseAsyncFileLock
 from filelock.read_write._api import BaseReadWriteFileLock, ReadWriteMode
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 
-class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncReleasable):
+class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncLockProtocol):
     """
     An asynchronous, writer-preferring read/write file lock.
 
@@ -150,8 +150,11 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncReleasable):
 
         """
         start_time = time.monotonic()
+        inner_lock = cast(AsyncLockProtocol, self._inner_lock)
+        outer_lock = cast(AsyncLockProtocol, self._outer_lock)
+
         # Writers or readers must first acquire the outer lock to verify no writer is active or pending.
-        await self._outer_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)  # type: ignore[misc]
+        await outer_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
         dur = time.monotonic() - start_time
         if timeout is not None:
             timeout -= dur
@@ -159,15 +162,15 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncReleasable):
         if self.read_write_mode == ReadWriteMode.READ:
             try:
                 # Acquire the inner lock for reading.
-                await self._inner_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)  # type: ignore[misc]
+                await inner_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
             finally:
                 # Release outer lock once the inner lock is acquired, allowing other readers in.
-                await self._outer_lock.release()  # type: ignore[func-returns-value]
+                await outer_lock.release()
         else:
             # In write mode, hold both locks:
             # - Outer lock prevents new readers from starting.
             # - Inner lock ensures exclusive write access.
-            await self._inner_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)  # type: ignore[misc]
+            await inner_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
         return AsyncAcquireReturnProxy(lock=self)
 
     async def release(self, force: bool = False) -> None:  # type: ignore[override]  # noqa: FBT001, FBT002
@@ -178,9 +181,12 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncReleasable):
         :param force: If true, the lock counter is ignored and the lock is released in every case/
 
         """
-        await self._inner_lock.release(force=force)  # type: ignore[func-returns-value]
+        inner_lock = cast(AsyncLockProtocol, self._inner_lock)
+        outer_lock = cast(AsyncLockProtocol, self._outer_lock)
+
+        await inner_lock.release(force=force)
         if self.read_write_mode == ReadWriteMode.WRITE:
-            await self._outer_lock.release(force=force)  # type: ignore[func-returns-value]
+            await outer_lock.release(force=force)
 
     async def __aenter__(self) -> Self:
         """

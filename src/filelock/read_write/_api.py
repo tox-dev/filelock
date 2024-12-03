@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from filelock._api import AcquireReturnProxy, BaseFileLock, Releasable
+from filelock._api import AcquireReturnProxy, BaseFileLock, LockProtocol
 
 if TYPE_CHECKING:
     import os
@@ -25,7 +25,7 @@ class ReadWriteMode(Enum):
     WRITE = "write"
 
 
-class BaseReadWriteFileLock(contextlib.ContextDecorator, Releasable, ABC):
+class BaseReadWriteFileLock(contextlib.ContextDecorator, LockProtocol, ABC):
     """Abstract base class for a writer-preferring read/write file lock object."""
 
     _shared_file_lock_cls: type[BaseFileLock]
@@ -173,6 +173,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, Releasable, ABC):
         timeout: float | None = None,
         poll_interval: float = 0.05,
         *,
+        poll_intervall: float | None = None,
         blocking: bool | None = None,
     ) -> AcquireReturnProxy:
         """
@@ -181,6 +182,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, Releasable, ABC):
         :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~timeout` is and
          if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file
+        :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
          first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
         :raises Timeout: if fails to acquire lock within the timeout period
@@ -201,17 +203,23 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, Releasable, ABC):
 
         """
         start_time = time.monotonic()
-        self._outer_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
+        self._outer_lock.acquire(
+            timeout=timeout, poll_interval=poll_interval, poll_intervall=poll_intervall, blocking=blocking
+        )
         dur = time.monotonic() - start_time
         if timeout:
             timeout -= dur
         if self.read_write_mode == ReadWriteMode.READ:
             try:
-                self._inner_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
+                self._inner_lock.acquire(
+                    timeout=timeout, poll_interval=poll_interval, poll_intervall=poll_intervall, blocking=blocking
+                )
             finally:
                 self._outer_lock.release()
         else:
-            self._inner_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
+            self._inner_lock.acquire(
+                timeout=timeout, poll_interval=poll_interval, poll_intervall=poll_intervall, blocking=blocking
+            )
         return AcquireReturnProxy(lock=self)
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002

@@ -32,8 +32,17 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger("filelock")
 
 
-class AsyncReleasable(Protocol):
-    """Interface for async objects implementing ```release``` method."""
+class AsyncLockProtocol(Protocol):
+    """Protocol for async objects implementing ```acquire``` and ```release``` methods."""
+
+    @abstractmethod
+    async def acquire(
+        self,
+        timeout: float | None = None,
+        poll_interval: float = 0.05,
+        *,
+        blocking: bool | None = None,
+    ) -> AsyncAcquireReturnProxy: ...
 
     @abstractmethod
     async def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
@@ -61,10 +70,10 @@ class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
 class AsyncAcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: AsyncReleasable) -> None:  # noqa: D107
+    def __init__(self, lock: AsyncLockProtocol) -> None:  # noqa: D107
         self.lock = lock
 
-    async def __aenter__(self) -> AsyncReleasable:  # noqa: D105
+    async def __aenter__(self) -> AsyncLockProtocol:  # noqa: D105
         return self.lock
 
     async def __aexit__(  # noqa: D105
