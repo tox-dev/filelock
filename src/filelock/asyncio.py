@@ -33,7 +33,7 @@ _LOGGER = logging.getLogger("filelock")
 
 
 class AsyncLockProtocol(Protocol):
-    """Protocol for async objects implementing ```acquire``` and ```release``` methods."""
+    """Protocol for async objects implementing ``acquire`` and ``release`` methods."""
 
     @abstractmethod
     async def acquire(

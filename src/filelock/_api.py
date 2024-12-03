@@ -30,7 +30,7 @@ DEFAULT_POLL_INTERVAL = 0.05
 
 
 class LockProtocol(Protocol):
-    """Protocol for objects implementing ```acquire``` and ```release``` methods."""
+    """Protocol for objects implementing ``acquire`` and ``release`` methods."""
 
     @abstractmethod
     def acquire(
