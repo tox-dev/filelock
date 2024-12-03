@@ -94,7 +94,17 @@ class BaseReadWriteFileLockWrapper(ABC):
 
 
 class _DisabledReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
-    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN002, ANN003
+    def __init__(  # noqa: PLR0913
+        self,
+        lock_file: str | os.PathLike[str] | None = None,
+        timeout: float = -1,
+        mode: int = 0o644,
+        thread_local: bool = True,  # noqa: FBT001, FBT002
+        *,
+        blocking: bool = True,
+        lock_file_inner: str | os.PathLike[str] | None = None,
+        lock_file_outer: str | os.PathLike[str] | None = None,
+    ) -> None:
         msg = "ReadWriteFileLock is unavailable."
         raise NotImplementedError(msg)
 

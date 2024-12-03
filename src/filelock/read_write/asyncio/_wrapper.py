@@ -76,7 +76,20 @@ class BaseAsyncReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
 
 
 class _DisabledAsyncReadWriteFileLockWrapper(BaseAsyncReadWriteFileLockWrapper):
-    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN002, ANN003
+    def __init__(  # noqa: PLR0913
+        self,
+        lock_file: str | os.PathLike[str] | None = None,
+        timeout: float = -1,
+        mode: int = 0o644,
+        thread_local: bool = False,  # noqa: FBT001, FBT002
+        *,
+        blocking: bool = True,
+        lock_file_inner: str | os.PathLike[str] | None = None,
+        lock_file_outer: str | os.PathLike[str] | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+        run_in_executor: bool = True,
+        executor: futures.Executor | None = None,
+    ) -> None:
         msg = "AsyncReadWriteFileLock is unavailable."
         raise NotImplementedError(msg)
 

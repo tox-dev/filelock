@@ -6,10 +6,10 @@ import logging
 import os
 import time
 import warnings
-from abc import ABC, ABCMeta, abstractmethod
+from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger("filelock")
 
 
-class Releasable(ABC):
-    """Interface for objects implementing ```release``` method."""
+class Releasable(Protocol):
+    """Protocol for objects implementing ```release``` method."""
 
     @abstractmethod
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
@@ -147,7 +147,7 @@ class FileLockMeta(ABCMeta):
         return cast(BaseFileLock, instance)
 
 
-class BaseFileLock(contextlib.ContextDecorator, Releasable, metaclass=FileLockMeta):
+class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     """Abstract base class for a file lock object."""
 
     _instances: WeakValueDictionary[str, BaseFileLock]

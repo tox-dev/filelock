@@ -22,30 +22,25 @@ if TYPE_CHECKING:
 ReadWriteFileLock: type[BaseReadWriteFileLock]
 ReadWriteFileLockWrapper: type[BaseReadWriteFileLockWrapper]
 
-if has_fcntl:
 
-    class UnixReadWriteFileLock(BaseReadWriteFileLock):
-        """Unix implementation of a read/write FileLock."""
+class UnixReadWriteFileLock(BaseReadWriteFileLock):
+    """Unix implementation of a read/write FileLock."""
 
-        _shared_file_lock_cls: type[BaseFileLock] = NonExclusiveUnixFileLock
-        _exclusive_file_lock_cls: type[BaseFileLock] = UnixFileLock
+    _shared_file_lock_cls: type[BaseFileLock] = NonExclusiveUnixFileLock
+    _exclusive_file_lock_cls: type[BaseFileLock] = UnixFileLock
 
-    class UnixReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
-        """Wrapper for a Unix implementation of a read/write FileLock."""
 
-        _read_write_file_lock_cls = UnixReadWriteFileLock
+class UnixReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
+    """Wrapper for a Unix implementation of a read/write FileLock."""
 
+    _read_write_file_lock_cls = UnixReadWriteFileLock
+
+
+if has_fcntl:  # pragma: win32 no cover
     ReadWriteFileLock = UnixReadWriteFileLock
     ReadWriteFileLockWrapper = UnixReadWriteFileLockWrapper
     has_read_write_file_lock = True
-else:
-
-    class UnixReadWriteFileLock(BaseReadWriteFileLock):
-        """Unix implementation of a read/write FileLock."""
-
-    class UnixReadWriteFileLockWrapper(BaseReadWriteFileLockWrapper):
-        """Wrapper for a Unix implementation of a read/write FileLock."""
-
+else:  # pragma: win32 cover
     ReadWriteFileLock = _DisabledReadWriteFileLock
     ReadWriteFileLockWrapper = _DisabledReadWriteFileLockWrapper
     has_read_write_file_lock = False

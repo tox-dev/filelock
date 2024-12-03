@@ -7,10 +7,10 @@ import contextlib
 import logging
 import os
 import time
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, Callable, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Callable, NoReturn, Protocol, cast
 
 from ._api import BaseFileLock, FileLockContext, FileLockMeta
 from ._error import Timeout
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger("filelock")
 
 
-class AsyncReleasable(ABC):
+class AsyncReleasable(Protocol):
     """Interface for async objects implementing ```release``` method."""
 
     @abstractmethod
@@ -107,7 +107,7 @@ class AsyncFileLockMeta(FileLockMeta):
         return cast(BaseAsyncFileLock, instance)
 
 
-class BaseAsyncFileLock(BaseFileLock, AsyncReleasable, metaclass=AsyncFileLockMeta):
+class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     """Base class for asynchronous file locks."""
 
     def __init__(  # noqa: PLR0913
@@ -330,19 +330,19 @@ class BaseAsyncFileLock(BaseFileLock, AsyncReleasable, metaclass=AsyncFileLockMe
                 loop.create_task(self.release(force=True))
 
 
-class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):  # type: ignore[misc]
+class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
     """Simply watches the existence of the lock file."""
 
 
-class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):  # type: ignore[misc]
+class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):
     """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
 
 
-class AsyncNonExclusiveUnixFileLock(NonExclusiveUnixFileLock, BaseAsyncFileLock):  # type: ignore[misc]
+class AsyncNonExclusiveUnixFileLock(NonExclusiveUnixFileLock, BaseAsyncFileLock):
     """Uses the :func:`fcntl.flock` to non-exclusively lock the lock file on unix systems."""
 
 
-class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):  # type: ignore[misc]
+class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):
     """Uses the :func:`msvcrt.locking` to hard lock the lock file on windows systems."""
 
 

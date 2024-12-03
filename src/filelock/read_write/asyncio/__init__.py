@@ -19,29 +19,24 @@ if TYPE_CHECKING:
 AsyncReadWriteFileLock: type[BaseAsyncReadWriteFileLock]
 AsyncReadWriteFileLockWrapper: type[BaseAsyncReadWriteFileLockWrapper]
 
-if has_fcntl:
 
-    class UnixAsyncReadWriteFileLock(BaseAsyncReadWriteFileLock):
-        """Unix implementation of an async read/write FileLock."""
+class UnixAsyncReadWriteFileLock(BaseAsyncReadWriteFileLock):
+    """Unix implementation of an async read/write FileLock."""
 
-        _shared_file_lock_cls: type[BaseAsyncFileLock] = AsyncNonExclusiveUnixFileLock
-        _exclusive_file_lock_cls: type[BaseAsyncFileLock] = AsyncUnixFileLock
+    _shared_file_lock_cls: type[BaseAsyncFileLock] = AsyncNonExclusiveUnixFileLock
+    _exclusive_file_lock_cls: type[BaseAsyncFileLock] = AsyncUnixFileLock
 
-    class UnixAsyncReadWriteFileLockWrapper(BaseAsyncReadWriteFileLockWrapper):
-        """Wrapper for a Unix implementation of an async read/write FileLock."""
 
-        _read_write_file_lock_cls = UnixAsyncReadWriteFileLock
+class UnixAsyncReadWriteFileLockWrapper(BaseAsyncReadWriteFileLockWrapper):
+    """Wrapper for a Unix implementation of an async read/write FileLock."""
 
+    _read_write_file_lock_cls = UnixAsyncReadWriteFileLock
+
+
+if has_fcntl:  # pragma: win32 no cover
     AsyncReadWriteFileLock = UnixAsyncReadWriteFileLock
     AsyncReadWriteFileLockWrapper = UnixAsyncReadWriteFileLockWrapper
-else:
-
-    class UnixAsyncReadWriteFileLock(BaseAsyncReadWriteFileLock):
-        """Unix implementation of an async read/write FileLock."""
-
-    class UnixAsyncReadWriteFileLockWrapper(BaseAsyncReadWriteFileLockWrapper):
-        """Wrapper for a Unix implementation of an async read/write FileLock."""
-
+else:  # pragma: win32 cover
     AsyncReadWriteFileLock = _DisabledAsyncReadWriteFileLock
     AsyncReadWriteFileLockWrapper = _DisabledAsyncReadWriteFileLockWrapper
 
