@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from threading import local
 from typing import TYPE_CHECKING, Any, Callable, NoReturn, Protocol, cast
 
-from ._api import BaseFileLock, FileLockContext, FileLockMeta
+from ._api import DEFAULT_POLL_INTERVAL, BaseFileLock, FileLockContext, FileLockMeta
 from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import NonExclusiveUnixFileLock, UnixFileLock
@@ -39,7 +39,7 @@ class AsyncLockProtocol(Protocol):
     async def acquire(
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         *,
         blocking: bool | None = None,
     ) -> AsyncAcquireReturnProxy: ...
@@ -198,7 +198,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     async def acquire(  # type: ignore[override]
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         *,
         blocking: bool | None = None,
     ) -> AsyncAcquireReturnProxy:

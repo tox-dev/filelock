@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger("filelock")
 
+DEFAULT_POLL_INTERVAL = 0.05
+
 
 class LockProtocol(Protocol):
     """Protocol for objects implementing ```acquire``` and ```release``` methods."""
@@ -34,7 +36,7 @@ class LockProtocol(Protocol):
     def acquire(
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         *,
         poll_intervall: float | None = None,
         blocking: bool | None = None,
@@ -289,7 +291,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     def acquire(
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         *,
         poll_intervall: float | None = None,
         blocking: bool | None = None,

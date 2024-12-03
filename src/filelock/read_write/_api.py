@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from filelock._api import AcquireReturnProxy, BaseFileLock, LockProtocol
+from filelock._api import DEFAULT_POLL_INTERVAL, AcquireReturnProxy, BaseFileLock, LockProtocol
 
 if TYPE_CHECKING:
     import os
@@ -171,7 +171,7 @@ class BaseReadWriteFileLock(contextlib.ContextDecorator, LockProtocol, ABC):
     def acquire(
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         *,
         poll_intervall: float | None = None,
         blocking: bool | None = None,

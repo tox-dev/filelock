@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast
 
+from filelock._api import DEFAULT_POLL_INTERVAL
 from filelock.asyncio import AsyncAcquireReturnProxy, AsyncLockProtocol, BaseAsyncFileLock
 from filelock.read_write._api import BaseReadWriteFileLock, ReadWriteMode
 
@@ -119,7 +120,7 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncLockProtocol):
     async def acquire(  # type: ignore[override]
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         *,
         blocking: bool | None = None,
     ) -> AsyncAcquireReturnProxy:
