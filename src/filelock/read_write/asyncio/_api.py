@@ -151,8 +151,8 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncLockProtocol):
 
         """
         start_time = time.monotonic()
-        inner_lock = cast(AsyncLockProtocol, self._inner_lock)
-        outer_lock = cast(AsyncLockProtocol, self._outer_lock)
+        inner_lock = cast("AsyncLockProtocol", self._inner_lock)
+        outer_lock = cast("AsyncLockProtocol", self._outer_lock)
 
         # Writers or readers must first acquire the outer lock to verify no writer is active or pending.
         await outer_lock.acquire(timeout=timeout, poll_interval=poll_interval, blocking=blocking)
@@ -182,8 +182,8 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncLockProtocol):
         :param force: If true, the lock counter is ignored and the lock is released in every case/
 
         """
-        inner_lock = cast(AsyncLockProtocol, self._inner_lock)
-        outer_lock = cast(AsyncLockProtocol, self._outer_lock)
+        inner_lock = cast("AsyncLockProtocol", self._inner_lock)
+        outer_lock = cast("AsyncLockProtocol", self._outer_lock)
 
         await inner_lock.release(force=force)
         if self.read_write_mode == ReadWriteMode.WRITE:
