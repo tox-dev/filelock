@@ -7,14 +7,15 @@ import contextlib
 import logging
 import os
 import time
+from abc import abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, Callable, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Callable, NoReturn, Protocol, cast
 
-from ._api import BaseFileLock, FileLockContext, FileLockMeta
+from ._api import DEFAULT_POLL_INTERVAL, BaseFileLock, FileLockContext, FileLockMeta
 from ._error import Timeout
 from ._soft import SoftFileLock
-from ._unix import UnixFileLock
+from ._unix import NonExclusiveUnixFileLock, UnixFileLock
 from ._windows import WindowsFileLock
 
 if TYPE_CHECKING:
@@ -29,6 +30,23 @@ if TYPE_CHECKING:
 
 
 _LOGGER = logging.getLogger("filelock")
+
+
+class AsyncLockProtocol(Protocol):
+    """Protocol for async objects implementing ``acquire`` and ``release`` methods."""
+
+    @abstractmethod
+    async def acquire(
+        self,
+        timeout: float | None = None,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        *,
+        blocking: bool | None = None,
+    ) -> AsyncAcquireReturnProxy: ...
+
+    @abstractmethod
+    async def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
+        ...
 
 
 @dataclass
@@ -52,10 +70,10 @@ class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
 class AsyncAcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseAsyncFileLock) -> None:  # noqa: D107
+    def __init__(self, lock: AsyncLockProtocol) -> None:  # noqa: D107
         self.lock = lock
 
-    async def __aenter__(self) -> BaseAsyncFileLock:  # noqa: D105
+    async def __aenter__(self) -> AsyncLockProtocol:  # noqa: D105
         return self.lock
 
     async def __aexit__(  # noqa: D105
@@ -180,7 +198,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     async def acquire(  # type: ignore[override]
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         *,
         blocking: bool | None = None,
     ) -> AsyncAcquireReturnProxy:
@@ -329,12 +347,17 @@ class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):
     """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
 
 
+class AsyncNonExclusiveUnixFileLock(NonExclusiveUnixFileLock, BaseAsyncFileLock):
+    """Uses the :func:`fcntl.flock` to non-exclusively lock the lock file on unix systems."""
+
+
 class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):
     """Uses the :func:`msvcrt.locking` to hard lock the lock file on windows systems."""
 
 
 __all__ = [
     "AsyncAcquireReturnProxy",
+    "AsyncNonExclusiveUnixFileLock",
     "AsyncSoftFileLock",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",

@@ -9,7 +9,7 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import local
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
@@ -26,6 +26,26 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger("filelock")
 
+DEFAULT_POLL_INTERVAL = 0.05
+
+
+class LockProtocol(Protocol):
+    """Protocol for objects implementing ``acquire`` and ``release`` methods."""
+
+    @abstractmethod
+    def acquire(
+        self,
+        timeout: float | None = None,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        *,
+        poll_intervall: float | None = None,
+        blocking: bool | None = None,
+    ) -> AcquireReturnProxy: ...
+
+    @abstractmethod
+    def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
+        ...
+
 
 # This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__
 # is not called twice when entering the with statement. If we would simply return *self*, the lock would be acquired
@@ -33,10 +53,10 @@ _LOGGER = logging.getLogger("filelock")
 class AcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseFileLock) -> None:
+    def __init__(self, lock: LockProtocol) -> None:
         self.lock = lock
 
-    def __enter__(self) -> BaseFileLock:
+    def __enter__(self) -> LockProtocol:
         return self.lock
 
     def __exit__(
@@ -271,7 +291,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     def acquire(
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         *,
         poll_intervall: float | None = None,
         blocking: bool | None = None,
