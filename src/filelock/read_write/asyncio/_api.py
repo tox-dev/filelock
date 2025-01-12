@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast
@@ -9,7 +10,6 @@ from filelock.asyncio import AsyncAcquireReturnProxy, AsyncLockProtocol, BaseAsy
 from filelock.read_write._api import BaseReadWriteFileLock, ReadWriteMode
 
 if TYPE_CHECKING:
-    import asyncio
     import os
     import sys
     from concurrent import futures
