@@ -235,6 +235,15 @@ class BaseAsyncReadWriteFileLock(BaseReadWriteFileLock, AsyncLockProtocol):
     ) -> None:
         pass
 
+    def __del__(self) -> None:
+        """Called when the lock object is deleted."""
+        with contextlib.suppress(RuntimeError):
+            loop = self.loop or asyncio.get_running_loop()
+            if not loop.is_running():  # pragma: no cover
+                loop.run_until_complete(self.release(force=True))
+            else:
+                loop.create_task(self.release(force=True))
+
 
 class _DisabledAsyncReadWriteFileLock(BaseAsyncReadWriteFileLock):
     def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN002, ANN003
