@@ -12,7 +12,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, Callable, Union
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -21,6 +21,8 @@ import pytest
 from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from pytest_mock import MockerFixture
 
 
@@ -218,7 +220,7 @@ def test_nested_contruct(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert not lock_1.is_locked
 
 
-_ExcInfoType = Union[Tuple[Type[BaseException], BaseException, TracebackType], Tuple[None, None, None]]
+_ExcInfoType = Union[tuple[type[BaseException], BaseException, TracebackType], tuple[None, None, None]]
 
 
 class ExThread(threading.Thread):
@@ -304,7 +306,7 @@ def test_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert not lock_2.is_locked
 
     # try to acquire lock 2
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_2.acquire(timeout=0.1)
     assert not lock_2.is_locked
     assert lock_1.is_locked
@@ -333,44 +335,44 @@ def test_non_blocking(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert not lock_5.is_locked
 
     # try to acquire lock 2
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_2.acquire(blocking=False)
     assert not lock_2.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `blocking=False` lock 3 with `acquire`
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_3.acquire()
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `blocking=False` lock 3 with context manager
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."), lock_3:
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."), lock_3:
         pass
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `timeout=0` lock 4 with `acquire`
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_4.acquire()
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `timeout=0` lock 4 with context manager
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."), lock_4:
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."), lock_4:
         pass
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
     # blocking precedence over timeout
     # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with `acquire`
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_5.acquire()
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with context manager
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."), lock_5:
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."), lock_5:
         pass
     assert not lock_5.is_locked
     assert lock_1.is_locked
@@ -397,7 +399,7 @@ def test_default_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert not lock_2.is_locked
 
     # try to acquire lock 2
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_2.acquire()
     assert not lock_2.is_locked
     assert lock_1.is_locked
@@ -405,7 +407,7 @@ def test_default_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_2.timeout = 0
     assert lock_2.timeout == 0
 
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_2.acquire()
     assert not lock_2.is_locked
     assert lock_1.is_locked
@@ -459,7 +461,7 @@ def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert not lock_2.is_locked
 
     # try to acquire lock 2
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_2.acquire(timeout=0.1)
 
     # delete lock 1 and try to acquire lock 2 again

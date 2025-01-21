@@ -26,7 +26,6 @@ jobs:
           - "3.11"
           - "3.10"
           - "3.9"
-          - "3.8"
         os:
           - ubuntu-latest
           - windows-latest
@@ -52,17 +51,21 @@ jobs:
         run: uv python install --python-preference only-managed ${{ matrix.py }}
       - name: Setup test suite
         run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.py }}
+        env:
+          UV_PYTHON_PREFERENCE: only-managed
       - name: Run test suite
         if: ${{ !startsWith(matrix.py, 'pypy')}}
         run: tox run --skip-pkg-install -e ${{ matrix.py }}
         env:
           PYTEST_ADDOPTS: "-vv --durations=20"
           DIFF_AGAINST: HEAD
+          UV_PYTHON_PREFERENCE: only-managed
       - name: Run test suite without coverage
         if: ${{ startsWith(matrix.py, 'pypy')}}
         run: tox run --skip-pkg-install -e ${{ matrix.py }} --
         env:
           PYTEST_ADDOPTS: "-vv --durations=20"
+          UV_PYTHON_PREFERENCE: only-managed
       - name: Rename coverage report file
         if: ${{ !startsWith(matrix.py, 'pypy')}}
         run: |
@@ -102,6 +105,8 @@ jobs:
         run: uv build --python 3.13 --python-preference only-managed --wheel . --out-dir dist
       - name: Setup coverage tool
         run: tox -e coverage --notest
+        env:
+          UV_PYTHON_PREFERENCE: only-managed
       - name: Download coverage data
         uses: actions/download-artifact@v4
         with:
@@ -110,6 +115,8 @@ jobs:
           merge-multiple: true
       - name: Combine and report coverage
         run: tox -e coverage --skip-pkg-install
+        env:
+          UV_PYTHON_PREFERENCE: only-managed
       - name: Upload HTML report
         uses: actions/upload-artifact@v4
         with:
@@ -150,5 +157,9 @@ jobs:
         run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
       - name: Setup test suite
         run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.tox_env }}
+        env:
+          UV_PYTHON_PREFERENCE: only-managed
       - name: Run test suite
         run: tox run --skip-pkg-install -e ${{ matrix.tox_env }}
+        env:
+          UV_PYTHON_PREFERENCE: only-managed
