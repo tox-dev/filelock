@@ -91,32 +91,32 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
     assert not lock_5.is_locked
 
     # try to acquire lock 2
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         await lock_2.acquire(blocking=False)
     assert not lock_2.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `blocking=False` lock 3 with `acquire`
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         await lock_3.acquire()
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `blocking=False` lock 3 with context manager
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_3:
             pass
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `timeout=0` lock 4 with `acquire`
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         await lock_4.acquire()
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `timeout=0` lock 4 with context manager
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_4:
             pass
     assert not lock_4.is_locked
@@ -124,13 +124,13 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 
     # blocking precedence over timeout
     # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with `acquire`
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         await lock_5.acquire()
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with context manager
-    with pytest.raises(Timeout, match="The file lock '.*' could not be acquired."):
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_5:
             pass
     assert not lock_5.is_locked
