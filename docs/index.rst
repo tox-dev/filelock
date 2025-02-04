@@ -57,7 +57,7 @@ working directory is currently used. To do so, create a :class:`FileLock <filelo
 
     lock = FileLock(lock_path, timeout=1)
 
-The lock object supports multiple ways for acquiring the lock, including the ones used to acquire standard Python thread
+The lock object represents an exclusive/write lock and can be acquired in multiple ways, including the ones used to acquire standard Python thread
 locks:
 
 .. code-block:: python
