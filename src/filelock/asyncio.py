@@ -1,4 +1,4 @@
-"""An asyncio-based implementation of the file lock."""  # noqa: A005
+"""An asyncio-based implementation of the file lock."""
 
 from __future__ import annotations
 
