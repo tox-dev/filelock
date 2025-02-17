@@ -30,7 +30,7 @@ repos:
       - id: ruff
         args: ["--fix", "--unsafe-fixes", "--exit-non-zero-on-fix"]
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: "v3.5.0" # Use the sha / tag you want to point at
+    rev: "v3.5.1" # Use the sha / tag you want to point at
     hooks:
       - id: prettier
         additional_dependencies:
