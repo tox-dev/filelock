@@ -27,7 +27,7 @@ else:  # pragma: win32 no cover
     try:
         import fcntl
 
-        _ = (fcntl.lock, fcntl.LOCK_EX, fcntl.LOCK_NB, fcntl.LOCK_UN)
+        _ = (fcntl.flock, fcntl.LOCK_EX, fcntl.LOCK_NB, fcntl.LOCK_UN)
     except (ImportError, AttributeError):
         pass
     else:
