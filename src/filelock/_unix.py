@@ -26,6 +26,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 else:  # pragma: win32 no cover
     try:
         import fcntl
+
         _ = (fcntl.lock, fcntl.LOCK_EX, fcntl.LOCK_NB, fcntl.LOCK_UN)
     except (ImportError, AttributeError):
         pass
