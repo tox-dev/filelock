@@ -1,13 +1,17 @@
+from __future__ import annotations
+
+import logging
 import os
 import sqlite3
 import threading
-import logging
 import time
-from _error import Timeout
-from filelock._api import AcquireReturnProxy, BaseFileLock
-from typing import Literal, Any
 from contextlib import contextmanager
+from typing import Any, Literal
 from weakref import WeakValueDictionary
+
+from _error import Timeout
+
+from filelock._api import AcquireReturnProxy
 
 _LOGGER = logging.getLogger("filelock")
 
@@ -16,21 +20,22 @@ _LOGGER = logging.getLogger("filelock")
 # systems. Use even a lower value to be safe. This 2 bln milliseconds is about 23 days.
 _MAX_SQLITE_TIMEOUT_MS = 2_000_000_000 - 1
 
+
 def timeout_for_sqlite(timeout: float, blocking: bool, already_waited: float) -> int:
     if blocking is False:
         return 0
-    
+
     if timeout == -1:
         return _MAX_SQLITE_TIMEOUT_MS
-    
+
     if timeout < 0:
-        raise ValueError("timeout must be a non-negative number or -1")
-    
+        msg = "timeout must be a non-negative number or -1"
+        raise ValueError(msg)
+
     if timeout > 0:
-        timeout = timeout - already_waited
-        if timeout < 0:
-            timeout = 0
-    
+        timeout -= already_waited
+        timeout = max(timeout, 0)
+
     assert timeout >= 0
 
     timeout_ms = int(timeout * 1000)
@@ -42,9 +47,16 @@ def timeout_for_sqlite(timeout: float, blocking: bool, already_waited: float) ->
 
 class _ReadWriteLockMeta(type):
     """Metaclass that redirects instance creation to get_lock() when is_singleton=True."""
-    def __call__(cls, lock_file: str | os.PathLike[str], 
-                 timeout: float = -1, blocking: bool = True, 
-                 is_singleton: bool = True, *args: Any, **kwargs: Any) -> "ReadWriteLock":
+
+    def __call__(
+        cls,
+        lock_file: str | os.PathLike[str],
+        timeout: float = -1,
+        blocking: bool = True,
+        is_singleton: bool = True,
+        *args: Any,
+        **kwargs: Any,
+    ) -> ReadWriteLock:
         if is_singleton:
             return cls.get_lock(lock_file, timeout, blocking)
         return super().__call__(lock_file, timeout, blocking, is_singleton, *args, **kwargs)
@@ -56,8 +68,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     _instances_lock = threading.Lock()
 
     @classmethod
-    def get_lock(cls, lock_file: str | os.PathLike[str],
-                 timeout: float = -1, blocking: bool = True) -> "ReadWriteLock":
+    def get_lock(cls, lock_file: str | os.PathLike[str], timeout: float = -1, blocking: bool = True) -> ReadWriteLock:
         """Return the one-and-only ReadWriteLock for a given file."""
         normalized = os.path.abspath(lock_file)
         with cls._instances_lock:
@@ -65,7 +76,14 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 cls._instances[normalized] = cls(lock_file, timeout, blocking)
             instance = cls._instances[normalized]
             if instance.timeout != timeout or instance.blocking != blocking:
-                raise ValueError("Singleton lock created with timeout=%s, blocking=%s, cannot be changed to timeout=%s, blocking=%s", instance.timeout, instance.blocking, timeout, blocking)
+                msg = "Singleton lock created with timeout=%s, blocking=%s, cannot be changed to timeout=%s, blocking=%s"
+                raise ValueError(
+                    msg,
+                    instance.timeout,
+                    instance.blocking,
+                    timeout,
+                    blocking,
+                )
             return instance
 
     def __init__(
@@ -85,7 +103,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._internal_lock = threading.Lock()
         self._lock_level = 0  # Reentrance counter.
         # _current_mode holds the active lock mode ("read" or "write") or None if no lock is held.
-        self._current_mode: Literal["read", "write", None] = None
+        self._current_mode: Literal["read", "write"] | None = None
         # _lock_level is the reentrance counter.
         self._lock_level = 0
         self.con = sqlite3.connect(self.lock_file, check_same_thread=False)
@@ -101,21 +119,25 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         # acquire, so crashes cannot adversely affect the DB. Even journal_mode=OFF would probably
         # be fine, too, but the SQLite documentation says that ROLLBACK becomes *undefined behaviour*
         # with journal_mode=OFF which sounds scarier.
-        self.con.execute('PRAGMA journal_mode=MEMORY;')
+        self.con.execute("PRAGMA journal_mode=MEMORY;")
 
     def acquire_read(self, timeout: float = -1, blocking: bool = True) -> AcquireReturnProxy:
-        """Acquire a read lock. If a lock is already held, it must be a read lock.
-        Upgrading from read to write is prohibited."""
-
+        """
+        Acquire a read lock. If a lock is already held, it must be a read lock.
+        Upgrading from read to write is prohibited.
+        """
         # Attempt to re-enter already held lock.
         with self._internal_lock:
             if self._lock_level > 0:
                 # Must already be in read mode.
                 if self._current_mode != "read":
-                        raise RuntimeError(
-                            f"Cannot acquire read lock on {self.lock_file} (lock id: {id(self)}): "
-                            "already holding a write lock (downgrade not allowed)"
-                        )
+                    msg = (
+                        f"Cannot acquire read lock on {self.lock_file} (lock id: {id(self)}): "
+                        "already holding a write lock (downgrade not allowed)"
+                    )
+                    raise RuntimeError(
+                        msg
+                    )
                 self._lock_level += 1
                 return AcquireReturnProxy(lock=self)
 
@@ -131,46 +153,53 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             with self._internal_lock:
                 if self._lock_level > 0:
                     if self._current_mode != "read":
-                        raise RuntimeError(
+                        msg = (
                             f"Cannot acquire read lock on {self.lock_file} (lock id: {id(self)}): "
                             "already holding a write lock (downgrade not allowed)"
                         )
+                        raise RuntimeError(
+                            msg
+                        )
                     self._lock_level += 1
                     return AcquireReturnProxy(lock=self)
-                
+
             waited = time.perf_counter() - start_time
             timeout_ms = timeout_for_sqlite(timeout, blocking, waited)
-            
-            self.con.execute('PRAGMA busy_timeout=?;', (timeout_ms,))
-            self.con.execute('BEGIN TRANSACTION;')
+
+            self.con.execute("PRAGMA busy_timeout=?;", (timeout_ms,))
+            self.con.execute("BEGIN TRANSACTION;")
             # Need to make SELECT to compel SQLite to actually acquire a SHARED db lock.
             # See https://www.sqlite.org/lockingv3.html#transaction_control
-            self.con.execute('SELECT name from sqlite_schema LIMIT 1;')
+            self.con.execute("SELECT name from sqlite_schema LIMIT 1;")
 
             with self._internal_lock:
                 self._current_mode = "read"
                 self._lock_level = 1
-            
+
             return AcquireReturnProxy(lock=self)
 
         except sqlite3.OperationalError as e:
-            if 'database is locked' not in str(e):
+            if "database is locked" not in str(e):
                 raise  # Re-raise unexpected errors.
             raise Timeout(self.lock_file)
         finally:
             self._transaction_lock.release()
 
     def acquire_write(self, timeout: float = -1, blocking: bool = True) -> AcquireReturnProxy:
-        """Acquire a write lock. If a lock is already held, it must be a write lock.
-        Upgrading from read to write is prohibited."""
-
+        """
+        Acquire a write lock. If a lock is already held, it must be a write lock.
+        Upgrading from read to write is prohibited.
+        """
         # Attempt to re-enter already held lock.
         with self._internal_lock:
             if self._lock_level > 0:
                 if self._current_mode != "write":
-                    raise RuntimeError(
+                    msg = (
                         f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}): "
                         "already holding a read lock (upgrade not allowed)"
+                    )
+                    raise RuntimeError(
+                        msg
                     )
                 self._lock_level += 1
                 return AcquireReturnProxy(lock=self)
@@ -185,27 +214,30 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             with self._internal_lock:
                 if self._lock_level > 0:
                     if self._current_mode != "write":
-                        raise RuntimeError(
+                        msg = (
                             f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}): "
                             "already holding a read lock (upgrade not allowed)"
                         )
+                        raise RuntimeError(
+                            msg
+                        )
                     self._lock_level += 1
                     return AcquireReturnProxy(lock=self)
-                
+
             waited = time.perf_counter() - start_time
             timeout_ms = timeout_for_sqlite(timeout, blocking, waited)
-                
-            self.con.execute('PRAGMA busy_timeout=?;', (timeout_ms,))
-            self.con.execute('BEGIN EXCLUSIVE TRANSACTION;')
+
+            self.con.execute("PRAGMA busy_timeout=?;", (timeout_ms,))
+            self.con.execute("BEGIN EXCLUSIVE TRANSACTION;")
 
             with self._internal_lock:
                 self._current_mode = "write"
                 self._lock_level = 1
-            
+
             return AcquireReturnProxy(lock=self)
 
         except sqlite3.OperationalError as e:
-            if 'database is locked' not in str(e):
+            if "database is locked" not in str(e):
                 raise  # Re-raise if it is an unexpected error.
             raise Timeout(self.lock_file)
         finally:
@@ -216,7 +248,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if self._lock_level == 0:
                 if force:
                     return
-                raise RuntimeError(f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held")
+                msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
+                raise RuntimeError(msg)
             if force:
                 self._lock_level = 0
             else:
@@ -233,10 +266,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     # (We provide two context managers as helpers.)
 
     @contextmanager
-    def read_lock(self, timeout: float | None = None,
-                  blocking: bool | None = None):
-        """Context manager for acquiring a read lock.
-        Attempts to upgrade to write lock are disallowed."""
+    def read_lock(self, timeout: float | None = None, blocking: bool | None = None):
+        """
+        Context manager for acquiring a read lock.
+        Attempts to upgrade to write lock are disallowed.
+        """
         if timeout is None:
             timeout = self.timeout
         if blocking is None:
@@ -248,10 +282,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self.release()
 
     @contextmanager
-    def write_lock(self, timeout: float | None = None,
-                   blocking: bool | None = None):
-        """Context manager for acquiring a write lock.
-        Acquiring read locks on the same file while helding a write lock is prohibited."""
+    def write_lock(self, timeout: float | None = None, blocking: bool | None = None):
+        """
+        Context manager for acquiring a write lock.
+        Acquiring read locks on the same file while helding a write lock is prohibited.
+        """
         if timeout is None:
             timeout = self.timeout
         if blocking is None:
@@ -261,9 +296,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             yield
         finally:
             self.release()
-    
+
     def __del__(self) -> None:
         """Called when the lock object is deleted."""
         self.release(force=True)
-
-
