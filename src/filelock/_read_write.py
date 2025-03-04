@@ -3,7 +3,7 @@ import sqlite3
 import threading
 import logging
 import time
-from _error import Timeout
+from ._error import Timeout
 from filelock._api import AcquireReturnProxy, BaseFileLock
 from typing import Literal, Any
 from contextlib import contextmanager
@@ -62,8 +62,12 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         normalized = os.path.abspath(lock_file)
         with cls._instances_lock:
             if normalized not in cls._instances:
-                cls._instances[normalized] = cls(lock_file, timeout, blocking)
-            instance = cls._instances[normalized]
+                # Create the instance with a strong reference first
+                instance = super(_ReadWriteLockMeta, cls).__call__(lock_file, timeout, blocking, is_singleton=False)
+                cls._instances[normalized] = instance
+            else:
+                instance = cls._instances[normalized]
+                
             if instance.timeout != timeout or instance.blocking != blocking:
                 raise ValueError("Singleton lock created with timeout=%s, blocking=%s, cannot be changed to timeout=%s, blocking=%s", instance.timeout, instance.blocking, timeout, blocking)
             return instance
@@ -89,19 +93,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         # _lock_level is the reentrance counter.
         self._lock_level = 0
         self.con = sqlite3.connect(self.lock_file, check_same_thread=False)
-        # Using the legacy journal mode rather than more modern WAL mode because,
-        # apparently, in WAL mode it's impossible to enforce that read transactions
-        # (started with BEGIN TRANSACTION) are blocked if a concurrent write transaction,
-        # even EXCLUSIVE, is in progress, unless the read transactions actually read
-        # any pages modified by the write transaction. But in the legacy journal mode,
-        # it seems, it's possible to do this read-write locking without table data
-        # modification at each exclusive lock.
-        # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
-        # "MEMORY" journal mode is fine because no actual writes to the are happening in write-lock
-        # acquire, so crashes cannot adversely affect the DB. Even journal_mode=OFF would probably
-        # be fine, too, but the SQLite documentation says that ROLLBACK becomes *undefined behaviour*
-        # with journal_mode=OFF which sounds scarier.
-        self.con.execute('PRAGMA journal_mode=MEMORY;')
 
     def acquire_read(self, timeout: float = -1, blocking: bool = True) -> AcquireReturnProxy:
         """Acquire a read lock. If a lock is already held, it must be a read lock.
@@ -118,8 +109,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                         )
                 self._lock_level += 1
                 return AcquireReturnProxy(lock=self)
-
-        timeout_ms = timeout_for_sqlite(timeout, blocking)
 
         start_time = time.perf_counter()
         # Acquire the transaction lock so that the (possibly blocking) SQLite work
@@ -140,8 +129,31 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 
             waited = time.perf_counter() - start_time
             timeout_ms = timeout_for_sqlite(timeout, blocking, waited)
-            
-            self.con.execute('PRAGMA busy_timeout=?;', (timeout_ms,))
+            self.con.execute('PRAGMA busy_timeout=%d;' % timeout_ms)
+            # WHY journal_mode=MEMORY?
+            # Using the legacy journal mode rather than more modern WAL mode because,
+            # apparently, in WAL mode it's impossible to enforce that read transactions
+            # (started with BEGIN TRANSACTION) are blocked if a concurrent write transaction,
+            # even EXCLUSIVE, is in progress, unless the read transactions actually read
+            # any pages modified by the write transaction. But in the legacy journal mode,
+            # it seems, it's possible to do this read-write locking without table data
+            # modification at each exclusive lock.
+            # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
+            # "MEMORY" journal mode is fine because no actual writes to the are happening in write-lock
+            # acquire, so crashes cannot adversely affect the DB. Even journal_mode=OFF would probably
+            # be fine, too, but the SQLite documentation says that ROLLBACK becomes *undefined behaviour*
+            # with journal_mode=OFF which sounds scarier.
+            #
+            # WHY SETTING THIS PRAGMA HERE RATHER THAN IN ReadWriteLock.__init__()?
+            # Because setting this pragma may block on the database if it is locked at the moment,
+            # so we must set this pragma *after* `PRAGMA busy_timeout` above.
+            self.con.execute('PRAGMA journal_mode=MEMORY;')
+            # Recompute the remaining timeout after the potentially blocking pragma
+            # statement above.
+            waited = time.perf_counter() - start_time
+            timeout_ms_2 = timeout_for_sqlite(timeout, blocking, waited)
+            if timeout_ms_2 != timeout_ms:
+                self.con.execute('PRAGMA busy_timeout=%d;' % timeout_ms_2)
             self.con.execute('BEGIN TRANSACTION;')
             # Need to make SELECT to compel SQLite to actually acquire a SHARED db lock.
             # See https://www.sqlite.org/lockingv3.html#transaction_control
@@ -194,8 +206,17 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 
             waited = time.perf_counter() - start_time
             timeout_ms = timeout_for_sqlite(timeout, blocking, waited)
-                
-            self.con.execute('PRAGMA busy_timeout=?;', (timeout_ms,))
+            self.con.execute('PRAGMA busy_timeout=%d;' % timeout_ms)
+            # For explanations for both why we use journal_mode=MEMORY and why we set
+            # this pragma here rather than in ReadWriteLock.__init__(), see the comments
+            # in acquire_read().
+            self.con.execute('PRAGMA journal_mode=MEMORY;')
+            # Recompute the remaining timeout after the potentially blocking pragma
+            # statement above.
+            waited = time.perf_counter() - start_time
+            timeout_ms_2 = timeout_for_sqlite(timeout, blocking, waited)
+            if timeout_ms_2 != timeout_ms:
+                self.con.execute('PRAGMA busy_timeout=%d;' % timeout_ms_2)
             self.con.execute('BEGIN EXCLUSIVE TRANSACTION;')
 
             with self._internal_lock:
@@ -206,7 +227,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         except sqlite3.OperationalError as e:
             if 'database is locked' not in str(e):
-                raise  # Re-raise if it is an unexpected error.
+                raise e # Re-raise unexpected errors.
             raise Timeout(self.lock_file)
         finally:
             self._transaction_lock.release()
@@ -226,7 +247,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 self._current_mode = None
                 # Unless there are bugs in this code, sqlite3.ProgrammingError
                 # must not be raise here, that is, the transaction should have been
-                # started in acquire().
+                # started in acquire_read() or acquire_write().
                 self.con.rollback()
 
     # ----- Context Manager Protocol -----
