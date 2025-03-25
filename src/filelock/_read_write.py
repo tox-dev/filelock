@@ -29,8 +29,7 @@ def timeout_for_sqlite(timeout: float, blocking: bool, already_waited: float) ->
         return _MAX_SQLITE_TIMEOUT_MS
 
     if timeout < 0:
-        msg = "timeout must be a non-negative number or -1"
-        raise ValueError(msg)
+        raise ValueError("timeout must be a non-negative number or -1")
 
     if timeout > 0:
         timeout -= already_waited
@@ -110,6 +109,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._current_mode: Literal["read", "write"] | None = None
         # _lock_level is the reentrance counter.
         self._lock_level = 0
+        self._write_thread_id: int | None = None
         self.con = sqlite3.connect(self.lock_file, check_same_thread=False)
 
     def acquire_read(self, timeout: float = -1, blocking: bool = True) -> AcquireReturnProxy:
@@ -122,12 +122,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if self._lock_level > 0:
                 # Must already be in read mode.
                 if self._current_mode != "read":
-                    msg = (
+                    raise RuntimeError(
                         f"Cannot acquire read lock on {self.lock_file} (lock id: {id(self)}): "
                         "already holding a write lock (downgrade not allowed)"
-                    )
-                    raise RuntimeError(
-                        msg
                     )
                 self._lock_level += 1
                 return AcquireReturnProxy(lock=self)
@@ -142,12 +139,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             with self._internal_lock:
                 if self._lock_level > 0:
                     if self._current_mode != "read":
-                        msg = (
+                        raise RuntimeError(
                             f"Cannot acquire read lock on {self.lock_file} (lock id: {id(self)}): "
                             "already holding a write lock (downgrade not allowed)"
-                        )
-                        raise RuntimeError(
-                            msg
                         )
                     self._lock_level += 1
                     return AcquireReturnProxy(lock=self)
@@ -206,12 +200,15 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         with self._internal_lock:
             if self._lock_level > 0:
                 if self._current_mode != "write":
-                    msg = (
+                    raise RuntimeError(
                         f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}): "
                         "already holding a read lock (upgrade not allowed)"
                     )
+                cur_thread_id = threading.get_ident()
+                if self._write_thread_id != cur_thread_id:
                     raise RuntimeError(
-                        msg
+                        f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
+                        f"from thread {cur_thread_id} while it is held by thread {self._write_thread_id}"
                     )
                 self._lock_level += 1
                 return AcquireReturnProxy(lock=self)
@@ -226,12 +223,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             with self._internal_lock:
                 if self._lock_level > 0:
                     if self._current_mode != "write":
-                        msg = (
+                        raise RuntimeError(
                             f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}): "
                             "already holding a read lock (upgrade not allowed)"
-                        )
-                        raise RuntimeError(
-                            msg
                         )
                     self._lock_level += 1
                     return AcquireReturnProxy(lock=self)
@@ -254,7 +248,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             with self._internal_lock:
                 self._current_mode = "write"
                 self._lock_level = 1
-
+                self._write_thread_id = threading.get_ident()
+            
             return AcquireReturnProxy(lock=self)
 
         except sqlite3.OperationalError as e:
@@ -278,6 +273,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if self._lock_level == 0:
                 # Clear current mode and rollback the SQLite transaction.
                 self._current_mode = None
+                self._write_thread_id = None
                 # Unless there are bugs in this code, sqlite3.ProgrammingError
                 # must not be raise here, that is, the transaction should have been
                 # started in acquire_read() or acquire_write().
