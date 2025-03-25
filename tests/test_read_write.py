@@ -11,7 +11,9 @@ from filelock._read_write import ReadWriteLock
 
 
 # Helper function to run in a separate process to acquire a read lock
-def acquire_read_lock(lock_file, acquired_event, release_event=None, timeout=-1, blocking=True, ready_event=None) -> bool | None:
+def acquire_read_lock(
+    lock_file, acquired_event, release_event=None, timeout=-1, blocking=True, ready_event=None
+) -> bool | None:
     # Get error queue from current process if available
     current_process = mp.current_process()
     error_queue = getattr(current_process, "_error_queue", None)
@@ -40,7 +42,9 @@ def acquire_read_lock(lock_file, acquired_event, release_event=None, timeout=-1,
 
 
 # Helper function to run in a separate process to acquire a write lock
-def acquire_write_lock(lock_file, acquired_event, release_event=None, timeout=-1, blocking=True, ready_event=None) -> bool | None:
+def acquire_write_lock(
+    lock_file, acquired_event, release_event=None, timeout=-1, blocking=True, ready_event=None
+) -> bool | None:
     if ready_event:
         ready_event.wait(timeout=10)
 
