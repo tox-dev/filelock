@@ -814,3 +814,12 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock = FilePathLock(str(lock_path))
     assert lock.lock_file == str(lock_path) + ".lock"
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_lock_is_removed(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock = lock_type(lock_path)
+    with lock:
+        assert Path.exists(lock_path)
+    assert not Path.exists(lock_path)
