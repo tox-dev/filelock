@@ -38,9 +38,7 @@ else:  # pragma: win32 no cover
 
         def _acquire(self) -> None:
             ensure_directory_exists(self.lock_file)
-            open_flags = os.O_RDWR | os.O_TRUNC
-            if not Path(self.lock_file).exists():
-                open_flags |= os.O_CREAT
+            open_flags = os.O_RDWR | os.O_TRUNC | os.O_CREAT
             fd = os.open(self.lock_file, open_flags, self._context.mode)
             with suppress(PermissionError):  # This locked is not owned by this UID
                 os.fchmod(fd, self._context.mode)
@@ -52,14 +50,21 @@ else:  # pragma: win32 no cover
                     msg = "FileSystem does not appear to support flock; use SoftFileLock instead"
                     raise NotImplementedError(msg) from exception
             else:
-                self._context.lock_file_fd = fd
+                st = os.fstat(fd)
+                if st.st_nlink == 0:
+                    # We raced with another process that deleted the lock file
+                    # before we called fcntl.flock. This means that lock is not
+                    # valid (since another process will just lock a different
+                    # file) and we need to try again.
+                    # See https://stackoverflow.com/a/51070775
+                    os.close(fd)
+                else:
+                    self._context.lock_file_fd = fd
 
         def _release(self) -> None:
-            # Do not remove the lockfile:
-            #   https://github.com/tox-dev/py-filelock/issues/31
-            #   https://stackoverflow.com/questions/17708885/flock-removing-locked-file-without-race-condition
             fd = cast("int", self._context.lock_file_fd)
             self._context.lock_file_fd = None
+            Path.unlink(self.lock_file)
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 
