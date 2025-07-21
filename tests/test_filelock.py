@@ -616,8 +616,8 @@ def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
 def _check_file_read_write(txt_file: Path) -> None:
     for _ in range(3):
         uuid = str(uuid4())
-        txt_file.write_text(uuid)
-        assert txt_file.read_text() == uuid
+        txt_file.write_text(uuid, encoding="utf-8")
+        assert txt_file.read_text(encoding="utf-8") == uuid
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
