@@ -32,7 +32,7 @@ jobs:
           - macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Install the latest version of uv
@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Install the latest version of uv
@@ -140,7 +140,7 @@ jobs:
         exclude:
           - { os: windows-latest, tox_env: readme }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Install the latest version of uv
