@@ -3,10 +3,8 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-import stat
 import sys
 import threading
-import types
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import ENOSYS
@@ -20,15 +18,7 @@ from weakref import WeakValueDictionary
 
 import pytest
 
-from filelock import (
-    BaseFileLock,
-    FileLock,
-    SoftFileLock,
-    Timeout,
-    UnixFileLock,
-    WindowsFileLock,
-    _util,  # noqa: PLC2701
-)
+from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -827,21 +817,22 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
     assert lock.lock_file == str(lock_path) + ".lock"
 
 
-def test_raise_on_not_writable_file_branches(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_stat(mode: int, mtime: int = 1) -> types.SimpleNamespace:
-        return types.SimpleNamespace(st_mtime=mtime, st_mode=mode)
+@pytest.mark.parametrize(
+    ("lock_type", "expected_exc"),
+    [
+        (SoftFileLock, TimeoutError),
+        (FileLock, PermissionError),
+    ],
+)
+def test_mtime_zero_exit_branch(
+    lock_type: type[BaseFileLock], expected_exc: type[BaseException], tmp_path: Path
+) -> None:
+    p = tmp_path / "z.lock"
+    p.touch()
+    Path(p).chmod(0o444)
+    os.utime(p, (0, 0))
 
-    monkeypatch.setattr("filelock._util.os.stat", lambda _p: fake_stat(stat.S_IFREG | 0o444))
-    with pytest.raises(PermissionError):
-        _util.raise_on_not_writable_file("x")
+    lock = lock_type(str(p))
 
-    monkeypatch.setattr("filelock._util.os.stat", lambda _p: fake_stat(stat.S_IFDIR | 0o700))
-    if sys.platform == "win32":
-        with pytest.raises(PermissionError):
-            _util.raise_on_not_writable_file("x")
-    else:
-        with pytest.raises(IsADirectoryError):
-            _util.raise_on_not_writable_file("x")
-
-    monkeypatch.setattr("filelock._util.os.stat", lambda _p: fake_stat(stat.S_IFREG | 0o600, mtime=0))
-    _util.raise_on_not_writable_file("x")
+    with pytest.raises(expected_exc):
+        lock.acquire(timeout=0)
