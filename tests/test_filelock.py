@@ -819,11 +819,15 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
 
 
 def test_raise_on_not_writable_file_branches(monkeypatch):
-    monkeypatch.setattr(_util.os, "stat", lambda _: types.SimpleNamespace(st_mtime=1, st_mode=stat.S_IFREG | 0o444))
+
+    def fake_stat(mode: int, mtime: int = 1) -> types.SimpleNamespace:
+        return types.SimpleNamespace(st_mtime=mtime, st_mode=mode)
+
+    monkeypatch.setattr("filelock._util.os.stat", lambda _p: fake_stat(stat.S_IFREG | 0o444))
     with pytest.raises(PermissionError):
         _util.raise_on_not_writable_file("x")
 
-    monkeypatch.setattr(_util.os, "stat", lambda _: types.SimpleNamespace(st_mtime=1, st_mode=stat.S_IFDIR | 0o700))
+    monkeypatch.setattr("filelock._util.os.stat", lambda _p: fake_stat(stat.S_IFDIR | 0o700))
     if sys.platform == "win32":
         with pytest.raises(PermissionError):
             _util.raise_on_not_writable_file("x")
@@ -831,5 +835,5 @@ def test_raise_on_not_writable_file_branches(monkeypatch):
         with pytest.raises(IsADirectoryError):
             _util.raise_on_not_writable_file("x")
 
-    monkeypatch.setattr(_util.os, "stat", lambda _: types.SimpleNamespace(st_mtime=0, st_mode=stat.S_IFREG | 0o600))
+    monkeypatch.setattr("filelock._util.os.stat", lambda _p: fake_stat(stat.S_IFREG | 0o600, mtime=0))
     _util.raise_on_not_writable_file("x")
