@@ -197,7 +197,7 @@ async def test_wait_message_logged(lock_type: type[BaseAsyncFileLock], tmp_path:
 
 @pytest.mark.parametrize("lock_type", [AsyncSoftFileLock, AsyncFileLock])
 @pytest.mark.asyncio
-async def test_attempting_to_acquire_branch(lock_type, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_attempting_to_acquire_branch(lock_type: type[BaseAsyncFileLock], tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG)
 
     lock = lock_type(str(tmp_path / "a"))
@@ -212,23 +212,23 @@ async def test_thread_local_run_in_executor(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("lock_type", [AsyncSoftFileLock, AsyncFileLock])
 @pytest.mark.asyncio
-async def test_attempting_to_acquire(lock_type, tmp_path, caplog):
+async def test_attempting_to_acquire(lock_type: type[BaseAsyncFileLock], tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     lock = lock_type(str(tmp_path / "a.lock"), run_in_executor=False)
-    await lock.acquire(timeout=0.1)  # starts unlocked → hits the branch
+    await lock.acquire(timeout=0.1)
     assert any("Attempting to acquire lock" in m for m in caplog.messages)
     await lock.release()
 
 
 @pytest.mark.parametrize("lock_type", [AsyncSoftFileLock, AsyncFileLock])
 @pytest.mark.asyncio
-async def test_attempting_to_release(lock_type, tmp_path, caplog):
+async def test_attempting_to_release(lock_type: type[BaseAsyncFileLock], tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     lock = lock_type(str(tmp_path / "a.lock"), run_in_executor=False)
 
     await lock.acquire(timeout=0.1)   # lock_counter = 1, is_locked = True
     await lock.acquire(timeout=0.1)   # lock_counter = 2 (reentrant)
-    await lock.release(force=True)    # hits: if self._context.lock_counter == 0 or force:
+    await lock.release(force=True)
 
     assert any("Attempting to release lock" in m for m in caplog.messages)
     assert any("released" in m for m in caplog.messages)
@@ -243,7 +243,7 @@ async def test_release_early_exit_when_unlocked(lock_type,tmp_path):
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
-async def test_release_nonzero_counter_exit(lock_type, tmp_path, caplog):
+async def test_release_nonzero_counter_exit(lock_type: type[BaseAsyncFileLock], tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     lock = lock_type(str(tmp_path / "a.lock"), run_in_executor=False)
     await lock.acquire()

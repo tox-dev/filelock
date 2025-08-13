@@ -818,7 +818,7 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
     assert lock.lock_file == str(lock_path) + ".lock"
 
 
-def test_raise_on_not_writable_file_branches(monkeypatch):
+def test_raise_on_not_writable_file_branches(monkeypatch: pytest.MonkeyPatch):
 
     def fake_stat(mode: int, mtime: int = 1) -> types.SimpleNamespace:
         return types.SimpleNamespace(st_mtime=mtime, st_mode=mode)
