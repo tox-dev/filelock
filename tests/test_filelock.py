@@ -3,8 +3,10 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import stat
 import sys
 import threading
+import types
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import ENOSYS
@@ -15,11 +17,18 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Callable, Union
 from uuid import uuid4
 from weakref import WeakValueDictionary
-import sys, stat, types, pytest
 
 import pytest
 
-from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock, _util
+from filelock import (
+    BaseFileLock,
+    FileLock,
+    SoftFileLock,
+    Timeout,
+    UnixFileLock,
+    WindowsFileLock,
+    _util,  # noqa: PLC2701
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -693,7 +702,7 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             **kwargs: dict[str, Any],  # noqa: ARG002
         ) -> None:
             super().__init__(lock_file, timeout, mode, thread_local, is_singleton=True)
-            self.blocking=True
+            self.blocking = True
             self.my_param = my_param
 
     lock_path = tmp_path / "a"
@@ -818,8 +827,7 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
     assert lock.lock_file == str(lock_path) + ".lock"
 
 
-def test_raise_on_not_writable_file_branches(monkeypatch: pytest.MonkeyPatch):
-
+def test_raise_on_not_writable_file_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_stat(mode: int, mtime: int = 1) -> types.SimpleNamespace:
         return types.SimpleNamespace(st_mtime=mtime, st_mode=mode)
 
