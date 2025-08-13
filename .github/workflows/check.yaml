@@ -1,4 +1,4 @@
-name: check
+name: "🛠️ check"
 on:
   workflow_dispatch:
   push:
@@ -14,65 +14,59 @@ concurrency:
 
 jobs:
   test:
-    name: test ${{ matrix.py }} - ${{ matrix.os }}
+    name: "🧪 Test ${{ matrix.py }} - ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         py:
-          - "pypy3.10" # ahead to start it earlier because takes longer
+          - "3.14"
           - "3.13"
           - "3.12"
           - "3.11"
           - "3.10"
           - "3.9"
+          - "pypy3.11"
         os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15
+        exclude:
+          - { os: windows-2025, py: pypy3.11 }
 
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Install the latest version of uv
+      - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Add .local/bin to Windows PATH
-        if: runner.os == 'Windows'
-        shell: bash
-        run: echo "$USERPROFILE/.local/bin" >> $GITHUB_PATH
-      - name: Install tox
+      - name: "🧪 Install tox"
         run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
-      - name: Install Python
+      - name: "🐍 Install Python"
         run: uv python install --python-preference only-managed ${{ matrix.py }}
-      - name: Setup test suite
+      - name: "⚙️ Setup test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.py }}
         env:
           UV_PYTHON_PREFERENCE: only-managed
-      - name: Run test suite
-        if: ${{ !startsWith(matrix.py, 'pypy')}}
-        run: tox run --skip-pkg-install -e ${{ matrix.py }}
+      - name: "✅ Run test suite"
+        run: |
+          if [[ "${{ matrix.py }}" == pypy* ]]; then
+            tox run --skip-pkg-install -e ${{ matrix.py }} --
+          else
+            tox run --skip-pkg-install -e ${{ matrix.py }}
+          fi
+        shell: bash
         env:
           PYTEST_ADDOPTS: "-vv --durations=20"
+          UV_PYTHON_PREFERENCE: only-managed
           DIFF_AGAINST: HEAD
-          UV_PYTHON_PREFERENCE: only-managed
-      - name: Run test suite without coverage
-        if: ${{ startsWith(matrix.py, 'pypy')}}
-        run: tox run --skip-pkg-install -e ${{ matrix.py }} --
-        env:
-          PYTEST_ADDOPTS: "-vv --durations=20"
-          UV_PYTHON_PREFERENCE: only-managed
-      - name: Rename coverage report file
+      - name: "📝 Rename coverage report file"
         if: ${{ !startsWith(matrix.py, 'pypy')}}
         run: |
           import os; import sys
           os.rename(f".tox/.coverage.${{ matrix.py }}", f".tox/.coverage.${{ matrix.py }}-{sys.platform}")
         shell: python
-      - name: Upload coverage data
+      - name: "📦 Upload coverage data"
         if: ${{ !startsWith(matrix.py, 'pypy')}}
         uses: actions/upload-artifact@v4
         with:
@@ -82,84 +76,68 @@ jobs:
           retention-days: 3
 
   coverage:
-    name: Combine coverage
-    runs-on: ubuntu-latest
+    name: "📊 Combine coverage"
+    runs-on: ubuntu-24.04
     needs: test
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Install the latest version of uv
+      - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Add .local/bin to Windows PATH
-        if: runner.os == 'Windows'
-        shell: bash
-        run: echo "$USERPROFILE/.local/bin" >> $GITHUB_PATH
-      - name: Install hatch
+      - name: "🧪 Install tox"
         run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
-      - name: Build package to generate version
+      - name: "📦 Build package to generate version"
         run: uv build --python 3.13 --python-preference only-managed --wheel . --out-dir dist
-      - name: Setup coverage tool
+      - name: "⚙️ Setup coverage tool"
         run: tox -e coverage --notest
         env:
           UV_PYTHON_PREFERENCE: only-managed
-      - name: Download coverage data
+      - name: "⬇️ Download coverage data"
         uses: actions/download-artifact@v5
         with:
           path: .tox
           pattern: .coverage.*
           merge-multiple: true
-      - name: Combine and report coverage
+      - name: "📊 Combine and report coverage"
         run: tox -e coverage --skip-pkg-install
         env:
           UV_PYTHON_PREFERENCE: only-managed
-      - name: Upload HTML report
+      - name: "📤 Upload HTML report"
         uses: actions/upload-artifact@v4
         with:
           name: html-report
           path: .tox/htmlcov
 
   check:
-    name: ${{ matrix.tox_env }} - ${{ matrix.os }}
+    name: "🔎 ${{ matrix.tox_env }} - ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
-          - windows-latest
+          - ubuntu-24.04
+          - windows-2025
         tox_env:
           - dev
           - type
           - docs
-          - readme
+          - pkg_meta
         exclude:
-          - { os: windows-latest, tox_env: readme }
+          - { os: windows-2025, tox_env: pkg_meta }
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Install the latest version of uv
+      - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Add .local/bin to Windows PATH
-        if: runner.os == 'Windows'
-        shell: bash
-        run: echo "$USERPROFILE/.local/bin" >> $GITHUB_PATH
-      - name: Install tox
+      - name: "🧪 Install tox"
         run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
-      - name: Setup test suite
+      - name: "⚙️ Setup test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.tox_env }}
         env:
           UV_PYTHON_PREFERENCE: only-managed
-      - name: Run test suite
+      - name: "✅ Run test suite"
         run: tox run --skip-pkg-install -e ${{ matrix.tox_env }}
         env:
           UV_PYTHON_PREFERENCE: only-managed

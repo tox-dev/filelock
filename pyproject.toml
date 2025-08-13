@@ -1,7 +1,7 @@
 [build-system]
 build-backend = "hatchling.build"
 requires = [
-  "hatch-vcs>=0.4",
+  "hatch-vcs>=0.5",
   "hatchling>=1.27",
 ]
 
@@ -40,29 +40,54 @@ classifiers = [
 dynamic = [
   "version",
 ]
-optional-dependencies.docs = [
-  "furo>=2024.8.6",
-  "sphinx>=8.1.3",
-  "sphinx-autodoc-typehints>=3",
-]
-optional-dependencies.testing = [
-  "covdefaults>=2.3",
-  "coverage>=7.6.10",
-  "diff-cover>=9.2.1",
-  "pytest>=8.3.4",
-  "pytest-asyncio>=0.25.2",
-  "pytest-cov>=6",
-  "pytest-mock>=3.14",
-  "pytest-timeout>=2.3.1",
-  "virtualenv>=20.28.1",
-]
-optional-dependencies.typing = [
-  "typing-extensions>=4.12.2; python_version<'3.11'",
-]
 urls.Documentation = "https://py-filelock.readthedocs.io"
 urls.Homepage = "https://github.com/tox-dev/py-filelock"
 urls.Source = "https://github.com/tox-dev/py-filelock"
 urls.Tracker = "https://github.com/tox-dev/py-filelock/issues"
+
+[dependency-groups]
+dev = [
+  { include-group = "coverage" },
+  { include-group = "docs" },
+  { include-group = "fix" },
+  { include-group = "pkg-meta" },
+  { include-group = "test" },
+  { include-group = "type" },
+]
+
+test = [
+  "covdefaults>=2.3",
+  "diff-cover>=9.6",
+  "pytest>=8.4.1",
+  "pytest-asyncio>=1.1",
+  "pytest-cov>=6.2.1",
+  "pytest-mock>=3.14.1",
+  "pytest-timeout>=2.4",
+  "virtualenv>=20.33.1",
+]
+type = [
+  "mypy>=1.17.1",
+  "typing-extensions>=4.14.1; python_version<'3.11'",
+  { include-group = "test" },
+]
+docs = [
+  "furo>=2025.7.19",
+  "sphinx>=8.2.3",
+  "sphinx-autodoc-typehints>=3.2",
+]
+fix = [
+  "pre-commit-uv>=4.1.4",
+]
+pkg-meta = [
+  "check-wheel-contents>=0.6.3",
+  "twine>=6.1",
+  "uv>=0.8.5",
+]
+coverage = [
+  "covdefaults>=2.3",
+  "coverage[toml]>=7.10.2",
+  "diff-cover>=9.6",
+]
 
 [tool.hatch]
 build.hooks.vcs.version-file = "src/filelock/version.py"
@@ -119,6 +144,15 @@ max_supported_python = "3.13"
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "session"
+testpaths = [
+  "tests",
+]
+verbosity_assertions = 2
+filterwarnings = [
+  "error",
+  "ignore:unclosed database in <sqlite3.Connection object at:ResourceWarning",
+  "ignore:unclosed file <_io.TextIOWrapper:ResourceWarning",
+]
 
 [tool.coverage]
 html.show_contexts = true

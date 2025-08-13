@@ -1,4 +1,4 @@
-name: Release to PyPI
+name: 🚀Release to PyPI
 on:
   push:
     tags: ["*"]
@@ -8,20 +8,16 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Install the latest version of uv
+      - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build package
+      - name: "📦 Build package"
         run: uv build --python 3.13 --python-preference only-managed --sdist --wheel . --out-dir dist
-      - name: Store the distribution packages
+      - name: "📤 Store the distribution packages"
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.dists-artifact-name }}
@@ -30,19 +26,17 @@ jobs:
   release:
     needs:
       - build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
-      name: release
+      name: "🚀 Release to PyPI"
       url: https://pypi.org/project/filelock/${{ github.ref_name }}
     permissions:
       id-token: write
     steps:
-      - name: Download all the dists
+      - name: "⬇️ Download all the dists"
         uses: actions/download-artifact@v5
         with:
           name: ${{ env.dists-artifact-name }}
           path: dist/
-      - name: Publish to PyPI
+      - name: "🚀 Publish to PyPI"
         uses: pypa/gh-action-pypi-publish@v1.12.4
-        with:
-          attestations: true
