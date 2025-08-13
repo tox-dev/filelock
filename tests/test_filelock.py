@@ -15,10 +15,11 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Callable, Union
 from uuid import uuid4
 from weakref import WeakValueDictionary
+import sys, stat, types, pytest
 
 import pytest
 
-from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
+from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock, _util
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -691,7 +692,8 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             my_param: int = 0,
             **kwargs: dict[str, Any],  # noqa: ARG002
         ) -> None:
-            super().__init__(lock_file, timeout, mode, thread_local, blocking=True, is_singleton=True)
+            super().__init__(lock_file, timeout, mode, thread_local, is_singleton=True)
+            self.blocking=True
             self.my_param = my_param
 
     lock_path = tmp_path / "a"
@@ -814,3 +816,20 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock = FilePathLock(str(lock_path))
     assert lock.lock_file == str(lock_path) + ".lock"
+
+
+def test_raise_on_not_writable_file_branches(monkeypatch):
+    monkeypatch.setattr(_util.os, "stat", lambda _: types.SimpleNamespace(st_mtime=1, st_mode=stat.S_IFREG | 0o444))
+    with pytest.raises(PermissionError):
+        _util.raise_on_not_writable_file("x")
+
+    monkeypatch.setattr(_util.os, "stat", lambda _: types.SimpleNamespace(st_mtime=1, st_mode=stat.S_IFDIR | 0o700))
+    if sys.platform == "win32":
+        with pytest.raises(PermissionError):
+            _util.raise_on_not_writable_file("x")
+    else:
+        with pytest.raises(IsADirectoryError):
+            _util.raise_on_not_writable_file("x")
+
+    monkeypatch.setattr(_util.os, "stat", lambda _: types.SimpleNamespace(st_mtime=0, st_mode=stat.S_IFREG | 0o600))
+    _util.raise_on_not_writable_file("x")
