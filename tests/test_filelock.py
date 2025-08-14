@@ -821,7 +821,7 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
     ("lock_type", "expected_exc"),
     [
         (SoftFileLock, TimeoutError),
-        (FileLock, PermissionError),
+        (FileLock, TimeoutError) if sys.platform == "win32" else (FileLock, PermissionError)
     ],
 )
 def test_mtime_zero_exit_branch(
