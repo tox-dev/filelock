@@ -28,7 +28,7 @@ jobs:
       - build
     runs-on: ubuntu-24.04
     environment:
-      name: "🚀 Release to PyPI"
+      name: "Release to PyPI"
       url: https://pypi.org/project/filelock/${{ github.ref_name }}
     permissions:
       id-token: write
