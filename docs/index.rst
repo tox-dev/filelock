@@ -114,7 +114,10 @@ The lock objects are recursive locks, which means that once acquired, they will 
 It should also be noted that the lock is released during garbage collection.
 Put another way, if you do not assign an acquired lock to a variable,
 the lock will eventually be released (implicitly, not explicitly).
-This is explained with code below:
+For this reason, using the lock in the way shown below is not something you should ever do,
+always use the context manager (`with` form) instead.
+
+This issue is illustrated with code below:
 
 .. code-block:: python
 
