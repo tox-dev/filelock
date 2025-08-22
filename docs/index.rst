@@ -123,9 +123,9 @@ This is explained with code below:
 
     import filelock
 
-    # If you create a lock and acquire it but don't assign it, 
+    # If you create a lock and acquire it but don't assign it,
     # you will not actually hold the lock forever.
-    # Instead, the lock is released 
+    # Instead, the lock is released
     # when the created variable is garbage collected.
     FileLock(lock_path).acquire()
     # At some point after the creation above,
