@@ -111,6 +111,34 @@ The lock objects are recursive locks, which means that once acquired, they will 
         cite2()
     # And released here.
 
+It should also be noted that the lock is released during garbage collection.
+Put another way, if you do not assign an acquired lock to a variable,
+the lock will eventually be released (implicitly, not explicitly).
+For this reason, using the lock in the way shown below is not something you should ever do,
+always use the context manager (`with` form) instead.
+
+This issue is illustrated with code below:
+
+.. code-block:: python
+
+    import tempfile
+    from pathlib import Path
+
+    import filelock
+
+    # If you create a lock and acquire it but don't assign it,
+    # you will not actually hold the lock forever.
+    # Instead, the lock is released
+    # when the created variable is garbage collected.
+    FileLock(lock_path).acquire()
+    # At some point after the creation above,
+    # the lock is released again even though there is no explicit call to `release`.
+
+    # If you instead assign to a dummy variable,
+    # the lock will be hold
+    _ = FileLock(lock_path).acquire()
+    # Now the lock is being held
+    # (at least until `_` is reassigned and the lock is garbage collected)
 
 Timeouts and non-blocking locks
 -------------------------------
