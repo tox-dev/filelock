@@ -14,7 +14,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
       - name: "📦 Build package"
         run: uv build --python 3.13 --python-preference only-managed --sdist --wheel . --out-dir dist
       - name: "📤 Store the distribution packages"

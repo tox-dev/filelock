@@ -40,7 +40,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
       - name: "🧪 Install tox"
         run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
       - name: "🐍 Install Python"
@@ -85,7 +85,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
       - name: "🧪 Install tox"
         run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
       - name: "📦 Build package to generate version"
@@ -131,7 +131,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
       - name: "🧪 Install tox"
         run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
       - name: "⚙️ Setup test suite"
