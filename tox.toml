@@ -1,5 +1,5 @@
-requires = [ "tox>=4.28.4" ]
-env_list = [ "fix", "3.14t", "3.14", "3.13", "3.12", "3.11", "3.10", "3.9", "coverage", "type", "docs", "pkg_meta" ]
+requires = [ "tox>=4.30.2" ]
+env_list = [ "fix", "3.14t", "3.14", "3.13", "3.12", "3.11", "3.10", "coverage", "type", "docs", "pkg_meta" ]
 skip_missing_interpreters = true
 
 [env_run_base]
@@ -71,7 +71,7 @@ commands = [
   ],
 ]
 parallel_show_output = true
-depends = [ "3.14t", "3.14", "3.13", "3.12", "3.11", "3.10", "3.9" ]
+depends = [ "3.14t", "3.14", "3.13", "3.12", "3.11", "3.10" ]
 
 [env.fix]
 description = "format the code base to adhere to our styles, and complain about what we cannot do automatically"

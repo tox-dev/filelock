@@ -26,7 +26,6 @@ jobs:
           - "3.12"
           - "3.11"
           - "3.10"
-          - "3.9"
           - "pypy3.11"
         os:
           - ubuntu-24.04
@@ -42,7 +41,7 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@v7
       - name: "🧪 Install tox"
-        run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
+        run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
       - name: "🐍 Install Python"
         run: uv python install --python-preference only-managed ${{ matrix.py }}
       - name: "⚙️ Setup test suite"
@@ -87,9 +86,9 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@v7
       - name: "🧪 Install tox"
-        run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
+        run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
       - name: "📦 Build package to generate version"
-        run: uv build --python 3.13 --python-preference only-managed --wheel . --out-dir dist
+        run: uv build --python 3.14 --python-preference only-managed --wheel . --out-dir dist
       - name: "⚙️ Setup coverage tool"
         run: tox -e coverage --notest
         env:
@@ -133,7 +132,7 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@v7
       - name: "🧪 Install tox"
-        run: uv tool install --python-preference only-managed --python 3.13 tox --with tox-uv
+        run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
       - name: "⚙️ Setup test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.tox_env }}
         env:
