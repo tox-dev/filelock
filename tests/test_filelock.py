@@ -12,7 +12,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Callable, Union
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -21,7 +21,7 @@ import pytest
 from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from pytest_mock import MockerFixture
 
@@ -220,7 +220,7 @@ def test_nested_contruct(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert not lock_1.is_locked
 
 
-_ExcInfoType = Union[tuple[type[BaseException], BaseException, TracebackType], tuple[None, None, None]]
+_ExcInfoType = tuple[type[BaseException], BaseException, TracebackType] | tuple[None, None, None]
 
 
 class ExThread(threading.Thread):

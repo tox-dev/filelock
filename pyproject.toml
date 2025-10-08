@@ -20,7 +20,7 @@ license = "Unlicense"
 maintainers = [
   { name = "Bernát Gábor", email = "gaborjbernat@gmail.com" },
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
@@ -28,11 +28,11 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Internet",
   "Topic :: Software Development :: Libraries",
   "Topic :: System",
@@ -57,36 +57,36 @@ dev = [
 
 test = [
   "covdefaults>=2.3",
-  "diff-cover>=9.6",
-  "pytest>=8.4.1",
-  "pytest-asyncio>=1.1",
-  "pytest-cov>=6.2.1",
-  "pytest-mock>=3.14.1",
+  "diff-cover>=9.7.1",
+  "pytest>=8.4.2",
+  "pytest-asyncio>=1.2",
+  "pytest-cov>=7",
+  "pytest-mock>=3.15.1",
   "pytest-timeout>=2.4",
-  "virtualenv>=20.33.1",
+  "virtualenv>=20.34",
 ]
 type = [
-  "mypy>=1.17.1",
-  "typing-extensions>=4.14.1; python_version<'3.11'",
+  "mypy>=1.18.2",
+  "typing-extensions>=4.15; python_version<'3.11'",
   { include-group = "test" },
 ]
 docs = [
-  "furo>=2025.7.19",
+  "furo>=2025.9.25",
   "sphinx>=8.2.3",
   "sphinx-autodoc-typehints>=3.2",
 ]
 fix = [
-  "pre-commit-uv>=4.1.4",
+  "pre-commit-uv>=4.1.5",
 ]
 pkg-meta = [
   "check-wheel-contents>=0.6.3",
-  "twine>=6.1",
-  "uv>=0.8.5",
+  "twine>=6.2",
+  "uv>=0.8.22",
 ]
 coverage = [
   "covdefaults>=2.3",
-  "coverage[toml]>=7.10.2",
-  "diff-cover>=9.6",
+  "coverage[toml]>=7.10.7",
+  "diff-cover>=9.7.1",
 ]
 
 [tool.hatch]
@@ -140,7 +140,7 @@ quiet-level = 3
 ignore-words-list = "master"
 
 [tool.pyproject-fmt]
-max_supported_python = "3.13"
+max_supported_python = "3.14"
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "session"
