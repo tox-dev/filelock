@@ -94,7 +94,7 @@ jobs:
         env:
           UV_PYTHON_PREFERENCE: only-managed
       - name: "⬇️ Download coverage data"
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           path: .tox
           pattern: .coverage.*
