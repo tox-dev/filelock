@@ -216,6 +216,22 @@ The :class:`SoftFileLock <filelock.SoftFileLock>` only watches the existence of 
 portable, but also more prone to dead locks if the application crashes. You can simply delete the lock file in such
 cases.
 
+.. warning::
+
+   **Security Consideration - TOCTOU Vulnerability**: On platforms without ``O_NOFOLLOW`` support
+   (such as GraalPy), :class:`SoftFileLock <filelock.SoftFileLock>` may be vulnerable to symlink-based
+   Time-of-Check-Time-of-Use (TOCTOU) attacks. An attacker with local filesystem access could create
+   a symlink at the lock file path during the small race window between permission validation and file
+   creation.
+
+   On most modern platforms with ``O_NOFOLLOW`` support, this vulnerability is mitigated by refusing
+   to follow symlinks when creating the lock file.
+
+   For security-sensitive applications, prefer :class:`UnixFileLock <filelock.UnixFileLock>` or
+   :class:`WindowsFileLock <filelock.WindowsFileLock>` which provide stronger guarantees via OS-level
+   file locking. :class:`SoftFileLock <filelock.SoftFileLock>` should only be used as a fallback mechanism
+   on platforms where OS-level locking primitives are unavailable.
+
 Asyncio support
 ---------------
 
