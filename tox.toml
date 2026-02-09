@@ -33,7 +33,6 @@ commands = [
       "--cov-report",
       "xml:{env_tmp_dir}{/}coverage.xml",
     ] },
-
     "tests",
   ],
   { replace = "posargs", extend = true, default = [
@@ -45,6 +44,20 @@ commands = [
     ],
   ] },
 ]
+
+[env.fix]
+description = "format the code base to adhere to our styles, and complain about what we cannot do automatically"
+skip_install = true
+dependency_groups = [ "fix" ]
+pass_env = [
+  { replace = "ref", of = [
+    "env_run_base",
+    "pass_env",
+  ], extend = true },
+  "PROGRAMDATA",
+  "DISABLE_PRE_COMMIT_UV_PATCH",
+]
+commands = [ [ "pre-commit", "run", "--all-files", "--show-diff-on-failure", { replace = "posargs", extend = true } ] ]
 
 [env.coverage]
 description = "combine coverage files and generate diff (against DIFF_AGAINST defaulting to origin/main)"
@@ -73,20 +86,6 @@ commands = [
 parallel_show_output = true
 depends = [ "3.14t", "3.14", "3.13", "3.12", "3.11", "3.10" ]
 
-[env.fix]
-description = "format the code base to adhere to our styles, and complain about what we cannot do automatically"
-skip_install = true
-dependency_groups = [ "fix" ]
-pass_env = [
-  { replace = "ref", of = [
-    "env_run_base",
-    "pass_env",
-  ], extend = true },
-  "PROGRAMDATA",
-  "DISABLE_PRE_COMMIT_UV_PATCH",
-]
-commands = [ [ "pre-commit", "run", "--all-files", "--show-diff-on-failure", { replace = "posargs", extend = true } ] ]
-
 [env.type]
 description = "run type check on code base"
 dependency_groups = [ "type" ]
@@ -105,7 +104,7 @@ commands = [
     "--color",
     "-b",
     "html",
-    { replace = "posargs", default = [  ], extend = true },
+    { replace = "posargs", default = [], extend = true },
     "-W",
   ],
   [

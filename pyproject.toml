@@ -54,7 +54,6 @@ dev = [
   { include-group = "test" },
   { include-group = "type" },
 ]
-
 test = [
   "covdefaults>=2.3",
   "diff-cover>=9.7.1",
@@ -75,6 +74,11 @@ docs = [
   "sphinx>=8.2.3",
   "sphinx-autodoc-typehints>=3.2",
 ]
+coverage = [
+  "covdefaults>=2.3",
+  "coverage[toml]>=7.10.7",
+  "diff-cover>=9.7.1",
+]
 fix = [
   "pre-commit-uv>=4.1.5",
 ]
@@ -82,11 +86,6 @@ pkg-meta = [
   "check-wheel-contents>=0.6.3",
   "twine>=6.2",
   "uv>=0.8.22",
-]
-coverage = [
-  "covdefaults>=2.3",
-  "coverage[toml]>=7.10.7",
-  "diff-cover>=9.7.1",
 ]
 
 [tool.hatch]
@@ -112,7 +111,7 @@ lint.ignore = [
   "D203",   # `one-blank-line-before-class` (D203) and `no-blank-line-before-class` (D211) are incompatible
   "D205",   # 1 blank line required between summary line and description
   "D212",   # `multi-line-summary-first-line` (D212) and `multi-line-summary-second-line` (D213) are incompatible
-  "D301",   #  Use `r"""` if any backslashes in a docstring
+  "D301",   # Use `r"""` if any backslashes in a docstring
   "D401",   # First line of docstring should be in imperative mood
   "DOC",    # no support yet
   "ISC001", # Conflict with formatter
@@ -143,13 +142,13 @@ ignore-words-list = "master"
 [tool.pyproject-fmt]
 max_supported_python = "3.14"
 
-[tool.pytest.ini_options]
-asyncio_default_fixture_loop_scope = "session"
-testpaths = [
+[tool.pytest]
+ini_options.asyncio_default_fixture_loop_scope = "session"
+ini_options.testpaths = [
   "tests",
 ]
-verbosity_assertions = 2
-filterwarnings = [
+ini_options.verbosity_assertions = 2
+ini_options.filterwarnings = [
   "error",
   "ignore:unclosed database in <sqlite3.Connection object at:ResourceWarning",
   "ignore:unclosed file <_io.TextIOWrapper:ResourceWarning",
