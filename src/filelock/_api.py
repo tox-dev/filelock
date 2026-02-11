@@ -79,6 +79,8 @@ class ThreadLocalFileContext(FileLockContext, local):
 
 
 class FileLockMeta(ABCMeta):
+    _instances: WeakValueDictionary[str, BaseFileLock]
+
     def __call__(  # noqa: PLR0913
         cls,
         lock_file: str | os.PathLike[str],
@@ -91,7 +93,7 @@ class FileLockMeta(ABCMeta):
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> BaseFileLock:
         if is_singleton:
-            instance = cls._instances.get(str(lock_file))  # type: ignore[attr-defined]
+            instance = cls._instances.get(str(lock_file))
             if instance:
                 params_to_check = {
                     "thread_local": (thread_local, instance.is_thread_local()),
@@ -128,13 +130,13 @@ class FileLockMeta(ABCMeta):
             **kwargs,
         }
 
-        present_params = inspect.signature(cls.__init__).parameters  # type: ignore[misc]
+        present_params = inspect.signature(cls.__init__).parameters
         init_params = {key: value for key, value in all_params.items() if key in present_params}
 
         instance = super().__call__(lock_file, **init_params)
 
         if is_singleton:
-            cls._instances[str(lock_file)] = instance  # type: ignore[attr-defined]
+            cls._instances[str(lock_file)] = instance
 
         return cast("BaseFileLock", instance)
 

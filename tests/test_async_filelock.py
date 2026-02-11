@@ -162,12 +162,12 @@ async def test_coroutine_function(tmp_path: Path) -> None:
     acquired = released = False
 
     class AioFileLock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # type: ignore[override]
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
             nonlocal acquired
             acquired = True
             self._context.lock_file_fd = 1
 
-        async def _release(self) -> None:  # type: ignore[override]
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
             nonlocal released
             released = True
             self._context.lock_file_fd = None
