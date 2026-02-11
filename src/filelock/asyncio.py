@@ -70,7 +70,7 @@ class AsyncAcquireReturnProxy:
 
 
 class AsyncFileLockMeta(FileLockMeta):
-    def __call__(  # type: ignore[override] # noqa: PLR0913
+    def __call__(  # ty: ignore[invalid-method-override]  # noqa: PLR0913
         cls,  # noqa: N805
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -179,7 +179,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """::return: the event loop."""
         return self._context.loop
 
-    async def acquire(  # type: ignore[override]
+    async def acquire(  # ty: ignore[invalid-method-override]
         self,
         timeout: float | None = None,
         poll_interval: float = 0.05,
@@ -247,7 +247,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             raise
         return AsyncAcquireReturnProxy(lock=self)
 
-    async def release(self, force: bool = False) -> None:  # type: ignore[override]  # noqa: FBT001, FBT002
+    async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # noqa: FBT001, FBT002
         """
         Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
         Also note, that the lock file itself is not automatically deleted.

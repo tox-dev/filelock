@@ -779,10 +779,10 @@ def test_singleton_locks_are_deleted_when_no_external_references_exist(
 @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_instance_tracking_is_unique_per_subclass(lock_type: type[BaseFileLock]) -> None:
-    class Lock1(lock_type):  # type: ignore[valid-type, misc]
+    class Lock1(lock_type):  # ty: ignore[unsupported-base]
         pass
 
-    class Lock2(lock_type):  # type: ignore[valid-type, misc]
+    class Lock2(lock_type):  # ty: ignore[unsupported-base]
         pass
 
     assert isinstance(Lock1._instances, WeakValueDictionary)  # noqa: SLF001
