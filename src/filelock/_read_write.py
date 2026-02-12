@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import contextlib
+import atexit
 import logging
 import os
 import pathlib
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, Literal
 from weakref import WeakValueDictionary
 
@@ -18,6 +18,19 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 _LOGGER = logging.getLogger("filelock")
+
+_all_connections: set[sqlite3.Connection] = set()
+_all_connections_lock = threading.Lock()
+
+
+def _cleanup_connections() -> None:
+    with _all_connections_lock:
+        for con in list(_all_connections):
+            with suppress(sqlite3.ProgrammingError):
+                con.close()
+
+
+atexit.register(_cleanup_connections)
 
 # sqlite3_busy_timeout() accepts a C int, max 2_147_483_647 on 32-bit. Use a lower value to be safe (~23 days).
 _MAX_SQLITE_TIMEOUT_MS = 2_000_000_000 - 1
@@ -136,6 +149,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._current_mode: Literal["read", "write"] | None = None
         self._write_thread_id: int | None = None
         self._con = sqlite3.connect(self.lock_file, check_same_thread=False)
+        with _all_connections_lock:
+            _all_connections.add(self._con)
 
     def _acquire_transaction_lock(self, *, blocking: bool, timeout: float) -> None:
         if timeout == -1:
@@ -319,13 +334,13 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         finally:
             self.release()
 
-    def __del__(self) -> None:
-        # Skip release() which calls rollback() — that creates an internal cursor whose __del__ segfaults on PyPy
-        # when GC runs after the connection is closed. connection.close() implicitly rolls back any pending
-        # transaction, so the explicit rollback is unnecessary.
-        with self._internal_lock:
-            self._lock_level = 0
-            self._current_mode = None
-            self._write_thread_id = None
-        with contextlib.suppress(sqlite3.ProgrammingError):
-            self._con.close()
+    def close(self) -> None:
+        """
+        Release the lock (if held) and close the underlying SQLite connection.
+
+        After calling this method, the lock instance is no longer usable.
+        """
+        self.release(force=True)
+        self._con.close()
+        with _all_connections_lock:
+            _all_connections.discard(self._con)

@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING, Literal
 import pytest
 
 from filelock import Timeout
-from filelock._read_write import _MAX_SQLITE_TIMEOUT_MS, ReadWriteLock, timeout_for_sqlite
+from filelock._read_write import (
+    _MAX_SQLITE_TIMEOUT_MS,
+    ReadWriteLock,
+    _all_connections,
+    _cleanup_connections,
+    timeout_for_sqlite,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -22,8 +28,7 @@ def _clear_singleton_cache() -> Generator[None]:
     yield
     for instance in list(ReadWriteLock._instances.valuerefs()):
         if (lock := instance()) is not None:
-            lock.release(force=True)
-            lock._con.close()
+            lock.close()
     ReadWriteLock._instances.clear()
 
 
@@ -227,19 +232,19 @@ def test_write_lock_custom_blocking(lock_file: str) -> None:
         assert lock._current_mode == "write"
 
 
-def test_del_releases_lock_and_closes_connection(lock_file: str) -> None:
+def test_close_releases_lock_and_closes_connection(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock.acquire_write()
     assert lock._lock_level == 1
-    lock.__del__()  # noqa: PLC2801
+    lock.close()
     assert lock._lock_level == 0
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
         lock._con.execute("SELECT 1;")
 
 
-def test_del_on_unheld_lock_closes_connection(lock_file: str) -> None:
+def test_close_on_unheld_lock_closes_connection(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    lock.__del__()  # noqa: PLC2801
+    lock.close()
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
         lock._con.execute("SELECT 1;")
 
@@ -529,3 +534,20 @@ def test_busy_timeout_recomputed_after_journal_mode(
     acquire = lock.acquire_read if mode == "read" else lock.acquire_write
     acquire(timeout=2.0)
     lock.release()
+
+
+def test_connection_tracked_in_all_connections(lock_file: str) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    assert lock._con in _all_connections
+    lock.close()
+
+
+def test_cleanup_connections_closes_all(tmp_path: Path) -> None:
+    lock1 = ReadWriteLock(str(tmp_path / "a.db"), is_singleton=False)
+    lock2 = ReadWriteLock(str(tmp_path / "b.db"), is_singleton=False)
+    con1, con2 = lock1._con, lock2._con
+    _cleanup_connections()
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        con1.execute("SELECT 1;")
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        con2.execute("SELECT 1;")
