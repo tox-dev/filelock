@@ -3,6 +3,7 @@
 # dependencies = [
 #   "gitpython>=3.1.46",
 #   "pygithub>=2.8.1",
+#   "pyyaml>=6.0.2",
 # ]
 # ///
 """Generate the changelog on release."""
@@ -15,6 +16,7 @@ from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
 from git import Repo
 from github import Github
 from github.Auth import Token
@@ -39,12 +41,13 @@ def run() -> None:
     git_repo = Repo(ROOT)
     github = Github(auth=Token(os.environ["GITHUB_TOKEN"]))
     gh_repo = github.get_repo(REPO_SLUG)
+    excluded_authors = _load_excluded_authors()
 
     last_version = latest_tag_version(git_repo)
     version = compute_next_version(last_version, options.bump)
 
     logs = []
-    for title, pr_number, by in entries(gh_repo, git_repo, options.pr, options.base):
+    for title, pr_number, by in entries(gh_repo, git_repo, options.pr, options.base, excluded_authors):
         suffix = f" :pr:`{pr_number}`" if pr_number else ""
         by_suffix = f" - by :user:`{by}`" if by != "gaborbernat" else ""
         logs.append(f"- {title}{suffix}{by_suffix}")
@@ -55,6 +58,15 @@ def run() -> None:
         with Path(output).open("at+", encoding="utf-8") as file_handler:
             file_handler.write(f"version={version}\n")
             file_handler.write(f"changelog<<EOF\n{changelog_text}\nEOF\n")
+
+
+def _load_excluded_authors() -> set[str]:
+    release_config = ROOT / ".github" / "release.yml"
+    if release_config.exists():
+        with release_config.open(encoding="utf-8") as file_handler:
+            config = yaml.safe_load(file_handler)
+        return set(config.get("changelog", {}).get("exclude", {}).get("authors", []))
+    return set()
 
 
 def parse_cli() -> Options:
@@ -87,7 +99,7 @@ def compute_next_version(current: str, bump: str) -> str:
 
 
 def entries(
-    gh_repo: GitHubRepository, git_repo: Repo, pr_number: int | None, base: str
+    gh_repo: GitHubRepository, git_repo: Repo, pr_number: int | None, base: str, excluded_authors: set[str]
 ) -> Iterator[tuple[str, str, str]]:
     if pr_number:
         pull = gh_repo.get_pull(pr_number)
@@ -104,7 +116,7 @@ def entries(
         if release_re.match(commit_title):
             break
         found_base = found_base or change.hexsha == base
-        if not found_base or change.author.name in {"pre-commit-ci[bot]", "dependabot[bot]"}:
+        if not found_base or change.author.name in excluded_authors:
             continue
         by = gh_repo.get_commit(change.hexsha).author.login
         if match := pr_re.match(commit_title):
