@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from ._api import AcquireReturnProxy, BaseFileLock
 from ._error import Timeout
+from ._read_write import ReadWriteLock
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock, has_fcntl
 from ._windows import WindowsFileLock
@@ -62,6 +63,7 @@ __all__ = [
     "BaseAsyncFileLock",
     "BaseFileLock",
     "FileLock",
+    "ReadWriteLock",
     "SoftFileLock",
     "Timeout",
     "UnixFileLock",

@@ -51,6 +51,7 @@ dev = [
   { include-group = "docs" },
   { include-group = "fix" },
   { include-group = "pkg-meta" },
+  { include-group = "release" },
   { include-group = "test" },
   { include-group = "type" },
 ]
@@ -66,6 +67,8 @@ test = [
 ]
 type = [
   "ty>=0.0.16",
+  { include-group = "docs" },
+  { include-group = "release" },
   { include-group = "test" },
 ]
 docs = [
@@ -85,6 +88,10 @@ pkg-meta = [
   "check-wheel-contents>=0.6.3",
   "twine>=6.2",
   "uv>=0.10.2",
+]
+release = [
+  "gitpython>=3.1.46",
+  "pygithub>=2.8.1",
 ]
 
 [tool.hatch]
@@ -117,13 +124,26 @@ lint.ignore = [
   "RUF067", # `__init__` module should only contain docstrings and re-exports
   "S104",   # Possible binding to all interface
 ]
+lint.per-file-ignores."tasks/**/*.py" = [
+  "D",      # don't care about documentation in tasks scripts
+  "INP001", # no implicit namespace
+  "S603",   # `subprocess` call: check for execution of untrusted input
+  "T201",   # print allowed in scripts
+]
 lint.per-file-ignores."tests/**/*.py" = [
-  "D",       # don"t care about documentation in tests
+  "BLE001",  # blind exception catching acceptable in test helpers
+  "D",       # don't care about documentation in tests
   "FBT",     # don't care about booleans as positional arguments in tests
   "INP001",  # no implicit namespace
+  "N806",    # variable in function should be lowercase
+  "PLC0415", # import should be at top-level
+  "PLC2701", # private name import from external module
+  "PLR0913", # too many arguments in function definition
+  "PLR0917", # too many positional arguments
   "PLR2004", # Magic value used in comparison, consider replacing with a constant variable
   "S101",    # asserts allowed in tests
   "S603",    # `subprocess` call: check for execution of untrusted input
+  "SLF001",  # accessing private members acceptable in tests
 ]
 lint.isort = { known-first-party = [
   "filelock",
@@ -154,10 +174,15 @@ ini_options.filterwarnings = [
 ]
 
 [tool.coverage]
+run.concurrency = [
+  "multiprocessing",
+  "thread",
+]
 run.parallel = true
 run.plugins = [
   "covdefaults",
 ]
+run.sigterm = true
 paths.other = [
   ".",
   "*/filelock",
@@ -176,4 +201,4 @@ html.skip_covered = false
 
 [tool.ty]
 environment.python-version = "3.14"
-src.exclude = [ "docs/" ]
+src.exclude = []
