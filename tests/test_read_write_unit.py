@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import sqlite3
 import threading
 from typing import TYPE_CHECKING, Literal
@@ -21,10 +20,11 @@ if TYPE_CHECKING:
 def _clear_singleton_cache() -> Generator[None]:
     ReadWriteLock._instances.clear()
     yield
+    for instance in list(ReadWriteLock._instances.valuerefs()):
+        if (lock := instance()) is not None:
+            lock.release(force=True)
+            lock._con.close()
     ReadWriteLock._instances.clear()
-    # Force GC so ReadWriteLock.__del__ closes SQLite connections now rather than at process exit,
-    # avoiding PyPy segfaults in Cursor.__del__._reset during shutdown.
-    gc.collect()
 
 
 @pytest.fixture

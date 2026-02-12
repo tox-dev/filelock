@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import pathlib
@@ -319,5 +320,12 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self.release()
 
     def __del__(self) -> None:
-        self.release(force=True)
-        self._con.close()
+        # Skip release() which calls rollback() — that creates an internal cursor whose __del__ segfaults on PyPy
+        # when GC runs after the connection is closed. connection.close() implicitly rolls back any pending
+        # transaction, so the explicit rollback is unnecessary.
+        with self._internal_lock:
+            self._lock_level = 0
+            self._current_mode = None
+            self._write_thread_id = None
+        with contextlib.suppress(sqlite3.ProgrammingError):
+            self._con.close()
