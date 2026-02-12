@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from filelock._read_write import _cleanup_connections
+try:
+    from filelock._read_write import _cleanup_connections
+except ModuleNotFoundError:
+    _cleanup_connections = None  # type: ignore[assignment, misc]
 
 
 def pytest_sessionfinish() -> None:
-    _cleanup_connections()
+    if _cleanup_connections is not None:
+        _cleanup_connections()

@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
+pytest.importorskip("sqlite3")
+
 from filelock import Timeout
 from filelock._read_write import ReadWriteLock
 

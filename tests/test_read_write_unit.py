@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-import sqlite3
 import threading
 from typing import TYPE_CHECKING, Literal
 
 import pytest
+
+pytest.importorskip("sqlite3")
+
+import sqlite3
 
 from filelock import Timeout
 from filelock._read_write import (

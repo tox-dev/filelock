@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING
 
 from ._api import AcquireReturnProxy, BaseFileLock
 from ._error import Timeout
-from ._read_write import ReadWriteLock
+
+try:
+    from ._read_write import ReadWriteLock
+except ModuleNotFoundError:  # sqlite3 may be unavailable if Python was built without it
+    ReadWriteLock = None  # type: ignore[assignment, misc]
+
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock, has_fcntl
 from ._windows import WindowsFileLock

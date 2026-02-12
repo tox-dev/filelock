@@ -236,7 +236,8 @@ This library provides several lock implementations. Pick the one that matches yo
 
   *Limitations*: higher overhead than ``FileLock`` due to SQLite transactions. Creates a ``.db`` file on disk.
   No async variant. Cannot upgrade a read lock to a write lock (or vice versa). May not work on network filesystems
-  where SQLite locking is unreliable.
+  where SQLite locking is unreliable. Requires the ``sqlite3`` standard library module (unavailable if Python was built
+  without SQLite support).
 
 .. warning::
 
@@ -264,6 +265,11 @@ transactions. Multiple processes can hold a read lock simultaneously, but a writ
 of :class:`FileLock <filelock.FileLock>` when your workload is read-heavy and you want readers to proceed without
 blocking each other. If you only need exclusive locking, prefer :class:`FileLock <filelock.FileLock>` -- it is
 lighter and faster.
+
+.. note::
+
+   :class:`ReadWriteLock <filelock.ReadWriteLock>` requires the ``sqlite3`` standard library module. If Python was built
+   without SQLite support, importing ``ReadWriteLock`` from ``filelock`` will return ``None``.
 
 Use the ``read_lock()`` and ``write_lock()`` context managers for the most common pattern:
 
