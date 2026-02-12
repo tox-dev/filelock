@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import sqlite3
 import threading
@@ -13,7 +14,6 @@ from ._api import AcquireReturnProxy
 from ._error import Timeout
 
 if TYPE_CHECKING:
-    import os
     from collections.abc import Generator
 
 _LOGGER = logging.getLogger("filelock")
@@ -42,7 +42,15 @@ def timeout_for_sqlite(timeout: float, *, blocking: bool, already_waited: float)
 
 
 class _ReadWriteLockMeta(type):
-    """Metaclass that redirects instance creation to get_lock() when is_singleton=True."""
+    """
+    Metaclass that handles singleton resolution when is_singleton=True.
+
+    Singleton logic lives here rather than in ReadWriteLock.get_lock so that ``ReadWriteLock(path)`` transparently
+    returns cached instances without a 2-arg ``super()`` call that type checkers cannot verify.
+    """
+
+    _instances: WeakValueDictionary[pathlib.Path, ReadWriteLock]
+    _instances_lock: threading.Lock
 
     def __call__(
         cls,
@@ -52,9 +60,24 @@ class _ReadWriteLockMeta(type):
         blocking: bool = True,
         is_singleton: bool = True,
     ) -> ReadWriteLock:
-        if is_singleton:
-            return cls.get_lock(lock_file, timeout, blocking=blocking)
-        return super().__call__(lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
+        if not is_singleton:
+            return super().__call__(lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
+
+        normalized = pathlib.Path(lock_file).resolve()
+        with cls._instances_lock:
+            if normalized not in cls._instances:
+                instance = super().__call__(lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
+                cls._instances[normalized] = instance
+            else:
+                instance = cls._instances[normalized]
+
+            if instance.timeout != timeout or instance.blocking != blocking:
+                msg = (
+                    f"Singleton lock created with timeout={instance.timeout}, blocking={instance.blocking},"
+                    f" cannot be changed to timeout={timeout}, blocking={blocking}"
+                )
+                raise ValueError(msg)
+            return instance
 
 
 class ReadWriteLock(metaclass=_ReadWriteLockMeta):
@@ -77,7 +100,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     .. versionadded:: 3.21.0
     """
 
-    _instances = WeakValueDictionary()
+    _instances: WeakValueDictionary[pathlib.Path, ReadWriteLock] = WeakValueDictionary()
     _instances_lock = threading.Lock()
 
     @classmethod
@@ -93,23 +116,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         :raises ValueError: if an instance already exists for this path with different *timeout* or *blocking* values
         :return: the singleton lock instance
         """
-        normalized = pathlib.Path(lock_file).resolve()
-        with cls._instances_lock:
-            if normalized not in cls._instances:
-                instance = super(_ReadWriteLockMeta, cls).__call__(
-                    lock_file, timeout, blocking=blocking, is_singleton=False
-                )
-                cls._instances[normalized] = instance
-            else:
-                instance = cls._instances[normalized]
-
-            if instance.timeout != timeout or instance.blocking != blocking:
-                msg = (
-                    f"Singleton lock created with timeout={instance.timeout}, blocking={instance.blocking},"
-                    f" cannot be changed to timeout={timeout}, blocking={blocking}"
-                )
-                raise ValueError(msg)
-            return instance
+        return cls(lock_file, timeout, blocking=blocking)
 
     def __init__(
         self,
@@ -119,7 +126,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         blocking: bool = True,
         is_singleton: bool = True,  # noqa: ARG002  # consumed by _ReadWriteLockMeta.__call__
     ) -> None:
-        self.lock_file = lock_file
+        self.lock_file = os.fspath(lock_file)
         self.timeout = timeout
         self.blocking = blocking
         self._transaction_lock = threading.Lock()  # serializes the (possibly blocking) SQLite transaction work
