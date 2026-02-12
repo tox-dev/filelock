@@ -15,4 +15,5 @@ dist
 venv*
 .python-version
 test.lock
+.coverage.*
 test.softlock

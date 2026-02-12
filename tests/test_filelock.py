@@ -231,7 +231,7 @@ class ExThread(threading.Thread):
     def run(self) -> None:
         try:
             super().run()
-        except Exception:  # noqa: BLE001 # pragma: no cover
+        except Exception:  # pragma: no cover
             self.ex = sys.exc_info()  # pragma: no cover
 
     def join(self, timeout: float | None = None) -> None:
@@ -597,7 +597,7 @@ def test_wrong_platform(tmp_path: Path) -> None:
     with pytest.raises(NotImplementedError):
         lock.acquire()
     with pytest.raises(NotImplementedError):
-        lock._release()  # noqa: SLF001
+        lock._release()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="flock not run on windows")
@@ -771,9 +771,9 @@ def test_singleton_locks_are_deleted_when_no_external_references_exist(
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path), is_singleton=True)
 
-    assert lock_type._instances == {str(lock_path): lock}  # noqa: SLF001
+    assert lock_type._instances == {str(lock_path): lock}
     del lock
-    assert lock_type._instances == {}  # noqa: SLF001
+    assert lock_type._instances == {}
 
 
 @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
@@ -785,9 +785,9 @@ def test_singleton_instance_tracking_is_unique_per_subclass(lock_type: type[Base
     class Lock2(lock_type):  # ty: ignore[unsupported-base]
         pass
 
-    assert isinstance(Lock1._instances, WeakValueDictionary)  # noqa: SLF001
-    assert isinstance(Lock2._instances, WeakValueDictionary)  # noqa: SLF001
-    assert Lock1._instances is not Lock2._instances  # noqa: SLF001
+    assert isinstance(Lock1._instances, WeakValueDictionary)
+    assert isinstance(Lock2._instances, WeakValueDictionary)
+    assert Lock1._instances is not Lock2._instances
 
 
 def test_singleton_locks_when_inheriting_init_is_called_once(tmp_path: Path) -> None:
