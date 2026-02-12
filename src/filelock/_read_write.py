@@ -61,10 +61,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     """
     Cross-process read-write lock backed by SQLite.
 
-    Allows concurrent shared readers or a single exclusive writer. The lock is reentrant within the same mode (multiple
-    ``acquire_read`` calls nest, as do multiple ``acquire_write`` calls from the same thread), but upgrading from read
-    to write or downgrading from write to read raises :class:`RuntimeError`. Write locks are pinned to the thread that
-    acquired them.
+    Allows concurrent shared readers or a single exclusive writer. The lock is reentrant within the same mode
+    (multiple ``acquire_read`` calls nest, as do multiple ``acquire_write`` calls from the same thread), but
+    upgrading from read to write or downgrading from write to read raises :class:`RuntimeError`. Write locks are
+    pinned to the thread that acquired them.
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. The lock file must use a ``.db`` extension (SQLite database).
@@ -216,8 +216,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         """
         Acquire a shared read lock.
 
-        If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire a
-        read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed).
+        If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire
+        a read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed).
 
         :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
@@ -232,8 +232,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Acquire an exclusive write lock.
 
         If this instance already holds a write lock from the same thread, the lock level is incremented (reentrant).
-        Attempting to acquire a write lock while holding a read lock raises :class:`RuntimeError` (upgrade not allowed).
-        Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
+        Attempting to acquire a write lock while holding a read lock raises :class:`RuntimeError` (upgrade not
+        allowed). Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
         :class:`RuntimeError`.
 
         :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely

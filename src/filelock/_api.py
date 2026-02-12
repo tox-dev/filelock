@@ -147,8 +147,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     """
     Abstract base class for a file lock object.
 
-    Provides a reentrant, cross-process exclusive lock backed by OS-level primitives. Subclasses implement the actual
-    locking mechanism (:class:`UnixFileLock <filelock.UnixFileLock>`,
+    Provides a reentrant, cross-process exclusive lock backed by OS-level primitives. Subclasses implement the
+    actual locking mechanism (:class:`UnixFileLock <filelock.UnixFileLock>`,
     :class:`WindowsFileLock <filelock.WindowsFileLock>`, :class:`SoftFileLock <filelock.SoftFileLock>`).
     """
 
@@ -173,16 +173,16 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         Create a new lock object.
 
         :param lock_file: path to the file
-        :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in \
-            the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it \
+        :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in
+            the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it
             to a negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
         :param mode: file permissions for the lockfile
-        :param thread_local: Whether this object's internal context should be thread local or not. If this is set to \
-            ``False`` then the lock will be reentrant across threads.
+        :param thread_local: Whether this object's internal context should be thread local or not. If this is set
+            to ``False`` then the lock will be reentrant across threads.
         :param blocking: whether the lock should be blocking or not
-        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created \
-            per lock file. This is useful if you want to use the lock object for reentrant locking without needing \
-            to pass the same object around.
+        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per
+            lock file. This is useful if you want to use the lock object for reentrant locking without needing to
+            pass the same object around.
 
         """
         self._is_thread_local = thread_local
@@ -296,12 +296,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         """
         Try to acquire the file lock.
 
-        :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~timeout` is and
-         if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
+        :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~timeout`
+            is and if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file
         :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
-        :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
-         first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
+        :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on
+            the first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
         :raises Timeout: if fails to acquire lock within the timeout period
         :return: a context object that will unlock the file when the context is exited
 

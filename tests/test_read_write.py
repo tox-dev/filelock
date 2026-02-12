@@ -205,9 +205,8 @@ def chain_reader(
 def test_write_non_starvation(lock_file: str) -> None:
     """Test that write locks can eventually be acquired even with continuous read locks.
 
-    Creates a chain of reader processes where the writer starts after the first reader
-    acquires a lock. The writer should be able to acquire its lock before the entire
-    reader chain has finished, demonstrating non-starvation.
+    Creates a chain of reader processes where the writer starts after the first reader acquires a lock. The writer
+    should be able to acquire its lock before the entire reader chain has finished, demonstrating non-starvation.
     """
     NUM_READERS = 7
 
@@ -336,8 +335,8 @@ def test_timeout_behavior(lock_file: str) -> None:
 def test_non_blocking_behavior(lock_file: str) -> None:
     """Test that non-blocking parameter works correctly.
 
-    This test directly attempts to acquire a read lock in non-blocking mode
-    when a write lock is already held by another process.
+    This test directly attempts to acquire a read lock in non-blocking mode when a write lock is already held by
+    another process.
     """
     write_acquired = Event()
     release_write = Event()

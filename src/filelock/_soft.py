@@ -14,10 +14,10 @@ class SoftFileLock(BaseFileLock):
     """
     Portable file lock based on file existence.
 
-    Unlike :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`WindowsFileLock <filelock.WindowsFileLock>`, this
-    lock does not use OS-level locking primitives. Instead, it creates the lock file with ``O_CREAT | O_EXCL`` and
-    treats its existence as the lock indicator. This makes it work on any filesystem but leaves stale lock files behind
-    if the process crashes without releasing the lock.
+    Unlike :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`WindowsFileLock <filelock.WindowsFileLock>`,
+    this lock does not use OS-level locking primitives. Instead, it creates the lock file with ``O_CREAT | O_EXCL``
+    and treats its existence as the lock indicator. This makes it work on any filesystem but leaves stale lock files
+    behind if the process crashes without releasing the lock.
     """
 
     def _acquire(self) -> None:
