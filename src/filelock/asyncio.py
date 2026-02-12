@@ -101,7 +101,11 @@ class AsyncFileLockMeta(FileLockMeta):
 
 
 class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
-    """Base class for asynchronous file locks."""
+    """
+    Base class for asynchronous file locks.
+
+    .. versionadded:: 3.15.0
+    """
 
     def __init__(  # noqa: PLR0913
         self,
@@ -155,12 +159,12 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     @property
     def run_in_executor(self) -> bool:
-        """::return: whether run in executor."""
+        """:return: whether run in executor."""
         return self._context.run_in_executor
 
     @property
     def executor(self) -> futures.Executor | None:
-        """::return: the executor."""
+        """:return: the executor."""
         return self._context.executor
 
     @executor.setter
@@ -176,7 +180,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
-        """::return: the event loop."""
+        """:return: the event loop."""
         return self._context.loop
 
     async def acquire(  # ty: ignore[invalid-method-override]
@@ -252,7 +256,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
         Also note, that the lock file itself is not automatically deleted.
 
-        :param force: If true, the lock counter is ignored and the lock is released in every case/
+        :param force: If true, the lock counter is ignored and the lock is released in every case.
 
         """
         if self.is_locked:

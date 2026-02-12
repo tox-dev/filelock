@@ -142,7 +142,13 @@ class FileLockMeta(ABCMeta):
 
 
 class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
-    """Abstract base class for a file lock object."""
+    """
+    Abstract base class for a file lock object.
+
+    Provides a reentrant, cross-process exclusive lock backed by OS-level primitives. Subclasses implement the actual
+    locking mechanism (:class:`UnixFileLock <filelock.UnixFileLock>`,
+    :class:`WindowsFileLock <filelock.WindowsFileLock>`, :class:`SoftFileLock <filelock.SoftFileLock>`).
+    """
 
     _instances: WeakValueDictionary[str, BaseFileLock]
 
@@ -196,7 +202,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
     @property
     def is_singleton(self) -> bool:
-        """:return: a flag indicating if this lock is singleton or not"""
+        """
+        :return: a flag indicating if this lock is singleton or not
+
+        .. versionadded:: 3.13.0
+        """
         return self._is_singleton
 
     @property
@@ -225,7 +235,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
     @property
     def blocking(self) -> bool:
-        """:return: whether the locking is blocking or not"""
+        """
+        :return: whether the locking is blocking or not
+
+        .. versionadded:: 3.14.0
+        """
         return self._context.blocking
 
     @blocking.setter
@@ -256,7 +270,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def is_locked(self) -> bool:
         """
-
         :return: A boolean indicating if the lock file is holding the lock currently.
 
         .. versionchanged:: 2.0.0
@@ -354,7 +367,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
         Also note, that the lock file itself is not automatically deleted.
 
-        :param force: If true, the lock counter is ignored and the lock is released in every case/
+        :param force: If true, the lock counter is ignored and the lock is released in every case.
 
         """
         if self.is_locked:

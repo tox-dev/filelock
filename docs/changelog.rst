@@ -1,5 +1,117 @@
 Changelog
 =========
+
+v3.21.0 (unreleased)
+--------------------
+- Add :class:`ReadWriteLock <filelock.ReadWriteLock>` for cross-process shared/exclusive locking via SQLite.
+- Document asyncio support.
+- Document ``is_singleton`` parameter.
+
+v3.20.3 (2026-01-09)
+--------------------
+- Fix TOCTOU symlink vulnerability in :class:`SoftFileLock <filelock.SoftFileLock>` :pr:`465`.
+
+v3.20.2 (2026-01-02)
+--------------------
+- Support Unix systems without ``O_NOFOLLOW`` :pr:`463`.
+
+v3.20.1 (2025-12-15)
+--------------------
+- Fix TOCTOU symlink vulnerability in lock file creation :pr:`461`.
+
+v3.20.0 (2025-10-08)
+--------------------
+- Add Python 3.14 support, drop 3.9 :pr:`448`.
+- Add ``tox.toml`` to sdist :pr:`436`.
+
+v3.19.1 (2025-08-14)
+--------------------
+- Increase test coverage :pr:`434`.
+
+v3.19.0 (2025-08-13)
+--------------------
+- Add support for Python 3.14 :pr:`432`.
+
+v3.18.0 (2025-03-11)
+--------------------
+- Support ``fcntl`` check on Emscripten :pr:`398`.
+- Indicate that locks are exclusive/write locks :pr:`394`.
+
+v3.17.0 (2025-01-21)
+--------------------
+- Drop Python 3.8 support :pr:`388`.
+
+v3.16.1 (2024-09-17)
+--------------------
+- CI improvements :pr:`362`.
+
+v3.16.0 (2024-09-07)
+--------------------
+- Add Python 3.13 to CI :pr:`359`.
+
+v3.15.4 (2024-06-22)
+--------------------
+- Pass ``file_lock`` as positional argument :pr:`347`.
+
+v3.15.3 (2024-06-19)
+--------------------
+- Fix ``TypeError: _CountedFileLock.__init__() got an unexpected keyword argument`` :pr:`345`.
+
+v3.15.2 (2024-06-19)
+--------------------
+- Use a metaclass to implement the singleton pattern :pr:`340`.
+
+v3.15.1 (2024-06-12)
+--------------------
+- Restore ``__init__`` method; more robust initialization for singleton locks :pr:`338`.
+
+v3.15.0 (2024-06-11)
+--------------------
+- Add asyncio support :pr:`332`.
+- Don't re-initialize ``BaseFileLock`` when returning existing singleton instance :pr:`334`.
+
+v3.14.0 (2024-04-27)
+--------------------
+- Add ``blocking`` parameter on lock constructor :pr:`325`.
+
+v3.13.4 (2024-04-09)
+--------------------
+- Raise error on incompatible singleton ``timeout`` and ``mode`` arguments :pr:`320`.
+
+v3.13.3 (2024-03-25)
+--------------------
+- Make singleton class instance dict unique per subclass :pr:`318`.
+
+v3.13.2 (2024-03-25)
+--------------------
+- Fix permission denied error when lock file is placed in ``/tmp`` :pr:`317`.
+
+v3.13.1 (2023-10-30)
+--------------------
+- Allow users to subclass ``FileLock`` with custom keyword arguments :pr:`284`.
+
+v3.13.0 (2023-10-27)
+--------------------
+- Support reentrant locking on lock file path via optional ``is_singleton`` instance :pr:`283`.
+
+v3.12.4 (2023-09-13)
+--------------------
+- Change ``typing-extensions`` to be installed only with the ``[typing]`` extra :pr:`276`.
+
+v3.12.3 (2023-08-28)
+--------------------
+- Add ``tox.ini`` to sdist :pr:`265`.
+- Create parent directories if necessary :pr:`254`.
+
+v3.12.2 (2023-06-12)
+--------------------
+- Restore ``if TYPE_CHECKING`` syntax for ``FileLock`` definition :pr:`245`.
+
+v3.12.1 (2023-06-10)
+--------------------
+- Add Python 3.12 support :pr:`237`.
+- Use ruff for linting :pr:`244`.
+
 v3.12.0 (2023-04-18)
 --------------------
 - Make the thread local behavior something the caller can enable/disable via a flag during the lock creation, it's on
