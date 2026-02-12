@@ -26,8 +26,8 @@ env:
   dists-artifact-name: python-package-distributions
 
 jobs:
-  bump:
-    name: 🔖 bump
+  build:
+    name: 📦 build
     runs-on: ubuntu-24.04
     permissions:
       pull-requests: read
@@ -52,21 +52,9 @@ jobs:
           github.event.pull_request.base.sha }}'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build:
-    name: 📦 build
-    needs: [bump]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: 🔄 Install the latest version of uv
-        uses: astral-sh/setup-uv@v7
       - name: 🏷️ Create temporary tag for hatch-vcs
         if: github.event.inputs.release != 'no' && github.event.inputs.release != null
-        run: git tag '${{ needs.bump.outputs.version }}'
+        run: git tag '${{ steps.v.outputs.version }}'
       - name: 📦 Build package
         run: uv build --python 3.14 --python-preference only-managed --sdist --wheel . --out-dir dist
       - name: 📤 Store the distribution packages
@@ -77,12 +65,12 @@ jobs:
 
   release:
     name: 🚀 release
-    needs: [bump, build]
+    needs: [build]
     if: github.event.inputs.release != 'no' && github.event.inputs.release != null && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     environment:
       name: release
-      url: https://pypi.org/project/filelock/${{ needs.bump.outputs.version }}
+      url: https://pypi.org/project/filelock/${{ needs.build.outputs.version }}
     permissions:
       id-token: write
       contents: write
@@ -104,25 +92,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
-          git tag '${{ needs.bump.outputs.version }}'
+          git tag '${{ needs.build.outputs.version }}'
           git push --tags
-          gh release create '${{ needs.bump.outputs.version }}' \
-            --title='${{ needs.bump.outputs.version }}' --verify-tag \
+          gh release create '${{ needs.build.outputs.version }}' \
+            --title='${{ needs.build.outputs.version }}' --verify-tag \
             --notes "$(cat << 'EOM'
-          ${{ needs.bump.outputs.changelog }}
+          ${{ needs.build.outputs.changelog }}
           EOM
           )"
-
-  all-pass:
-    name: ✅ release
-    if: always()
-    needs: [bump, build]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Decide whether all jobs passed or were skipped
-        run: |
-          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
-            echo "Some jobs failed or were canceled"
-            exit 1
-          fi
-          echo "All jobs passed or were skipped"
