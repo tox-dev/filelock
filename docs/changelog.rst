@@ -1,5 +1,9 @@
 Changelog
 =========
+3.20.4 (2026-02-12)
+-------------------
+- 🐛 fix(ci): add contents permission to build job
+
 3.21.0 (2026-02-12)
 -------------------
 - 🐛 fix(ci): add contents permission to build job
