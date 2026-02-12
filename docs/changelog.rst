@@ -1,5 +1,10 @@
 Changelog
 =========
+3.21.1 (2026-02-12)
+-------------------
+- 🐛 fix: gracefully handle missing `sqlite3` when importing `ReadWriteLock` :pr:`473` - by :user:`bayandin`
+- 🐛 fix(ci): make release workflow robust
+
 3.21.0 (2026-02-12)
 -------------------
 - 🐛 fix(ci): make release workflow robust
