@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from multiprocessing import Event, Process, Value, set_start_method
-from typing import TYPE_CHECKING
+from multiprocessing import Event, Process, Value
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 
@@ -17,8 +17,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def acquire_read_lock(
+def acquire_lock(
     lock_file: str,
+    mode: Literal["read", "write"],
     acquired_event: EventType,
     release_event: EventType | None = None,
     timeout: float = -1,
@@ -29,32 +30,13 @@ def acquire_read_lock(
         ready_event.wait(timeout=10)
 
     lock = ReadWriteLock(lock_file, timeout=timeout, blocking=blocking)
-    with lock.read_lock():
+    ctx = lock.read_lock() if mode == "read" else lock.write_lock()
+    with ctx:
         acquired_event.set()
         if release_event:
             release_event.wait(timeout=10)
         else:
-            time.sleep(0.5)
-
-
-def acquire_write_lock(
-    lock_file: str,
-    acquired_event: EventType,
-    release_event: EventType | None = None,
-    timeout: float = -1,
-    blocking: bool = True,
-    ready_event: EventType | None = None,
-) -> None:
-    if ready_event:
-        ready_event.wait(timeout=10)
-
-    lock = ReadWriteLock(lock_file, timeout=timeout, blocking=blocking)
-    with lock.write_lock():
-        acquired_event.set()
-        if release_event:
-            release_event.wait(timeout=10)
-        else:
-            time.sleep(0.5)
+            time.sleep(0.5)  # hold lock briefly to simulate work
 
 
 @contextmanager
@@ -78,12 +60,12 @@ def test_read_locks_are_shared(lock_file: str) -> None:
     read1_acquired = Event()
     read2_acquired = Event()
 
-    p1 = Process(target=acquire_read_lock, args=(lock_file, read1_acquired))
-    p2 = Process(target=acquire_read_lock, args=(lock_file, read2_acquired))
+    p1 = Process(target=acquire_lock, args=(lock_file, "read", read1_acquired))
+    p2 = Process(target=acquire_lock, args=(lock_file, "read", read2_acquired))
 
     with cleanup_processes([p1, p2]):
         p1.start()
-        time.sleep(0.1)
+        time.sleep(0.1)  # give p1 time to acquire lock before starting p2
         p2.start()
 
         assert read1_acquired.wait(timeout=2), f"First read lock not acquired on {lock_file}"
@@ -102,8 +84,8 @@ def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
     release_write1 = Event()
     write2_acquired = Event()
 
-    p1 = Process(target=acquire_write_lock, args=(lock_file, write1_acquired, release_write1))
-    p2 = Process(target=acquire_write_lock, args=(lock_file, write2_acquired, None, 0.5, True))
+    p1 = Process(target=acquire_lock, args=(lock_file, "write", write1_acquired, release_write1))
+    p2 = Process(target=acquire_lock, args=(lock_file, "write", write2_acquired, None, 0.5, True))
 
     with cleanup_processes([p1]):
         p1.start()
@@ -118,7 +100,7 @@ def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
             assert not p1.is_alive(), "Process 1 did not exit cleanly"
 
         write2_acquired.clear()
-        p3 = Process(target=acquire_write_lock, args=(lock_file, write2_acquired, None))
+        p3 = Process(target=acquire_lock, args=(lock_file, "write", write2_acquired))
 
         with cleanup_processes([p3]):
             p3.start()
@@ -135,8 +117,8 @@ def test_write_lock_excludes_read_locks(lock_file: str) -> None:
     read_acquired = Event()
     read_started = Event()
 
-    p1 = Process(target=acquire_write_lock, args=(lock_file, write_acquired, release_write))
-    p2 = Process(target=acquire_read_lock, args=(lock_file, read_acquired, None, -1, True, read_started))
+    p1 = Process(target=acquire_lock, args=(lock_file, "write", write_acquired, release_write))
+    p2 = Process(target=acquire_lock, args=(lock_file, "read", read_acquired, None, -1, True, read_started))
 
     with cleanup_processes([p1, p2]):
         p1.start()
@@ -145,7 +127,7 @@ def test_write_lock_excludes_read_locks(lock_file: str) -> None:
         p2.start()
         read_started.set()
 
-        time.sleep(2)
+        time.sleep(2)  # wait to verify lock is NOT acquired
         assert not read_acquired.is_set(), "Read lock should not be acquired while write lock held"
 
         release_write.set()
@@ -165,8 +147,8 @@ def test_read_lock_excludes_write_locks(lock_file: str) -> None:
     write_acquired = Event()
     write_started = Event()
 
-    p1 = Process(target=acquire_read_lock, args=(lock_file, read_acquired, release_read))
-    p2 = Process(target=acquire_write_lock, args=(lock_file, write_acquired, None, -1, True, write_started))
+    p1 = Process(target=acquire_lock, args=(lock_file, "read", read_acquired, release_read))
+    p2 = Process(target=acquire_lock, args=(lock_file, "write", write_acquired, None, -1, True, write_started))
 
     with cleanup_processes([p1, p2]):
         p1.start()
@@ -175,7 +157,7 @@ def test_read_lock_excludes_write_locks(lock_file: str) -> None:
         p2.start()
         write_started.set()
 
-        time.sleep(2)
+        time.sleep(2)  # wait to verify lock is NOT acquired
         assert not write_acquired.is_set(), "Write lock should not be acquired while read lock held"
 
         release_read.set()
@@ -188,30 +170,32 @@ def test_read_lock_excludes_write_locks(lock_file: str) -> None:
 
 
 def chain_reader(
-    idx: int,
+    reader_index: int,
     lock_file: str,
     release_count: Synchronized[int],
-    forward_wait: EventType,
-    backward_wait: EventType,
-    forward_set: EventType | None,
-    backward_set: EventType,
+    start_signal: EventType,
+    release_signal: EventType,
+    next_reader_signal: EventType | None,
+    writer_or_prev_signal: EventType,
 ) -> None:
-    forward_wait.wait(timeout=10)
+    start_signal.wait(timeout=10)
 
     lock = ReadWriteLock(lock_file)
     with lock.read_lock():
-        if idx > 0:
+        if reader_index > 0:
+            # delay so writer can attempt acquisition while readers overlap
             time.sleep(2)
 
-        if forward_set is not None:
-            forward_set.set()
+        if next_reader_signal is not None:
+            next_reader_signal.set()
 
-        if idx == 0:
+        if reader_index == 0:
+            # first reader holds lock briefly then signals writer
             time.sleep(1)
 
-        backward_set.set()
+        writer_or_prev_signal.set()
 
-        backward_wait.wait(timeout=10)
+        release_signal.wait(timeout=10)
 
         with release_count.get_lock():
             release_count.value += 1
@@ -236,15 +220,15 @@ def test_write_non_starvation(lock_file: str) -> None:
 
     readers = []
     for i in range(NUM_READERS):
-        forward_set = chain_forward[i + 1] if i < NUM_READERS - 1 else None
-        backward_set = chain_backward[i - 1] if i > 0 else writer_ready
+        next_reader = chain_forward[i + 1] if i < NUM_READERS - 1 else None
+        prev_or_writer = chain_backward[i - 1] if i > 0 else writer_ready
         reader = Process(
             target=chain_reader,
-            args=(i, lock_file, release_count, chain_forward[i], chain_backward[i], forward_set, backward_set),
+            args=(i, lock_file, release_count, chain_forward[i], chain_backward[i], next_reader, prev_or_writer),
         )
         readers.append(reader)
 
-    writer = Process(target=acquire_write_lock, args=(lock_file, writer_acquired, None, 20, True, writer_ready))
+    writer = Process(target=acquire_lock, args=(lock_file, "write", writer_acquired, None, 20, True, writer_ready))
 
     with cleanup_processes([*readers, writer]):
         for reader in readers:
@@ -328,8 +312,8 @@ def test_timeout_behavior(lock_file: str) -> None:
     release_write = Event()
     read_acquired = Event()
 
-    p1 = Process(target=acquire_write_lock, args=(lock_file, write_acquired, release_write))
-    p2 = Process(target=acquire_read_lock, args=(lock_file, read_acquired, None, 0.5, True))
+    p1 = Process(target=acquire_lock, args=(lock_file, "write", write_acquired, release_write))
+    p2 = Process(target=acquire_lock, args=(lock_file, "read", read_acquired, None, 0.5, True))
 
     with cleanup_processes([p1, p2]):
         p1.start()
@@ -358,7 +342,7 @@ def test_non_blocking_behavior(lock_file: str) -> None:
     write_acquired = Event()
     release_write = Event()
 
-    p1 = Process(target=acquire_write_lock, args=(lock_file, write_acquired, release_write))
+    p1 = Process(target=acquire_lock, args=(lock_file, "write", write_acquired, release_write))
 
     with cleanup_processes([p1]):
         p1.start()
@@ -476,10 +460,10 @@ def test_write_lock_release_on_process_termination(lock_file: str) -> None:
     assert lock_acquired.wait(timeout=2), "Lock not acquired by first process"
 
     write_acquired = Event()
-    p2 = Process(target=acquire_write_lock, args=(lock_file, write_acquired))
+    p2 = Process(target=acquire_lock, args=(lock_file, "write", write_acquired))
 
     with cleanup_processes([p1, p2]):
-        time.sleep(0.5)
+        time.sleep(0.5)  # ensure lock is fully acquired before terminating
         p1.terminate()
         p1.join(timeout=2)
 
@@ -510,10 +494,10 @@ def test_read_lock_release_on_process_termination(lock_file: str) -> None:
     assert lock_acquired.wait(timeout=2), "Lock not acquired by first process"
 
     write_acquired = Event()
-    p2 = Process(target=acquire_write_lock, args=(lock_file, write_acquired))
+    p2 = Process(target=acquire_lock, args=(lock_file, "write", write_acquired))
 
     with cleanup_processes([p1, p2]):
-        time.sleep(0.5)
+        time.sleep(0.5)  # ensure lock is fully acquired before terminating
         p1.terminate()
         p1.join(timeout=2)
 
@@ -571,7 +555,3 @@ def test_write_then_read_lock(lock_file: str) -> None:
 
     with lock.read_lock():
         pass
-
-
-if __name__ == "__main__":
-    set_start_method("spawn")

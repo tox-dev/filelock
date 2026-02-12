@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     import sys
     from types import TracebackType
 
+    from ._read_write import ReadWriteLock
+
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
         from typing import Self
     else:  # pragma: no cover (<py311)
@@ -33,10 +35,10 @@ _LOGGER = logging.getLogger("filelock")
 class AcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseFileLock) -> None:
-        self.lock = lock
+    def __init__(self, lock: BaseFileLock | ReadWriteLock) -> None:
+        self.lock: BaseFileLock | ReadWriteLock = lock
 
-    def __enter__(self) -> BaseFileLock:
+    def __enter__(self) -> BaseFileLock | ReadWriteLock:
         return self.lock
 
     def __exit__(

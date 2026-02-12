@@ -10,13 +10,16 @@ from filelock import Timeout
 from filelock._read_write import _MAX_SQLITE_TIMEOUT_MS, ReadWriteLock, timeout_for_sqlite
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from pathlib import Path
 
     from pytest_mock import MockerFixture
 
 
 @pytest.fixture(autouse=True)
-def _clear_singleton_cache() -> None:
+def _clear_singleton_cache() -> Generator[None]:
+    ReadWriteLock._instances.clear()
+    yield
     ReadWriteLock._instances.clear()
 
 
@@ -94,7 +97,7 @@ def test_init_sets_attributes(lock_file: str) -> None:
     assert lock._lock_level == 0
     assert lock._current_mode is None
     assert lock._write_thread_id is None
-    assert lock.con is not None
+    assert lock._con is not None
 
 
 def test_acquire_release_read(lock_file: str) -> None:
@@ -227,14 +230,14 @@ def test_del_releases_lock_and_closes_connection(lock_file: str) -> None:
     lock.__del__()  # noqa: PLC2801
     assert lock._lock_level == 0
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
-        lock.con.execute("SELECT 1;")
+        lock._con.execute("SELECT 1;")
 
 
 def test_del_on_unheld_lock_closes_connection(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock.__del__()  # noqa: PLC2801
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
-        lock.con.execute("SELECT 1;")
+        lock._con.execute("SELECT 1;")
 
 
 def test_write_lock_reentrant_from_different_thread_prohibited(lock_file: str) -> None:
@@ -411,7 +414,7 @@ def test_double_check_read_reentrance(lock_file: str, mocker: MockerFixture) -> 
     assert proxy is not None
     lock._lock_level = 0
     lock._current_mode = None
-    lock.con.rollback()
+    lock._con.rollback()
 
 
 def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) -> None:
@@ -434,7 +437,7 @@ def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) ->
     lock._lock_level = 0
     lock._current_mode = None
     lock._write_thread_id = None
-    lock.con.rollback()
+    lock._con.rollback()
 
 
 @pytest.mark.parametrize(
@@ -494,7 +497,7 @@ def test_operational_error_handling(
     lock = ReadWriteLock(lock_file, is_singleton=False)
     con_mock = mocker.MagicMock()
     con_mock.execute.side_effect = sqlite3.OperationalError(error_msg)
-    lock.con = con_mock
+    lock._con = con_mock
     acquire = lock.acquire_read if mode == "read" else lock.acquire_write
     with pytest.raises(expected_exception):
         acquire()

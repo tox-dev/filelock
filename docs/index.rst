@@ -219,13 +219,14 @@ This library provides several lock implementations. Pick the one that matches yo
   - **Other** (no ``fcntl``) -- :class:`SoftFileLock <filelock.SoftFileLock>` (file-existence fallback, emits a warning)
 
   Always import :class:`FileLock <filelock.FileLock>` rather than a platform-specific class unless you have a reason
-  to pin the backend.
+  to pin the backend. For async code, use :class:`AsyncFileLock <filelock.AsyncFileLock>` (same platform resolution).
 
   *Limitations*: exclusive only -- no shared/reader mode. May not work correctly on some network filesystems (e.g. NFS)
   where OS-level locking is unreliable.
 
 - :class:`SoftFileLock <filelock.SoftFileLock>` -- portable file-existence lock. Works on any filesystem, including
-  network mounts where OS-level locking may be unavailable.
+  network mounts where OS-level locking may be unavailable. Async variant:
+  :class:`AsyncSoftFileLock <filelock.AsyncSoftFileLock>`.
 
   *Limitations*: if the process crashes without releasing the lock the stale lock file remains and must be deleted
   manually. Exclusive only. See the TOCTOU warning below.
@@ -376,8 +377,8 @@ raises ``ValueError``.
 Asyncio support
 ^^^^^^^^^^^^^^^
 
-Every synchronous :class:`BaseFileLock <filelock.BaseFileLock>` subclass has an async counterpart that can be used with
-``async with``:
+Each :class:`BaseFileLock <filelock.BaseFileLock>` subclass has an async counterpart that can be used with
+``async with`` (:class:`ReadWriteLock <filelock.ReadWriteLock>` does not have an async variant):
 
 - :class:`AsyncFileLock <filelock.AsyncFileLock>`
 - :class:`AsyncSoftFileLock <filelock.AsyncSoftFileLock>`
