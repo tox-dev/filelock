@@ -30,6 +30,7 @@ jobs:
     name: 📦 build
     runs-on: ubuntu-24.04
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       version: ${{ steps.v.outputs.version }}
@@ -79,21 +80,30 @@ jobs:
         uses: actions/checkout@v6
         with:
           token: ${{ secrets.RELEASE_TOKEN }}
-      - name: 📝 Update changelog
-        run: |
-          version='${{ needs.build.outputs.version }}'
-          date=$(date -u +%Y-%m-%d)
-          entry="$version ($date)\n$(printf '%0.s-' $(seq 1 ${#version}) $(seq 1 ${#date}) - - - -)\n${{ needs.build.outputs.changelog }}"
-          awk -v entry="$entry" 'NR==3{print entry; print ""}1' docs/changelog.rst > docs/changelog.tmp
-          mv docs/changelog.tmp docs/changelog.rst
       - name: 📤 Commit changelog and tag
+        env:
+          CHANGELOG: ${{ needs.build.outputs.changelog }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
+          if git ls-remote --tags origin "refs/tags/$VERSION" | grep -q .; then
+            echo "Tag $VERSION already exists, skipping changelog commit"
+            exit 0
+          fi
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+          header="$VERSION ($(date -u +%Y-%m-%d))"
+          separator=$(printf '%0.s-' $(seq 1 ${#header}))
+          {
+            head -2 docs/changelog.rst
+            printf '%s\n%s\n%s\n\n' "$header" "$separator" "$CHANGELOG"
+            tail -n +3 docs/changelog.rst
+          } > docs/changelog.tmp
+          mv docs/changelog.tmp docs/changelog.rst
           git add docs/changelog.rst
-          git commit -m 'Release ${{ needs.build.outputs.version }}'
-          git tag '${{ needs.build.outputs.version }}'
-          git push --follow-tags
+          git commit -m "Release $VERSION"
+          git tag "$VERSION"
+          git push origin "$VERSION"
+          git push origin main
       - name: ⬇️ Download all the dists
         uses: actions/download-artifact@v7
         with:
@@ -106,10 +116,11 @@ jobs:
       - name: 📢 Create GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          CHANGELOG: ${{ needs.build.outputs.changelog }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
-          gh release create '${{ needs.build.outputs.version }}' \
-            --title='${{ needs.build.outputs.version }}' --verify-tag \
-            --notes "$(cat << 'EOM'
-          ${{ needs.build.outputs.changelog }}
-          EOM
-          )"
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "Release $VERSION already exists, skipping"
+          else
+            gh release create "$VERSION" --title="$VERSION" --verify-tag --notes "$CHANGELOG"
+          fi
