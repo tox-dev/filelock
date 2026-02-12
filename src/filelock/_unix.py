@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import suppress
-from errno import ENOSYS
+from errno import EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
 from typing import cast
 
@@ -42,27 +42,42 @@ else:  # pragma: win32 no cover
             o_nofollow = getattr(os, "O_NOFOLLOW", None)
             if o_nofollow is not None:
                 open_flags |= o_nofollow
-            if not Path(self.lock_file).exists():
-                open_flags |= os.O_CREAT
-            fd = os.open(self.lock_file, open_flags, self._context.mode)
-            with suppress(PermissionError):  # This locked is not owned by this UID
+            open_flags |= os.O_CREAT
+            try:
+                fd = os.open(self.lock_file, open_flags, self._context.mode)
+            except PermissionError:
+                # Sticky-bit dirs (e.g. /tmp): O_CREAT fails if the file is owned by another user (#317).
+                # Fall back to opening the existing file without O_CREAT.
+                if not Path(self.lock_file).exists():
+                    raise
+                try:
+                    fd = os.open(self.lock_file, open_flags & ~os.O_CREAT, self._context.mode)
+                except FileNotFoundError:
+                    return
+            with suppress(PermissionError):  # fchmod fails if the lock file is not owned by this UID
                 os.fchmod(fd, self._context.mode)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exception:
                 os.close(fd)
-                if exception.errno == ENOSYS:  # NotImplemented error
+                if exception.errno == ENOSYS:
                     msg = "FileSystem does not appear to support flock; use SoftFileLock instead"
                     raise NotImplementedError(msg) from exception
+                if exception.errno not in {EAGAIN, EWOULDBLOCK}:
+                    raise
             else:
-                self._context.lock_file_fd = fd
+                # The file may have been unlinked by a concurrent _release() between our open() and flock().
+                # A lock on an unlinked inode is useless — discard and let the retry loop start fresh.
+                if os.fstat(fd).st_nlink == 0:
+                    os.close(fd)
+                else:
+                    self._context.lock_file_fd = fd
 
         def _release(self) -> None:
-            # Do not remove the lockfile:
-            #   https://github.com/tox-dev/py-filelock/issues/31
-            #   https://stackoverflow.com/questions/17708885/flock-removing-locked-file-without-race-condition
             fd = cast("int", self._context.lock_file_fd)
             self._context.lock_file_fd = None
+            with suppress(OSError):
+                Path(self.lock_file).unlink()
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 

@@ -836,3 +836,141 @@ def test_mtime_zero_exit_branch(
 
     with pytest.raises(expected_exc):
         lock.acquire(timeout=0)
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_lock_file_removed_after_release(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock = lock_type(str(lock_path))
+    with lock:
+        assert lock_path.exists()
+    assert not lock_path.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
+def test_concurrent_acquire_release_removes_lock_file(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lock"
+    errors: list[Exception] = []
+
+    def worker() -> None:
+        try:
+            for _ in range(20):
+                lock = FileLock(str(lock_path), is_singleton=False)
+                with lock:
+                    pass
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not errors, errors
+    assert not lock_path.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
+def test_lock_acquired_after_release_unlinks(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lock"
+    first = FileLock(str(lock_path), is_singleton=False)
+    second = FileLock(str(lock_path), is_singleton=False)
+
+    first.acquire()
+    assert lock_path.exists()
+    first.release()
+    assert not lock_path.exists()
+
+    second.acquire()
+    assert lock_path.exists()
+    second.release()
+    assert not lock_path.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
+def test_stale_inode_retry_on_unlinked_lock(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock = FileLock(str(lock_path), is_singleton=False)
+
+    real_fstat = os.fstat
+    call_count = 0
+
+    def fstat_unlinked_once(fd: int) -> os.stat_result:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            Path(lock_path).unlink()
+            return real_fstat(fd)
+        return real_fstat(fd)
+
+    mocker.patch("os.fstat", side_effect=fstat_unlinked_once)
+    lock.acquire()
+    assert lock.is_locked
+    assert call_count == 2
+    lock.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
+def test_permission_error_fallback_without_o_creat(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock_path.touch()
+    lock = FileLock(str(lock_path), is_singleton=False)
+
+    real_open = os.open
+    call_count = 0
+
+    def open_no_creat(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1 and flags & os.O_CREAT:
+            raise PermissionError(13, "Permission denied", path)
+        return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("os.open", side_effect=open_no_creat)
+    lock.acquire()
+    assert lock.is_locked
+    assert call_count == 2
+    lock.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
+def test_permission_error_propagates_when_file_missing(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock = FileLock(str(lock_path), is_singleton=False)
+
+    real_open = os.open
+
+    def open_always_permission_error(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if "test.lock" in path:
+            raise PermissionError(13, "Permission denied", path)
+        return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("os.open", side_effect=open_always_permission_error)
+    with pytest.raises(PermissionError, match="Permission denied"):
+        lock.acquire(timeout=0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
+def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock_path.touch()
+    lock = FileLock(str(lock_path), is_singleton=False)
+
+    real_open = os.open
+    call_count = 0
+
+    def open_permission_then_unlink(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1 and flags & os.O_CREAT and "test.lock" in path:
+            raise PermissionError(13, "Permission denied", path)
+        if call_count == 2 and not (flags & os.O_CREAT) and "test.lock" in path:
+            lock_path.unlink(missing_ok=True)
+            raise FileNotFoundError(2, "No such file or directory", path)
+        return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("os.open", side_effect=open_permission_then_unlink)
+    lock.acquire()
+    assert lock.is_locked
+    assert call_count == 3
+    lock.release()
