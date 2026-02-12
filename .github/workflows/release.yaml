@@ -116,11 +116,10 @@ jobs:
       - name: 📢 Create GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          CHANGELOG: ${{ needs.build.outputs.changelog }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           if gh release view "$VERSION" > /dev/null 2>&1; then
             echo "Release $VERSION already exists, skipping"
           else
-            gh release create "$VERSION" --title="$VERSION" --verify-tag --notes "$CHANGELOG"
+            gh release create "$VERSION" --title="$VERSION" --verify-tag --generate-notes
           fi
