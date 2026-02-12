@@ -1,42 +1,128 @@
-name: 🚀Release to PyPI
+name: 🚀 Release
 on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "🚀 Release (semver bump)?"
+        required: true
+        default: "no"
+        type: choice
+        options: ["no", patch, minor, major]
   push:
-    tags: ["*"]
+    branches: ["main"]
+  pull_request:
+
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.ref }}${{
+      github.event.inputs.release && github.event.inputs.release != 'no' && '-release' || ''
+    }}
+  cancel-in-progress: ${{ github.event.inputs.release == 'no' || github.event.inputs.release == null }}
+
+permissions:
+  contents: read
 
 env:
   dists-artifact-name: python-package-distributions
 
 jobs:
-  build:
+  bump:
+    name: 🔖 bump
     runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      changelog: ${{ steps.v.outputs.changelog }}
     steps:
-      - uses: actions/checkout@v6
+      - name: 📥 Checkout
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: "🔄 Install the latest version of uv"
+      - name: 📦 Setup uv
         uses: astral-sh/setup-uv@v7
-      - name: "📦 Build package"
+        with:
+          enable-cache: true
+          cache-dependency-glob: "tasks/changelog.py"
+      - name: 📝 Generate changelog
+        id: v
+        run: >-
+          uv run tasks/changelog.py '${{ github.event.inputs.release == 'no' || github.event.inputs.release == null &&
+          'patch' || github.event.inputs.release }}' '${{ github.event.number }}' '${{
+          github.event.pull_request.base.sha }}'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: 📦 build
+    needs: [bump]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: 🔄 Install the latest version of uv
+        uses: astral-sh/setup-uv@v7
+      - name: 🏷️ Create temporary tag for hatch-vcs
+        if: github.event.inputs.release != 'no' && github.event.inputs.release != null
+        run: git tag '${{ needs.bump.outputs.version }}'
+      - name: 📦 Build package
         run: uv build --python 3.14 --python-preference only-managed --sdist --wheel . --out-dir dist
-      - name: "📤 Store the distribution packages"
+      - name: 📤 Store the distribution packages
         uses: actions/upload-artifact@v6
         with:
           name: ${{ env.dists-artifact-name }}
           path: dist/*
 
   release:
-    needs:
-      - build
+    name: 🚀 release
+    needs: [bump, build]
+    if: github.event.inputs.release != 'no' && github.event.inputs.release != null && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     environment:
-      name: "Release to PyPI"
-      url: https://pypi.org/project/filelock/${{ github.ref_name }}
+      name: release
+      url: https://pypi.org/project/filelock/${{ needs.bump.outputs.version }}
     permissions:
       id-token: write
+      contents: write
     steps:
-      - name: "⬇️ Download all the dists"
+      - name: 📥 Checkout
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+      - name: ⬇️ Download all the dists
         uses: actions/download-artifact@v7
         with:
           name: ${{ env.dists-artifact-name }}
           path: dist/
-      - name: "🚀 Publish to PyPI"
+      - name: 🚀 Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.13.0
+        with:
+          skip-existing: true
+      - name: 📢 Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          git tag '${{ needs.bump.outputs.version }}'
+          git push --tags
+          gh release create '${{ needs.bump.outputs.version }}' \
+            --title='${{ needs.bump.outputs.version }}' --verify-tag \
+            --notes "$(cat << 'EOM'
+          ${{ needs.bump.outputs.changelog }}
+          EOM
+          )"
+
+  all-pass:
+    name: ✅ release
+    if: always()
+    needs: [bump, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide whether all jobs passed or were skipped
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "Some jobs failed or were canceled"
+            exit 1
+          fi
+          echo "All jobs passed or were skipped"

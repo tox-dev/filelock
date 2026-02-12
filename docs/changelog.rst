@@ -1,12 +1,6 @@
 Changelog
 =========
 
-v3.21.0 (unreleased)
---------------------
-- Add :class:`ReadWriteLock <filelock.ReadWriteLock>` for cross-process shared/exclusive locking via SQLite.
-- Document asyncio support.
-- Document ``is_singleton`` parameter.
-
 v3.20.3 (2026-01-09)
 --------------------
 - Fix TOCTOU symlink vulnerability in :class:`SoftFileLock <filelock.SoftFileLock>` :pr:`465`.

@@ -51,6 +51,7 @@ dev = [
   { include-group = "docs" },
   { include-group = "fix" },
   { include-group = "pkg-meta" },
+  { include-group = "release" },
   { include-group = "test" },
   { include-group = "type" },
 ]
@@ -66,6 +67,8 @@ test = [
 ]
 type = [
   "ty>=0.0.16",
+  { include-group = "docs" },
+  { include-group = "release" },
   { include-group = "test" },
 ]
 docs = [
@@ -85,6 +88,10 @@ pkg-meta = [
   "check-wheel-contents>=0.6.3",
   "twine>=6.2",
   "uv>=0.10.2",
+]
+release = [
+  "gitpython>=3.1.46",
+  "pygithub>=2.8.1",
 ]
 
 [tool.hatch]
@@ -116,6 +123,12 @@ lint.ignore = [
   "ISC001", # Conflict with formatter
   "RUF067", # `__init__` module should only contain docstrings and re-exports
   "S104",   # Possible binding to all interface
+]
+lint.per-file-ignores."tasks/**/*.py" = [
+  "D",      # don't care about documentation in tasks scripts
+  "INP001", # no implicit namespace
+  "S603",   # `subprocess` call: check for execution of untrusted input
+  "T201",   # print allowed in scripts
 ]
 lint.per-file-ignores."tests/**/*.py" = [
   "BLE001",  # blind exception catching acceptable in test helpers
@@ -188,4 +201,4 @@ html.skip_covered = false
 
 [tool.ty]
 environment.python-version = "3.14"
-src.exclude = [ "docs/" ]
+src.exclude = []

@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from docutils.nodes import Element, Text
+from docutils.nodes import Element, Text, reference
 from sphinx.domains.python import PythonDomain
 
 from filelock import __version__
@@ -64,12 +64,13 @@ def setup(app: Sphinx) -> None:
             target: str,
             node: pending_xref,
             contnode: Element,
-        ) -> Element:
+        ) -> reference | None:
             mapping = {"_thread._local": ("threading.local", "local")}
             if target in mapping:
                 of_type, with_name = mapping[target]
-                target = node["reftarget"] = of_type
-                contnode.children[0] = Text(with_name, with_name)
+                target = of_type
+                node["reftarget"] = of_type
+                contnode.replace(contnode.children[0], Text(with_name))
             return super().resolve_xref(env, fromdocname, builder, type, target, node, contnode)
 
     app.add_domain(PatchedPythonDomain, override=True)
