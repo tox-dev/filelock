@@ -1,5 +1,14 @@
 Changelog
 =========
+3.21.0 (2026-02-12)
+-------------------
+- 🐛 fix(ci): make release workflow robust
+- 👷 ci(release): commit changelog and use release config :pr:`472`
+- 👷 ci(release): consolidate to two jobs :pr:`471`
+- ✨ feat(unix): delete lock file on release :pr:`408` - by :user:`sbc100`
+- ✨ feat(lock): add SQLite-based ReadWriteLock :pr:`399` - by :user:`leventov`
+- 🔧 chore: modernize tooling and bump deps :pr:`470`
+
 
 v3.20.3 (2026-01-09)
 --------------------
