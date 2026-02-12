@@ -81,11 +81,18 @@ jobs:
         with:
           token: ${{ secrets.RELEASE_TOKEN }}
       - name: 📝 Update changelog
+        env:
+          CHANGELOG: ${{ needs.build.outputs.changelog }}
         run: |
           version='${{ needs.build.outputs.version }}'
           date=$(date -u +%Y-%m-%d)
-          entry="$version ($date)\n$(printf '%0.s-' $(seq 1 ${#version}) $(seq 1 ${#date}) - - - -)\n${{ needs.build.outputs.changelog }}"
-          awk -v entry="$entry" 'NR==3{print entry; print ""}1' docs/changelog.rst > docs/changelog.tmp
+          header="$version ($date)"
+          separator=$(printf '%0.s-' $(seq 1 ${#header}))
+          {
+            head -2 docs/changelog.rst
+            printf '%s\n%s\n%s\n\n' "$header" "$separator" "$CHANGELOG"
+            tail -n +3 docs/changelog.rst
+          } > docs/changelog.tmp
           mv docs/changelog.tmp docs/changelog.rst
       - name: 📤 Commit changelog and tag
         run: |
@@ -107,10 +114,8 @@ jobs:
       - name: 📢 Create GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          CHANGELOG: ${{ needs.build.outputs.changelog }}
         run: |
           gh release create '${{ needs.build.outputs.version }}' \
             --title='${{ needs.build.outputs.version }}' --verify-tag \
-            --notes "$(cat << 'EOM'
-          ${{ needs.build.outputs.changelog }}
-          EOM
-          )"
+            --notes "$CHANGELOG"
