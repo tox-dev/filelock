@@ -205,8 +205,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
             return AcquireReturnProxy(lock=self)
 
-        except sqlite3.OperationalError as e:
-            if "database is locked" not in str(e):
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc):
                 raise
             raise Timeout(self.lock_file) from None
         finally:

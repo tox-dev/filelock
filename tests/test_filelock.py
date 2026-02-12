@@ -827,12 +827,12 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
 def test_mtime_zero_exit_branch(
     lock_type: type[BaseFileLock], expected_exc: type[BaseException], tmp_path: Path
 ) -> None:
-    p = tmp_path / "z.lock"
-    p.touch()
-    Path(p).chmod(0o444)
-    os.utime(p, (0, 0))
+    lock_path = tmp_path / "z.lock"
+    lock_path.touch()
+    Path(lock_path).chmod(0o444)
+    os.utime(lock_path, (0, 0))
 
-    lock = lock_type(str(p))
+    lock = lock_type(str(lock_path))
 
     with pytest.raises(expected_exc):
         lock.acquire(timeout=0)

@@ -249,12 +249,12 @@ def test_write_lock_reentrant_from_different_thread_prohibited(lock_file: str) -
         nonlocal error
         try:
             lock.acquire_write()
-        except RuntimeError as e:
-            error = e
+        except RuntimeError as exc:
+            error = exc
 
-    t = threading.Thread(target=try_reenter)
-    t.start()
-    t.join(timeout=5)
+    thread = threading.Thread(target=try_reenter)
+    thread.start()
+    thread.join(timeout=5)
     lock.release()
     assert error is not None
     assert "while it is held by thread" in str(error)
@@ -278,63 +278,63 @@ def test_sequential_mode_switch(lock_file: str, first: str, second: str) -> None
 
 
 def test_non_blocking_read_fails_when_write_held(lock_file: str) -> None:
-    lock1 = ReadWriteLock(lock_file, is_singleton=False)
-    lock2 = ReadWriteLock(lock_file, is_singleton=False)
+    holder_lock = ReadWriteLock(lock_file, is_singleton=False)
+    contender_lock = ReadWriteLock(lock_file, is_singleton=False)
     acquired = threading.Event()
 
     def hold_write() -> None:
-        with lock1.write_lock():
+        with holder_lock.write_lock():
             acquired.set()
             threading.Event().wait(timeout=2)
 
-    t = threading.Thread(target=hold_write)
-    t.start()
+    thread = threading.Thread(target=hold_write)
+    thread.start()
     acquired.wait(timeout=5)
 
     with pytest.raises(Timeout):
-        lock2.acquire_read(blocking=False)
+        contender_lock.acquire_read(blocking=False)
 
-    t.join(timeout=5)
+    thread.join(timeout=5)
 
 
 def test_non_blocking_write_fails_when_read_held(lock_file: str) -> None:
-    lock1 = ReadWriteLock(lock_file, is_singleton=False)
-    lock2 = ReadWriteLock(lock_file, is_singleton=False)
+    holder_lock = ReadWriteLock(lock_file, is_singleton=False)
+    contender_lock = ReadWriteLock(lock_file, is_singleton=False)
     acquired = threading.Event()
 
     def hold_read() -> None:
-        with lock1.read_lock():
+        with holder_lock.read_lock():
             acquired.set()
             threading.Event().wait(timeout=2)
 
-    t = threading.Thread(target=hold_read)
-    t.start()
+    thread = threading.Thread(target=hold_read)
+    thread.start()
     acquired.wait(timeout=5)
 
     with pytest.raises(Timeout):
-        lock2.acquire_write(blocking=False)
+        contender_lock.acquire_write(blocking=False)
 
-    t.join(timeout=5)
+    thread.join(timeout=5)
 
 
 def test_timeout_read_expires(lock_file: str) -> None:
-    lock1 = ReadWriteLock(lock_file, is_singleton=False)
-    lock2 = ReadWriteLock(lock_file, is_singleton=False)
+    holder_lock = ReadWriteLock(lock_file, is_singleton=False)
+    contender_lock = ReadWriteLock(lock_file, is_singleton=False)
     acquired = threading.Event()
 
     def hold_write() -> None:
-        with lock1.write_lock():
+        with holder_lock.write_lock():
             acquired.set()
             threading.Event().wait(timeout=3)
 
-    t = threading.Thread(target=hold_write)
-    t.start()
+    thread = threading.Thread(target=hold_write)
+    thread.start()
     acquired.wait(timeout=5)
 
     with pytest.raises(Timeout):
-        lock2.acquire_read(timeout=0.2)
+        contender_lock.acquire_read(timeout=0.2)
 
-    t.join(timeout=5)
+    thread.join(timeout=5)
 
 
 def test_nested_read_context_managers(lock_file: str) -> None:
