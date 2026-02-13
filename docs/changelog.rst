@@ -1,5 +1,9 @@
 Changelog
 =========
+3.21.2 (2026-02-13)
+-------------------
+- 🐛 fix: catch ImportError for missing sqlite3 C library :pr:`475`
+
 3.21.1 (2026-02-12)
 -------------------
 - 🐛 fix: gracefully handle missing `sqlite3` when importing `ReadWriteLock` :pr:`473` - by :user:`bayandin`
