@@ -17,7 +17,7 @@ from ._error import Timeout
 
 try:
     from ._read_write import ReadWriteLock
-except ModuleNotFoundError:  # sqlite3 may be unavailable if Python was built without it
+except ImportError:  # sqlite3 may be unavailable if Python was built without it or the C library is missing
     ReadWriteLock = None  # type: ignore[assignment, misc]
 
 from ._soft import SoftFileLock
