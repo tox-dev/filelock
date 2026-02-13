@@ -2,7 +2,7 @@ from __future__ import annotations
 
 try:
     from filelock._read_write import _cleanup_connections
-except ModuleNotFoundError:
+except ImportError:
     _cleanup_connections = None  # type: ignore[assignment, misc]
 
 
