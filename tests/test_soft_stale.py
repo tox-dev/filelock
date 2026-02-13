@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import socket
-from errno import EPERM, ESRCH
+import sys
+from errno import ENODEV, EPERM, ESRCH
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
+unix_only = pytest.mark.skipif(sys.platform == "win32", reason="uses os.kill for process liveness check")
+
 
 def test_lock_writes_pid_and_hostname(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
@@ -24,6 +27,7 @@ def test_lock_writes_pid_and_hostname(tmp_path: Path) -> None:
         assert content == f"{os.getpid()}\n{socket.gethostname()}\n"
 
 
+@unix_only
 def test_stale_lock_broken_when_process_dead(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     dead_pid = 2**22 + 1
@@ -45,18 +49,17 @@ def test_stale_lock_not_broken_when_process_alive(tmp_path: Path) -> None:
         lock.acquire()
 
 
-def test_stale_lock_not_broken_different_hostname(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_stale_lock_not_broken_different_hostname(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     dead_pid = 2**22 + 1
     lock_path.write_text(f"{dead_pid}\nother-host.example.com\n", encoding="utf-8")
-
-    mocker.patch("filelock._soft.os.kill", side_effect=OSError(ESRCH, "No such process"))
 
     lock = SoftFileLock(lock_path, timeout=0.1)
     with pytest.raises(TimeoutError):
         lock.acquire()
 
 
+@unix_only
 def test_stale_lock_not_broken_when_eperm(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.write_text(f"{99999}\n{socket.gethostname()}\n", encoding="utf-8")
@@ -86,6 +89,7 @@ def test_stale_lock_malformed_content_ignored(tmp_path: Path) -> None:
         lock.acquire()
 
 
+@unix_only
 def test_stale_lock_rename_race(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     dead_pid = 2**22 + 1
@@ -93,6 +97,18 @@ def test_stale_lock_rename_race(tmp_path: Path, mocker: MockerFixture) -> None:
 
     mocker.patch("filelock._soft.os.kill", side_effect=OSError(ESRCH, "No such process"))
     mocker.patch.object(Path, "rename", side_effect=FileNotFoundError("already gone"))
+
+    lock = SoftFileLock(lock_path, timeout=0.1)
+    with pytest.raises(TimeoutError):
+        lock.acquire()
+
+
+@unix_only
+def test_stale_lock_unexpected_kill_error_suppressed(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock_path.write_text(f"{99999}\n{socket.gethostname()}\n", encoding="utf-8")
+
+    mocker.patch("filelock._soft.os.kill", side_effect=OSError(ENODEV, "No such device"))
 
     lock = SoftFileLock(lock_path, timeout=0.1)
     with pytest.raises(TimeoutError):

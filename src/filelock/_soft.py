@@ -10,6 +10,9 @@ from pathlib import Path
 from ._api import BaseFileLock
 from ._util import ensure_directory_exists, raise_on_not_writable_file
 
+_WIN_SYNCHRONIZE = 0x100000
+_WIN_ERROR_INVALID_PARAMETER = 87
+
 
 class SoftFileLock(BaseFileLock):
     """
@@ -43,7 +46,8 @@ class SoftFileLock(BaseFileLock):
                 or (exception.errno == EACCES and sys.platform == "win32")  # has no access to this lock
             ):  # pragma: win32 no cover
                 raise
-            self._try_break_stale_lock()
+            if exception.errno == EEXIST:  # EACCES on Windows means the file is actively held open
+                self._try_break_stale_lock()
         else:
             self._write_lock_info(file_handler)
             self._context.lock_file_fd = file_handler
@@ -66,6 +70,15 @@ class SoftFileLock(BaseFileLock):
 
     @staticmethod
     def _is_process_alive(pid: int) -> bool:
+        if sys.platform == "win32":  # pragma: win32 cover
+            import ctypes  # noqa: PLC0415
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(_WIN_SYNCHRONIZE, 0, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return kernel32.GetLastError() != _WIN_ERROR_INVALID_PARAMETER
         try:
             os.kill(pid, 0)
         except OSError as exc:
@@ -73,7 +86,7 @@ class SoftFileLock(BaseFileLock):
                 return False
             if exc.errno == EPERM:
                 return True
-            return True  # pragma: no cover
+            raise
         return True
 
     @staticmethod
