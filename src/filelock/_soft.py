@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import socket
 import sys
 from contextlib import suppress
-from errno import EACCES, EEXIST
+from errno import EACCES, EEXIST, EPERM, ESRCH
 from pathlib import Path
 
 from ._api import BaseFileLock
@@ -18,6 +19,9 @@ class SoftFileLock(BaseFileLock):
     this lock does not use OS-level locking primitives. Instead, it creates the lock file with ``O_CREAT | O_EXCL``
     and treats its existence as the lock indicator. This makes it work on any filesystem but leaves stale lock files
     behind if the process crashes without releasing the lock.
+
+    To mitigate stale locks, the lock file contains the PID and hostname of the holding process. On contention, if the
+    holder is on the same host and its PID no longer exists, the stale lock is broken automatically.
     """
 
     def _acquire(self) -> None:
@@ -29,8 +33,7 @@ class SoftFileLock(BaseFileLock):
             | os.O_EXCL  # together with above raise EEXIST if the file specified by filename exists
             | os.O_TRUNC  # truncate the file to zero byte
         )
-        o_nofollow = getattr(os, "O_NOFOLLOW", None)
-        if o_nofollow is not None:
+        if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
             flags |= o_nofollow
         try:
             file_handler = os.open(self.lock_file, flags, self._context.mode)
@@ -40,8 +43,43 @@ class SoftFileLock(BaseFileLock):
                 or (exception.errno == EACCES and sys.platform == "win32")  # has no access to this lock
             ):  # pragma: win32 no cover
                 raise
+            self._try_break_stale_lock()
         else:
+            self._write_lock_info(file_handler)
             self._context.lock_file_fd = file_handler
+
+    def _try_break_stale_lock(self) -> None:
+        with suppress(OSError):
+            content = Path(self.lock_file).read_text(encoding="utf-8")
+            lines = content.strip().splitlines()
+            if len(lines) != 2:  # noqa: PLR2004
+                return
+            pid_str, hostname = lines
+            if hostname != socket.gethostname():
+                return
+            pid = int(pid_str)
+            if self._is_process_alive(pid):
+                return
+            break_path = f"{self.lock_file}.break.{os.getpid()}"
+            Path(self.lock_file).rename(break_path)
+            Path(break_path).unlink()
+
+    @staticmethod
+    def _is_process_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except OSError as exc:
+            if exc.errno == ESRCH:
+                return False
+            if exc.errno == EPERM:
+                return True
+            return True  # pragma: no cover
+        return True
+
+    @staticmethod
+    def _write_lock_info(fd: int) -> None:
+        with suppress(OSError):
+            os.write(fd, f"{os.getpid()}\n{socket.gethostname()}\n".encode())
 
     def _release(self) -> None:
         assert self._context.lock_file_fd is not None  # noqa: S101
