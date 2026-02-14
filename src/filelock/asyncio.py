@@ -79,6 +79,7 @@ class AsyncFileLockMeta(FileLockMeta):
         *,
         blocking: bool = True,
         is_singleton: bool = False,
+        poll_interval: float = 0.05,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -93,6 +94,7 @@ class AsyncFileLockMeta(FileLockMeta):
             thread_local=thread_local,
             blocking=blocking,
             is_singleton=is_singleton,
+            poll_interval=poll_interval,
             loop=loop,
             run_in_executor=run_in_executor,
             executor=executor,
@@ -116,6 +118,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         *,
         blocking: bool = True,
         is_singleton: bool = False,
+        poll_interval: float = 0.05,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -134,6 +137,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per
             lock file. This is useful if you want to use the lock object for reentrant locking without needing to
             pass the same object around.
+        :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback
+            value in the acquire method, if no poll_interval value (``None``) is given.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
@@ -149,6 +154,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             "timeout": timeout,
             "mode": mode,
             "blocking": blocking,
+            "poll_interval": poll_interval,
             "loop": loop,
             "run_in_executor": run_in_executor,
             "executor": executor,
@@ -186,7 +192,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     async def acquire(  # ty: ignore[invalid-method-override]
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float | None = None,
         *,
         blocking: bool | None = None,
     ) -> AsyncAcquireReturnProxy:
@@ -196,7 +202,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default
             :attr:`~BaseFileLock.timeout` is and if ``timeout < 0``, there is no timeout and this method will
             block until the lock could be acquired
-        :param poll_interval: interval of trying to acquire the lock file
+        :param poll_interval: interval of trying to acquire the lock file, ``None`` means use the default
+            :attr:`~BaseFileLock.poll_interval`
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on
             the first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
         :raises Timeout: if fails to acquire lock within the timeout period
@@ -222,6 +229,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
         if blocking is None:
             blocking = self._context.blocking
+
+        if poll_interval is None:
+            poll_interval = self._context.poll_interval
 
         # Increment the number right at the beginning. We can still undo it, if something fails.
         self._context.lock_counter += 1

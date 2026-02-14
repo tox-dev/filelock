@@ -498,6 +498,55 @@ def test_poll_intervall_deprecated(lock_type: type[BaseFileLock], tmp_path: Path
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_default_poll_interval(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a"
+    lock = lock_type(str(lock_path))
+    assert lock.poll_interval == 0.05
+
+    lock_2 = lock_type(str(lock_path), poll_interval=0.1)
+    assert lock_2.poll_interval == 0.1
+
+    lock_2.poll_interval = 0.2
+    assert lock_2.poll_interval == 0.2
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_poll_interval_used_by_context_manager(
+    lock_type: type[BaseFileLock], tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "a"
+    lock_1 = lock_type(str(lock_path))
+    lock_2 = lock_type(str(lock_path), timeout=0.2, poll_interval=0.05)
+
+    lock_1.acquire()
+    sleep_mock = mocker.patch("filelock._api.time.sleep")
+    with pytest.raises(Timeout):
+        lock_2.acquire()
+    sleep_mock.assert_called_with(0.05)
+
+    sleep_mock.reset_mock()
+    lock_2.poll_interval = 0.1
+    with pytest.raises(Timeout):
+        lock_2.acquire()
+    sleep_mock.assert_called_with(0.1)
+    lock_1.release()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_poll_interval_acquire_override(lock_type: type[BaseFileLock], tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "a"
+    lock_1 = lock_type(str(lock_path))
+    lock_2 = lock_type(str(lock_path), timeout=0.2, poll_interval=0.05)
+
+    lock_1.acquire()
+    sleep_mock = mocker.patch("filelock._api.time.sleep")
+    with pytest.raises(Timeout):
+        lock_2.acquire(poll_interval=0.15)
+    sleep_mock.assert_called_with(0.15)
+    lock_1.release()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
@@ -750,8 +799,14 @@ def test_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFileLock
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_locks_must_be_initialized_with_the_same_args(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
-    args: dict[str, Any] = {"timeout": -1, "mode": 0o644, "thread_local": True, "blocking": True}
-    alternate_args: dict[str, Any] = {"timeout": 10, "mode": 0, "thread_local": False, "blocking": False}
+    args: dict[str, Any] = {"timeout": -1, "mode": 0o644, "thread_local": True, "blocking": True, "poll_interval": 0.05}
+    alternate_args: dict[str, Any] = {
+        "timeout": 10,
+        "mode": 0,
+        "thread_local": False,
+        "blocking": False,
+        "poll_interval": 0.1,
+    }
 
     lock = lock_type(str(lock_path), is_singleton=True, **args)
 
