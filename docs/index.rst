@@ -28,7 +28,8 @@ Perhaps you are looking for something like:
 - for Windows the `msvcrt <https://docs.python.org/3/library/msvcrt.html#msvcrt.locking>`_ module in the standard
   library,
 - for UNIX the `fcntl <https://docs.python.org/3/library/fcntl.html#fcntl.flock>`_ module in the standard library,
-- the `flufl.lock <https://pypi.org/project/flufl.lock/>`_ 3rd party library.
+- the `flufl.lock <https://pypi.org/project/flufl.lock/>`_ 3rd party library,
+- the `fasteners <https://pypi.org/project/fasteners/>`_ 3rd party library.
 
 
 Installation
