@@ -1,5 +1,10 @@
 Changelog
 =========
+3.23.0 (2026-02-14)
+-------------------
+- 📝 docs: move from Unlicense to MIT :pr:`479`
+- 📝 docs: add fasteners to similar libraries :pr:`478`
+
 3.22.0 (2026-02-14)
 -------------------
 - 🐛 fix(soft): skip stale detection on Windows :pr:`477`
