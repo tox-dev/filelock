@@ -1,6 +1,6 @@
 License
 =======
 
-*py-filelock* is public domain:
+*py-filelock* is licensed under the MIT License:
 
 .. literalinclude:: ../LICENSE
