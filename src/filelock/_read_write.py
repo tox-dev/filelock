@@ -26,8 +26,9 @@ _all_connections_lock = threading.Lock()
 def _cleanup_connections() -> None:
     with _all_connections_lock:
         for con in list(_all_connections):
-            with suppress(sqlite3.ProgrammingError):
+            with suppress(Exception):
                 con.close()
+        _all_connections.clear()
 
 
 atexit.register(_cleanup_connections)
