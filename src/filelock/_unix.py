@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from contextlib import suppress
 from errno import EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
@@ -61,8 +62,11 @@ else:  # pragma: win32 no cover
             except OSError as exception:
                 os.close(fd)
                 if exception.errno == ENOSYS:
-                    msg = "FileSystem does not appear to support flock; use SoftFileLock instead"
-                    raise NotImplementedError(msg) from exception
+                    with suppress(OSError):
+                        Path(self.lock_file).unlink()
+                    self._fallback_to_soft_lock()
+                    self._acquire()
+                    return
                 if exception.errno not in {EAGAIN, EWOULDBLOCK}:
                     raise
             else:
@@ -72,6 +76,14 @@ else:  # pragma: win32 no cover
                     os.close(fd)
                 else:
                     self._context.lock_file_fd = fd
+
+        def _fallback_to_soft_lock(self) -> None:
+            from ._soft import SoftFileLock  # noqa: PLC0415
+
+            warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
+            from .asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # noqa: PLC0415
+
+            self.__class__ = AsyncSoftFileLock if isinstance(self, BaseAsyncFileLock) else SoftFileLock
 
         def _release(self) -> None:
             fd = cast("int", self._context.lock_file_fd)
