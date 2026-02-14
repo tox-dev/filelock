@@ -69,6 +69,9 @@ class FileLockContext:
     #: Whether the lock should be blocking or not
     blocking: bool
 
+    #: The default polling interval value.
+    poll_interval: float
+
     #: The file descriptor for the *_lock_file* as it is returned by the os.open() function, not None when lock held
     lock_file_fd: int | None = None
 
@@ -92,6 +95,7 @@ class FileLockMeta(ABCMeta):
         *,
         blocking: bool = True,
         is_singleton: bool = False,
+        poll_interval: float = 0.05,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> BaseFileLock:
         if is_singleton:
@@ -102,6 +106,7 @@ class FileLockMeta(ABCMeta):
                     "timeout": (timeout, instance.timeout),
                     "mode": (mode, instance.mode),
                     "blocking": (blocking, instance.blocking),
+                    "poll_interval": (poll_interval, instance.poll_interval),
                 }
 
                 non_matching_params = {
@@ -129,6 +134,7 @@ class FileLockMeta(ABCMeta):
             "thread_local": thread_local,
             "blocking": blocking,
             "is_singleton": is_singleton,
+            "poll_interval": poll_interval,
             **kwargs,
         }
 
@@ -168,6 +174,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         *,
         blocking: bool = True,
         is_singleton: bool = False,
+        poll_interval: float = 0.05,
     ) -> None:
         """
         Create a new lock object.
@@ -183,6 +190,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per
             lock file. This is useful if you want to use the lock object for reentrant locking without needing to
             pass the same object around.
+        :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback
+            value in the acquire method, if no poll_interval value (``None``) is given.
 
         """
         self._is_thread_local = thread_local
@@ -195,6 +204,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             "timeout": timeout,
             "mode": mode,
             "blocking": blocking,
+            "poll_interval": poll_interval,
         }
         self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(**kwargs)
 
@@ -255,6 +265,25 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         self._context.blocking = value
 
     @property
+    def poll_interval(self) -> float:
+        """
+        :return: the default polling interval, in seconds
+
+        .. versionadded:: 3.24.0
+        """
+        return self._context.poll_interval
+
+    @poll_interval.setter
+    def poll_interval(self, value: float) -> None:
+        """
+        Change the default polling interval.
+
+        :param value: the new value, in seconds
+
+        """
+        self._context.poll_interval = value
+
+    @property
     def mode(self) -> int:
         """:return: the file permissions for the lockfile"""
         return self._context.mode
@@ -288,7 +317,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     def acquire(
         self,
         timeout: float | None = None,
-        poll_interval: float = 0.05,
+        poll_interval: float | None = None,
         *,
         poll_intervall: float | None = None,
         blocking: bool | None = None,
@@ -298,7 +327,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
         :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~timeout`
             is and if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
-        :param poll_interval: interval of trying to acquire the lock file
+        :param poll_interval: interval of trying to acquire the lock file, ``None`` means use the default
+            :attr:`~poll_interval`
         :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on
             the first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
@@ -335,6 +365,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             msg = "use poll_interval instead of poll_intervall"
             warnings.warn(msg, DeprecationWarning, stacklevel=2)
             poll_interval = poll_intervall
+
+        poll_interval = poll_interval if poll_interval is not None else self._context.poll_interval
 
         # Increment the number right at the beginning. We can still undo it, if something fails.
         self._context.lock_counter += 1

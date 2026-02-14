@@ -192,6 +192,35 @@ You can pre-parametrize both of these options when constructing the lock for eas
     except Timeout:
         print("Ten seconds feel like forever sometimes.")
 
+Poll interval
+^^^^^^^^^^^^^
+
+When the lock cannot be acquired immediately, the :meth:`acquire <filelock.BaseFileLock.acquire>` method retries at a
+fixed interval. The ``poll_interval`` parameter controls how many seconds to wait between attempts (default ``0.05``).
+
+You can pass ``poll_interval`` directly to :meth:`acquire <filelock.BaseFileLock.acquire>`:
+
+.. code-block:: python
+
+    with lock.acquire(poll_interval=0.1):
+        with file_path.open("a") as file_handler:
+            file_handler.write("Patience you must have, my young Padawan.")
+
+Or set it on the constructor so that it applies when using the lock as a context manager:
+
+.. code-block:: python
+
+    lock = FileLock("high_ground.txt.lock", poll_interval=0.25)
+    with lock:
+        with file_path.open("a") as file_handler:
+            file_handler.write("This is where the fun begins.")
+
+The default can also be changed at any time via the :attr:`~filelock.BaseFileLock.poll_interval` property:
+
+.. code-block:: python
+
+    lock.poll_interval = 0.5
+
 Logging
 ^^^^^^^
 
