@@ -1,5 +1,10 @@
 Changelog
 =========
+3.22.0 (2026-02-14)
+-------------------
+- 🐛 fix(soft): skip stale detection on Windows :pr:`477`
+- ✨ feat(soft): detect and break stale locks :pr:`476`
+
 3.21.2 (2026-02-13)
 -------------------
 - 🐛 fix: catch ImportError for missing sqlite3 C library :pr:`475`
