@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import time
 from contextlib import suppress
 from errno import EACCES, EEXIST, EPERM, ESRCH
 from pathlib import Path
@@ -58,8 +59,15 @@ class SoftFileLock(BaseFileLock):
             self._write_lock_info(file_handler)
             self._context.lock_file_fd = file_handler
 
+    _STALE_LOCK_MIN_AGE = 2.0
+
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError):
+            # Only probe locks old enough to plausibly be stale — during normal threaded contention the file is
+            # sub-second old, and opening it for reading on Windows blocks concurrent deletion even with
+            # FILE_SHARE_DELETE (the name stays visible until the last handle closes)
+            if time.time() - Path(self.lock_file).stat().st_mtime < self._STALE_LOCK_MIN_AGE:
+                return
             content = self._read_lock_info()
             if not content:
                 return
