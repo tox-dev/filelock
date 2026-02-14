@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import socket
 import sys
-import time
 from contextlib import suppress
 from errno import EACCES, EEXIST, EPERM, ESRCH
 from pathlib import Path
@@ -13,12 +12,6 @@ from ._util import ensure_directory_exists, raise_on_not_writable_file
 
 _WIN_SYNCHRONIZE = 0x100000
 _WIN_ERROR_INVALID_PARAMETER = 87
-_WIN_FILE_SHARE_READ = 1
-_WIN_FILE_SHARE_WRITE = 2
-_WIN_FILE_SHARE_DELETE = 4
-_WIN_GENERIC_READ = 0x80000000
-_WIN_OPEN_EXISTING = 3
-_WIN_INVALID_HANDLE_VALUE = -1
 
 
 class SoftFileLock(BaseFileLock):
@@ -53,24 +46,19 @@ class SoftFileLock(BaseFileLock):
                 or (exception.errno == EACCES and sys.platform == "win32")  # has no access to this lock
             ):  # pragma: win32 no cover
                 raise
-            if exception.errno == EEXIST:  # EACCES on Windows means the file is actively held open
+            # On Windows, stale detection is skipped: Python's os.open uses _wopen which cannot set
+            # FILE_SHARE_DELETE, so any read handle blocks DeleteFileW in _release — causing a livelock
+            # under threaded contention. EACCES already signals the holder is alive (fd still open), and
+            # EEXIST means the file will be cleaned up by the releasing thread shortly.
+            if exception.errno == EEXIST and sys.platform != "win32":  # pragma: win32 no cover
                 self._try_break_stale_lock()
         else:
             self._write_lock_info(file_handler)
             self._context.lock_file_fd = file_handler
 
-    _STALE_LOCK_MIN_AGE = 2.0
-
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError):
-            # Only probe locks old enough to plausibly be stale — during normal threaded contention the file is
-            # sub-second old, and opening it for reading on Windows blocks concurrent deletion even with
-            # FILE_SHARE_DELETE (the name stays visible until the last handle closes)
-            if time.time() - Path(self.lock_file).stat().st_mtime < self._STALE_LOCK_MIN_AGE:
-                return
-            content = self._read_lock_info()
-            if not content:
-                return
+            content = Path(self.lock_file).read_text(encoding="utf-8")
             lines = content.strip().splitlines()
             if len(lines) != 2:  # noqa: PLR2004
                 return
@@ -83,38 +71,6 @@ class SoftFileLock(BaseFileLock):
             break_path = f"{self.lock_file}.break.{os.getpid()}"
             Path(self.lock_file).rename(break_path)
             Path(break_path).unlink()
-
-    def _read_lock_info(self) -> str:
-        if sys.platform == "win32":  # pragma: win32 cover
-            import ctypes  # noqa: PLC0415
-            from ctypes import wintypes  # noqa: PLC0415
-
-            kernel32 = ctypes.windll.kernel32
-            # Open with FILE_SHARE_DELETE so concurrent unlink in _release is not blocked by this read handle
-            handle = kernel32.CreateFileW(
-                self.lock_file,
-                _WIN_GENERIC_READ,
-                _WIN_FILE_SHARE_READ | _WIN_FILE_SHARE_WRITE | _WIN_FILE_SHARE_DELETE,
-                None,
-                _WIN_OPEN_EXISTING,
-                0,
-                None,
-            )
-            if handle == _WIN_INVALID_HANDLE_VALUE:
-                msg = "CreateFileW failed"
-                raise OSError(msg)
-            try:
-                buf = ctypes.create_string_buffer(256)
-                bytes_read = wintypes.DWORD()
-                kernel32.ReadFile(handle, buf, 256, ctypes.byref(bytes_read), None)
-                return buf.raw[: bytes_read.value].decode("utf-8")
-            finally:
-                kernel32.CloseHandle(handle)
-        fd = os.open(self.lock_file, os.O_RDONLY)
-        try:
-            return os.read(fd, 256).decode("utf-8")
-        finally:
-            os.close(fd)
 
     @staticmethod
     def _is_process_alive(pid: int) -> bool:
