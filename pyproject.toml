@@ -167,6 +167,7 @@ ini_options.asyncio_default_fixture_loop_scope = "session"
 ini_options.testpaths = [
   "tests",
 ]
+ini_options.timeout = 20
 ini_options.verbosity_assertions = 2
 ini_options.filterwarnings = [
   "error",

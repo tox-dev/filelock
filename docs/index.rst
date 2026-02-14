@@ -228,8 +228,13 @@ This library provides several lock implementations. Pick the one that matches yo
   network mounts where OS-level locking may be unavailable. Async variant:
   :class:`AsyncSoftFileLock <filelock.AsyncSoftFileLock>`.
 
-  *Limitations*: if the process crashes without releasing the lock the stale lock file remains and must be deleted
-  manually. Exclusive only. See the TOCTOU warning below.
+  The lock file stores the holder's PID and hostname. When a competing process finds an existing lock, it checks whether
+  the holder is still alive (same host only). If the holding process has died, the stale lock is automatically broken
+  via an atomic rename-and-delete sequence. Stale locks from a different host, or lock files with unrecognized content
+  (e.g. from an older version), are left untouched and fall back to the normal retry/timeout behavior.
+
+  *Limitations*: stale lock detection only works when the holder and competitor are on the same host -- cross-host stale
+  locks still require manual removal. Exclusive only. See the TOCTOU warning below.
 
 - :class:`ReadWriteLock <filelock.ReadWriteLock>` -- shared reads / exclusive writes via SQLite. Use this when you need
   concurrent readers with occasional writers. See :ref:`read-write-lock` below for details.
