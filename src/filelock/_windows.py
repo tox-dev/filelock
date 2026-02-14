@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from contextlib import suppress
 from errno import EACCES
-from pathlib import Path
 from typing import cast
 
 from ._api import BaseFileLock
@@ -60,7 +58,6 @@ if sys.platform == "win32":  # pragma: win32 cover
             flags = (
                 os.O_RDWR  # open for read and write
                 | os.O_CREAT  # create file if not exists
-                | os.O_TRUNC  # truncate file if not empty
             )
             try:
                 fd = os.open(self.lock_file, flags, self._context.mode)
@@ -82,9 +79,6 @@ if sys.platform == "win32":  # pragma: win32 cover
             self._context.lock_file_fd = None
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             os.close(fd)
-
-            with suppress(OSError):  # Probably another instance of the application hat acquired the file lock.
-                Path(self.lock_file).unlink()
 
 else:  # pragma: win32 no cover
 

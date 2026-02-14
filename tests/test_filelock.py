@@ -266,7 +266,6 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path)
 def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # Runs multiple threads, which acquire the same lock file with a different FileLock object. When thread group 1
     # acquired the lock, thread group 2 must not hold their lock.
-
     def t_1() -> None:
         for _ in range(1000):
             with lock_1:
@@ -896,7 +895,15 @@ def test_mtime_zero_exit_branch(
         lock.acquire(timeout=0)
 
 
-@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        pytest.param(
+            FileLock, marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot unlink open files")
+        ),
+        SoftFileLock,
+    ],
+)
 def test_lock_file_removed_after_release(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     lock_path = tmp_path / "test.lock"
     lock = lock_type(str(lock_path))
