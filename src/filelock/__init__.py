@@ -13,7 +13,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 from ._api import AcquireReturnProxy, BaseFileLock
-from ._error import Timeout
+from ._error import FileLockDeadlockError, Timeout
 
 try:
     from ._read_write import ReadWriteLock
@@ -68,6 +68,7 @@ __all__ = [
     "BaseAsyncFileLock",
     "BaseFileLock",
     "FileLock",
+    "FileLockDeadlockError",
     "ReadWriteLock",
     "SoftFileLock",
     "Timeout",

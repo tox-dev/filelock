@@ -4,6 +4,7 @@ import contextlib
 import inspect
 import logging
 import os
+import threading
 import time
 import warnings
 from abc import ABCMeta, abstractmethod
@@ -12,7 +13,7 @@ from threading import local
 from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakValueDictionary
 
-from ._error import Timeout
+from ._error import FileLockDeadlockError, Timeout
 
 #: Sentinel indicating that no explicit file permission mode was passed.
 #: When used, lock files are created with 0o666 (letting umask and default ACLs control the final permissions)
@@ -32,6 +33,14 @@ if TYPE_CHECKING:
 
 
 _LOGGER = logging.getLogger("filelock")
+
+_thread_lock_registry: threading.local = threading.local()
+
+
+def _get_thread_registry() -> set[str]:
+    if not hasattr(_thread_lock_registry, "locked_files"):
+        _thread_lock_registry.locked_files = set()
+    return _thread_lock_registry.locked_files
 
 
 # This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__
@@ -329,6 +338,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         """:return: The number of times this lock has been acquired (but not yet released)."""
         return self._context.lock_counter
 
+    def _try_acquire_once(self, lock_filename: str, resolved_path: str) -> None:
+        if resolved_path in _get_thread_registry():
+            raise FileLockDeadlockError(lock_filename)
+        _LOGGER.debug("Attempting to acquire lock %s on %s", id(self), lock_filename)
+        self._acquire()
+        if self.is_locked:
+            _get_thread_registry().add(resolved_path)
+
     def acquire(
         self,
         timeout: float | None = None,
@@ -388,12 +405,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
         lock_id = id(self)
         lock_filename = self.lock_file
+        resolved_path = os.path.realpath(lock_filename)
         start_time = time.perf_counter()
         try:
             while True:
                 if not self.is_locked:
-                    _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                    self._acquire()
+                    self._try_acquire_once(lock_filename, resolved_path)
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
@@ -428,6 +445,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                 self._release()
                 self._context.lock_counter = 0
+                _get_thread_registry().discard(os.path.realpath(lock_filename))
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def __enter__(self) -> Self:

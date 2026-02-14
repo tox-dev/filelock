@@ -12,8 +12,8 @@ from inspect import iscoroutinefunction
 from threading import local
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
-from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta
-from ._error import Timeout
+from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta, _get_thread_registry
+from ._error import FileLockDeadlockError, Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock
 from ._windows import WindowsFileLock
@@ -190,6 +190,14 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """:return: the event loop."""
         return self._context.loop
 
+    async def _try_acquire_once(self, lock_filename: str, resolved_path: str) -> None:  # type: ignore[override]
+        if resolved_path in _get_thread_registry():
+            raise FileLockDeadlockError(lock_filename)
+        _LOGGER.debug("Attempting to acquire lock %s on %s", id(self), lock_filename)
+        await self._run_internal_method(self._acquire)
+        if self.is_locked:
+            _get_thread_registry().add(resolved_path)
+
     async def acquire(  # ty: ignore[invalid-method-override]
         self,
         timeout: float | None = None,
@@ -239,12 +247,12 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
         lock_id = id(self)
         lock_filename = self.lock_file
+        resolved_path = os.path.realpath(lock_filename)  # noqa: ASYNC240
         start_time = time.perf_counter()
         try:
             while True:
                 if not self.is_locked:
-                    _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                    await self._run_internal_method(self._acquire)
+                    await self._try_acquire_once(lock_filename, resolved_path)
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
@@ -279,6 +287,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                 await self._run_internal_method(self._release)
                 self._context.lock_counter = 0
+                _get_thread_registry().discard(os.path.realpath(lock_filename))  # noqa: ASYNC240
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     async def _run_internal_method(self, method: Callable[[], Any]) -> None:

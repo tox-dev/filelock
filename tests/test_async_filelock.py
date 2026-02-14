@@ -5,7 +5,7 @@ from pathlib import Path, PurePath
 
 import pytest
 
-from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, Timeout
+from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, FileLockDeadlockError
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -75,7 +75,7 @@ async def test_acquire(
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
-    # raises Timeout error when the lock cannot be acquired
+    # same-thread cross-instance locking now raises FileLockDeadlockError
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
     lock_3 = lock_type(str(lock_path), blocking=False)
@@ -90,47 +90,46 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
     assert not lock_4.is_locked
     assert not lock_5.is_locked
 
-    # try to acquire lock 2
-    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
+    # try to acquire lock 2 — deadlock detected before blocking/timeout kicks in
+    with pytest.raises(FileLockDeadlockError, match="would deadlock"):
         await lock_2.acquire(blocking=False)
     assert not lock_2.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `blocking=False` lock 3 with `acquire`
-    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
+    with pytest.raises(FileLockDeadlockError, match="would deadlock"):
         await lock_3.acquire()
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `blocking=False` lock 3 with context manager
-    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
+    with pytest.raises(FileLockDeadlockError, match="would deadlock"):
         async with lock_3:
             pass
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `timeout=0` lock 4 with `acquire`
-    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
+    with pytest.raises(FileLockDeadlockError, match="would deadlock"):
         await lock_4.acquire()
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `timeout=0` lock 4 with context manager
-    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
+    with pytest.raises(FileLockDeadlockError, match="would deadlock"):
         async with lock_4:
             pass
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
-    # blocking precedence over timeout
     # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with `acquire`
-    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
+    with pytest.raises(FileLockDeadlockError, match="would deadlock"):
         await lock_5.acquire()
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
     # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with context manager
-    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
+    with pytest.raises(FileLockDeadlockError, match="would deadlock"):
         async with lock_5:
             pass
     assert not lock_5.is_locked
@@ -191,11 +190,11 @@ async def test_wait_message_logged(
     first_lock = lock_type(str(lock_path))
     second_lock = lock_type(str(lock_path), timeout=0.2)
 
-    # Hold the lock so second_lock has to wait
+    # same-thread cross-instance now raises FileLockDeadlockError before waiting
     await first_lock.acquire()
-    with pytest.raises(Timeout):
+    with pytest.raises(FileLockDeadlockError, match="would deadlock"):
         await second_lock.acquire()
-    assert any("waiting" in msg for msg in caplog.messages)
+    await first_lock.release()
 
 
 @pytest.mark.parametrize("lock_type", [AsyncSoftFileLock, AsyncFileLock])
