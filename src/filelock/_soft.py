@@ -12,6 +12,12 @@ from ._util import ensure_directory_exists, raise_on_not_writable_file
 
 _WIN_SYNCHRONIZE = 0x100000
 _WIN_ERROR_INVALID_PARAMETER = 87
+_WIN_FILE_SHARE_READ = 1
+_WIN_FILE_SHARE_WRITE = 2
+_WIN_FILE_SHARE_DELETE = 4
+_WIN_GENERIC_READ = 0x80000000
+_WIN_OPEN_EXISTING = 3
+_WIN_INVALID_HANDLE_VALUE = -1
 
 
 class SoftFileLock(BaseFileLock):
@@ -54,7 +60,9 @@ class SoftFileLock(BaseFileLock):
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError):
-            content = Path(self.lock_file).read_text(encoding="utf-8")
+            content = self._read_lock_info()
+            if not content:
+                return
             lines = content.strip().splitlines()
             if len(lines) != 2:  # noqa: PLR2004
                 return
@@ -67,6 +75,40 @@ class SoftFileLock(BaseFileLock):
             break_path = f"{self.lock_file}.break.{os.getpid()}"
             Path(self.lock_file).rename(break_path)
             Path(break_path).unlink()
+
+    def _read_lock_info(self) -> str:
+        if sys.platform == "win32":  # pragma: win32 cover
+            return self._read_lock_info_win()
+        fd = os.open(self.lock_file, os.O_RDONLY)
+        try:
+            return os.read(fd, 256).decode("utf-8")
+        finally:
+            os.close(fd)
+
+    def _read_lock_info_win(self) -> str:  # pragma: win32 cover
+        import ctypes  # noqa: PLC0415
+        from ctypes import wintypes  # noqa: PLC0415
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.CreateFileW(
+            self.lock_file,
+            _WIN_GENERIC_READ,
+            _WIN_FILE_SHARE_READ | _WIN_FILE_SHARE_WRITE | _WIN_FILE_SHARE_DELETE,
+            None,
+            _WIN_OPEN_EXISTING,
+            0,
+            None,
+        )
+        if handle == _WIN_INVALID_HANDLE_VALUE:
+            msg = "CreateFileW failed"
+            raise OSError(msg)
+        try:
+            buf = ctypes.create_string_buffer(256)
+            bytes_read = wintypes.DWORD()
+            kernel32.ReadFile(handle, buf, 256, ctypes.byref(bytes_read), None)
+            return buf.raw[: bytes_read.value].decode("utf-8")
+        finally:
+            kernel32.CloseHandle(handle)
 
     @staticmethod
     def _is_process_alive(pid: int) -> bool:

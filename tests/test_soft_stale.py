@@ -119,7 +119,7 @@ def test_stale_detection_errors_suppressed(tmp_path: Path, mocker: MockerFixture
     lock_path = tmp_path / "test.lock"
     lock_path.write_text(f"{os.getpid()}\n{socket.gethostname()}\n", encoding="utf-8")
 
-    mock_read: MagicMock = mocker.patch.object(Path, "read_text", side_effect=OSError("read failed"))
+    mock_read: MagicMock = mocker.patch.object(SoftFileLock, "_read_lock_info", side_effect=OSError("read failed"))
 
     lock = SoftFileLock(lock_path, timeout=0.1)
     with pytest.raises(TimeoutError):
