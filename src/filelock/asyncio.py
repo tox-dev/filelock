@@ -196,6 +196,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         poll_interval: float | None = None,
         *,
         blocking: bool | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> AsyncAcquireReturnProxy:
         """
         Try to acquire the file lock.
@@ -207,6 +208,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             :attr:`~BaseFileLock.poll_interval`
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on
             the first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
+        :param cancel_check: a callable returning ``True`` when the acquisition should be cancelled. Checked on each
+            poll iteration. When triggered, raises :class:`~Timeout` just like an expired timeout.
         :raises Timeout: if fails to acquire lock within the timeout period
         :return: a context object that will unlock the file when the context is exited
 
@@ -248,11 +251,14 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
-                if blocking is False:
-                    _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
-                    raise Timeout(lock_filename)  # noqa: TRY301
-                if 0 <= timeout < time.perf_counter() - start_time:
-                    _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
+                if self._check_give_up(
+                    lock_id,
+                    lock_filename,
+                    blocking=blocking,
+                    cancel_check=cancel_check,
+                    timeout=timeout,
+                    start_time=start_time,
+                ):
                     raise Timeout(lock_filename)  # noqa: TRY301
                 msg = "Lock %s not acquired on %s, waiting %s seconds ..."
                 _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)

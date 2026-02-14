@@ -21,6 +21,7 @@ from ._error import Timeout
 _UNSET_FILE_MODE: int = -1
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from types import TracebackType
 
     from ._read_write import ReadWriteLock
@@ -342,6 +343,27 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         """:return: The number of times this lock has been acquired (but not yet released)."""
         return self._context.lock_counter
 
+    @staticmethod
+    def _check_give_up(  # noqa: PLR0913
+        lock_id: int,
+        lock_filename: str,
+        *,
+        blocking: bool,
+        cancel_check: Callable[[], bool] | None,
+        timeout: float,
+        start_time: float,
+    ) -> bool:
+        if blocking is False:
+            _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
+            return True
+        if cancel_check is not None and cancel_check():
+            _LOGGER.debug("Cancellation requested for lock %s on %s", lock_id, lock_filename)
+            return True
+        if 0 <= timeout < time.perf_counter() - start_time:
+            _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
+            return True
+        return False
+
     def acquire(  # noqa: C901
         self,
         timeout: float | None = None,
@@ -349,6 +371,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         *,
         poll_intervall: float | None = None,
         blocking: bool | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> AcquireReturnProxy:
         """
         Try to acquire the file lock.
@@ -360,6 +383,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
         :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on
             the first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
+        :param cancel_check: a callable returning ``True`` when the acquisition should be cancelled. Checked on each
+            poll iteration. When triggered, raises :class:`~Timeout` just like an expired timeout.
         :raises Timeout: if fails to acquire lock within the timeout period
         :return: a context object that will unlock the file when the context is exited
 
@@ -422,11 +447,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
                 if self.is_locked:
                     _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                     break
-                if blocking is False:
-                    _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
-                    raise Timeout(lock_filename)  # noqa: TRY301
-                if 0 <= timeout < time.perf_counter() - start_time:
-                    _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
+                if self._check_give_up(
+                    lock_id,
+                    lock_filename,
+                    blocking=blocking,
+                    cancel_check=cancel_check,
+                    timeout=timeout,
+                    start_time=start_time,
+                ):
                     raise Timeout(lock_filename)  # noqa: TRY301
                 msg = "Lock %s not acquired on %s, waiting %s seconds ..."
                 _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
