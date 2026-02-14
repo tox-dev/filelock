@@ -4,6 +4,7 @@ import contextlib
 import inspect
 import logging
 import os
+import pathlib
 import sys
 import time
 import warnings
@@ -91,6 +92,9 @@ class FileLockContext:
     #: The default polling interval value.
     poll_interval: float
 
+    #: The lock lifetime in seconds; ``None`` means the lock never expires.
+    lifetime: float | None = None
+
     #: The file descriptor for the *_lock_file* as it is returned by the os.open() function, not None when lock held
     lock_file_fd: int | None = None
 
@@ -115,6 +119,7 @@ class FileLockMeta(ABCMeta):
         blocking: bool = True,
         is_singleton: bool = False,
         poll_interval: float = 0.05,
+        lifetime: float | None = None,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> BaseFileLock:
         if is_singleton:
@@ -126,6 +131,7 @@ class FileLockMeta(ABCMeta):
                     "mode": (mode, instance._context.mode),  # noqa: SLF001
                     "blocking": (blocking, instance.blocking),
                     "poll_interval": (poll_interval, instance.poll_interval),
+                    "lifetime": (lifetime, instance.lifetime),
                 }
 
                 non_matching_params = {
@@ -154,6 +160,7 @@ class FileLockMeta(ABCMeta):
             "blocking": blocking,
             "is_singleton": is_singleton,
             "poll_interval": poll_interval,
+            "lifetime": lifetime,
             **kwargs,
         }
 
@@ -194,6 +201,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         blocking: bool = True,
         is_singleton: bool = False,
         poll_interval: float = 0.05,
+        lifetime: float | None = None,
     ) -> None:
         """
         Create a new lock object.
@@ -212,6 +220,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             pass the same object around.
         :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback
             value in the acquire method, if no poll_interval value (``None``) is given.
+        :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set,
+            a waiting process will break a lock whose file modification time is older than ``lifetime`` seconds.
+            ``None`` (the default) means locks never expire.
 
         """
         self._is_thread_local = thread_local
@@ -225,6 +236,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             "mode": mode,
             "blocking": blocking,
             "poll_interval": poll_interval,
+            "lifetime": lifetime,
         }
         self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(**kwargs)
 
@@ -304,6 +316,25 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         self._context.poll_interval = value
 
     @property
+    def lifetime(self) -> float | None:
+        """
+        :return: the lock lifetime in seconds, or ``None`` if the lock never expires
+
+        .. versionadded:: 3.24.0
+        """
+        return self._context.lifetime
+
+    @lifetime.setter
+    def lifetime(self, value: float | None) -> None:
+        """
+        Change the lock lifetime.
+
+        :param value: the new value in seconds, or ``None`` to disable expiration
+
+        """
+        self._context.lifetime = value
+
+    @property
     def mode(self) -> int:
         """:return: the file permissions for the lockfile"""
         return 0o644 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
@@ -316,6 +347,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     def _open_mode(self) -> int:
         """:return: the mode for os.open() — 0o666 when unset (let umask/ACLs decide), else the explicit mode"""
         return 0o666 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
+
+    def _try_break_expired_lock(self) -> None:
+        """Remove the lock file if its modification time exceeds the configured :attr:`lifetime`."""
+        if (lifetime := self._context.lifetime) is None:
+            return
+        with contextlib.suppress(OSError):
+            if time.time() - pathlib.Path(self.lock_file).stat().st_mtime < lifetime:
+                return
+            break_path = f"{self.lock_file}.break.{os.getpid()}"
+            pathlib.Path(self.lock_file).rename(break_path)
+            pathlib.Path(break_path).unlink()
 
     @abstractmethod
     def _acquire(self) -> None:
@@ -442,6 +484,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         try:
             while True:
                 if not self.is_locked:
+                    self._try_break_expired_lock()
                     _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
                     self._acquire()
                 if self.is_locked:

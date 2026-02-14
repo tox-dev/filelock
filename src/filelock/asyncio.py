@@ -80,6 +80,7 @@ class AsyncFileLockMeta(FileLockMeta):
         blocking: bool = True,
         is_singleton: bool = False,
         poll_interval: float = 0.05,
+        lifetime: float | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -95,6 +96,7 @@ class AsyncFileLockMeta(FileLockMeta):
             blocking=blocking,
             is_singleton=is_singleton,
             poll_interval=poll_interval,
+            lifetime=lifetime,
             loop=loop,
             run_in_executor=run_in_executor,
             executor=executor,
@@ -119,6 +121,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         blocking: bool = True,
         is_singleton: bool = False,
         poll_interval: float = 0.05,
+        lifetime: float | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -140,6 +143,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             pass the same object around.
         :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback
             value in the acquire method, if no poll_interval value (``None``) is given.
+        :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set,
+            a waiting process will break a lock whose file modification time is older than ``lifetime`` seconds.
+            ``None`` (the default) means locks never expire.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
@@ -156,6 +162,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             "mode": mode,
             "blocking": blocking,
             "poll_interval": poll_interval,
+            "lifetime": lifetime,
             "loop": loop,
             "run_in_executor": run_in_executor,
             "executor": executor,
@@ -246,6 +253,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         try:
             while True:
                 if not self.is_locked:
+                    self._try_break_expired_lock()
                     _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
                     await self._run_internal_method(self._acquire)
                 if self.is_locked:
