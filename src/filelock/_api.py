@@ -4,6 +4,7 @@ import contextlib
 import inspect
 import logging
 import os
+import sys
 import time
 import warnings
 from abc import ABCMeta, abstractmethod
@@ -20,7 +21,6 @@ from ._error import Timeout
 _UNSET_FILE_MODE: int = -1
 
 if TYPE_CHECKING:
-    import sys
     from types import TracebackType
 
     from ._read_write import ReadWriteLock
@@ -32,6 +32,19 @@ if TYPE_CHECKING:
 
 
 _LOGGER = logging.getLogger("filelock")
+
+# On Windows os.path.realpath calls CreateFileW with share_mode=0, which blocks concurrent DeleteFileW and causes
+# livelocks under threaded contention with SoftFileLock. os.path.abspath is purely string-based and avoids this.
+_canonical = os.path.abspath if sys.platform == "win32" else os.path.realpath
+
+
+class _ThreadLocalRegistry(local):
+    def __init__(self) -> None:
+        super().__init__()
+        self.held: dict[str, int] = {}
+
+
+_registry = _ThreadLocalRegistry()
 
 
 # This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__
@@ -329,7 +342,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         """:return: The number of times this lock has been acquired (but not yet released)."""
         return self._context.lock_counter
 
-    def acquire(
+    def acquire(  # noqa: C901
         self,
         timeout: float | None = None,
         poll_interval: float | None = None,
@@ -388,6 +401,18 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
         lock_id = id(self)
         lock_filename = self.lock_file
+        canonical = _canonical(lock_filename)
+
+        would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
+        if would_block and (existing := _registry.held.get(canonical)) is not None and existing != lock_id:
+            self._context.lock_counter -= 1
+            msg = (
+                f"Deadlock: lock '{lock_filename}' is already held by a different "
+                f"FileLock instance in this thread. Use is_singleton=True to "
+                f"enable reentrant locking across instances."
+            )
+            raise RuntimeError(msg)
+
         start_time = time.perf_counter()
         try:
             while True:
@@ -406,9 +431,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
                 msg = "Lock %s not acquired on %s, waiting %s seconds ..."
                 _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
                 time.sleep(poll_interval)
-        except BaseException:  # Something did go wrong, so decrement the counter.
+        except BaseException:
             self._context.lock_counter = max(0, self._context.lock_counter - 1)
+            if self._context.lock_counter == 0:
+                _registry.held.pop(canonical, None)
             raise
+        if self._context.lock_counter == 1:
+            _registry.held[canonical] = lock_id
         return AcquireReturnProxy(lock=self)
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
@@ -428,6 +457,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                 self._release()
                 self._context.lock_counter = 0
+                _registry.held.pop(_canonical(lock_filename), None)
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def __enter__(self) -> Self:

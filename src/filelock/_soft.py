@@ -40,16 +40,11 @@ class SoftFileLock(BaseFileLock):
             flags |= o_nofollow
         try:
             file_handler = os.open(self.lock_file, flags, self._open_mode())
-        except OSError as exception:  # re-raise unless expected exception
+        except OSError as exception:
             if not (
-                exception.errno == EEXIST  # lock already exist
-                or (exception.errno == EACCES and sys.platform == "win32")  # has no access to this lock
+                exception.errno == EEXIST or (exception.errno == EACCES and sys.platform == "win32")
             ):  # pragma: win32 no cover
                 raise
-            # On Windows, stale detection is skipped: Python's os.open uses _wopen which cannot set
-            # FILE_SHARE_DELETE, so any read handle blocks DeleteFileW in _release — causing a livelock
-            # under threaded contention. EACCES already signals the holder is alive (fd still open), and
-            # EEXIST means the file will be cleaned up by the releasing thread shortly.
             if exception.errno == EEXIST and sys.platform != "win32":  # pragma: win32 no cover
                 self._try_break_stale_lock()
         else:
@@ -100,7 +95,7 @@ class SoftFileLock(BaseFileLock):
 
     def _release(self) -> None:
         assert self._context.lock_file_fd is not None  # noqa: S101
-        os.close(self._context.lock_file_fd)  # the lock file is definitely not None
+        os.close(self._context.lock_file_fd)
         self._context.lock_file_fd = None
         with suppress(OSError):  # the file is already deleted and that's what we want
             Path(self.lock_file).unlink()
