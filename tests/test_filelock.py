@@ -1039,3 +1039,84 @@ def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: M
     assert lock.is_locked
     assert call_count == 3
     lock.release()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_cancel_check_triggers(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a"
+    lock_1 = lock_type(str(lock_path))
+    lock_2 = lock_type(str(lock_path))
+
+    lock_1.acquire()
+
+    with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
+        lock_2.acquire(timeout=1, cancel_check=lambda: True)
+    assert not lock_2.is_locked
+    lock_1.release()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_cancel_check_after_n_polls(lock_type: type[BaseFileLock], tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "a"
+    lock_1 = lock_type(str(lock_path))
+    lock_2 = lock_type(str(lock_path))
+
+    lock_1.acquire()
+
+    call_count = 0
+
+    def cancel_after_two() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count >= 2
+
+    mocker.patch("filelock._api.time.sleep")
+    with pytest.raises(Timeout):
+        lock_2.acquire(timeout=10, cancel_check=cancel_after_two)
+    assert call_count == 2
+    assert not lock_2.is_locked
+    lock_1.release()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_cancel_check_not_called_when_lock_available(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a"
+    lock = lock_type(str(lock_path))
+
+    called = False
+
+    def should_not_be_called() -> bool:
+        nonlocal called
+        called = True
+        return True
+
+    lock.acquire(cancel_check=should_not_be_called)
+    assert lock.is_locked
+    assert not called
+    lock.release()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_cancel_check_false_allows_acquisition(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a"
+    lock = lock_type(str(lock_path))
+
+    lock.acquire(cancel_check=lambda: False)
+    assert lock.is_locked
+    lock.release()
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_cancel_check_log_message(
+    lock_type: type[BaseFileLock], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    lock_path = tmp_path / "a"
+    lock_1 = lock_type(str(lock_path))
+    lock_2 = lock_type(str(lock_path))
+
+    lock_1.acquire()
+    with pytest.raises(Timeout):
+        lock_2.acquire(timeout=1, cancel_check=lambda: True)
+    assert any("Cancellation requested" in msg for msg in caplog.messages)
+    lock_1.release()
