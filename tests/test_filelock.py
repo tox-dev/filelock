@@ -601,10 +601,13 @@ def test_wrong_platform(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="flock not run on windows")
+@pytest.mark.filterwarnings("default::UserWarning")
 def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("fcntl.flock", side_effect=OSError(ENOSYS, "mock error"))
-    with pytest.raises(NotImplementedError), FileLock(tmp_path / "a.lock"):
-        pass
+    lock = FileLock(tmp_path / "a.lock")
+    with lock:
+        assert lock.is_locked
+        assert isinstance(lock, SoftFileLock)
 
 
 def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
