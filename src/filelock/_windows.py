@@ -63,7 +63,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 | os.O_TRUNC  # truncate file if not empty
             )
             try:
-                fd = os.open(self.lock_file, flags, self._context.mode)
+                fd = os.open(self.lock_file, flags, self._open_mode())
             except OSError as exception:
                 if exception.errno != EACCES:  # has no access to this lock
                     raise

@@ -14,6 +14,11 @@ from weakref import WeakValueDictionary
 
 from ._error import Timeout
 
+#: Sentinel indicating that no explicit file permission mode was passed.
+#: When used, lock files are created with 0o666 (letting umask and default ACLs control the final permissions)
+#: and fchmod is skipped so that POSIX default ACL inheritance is preserved.
+_UNSET_FILE_MODE: int = -1
+
 if TYPE_CHECKING:
     import sys
     from types import TracebackType
@@ -87,7 +92,7 @@ class FileLockMeta(ABCMeta):
         cls,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
-        mode: int = 0o644,
+        mode: int = _UNSET_FILE_MODE,
         thread_local: bool = True,  # noqa: FBT001, FBT002
         *,
         blocking: bool = True,
@@ -100,7 +105,7 @@ class FileLockMeta(ABCMeta):
                 params_to_check = {
                     "thread_local": (thread_local, instance.is_thread_local()),
                     "timeout": (timeout, instance.timeout),
-                    "mode": (mode, instance.mode),
+                    "mode": (mode, instance._context.mode),  # noqa: SLF001
                     "blocking": (blocking, instance.blocking),
                 }
 
@@ -163,7 +168,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
-        mode: int = 0o644,
+        mode: int = _UNSET_FILE_MODE,
         thread_local: bool = True,  # noqa: FBT001, FBT002
         *,
         blocking: bool = True,
@@ -176,7 +181,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in
             the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it
             to a negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
-        :param mode: file permissions for the lockfile
+        :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask
+            and default ACLs, preserving POSIX default ACL inheritance in shared directories.
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set
             to ``False`` then the lock will be reentrant across threads.
         :param blocking: whether the lock should be blocking or not
@@ -257,7 +263,16 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def mode(self) -> int:
         """:return: the file permissions for the lockfile"""
-        return self._context.mode
+        return 0o644 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
+
+    @property
+    def has_explicit_mode(self) -> bool:
+        """:return: whether the file permissions were explicitly set"""
+        return self._context.mode != _UNSET_FILE_MODE
+
+    def _open_mode(self) -> int:
+        """:return: the mode for os.open() — 0o666 when unset (let umask/ACLs decide), else the explicit mode"""
+        return 0o666 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
 
     @abstractmethod
     def _acquire(self) -> None:
@@ -415,6 +430,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
 
 __all__ = [
+    "_UNSET_FILE_MODE",
     "AcquireReturnProxy",
     "BaseFileLock",
 ]
