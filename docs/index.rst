@@ -228,13 +228,16 @@ This library provides several lock implementations. Pick the one that matches yo
   network mounts where OS-level locking may be unavailable. Async variant:
   :class:`AsyncSoftFileLock <filelock.AsyncSoftFileLock>`.
 
-  The lock file stores the holder's PID and hostname. When a competing process finds an existing lock, it checks whether
-  the holder is still alive (same host only). If the holding process has died, the stale lock is automatically broken
-  via an atomic rename-and-delete sequence. Stale locks from a different host, or lock files with unrecognized content
-  (e.g. from an older version), are left untouched and fall back to the normal retry/timeout behavior.
+  The lock file stores the holder's PID and hostname. On **Unix and macOS**, when a competing process finds an existing
+  lock, it checks whether the holder is still alive (same host only). If the holding process has died, the stale lock
+  is automatically broken via an atomic rename-and-delete sequence. Stale locks from a different host, or lock files
+  with unrecognized content (e.g. from an older version), are left untouched and fall back to the normal retry/timeout
+  behavior.
 
-  *Limitations*: stale lock detection only works when the holder and competitor are on the same host -- cross-host stale
-  locks still require manual removal. Exclusive only. See the TOCTOU warning below.
+  *Limitations*: stale lock detection is **not available on Windows** -- Python's C runtime (``_wopen``) cannot set
+  ``FILE_SHARE_DELETE``, so any read handle on the lock file blocks ``DeleteFileW`` in the release path, causing a
+  livelock under threaded contention. On Unix/macOS, stale detection only works when the holder and competitor are on
+  the same host -- cross-host stale locks still require manual removal. Exclusive only. See the TOCTOU warning below.
 
 - :class:`ReadWriteLock <filelock.ReadWriteLock>` -- shared reads / exclusive writes via SQLite. Use this when you need
   concurrent readers with occasional writers. See :ref:`read-write-lock` below for details.
