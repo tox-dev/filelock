@@ -39,7 +39,7 @@ class SoftFileLock(BaseFileLock):
         if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
             flags |= o_nofollow
         try:
-            file_handler = os.open(self.lock_file, flags, self._context.mode)
+            file_handler = os.open(self.lock_file, flags, self._open_mode())
         except OSError as exception:  # re-raise unless expected exception
             if not (
                 exception.errno == EEXIST  # lock already exist

@@ -12,7 +12,7 @@ from inspect import iscoroutinefunction
 from threading import local
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
-from ._api import BaseFileLock, FileLockContext, FileLockMeta
+from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta
 from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock
@@ -74,7 +74,7 @@ class AsyncFileLockMeta(FileLockMeta):
         cls,  # noqa: N805
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
-        mode: int = 0o644,
+        mode: int = _UNSET_FILE_MODE,
         thread_local: bool = False,  # noqa: FBT001, FBT002
         *,
         blocking: bool = True,
@@ -113,7 +113,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
-        mode: int = 0o644,
+        mode: int = _UNSET_FILE_MODE,
         thread_local: bool = False,  # noqa: FBT001, FBT002
         *,
         blocking: bool = True,
@@ -130,7 +130,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in
             the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it
             to a negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
-        :param mode: file permissions for the lockfile
+        :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask
+            and default ACLs, preserving POSIX default ACL inheritance in shared directories.
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set
             to ``False`` then the lock will be reentrant across threads.
         :param blocking: whether the lock should be blocking or not
