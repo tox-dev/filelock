@@ -1,5 +1,15 @@
 Changelog
 =========
+3.24.0 (2026-02-14)
+-------------------
+- ✨ feat(lock): add lifetime parameter for lock expiration (#68) :pr:`486`
+- ✨ feat(lock): add cancel_check to acquire (#309) :pr:`487`
+- 🐛 fix(api): detect same-thread self-deadlock :pr:`481`
+- ✨ feat(mode): respect POSIX default ACLs (#378) :pr:`483`
+- 🐛 fix(win): eliminate lock file race in threaded usage :pr:`484`
+- ✨ feat(lock): add poll_interval to constructor :pr:`482`
+- 🐛 fix(unix): auto-fallback to SoftFileLock on ENOSYS :pr:`480`
+
 3.23.0 (2026-02-14)
 -------------------
 - 📝 docs: move from Unlicense to MIT :pr:`479`
