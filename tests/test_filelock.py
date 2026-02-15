@@ -262,8 +262,10 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path)
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-@pytest.mark.skipif(hasattr(sys, "pypy_version_info") and sys.platform == "win32", reason="deadlocks randomly")
 def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    if sys.platform == "win32" and (hasattr(sys, "pypy_version_info") or lock_type.__name__ == "SoftFileLock"):
+        pytest.skip("SoftFileLock on Windows has race conditions under heavy threading")
+
     # Runs multiple threads, which acquire the same lock file with a different FileLock object. When thread group 1
     # acquired the lock, thread group 2 must not hold their lock.
     def t_1() -> None:

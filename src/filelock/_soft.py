@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import time
 from contextlib import suppress
 from errno import EACCES, EEXIST, EPERM, ESRCH
 from pathlib import Path
@@ -97,8 +98,27 @@ class SoftFileLock(BaseFileLock):
         assert self._context.lock_file_fd is not None  # noqa: S101
         os.close(self._context.lock_file_fd)
         self._context.lock_file_fd = None
-        with suppress(OSError):  # the file is already deleted and that's what we want
-            Path(self.lock_file).unlink()
+        if sys.platform == "win32":
+            self._windows_unlink_with_retry()
+        else:
+            with suppress(OSError):
+                Path(self.lock_file).unlink()
+
+    def _windows_unlink_with_retry(self) -> None:
+        max_retries = 10
+        retry_delay = 0.001
+        for attempt in range(max_retries):
+            # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink
+            try:
+                Path(self.lock_file).unlink()
+            except OSError as exc:  # noqa: PERF203
+                if exc.errno not in {EACCES, EPERM}:
+                    return
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+            else:
+                return
 
 
 __all__ = [
