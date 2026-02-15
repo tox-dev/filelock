@@ -15,6 +15,7 @@ def raise_on_not_writable_file(filename: str) -> None:
     locked.
 
     :param filename: file to check
+
     :raises OSError: as if the file was opened for writing.
 
     """

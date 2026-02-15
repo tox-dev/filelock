@@ -2,7 +2,7 @@
 A platform independent file lock that supports the with-statement.
 
 .. autodata:: filelock.__version__
-   :no-value:
+    :no-value:
 
 """
 
