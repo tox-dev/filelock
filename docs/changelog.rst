@@ -1,5 +1,9 @@
 Changelog
 =========
+3.24.1 (2026-02-15)
+-------------------
+- 🐛 fix(soft): resolve Windows deadlock and test race condition :pr:`488`
+
 3.24.0 (2026-02-14)
 -------------------
 - ✨ feat(lock): add lifetime parameter for lock expiration (#68) :pr:`486`
