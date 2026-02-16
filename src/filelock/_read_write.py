@@ -188,7 +188,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     ) -> None:
         waited = time.perf_counter() - start_time
         timeout_ms = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
-        self._con.execute(f"PRAGMA busy_timeout={timeout_ms};")
+        self._con.execute(f"PRAGMA busy_timeout={timeout_ms};").close()
         # Use legacy journal mode (not WAL) because WAL does not block readers when a concurrent EXCLUSIVE
         # write transaction is active, making read-write locking impossible without modifying table data.
         # MEMORY is safe here since no actual writes happen — crashes cannot corrupt the DB.
@@ -196,17 +196,17 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         #
         # Set here (not in __init__) because this pragma itself may block on a locked database,
         # so it must run after busy_timeout is configured above.
-        self._con.execute("PRAGMA journal_mode=MEMORY;")
+        self._con.execute("PRAGMA journal_mode=MEMORY;").close()
         # Recompute remaining timeout after the potentially blocking journal_mode pragma.
         waited = time.perf_counter() - start_time
         if (recomputed := timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)) != timeout_ms:
-            self._con.execute(f"PRAGMA busy_timeout={recomputed};")
+            self._con.execute(f"PRAGMA busy_timeout={recomputed};").close()
         stmt = "BEGIN EXCLUSIVE TRANSACTION;" if mode == "write" else "BEGIN TRANSACTION;"
-        self._con.execute(stmt)
+        self._con.execute(stmt).close()
         if mode == "read":
             # A SELECT is needed to force SQLite to actually acquire the SHARED lock on the database.
             # https://www.sqlite.org/lockingv3.html#transaction_control
-            self._con.execute("SELECT name FROM sqlite_schema LIMIT 1;")
+            self._con.execute("SELECT name FROM sqlite_schema LIMIT 1;").close()
 
     def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
         opposite = "write" if mode == "read" else "read"

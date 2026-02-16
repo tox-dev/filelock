@@ -242,6 +242,12 @@ class ExThread(threading.Thread):
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    if sys.platform == "win32" and lock_type.__name__ == "SoftFileLock":
+        pytest.skip(
+            "SoftFileLock uses file-existence locking — on Windows, unlink can silently fail under heavy "
+            "thread contention (EACCES from antivirus/indexer), orphaning the lock file with no recovery path"
+        )
+
     # Runs 100 threads, which need the filelock. The lock must be acquired if at least one thread required it and
     # released, as soon as all threads stopped.
     lock_path = tmp_path / "a"
