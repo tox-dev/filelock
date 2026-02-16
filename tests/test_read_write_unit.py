@@ -104,7 +104,7 @@ def test_non_singleton_creates_new_instance(lock_file: str) -> None:
 def test_init_sets_attributes(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, timeout=5.0, blocking=False, is_singleton=False)
     assert lock.lock_file == lock_file
-    assert lock.timeout == 5.0
+    assert lock.timeout == pytest.approx(5.0)
     assert lock.blocking is False
     assert lock._lock_level == 0
     assert lock._current_mode is None

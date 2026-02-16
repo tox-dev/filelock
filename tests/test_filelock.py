@@ -398,7 +398,7 @@ def test_default_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     # test if the default timeout parameter works
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path), timeout=0.1)
-    assert lock_2.timeout == 0.1
+    assert lock_2.timeout == pytest.approx(0.1)
 
     # acquire lock 1
     lock_1.acquire()
@@ -508,13 +508,13 @@ def test_poll_intervall_deprecated(lock_type: type[BaseFileLock], tmp_path: Path
 def test_default_poll_interval(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
-    assert lock.poll_interval == 0.05
+    assert lock.poll_interval == pytest.approx(0.05)
 
     lock_2 = lock_type(str(lock_path), poll_interval=0.1)
-    assert lock_2.poll_interval == 0.1
+    assert lock_2.poll_interval == pytest.approx(0.1)
 
     lock_2.poll_interval = 0.2
-    assert lock_2.poll_interval == 0.2
+    assert lock_2.poll_interval == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])

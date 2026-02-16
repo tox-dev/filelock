@@ -58,10 +58,10 @@ def test_expired_lock_race_rename_fails(tmp_path: Path, mocker: MockerFixture) -
 
 def test_lifetime_property_getter_setter(tmp_path: Path) -> None:
     lock = FileLock(tmp_path / "test.lock", lifetime=10.0)
-    assert lock.lifetime == 10.0
+    assert lock.lifetime == pytest.approx(10.0)
 
     lock.lifetime = 20.0
-    assert lock.lifetime == 20.0
+    assert lock.lifetime == pytest.approx(20.0)
 
     lock.lifetime = None
     assert lock.lifetime is None
@@ -75,7 +75,7 @@ def test_lifetime_default_none(tmp_path: Path) -> None:
 def test_lifetime_singleton_mismatch(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     lock1 = FileLock(lock_path, is_singleton=True, lifetime=10.0)
-    assert lock1.lifetime == 10.0
+    assert lock1.lifetime == pytest.approx(10.0)
 
     with pytest.raises(ValueError, match="lifetime"):
         FileLock(lock_path, is_singleton=True, lifetime=20.0)
