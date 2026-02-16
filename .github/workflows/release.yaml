@@ -96,7 +96,7 @@ jobs:
           {
             head -4 docs/changelog.rst
             printf '%s\n %s\n%s\n\n' "$separator" "$header" "$separator"
-            printf '%s\n' "$CHANGELOG"
+            printf '%s\n\n' "$CHANGELOG"
             tail -n +5 docs/changelog.rst
           } > docs/changelog.tmp
           mv docs/changelog.tmp docs/changelog.rst
