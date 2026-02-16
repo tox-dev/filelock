@@ -28,9 +28,32 @@ extensions = [
     "sphinx.ext.extlinks",
     "sphinx.ext.intersphinx",
     "sphinx_autodoc_typehints",
+    "sphinx_copybutton",
+    "sphinx_design",
+    "sphinx_sitemap",
+    "sphinxcontrib.mermaid",
+    "sphinxext.opengraph",
 ]
+mermaid_output_format = "raw"
+
+# sphinx-copybutton: add copy button to code blocks
+copybutton_prompt_is_regexp = True
+copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: "
+
+# sphinx-design: no special config needed
+
+# sphinx-sitemap: generate sitemap.xml
+# sphinx-notfound-page: custom 404 pages (no config needed)
+
+# sphinxext-opengraph: social media metadata
+ogp_site_url = "https://py-filelock.readthedocs.io"
+ogp_social_cards = {"enable": False}
+ogp_use_first_image = True
+ogp_description_length = 200
+
 html_theme = "furo"
 html_title, html_last_updated_fmt = name, now.isoformat()
+html_baseurl = "https://py-filelock.readthedocs.io/"
 pygments_style, pygments_dark_style = "sphinx", "monokai"
 autoclass_content, autodoc_member_order, autodoc_typehints = "class", "bysource", "none"
 autodoc_default_options = {"member-order": "bysource", "undoc-members": True, "show-inheritance": True}

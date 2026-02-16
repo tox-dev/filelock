@@ -27,8 +27,11 @@ if sys.platform == "win32":  # pragma: win32 cover
         Check if a path is a reparse point (symlink, junction, etc.) on Windows.
 
         :param path: Path to check
-        :return: True if path is a reparse point, False otherwise
+
+        :returns: True if path is a reparse point, False otherwise
+
         :raises OSError: If GetFileAttributesW fails for reasons other than file-not-found
+
         """
         attrs = _kernel32.GetFileAttributesW(path)
         if attrs == INVALID_FILE_ATTRIBUTES:

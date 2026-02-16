@@ -62,6 +62,7 @@ class _ReadWriteLockMeta(type):
 
     Singleton logic lives here rather than in ReadWriteLock.get_lock so that ``ReadWriteLock(path)`` transparently
     returns cached instances without a 2-arg ``super()`` call that type checkers cannot verify.
+
     """
 
     _instances: WeakValueDictionary[pathlib.Path, ReadWriteLock]
@@ -99,10 +100,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     """
     Cross-process read-write lock backed by SQLite.
 
-    Allows concurrent shared readers or a single exclusive writer. The lock is reentrant within the same mode
-    (multiple ``acquire_read`` calls nest, as do multiple ``acquire_write`` calls from the same thread), but
-    upgrading from read to write or downgrading from write to read raises :class:`RuntimeError`. Write locks are
-    pinned to the thread that acquired them.
+    Allows concurrent shared readers or a single exclusive writer. The lock is reentrant within the same mode (multiple
+    ``acquire_read`` calls nest, as do multiple ``acquire_write`` calls from the same thread), but upgrading from read
+    to write or downgrading from write to read raises :class:`RuntimeError`. Write locks are pinned to the thread that
+    acquired them.
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. The lock file must use a ``.db`` extension (SQLite database).
@@ -113,6 +114,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     :param is_singleton: if ``True``, reuse existing instances for the same resolved path
 
     .. versionadded:: 3.21.0
+
     """
 
     _instances: WeakValueDictionary[pathlib.Path, ReadWriteLock] = WeakValueDictionary()
@@ -128,8 +130,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         :param lock_file: path to the SQLite database file used as the lock
         :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+
+        :returns: the singleton lock instance
+
         :raises ValueError: if an instance already exists for this path with different *timeout* or *blocking* values
-        :return: the singleton lock instance
+
         """
         return cls(lock_file, timeout, blocking=blocking)
 
@@ -240,14 +245,17 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         """
         Acquire a shared read lock.
 
-        If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire
-        a read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed).
+        If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire a
+        read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed).
 
         :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+
+        :returns: a proxy that can be used as a context manager to release the lock
+
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :return: a proxy that can be used as a context manager to release the lock
+
         """
         return self._acquire("read", timeout, blocking=blocking)
 
@@ -256,15 +264,18 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Acquire an exclusive write lock.
 
         If this instance already holds a write lock from the same thread, the lock level is incremented (reentrant).
-        Attempting to acquire a write lock while holding a read lock raises :class:`RuntimeError` (upgrade not
-        allowed). Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
+        Attempting to acquire a write lock while holding a read lock raises :class:`RuntimeError` (upgrade not allowed).
+        Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
         :class:`RuntimeError`.
 
         :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+
+        :returns: a proxy that can be used as a context manager to release the lock
+
         :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :return: a proxy that can be used as a context manager to release the lock
+
         """
         return self._acquire("write", timeout, blocking=blocking)
 
@@ -275,7 +286,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         When the lock level reaches zero the underlying SQLite transaction is rolled back, releasing the database lock.
 
         :param force: if ``True``, release the lock completely regardless of the current lock level
+
         :raises RuntimeError: if no lock is currently held and *force* is ``False``
+
         """
         should_rollback = False
         with self._internal_lock:
@@ -304,6 +317,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+
         """
         if timeout is None:
             timeout = self.timeout
@@ -324,6 +338,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+
         """
         if timeout is None:
             timeout = self.timeout
@@ -340,6 +355,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Release the lock (if held) and close the underlying SQLite connection.
 
         After calling this method, the lock instance is no longer usable.
+
         """
         self.release(force=True)
         self._con.close()

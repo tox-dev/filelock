@@ -109,6 +109,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     Base class for asynchronous file locks.
 
     .. versionadded:: 3.15.0
+
     """
 
     def __init__(  # noqa: PLR0913
@@ -130,22 +131,22 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         Create a new lock object.
 
         :param lock_file: path to the file
-        :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in
-            the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it
-            to a negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
-        :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask
-            and default ACLs, preserving POSIX default ACL inheritance in shared directories.
-        :param thread_local: Whether this object's internal context should be thread local or not. If this is set
-            to ``False`` then the lock will be reentrant across threads.
+        :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in the
+            acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it to a
+            negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
+        :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask and
+            default ACLs, preserving POSIX default ACL inheritance in shared directories.
+        :param thread_local: Whether this object's internal context should be thread local or not. If this is set to
+            ``False`` then the lock will be reentrant across threads.
         :param blocking: whether the lock should be blocking or not
-        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per
-            lock file. This is useful if you want to use the lock object for reentrant locking without needing to
-            pass the same object around.
-        :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback
-            value in the acquire method, if no poll_interval value (``None``) is given.
-        :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set,
-            a waiting process will break a lock whose file modification time is older than ``lifetime`` seconds.
-            ``None`` (the default) means locks never expire.
+        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per lock
+            file. This is useful if you want to use the lock object for reentrant locking without needing to pass the
+            same object around.
+        :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback value
+            in the acquire method, if no poll_interval value (``None``) is given.
+        :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set, a waiting
+            process will break a lock whose file modification time is older than ``lifetime`` seconds. ``None`` (the
+            default) means locks never expire.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
@@ -173,12 +174,12 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     @property
     def run_in_executor(self) -> bool:
-        """:return: whether run in executor."""
+        """:returns: whether run in executor."""
         return self._context.run_in_executor
 
     @property
     def executor(self) -> futures.Executor | None:
-        """:return: the executor."""
+        """:returns: the executor."""
         return self._context.executor
 
     @executor.setter
@@ -186,15 +187,14 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """
         Change the executor.
 
-        :param value: the new executor or ``None``
-        :type value: futures.Executor | None
+        :param futures.Executor | None value: the new executor or ``None``
 
         """
         self._context.executor = value
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
-        """:return: the event loop."""
+        """:returns: the event loop."""
         return self._context.loop
 
     async def acquire(  # ty: ignore[invalid-method-override]
@@ -209,16 +209,18 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         Try to acquire the file lock.
 
         :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default
-            :attr:`~BaseFileLock.timeout` is and if ``timeout < 0``, there is no timeout and this method will
-            block until the lock could be acquired
+            :attr:`~BaseFileLock.timeout` is and if ``timeout < 0``, there is no timeout and this method will block
+            until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file, ``None`` means use the default
             :attr:`~BaseFileLock.poll_interval`
-        :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on
-            the first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
-        :param cancel_check: a callable returning ``True`` when the acquisition should be canceled. Checked on each
-            poll iteration. When triggered, raises :class:`~Timeout` just like an expired timeout.
+        :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
+            first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
+        :param cancel_check: a callable returning ``True`` when the acquisition should be canceled. Checked on each poll
+            iteration. When triggered, raises :class:`~Timeout` just like an expired timeout.
+
+        :returns: a context object that will unlock the file when the context is exited
+
         :raises Timeout: if fails to acquire lock within the timeout period
-        :return: a context object that will unlock the file when the context is exited
 
         .. code-block:: python
 
@@ -278,8 +280,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # noqa: FBT001, FBT002
         """
-        Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
-        Also note, that the lock file itself is not automatically deleted.
+        Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
+        itself is not automatically deleted.
 
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
@@ -310,8 +312,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
         NOTE: DO NOT USE `with` FOR ASYNCIO LOCKS, USE `async with` INSTEAD.
 
-        :return: none
+        :returns: none
         :rtype: NoReturn
+
         """
         msg = "Do not use `with` for asyncio locks, use `async with` instead."
         raise NotImplementedError(msg)
@@ -320,7 +323,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """
         Acquire the lock.
 
-        :return: the lock object
+        :returns: the lock object
 
         """
         await self.acquire()

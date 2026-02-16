@@ -179,9 +179,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     """
     Abstract base class for a file lock object.
 
-    Provides a reentrant, cross-process exclusive lock backed by OS-level primitives. Subclasses implement the
-    actual locking mechanism (:class:`UnixFileLock <filelock.UnixFileLock>`,
-    :class:`WindowsFileLock <filelock.WindowsFileLock>`, :class:`SoftFileLock <filelock.SoftFileLock>`).
+    Provides a reentrant, cross-process exclusive lock backed by OS-level primitives. Subclasses implement the actual
+    locking mechanism (:class:`UnixFileLock <filelock.UnixFileLock>`, :class:`WindowsFileLock
+    <filelock.WindowsFileLock>`, :class:`SoftFileLock <filelock.SoftFileLock>`).
+
     """
 
     _instances: WeakValueDictionary[str, BaseFileLock]
@@ -207,22 +208,22 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         Create a new lock object.
 
         :param lock_file: path to the file
-        :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in
-            the acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it
-            to a negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
-        :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask
-            and default ACLs, preserving POSIX default ACL inheritance in shared directories.
-        :param thread_local: Whether this object's internal context should be thread local or not. If this is set
-            to ``False`` then the lock will be reentrant across threads.
+        :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in the
+            acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it to a
+            negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
+        :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask and
+            default ACLs, preserving POSIX default ACL inheritance in shared directories.
+        :param thread_local: Whether this object's internal context should be thread local or not. If this is set to
+            ``False`` then the lock will be reentrant across threads.
         :param blocking: whether the lock should be blocking or not
-        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per
-            lock file. This is useful if you want to use the lock object for reentrant locking without needing to
-            pass the same object around.
-        :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback
-            value in the acquire method, if no poll_interval value (``None``) is given.
-        :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set,
-            a waiting process will break a lock whose file modification time is older than ``lifetime`` seconds.
-            ``None`` (the default) means locks never expire.
+        :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per lock
+            file. This is useful if you want to use the lock object for reentrant locking without needing to pass the
+            same object around.
+        :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback value
+            in the acquire method, if no poll_interval value (``None``) is given.
+        :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set, a waiting
+            process will break a lock whose file modification time is older than ``lifetime`` seconds. ``None`` (the
+            default) means locks never expire.
 
         """
         self._is_thread_local = thread_local
@@ -241,29 +242,31 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(**kwargs)
 
     def is_thread_local(self) -> bool:
-        """:return: a flag indicating if this lock is thread local or not"""
+        """:returns: a flag indicating if this lock is thread local or not"""
         return self._is_thread_local
 
     @property
     def is_singleton(self) -> bool:
         """
-        :return: a flag indicating if this lock is singleton or not
+        :returns: a flag indicating if this lock is singleton or not
 
         .. versionadded:: 3.13.0
+
         """
         return self._is_singleton
 
     @property
     def lock_file(self) -> str:
-        """:return: path to the lock file"""
+        """:returns: path to the lock file"""
         return self._context.lock_file
 
     @property
     def timeout(self) -> float:
         """
-        :return: the default timeout value, in seconds
+        :returns: the default timeout value, in seconds
 
         .. versionadded:: 2.0.0
+
         """
         return self._context.timeout
 
@@ -280,9 +283,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def blocking(self) -> bool:
         """
-        :return: whether the locking is blocking or not
+        :returns: whether the locking is blocking or not
 
         .. versionadded:: 3.14.0
+
         """
         return self._context.blocking
 
@@ -299,9 +303,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def poll_interval(self) -> float:
         """
-        :return: the default polling interval, in seconds
+        :returns: the default polling interval, in seconds
 
         .. versionadded:: 3.24.0
+
         """
         return self._context.poll_interval
 
@@ -318,9 +323,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def lifetime(self) -> float | None:
         """
-        :return: the lock lifetime in seconds, or ``None`` if the lock never expires
+        :returns: the lock lifetime in seconds, or ``None`` if the lock never expires
 
         .. versionadded:: 3.24.0
+
         """
         return self._context.lifetime
 
@@ -336,16 +342,16 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
     @property
     def mode(self) -> int:
-        """:return: the file permissions for the lockfile"""
+        """:returns: the file permissions for the lockfile"""
         return 0o644 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
 
     @property
     def has_explicit_mode(self) -> bool:
-        """:return: whether the file permissions were explicitly set"""
+        """:returns: whether the file permissions were explicitly set"""
         return self._context.mode != _UNSET_FILE_MODE
 
     def _open_mode(self) -> int:
-        """:return: the mode for os.open() — 0o666 when unset (let umask/ACLs decide), else the explicit mode"""
+        """:returns: the mode for os.open() — 0o666 when unset (let umask/ACLs decide), else the explicit mode"""
         return 0o666 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
 
     def _try_break_expired_lock(self) -> None:
@@ -372,17 +378,18 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def is_locked(self) -> bool:
         """
-        :return: A boolean indicating if the lock file is holding the lock currently.
+        :returns: A boolean indicating if the lock file is holding the lock currently.
 
         .. versionchanged:: 2.0.0
 
             This was previously a method and is now a property.
+
         """
         return self._context.lock_file_fd is not None
 
     @property
     def lock_counter(self) -> int:
-        """:return: The number of times this lock has been acquired (but not yet released)."""
+        """:returns: The number of times this lock has been acquired (but not yet released)."""
         return self._context.lock_counter
 
     @staticmethod
@@ -418,17 +425,19 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         """
         Try to acquire the file lock.
 
-        :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~timeout`
-            is and if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
+        :param timeout: maximum wait time for acquiring the lock, ``None`` means use the default :attr:`~timeout` is and
+            if ``timeout < 0``, there is no timeout and this method will block until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file, ``None`` means use the default
             :attr:`~poll_interval`
         :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
-        :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on
-            the first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
-        :param cancel_check: a callable returning ``True`` when the acquisition should be canceled. Checked on each
-            poll iteration. When triggered, raises :class:`~Timeout` just like an expired timeout.
+        :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
+            first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
+        :param cancel_check: a callable returning ``True`` when the acquisition should be canceled. Checked on each poll
+            iteration. When triggered, raises :class:`~Timeout` just like an expired timeout.
+
+        :returns: a context object that will unlock the file when the context is exited
+
         :raises Timeout: if fails to acquire lock within the timeout period
-        :return: a context object that will unlock the file when the context is exited
 
         .. code-block:: python
 
@@ -445,8 +454,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
         .. versionchanged:: 2.0.0
 
-            This method returns now a *proxy* object instead of *self*,
-            so that it can be used in a with statement without side effects.
+            This method returns now a *proxy* object instead of *self*, so that it can be used in a with statement
+            without side effects.
 
         """
         # Use the default timeout, if no timeout is provided.
@@ -513,8 +522,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
         """
-        Releases the file lock. Please note, that the lock is only completely released, if the lock counter is 0.
-        Also note, that the lock file itself is not automatically deleted.
+        Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
+        itself is not automatically deleted.
 
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
@@ -535,7 +544,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         """
         Acquire the lock.
 
-        :return: the lock object
+        :returns: the lock object
 
         """
         self.acquire()
