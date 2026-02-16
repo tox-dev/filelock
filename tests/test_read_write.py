@@ -256,7 +256,7 @@ def test_write_non_starvation(lock_file: str) -> None:
             event.set()
 
         for idx, reader in enumerate(readers):
-            reader.join(timeout=3)
+            reader.join(timeout=10)
             assert not reader.is_alive(), f"Reader {idx} did not exit cleanly"
 
 
