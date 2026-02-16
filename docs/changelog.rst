@@ -9,6 +9,7 @@
 - 🐛 fix(rw): close sqlite3 cursors and skip SoftFileLock Windows race :pr:`491`
 - 🐛 fix(test): resolve flaky write non-starvation test :pr:`490`
 - 📝 docs: restructure using Diataxis framework :pr:`489`
+
 *********************
  3.24.1 (2026-02-15)
 *********************
