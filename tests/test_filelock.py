@@ -1128,3 +1128,28 @@ def test_cancel_check_log_message(
         lock_2.acquire(timeout=1, cancel_check=lambda: True)
     assert any("Cancellation requested" in msg for msg in caplog.messages)
     lock_1.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="unix-only test")
+def test_filenotfound_on_fuse_nfs_retries(tmp_path: Path, mocker: MockerFixture) -> None:
+    """FileNotFoundError from FUSE/NFS os.open(O_CREAT) race is handled by retry."""
+    lock_path = tmp_path / "test.lock"
+    lock = FileLock(str(lock_path), is_singleton=False)
+
+    real_open = os.open
+    call_count = 0
+
+    def open_enoent_then_succeed(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        nonlocal call_count
+        call_count += 1
+        # Simulate FUSE/NFS race: first call to os.open(O_CREAT) fails with ENOENT
+        if call_count == 1 and flags & os.O_CREAT and "test.lock" in path:
+            raise FileNotFoundError(2, "No such file or directory", path)
+        return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("os.open", side_effect=open_enoent_then_succeed)
+    lock.acquire()
+    assert lock.is_locked
+    # First call failed with ENOENT, retry succeeded
+    assert call_count >= 2
+    lock.release()
