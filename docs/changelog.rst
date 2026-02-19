@@ -3,6 +3,13 @@
 ###########
 
 ********************
+ 3.24.3 (2026-02-19)
+********************
+
+- 🐛 fix(unix): handle ENOENT race on FUSE/NFS during acquire :pr:`495`
+- 🐛 fix(ci): add trailing blank line after changelog entries :pr:`492`
+
+********************
  3.24.2 (2026-02-16)
 ********************
 
