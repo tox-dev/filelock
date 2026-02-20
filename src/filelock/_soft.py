@@ -54,7 +54,7 @@ class SoftFileLock(BaseFileLock):
             self._context.lock_file_fd = file_handler
 
     def _try_break_stale_lock(self) -> None:
-        with suppress(OSError):
+        with suppress(OSError, ValueError):
             content = Path(self.lock_file).read_text(encoding="utf-8")
             lines = content.strip().splitlines()
             if len(lines) != 2:  # noqa: PLR2004
