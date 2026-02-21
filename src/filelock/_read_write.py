@@ -159,11 +159,12 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             _all_connections.add(self._con)
 
     def _acquire_transaction_lock(self, *, blocking: bool, timeout: float) -> None:
-        if timeout == -1:
-            # blocking=True with no timeout means wait indefinitely per threading.Lock.acquire semantics
-            acquired = self._transaction_lock.acquire(blocking)
+        if not blocking:
+            acquired = self._transaction_lock.acquire(False)
+        elif timeout == -1:
+            acquired = self._transaction_lock.acquire(True)
         else:
-            acquired = self._transaction_lock.acquire(blocking, timeout)
+            acquired = self._transaction_lock.acquire(True, timeout)
         if not acquired:
             raise Timeout(self.lock_file) from None
 
