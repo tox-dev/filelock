@@ -397,6 +397,24 @@ def test_non_blocking_transaction_lock_timeout(lock_file: str, mode: Literal["re
         pytest.param("write", id="write"),
     ],
 )
+def test_non_blocking_with_timeout_no_value_error(lock_file: str, mode: Literal["read", "write"]) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    lock._transaction_lock.acquire()
+    try:
+        acquire = lock.acquire_read if mode == "read" else lock.acquire_write
+        with pytest.raises(Timeout):
+            acquire(blocking=False, timeout=5.0)
+    finally:
+        lock._transaction_lock.release()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("read", id="read"),
+        pytest.param("write", id="write"),
+    ],
+)
 def test_finite_timeout_transaction_lock(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock._transaction_lock.acquire()

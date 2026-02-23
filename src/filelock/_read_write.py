@@ -160,11 +160,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     def _acquire_transaction_lock(self, *, blocking: bool, timeout: float) -> None:
         if not blocking:
-            acquired = self._transaction_lock.acquire(False)
+            acquired = self._transaction_lock.acquire(blocking=False)
         elif timeout == -1:
-            acquired = self._transaction_lock.acquire(True)
+            acquired = self._transaction_lock.acquire(blocking=True)
         else:
-            acquired = self._transaction_lock.acquire(True, timeout)
+            acquired = self._transaction_lock.acquire(blocking=True, timeout=timeout)
         if not acquired:
             raise Timeout(self.lock_file) from None
 
