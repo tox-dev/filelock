@@ -71,7 +71,7 @@ jobs:
         shell: python
       - name: "📦 Upload coverage data"
         if: ${{ !startsWith(matrix.py, 'pypy')}}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           include-hidden-files: true
           name: .coverage.${{ matrix.os }}.${{ matrix.py }}
@@ -107,7 +107,7 @@ jobs:
         env:
           UV_PYTHON_PREFERENCE: only-managed
       - name: "📤 Upload HTML report"
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: html-report
           path: .tox/htmlcov
