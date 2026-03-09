@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import suppress
 from errno import EACCES
+from pathlib import Path
 from typing import cast
 
 from ._api import BaseFileLock
@@ -46,7 +48,13 @@ if sys.platform == "win32":  # pragma: win32 cover
         return bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT)
 
     class WindowsFileLock(BaseFileLock):
-        """Uses the :func:`msvcrt.locking` function to hard lock the lock file on Windows systems."""
+        """
+        Uses the :func:`msvcrt.locking` function to hard lock the lock file on Windows systems.
+
+        Lock file cleanup: Windows attempts to delete the lock file after release, but deletion is
+        not guaranteed in multi-threaded scenarios where another thread holds an open handle. The lock
+        file may persist on disk, which does not affect lock correctness.
+        """
 
         def _acquire(self) -> None:
             raise_on_not_writable_file(self.lock_file)
@@ -82,6 +90,9 @@ if sys.platform == "win32":  # pragma: win32 cover
             self._context.lock_file_fd = None
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             os.close(fd)
+
+            with suppress(OSError):
+                Path(self.lock_file).unlink()
 
 else:  # pragma: win32 no cover
 

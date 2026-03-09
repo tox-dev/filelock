@@ -903,15 +903,7 @@ def test_mtime_zero_exit_branch(
         lock.acquire(timeout=0)
 
 
-@pytest.mark.parametrize(
-    "lock_type",
-    [
-        pytest.param(
-            FileLock, marks=pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot unlink open files")
-        ),
-        SoftFileLock,
-    ],
-)
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_lock_file_removed_after_release(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     lock_path = tmp_path / "test.lock"
     lock = lock_type(str(lock_path))

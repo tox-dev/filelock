@@ -138,12 +138,20 @@ stale lock breaking is skipped because the lock file cannot be atomically rename
     The lock is exclusive and works reliably on local filesystems. Network filesystem (SMB) support is available but
     considered less reliable.
 
+    Lock file cleanup: Windows attempts to delete the lock file after release, but deletion is not guaranteed in
+    multi-threaded scenarios. Windows cannot delete files with open handles, so if another thread acquires the lock
+    before the previous holder finishes cleanup, the lock file persists. This is by design and does not affect lock
+    correctness.
+
 **Unix and macOS**
     Uses the :class:`UnixFileLock <filelock.UnixFileLock>` class, backed by ``fcntl.flock``. This is the POSIX standard
     for file locking and enforced by the kernel.
 
     Works best on local filesystems. Network filesystems (NFS) may have issues—locking isn't always reliable on NFS even
     in POSIX-compliant systems.
+
+    Lock file cleanup: Unix and macOS delete the lock file reliably after release, even in multi-threaded scenarios.
+    Unlike Windows, Unix allows unlinking files that other processes have open.
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,
