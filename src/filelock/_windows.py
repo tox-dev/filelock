@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import suppress
 from errno import EACCES
+from pathlib import Path
 from typing import cast
 
 from ._api import BaseFileLock
@@ -82,6 +84,9 @@ if sys.platform == "win32":  # pragma: win32 cover
             self._context.lock_file_fd = None
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             os.close(fd)
+
+            with suppress(OSError):
+                Path(self.lock_file).unlink()
 
 else:  # pragma: win32 no cover
 
