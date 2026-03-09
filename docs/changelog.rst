@@ -3,6 +3,15 @@
 ###########
 
 ********************
+ 3.25.1 (2026-03-09)
+********************
+
+- [pre-commit.ci] pre-commit autoupdate :pr:`510` - by :user:`pre-commit-ci[bot]`
+- 🐛 fix(win): restore best-effort lock file cleanup on release :pr:`511`
+- [pre-commit.ci] pre-commit autoupdate :pr:`508` - by :user:`pre-commit-ci[bot]`
+- 📝 docs(logo): add branded project logo :pr:`507`
+
+********************
  3.25.0 (2026-03-01)
 ********************
 
