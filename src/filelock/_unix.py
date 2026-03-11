@@ -106,7 +106,8 @@ else:  # pragma: win32 no cover
             with suppress(OSError):
                 Path(self.lock_file).unlink()
             fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+            with suppress(OSError):  # close can raise EIO on FUSE/Docker bind-mount filesystems after unlink
+                os.close(fd)
 
 
 __all__ = [

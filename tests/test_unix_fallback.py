@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
-from errno import ENOSYS
+from errno import EIO, ENOSYS
 from typing import TYPE_CHECKING
 
 import pytest
@@ -92,4 +92,22 @@ def test_fallback_reentrant_locking(tmp_path: Path, mocker: MockerFixture) -> No
         with lock:
             assert lock.is_locked
         assert lock.is_locked
+    assert not lock.is_locked
+
+
+@unix_only
+def test_release_suppresses_eio_on_close(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = UnixFileLock(tmp_path / "test.lock")
+    lock.acquire()
+
+    real_close = os.close
+    fd_to_fail = lock._context.lock_file_fd
+
+    def _close_eio(fd: int) -> None:
+        real_close(fd)
+        if fd == fd_to_fail:
+            raise OSError(EIO, "Input/output error")
+
+    mocker.patch("filelock._unix.os.close", side_effect=_close_eio)
+    lock.release()
     assert not lock.is_locked
