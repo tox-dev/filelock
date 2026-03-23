@@ -167,6 +167,10 @@ ignore-words-list = "master"
 [tool.pyproject-fmt]
 max_supported_python = "3.14"
 
+[tool.ty]
+environment.python-version = "3.14"
+src.exclude = []
+
 [tool.pytest]
 ini_options.asyncio_default_fixture_loop_scope = "session"
 ini_options.testpaths = [
@@ -205,7 +209,3 @@ paths.source = [
 report.fail_under = 76
 html.show_contexts = true
 html.skip_covered = false
-
-[tool.ty]
-environment.python-version = "3.14"
-src.exclude = []
