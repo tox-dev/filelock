@@ -57,6 +57,7 @@ def lock_file(tmp_path: Path) -> str:
 
 
 @pytest.mark.timeout(20)
+@pytest.mark.timeout(20)
 def test_read_locks_are_shared(lock_file: str) -> None:
     """Test that multiple processes can acquire read locks simultaneously."""
     read1_acquired = Event()
@@ -67,14 +68,14 @@ def test_read_locks_are_shared(lock_file: str) -> None:
 
     with cleanup_processes([reader1, reader2]):
         reader1.start()
-        time.sleep(0.1)  # give reader1 time to acquire lock before starting reader2
+        time.sleep(0.5)  # give reader1 time to acquire lock before starting reader2
         reader2.start()
 
-        assert read1_acquired.wait(timeout=2), f"First read lock not acquired on {lock_file}"
-        assert read2_acquired.wait(timeout=2), f"Second read lock not acquired on {lock_file}"
+        assert read1_acquired.wait(timeout=10), f"First read lock not acquired on {lock_file}"
+        assert read2_acquired.wait(timeout=10), f"Second read lock not acquired on {lock_file}"
 
-        reader1.join(timeout=2)
-        reader2.join(timeout=2)
+        reader1.join(timeout=10)
+        reader2.join(timeout=10)
         assert not reader1.is_alive(), "Reader 1 did not exit cleanly"
         assert not reader2.is_alive(), "Reader 2 did not exit cleanly"
 

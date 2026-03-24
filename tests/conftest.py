@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import gc
 import sys
+from typing import TYPE_CHECKING
 
-try:
+if TYPE_CHECKING:
     from filelock._read_write import _cleanup_connections
-except ImportError:
-    _cleanup_connections = None  # type: ignore[assignment, misc]
+else:
+    try:
+        from filelock._read_write import _cleanup_connections
+    except ImportError:
+        _cleanup_connections = None
 
 
 def pytest_sessionfinish() -> None:
