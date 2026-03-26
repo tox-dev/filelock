@@ -15,13 +15,20 @@ from typing import TYPE_CHECKING
 from ._api import AcquireReturnProxy, BaseFileLock
 from ._error import Timeout
 
-try:
-    from ._async_read_write import AsyncAcquireReadWriteReturnProxy, AsyncReadWriteLock
+if TYPE_CHECKING:
+    from ._async_read_write import (
+        AsyncAcquireReadWriteReturnProxy,
+        AsyncReadWriteLock,
+    )
     from ._read_write import ReadWriteLock
-except ImportError:  # sqlite3 may be unavailable if Python was built without it or the C library is missing
-    AsyncAcquireReadWriteReturnProxy = None  # type: ignore[assignment, misc]
-    AsyncReadWriteLock = None  # type: ignore[assignment, misc]
-    ReadWriteLock = None  # type: ignore[assignment, misc]
+else:
+    try:
+        from ._async_read_write import AsyncAcquireReadWriteReturnProxy, AsyncReadWriteLock
+        from ._read_write import ReadWriteLock
+    except ImportError:  # sqlite3 may be unavailable if Python was built without it or the C library is missing
+        AsyncAcquireReadWriteReturnProxy = None
+        AsyncReadWriteLock = None
+        ReadWriteLock = None
 
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock, has_fcntl
