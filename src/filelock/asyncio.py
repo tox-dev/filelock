@@ -303,8 +303,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         if iscoroutinefunction(method):
             await method()
         elif self.run_in_executor:
-            loop = self.loop or asyncio.get_running_loop()
-            await loop.run_in_executor(self.executor, method)
+            await asyncio.get_running_loop().run_in_executor(self.executor, method)
         else:
             method()
 
@@ -317,6 +316,22 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :returns: none
         :rtype: NoReturn
 
+        """
+        msg = "Do not use `with` for asyncio locks, use `async with` instead."
+        raise NotImplementedError(msg)
+
+    def __exit__(  # type: ignore[override]
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> None:
+        """
+        Replace old __exit__ method to avoid using it.
+
+        NOTE: DO NOT USE `with` FOR ASYNCIO LOCKS, USE `async with` INSTEAD.
+
+        :raises NotImplementedError: always, to guide users toward ``async with``
         """
         msg = "Do not use `with` for asyncio locks, use `async with` instead."
         raise NotImplementedError(msg)
@@ -348,9 +363,21 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         await self.release()
 
     def __del__(self) -> None:
-        """Called when the lock object is deleted."""
-        with contextlib.suppress(RuntimeError):
-            loop = self.loop or asyncio.get_running_loop()
+        """Called when the lock object is deleted.
+
+        Attempts to release the lock if it's still held.
+        Uses the stored loop if available, otherwise falls back to
+        get_event_loop() — avoids get_running_loop() which raises if
+        no loop is running (common in __del__ called during GC).
+        """
+        with contextlib.suppress(Exception):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop — try stored loop or create one
+                loop = self._context.loop if self._context.loop and not self._context.loop.is_closed() else None
+            if loop is None:
+                return
             if not loop.is_running():  # pragma: no cover
                 loop.run_until_complete(self.release(force=True))
             else:
