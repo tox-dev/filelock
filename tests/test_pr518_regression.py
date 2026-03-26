@@ -17,15 +17,17 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Bug 1 : missing __exit__ ──────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 def test_sync_with_raises_not_implemented_error_not_attribute_error(
@@ -46,9 +48,8 @@ def test_sync_with_raises_not_implemented_error_not_attribute_error(
     lock = lock_type(str(tmp_path / "test.lock"))
 
     # Must raise NotImplementedError, NOT AttributeError
-    with pytest.raises(NotImplementedError, match=r"async with"):
-        with lock:  # sync context manager — must be rejected
-            pass  # pragma: no cover
+    with pytest.raises(NotImplementedError, match=r"async with"), lock:  # sync context manager — must be rejected
+        pass  # pragma: no cover
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -76,6 +77,7 @@ def test_exit_raises_not_implemented_error(lock_type: type[BaseAsyncFileLock], t
 
 
 # ── Bug 2 : stored event loop in __del__ ─────────────────────────────────────
+
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 def test_del_after_loop_close_does_not_raise(

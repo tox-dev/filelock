@@ -363,7 +363,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         await self.release()
 
     def __del__(self) -> None:
-        """Called when the lock object is deleted.
+        """
+        Called when the lock object is deleted.
 
         Attempts to release the lock if it's still held.
         Uses the stored loop if available, otherwise falls back to
