@@ -3,6 +3,19 @@
 ###########
 
 ********************
+ 3.26.0 (2026-04-06)
+********************
+
+- ✨ feat(soft): add PID inspection and lock breaking :pr:`524`
+- [pre-commit.ci] pre-commit autoupdate :pr:`523` - by :user:`pre-commit-ci[bot]`
+- build(deps): bump astral-sh/setup-uv from 7.6.0 to 8.0.0 :pr:`522` - by :user:`dependabot[bot]`
+- Remove persist-credentials: false from release job :pr:`520`
+- [pre-commit.ci] pre-commit autoupdate :pr:`519` - by :user:`pre-commit-ci[bot]`
+- 🔒 ci(workflows): add zizmor security auditing :pr:`517`
+- [pre-commit.ci] pre-commit autoupdate :pr:`516` - by :user:`pre-commit-ci[bot]`
+- [pre-commit.ci] pre-commit autoupdate :pr:`514` - by :user:`pre-commit-ci[bot]`
+
+********************
  3.25.2 (2026-03-11)
 ********************
 
