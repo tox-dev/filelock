@@ -183,7 +183,7 @@ See :ref:`how-to:Use locks with multiple threads` for practical examples of cont
  Migrating from lockfile.PIDLockFile
 ***************************************
 
-If you're migrating from the deprecated ``lockfile`` library, :class:`SoftFileLock <filelock.SoftFileLock>` is the
+If you're migrating from the deprecated `lockfile <https://pypi.org/project/lockfile/>`_ library, :class:`SoftFileLock <filelock.SoftFileLock>` is the
 direct replacement for ``PIDLockFile``. It writes the process ID to the lock file and can detect stale locks.
 
 .. code-block:: python

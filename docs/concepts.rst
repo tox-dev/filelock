@@ -109,7 +109,7 @@ A separate "lock file" indicates that a resource is in use. The lock file contai
 (one per line). A process acquires a lock by creating this file atomically with ``O_CREAT | O_EXCL``; it releases by
 deleting it.
 
-This is the same concept as a traditional **PID lock file** (as used by Unix daemons and the deprecated ``lockfile``
+This is the same concept as a traditional **PID lock file** (as used by Unix daemons and the deprecated `lockfile <https://pypi.org/project/lockfile/>`_
 library's ``PIDLockFile``). The PID stored in the file enables two important capabilities: identifying the lock holder
 via the :attr:`~filelock.SoftFileLock.pid` property, and detecting stale locks when the holding process has died.
 

@@ -376,7 +376,8 @@ holds a handle to it.
 *****************************************
 
 :class:`SoftFileLock <filelock.SoftFileLock>` exposes properties to inspect the lock holder and a method to forcibly
-break the lock. This is useful for migrating from the deprecated ``lockfile.PIDLockFile`` class.
+break the lock. This is useful for migrating from the deprecated `lockfile <https://pypi.org/project/lockfile/>`_
+library's ``PIDLockFile`` class.
 
 Read the PID of the current lock holder:
 
