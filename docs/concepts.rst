@@ -103,10 +103,15 @@ file handle can lock it. When a process dies, the OS automatically releases its 
     - - ✓ Lower overhead.
       -
 
-**Soft locks** (SoftFileLock, the fallback on systems without fcntl)
+**Soft locks / PID locks** (SoftFileLock, the fallback on systems without fcntl)
 
-A separate "lock file" indicates that a resource is in use. The lock file contains the PID and hostname of the holder. A
-process acquires a lock by creating this file; it releases by deleting it.
+A separate "lock file" indicates that a resource is in use. The lock file contains the PID and hostname of the holder
+(one per line). A process acquires a lock by creating this file atomically with ``O_CREAT | O_EXCL``; it releases by
+deleting it.
+
+This is the same concept as a traditional **PID lock file** (as used by Unix daemons and the deprecated `lockfile <https://pypi.org/project/lockfile/>`_
+library's ``PIDLockFile``). The PID stored in the file enables two important capabilities: identifying the lock holder
+via the :attr:`~filelock.SoftFileLock.pid` property, and detecting stale locks when the holding process has died.
 
 On Unix/macOS, processes can check if the lock holder is still alive and break stale locks automatically. On Windows,
 stale lock breaking is skipped because the lock file cannot be atomically renamed while another process holds a handle.
@@ -236,6 +241,10 @@ Lock types compared
       - N/A (OS-enforced)
       - Yes (Unix/macOS only)
       - N/A
+    - - PID inspection (``pid``, ``is_lock_held_by_us``)
+      - No
+      - Yes
+      - No
     - - Lifetime expiration
       - Yes
       - Yes

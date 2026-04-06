@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from inspect import iscoroutinefunction
 from threading import local
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta
 from ._error import Timeout
@@ -69,9 +69,12 @@ class AsyncAcquireReturnProxy:
         await self.lock.release()
 
 
+_AT = TypeVar("_AT", bound="BaseAsyncFileLock")
+
+
 class AsyncFileLockMeta(FileLockMeta):
     def __call__(  # ty: ignore[invalid-method-override]  # noqa: PLR0913
-        cls,  # noqa: N805
+        cls: type[_AT],  # noqa: N805
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = _UNSET_FILE_MODE,
@@ -84,11 +87,11 @@ class AsyncFileLockMeta(FileLockMeta):
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
-    ) -> BaseAsyncFileLock:
+    ) -> _AT:
         if thread_local and run_in_executor:
             msg = "run_in_executor is not supported when thread_local is True"
             raise ValueError(msg)
-        instance = super().__call__(
+        return super().__call__(  # ty: ignore[invalid-super-argument]  # https://github.com/astral-sh/ty/issues/3231
             lock_file=lock_file,
             timeout=timeout,
             mode=mode,
@@ -101,7 +104,6 @@ class AsyncFileLockMeta(FileLockMeta):
             run_in_executor=run_in_executor,
             executor=executor,
         )
-        return cast("BaseAsyncFileLock", instance)
 
 
 class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):

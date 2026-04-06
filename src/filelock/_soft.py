@@ -95,6 +95,38 @@ class SoftFileLock(BaseFileLock):
         with suppress(OSError):
             os.write(fd, f"{os.getpid()}\n{socket.gethostname()}\n".encode())
 
+    @property
+    def pid(self) -> int | None:
+        """
+        The PID of the process holding this lock, read from the lock file.
+
+        :returns: the PID as an integer, or ``None`` if the lock file does not exist or cannot be parsed
+
+        """
+        try:
+            content = Path(self.lock_file).read_text(encoding="utf-8")
+            lines = content.strip().splitlines()
+            if lines:
+                return int(lines[0])
+        except (OSError, ValueError):
+            pass
+        return None
+
+    @property
+    def is_lock_held_by_us(self) -> bool:
+        """
+        Whether this lock is held by the current process.
+
+        :returns: ``True`` if the lock file exists and contains the current process's PID
+
+        """
+        return self.pid == os.getpid()
+
+    def break_lock(self) -> None:
+        """Forcibly break the lock by removing the lock file, regardless of who holds it."""
+        with suppress(OSError):
+            Path(self.lock_file).unlink()
+
     def _release(self) -> None:
         assert self._context.lock_file_fd is not None  # noqa: S101
         os.close(self._context.lock_file_fd)
