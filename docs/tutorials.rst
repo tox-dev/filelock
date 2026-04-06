@@ -179,9 +179,9 @@ from the releasing thread.
 
 See :ref:`how-to:Use locks with multiple threads` for practical examples of controlling this behavior.
 
-***********************************
+***************************************
  Migrating from lockfile.PIDLockFile
-***********************************
+***************************************
 
 If you're migrating from the deprecated ``lockfile`` library, :class:`SoftFileLock <filelock.SoftFileLock>` is the
 direct replacement for ``PIDLockFile``. It writes the process ID to the lock file and can detect stale locks.
