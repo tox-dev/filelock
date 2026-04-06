@@ -132,6 +132,55 @@ def test_stale_detection_errors_suppressed(tmp_path: Path, mocker: MockerFixture
     mock_read.assert_called()
 
 
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        pytest.param(None, None, id="no_file"),
+        pytest.param("not-a-number\n", None, id="malformed"),
+        pytest.param(f"{os.getpid()}\n{socket.gethostname()}\n", os.getpid(), id="valid"),
+    ],
+)
+def test_pid(tmp_path: Path, content: str | None, expected: int | None) -> None:
+    lock_path = tmp_path / "test.lock"
+    if content is not None:
+        lock_path.write_text(content, encoding="utf-8")
+    assert SoftFileLock(lock_path).pid == expected
+
+
+def test_pid_while_locked(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock = SoftFileLock(lock_path)
+    with lock:
+        assert lock.pid == os.getpid()
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        pytest.param(None, False, id="no_file"),
+        pytest.param(f"{os.getpid() + 1}\n{socket.gethostname()}\n", False, id="different_pid"),
+        pytest.param(f"{os.getpid()}\n{socket.gethostname()}\n", True, id="same_pid"),
+    ],
+)
+def test_i_am_locking(tmp_path: Path, content: str | None, expected: bool) -> None:
+    lock_path = tmp_path / "test.lock"
+    if content is not None:
+        lock_path.write_text(content, encoding="utf-8")
+    assert SoftFileLock(lock_path).i_am_locking is expected
+
+
+@pytest.mark.parametrize(
+    "exists",
+    [pytest.param(True, id="exists"), pytest.param(False, id="missing")],
+)
+def test_break_lock(tmp_path: Path, *, exists: bool) -> None:
+    lock_path = tmp_path / "test.lock"
+    if exists:
+        lock_path.write_text(f"{os.getpid()}\n{socket.gethostname()}\n", encoding="utf-8")
+    SoftFileLock(lock_path).break_lock()
+    assert not lock_path.exists()
+
+
 def test_write_lock_info_errors_suppressed(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     mocker.patch("filelock._soft.os.write", side_effect=OSError("write failed"))

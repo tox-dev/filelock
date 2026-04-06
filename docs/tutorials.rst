@@ -179,6 +179,41 @@ from the releasing thread.
 
 See :ref:`how-to:Use locks with multiple threads` for practical examples of controlling this behavior.
 
+***********************************
+ Migrating from lockfile.PIDLockFile
+***********************************
+
+If you're migrating from the deprecated ``lockfile`` library, :class:`SoftFileLock <filelock.SoftFileLock>` is the
+direct replacement for ``PIDLockFile``. It writes the process ID to the lock file and can detect stale locks.
+
+.. code-block:: python
+
+    # Before (lockfile):
+    from lockfile.pidlockfile import PIDLockFile
+
+    lock = PIDLockFile("/tmp/myapp.lock")
+    lock.acquire()
+    print(lock.read_pid())
+    print(lock.i_am_locking())
+    lock.release()
+
+    # After (filelock):
+    from filelock import SoftFileLock
+
+    lock = SoftFileLock("/tmp/myapp.lock")
+
+    with lock:
+        print(lock.pid)
+        print(lock.i_am_locking)
+
+Key differences from ``PIDLockFile``:
+
+- ``read_pid()`` is now a property: ``lock.pid``
+- ``i_am_locking()`` is now a property: ``lock.i_am_locking``
+- ``break_lock()`` is now ``lock.break_lock()`` (same name)
+- Stale lock detection happens automatically on acquire (Unix/macOS only)
+- Supports context managers, reentrant locking, timeouts, and all other filelock features
+
 ************
  Next steps
 ************

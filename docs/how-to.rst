@@ -371,6 +371,44 @@ require manual removal.
 On Windows, stale lock detection is skipped because the lock file cannot be atomically renamed while another process
 holds a handle to it.
 
+*****************************************
+ Inspect and manage PID locks
+*****************************************
+
+:class:`SoftFileLock <filelock.SoftFileLock>` exposes properties to inspect the lock holder and a method to forcibly
+break the lock. This is useful for migrating from the deprecated ``lockfile.PIDLockFile`` class.
+
+Read the PID of the current lock holder:
+
+.. code-block:: python
+
+    from filelock import SoftFileLock
+
+    lock = SoftFileLock("work.lock")
+
+    with lock:
+        print(lock.pid)  # e.g. 12345
+
+    print(lock.pid)  # None (lock file removed after release)
+
+Check whether the current process holds the lock:
+
+.. code-block:: python
+
+    lock = SoftFileLock("work.lock")
+
+    print(lock.i_am_locking)  # False
+
+    with lock:
+        print(lock.i_am_locking)  # True
+
+Forcibly break a lock regardless of who holds it:
+
+.. code-block:: python
+
+    lock = SoftFileLock("work.lock")
+    lock.break_lock()  # removes the lock file unconditionally
+
 *****************
  Control logging
 *****************
