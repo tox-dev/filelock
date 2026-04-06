@@ -113,7 +113,7 @@ class SoftFileLock(BaseFileLock):
         return None
 
     @property
-    def i_am_locking(self) -> bool:
+    def is_lock_held_by_us(self) -> bool:
         """
         Whether this lock is held by the current process.
 

@@ -194,7 +194,7 @@ direct replacement for ``PIDLockFile``. It writes the process ID to the lock fil
     lock = PIDLockFile("/tmp/myapp.lock")
     lock.acquire()
     print(lock.read_pid())
-    print(lock.i_am_locking())
+    print(lock.is_lock_held_by_us())
     lock.release()
 
     # After (filelock):
@@ -204,12 +204,12 @@ direct replacement for ``PIDLockFile``. It writes the process ID to the lock fil
 
     with lock:
         print(lock.pid)
-        print(lock.i_am_locking)
+        print(lock.is_lock_held_by_us)
 
 Key differences from ``PIDLockFile``:
 
 - ``read_pid()`` is now a property: ``lock.pid``
-- ``i_am_locking()`` is now a property: ``lock.i_am_locking``
+- ``is_lock_held_by_us()`` is now a property: ``lock.is_lock_held_by_us``
 - ``break_lock()`` is now ``lock.break_lock()`` (same name)
 - Stale lock detection happens automatically on acquire (Unix/macOS only)
 - Supports context managers, reentrant locking, timeouts, and all other filelock features

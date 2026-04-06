@@ -162,11 +162,11 @@ def test_pid_while_locked(tmp_path: Path) -> None:
         pytest.param(f"{os.getpid()}\n{socket.gethostname()}\n", True, id="same_pid"),
     ],
 )
-def test_i_am_locking(tmp_path: Path, content: str | None, expected: bool) -> None:
+def test_is_lock_held_by_us(tmp_path: Path, content: str | None, expected: bool) -> None:
     lock_path = tmp_path / "test.lock"
     if content is not None:
         lock_path.write_text(content, encoding="utf-8")
-    assert SoftFileLock(lock_path).i_am_locking is expected
+    assert SoftFileLock(lock_path).is_lock_held_by_us is expected
 
 
 @pytest.mark.parametrize(

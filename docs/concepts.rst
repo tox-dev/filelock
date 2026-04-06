@@ -241,7 +241,7 @@ Lock types compared
       - N/A (OS-enforced)
       - Yes (Unix/macOS only)
       - N/A
-    - - PID inspection (``pid``, ``i_am_locking``)
+    - - PID inspection (``pid``, ``is_lock_held_by_us``)
       - No
       - Yes
       - No

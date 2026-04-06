@@ -398,10 +398,10 @@ Check whether the current process holds the lock:
 
     lock = SoftFileLock("work.lock")
 
-    print(lock.i_am_locking)  # False
+    print(lock.is_lock_held_by_us)  # False
 
     with lock:
-        print(lock.i_am_locking)  # True
+        print(lock.is_lock_held_by_us)  # True
 
 Forcibly break a lock regardless of who holds it:
 
