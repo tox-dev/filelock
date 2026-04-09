@@ -121,8 +121,8 @@ For async code, use the async variants with ``async with``:
 
 .. warning::
 
-   Do not use ``with`` (sync context manager) on async locks. Because ``acquire`` and ``release`` are coroutines,
-   they cannot be awaited inside a sync context manager — using ``with`` raises ``NotImplementedError``.
+   ``with`` does not work on async locks — ``acquire`` and ``release`` are coroutines and must be awaited.
+   Use ``async with`` as shown above.
 
 By default, async locks run blocking I/O in a thread pool. You can customize this:
 
