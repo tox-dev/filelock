@@ -119,6 +119,11 @@ For async code, use the async variants with ``async with``:
             data = Path("data.txt").read_text()
             return data
 
+.. warning::
+
+   Do not use ``with`` (sync context manager) on async locks. Because ``acquire`` and ``release`` are coroutines,
+   they cannot be awaited inside a sync context manager — using ``with`` raises ``NotImplementedError``.
+
 By default, async locks run blocking I/O in a thread pool. You can customize this:
 
 .. code-block:: python
