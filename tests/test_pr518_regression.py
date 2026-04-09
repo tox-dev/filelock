@@ -42,7 +42,7 @@ def test_sync_with_raises_not_implemented_error_not_attribute_error(
     did not exist, so an ``AttributeError`` was raised *instead*, masking the
     real problem and confusing users.
 
-    The correct behaviour is a clear ``NotImplementedError`` with a message
+    The correct behavior is a clear ``NotImplementedError`` with a message
     telling the user to use ``async with`` instead.
     """
     lock = lock_type(str(tmp_path / "test.lock"))
