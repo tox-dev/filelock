@@ -308,15 +308,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             method()
 
     def __enter__(self) -> NoReturn:
-        """
-        Replace old __enter__ method to avoid using it.
-
-        NOTE: DO NOT USE `with` FOR ASYNCIO LOCKS, USE `async with` INSTEAD.
-
-        :returns: none
-        :rtype: NoReturn
-
-        """
+        """Sync context manager entry is not supported because lock acquisition is a coroutine."""
         msg = "Do not use `with` for asyncio locks, use `async with` instead."
         raise NotImplementedError(msg)
 
@@ -326,13 +318,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         exc_value: BaseException | None,
         traceback: object,
     ) -> None:
-        """
-        Replace old __exit__ method to avoid using it.
-
-        NOTE: DO NOT USE `with` FOR ASYNCIO LOCKS, USE `async with` INSTEAD.
-
-        :raises NotImplementedError: always, to guide users toward ``async with``
-        """
+        """Sync context manager exit is not supported because lock release is a coroutine."""
         msg = "Do not use `with` for asyncio locks, use `async with` instead."
         raise NotImplementedError(msg)
 
