@@ -309,7 +309,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     def __enter__(self) -> NoReturn:
         """Sync context manager entry is not supported because lock acquisition is a coroutine."""
-        msg = "Do not use `with` for asyncio locks, use `async with` instead."
+        msg = "Use `async with` — acquire/release are coroutines and cannot be awaited in a sync context manager."
         raise NotImplementedError(msg)
 
     def __exit__(
@@ -319,7 +319,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         traceback: object,
     ) -> None:
         """Sync context manager exit is not supported because lock release is a coroutine."""
-        msg = "Do not use `with` for asyncio locks, use `async with` instead."
+        msg = "Use `async with` — acquire/release are coroutines and cannot be awaited in a sync context manager."
         raise NotImplementedError(msg)
 
     async def __aenter__(self) -> Self:
@@ -349,14 +349,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         await self.release()
 
     def __del__(self) -> None:
-        """
-        Called when the lock object is deleted.
-
-        Attempts to release the lock if it's still held.
-        Uses the stored loop if available, otherwise falls back to
-        get_event_loop() — avoids get_running_loop() which raises if
-        no loop is running (common in __del__ called during GC).
-        """
+        """Release on deletion — safe to call during GC even when no event loop is running."""
         with contextlib.suppress(Exception):
             try:
                 loop = asyncio.get_running_loop()
