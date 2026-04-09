@@ -3,6 +3,13 @@
 ###########
 
 ********************
+ 3.26.1 (2026-04-09)
+********************
+
+- 🐛 fix(asyncio): add __exit__ to BaseAsyncFileLock and fix __del__ loop handling :pr:`518` - by :user:`naarob`
+- build(deps): bump pypa/gh-action-pypi-publish from 1.13.0 to 1.14.0 :pr:`525` - by :user:`dependabot[bot]`
+
+********************
  3.26.0 (2026-04-06)
 ********************
 
