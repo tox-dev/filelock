@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import gc
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
 
 import pytest
@@ -319,3 +322,36 @@ async def test_cancel_check_log_message(
         await lock_2.acquire(timeout=1, cancel_check=lambda: True)
     assert any("Cancellation requested" in msg for msg in caplog.messages)
     await lock_1.release()
+
+
+@pytest.mark.parametrize(
+    "lock_type",
+    [pytest.param(AsyncFileLock, id="async"), pytest.param(AsyncSoftFileLock, id="soft")],
+)
+def test_sync_with_raises_not_implemented_error(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
+    # __exit__ must exist so Python can call it after __enter__ raises — without it AttributeError masks the real error
+    with pytest.raises(NotImplementedError, match=r"async with"), lock_type(str(tmp_path / "test.lock")):
+        pass  # pragma: no cover
+
+
+@pytest.mark.parametrize(
+    "lock_type",
+    [pytest.param(AsyncFileLock, id="async"), pytest.param(AsyncSoftFileLock, id="soft")],
+)
+def test_del_after_loop_close_does_not_raise(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
+    # __del__ must not call get_running_loop() — it raises RuntimeError when no loop is running
+    def _run() -> None:
+        lock = lock_type(str(tmp_path / "test.lock"))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(lock.acquire())
+            loop.run_until_complete(lock.release(force=True))
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+        del lock
+        gc.collect()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(_run).result(timeout=10)
