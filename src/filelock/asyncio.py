@@ -303,22 +303,23 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         if iscoroutinefunction(method):
             await method()
         elif self.run_in_executor:
-            loop = self.loop or asyncio.get_running_loop()
-            await loop.run_in_executor(self.executor, method)
+            await asyncio.get_running_loop().run_in_executor(self.executor, method)
         else:
             method()
 
     def __enter__(self) -> NoReturn:
-        """
-        Replace old __enter__ method to avoid using it.
+        """Sync context manager entry is not supported because lock acquisition is a coroutine."""
+        msg = "Use `async with` — acquire/release are coroutines and cannot be awaited in a sync context manager."
+        raise NotImplementedError(msg)
 
-        NOTE: DO NOT USE `with` FOR ASYNCIO LOCKS, USE `async with` INSTEAD.
-
-        :returns: none
-        :rtype: NoReturn
-
-        """
-        msg = "Do not use `with` for asyncio locks, use `async with` instead."
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> None:
+        """Sync context manager exit is not supported because lock release is a coroutine."""
+        msg = "Use `async with` — acquire/release are coroutines and cannot be awaited in a sync context manager."
         raise NotImplementedError(msg)
 
     async def __aenter__(self) -> Self:
@@ -348,9 +349,15 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         await self.release()
 
     def __del__(self) -> None:
-        """Called when the lock object is deleted."""
-        with contextlib.suppress(RuntimeError):
-            loop = self.loop or asyncio.get_running_loop()
+        """Release on deletion — safe to call during GC even when no event loop is running."""
+        with contextlib.suppress(Exception):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop — try stored loop or create one
+                loop = self._context.loop if self._context.loop and not self._context.loop.is_closed() else None
+            if loop is None:
+                return
             if not loop.is_running():  # pragma: no cover
                 loop.run_until_complete(self.release(force=True))
             else:
