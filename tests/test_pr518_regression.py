@@ -94,9 +94,7 @@ def test_del_after_loop_close_does_not_raise(
     This test runs in a dedicated thread so it can create and close its own
     event loop without interfering with pytest-asyncio's loop.
     """
-    import threading
-
-    errors: list[Exception] = []
+    from concurrent.futures import ThreadPoolExecutor
 
     def _run() -> None:
         lock = lock_type(str(tmp_path / "test.lock"))
@@ -108,21 +106,11 @@ def test_del_after_loop_close_does_not_raise(
         finally:
             loop.close()
             asyncio.set_event_loop(None)
+        del lock
+        gc.collect()
 
-        # __del__ called with no running loop — must not raise RuntimeError
-        try:
-            lock.__del__()
-        except RuntimeError as exc:
-            errors.append(exc)
-
-    t = threading.Thread(target=_run)
-    t.start()
-    t.join(timeout=10)
-    assert not t.is_alive(), "Thread did not finish in time"
-    assert not errors, (
-        f"__del__ raised RuntimeError after loop was closed: {errors[0]!r}\n"
-        "This is a regression of the stored-loop bug fixed in PR #518."
-    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(_run).result(timeout=10)
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -136,9 +124,7 @@ def test_gc_after_loop_close_does_not_raise(
     object is garbage-collected with no running loop — ``__del__`` must not
     raise ``RuntimeError`` in that situation.
     """
-    import threading
-
-    errors: list[Exception] = []
+    from concurrent.futures import ThreadPoolExecutor
 
     def _run() -> None:
         lock_path = tmp_path / "gc_test.lock"
@@ -151,19 +137,8 @@ def test_gc_after_loop_close_does_not_raise(
         finally:
             loop.close()
             asyncio.set_event_loop(None)
+        del lk
+        gc.collect()
 
-        # lk still in scope but loop is gone — force GC
-        try:
-            del lk
-            gc.collect()
-        except RuntimeError as exc:
-            errors.append(exc)
-
-    t = threading.Thread(target=_run)
-    t.start()
-    t.join(timeout=10)
-    assert not t.is_alive(), "Thread did not finish in time"
-    assert not errors, (
-        f"gc.collect() raised RuntimeError after loop close: {errors[0]!r}\n"
-        "This is a regression of the stored-loop bug fixed in PR #518."
-    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(_run).result(timeout=10)

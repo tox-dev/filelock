@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 from typing import TYPE_CHECKING, Literal
 
@@ -8,6 +9,8 @@ import pytest
 pytest.importorskip("sqlite3")
 
 import sqlite3
+
+from conftest import pytest_sessionfinish
 
 from filelock import Timeout
 from filelock._read_write import (
@@ -572,3 +575,21 @@ def test_cleanup_connections_closes_all(tmp_path: Path) -> None:
         con1.execute("SELECT 1;")
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
         con2.execute("SELECT 1;")
+
+
+def test_pytest_session_finish_calls_cleanup(mocker: MockerFixture) -> None:
+    mock = mocker.patch("conftest._cleanup_connections")
+    pytest_sessionfinish()
+    mock.assert_called_once_with()
+
+
+def test_pytest_session_finish_calls_cleanup_pypy(mocker: MockerFixture) -> None:
+    mocker.patch.object(sys, "pypy_version_info", (7, 3, 0), create=True)
+    mock = mocker.patch("conftest._cleanup_connections")
+    pytest_sessionfinish()
+    mock.assert_called_once_with()
+
+
+def test_pytest_session_finish_no_sqlite(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("conftest._cleanup_connections", None)
+    pytest_sessionfinish()  # must not raise, just skips cleanup
