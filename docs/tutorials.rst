@@ -214,6 +214,53 @@ Key differences from ``PIDLockFile``:
 - Stale lock detection happens automatically on acquire (Unix/macOS only)
 - Supports context managers, reentrant locking, timeouts, and all other filelock features
 
+*************************************
+ Reader/writer locks on a shared NFS
+*************************************
+
+If your lock file lives on a network filesystem — a slurm-mounted home directory, a Lustre cluster scratch
+space, or any NFS share — use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` rather than
+:class:`ReadWriteLock <filelock.ReadWriteLock>`. ``ReadWriteLock`` is SQLite-backed and unsafe on NFS.
+``SoftReadWriteLock`` is built on :class:`SoftFileLock <filelock.SoftFileLock>` primitives and handles cross-host stale detection via a
+background heartbeat thread.
+
+.. code-block:: python
+
+    from filelock import SoftReadWriteLock
+
+    rw = SoftReadWriteLock("/shared/nfs/work.lock")
+
+    with rw.read_lock():
+        # Any number of processes on any host can be here at the same time.
+        data = open("/shared/nfs/data.json").read()
+
+    with rw.write_lock():
+        # Exactly one process anywhere can be here. New readers wait behind a pending writer.
+        open("/shared/nfs/data.json", "w").write(new_data)
+
+While the lock is held, you will see a few sidecar files on disk next to ``work.lock``:
+
+.. code-block:: text
+
+    work.lock.state         # short-lived state mutex, exists only during transitions
+    work.lock.write         # writer marker, exists while a writer is claiming or holding
+    work.lock.readers/      # directory with one file per active reader
+
+A daemon heartbeat thread refreshes each marker's ``mtime`` every ``heartbeat_interval`` seconds (default 30).
+If a compute node crashes while holding a lock, any other node will evict the stale marker after
+``stale_threshold`` seconds of no refresh (default 90, following etcd's ``LeaseKeepAlive`` convention of
+``TTL / 3``). Both values are constructor arguments, so HPC deployments that hold locks for hours can raise them:
+
+.. code-block:: python
+
+    rw = SoftReadWriteLock(
+        "/shared/nfs/work.lock",
+        heartbeat_interval=120,
+        stale_threshold=360,
+    )
+
+See :doc:`concepts` for the full explanation of the heartbeat + TTL model.
+
 ************
  Next steps
 ************

@@ -192,6 +192,13 @@ necessary in testing or if you need platform-specific behavior.
 - Your workload is read-heavy with occasional writes.
 - Multiple processes need to read simultaneously.
 - You want a single writer while no readers are active.
+- The lock file lives on a **local** filesystem. ``ReadWriteLock`` is SQLite-backed and is unsafe on NFS.
+
+**Use SoftReadWriteLock** when:
+
+- You want reader/writer semantics on a **network filesystem** (NFS, Lustre with ``-o flock``, HPC shared storage).
+- You need cross-host stale detection so a crash on one compute node does not wedge readers on other nodes.
+- You are running on a multi-node slurm/HPC cluster.
 
 Lock selection flowchart:
 
@@ -199,7 +206,9 @@ Lock selection flowchart:
 
     flowchart TD
         start["Choose a lock type"] --> question1{"Read-heavy workload?"}
-        question1 -->|Yes| questionAsync{"Async code?"}
+        question1 -->|Yes| questionRwNet{"Network<br/>filesystem?"}
+        questionRwNet -->|Yes| srw["Use SoftReadWriteLock"]
+        questionRwNet -->|No| questionAsync{"Async code?"}
         questionAsync -->|Yes| arw["Use AsyncReadWriteLock"]
         questionAsync -->|No| rw["Use ReadWriteLock"]
         question1 -->|No| question2{"Need network<br/>filesystem support?"}
@@ -212,7 +221,7 @@ Lock selection flowchart:
         classDef alternative fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#78350f
         classDef special fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f
         class default recommended
-        class soft,platform alternative
+        class soft,platform,srw alternative
         class rw,arw special
 
 Lock types compared
@@ -225,35 +234,44 @@ Lock types compared
       - FileLock
       - SoftFileLock
       - ReadWriteLock
+      - SoftReadWriteLock
     - - Exclusive/shared
       - Exclusive only
       - Exclusive only
+      - Both (separate context managers)
       - Both (separate context managers)
     - - Platform enforcement
       - OS-level (Windows/Unix)
       - No (file-based)
       - File-based (SQLite)
+      - No (file-based, ``O_CREAT|O_EXCL|O_NOFOLLOW``)
     - - Network filesystem
       - Not reliable
       - Works (if you accept the limitations)
       - Not reliable
+      - Works, including cross-host on multi-node clusters
     - - Stale lock detection
       - N/A (OS-enforced)
-      - Yes (Unix/macOS only)
+      - Yes (Unix/macOS only, same-host)
       - N/A
-    - - PID inspection (``pid``, ``is_lock_held_by_us``)
+      - Yes, TTL-based heartbeat (cross-host)
+    - - PID inspection
       - No
-      - Yes
+      - Yes (``pid``, ``is_lock_held_by_us``)
       - No
+      - No (content is not a public API)
     - - Lifetime expiration
       - Yes
       - Yes
       - No
+      - Yes (``heartbeat_interval`` / ``stale_threshold``)
     - - Cancel acquisition
       - Yes (``cancel_check``)
       - Yes (``cancel_check``)
       - No
+      - No
     - - Force release
+      - Yes (``force=True``)
       - Yes (``force=True``)
       - Yes (``force=True``)
       - Yes (``force=True``)
@@ -261,14 +279,17 @@ Lock types compared
       - AsyncFileLock
       - AsyncSoftFileLock
       - AsyncReadWriteLock
+      - AsyncSoftReadWriteLock
     - - Singleton default
       - No
       - No
+      - Yes
       - Yes
     - - Overhead
       - Low
       - High
       - Medium (SQLite)
+      - Medium (daemon heartbeat thread + dirfd scans)
 
 **********************
  TOCTOU vulnerability
@@ -321,12 +342,15 @@ On older platforms without ``O_NOFOLLOW``, prefer :class:`UnixFileLock <filelock
     OS-level locks (FileLock on Windows/Unix) are unreliable on network filesystems (NFS, SMB). This is a fundamental
     limitation of how network filesystems work—they don't reliably support locking semantics.
 
-    If you need locking on network filesystems, consider: - Using SoftFileLock (less efficient but more portable) -
-    Switching to a centralized lock service (Redis, Consul, etc.) - Using a database with transactions
+    For **exclusive locking** on NFS, use :class:`SoftFileLock <filelock.SoftFileLock>`. For **reader/writer
+    locking** (shared readers + exclusive writers) on NFS, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>`,
+    which is the only variant in filelock that also handles cross-host stale detection. ``ReadWriteLock`` is SQLite-backed
+    and is unsafe on NFS because SQLite itself warns against running on network filesystems.
 
 **Locks across different machines**
     A lock on one machine doesn't stop another machine from accessing the resource unless they use a centralized locking
-    service. Filelock is for inter-process coordination on the same machine (or at least the same shared filesystem).
+    service — or a shared filesystem plus filelock's soft locks. On a multi-node slurm/HPC cluster,
+    :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` is correct across compute nodes sharing an NFS mount.
 
 **Read-write semantics**
     FileLock is exclusive only—readers block writers and vice versa. If you need multiple readers with occasional
@@ -384,6 +408,62 @@ The async variant (:class:`AsyncReadWriteLock <filelock.AsyncReadWriteLock>`) wr
 implementation. Because Python's :mod:`sqlite3` module has no async API, all blocking operations are dispatched to a
 thread pool via ``loop.run_in_executor``. This is the same approach used by :class:`BaseAsyncFileLock
 <filelock.BaseAsyncFileLock>`.
+
+How does SoftReadWriteLock work on NFS?
+=======================================
+
+:class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` fills the gap left by ``ReadWriteLock`` on network filesystems.
+It stores state as a small directory tree next to the lock file:
+
+- ``<path>.state`` — a short-held :class:`SoftFileLock <filelock.SoftFileLock>` used as the state mutex during transitions.
+- ``<path>.write`` — the writer marker; its presence blocks readers and other writers.
+- ``<path>.readers/<host>.<pid>.<uuid>`` — one marker file per active reader.
+
+Each marker stores a random 128-bit token, the holder's pid, and the holder's hostname. Every acquire uses
+``O_CREAT | O_EXCL | O_NOFOLLOW`` with mode ``0o600``; the readers directory uses mode ``0o700`` and a ``lstat``
+check plus a dirfd-relative open to close symlink races (which ``mkdir`` alone cannot).
+
+Writer acquisition is two-phase and writer-preferring: phase one atomically claims ``<path>.write`` (which blocks
+any new reader as soon as it exists), phase two polls the ``readers/`` directory until every reader has exited.
+Writer starvation is impossible, which matters under read-heavy workloads such as the 99/1 reader-to-writer mix
+typical of slurm job queues.
+
+Cross-host stale detection
+==========================
+
+On a multi-node cluster, a process on ``node-42`` that crashes while holding a lock cannot be detected via
+``kill(pid, 0)`` from ``node-17`` — the pid means nothing to a different kernel. ``SoftReadWriteLock`` therefore
+uses a **TTL with a heartbeat** rather than ``SoftFileLock``'s PID-alive check:
+
+- Each lock instance starts a daemon thread on acquire. The thread refreshes the marker's ``mtime`` every
+  ``heartbeat_interval`` seconds (default 30 s).
+- Any process on any host may evict a marker whose ``mtime`` has not advanced in ``stale_threshold`` seconds
+  (default 90 s, ratio borrowed from etcd's ``LeaseKeepAlive``).
+- Eviction is atomic: read → rename to a unique ``.break.<pid>.<nonce>`` file → re-verify token and mtime →
+  unlink. On verification failure the ``.break.*`` file stays for TTL or atexit cleanup; rollback-rename is itself
+  racy and is not attempted.
+- The heartbeat thread stops itself on token mismatch or a vanished marker, so a replaced or evicted marker
+  never gets accidentally refreshed.
+
+The trade-off: ``stale_threshold`` must be larger than any realistic pause a holder might hit (GC, syscall delay,
+NFS hiccup). Pick it generously. Clock synchronization across compute nodes is assumed — every HPC cluster runs
+NTP or chrony, so this is not an additional constraint in the target environment.
+
+Fork semantics
+==============
+
+Python threads do not survive ``fork()``. A process that forks while holding a ``SoftReadWriteLock`` would leave
+the child with the marker files, the lock-level state, and no heartbeat thread; the parent would keep
+refreshing while the child would not, and both would believe they hold the lock. ``SoftReadWriteLock`` registers
+an ``os.register_at_fork(after_in_child=...)`` hook that replaces the inherited ``threading.Lock`` objects with
+fresh ones and marks the instance fork-invalidated. ``release()`` on an invalidated instance is a no-op, so an
+inherited ``with lock.read_lock():`` block can unwind in the child without raising. The child must construct a
+fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMongo's connection-pool semantics.
+
+**Trust boundary.** The class protects against same-UID non-cooperating processes (one host or cross-host) and
+same-host different-UID users via the ``0o600`` / ``0o700`` permissions on markers and the readers directory.
+It does not protect against root compromise, NTP tampering on same-UID cross-host nodes, or multi-tenant mounts
+where hostile co-tenants share the UID.
 
 ****************************
  File permissions and mode

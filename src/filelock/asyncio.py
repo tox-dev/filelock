@@ -91,7 +91,7 @@ class AsyncFileLockMeta(FileLockMeta):
         if thread_local and run_in_executor:
             msg = "run_in_executor is not supported when thread_local is True"
             raise ValueError(msg)
-        return super().__call__(  # ty: ignore[invalid-super-argument]  # https://github.com/astral-sh/ty/issues/3231
+        return super().__call__(
             lock_file=lock_file,
             timeout=timeout,
             mode=mode,
