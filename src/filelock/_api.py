@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from ._read_write import ReadWriteLock
+    from ._soft_rw import SoftReadWriteLock
 
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
         from typing import Self
@@ -55,10 +56,10 @@ _registry = _ThreadLocalRegistry()
 class AcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseFileLock | ReadWriteLock) -> None:
-        self.lock: BaseFileLock | ReadWriteLock = lock
+    def __init__(self, lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock) -> None:
+        self.lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock = lock
 
-    def __enter__(self) -> BaseFileLock | ReadWriteLock:
+    def __enter__(self) -> BaseFileLock | ReadWriteLock | SoftReadWriteLock:
         return self.lock
 
     def __exit__(
@@ -170,7 +171,7 @@ class FileLockMeta(ABCMeta):
         present_params = inspect.signature(cls.__init__).parameters
         init_params = {key: value for key, value in all_params.items() if key in present_params}
 
-        instance = super().__call__(lock_file, **init_params)  # ty: ignore[invalid-super-argument]  # https://github.com/astral-sh/ty/issues/3231
+        instance = super().__call__(lock_file, **init_params)
 
         if is_singleton:
             cls._instances[str(lock_file)] = instance

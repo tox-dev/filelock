@@ -31,6 +31,7 @@ else:
         ReadWriteLock = None
 
 from ._soft import SoftFileLock
+from ._soft_rw import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
 from ._unix import UnixFileLock, has_fcntl
 from ._windows import WindowsFileLock
 from .asyncio import (
@@ -72,9 +73,11 @@ __all__ = [
     "AcquireReturnProxy",
     "AsyncAcquireReadWriteReturnProxy",
     "AsyncAcquireReturnProxy",
+    "AsyncAcquireSoftReadWriteReturnProxy",
     "AsyncFileLock",
     "AsyncReadWriteLock",
     "AsyncSoftFileLock",
+    "AsyncSoftReadWriteLock",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",
@@ -82,6 +85,7 @@ __all__ = [
     "FileLock",
     "ReadWriteLock",
     "SoftFileLock",
+    "SoftReadWriteLock",
     "Timeout",
     "UnixFileLock",
     "WindowsFileLock",

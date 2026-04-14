@@ -308,6 +308,60 @@ When you're done with a ``ReadWriteLock``, close it to release the underlying SQ
     finally:
         rw.close()  # releases any held lock and closes the SQLite connection
 
+***************************************************
+ Use read/write locks on network filesystems (NFS)
+***************************************************
+
+:class:`ReadWriteLock <filelock.ReadWriteLock>` is SQLite-backed and requires a local filesystem: SQLite's own
+docs warn against running on NFS because POSIX ``fcntl`` locks are unreliable there. For HPC clusters, slurm
+deployments, or any multi-host shared storage, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>`
+instead. It is built on :class:`SoftFileLock <filelock.SoftFileLock>` primitives (atomic ``O_CREAT | O_EXCL | O_NOFOLLOW``) and runs a
+daemon heartbeat thread that refreshes each held marker's ``mtime`` so any host on any node can evict a stale
+marker when the holder crashes.
+
+.. code-block:: python
+
+    from filelock import SoftReadWriteLock
+
+    rw = SoftReadWriteLock("/shared/nfs/data.lock")
+
+    with rw.read_lock():
+        data = get_shared_data()
+
+    with rw.write_lock():
+        update_shared_data()
+
+The defaults (``heartbeat_interval=30`` s, ``stale_threshold=90`` s, ``poll_interval=0.25`` s) fit workloads
+that hold locks for seconds-to-minutes. Tune them for your deployment:
+
+.. code-block:: python
+
+    rw = SoftReadWriteLock(
+        "/shared/nfs/data.lock",
+        heartbeat_interval=30,   # how often to refresh the marker's mtime
+        stale_threshold=90,      # declare a marker stale after this many seconds of no refresh
+        poll_interval=0.25,      # how long to sleep between acquire retries
+    )
+
+Pick ``stale_threshold`` larger than any realistic pause a holder could experience (GC, disk flush, kernel
+preemption). ``heartbeat_interval`` should be roughly ``stale_threshold / 3``; that is the ratio etcd uses for
+its ``LeaseKeepAlive``. Lower ``poll_interval`` reduces acquire latency under contention at the cost of more
+NFS ``stat`` calls per waiting client.
+
+Writer acquisition is two-phase and writer-preferring: phase one claims the writer marker (which immediately
+blocks any new reader), phase two waits for existing readers to drain. This rules out writer starvation even
+under a read-heavy workload like the 99/1 reader-to-writer mix typical of slurm job queues.
+
+**Fork caveat.** A process that forks while holding a ``SoftReadWriteLock`` loses the lock in the child. The
+inherited instance is marked fork-invalidated; ``release()`` on it becomes a no-op, and the child must call
+``SoftReadWriteLock(path)`` again to get a fresh instance before acquiring. Matches the semantics of
+:class:`threading.Lock` and PyMongo's connection pools.
+
+**Trust boundary.** The class protects against same-UID non-cooperating processes on one host, cross-host
+same-UID processes, and same-host different-UID users (via ``0o600`` / ``0o700`` permissions). It does not
+protect against root compromise, NTP tampering on same-UID cross-host nodes, or multi-tenant mounts where
+hostile co-tenants share the UID.
+
 ***********************************
  Use async read / write locks
 ***********************************
@@ -349,6 +403,18 @@ Low-level ``acquire_read``/``acquire_write``/``release`` methods are also availa
 
 The same reentrancy and upgrade/downgrade rules as the synchronous :class:`ReadWriteLock <filelock.ReadWriteLock>`
 apply — see :ref:`how-to:Use shared read / exclusive write locks` for details.
+
+For network filesystems, use :class:`AsyncSoftReadWriteLock <filelock.AsyncSoftReadWriteLock>`, which wraps
+:class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` the same way:
+
+.. code-block:: python
+
+    from filelock import AsyncSoftReadWriteLock
+
+    rw = AsyncSoftReadWriteLock("/shared/nfs/data.lock")
+
+    async with rw.read_lock():
+        data = await get_shared_data()
 
 **************************************
  Detect stale locks (soft locks only)

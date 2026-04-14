@@ -90,6 +90,16 @@ Choose the right lock for your use case:
         - ✓ Async via AsyncReadWriteLock
 
     .. grid-item-card::
+        **SoftReadWriteLock**
+
+        NFS and HPC-cluster reader/writer lock with TTL-based cross-host stale detection.
+
+        - ✓ Works on NFS / Lustre / shared storage
+        - ✓ Cross-host stale detection via heartbeat
+        - ✓ Writer-preferring, starvation-free
+        - ✓ Async via AsyncSoftReadWriteLock
+
+    .. grid-item-card::
         **AsyncFileLock**
 
         Async-compatible variants. Run blocking I/O in thread pool or custom executor.
