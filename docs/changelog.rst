@@ -3,6 +3,14 @@
 ###########
 
 ********************
+ 3.29.0 (2026-04-19)
+********************
+
+- ✨ feat(soft): enable stale lock detection on Windows :pr:`534`
+- 🐛 fix(async): use single-thread executor for lock consistency :pr:`533`
+- build(deps): bump actions/upload-artifact from 7.0.0 to 7.0.1 :pr:`530` - by :user:`dependabot[bot]`
+
+********************
  3.28.0 (2026-04-14)
 ********************
 
