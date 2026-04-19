@@ -211,7 +211,7 @@ Key differences from ``PIDLockFile``:
 - ``read_pid()`` is now a property: ``lock.pid``
 - ``is_lock_held_by_us()`` is now a property: ``lock.is_lock_held_by_us``
 - ``break_lock()`` is now ``lock.break_lock()`` (same name)
-- Stale lock detection happens automatically on acquire (Unix/macOS only)
+- Stale lock detection happens automatically on acquire (all platforms)
 - Supports context managers, reentrant locking, timeouts, and all other filelock features
 
 *************************************
