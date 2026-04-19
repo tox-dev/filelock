@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import time
 from typing import TYPE_CHECKING
 
@@ -27,7 +28,7 @@ def test_expired_lock_is_broken(lock_type: type[FileLock | SoftFileLock], tmp_pa
 
 def test_soft_non_expired_lock_not_broken(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
-    lock_path.touch()
+    lock_path.write_text(f"{os.getpid()}\n{socket.gethostname()}\n", encoding="utf-8")
 
     lock = SoftFileLock(lock_path, lifetime=9999, timeout=0.2)
     with pytest.raises(TimeoutError):
@@ -36,7 +37,7 @@ def test_soft_non_expired_lock_not_broken(tmp_path: Path) -> None:
 
 def test_soft_lifetime_none_no_expiry(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
-    lock_path.touch()
+    lock_path.write_text(f"{os.getpid()}\n{socket.gethostname()}\n", encoding="utf-8")
     os.utime(lock_path, (0, 0))
 
     lock = SoftFileLock(lock_path, lifetime=None, timeout=0.2)
