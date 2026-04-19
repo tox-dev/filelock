@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -65,7 +66,8 @@ class AsyncReadWriteLock:
     ) -> None:
         self._lock = ReadWriteLock(lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
         self._loop = loop
-        self._executor = executor
+        self._owns_executor = executor is None
+        self._executor = executor or ThreadPoolExecutor(max_workers=1)
 
     @property
     def lock_file(self) -> str:
@@ -195,6 +197,8 @@ class AsyncReadWriteLock:
 
         """
         await self._run(self._lock.close)
+        if self._owns_executor:
+            self._executor.shutdown(wait=False)
 
 
 __all__ = [
