@@ -77,7 +77,7 @@ Choose the right lock for your use case:
         File-existence based locking. Works on any filesystem including network mounts.
 
         - ✓ Network filesystems
-        - ✓ Stale detection (Unix)
+        - ✓ Stale detection
         - ✓ Lifetime expiration, cancellable acquire
 
     .. grid-item-card::

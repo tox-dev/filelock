@@ -420,8 +420,8 @@ For network filesystems, use :class:`AsyncSoftReadWriteLock <filelock.AsyncSoftR
  Detect stale locks (soft locks only)
 **************************************
 
-:class:`SoftFileLock <filelock.SoftFileLock>` stores the PID and hostname of the lock holder. On Unix and macOS, it can
-detect when the holding process has died and automatically break stale locks.
+:class:`SoftFileLock <filelock.SoftFileLock>` stores the PID and hostname of the lock holder. It can detect when the
+holding process has died and automatically break stale locks on all platforms.
 
 This happens automatically—you don't need to do anything special:
 
@@ -436,11 +436,10 @@ This happens automatically—you don't need to do anything special:
         # another process will automatically clean up the stale lock
         pass
 
-Stale lock detection only works on Unix/macOS and only detects locks from the same host. Cross-host stale locks still
-require manual removal.
+Stale lock detection only detects locks from the same host. Cross-host stale locks still require manual removal.
 
-On Windows, stale lock detection is skipped because the lock file cannot be atomically renamed while another process
-holds a handle to it.
+On Windows, the lock file additionally stores the process creation time to guard against PID recycling. Malformed lock
+files (empty or corrupted) are evicted automatically after a brief safety window.
 
 *****************************************
  Inspect and manage PID locks

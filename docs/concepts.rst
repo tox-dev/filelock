@@ -113,8 +113,8 @@ This is the same concept as a traditional **PID lock file** (as used by Unix dae
 library's ``PIDLockFile``). The PID stored in the file enables two important capabilities: identifying the lock holder
 via the :attr:`~filelock.SoftFileLock.pid` property, and detecting stale locks when the holding process has died.
 
-On Unix/macOS, processes can check if the lock holder is still alive and break stale locks automatically. On Windows,
-stale lock breaking is skipped because the lock file cannot be atomically renamed while another process holds a handle.
+On all platforms, processes can check if the lock holder is still alive and break stale locks automatically. On Windows,
+the lock file additionally stores the process creation time to guard against PID recycling.
 
 .. list-table::
     :header-rows: 1
@@ -124,13 +124,9 @@ stale lock breaking is skipped because the lock file cannot be atomically rename
     - - ✓ Works on any filesystem, including network mounts.
       - ✗ Not enforced—requires cooperation (a buggy process can ignore it).
     - - ✓ Portable—same code works everywhere.
-      - ✗ Stale lock detection not available on Windows.
-    - - ✓ Can detect stale locks (Unix/macOS only).
       - ✗ Higher overhead than OS-level locks.
-    - -
+    - - ✓ Can detect stale locks (all platforms).
       - ✗ Cross-host detection doesn't work (stale locks from other hosts require manual cleanup).
-    - -
-      - ✗ On Windows, stale lock detection is skipped (file rename is not atomic while handle is open).
 
 ***************************
  Platform-specific details
@@ -160,8 +156,8 @@ stale lock breaking is skipped because the lock file cannot be atomically rename
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,
-    but filelock includes stale lock detection on Unix-like systems (though without fcntl, this detection is less
-    reliable than on systems with full fcntl support).
+    but filelock includes stale lock detection (though without fcntl, this detection is less reliable than on systems
+    with full fcntl support).
 
 *******************************
  Which lock type should I use?
@@ -185,7 +181,7 @@ necessary in testing or if you need platform-specific behavior.
 
 - You're on a network filesystem where OS-level locking is unavailable (NFS).
 - You need cross-filesystem compatibility and can tolerate the overhead.
-- You need stale lock detection (Unix/macOS only).
+- You need stale lock detection.
 
 **Use ReadWriteLock** when:
 
@@ -252,7 +248,7 @@ Lock types compared
       - Works, including cross-host on multi-node clusters
     - - Stale lock detection
       - N/A (OS-enforced)
-      - Yes (Unix/macOS only, same-host)
+      - Yes (same-host, all platforms)
       - N/A
       - Yes, TTL-based heartbeat (cross-host)
     - - PID inspection
@@ -385,15 +381,16 @@ Why does SoftFileLock use a separate file instead of just checking a directory?
 A directory can't reliably be atomically created and deleted across platforms. A file can be created with ``O_EXCL``
 (atomic, all-or-nothing) to detect conflicts. This is why SoftFileLock uses files.
 
-Why is stale lock detection only on Unix/macOS?
-===============================================
+How does stale lock detection work across platforms?
+====================================================
 
 Stale lock detection requires: 1. Knowing the PID of the lock holder 2. A way to check if that process is still alive
 3. A way to atomically break the stale lock without corruption.
 
 On Unix/macOS, ``kill(pid, 0)`` checks process liveness and ``rename()`` atomically replaces the lock file. On Windows,
-process liveness can be checked via ``OpenProcess``, but the lock file cannot be atomically renamed while another process
-holds a handle to it. So stale detection is skipped on Windows to avoid corruption.
+``OpenProcess`` checks liveness and the lock file additionally stores the process creation time (via
+``GetProcessTimes``) to guard against PID recycling. If the PID is alive but the creation time doesn't match what was
+stored, the lock is recognized as stale from a recycled PID and evicted.
 
 Why is ReadWriteLock backed by SQLite?
 ======================================
