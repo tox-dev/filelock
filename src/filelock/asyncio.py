@@ -283,7 +283,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # noqa: FBT001, FBT002
         """
         Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
-        itself is not automatically deleted.
+        itself may be deleted automatically, the behavior is platform-specific.
 
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
