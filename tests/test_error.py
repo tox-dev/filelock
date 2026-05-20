@@ -20,6 +20,11 @@ def test_timeout_lock_file() -> None:
     assert timeout.lock_file == "/path/to/lock"
 
 
+def test_timeout_reduce() -> None:
+    timeout = Timeout("/path/to/lock")
+    assert timeout.__reduce__() == (Timeout, ("/path/to/lock",))
+
+
 def test_timeout_pickle() -> None:
     timeout = Timeout("/path/to/lock")
     timeout_loaded = pickle.loads(pickle.dumps(timeout))  # noqa: S301
