@@ -218,7 +218,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask and
             default ACLs, preserving POSIX default ACL inheritance in shared directories.
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set to
-            ``False`` then the lock will be reentrant across threads.
+            ``False`` then the lock will be reentrant across threads. When ``True`` (the default), **all fields of the
+            lock's internal context are per-thread**, including the configuration values ``poll_interval``, ``timeout``,
+            ``blocking``, ``mode``, and ``lifetime``. Setting one of these properties from one thread does not change
+            the value seen by another thread; threads that did not perform the write continue to see the value supplied
+            at construction time. If you need configuration values to be visible across threads, construct the lock
+            with ``thread_local=False``.
         :param blocking: whether the lock should be blocking or not
         :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per lock
             file. This is useful if you want to use the lock object for reentrant locking without needing to pass the

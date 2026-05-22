@@ -477,14 +477,24 @@ overrides any default ACLs on the directory.
  Thread-local vs shared state
 *****************************
 
-Each ``FileLock`` instance tracks its lock counter and file descriptor in a context object. By default
-(``thread_local=True``), each thread gets its own context via ``threading.local``. This means:
+Each ``FileLock`` instance tracks its lock counter, file descriptor, and
+configured defaults (``poll_interval``, ``timeout``, ``blocking``, ``mode``,
+``lifetime``) in a single context object. By default (``thread_local=True``),
+each thread gets its own context via ``threading.local``. This means:
 
-- Two threads holding the same ``FileLock`` object each maintain independent lock counters.
+- Two threads holding the same ``FileLock`` object each maintain
+  independent lock counters.
 - Thread A releasing the lock doesn't affect Thread B's counter.
+- Setting a configuration property (for example ``lock.poll_interval = 0.5``)
+  affects only the thread that performed the write. Other threads continue
+  to see the value supplied to the lock's constructor; ``threading.local``
+  re-applies the original constructor arguments the first time each new
+  thread accesses the context.
 
-When ``thread_local=False``, all threads share the same context. This is useful for objects passed between threads, but
-requires external coordination to avoid counter mismatches.
+When ``thread_local=False``, all threads share the same context, including
+configuration values. This is useful for objects passed between threads or
+for cases where you want a property setter to affect all threads, but it
+requires external coordination to avoid lock-counter mismatches.
 
 Async locks default to ``thread_local=False`` because the thread that calls ``acquire()`` (via
 ``run_in_executor``) may differ from the thread that calls ``release()``. Using ``thread_local=True`` with
