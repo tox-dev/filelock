@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 class Timeout(TimeoutError):  # noqa: N818
     """Raised when the lock could not be acquired in *timeout* seconds."""
 
