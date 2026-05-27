@@ -61,8 +61,10 @@ def test_simple(
 def make_ro(path: Path) -> Iterator[None]:
     write = S_IWUSR | S_IWGRP | S_IWOTH
     path.chmod(path.stat().st_mode & ~write)
-    yield
-    path.chmod(path.stat().st_mode | write)
+    try:
+        yield
+    finally:
+        path.chmod(path.stat().st_mode | write)
 
 
 @pytest.fixture
