@@ -256,34 +256,51 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         # Increment the number right at the beginning. We can still undo it, if something fails.
         self._context.lock_counter += 1
 
-        lock_id = id(self)
-        lock_filename = self.lock_file
         start_time = time.perf_counter()
         try:
-            while True:
-                if not self.is_locked:
-                    self._try_break_expired_lock()
-                    _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                    await self._run_internal_method(self._acquire)
-                if self.is_locked:
-                    _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
-                    break
-                if self._check_give_up(
-                    lock_id,
-                    lock_filename,
-                    blocking=blocking,
-                    cancel_check=cancel_check,
-                    timeout=timeout,
-                    start_time=start_time,
-                ):
-                    raise Timeout(lock_filename)  # noqa: TRY301
-                msg = "Lock %s not acquired on %s, waiting %s seconds ..."
-                _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
-                await asyncio.sleep(poll_interval)
+            await self._async_poll_until_acquired(
+                blocking=blocking,
+                cancel_check=cancel_check,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                start_time=start_time,
+            )
         except BaseException:  # Something did go wrong, so decrement the counter.
             self._context.lock_counter = max(0, self._context.lock_counter - 1)
             raise
         return AsyncAcquireReturnProxy(lock=self)
+
+    async def _async_poll_until_acquired(
+        self,
+        *,
+        blocking: bool,
+        cancel_check: Callable[[], bool] | None,
+        timeout: float,
+        poll_interval: float,
+        start_time: float,
+    ) -> None:
+        lock_id = id(self)
+        lock_filename = self.lock_file
+        while True:
+            if not self.is_locked:
+                self._try_break_expired_lock()
+                _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
+                await self._run_internal_method(self._acquire)
+            if self.is_locked:
+                _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
+                return
+            if self._check_give_up(
+                lock_id,
+                lock_filename,
+                blocking=blocking,
+                cancel_check=cancel_check,
+                timeout=timeout,
+                start_time=start_time,
+            ):
+                raise Timeout(lock_filename)
+            msg = "Lock %s not acquired on %s, waiting %s seconds ..."
+            _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
+            await asyncio.sleep(poll_interval)
 
     async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # noqa: FBT001, FBT002
         """

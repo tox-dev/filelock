@@ -220,27 +220,35 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         start_time = time.perf_counter()
         self._acquire_transaction_lock(blocking=blocking, timeout=timeout)
         try:
-            # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
-            with self._internal_lock:
-                if self._lock_level > 0:
-                    return self._validate_reentrant(mode, opposite, direction)
-
-            self._configure_and_begin(mode, timeout, blocking=blocking, start_time=start_time)
-
-            with self._internal_lock:
-                self._current_mode = mode
-                self._lock_level = 1
-                if mode == "write":
-                    self._write_thread_id = threading.get_ident()
-
-            return AcquireReturnProxy(lock=self)
-
+            return self._do_acquire_inner(mode, timeout, blocking=blocking, start_time=start_time)
         except sqlite3.OperationalError as exc:
             if "database is locked" not in str(exc):
                 raise
             raise Timeout(self.lock_file) from None
         finally:
             self._transaction_lock.release()
+
+    def _do_acquire_inner(
+        self,
+        mode: Literal["read", "write"],
+        timeout: float,
+        *,
+        blocking: bool,
+        start_time: float,
+    ) -> AcquireReturnProxy:
+        opposite = "write" if mode == "read" else "read"
+        direction = "downgrade" if mode == "read" else "upgrade"
+        # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
+        with self._internal_lock:
+            if self._lock_level > 0:
+                return self._validate_reentrant(mode, opposite, direction)
+        self._configure_and_begin(mode, timeout, blocking=blocking, start_time=start_time)
+        with self._internal_lock:
+            self._current_mode = mode
+            self._lock_level = 1
+            if mode == "write":
+                self._write_thread_id = threading.get_ident()
+        return AcquireReturnProxy(lock=self)
 
     def acquire_read(self, timeout: float = -1, *, blocking: bool = True) -> AcquireReturnProxy:
         """

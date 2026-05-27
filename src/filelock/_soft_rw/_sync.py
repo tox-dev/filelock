@@ -405,7 +405,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         blocking: bool | None,
     ) -> AcquireReturnProxy:
         effective_timeout = self.timeout if timeout is None else timeout
-        effective_blocking = self.blocking if blocking is None else blocking
+        blocking = self.blocking if blocking is None else blocking
 
         with self._locks.internal:
             if self._fork_invalidated:
@@ -418,7 +418,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 return self._validate_reentrant(mode)
 
         start = time.perf_counter()
-        if not effective_blocking:
+        if not blocking:
             acquired = self._locks.transaction.acquire(blocking=False)
         elif effective_timeout == -1:
             acquired = self._locks.transaction.acquire(blocking=True)
@@ -427,45 +427,47 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         if not acquired:
             raise Timeout(self.lock_file) from None
         try:
-            with self._locks.internal:
-                if self._hold is not None:
-                    return self._validate_reentrant(mode)
-
-            deadline = None if effective_timeout == -1 else start + effective_timeout
-            token = secrets.token_hex(16)
-            if mode == "write":
-                marker_name, is_reader = self._acquire_writer_slot(
-                    token, deadline=deadline, blocking=effective_blocking
-                )
-            else:
-                marker_name, is_reader = self._acquire_reader_slot(
-                    token, deadline=deadline, blocking=effective_blocking
-                )
-
-            stop_event = threading.Event()
-            heartbeat = _HeartbeatThread(
-                refresh=self._refresh_marker,
-                interval=self.heartbeat_interval,
-                stop_event=stop_event,
-                name=f"filelock-heartbeat-{id(self):x}",
-            )
-
-            with self._locks.internal:
-                self._hold = _Hold(
-                    level=1,
-                    mode=mode,
-                    write_thread_id=threading.get_ident() if mode == "write" else None,
-                    marker_name=marker_name,
-                    is_reader=is_reader,
-                    token=token,
-                    heartbeat_thread=heartbeat,
-                    heartbeat_stop=stop_event,
-                )
-
-            heartbeat.start()
-            return AcquireReturnProxy(lock=self)
+            return self._do_acquire_inner(mode, effective_timeout, start, blocking=blocking)
         finally:
             self._locks.transaction.release()
+
+    def _do_acquire_inner(
+        self,
+        mode: _Mode,
+        effective_timeout: float,
+        start: float,
+        *,
+        blocking: bool,
+    ) -> AcquireReturnProxy:
+        with self._locks.internal:
+            if self._hold is not None:
+                return self._validate_reentrant(mode)
+        deadline = None if effective_timeout == -1 else start + effective_timeout
+        token = secrets.token_hex(16)
+        if mode == "write":
+            marker_name, is_reader = self._acquire_writer_slot(token, deadline=deadline, blocking=blocking)
+        else:
+            marker_name, is_reader = self._acquire_reader_slot(token, deadline=deadline, blocking=blocking)
+        stop_event = threading.Event()
+        heartbeat = _HeartbeatThread(
+            refresh=self._refresh_marker,
+            interval=self.heartbeat_interval,
+            stop_event=stop_event,
+            name=f"filelock-heartbeat-{id(self):x}",
+        )
+        with self._locks.internal:
+            self._hold = _Hold(
+                level=1,
+                mode=mode,
+                write_thread_id=threading.get_ident() if mode == "write" else None,
+                marker_name=marker_name,
+                is_reader=is_reader,
+                token=token,
+                heartbeat_thread=heartbeat,
+                heartbeat_stop=stop_event,
+            )
+        heartbeat.start()
+        return AcquireReturnProxy(lock=self)
 
     def _validate_reentrant(self, mode: _Mode) -> AcquireReturnProxy:
         hold = self._hold
