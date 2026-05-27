@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 
 class Timeout(TimeoutError):  # noqa: N818
     """Raised when the lock could not be acquired in *timeout* seconds."""
@@ -10,7 +8,7 @@ class Timeout(TimeoutError):  # noqa: N818
         super().__init__()
         self._lock_file = lock_file
 
-    def __reduce__(self) -> str | tuple[Any, ...]:
+    def __reduce__(self) -> tuple[type[Timeout], tuple[str]]:
         return self.__class__, (self._lock_file,)  # Properly pickle the exception
 
     def __str__(self) -> str:
