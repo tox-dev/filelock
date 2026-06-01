@@ -101,13 +101,13 @@ release = [
 ]
 
 [tool.hatch]
+version.source = "vcs"
 build.hooks.vcs.version-file = "src/filelock/version.py"
 build.targets.sdist.include = [
   "/src",
   "/tests",
   "/tox.toml",
 ]
-version.source = "vcs"
 
 [tool.ruff]
 line-length = 120
@@ -161,29 +161,29 @@ lint.preview = true
 
 [tool.codespell]
 builtin = "clear,usage,en-GB_to_en-US"
+ignore-words-list = "master"
 count = true
 quiet-level = 3
-ignore-words-list = "master"
 
 [tool.pyproject-fmt]
 max_supported_python = "3.14"
 
 [tool.ty]
-environment.python-version = "3.14"
 src.exclude = []
+environment.python-version = "3.14"
 
 [tool.pytest]
-ini_options.asyncio_default_fixture_loop_scope = "session"
 ini_options.testpaths = [
   "tests",
 ]
-ini_options.timeout = 20
-ini_options.verbosity_assertions = 2
 ini_options.filterwarnings = [
   "error",
   "ignore:unclosed database in <sqlite3.Connection object at:ResourceWarning",
   "ignore:unclosed file <_io.TextIOWrapper:ResourceWarning",
 ]
+ini_options.verbosity_assertions = 2
+ini_options.asyncio_default_fixture_loop_scope = "session"
+ini_options.timeout = 20
 
 [tool.coverage]
 run.concurrency = [
