@@ -138,7 +138,7 @@ def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) ->
 
 @unix_only
 def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
-    os.mkfifo(lock_path)
+    getattr(os, "mkfifo")(lock_path)  # noqa: B009 # os.mkfifo is unix-only; getattr keeps the win32 type check happy
     # An attacker-placed FIFO must not stall the open; O_NONBLOCK makes the read bail instead of hang.
     assert SoftFileLock(lock_path).pid is None
 
