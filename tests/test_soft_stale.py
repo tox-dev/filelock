@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from filelock import SoftFileLock
+from filelock._soft import _MAX_LOCK_FILE_SIZE
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -153,6 +154,29 @@ def test_symlinked_lock_file_is_not_followed(tmp_path: Path) -> None:
     # Neither the pid read nor stale detection may follow the symlink onto the target file.
     assert SoftFileLock(link).pid is None
     assert target.read_text(encoding="utf-8") == f"{99999}\n{socket.gethostname()}\n"
+
+
+def test_oversized_lock_file_evicted_as_stale(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock_path.write_bytes(b"x" * (_MAX_LOCK_FILE_SIZE + 1))
+    os.utime(lock_path, (0, 0))
+
+    # An unreadable (here, oversized) lock must still self-heal rather than stay stuck forever.
+    lock = SoftFileLock(lock_path, timeout=1)
+    with lock:
+        assert lock.is_locked
+
+
+def test_oversized_lock_file_pid_is_none(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock_path.write_bytes(b"x" * (_MAX_LOCK_FILE_SIZE + 1))
+    assert SoftFileLock(lock_path).pid is None
+
+
+def test_non_utf8_lock_file_pid_is_none(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock_path.write_bytes(b"\xff\xfe\n")
+    assert SoftFileLock(lock_path).pid is None
 
 
 def test_stale_detection_errors_suppressed(tmp_path: Path, mocker: MockerFixture) -> None:
