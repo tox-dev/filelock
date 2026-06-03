@@ -15,6 +15,7 @@ _WIN_SYNCHRONIZE = 0x100000
 _WIN_ERROR_INVALID_PARAMETER = 87
 _WIN_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _MALFORMED_LOCK_AGE_THRESHOLD = 2.0
+_MAX_LOCK_FILE_SIZE = 1024
 
 
 class SoftFileLock(BaseFileLock):
@@ -56,13 +57,11 @@ class SoftFileLock(BaseFileLock):
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
-            lock_path = Path(self.lock_file)
-            stat_result = lock_path.stat()
-            content = lock_path.read_text(encoding="utf-8")
-            lines = content.strip().splitlines()
+            content, mtime = _read_lock_file(self.lock_file)
+            lines = content.strip().splitlines() if content else []
 
             if len(lines) not in {2, 3}:
-                if time.time() - stat_result.st_mtime >= _MALFORMED_LOCK_AGE_THRESHOLD:
+                if time.time() - mtime >= _MALFORMED_LOCK_AGE_THRESHOLD:
                     self._evict_lock_file()
                 return
 
@@ -158,13 +157,10 @@ class SoftFileLock(BaseFileLock):
         :returns: the PID as an integer, or ``None`` if the lock file does not exist or cannot be parsed
 
         """
-        try:
-            content = Path(self.lock_file).read_text(encoding="utf-8")
-            lines = content.strip().splitlines()
-            if lines:
+        with suppress(OSError, ValueError):
+            content, _ = _read_lock_file(self.lock_file)
+            if content and (lines := content.strip().splitlines()):
                 return int(lines[0])
-        except (OSError, ValueError):
-            pass
         return None
 
     @property
@@ -207,6 +203,23 @@ class SoftFileLock(BaseFileLock):
                     retry_delay *= 2
             else:
                 return
+
+
+def _read_lock_file(path: str) -> tuple[str | None, float]:
+    # The lock file is created with O_EXCL | O_NOFOLLOW, so a symlink here is a hostile replacement and must
+    # not be followed. O_NONBLOCK keeps an attacker-placed FIFO from stalling the open (O_NOFOLLOW alone only
+    # rejects a symlink, not a real FIFO at the path), and the capped read stops a huge file (e.g. /dev/zero)
+    # from exhausting memory. Content is None when the file is too large or not UTF-8, but the mtime still
+    # flows back so the caller can evict it as a stale, malformed lock.
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        mtime, data = os.fstat(fd).st_mtime, os.read(fd, _MAX_LOCK_FILE_SIZE + 1)
+    finally:
+        os.close(fd)
+    if len(data) <= _MAX_LOCK_FILE_SIZE:
+        with suppress(UnicodeDecodeError):
+            return data.decode("utf-8"), mtime
+    return None, mtime
 
 
 __all__ = [
