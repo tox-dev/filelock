@@ -207,10 +207,11 @@ class SoftFileLock(BaseFileLock):
 
 def _read_lock_file(path: str) -> tuple[str | None, float]:
     # The lock file is created with O_EXCL | O_NOFOLLOW, so a symlink here is a hostile replacement and must
-    # not be followed; cap the read like _soft_rw._read_marker so a swapped-in link to a blocking or huge file
-    # (FIFO, /dev/zero) cannot stall or exhaust memory. Content is None when the file is too large or not
-    # UTF-8, but the mtime still flows back so the caller can evict it as a stale, malformed lock.
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    # not be followed. O_NONBLOCK keeps an attacker-placed FIFO from stalling the open (O_NOFOLLOW alone only
+    # rejects a symlink, not a real FIFO at the path), and the capped read stops a huge file (e.g. /dev/zero)
+    # from exhausting memory. Content is None when the file is too large or not UTF-8, but the mtime still
+    # flows back so the caller can evict it as a stale, malformed lock.
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     try:
         mtime, data = os.fstat(fd).st_mtime, os.read(fd, _MAX_LOCK_FILE_SIZE + 1)
     finally:

@@ -20,15 +20,38 @@ if TYPE_CHECKING:
 unix_only = pytest.mark.skipif(sys.platform == "win32", reason="unix-only stale lock detection")
 win_only = pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
 
+HOST = socket.gethostname()
+DEAD_PID = 2**22 + 1
 
-def test_lock_writes_pid_and_hostname(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
+
+@pytest.fixture
+def lock_path(tmp_path: Path) -> Path:
+    return tmp_path / "test.lock"
+
+
+def _holder(pid: int, *, host: str = HOST, creation_time: int | None = None) -> str:
+    lines = [str(pid), host, *([] if creation_time is None else [str(creation_time)])]
+    return "\n".join(lines) + "\n"
+
+
+def _assert_self_heals(lock_path: Path) -> None:
+    lock = SoftFileLock(lock_path, timeout=1)
+    with lock:
+        assert lock.is_locked
+
+
+def _assert_times_out(lock_path: Path) -> None:
+    lock = SoftFileLock(lock_path, timeout=0.1)
+    with pytest.raises(TimeoutError):
+        lock.acquire()
+
+
+def test_lock_writes_pid_and_hostname(lock_path: Path) -> None:
     lock = SoftFileLock(lock_path)
     with lock:
-        content = lock_path.read_text(encoding="utf-8")
-        lines = content.strip().splitlines()
+        lines = lock_path.read_text(encoding="utf-8").strip().splitlines()
         assert lines[0] == str(os.getpid())
-        assert lines[1] == socket.gethostname()
+        assert lines[1] == HOST
         if sys.platform == "win32":
             assert len(lines) == 3
             int(lines[2])  # must be parseable as int (creation FILETIME)
@@ -36,223 +59,119 @@ def test_lock_writes_pid_and_hostname(tmp_path: Path) -> None:
             assert len(lines) == 2
 
 
-def test_stale_lock_broken_when_process_dead(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    dead_pid = 2**22 + 1
-    lock_path.write_text(f"{dead_pid}\n{socket.gethostname()}\n", encoding="utf-8")
-
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(_holder(DEAD_PID), id="two_line"),
+        pytest.param(_holder(DEAD_PID, creation_time=123456789), id="three_line"),
+    ],
+)
+def test_stale_lock_broken_when_process_dead(lock_path: Path, mocker: MockerFixture, content: str) -> None:
+    lock_path.write_text(content, encoding="utf-8")
     mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=False)
-
-    lock = SoftFileLock(lock_path, timeout=1)
-    with lock:
-        assert lock.is_locked
+    _assert_self_heals(lock_path)
 
 
-def test_stale_lock_not_broken_when_process_alive(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_text(f"{os.getpid()}\n{socket.gethostname()}\n", encoding="utf-8")
-
+def test_stale_lock_not_broken_when_process_alive(lock_path: Path, mocker: MockerFixture) -> None:
+    lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=True)
-
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
+    _assert_times_out(lock_path)
 
 
-def test_stale_lock_not_broken_different_hostname(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
-    dead_pid = 2**22 + 1
-    lock_path.write_text(f"{dead_pid}\nother-host.example.com\n", encoding="utf-8")
-
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
+def test_stale_lock_not_broken_different_hostname(lock_path: Path) -> None:
+    lock_path.write_text(_holder(DEAD_PID, host="other-host.example.com"), encoding="utf-8")
+    _assert_times_out(lock_path)
 
 
 @unix_only
-def test_stale_lock_not_broken_when_eperm(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_text(f"{99999}\n{socket.gethostname()}\n", encoding="utf-8")
+@pytest.mark.parametrize(
+    "errno",
+    [pytest.param(EPERM, id="eperm"), pytest.param(ENODEV, id="unexpected_device")],
+)
+def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixture, errno: int) -> None:
+    lock_path.write_text(_holder(99999), encoding="utf-8")
+    mocker.patch("filelock._soft.os.kill", side_effect=OSError(errno, "kill failed"))
+    _assert_times_out(lock_path)
 
-    mocker.patch("filelock._soft.os.kill", side_effect=OSError(EPERM, "Operation not permitted"))
 
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
-
-
-def test_stale_lock_malformed_evicted_when_old(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_text("not-a-pid\n", encoding="utf-8")
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(b"not-a-pid\n", id="malformed"),
+        pytest.param(b"", id="empty"),
+        pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), id="oversized"),
+    ],
+)
+def test_unparseable_lock_evicted_when_old(lock_path: Path, content: bytes) -> None:
+    lock_path.write_bytes(content)
     os.utime(lock_path, (0, 0))
-
-    lock = SoftFileLock(lock_path, timeout=1)
-    with lock:
-        assert lock.is_locked
+    # An unreadable lock (malformed, empty, or oversized) must self-heal rather than stay stuck forever.
+    _assert_self_heals(lock_path)
 
 
-def test_stale_lock_malformed_not_evicted_when_fresh(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_text("not-a-pid\n", encoding="utf-8")
-
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
-
-
-def test_stale_lock_empty_file_evicted_when_old(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_text("", encoding="utf-8")
-    os.utime(lock_path, (0, 0))
-
-    lock = SoftFileLock(lock_path, timeout=1)
-    with lock:
-        assert lock.is_locked
+@pytest.mark.parametrize(
+    "content",
+    [pytest.param(b"not-a-pid\n", id="malformed"), pytest.param(b"", id="empty")],
+)
+def test_unparseable_lock_not_evicted_when_fresh(lock_path: Path, content: bytes) -> None:
+    lock_path.write_bytes(content)
+    _assert_times_out(lock_path)
 
 
-def test_stale_lock_empty_file_not_evicted_when_fresh(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_text("", encoding="utf-8")
-
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
-
-
-def test_stale_lock_rename_race(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    dead_pid = 2**22 + 1
-    lock_path.write_text(f"{dead_pid}\n{socket.gethostname()}\n", encoding="utf-8")
-
+def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
+    lock_path.write_text(_holder(DEAD_PID), encoding="utf-8")
     mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=False)
     mocker.patch.object(Path, "rename", side_effect=FileNotFoundError("already gone"))
-
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
+    _assert_times_out(lock_path)
 
 
 @unix_only
-def test_stale_lock_unexpected_kill_error_suppressed(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_text(f"{99999}\n{socket.gethostname()}\n", encoding="utf-8")
-
-    mocker.patch("filelock._soft.os.kill", side_effect=OSError(ENODEV, "No such device"))
-
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
-
-
-@unix_only
-def test_symlinked_lock_file_is_not_followed(tmp_path: Path) -> None:
+def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) -> None:
     target = tmp_path / "target"
-    target.write_text(f"{99999}\n{socket.gethostname()}\n", encoding="utf-8")
-    link = tmp_path / "test.lock"
-    link.symlink_to(target)
+    target.write_text(_holder(99999), encoding="utf-8")
+    lock_path.symlink_to(target)
 
     # Neither the pid read nor stale detection may follow the symlink onto the target file.
-    assert SoftFileLock(link).pid is None
-    assert target.read_text(encoding="utf-8") == f"{99999}\n{socket.gethostname()}\n"
+    assert SoftFileLock(lock_path).pid is None
+    assert target.read_text(encoding="utf-8") == _holder(99999)
 
 
-def test_oversized_lock_file_evicted_as_stale(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_bytes(b"x" * (_MAX_LOCK_FILE_SIZE + 1))
-    os.utime(lock_path, (0, 0))
-
-    # An unreadable (here, oversized) lock must still self-heal rather than stay stuck forever.
-    lock = SoftFileLock(lock_path, timeout=1)
-    with lock:
-        assert lock.is_locked
-
-
-def test_oversized_lock_file_pid_is_none(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_bytes(b"x" * (_MAX_LOCK_FILE_SIZE + 1))
+@unix_only
+def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
+    os.mkfifo(lock_path)
+    # An attacker-placed FIFO must not stall the open; O_NONBLOCK makes the read bail instead of hang.
     assert SoftFileLock(lock_path).pid is None
 
 
-def test_non_utf8_lock_file_pid_is_none(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_bytes(b"\xff\xfe\n")
-    assert SoftFileLock(lock_path).pid is None
-
-
-def test_stale_detection_errors_suppressed(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    lock_path.write_text(f"{os.getpid()}\n{socket.gethostname()}\n", encoding="utf-8")
-
+def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
+    lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     mock_read: MagicMock = mocker.patch("filelock._soft._read_lock_file", side_effect=OSError("read failed"))
-
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
+    _assert_times_out(lock_path)
     mock_read.assert_called()
 
 
-def test_stale_lock_three_line_format_accepted(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    dead_pid = 2**22 + 1
-    lock_path.write_text(f"{dead_pid}\n{socket.gethostname()}\n123456789\n", encoding="utf-8")
-
-    mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=False)
-
-    lock = SoftFileLock(lock_path, timeout=1)
-    with lock:
-        assert lock.is_locked
-
-
 @win_only
-def test_windows_stale_lock_broken_when_pid_recycled(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    recycled_pid = 1234
-    original_creation_time = 100000000
-    new_creation_time = 999999999
-
-    lock_path.write_text(
-        f"{recycled_pid}\n{socket.gethostname()}\n{original_creation_time}\n",
-        encoding="utf-8",
-    )
-
+def test_windows_stale_lock_broken_when_pid_recycled(lock_path: Path, mocker: MockerFixture) -> None:
+    lock_path.write_text(_holder(1234, creation_time=100000000), encoding="utf-8")
     mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=True)
-    mocker.patch.object(SoftFileLock, "_get_process_creation_time", return_value=new_creation_time)
-
-    lock = SoftFileLock(lock_path, timeout=1)
-    with lock:
-        assert lock.is_locked
+    mocker.patch.object(SoftFileLock, "_get_process_creation_time", return_value=999999999)
+    _assert_self_heals(lock_path)
 
 
 @win_only
-def test_windows_stale_lock_not_broken_same_creation_time(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    alive_pid = 1234
+def test_windows_stale_lock_not_broken_same_creation_time(lock_path: Path, mocker: MockerFixture) -> None:
     creation_time = 100000000
-
-    lock_path.write_text(
-        f"{alive_pid}\n{socket.gethostname()}\n{creation_time}\n",
-        encoding="utf-8",
-    )
-
+    lock_path.write_text(_holder(1234, creation_time=creation_time), encoding="utf-8")
     mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=True)
     mocker.patch.object(SoftFileLock, "_get_process_creation_time", return_value=creation_time)
-
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
+    _assert_times_out(lock_path)
 
 
 @win_only
-def test_windows_stale_lock_conservative_without_creation_time(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
-    alive_pid = 1234
-    lock_path.write_text(f"{alive_pid}\n{socket.gethostname()}\n", encoding="utf-8")
-
+def test_windows_stale_lock_conservative_without_creation_time(lock_path: Path, mocker: MockerFixture) -> None:
+    lock_path.write_text(_holder(1234), encoding="utf-8")
     mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=True)
-
-    lock = SoftFileLock(lock_path, timeout=0.1)
-    with pytest.raises(TimeoutError):
-        lock.acquire()
+    _assert_times_out(lock_path)
 
 
 @win_only
@@ -265,8 +184,7 @@ def test_get_process_creation_time_returns_int_on_windows() -> None:
 
 @win_only
 def test_get_process_creation_time_returns_none_for_dead_pid() -> None:
-    result = SoftFileLock._get_process_creation_time(2**22 + 1)
-    assert result is None
+    assert SoftFileLock._get_process_creation_time(DEAD_PID) is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="unix-only")
@@ -278,19 +196,19 @@ def test_get_process_creation_time_returns_none_on_unix() -> None:
     ("content", "expected"),
     [
         pytest.param(None, None, id="no_file"),
-        pytest.param("not-a-number\n", None, id="malformed"),
-        pytest.param(f"{os.getpid()}\n{socket.gethostname()}\n", os.getpid(), id="valid"),
+        pytest.param(b"not-a-number\n", None, id="malformed"),
+        pytest.param(b"\xff\xfe\n", None, id="non_utf8"),
+        pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), None, id="oversized"),
+        pytest.param(_holder(os.getpid()).encode(), os.getpid(), id="valid"),
     ],
 )
-def test_pid(tmp_path: Path, content: str | None, expected: int | None) -> None:
-    lock_path = tmp_path / "test.lock"
+def test_pid(lock_path: Path, content: bytes | None, expected: int | None) -> None:
     if content is not None:
-        lock_path.write_text(content, encoding="utf-8")
+        lock_path.write_bytes(content)
     assert SoftFileLock(lock_path).pid == expected
 
 
-def test_pid_while_locked(tmp_path: Path) -> None:
-    lock_path = tmp_path / "test.lock"
+def test_pid_while_locked(lock_path: Path) -> None:
     lock = SoftFileLock(lock_path)
     with lock:
         assert lock.pid == os.getpid()
@@ -300,12 +218,11 @@ def test_pid_while_locked(tmp_path: Path) -> None:
     ("content", "expected"),
     [
         pytest.param(None, False, id="no_file"),
-        pytest.param(f"{os.getpid() + 1}\n{socket.gethostname()}\n", False, id="different_pid"),
-        pytest.param(f"{os.getpid()}\n{socket.gethostname()}\n", True, id="same_pid"),
+        pytest.param(_holder(os.getpid() + 1), False, id="different_pid"),
+        pytest.param(_holder(os.getpid()), True, id="same_pid"),
     ],
 )
-def test_is_lock_held_by_us(tmp_path: Path, content: str | None, expected: bool) -> None:
-    lock_path = tmp_path / "test.lock"
+def test_is_lock_held_by_us(lock_path: Path, content: str | None, expected: bool) -> None:
     if content is not None:
         lock_path.write_text(content, encoding="utf-8")
     assert SoftFileLock(lock_path).is_lock_held_by_us is expected
@@ -315,16 +232,14 @@ def test_is_lock_held_by_us(tmp_path: Path, content: str | None, expected: bool)
     "exists",
     [pytest.param(True, id="exists"), pytest.param(False, id="missing")],
 )
-def test_break_lock(tmp_path: Path, *, exists: bool) -> None:
-    lock_path = tmp_path / "test.lock"
+def test_break_lock(lock_path: Path, *, exists: bool) -> None:
     if exists:
-        lock_path.write_text(f"{os.getpid()}\n{socket.gethostname()}\n", encoding="utf-8")
+        lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     SoftFileLock(lock_path).break_lock()
     assert not lock_path.exists()
 
 
-def test_write_lock_info_errors_suppressed(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "test.lock"
+def test_write_lock_info_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._soft.os.write", side_effect=OSError("write failed"))
 
     lock = SoftFileLock(lock_path)
