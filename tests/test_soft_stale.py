@@ -143,11 +143,23 @@ def test_stale_lock_unexpected_kill_error_suppressed(tmp_path: Path, mocker: Moc
         lock.acquire()
 
 
+@unix_only
+def test_symlinked_lock_file_is_not_followed(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.write_text(f"{99999}\n{socket.gethostname()}\n", encoding="utf-8")
+    link = tmp_path / "test.lock"
+    link.symlink_to(target)
+
+    # Neither the pid read nor stale detection may follow the symlink onto the target file.
+    assert SoftFileLock(link).pid is None
+    assert target.read_text(encoding="utf-8") == f"{99999}\n{socket.gethostname()}\n"
+
+
 def test_stale_detection_errors_suppressed(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.write_text(f"{os.getpid()}\n{socket.gethostname()}\n", encoding="utf-8")
 
-    mock_read: MagicMock = mocker.patch.object(Path, "read_text", side_effect=OSError("read failed"))
+    mock_read: MagicMock = mocker.patch("filelock._soft._read_lock_file", side_effect=OSError("read failed"))
 
     lock = SoftFileLock(lock_path, timeout=0.1)
     with pytest.raises(TimeoutError):

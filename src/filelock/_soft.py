@@ -15,6 +15,23 @@ _WIN_SYNCHRONIZE = 0x100000
 _WIN_ERROR_INVALID_PARAMETER = 87
 _WIN_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _MALFORMED_LOCK_AGE_THRESHOLD = 2.0
+_MAX_LOCK_FILE_SIZE = 1024
+
+
+def _read_lock_file(path: str) -> tuple[str, float] | None:
+    # The lock file is created with O_EXCL | O_NOFOLLOW, so a symlink at this path is a hostile
+    # replacement and must not be followed; cap the read like _soft_rw._read_marker so a swapped-in
+    # link to a blocking or huge file (FIFO, /dev/zero) cannot stall or exhaust memory.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        st = os.fstat(fd)
+        data = os.read(fd, _MAX_LOCK_FILE_SIZE + 1)
+    finally:
+        os.close(fd)
+    if len(data) > _MAX_LOCK_FILE_SIZE:
+        return None
+    return data.decode("utf-8"), st.st_mtime
 
 
 class SoftFileLock(BaseFileLock):
@@ -56,13 +73,14 @@ class SoftFileLock(BaseFileLock):
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
-            lock_path = Path(self.lock_file)
-            stat_result = lock_path.stat()
-            content = lock_path.read_text(encoding="utf-8")
+            result = _read_lock_file(self.lock_file)
+            if result is None:
+                return
+            content, mtime = result
             lines = content.strip().splitlines()
 
             if len(lines) not in {2, 3}:
-                if time.time() - stat_result.st_mtime >= _MALFORMED_LOCK_AGE_THRESHOLD:
+                if time.time() - mtime >= _MALFORMED_LOCK_AGE_THRESHOLD:
                     self._evict_lock_file()
                 return
 
@@ -159,10 +177,11 @@ class SoftFileLock(BaseFileLock):
 
         """
         try:
-            content = Path(self.lock_file).read_text(encoding="utf-8")
-            lines = content.strip().splitlines()
-            if lines:
-                return int(lines[0])
+            result = _read_lock_file(self.lock_file)
+            if result is not None:
+                lines = result[0].strip().splitlines()
+                if lines:
+                    return int(lines[0])
         except (OSError, ValueError):
             pass
         return None
