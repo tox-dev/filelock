@@ -3,6 +3,25 @@
 ###########
 
 ********************
+ 3.29.1 (2026-06-03)
+********************
+
+- 🐛 fix(soft): refuse to follow symlinks when reading the lock file :pr:`548` - by :user:`dxbjavid`
+- [pre-commit.ci] pre-commit autoupdate :pr:`547` - by :user:`pre-commit-ci[bot]`
+- [pre-commit.ci] pre-commit autoupdate :pr:`546` - by :user:`pre-commit-ci[bot]`
+- chore: improve filelock maintenance path :pr:`545` - by :user:`lphuc2250gma`
+- chore: improve filelock maintenance path :pr:`544` - by :user:`lphuc2250gma`
+- chore: improve filelock maintenance path :pr:`542` - by :user:`lphuc2250gma`
+- docs: clarify per-thread scope of FileLock configuration :pr:`543` - by :user:`Gares95`
+- [pre-commit.ci] pre-commit autoupdate :pr:`541` - by :user:`pre-commit-ci[bot]`
+- docs: fix API docs of `release()` :pr:`540` - by :user:`MrAnno`
+- [pre-commit.ci] pre-commit autoupdate :pr:`539` - by :user:`pre-commit-ci[bot]`
+- [pre-commit.ci] pre-commit autoupdate :pr:`538` - by :user:`pre-commit-ci[bot]`
+- [pre-commit.ci] pre-commit autoupdate :pr:`537` - by :user:`pre-commit-ci[bot]`
+- build(deps): bump astral-sh/setup-uv from 8.0.0 to 8.1.0 :pr:`536` - by :user:`dependabot[bot]`
+- [pre-commit.ci] pre-commit autoupdate :pr:`535` - by :user:`pre-commit-ci[bot]`
+
+********************
  3.29.0 (2026-04-19)
 ********************
 
