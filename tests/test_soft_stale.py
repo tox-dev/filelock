@@ -136,10 +136,11 @@ def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) ->
     assert target.read_text(encoding="utf-8") == _holder(99999)
 
 
-@unix_only
 def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
-    getattr(os, "mkfifo")(lock_path)  # noqa: B009 # os.mkfifo is unix-only; getattr keeps the win32 type check happy
+    if sys.platform == "win32":
+        pytest.skip("os.mkfifo is unix-only")
     # An attacker-placed FIFO must not stall the open; O_NONBLOCK makes the read bail instead of hang.
+    os.mkfifo(lock_path)
     assert SoftFileLock(lock_path).pid is None
 
 
