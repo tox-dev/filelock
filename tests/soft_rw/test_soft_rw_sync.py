@@ -664,6 +664,22 @@ def test_stale_malformed_marker_is_evicted(lock_file: str, content: bytes) -> No
         lock.close()
 
 
+def test_fifo_write_marker_does_not_block(lock_file: str) -> None:
+    if sys.platform == "win32":
+        pytest.skip("os.mkfifo is unix-only")
+    marker = f"{lock_file}.write"
+    os.mkfifo(marker)
+    past = time.time() - 1000
+    os.utime(marker, (past, past))
+    # Without O_NONBLOCK this open blocks forever; the FIFO instead reads as a stale marker and is evicted.
+    lock = _make_lock(lock_file)
+    try:
+        with lock.write_lock(timeout=2):
+            pass
+    finally:
+        lock.close()
+
+
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW required")
 def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> None:
     victim = tmp_path / "victim"

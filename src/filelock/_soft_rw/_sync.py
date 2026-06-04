@@ -32,6 +32,7 @@ _Mode = Literal["read", "write"]
 _BREAK_SUFFIX = ".break"
 _MAX_MARKER_SIZE = 1024
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 # dirfd-relative I/O is a Unix-only optimization; Windows cannot ``os.open()`` a directory at all, and
 # its ``os`` module skips dir_fd support entirely. When disabled, callers fall back to full-path ops.
 _SUPPORTS_DIR_FD = sys.platform != "win32" and os.open in os.supports_dir_fd
@@ -696,9 +697,10 @@ def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -
 
 
 def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo | None, float] | None:
-    # O_NOFOLLOW is defense in depth: we already created this file, but a hostile replacement by symlink
-    # between create and read would be caught here.
-    flags = os.O_RDONLY | _O_NOFOLLOW
+    # The file is ours; these guard a hostile mid-flight swap. O_NOFOLLOW rejects a symlink; O_NONBLOCK keeps
+    # a real FIFO from blocking the open forever, so it reads as a malformed marker instead of wedging a peer
+    # that holds the state lock.
+    flags = os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK
     try:
         fd = os.open(name, flags, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.open(name, flags)
     except OSError:
@@ -707,7 +709,7 @@ def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo |
         try:
             st = os.fstat(fd)
             data = os.read(fd, _MAX_MARKER_SIZE + 1)
-        except OSError:  # pragma: no cover - fstat/read after a successful open is hard to provoke
+        except OSError:  # pragma: no cover - e.g. EAGAIN from a hostile FIFO that has a writer attached
             return None
     finally:
         os.close(fd)
