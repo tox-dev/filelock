@@ -697,8 +697,9 @@ def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -
 
 def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo | None, float] | None:
     # O_NOFOLLOW is defense in depth: we already created this file, but a hostile replacement by symlink
-    # between create and read would be caught here.
-    flags = os.O_RDONLY | _O_NOFOLLOW
+    # between create and read would be caught here. O_NONBLOCK stops an attacker-placed FIFO at the marker
+    # path from stalling the open indefinitely (O_NOFOLLOW alone rejects a symlink, not a real FIFO).
+    flags = os.O_RDONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
     try:
         fd = os.open(name, flags, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.open(name, flags)
     except OSError:
