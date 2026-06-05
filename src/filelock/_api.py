@@ -368,7 +368,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         if (lifetime := self._context.lifetime) is None:
             return
         with contextlib.suppress(OSError):
-            if time.time() - pathlib.Path(self.lock_file).stat().st_mtime < lifetime:
+            # lstat, not stat: an attacker with write access to the lock directory can replace a held
+            # lock file with a symlink pointing at an old file, making stat() report the target's stale
+            # mtime so a waiter breaks a live lock and two processes hold it at once. lstat reads the
+            # symlink's own mtime, matching the O_NOFOLLOW reads elsewhere.
+            if time.time() - os.lstat(self.lock_file).st_mtime < lifetime:
                 return
             break_path = f"{self.lock_file}.break.{os.getpid()}"
             pathlib.Path(self.lock_file).rename(break_path)
