@@ -405,7 +405,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         *,
         blocking: bool | None,
     ) -> AcquireReturnProxy:
-        effective_timeout = self.timeout if timeout is None else timeout
+        timeout = self.timeout if timeout is None else timeout
         blocking = self.blocking if blocking is None else blocking
 
         with self._locks.internal:
@@ -421,14 +421,14 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         start = time.perf_counter()
         if not blocking:
             acquired = self._locks.transaction.acquire(blocking=False)
-        elif effective_timeout == -1:
+        elif timeout == -1:
             acquired = self._locks.transaction.acquire(blocking=True)
         else:
-            acquired = self._locks.transaction.acquire(blocking=True, timeout=effective_timeout)
+            acquired = self._locks.transaction.acquire(blocking=True, timeout=timeout)
         if not acquired:
             raise Timeout(self.lock_file) from None
         try:
-            return self._do_acquire_inner(mode, effective_timeout, start, blocking=blocking)
+            return self._do_acquire_inner(mode, timeout, start, blocking=blocking)
         finally:
             self._locks.transaction.release()
 

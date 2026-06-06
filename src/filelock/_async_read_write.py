@@ -48,7 +48,10 @@ class AsyncReadWriteLock:
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
     :param is_singleton: if ``True``, reuse existing :class:`ReadWriteLock` instances for the same resolved path
     :param loop: event loop for ``run_in_executor``; ``None`` uses the running loop
-    :param executor: executor for ``run_in_executor``; ``None`` uses the default executor
+    :param executor: executor for ``run_in_executor``. When ``None`` a dedicated single-thread executor is created
+        and owned by this lock, ensuring every operation runs on the same thread (required for SQLite affinity); it
+        is shut down by :meth:`close`. A caller-supplied executor is used as-is and never shut down here, so when no
+        executor is passed remember to call :meth:`close` to release the owned one.
 
     .. versionadded:: 3.21.0
 
@@ -90,8 +93,8 @@ class AsyncReadWriteLock:
         return self._loop
 
     @property
-    def executor(self) -> futures.Executor | None:
-        """:returns: the executor (or ``None`` for the default)."""
+    def executor(self) -> futures.Executor:
+        """:returns: the executor used for ``run_in_executor`` (a dedicated single-thread one if none was supplied)."""
         return self._executor
 
     async def _run(self, func: Callable[..., object], *args: object, **kwargs: object) -> object:
@@ -198,6 +201,12 @@ class AsyncReadWriteLock:
         """
         await self._run(self._lock.close)
         if self._owns_executor:
+            self._executor.shutdown(wait=False)
+
+    def __del__(self) -> None:
+        # Safety net: if close() was never called, still shut down the executor we created so its worker thread does
+        # not outlive the lock. A caller-supplied executor is left untouched. shutdown(wait=False) never blocks.
+        if getattr(self, "_owns_executor", False):
             self._executor.shutdown(wait=False)
 
 

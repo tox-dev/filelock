@@ -168,7 +168,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         if not acquired:
             raise Timeout(self.lock_file) from None
 
-    def _validate_reentrant(self, mode: Literal["read", "write"], opposite: str, direction: str) -> AcquireReturnProxy:
+    def _validate_reentrant(self, mode: Literal["read", "write"]) -> AcquireReturnProxy:
+        opposite = "write" if mode == "read" else "read"
+        direction = "downgrade" if mode == "read" else "upgrade"
         if self._current_mode != mode:
             msg = (
                 f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): "
@@ -210,12 +212,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._con.execute("SELECT name FROM sqlite_schema LIMIT 1;").close()
 
     def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
-        opposite = "write" if mode == "read" else "read"
-        direction = "downgrade" if mode == "read" else "upgrade"
-
         with self._internal_lock:
             if self._lock_level > 0:
-                return self._validate_reentrant(mode, opposite, direction)
+                return self._validate_reentrant(mode)
 
         start_time = time.perf_counter()
         self._acquire_transaction_lock(blocking=blocking, timeout=timeout)
@@ -236,12 +235,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         blocking: bool,
         start_time: float,
     ) -> AcquireReturnProxy:
-        opposite = "write" if mode == "read" else "read"
-        direction = "downgrade" if mode == "read" else "upgrade"
         # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
         with self._internal_lock:
             if self._lock_level > 0:
-                return self._validate_reentrant(mode, opposite, direction)
+                return self._validate_reentrant(mode)
         self._configure_and_begin(mode, timeout, blocking=blocking, start_time=start_time)
         with self._internal_lock:
             self._current_mode = mode

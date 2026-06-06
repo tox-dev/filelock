@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
@@ -216,6 +217,46 @@ async def test_custom_executor(lock_file: str) -> None:
     async with lock.read_lock():
         assert lock._lock._current_mode == "read"
     assert lock._lock._lock_level == 0
+    executor.shutdown(wait=False)
+
+
+@pytest.mark.asyncio
+async def test_close_shuts_down_owned_executor(lock_file: str) -> None:
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+    assert lock._owns_executor is True
+    executor = lock.executor
+    await lock.close()
+    with pytest.raises(RuntimeError):  # submitting after shutdown is rejected
+        executor.submit(int)
+
+
+@pytest.mark.asyncio
+async def test_close_keeps_provided_executor_open(lock_file: str) -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
+    assert lock._owns_executor is False
+    await lock.close()
+    assert executor.submit(int).result(timeout=5) == 0  # still usable
+    executor.shutdown(wait=False)
+
+
+def test_del_shuts_down_owned_executor(lock_file: str) -> None:
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+    executor = lock.executor
+    lock._lock.close()  # close the connection so only the executor lifecycle is under test
+    del lock
+    gc.collect()
+    with pytest.raises(RuntimeError):
+        executor.submit(int)
+
+
+def test_del_keeps_provided_executor_open(lock_file: str) -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
+    lock._lock.close()
+    del lock
+    gc.collect()
+    assert executor.submit(int).result(timeout=5) == 0
     executor.shutdown(wait=False)
 
 
