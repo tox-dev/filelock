@@ -228,6 +228,7 @@ def test_pid_while_locked(lock_path: Path) -> None:
         pytest.param(None, False, id="no_file"),
         pytest.param(_holder(os.getpid() + 1), False, id="different_pid"),
         pytest.param(_holder(os.getpid()), True, id="same_pid"),
+        pytest.param(_holder(os.getpid(), host="other-host"), False, id="same_pid_different_host"),
     ],
 )
 def test_is_lock_held_by_us(lock_path: Path, content: str | None, expected: bool) -> None:

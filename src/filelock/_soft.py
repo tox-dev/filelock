@@ -159,10 +159,15 @@ class SoftFileLock(BaseFileLock):
         """
         Whether this lock is held by the current process.
 
-        :returns: ``True`` if the lock file exists and contains the current process's PID
+        :returns: ``True`` if the lock file exists and names the current process's PID and hostname
 
         """
-        return self.pid == os.getpid()
+        with suppress(OSError, ValueError):
+            holder = _parse_lock_holder(_read_lock_file(self.lock_file)[0])
+            if holder is not None:
+                pid, hostname, _ = holder
+                return pid == os.getpid() and hostname == socket.gethostname()
+        return False
 
     def break_lock(self) -> None:
         """Forcibly break the lock by removing the lock file, regardless of who holds it."""
