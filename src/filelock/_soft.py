@@ -149,9 +149,9 @@ class SoftFileLock(BaseFileLock):
 
         """
         with suppress(OSError, ValueError):
-            content, _ = _read_lock_file(self.lock_file)
-            if content and (lines := content.strip().splitlines()):
-                return int(lines[0])
+            holder = _parse_lock_holder(_read_lock_file(self.lock_file)[0])
+            if holder is not None:
+                return holder[0]
         return None
 
     @property
@@ -228,6 +228,12 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
         pid = int(lines[0])
         creation_time = int(lines[2]) if len(lines) == 3 else None  # noqa: PLR2004
     except ValueError:
+        return None
+    # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid
+    # reaches os.kill() where 0 / -1 mean "the caller's own process group / every process" so a dead
+    # holder reads as alive and the lock is never reclaimed, while an oversized pid raises OverflowError
+    # (not OSError/ValueError) out of the self-heal path. _parse_marker_bytes already enforces this range.
+    if not 1 <= pid <= 2**31 - 1:
         return None
     return pid, lines[1], creation_time
 

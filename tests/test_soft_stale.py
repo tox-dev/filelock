@@ -125,6 +125,30 @@ def test_unparseable_lock_not_evicted_when_fresh(lock_path: Path, content: bytes
     _assert_times_out(lock_path)
 
 
+@pytest.mark.parametrize(
+    "pid",
+    [
+        pytest.param(0, id="zero"),
+        pytest.param(-1, id="negative"),
+        pytest.param(2**31, id="oversized"),
+    ],
+)
+def test_out_of_range_pid_self_heals_when_old(lock_path: Path, pid: int) -> None:
+    lock_path.write_text(_holder(pid), encoding="utf-8")
+    os.utime(lock_path, (0, 0))
+    # A pid of 0 or -1 makes os.kill() probe the caller's own process group (read as alive) so the lock is
+    # never reclaimed, and an oversized pid raises OverflowError out of stale detection. Such a holder is
+    # malformed and must self-heal like any other unparsable one, matching what _parse_marker_bytes rejects.
+    _assert_self_heals(lock_path)
+
+
+def test_out_of_range_pid_not_evicted_when_fresh(lock_path: Path) -> None:
+    lock_path.write_text(_holder(0), encoding="utf-8")
+    # A fresh out-of-range pid is malformed too, but like any malformed lock it is left alone until it ages
+    # past the threshold, so a peer mid-write is never mistaken for a stale lock.
+    _assert_times_out(lock_path)
+
+
 def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(DEAD_PID), encoding="utf-8")
     mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=False)
@@ -207,6 +231,8 @@ def test_get_process_creation_time_returns_none_on_unix() -> None:
         pytest.param(b"not-a-number\n", None, id="malformed"),
         pytest.param(b"\xff\xfe\n", None, id="non_utf8"),
         pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), None, id="oversized"),
+        pytest.param(b"42\n", None, id="single_line"),
+        pytest.param(_holder(0).encode(), None, id="out_of_range_pid"),
         pytest.param(_holder(os.getpid()).encode(), os.getpid(), id="valid"),
     ],
 )
