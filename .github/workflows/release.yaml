@@ -10,6 +10,7 @@ on:
         options: ["no", patch, minor, major]
   push:
     branches: ["main"]
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
   pull_request:
 
 concurrency:
@@ -44,10 +45,10 @@ jobs:
       - name: 📦 Setup uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
-          enable-cache: true
-          cache-dependency-glob: "tasks/changelog.py"
+          enable-cache: false # this workflow builds the artifact that gets published; no cache to poison
       - name: 📝 Generate changelog
         id: v
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }} # on a tag push we build to publish, no changelog needed
         run: >-
           uv run tasks/changelog.py "$RELEASE_TYPE" "$EVENT_NUMBER" "$BASE_SHA"
         env:
@@ -110,7 +111,39 @@ jobs:
           git commit -m "Release $VERSION"
           git tag "$VERSION"
           # Push the branch, then the tag. The tag is pushed with RELEASE_TOKEN (a PAT, not GITHUB_TOKEN), so it
-          # triggers publish.yaml, which builds at the tag and uploads to PyPI. Publishing lives there, not here, so
-          # any tag — including one pushed by hand — always reaches PyPI instead of silently skipping it.
+          # triggers this same workflow on the tag ref, where the publish job below uploads to PyPI. Publishing keys
+          # off the tag, not this dispatch run, so any tag — including one pushed by hand — always reaches PyPI.
           git push origin main
           git push origin "$VERSION"
+
+  publish:
+    name: 🚀 publish
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    environment:
+      name: release
+      url: https://pypi.org/project/filelock/${{ github.ref_name }}
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - name: ⬇️ Download all the dists
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ env.dists-artifact-name }}
+          path: dist/
+      - name: 🚀 Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          skip-existing: true
+      - name: 📢 Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $VERSION already exists, skipping"
+          else
+            gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title="$VERSION" --verify-tag --generate-notes
+          fi
