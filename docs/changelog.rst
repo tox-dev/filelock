@@ -3,6 +3,16 @@
 ###########
 
 ********************
+ 3.29.2 (2026-06-10)
+********************
+
+- build(deps): bump actions/checkout from 6.0.2 to 6.0.3 :pr:`555` - by :user:`dependabot[bot]`
+- [pre-commit.ci] pre-commit autoupdate :pr:`554` - by :user:`pre-commit-ci[bot]`
+- check hostname in is_lock_held_by_us :pr:`553` - by :user:`dxbjavid`
+- 🔒 fix(soft): harden stale-lock breaking and self-heal malformed locks :pr:`551`
+- open marker reads non-blocking to refuse attacker-placed fifo :pr:`549` - by :user:`dxbjavid`
+
+********************
  3.29.1 (2026-06-03)
 ********************
 
