@@ -71,15 +71,11 @@ jobs:
           path: dist/*
 
   release:
-    name: 🚀 release
+    name: 🏷️ tag
     needs: [build]
     if: github.event.inputs.release != 'no' && github.event.inputs.release != null && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    environment:
-      name: release
-      url: https://pypi.org/project/filelock/${{ needs.build.outputs.version }}
     permissions:
-      id-token: write
       contents: write
     steps:
       - name: 📥 Checkout
@@ -92,7 +88,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           if git ls-remote --tags origin "refs/tags/$VERSION" | grep -q .; then
-            echo "Tag $VERSION already exists, skipping changelog commit"
+            echo "Tag $VERSION already exists, nothing to do"
             exit 0
           fi
           git config user.name "${GITHUB_ACTOR}"
@@ -109,24 +105,8 @@ jobs:
           git add docs/changelog.rst
           git commit -m "Release $VERSION"
           git tag "$VERSION"
-          git push origin "$VERSION"
+          # Push the branch, then the tag. The tag is pushed with RELEASE_TOKEN (a PAT, not GITHUB_TOKEN), so it
+          # triggers publish.yaml, which builds at the tag and uploads to PyPI. Publishing lives there, not here, so
+          # any tag — including one pushed by hand — always reaches PyPI instead of silently skipping it.
           git push origin main
-      - name: ⬇️ Download all the dists
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: ${{ env.dists-artifact-name }}
-          path: dist/
-      - name: 🚀 Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
-        with:
-          skip-existing: true
-      - name: 📢 Create GitHub release
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          if gh release view "$VERSION" > /dev/null 2>&1; then
-            echo "Release $VERSION already exists, skipping"
-          else
-            gh release create "$VERSION" --title="$VERSION" --verify-tag --generate-notes
-          fi
+          git push origin "$VERSION"
