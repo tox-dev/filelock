@@ -3,6 +3,15 @@
 ###########
 
 ********************
+ 3.29.3 (2026-06-10)
+********************
+
+- 🐛 fix(ci): restore release environment on tag job :pr:`559`
+- validate pid range in _parse_lock_holder :pr:`556` - by :user:`dxbjavid`
+- 🔧 ci(release): publish to PyPI on tag push :pr:`557`
+- build(deps): bump astral-sh/setup-uv from 8.1.0 to 8.2.0 :pr:`558` - by :user:`dependabot[bot]`
+
+********************
  3.29.2 (2026-06-10)
 ********************
 
