@@ -75,6 +75,10 @@ jobs:
     needs: [build]
     if: github.event.inputs.release != 'no' && github.event.inputs.release != null && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    # RELEASE_TOKEN is an environment-scoped secret; without selecting the environment it resolves empty and the
+    # checkout fails with "Input required and not supplied: token".
+    environment:
+      name: release
     permissions:
       contents: write
     steps:
