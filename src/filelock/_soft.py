@@ -149,9 +149,9 @@ class SoftFileLock(BaseFileLock):
 
         """
         with suppress(OSError, ValueError):
-            content, _ = _read_lock_file(self.lock_file)
-            if content and (lines := content.strip().splitlines()):
-                return int(lines[0])
+            holder = _parse_lock_holder(_read_lock_file(self.lock_file)[0])
+            if holder is not None:
+                return holder[0]
         return None
 
     @property
