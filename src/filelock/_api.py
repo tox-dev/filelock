@@ -372,10 +372,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             # lock file with a symlink pointing at an old file, making stat() report the target's stale
             # mtime so a waiter breaks a live lock and two processes hold it at once. lstat reads the
             # symlink's own mtime, matching the O_NOFOLLOW reads elsewhere.
-            mtime = os.lstat(self.lock_file).st_mtime
-            if time.time() - mtime < lifetime:
+            st = os.lstat(self.lock_file)
+            if time.time() - st.st_mtime < lifetime:
                 return
-            break_lock_file(self.lock_file, mtime)
+            break_lock_file(self.lock_file, st.st_mtime, st.st_ino)
 
     @abstractmethod
     def _acquire(self) -> None:
