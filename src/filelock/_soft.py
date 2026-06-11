@@ -57,7 +57,7 @@ class SoftFileLock(BaseFileLock):
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
-            content, mtime = _read_lock_file(self.lock_file)
+            content, mtime, ino = _read_lock_file(self.lock_file)
             holder = _parse_lock_holder(content)
 
             if holder is None:
@@ -65,7 +65,7 @@ class SoftFileLock(BaseFileLock):
                 # Self-heal only once the file is clearly not a half-written fresh lock (a peer between O_EXCL and
                 # _write_lock_info), so the brief create-then-write window is never mistaken for a stale lock.
                 if time.time() - mtime >= _MALFORMED_LOCK_AGE_THRESHOLD:
-                    break_lock_file(self.lock_file, mtime)
+                    break_lock_file(self.lock_file, mtime, ino)
                 return
 
             pid, hostname, creation_time = holder
@@ -80,7 +80,7 @@ class SoftFileLock(BaseFileLock):
                     return  # same process or can't verify — don't evict
                 # else: PID alive but creation time differs — the PID was recycled, so the lock is stale.
 
-            break_lock_file(self.lock_file, mtime)
+            break_lock_file(self.lock_file, mtime, ino)
 
     @staticmethod
     def _is_process_alive(pid: int) -> bool:
@@ -201,21 +201,21 @@ class SoftFileLock(BaseFileLock):
                 return
 
 
-def _read_lock_file(path: str) -> tuple[str | None, float]:
+def _read_lock_file(path: str) -> tuple[str | None, float, int]:
     # The lock file is created with O_EXCL | O_NOFOLLOW, so a symlink here is a hostile replacement and must
     # not be followed. O_NONBLOCK keeps an attacker-placed FIFO from stalling the open (O_NOFOLLOW alone only
     # rejects a symlink, not a real FIFO at the path), and the capped read stops a huge file (e.g. /dev/zero)
-    # from exhausting memory. Content is None when the file is too large or not UTF-8, but the mtime still
-    # flows back so the caller can evict it as a stale, malformed lock.
+    # from exhausting memory. Content is None when the file is too large or not UTF-8, but the mtime and inode
+    # still flow back so the caller can evict it as a stale, malformed lock and verify identity before breaking.
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     try:
-        mtime, data = os.fstat(fd).st_mtime, os.read(fd, _MAX_LOCK_FILE_SIZE + 1)
+        st, data = os.fstat(fd), os.read(fd, _MAX_LOCK_FILE_SIZE + 1)
     finally:
         os.close(fd)
     if len(data) <= _MAX_LOCK_FILE_SIZE:
         with suppress(UnicodeDecodeError):
-            return data.decode("utf-8"), mtime
-    return None, mtime
+            return data.decode("utf-8"), st.st_mtime, st.st_ino
+    return None, st.st_mtime, st.st_ino
 
 
 def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | None:
