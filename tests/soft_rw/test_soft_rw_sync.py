@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager, suppress
-from errno import EIO
+from errno import EIO, ENOENT
 from multiprocessing import Event, Process
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -624,6 +624,26 @@ def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: p
         time.sleep(0.2)  # ~10 ticks, all of which fail the touch
         assert hold.heartbeat_thread.is_alive()
         assert not hold.heartbeat_stop.is_set()
+    finally:
+        lock.release(force=True)
+        lock.close()
+
+
+def test_heartbeat_stops_when_marker_unlinked_during_touch(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # ENOENT on the touch means the marker we just read was unlinked between the read and the touch -- a peer
+    # evicted us, not a transient hiccup -- so the heartbeat must stop at once rather than wait another tick.
+    def gone(name: str, *, dir_fd: int | None = None) -> None:  # noqa: ARG001
+        raise FileNotFoundError(ENOENT, "No such file or directory")
+
+    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
+    lock.acquire_write(timeout=2)
+    try:
+        hold = lock._hold
+        assert hold is not None
+        monkeypatch.setattr(sync_mod, "_touch", gone)
+        assert hold.heartbeat_stop.wait(timeout=2)
+        hold.heartbeat_thread.join(timeout=2)
+        assert not hold.heartbeat_thread.is_alive()
     finally:
         lock.release(force=True)
         lock.close()
