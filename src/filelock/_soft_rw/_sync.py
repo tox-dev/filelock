@@ -641,10 +641,17 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # thread so it does not touch a stranger's file.
         if info is None or not hmac.compare_digest(info.token, token):
             return False
+        # A transient touch failure (ESTALE / EIO on the NFS-style filesystems this lock targets) must not
+        # kill the heartbeat thread: the read above just confirmed the marker is still ours, so swallow the
+        # error and retry on the next tick rather than letting the lease lapse while we still believe we
+        # hold the lock. FileNotFoundError is different in kind -- the marker we just read has since been
+        # unlinked, i.e. a peer evicted us -- so stop the heartbeat at once instead of waiting a tick.
         try:
             _touch(marker_name, dir_fd=dir_fd)
-        except FileNotFoundError:  # pragma: no cover - race between successful read and touch
+        except FileNotFoundError:
             return False
+        except OSError:
+            pass
         return True
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - fork child not tracked

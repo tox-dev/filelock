@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager, suppress
+from errno import EIO, ENOENT
 from multiprocessing import Event, Process
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -15,6 +16,7 @@ import pytest
 
 from filelock import Timeout
 from filelock._soft_rw import SoftReadWriteLock
+from filelock._soft_rw import _sync as sync_mod
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -602,6 +604,46 @@ def test_heartbeat_self_stops_on_token_replacement(lock_file: str) -> None:
         # Replace the marker content with a well-formed marker holding a different token.
         Path(f"{lock_file}.write").write_bytes(b"0" * 32 + b"\n1\nhost\n")
         time.sleep(0.15)
+    finally:
+        lock.release(force=True)
+        lock.close()
+
+
+def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # On the NFS-style filesystems this lock targets a transient ESTALE / EIO on the heartbeat touch is
+    # routine; it must not kill the heartbeat and silently drop the lease while we still believe we hold it.
+    def boom(name: str, *, dir_fd: int | None = None) -> None:  # noqa: ARG001
+        raise OSError(EIO, "Input/output error")
+
+    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
+    lock.acquire_write(timeout=2)
+    try:
+        hold = lock._hold
+        assert hold is not None
+        monkeypatch.setattr(sync_mod, "_touch", boom)
+        time.sleep(0.2)  # ~10 ticks, all of which fail the touch
+        assert hold.heartbeat_thread.is_alive()
+        assert not hold.heartbeat_stop.is_set()
+    finally:
+        lock.release(force=True)
+        lock.close()
+
+
+def test_heartbeat_stops_when_marker_unlinked_during_touch(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # ENOENT on the touch means the marker we just read was unlinked between the read and the touch -- a peer
+    # evicted us, not a transient hiccup -- so the heartbeat must stop at once rather than wait another tick.
+    def gone(name: str, *, dir_fd: int | None = None) -> None:  # noqa: ARG001
+        raise FileNotFoundError(ENOENT, "No such file or directory")
+
+    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
+    lock.acquire_write(timeout=2)
+    try:
+        hold = lock._hold
+        assert hold is not None
+        monkeypatch.setattr(sync_mod, "_touch", gone)
+        assert hold.heartbeat_stop.wait(timeout=2)
+        hold.heartbeat_thread.join(timeout=2)
+        assert not hold.heartbeat_thread.is_alive()
     finally:
         lock.release(force=True)
         lock.close()
