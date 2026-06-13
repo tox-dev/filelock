@@ -3,6 +3,13 @@
 ###########
 
 ********************
+ 3.29.4 (2026-06-13)
+********************
+
+- keep the read/write heartbeat alive on a transient touch error :pr:`562` - by :user:`dxbjavid`
+- verify inode in break_lock_file before unlinking a stale lock :pr:`561` - by :user:`dxbjavid`
+
+********************
  3.29.3 (2026-06-10)
 ********************
 
