@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager, suppress
+from errno import EIO
 from multiprocessing import Event, Process
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -15,6 +16,7 @@ import pytest
 
 from filelock import Timeout
 from filelock._soft_rw import SoftReadWriteLock
+from filelock._soft_rw import _sync as sync_mod
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -602,6 +604,25 @@ def test_heartbeat_self_stops_on_token_replacement(lock_file: str) -> None:
         # Replace the marker content with a well-formed marker holding a different token.
         Path(f"{lock_file}.write").write_bytes(b"0" * 32 + b"\n1\nhost\n")
         time.sleep(0.15)
+    finally:
+        lock.release(force=True)
+        lock.close()
+
+
+def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # On the NFS-style filesystems this lock targets a transient ESTALE / EIO on the heartbeat touch is
+    # routine; it must not kill the heartbeat and silently drop the lease while we still believe we hold it.
+    def boom(name: str, *, dir_fd: int | None = None) -> None:  # noqa: ARG001
+        raise OSError(EIO, "Input/output error")
+
+    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
+    lock.acquire_write(timeout=2)
+    try:
+        heartbeat = lock._hold.heartbeat_thread
+        monkeypatch.setattr(sync_mod, "_touch", boom)
+        time.sleep(0.2)  # ~10 ticks, all of which fail the touch
+        assert heartbeat.is_alive()
+        assert not lock._hold.heartbeat_stop.is_set()
     finally:
         lock.release(force=True)
         lock.close()

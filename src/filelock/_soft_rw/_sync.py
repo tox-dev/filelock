@@ -641,10 +641,13 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # thread so it does not touch a stranger's file.
         if info is None or not hmac.compare_digest(info.token, token):
             return False
-        try:
+        # A transient touch failure (ESTALE / EIO on the NFS-style filesystems this lock targets) must not
+        # kill the heartbeat thread: the read above just confirmed the marker is still ours, so swallow the
+        # error and retry on the next tick rather than letting the lease lapse while we still believe we
+        # hold the lock. A marker that has genuinely vanished is caught by the next iteration's _read_marker
+        # returning None. This mirrors the OSError suppression already used around the writer-drain touch.
+        with suppress(OSError):
             _touch(marker_name, dir_fd=dir_fd)
-        except FileNotFoundError:  # pragma: no cover - race between successful read and touch
-            return False
         return True
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - fork child not tracked
