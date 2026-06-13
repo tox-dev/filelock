@@ -618,11 +618,12 @@ def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: p
     lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
     lock.acquire_write(timeout=2)
     try:
-        heartbeat = lock._hold.heartbeat_thread
+        hold = lock._hold
+        assert hold is not None
         monkeypatch.setattr(sync_mod, "_touch", boom)
         time.sleep(0.2)  # ~10 ticks, all of which fail the touch
-        assert heartbeat.is_alive()
-        assert not lock._hold.heartbeat_stop.is_set()
+        assert hold.heartbeat_thread.is_alive()
+        assert not hold.heartbeat_stop.is_set()
     finally:
         lock.release(force=True)
         lock.close()
