@@ -608,7 +608,7 @@ def test_release_rollback_serialised_against_concurrent_acquire(lock_file: str) 
         try:
             lock.acquire_read()
             result["ok"] = True
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             result["exc"] = exc
 
     thread = threading.Thread(target=acquirer, daemon=True)
