@@ -577,6 +577,53 @@ def test_cleanup_connections_closes_all(tmp_path: Path) -> None:
         con2.execute("SELECT 1;")
 
 
+def test_release_rollback_serialised_against_concurrent_acquire(lock_file: str) -> None:
+    # release() rolls back the transaction on the shared connection; a concurrent acquire on another thread
+    # must not be able to BEGIN while that rollback is still in flight. Park the rollback with the lock level
+    # already back at 0 and confirm the racing acquire waits for it instead of erroring with "cannot start a
+    # transaction within a transaction".
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    lock.acquire_read()
+
+    started = threading.Event()
+    proceed = threading.Event()
+    real_con = lock._con
+
+    class _SlowRollbackCon:
+        def rollback(self) -> None:
+            started.set()
+            proceed.wait(timeout=5)
+            real_con.rollback()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(real_con, name)
+
+    lock._con = _SlowRollbackCon()  # type: ignore[assignment]
+    threading.Thread(target=lock.release, daemon=True).start()
+    assert started.wait(timeout=5)
+
+    result: dict[str, object] = {}
+
+    def acquirer() -> None:
+        try:
+            lock.acquire_read()
+            result["ok"] = True
+        except BaseException as exc:  # noqa: BLE001
+            result["exc"] = exc
+
+    thread = threading.Thread(target=acquirer, daemon=True)
+    thread.start()
+    thread.join(timeout=1)
+    assert thread.is_alive()  # blocked on _transaction_lock, not racing the rollback
+
+    proceed.set()
+    thread.join(timeout=5)
+    lock._con = real_con  # type: ignore[assignment]
+    assert result.get("ok") is True
+    assert "exc" not in result
+    lock.release()
+
+
 def test_pytest_session_finish_calls_cleanup(mocker: MockerFixture) -> None:
     mock = mocker.patch("conftest._cleanup_connections")
     pytest_sessionfinish()
