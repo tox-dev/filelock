@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # noqa: RUF076
 def _clear_singletons() -> Generator[None]:
     SoftReadWriteLock._instances.clear()
     yield

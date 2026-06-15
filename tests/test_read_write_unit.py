@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # noqa: RUF076
 def _clear_singleton_cache() -> Generator[None]:
     ReadWriteLock._instances.clear()
     yield
