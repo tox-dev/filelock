@@ -312,8 +312,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 self._write_thread_id = None
                 should_rollback = True
         if should_rollback:
-            # The rollback ends the transaction on the shared connection, so it has to be serialised against
-            # acquire()'s BEGIN the same way acquire() already serialises itself with _transaction_lock. Without
+            # The rollback ends the transaction on the shared connection, so it has to be serialized against
+            # acquire()'s BEGIN the same way acquire() already serializes itself with _transaction_lock. Without
             # this, another thread that sees lock_level back at 0 can start its BEGIN while this rollback's
             # transaction is still open (raising "cannot start a transaction within a transaction") or, in the
             # other ordering, have its freshly started transaction rolled back here, dropping the database lock

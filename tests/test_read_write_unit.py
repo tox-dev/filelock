@@ -590,7 +590,7 @@ def test_release_rollback_serialised_against_concurrent_acquire(lock_file: str) 
     real_con = lock._con
 
     class _SlowRollbackCon:
-        def rollback(self) -> None:
+        def rollback(self) -> None:  # noqa: PLR6301
             started.set()
             proceed.wait(timeout=5)
             real_con.rollback()
@@ -598,7 +598,7 @@ def test_release_rollback_serialised_against_concurrent_acquire(lock_file: str) 
         def __getattr__(self, name: str) -> object:
             return getattr(real_con, name)
 
-    lock._con = _SlowRollbackCon()  # type: ignore[assignment]
+    lock._con = _SlowRollbackCon()  # ty: ignore[invalid-assignment]
     threading.Thread(target=lock.release, daemon=True).start()
     assert started.wait(timeout=5)
 
@@ -618,7 +618,7 @@ def test_release_rollback_serialised_against_concurrent_acquire(lock_file: str) 
 
     proceed.set()
     thread.join(timeout=5)
-    lock._con = real_con  # type: ignore[assignment]
+    lock._con = real_con
     assert result.get("ok") is True
     assert "exc" not in result
     lock.release()
