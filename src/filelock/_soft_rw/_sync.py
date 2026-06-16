@@ -33,6 +33,8 @@ _BREAK_SUFFIX = ".break"
 _MAX_MARKER_SIZE = 1024
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+# os.utime follows symlinks unless told not to; not every platform can refuse the follow, so probe support.
+_SUPPORTS_UTIME_NOFOLLOW = os.utime in os.supports_follow_symlinks
 # dirfd-relative I/O is a Unix-only optimization; Windows cannot ``os.open()`` a directory at all, and
 # its ``os`` module skips dir_fd support entirely. When disabled, callers fall back to full-path ops.
 _SUPPORTS_DIR_FD = sys.platform != "win32" and os.open in os.supports_dir_fd
@@ -808,10 +810,15 @@ def _unlink(name: str, *, dir_fd: int | None = None) -> None:
 
 
 def _touch(name: str, *, dir_fd: int | None = None) -> None:
+    # Refuse to follow a symlink (where the platform allows it). Every read in this module already opens the
+    # marker with O_NOFOLLOW because a peer can swap an attacker-controlled symlink in at a marker path; the
+    # refresh touch is the one spot left following symlinks, so a marker swapped in the window after the
+    # O_NOFOLLOW read would have its link target's mtime updated instead of the swapped marker being refused.
+    follow = not _SUPPORTS_UTIME_NOFOLLOW
     if _SUPPORTS_DIR_FD and dir_fd is not None:
-        os.utime(name, None, dir_fd=dir_fd)
+        os.utime(name, None, dir_fd=dir_fd, follow_symlinks=follow)
     else:
-        os.utime(name, None)
+        os.utime(name, None, follow_symlinks=follow)
 
 
 def _file_exists(path: str) -> bool:

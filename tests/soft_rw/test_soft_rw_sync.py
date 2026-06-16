@@ -722,6 +722,25 @@ def test_fifo_write_marker_does_not_block(lock_file: str) -> None:
         lock.close()
 
 
+@pytest.mark.skipif(
+    os.utime not in os.supports_follow_symlinks, reason="os.utime cannot refuse symlinks on this platform"
+)
+def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:
+    # A peer can swap a marker for a symlink in the window after our O_NOFOLLOW read but before the refresh
+    # touch; the touch must update the symlink itself, not the file it points at.
+    victim = tmp_path / "victim"
+    victim.write_text("do-not-touch")
+    past = time.time() - 1000
+    os.utime(victim, (past, past))
+    marker = Path(f"{lock_file}.write")
+    marker.symlink_to(victim)
+
+    sync_mod._touch(str(marker))
+
+    assert victim.stat().st_mtime == past
+    assert victim.read_text() == "do-not-touch"
+
+
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW required")
 def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> None:
     victim = tmp_path / "victim"
