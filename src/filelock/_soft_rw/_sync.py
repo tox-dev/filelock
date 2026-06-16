@@ -33,6 +33,9 @@ _BREAK_SUFFIX = ".break"
 _MAX_MARKER_SIZE = 1024
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+# Retargeting os.utime to an open fd lets the heartbeat refresh the exact inode it just verified instead of
+# re-resolving the path; Windows read-only handles cannot set times that way, so keep it Unix-only.
+_SUPPORTS_UTIME_FD = sys.platform != "win32" and os.utime in os.supports_fd
 # os.utime follows symlinks unless told not to; not every platform can refuse the follow, so probe support.
 _SUPPORTS_UTIME_NOFOLLOW = os.utime in os.supports_follow_symlinks
 # dirfd-relative I/O is a Unix-only optimization; Windows cannot ``os.open()`` a directory at all, and
@@ -635,26 +638,32 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             token = hold.token
             dir_fd = self._readers_dir_fd if hold.is_reader else None
 
-        read_result = _read_marker(marker_name, dir_fd=dir_fd)
-        if read_result is None:
+        # Open once with O_NOFOLLOW and touch that exact descriptor. Doing the refresh through the verified fd
+        # (instead of re-opening by name) closes the window where a peer unlinks our marker and drops a symlink
+        # or a different file at the path between the read and the touch: utime then lands on the inode we
+        # verified, or nowhere. A failed open means the marker is gone or was swapped out -- a peer evicted us
+        # -- so stop the heartbeat at once instead of waiting a tick.
+        fd = _open_marker(marker_name, dir_fd=dir_fd)
+        if fd is None:
             return False
-        info, _mtime = read_result
-        # Token mismatch means another process already evicted our marker and created its own; stop the
-        # thread so it does not touch a stranger's file.
-        if info is None or not hmac.compare_digest(info.token, token):
-            return False
-        # A transient touch failure (ESTALE / EIO on the NFS-style filesystems this lock targets) must not
-        # kill the heartbeat thread: the read above just confirmed the marker is still ours, so swallow the
-        # error and retry on the next tick rather than letting the lease lapse while we still believe we
-        # hold the lock. FileNotFoundError is different in kind -- the marker we just read has since been
-        # unlinked, i.e. a peer evicted us -- so stop the heartbeat at once instead of waiting a tick.
         try:
-            _touch(marker_name, dir_fd=dir_fd)
-        except FileNotFoundError:
-            return False
-        except OSError:
-            pass
-        return True
+            try:
+                data = os.read(fd, _MAX_MARKER_SIZE + 1)
+            except OSError:  # pragma: no cover - e.g. EAGAIN from a hostile FIFO that has a writer attached
+                return False
+            info = _parse_marker_bytes(data)
+            # Token mismatch means another process already evicted our marker and created its own; stop the
+            # thread so it does not keep a stranger's file alive.
+            if info is None or not hmac.compare_digest(info.token, token):
+                return False
+            # A transient touch failure (ESTALE / EIO on the NFS-style filesystems this lock targets) must not
+            # kill the heartbeat thread: the read above just confirmed the marker is still ours, so swallow the
+            # error and retry on the next tick rather than letting the lease lapse while we still hold the lock.
+            with suppress(OSError):
+                _touch(marker_name, fd=fd)
+            return True
+        finally:
+            os.close(fd)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - fork child not tracked
         # Replace every lock this instance owns with a fresh one; the inherited locks may still be held
@@ -705,14 +714,20 @@ def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -
         os.close(fd)
 
 
-def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo | None, float] | None:
+def _open_marker(name: str, *, dir_fd: int | None = None) -> int | None:
     # The file is ours; these guard a hostile mid-flight swap. O_NOFOLLOW rejects a symlink; O_NONBLOCK keeps
     # a real FIFO from blocking the open forever, so it reads as a malformed marker instead of wedging a peer
     # that holds the state lock.
     flags = os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK
     try:
-        fd = os.open(name, flags, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.open(name, flags)
+        return os.open(name, flags, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.open(name, flags)
     except OSError:
+        return None
+
+
+def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo | None, float] | None:
+    fd = _open_marker(name, dir_fd=dir_fd)
+    if fd is None:
         return None
     try:
         try:
@@ -809,16 +824,15 @@ def _unlink(name: str, *, dir_fd: int | None = None) -> None:
             Path(name).unlink()
 
 
-def _touch(name: str, *, dir_fd: int | None = None) -> None:
-    # Refuse to follow a symlink (where the platform allows it). Every read in this module already opens the
-    # marker with O_NOFOLLOW because a peer can swap an attacker-controlled symlink in at a marker path; the
-    # refresh touch is the one spot left following symlinks, so a marker swapped in the window after the
-    # O_NOFOLLOW read would have its link target's mtime updated instead of the swapped marker being refused.
-    follow = not _SUPPORTS_UTIME_NOFOLLOW
-    if _SUPPORTS_DIR_FD and dir_fd is not None:
-        os.utime(name, None, dir_fd=dir_fd, follow_symlinks=follow)
-    else:
-        os.utime(name, None, follow_symlinks=follow)
+def _touch(name: str, *, fd: int | None = None) -> None:
+    # Prefer the already-open, already-verified fd so a peer that swaps a symlink or a different file in at the
+    # path after our O_NOFOLLOW read cannot redirect the touch: utime then targets the inode behind the fd.
+    # Where the platform cannot utime an fd, fall back to a path-based touch that still refuses to follow a
+    # symlink where supported -- matching the O_NOFOLLOW reads used everywhere else here.
+    if fd is not None and _SUPPORTS_UTIME_FD:
+        os.utime(fd, None)
+        return
+    os.utime(name, None, follow_symlinks=not _SUPPORTS_UTIME_NOFOLLOW)
 
 
 def _file_exists(path: str) -> bool:
