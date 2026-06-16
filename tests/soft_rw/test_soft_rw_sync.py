@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager, suppress
-from errno import EIO, ENOENT
+from errno import EIO
 from multiprocessing import Event, Process
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -612,7 +612,7 @@ def test_heartbeat_self_stops_on_token_replacement(lock_file: str) -> None:
 def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
     # On the NFS-style filesystems this lock targets a transient ESTALE / EIO on the heartbeat touch is
     # routine; it must not kill the heartbeat and silently drop the lease while we still believe we hold it.
-    def boom(name: str, *, dir_fd: int | None = None) -> None:  # noqa: ARG001
+    def boom(name: str, *, fd: int | None = None) -> None:  # noqa: ARG001
         raise OSError(EIO, "Input/output error")
 
     lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
@@ -629,18 +629,18 @@ def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: p
         lock.close()
 
 
-def test_heartbeat_stops_when_marker_unlinked_during_touch(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    # ENOENT on the touch means the marker we just read was unlinked between the read and the touch -- a peer
-    # evicted us, not a transient hiccup -- so the heartbeat must stop at once rather than wait another tick.
-    def gone(name: str, *, dir_fd: int | None = None) -> None:  # noqa: ARG001
-        raise FileNotFoundError(ENOENT, "No such file or directory")
+def test_heartbeat_stops_when_marker_evicted(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A failed O_NOFOLLOW open means the marker we held was unlinked or swapped for a symlink -- a peer
+    # evicted us, not a transient hiccup -- so the heartbeat must stop at once rather than keep retrying.
+    def gone(name: str, *, dir_fd: int | None = None) -> int | None:  # noqa: ARG001
+        return None
 
     lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
     lock.acquire_write(timeout=2)
     try:
         hold = lock._hold
         assert hold is not None
-        monkeypatch.setattr(sync_mod, "_touch", gone)
+        monkeypatch.setattr(sync_mod, "_open_marker", gone)
         assert hold.heartbeat_stop.wait(timeout=2)
         hold.heartbeat_thread.join(timeout=2)
         assert not hold.heartbeat_thread.is_alive()
@@ -734,6 +734,58 @@ def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> No
     finally:
         lock.close()
     assert victim.read_text() == "do-not-touch"
+
+
+@pytest.mark.skipif(
+    os.utime not in os.supports_follow_symlinks, reason="os.utime cannot refuse symlinks on this platform"
+)
+def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:
+    # The phase-2 writer-drain touch refreshes the .write marker by path (no held fd); if a peer swaps a
+    # symlink in, the touch must land on the link itself, not the file it points at.
+    victim = tmp_path / "victim"
+    victim.write_text("do-not-touch")
+    past = time.time() - 1000
+    os.utime(victim, (past, past))
+    marker = Path(f"{lock_file}.write")
+    marker.symlink_to(victim)
+
+    sync_mod._touch(str(marker))
+
+    assert victim.stat().st_mtime == past
+    assert victim.read_text() == "do-not-touch"
+
+
+@pytest.mark.skipif(not sync_mod._SUPPORTS_UTIME_FD, reason="os.utime cannot target an fd on this platform")
+def test_refresh_touches_verified_fd_not_swapped_path(
+    lock_file: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A peer can swap our marker for a symlink in the window after the heartbeat's O_NOFOLLOW open but before
+    # the touch; because the refresh touches the verified fd, the swapped symlink's target stays untouched.
+    victim = tmp_path / "victim"
+    victim.write_text("do-not-touch")
+    past = time.time() - 1000
+    os.utime(victim, (past, past))
+
+    lock = _make_lock(lock_file, heartbeat_interval=30, stale_threshold=90)
+    lock.acquire_write(timeout=2)
+    try:
+        marker = Path(f"{lock_file}.write")
+        real_open = sync_mod._open_marker
+
+        def swap_after_open(name: str, *, dir_fd: int | None = None) -> int | None:
+            fd = real_open(name, dir_fd=dir_fd)
+            if fd is not None and Path(name) == marker:
+                marker.unlink()
+                marker.symlink_to(victim)
+            return fd
+
+        monkeypatch.setattr(sync_mod, "_open_marker", swap_after_open)
+        assert lock._refresh_marker() is True
+        assert victim.stat().st_mtime == past
+        assert victim.read_text() == "do-not-touch"
+    finally:
+        lock.release(force=True)
+        lock.close()
 
 
 def test_symlinked_readers_directory_is_refused(lock_file: str, tmp_path: Path) -> None:
