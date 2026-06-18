@@ -609,6 +609,22 @@ def test_heartbeat_self_stops_on_token_replacement(lock_file: str) -> None:
         lock.close()
 
 
+def test_release_keeps_a_peers_writer_marker(lock_file: str) -> None:
+    # A holder paused long enough (a stop-the-world GC pause, SIGSTOP, a suspended VM) for a peer to evict
+    # its stale marker and claim the writer slot must not unlink that peer's live marker on release: doing so
+    # would let a second writer through and break mutual exclusion.
+    lock = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
+    lock.acquire_write(timeout=2)
+    try:
+        write_marker = f"{lock_file}.write"
+        peer_marker = b"a" * 32 + b"\n1\npeerhost\n"
+        Path(write_marker).write_bytes(peer_marker)
+        lock.release()
+        assert Path(write_marker).read_bytes() == peer_marker
+    finally:
+        lock.close()
+
+
 def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
     # On the NFS-style filesystems this lock targets a transient ESTALE / EIO on the heartbeat touch is
     # routine; it must not kill the heartbeat and silently drop the lease while we still believe we hold it.

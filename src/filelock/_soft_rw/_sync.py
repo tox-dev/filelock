@@ -379,7 +379,23 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         if hold.is_reader:
             _unlink(hold.marker_name, dir_fd=self._readers_dir_fd)
         else:
-            _unlink(hold.marker_name)
+            self._unlink_writer_marker_if_ours(hold.token)
+
+    def _unlink_writer_marker_if_ours(self, token: str) -> None:
+        # Remove the writer marker only while it still carries our token. If this holder was paused long
+        # enough (a stop-the-world GC pause, SIGSTOP, a suspended VM) for a peer to evict the marker as
+        # stale and claim the writer slot itself, the file now at <path>.write is the peer's live marker;
+        # unlinking it by path would let a second writer through and break mutual exclusion. The state lock
+        # serialises this against a concurrent break/claim, and the heartbeat is already stopped, so the
+        # token we read is authoritative. Mirrors the token re-check the stale-break path already does.
+        with self._locks.state:
+            read = _read_marker(self._paths.write)
+            if read is None:
+                return
+            info, _ = read
+            if info is None or not hmac.compare_digest(info.token, token):
+                return
+            _unlink(self._paths.write)
 
     @classmethod
     def get_lock(
@@ -530,8 +546,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         try:
             self._wait_for(readers_drained_touching, deadline=deadline, blocking=blocking)
         except Timeout:
-            # Give up our writer claim so readers can make progress again.
-            _unlink(self._paths.write)
+            # Give up our writer claim so readers can make progress again, but only while the marker is
+            # still ours: a peer may have evicted it as stale and claimed the slot while phase 2 waited.
+            self._unlink_writer_marker_if_ours(token)
             raise
         return self._paths.write, False
 
