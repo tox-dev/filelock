@@ -386,7 +386,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # enough (a stop-the-world GC pause, SIGSTOP, a suspended VM) for a peer to evict the marker as
         # stale and claim the writer slot itself, the file now at <path>.write is the peer's live marker;
         # unlinking it by path would let a second writer through and break mutual exclusion. The state lock
-        # serialises this against a concurrent break/claim, and the heartbeat is already stopped, so the
+        # serializes this against a concurrent break/claim, and the heartbeat is already stopped, so the
         # token we read is authoritative. Mirrors the token re-check the stale-break path already does.
         with self._locks.state:
             read = _read_marker(self._paths.write)
