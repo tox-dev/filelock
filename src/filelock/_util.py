@@ -19,8 +19,12 @@ def raise_on_not_writable_file(filename: str) -> None:
     :raises OSError: as if the file was opened for writing.
 
     """
-    try:  # use stat to do exists + can write to check without race condition
-        file_stat = os.stat(filename)  # noqa: PTH116
+    try:  # use lstat to do exists + can write to check without race condition
+        # lstat, not stat: a hostile symlink planted at the lock path would otherwise make this check inspect the
+        # link target, so an attacker could turn a contended acquire into a misleading PermissionError /
+        # IsADirectoryError and probe the target's attributes. The actual open uses O_NOFOLLOW and refuses the
+        # symlink anyway, so reading the link itself here keeps the handling consistent with the rest of the module.
+        file_stat = os.lstat(filename)
     except OSError:
         return  # swallow does not exist or other errors
 

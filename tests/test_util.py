@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import stat
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
 
-from filelock._util import break_lock_file
+from filelock._util import break_lock_file, raise_on_not_writable_file
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -64,3 +66,53 @@ def test_break_lock_file_aborts_if_break_path_vanishes(tmp_path: Path, mocker: M
 def test_break_lock_file_missing_source_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         break_lock_file(str(tmp_path / "nope.lock"), 0.0, 0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink-to-dir raises IsADirectoryError only on Unix")
+def test_raise_on_not_writable_file_does_not_follow_symlink_to_dir(tmp_path: Path) -> None:
+    target = tmp_path / "targetdir"
+    target.mkdir()
+    link = tmp_path / "my.lock"
+    link.symlink_to(target)
+    # Following the symlink would see a directory and raise IsADirectoryError; lstat sees the link itself.
+    raise_on_not_writable_file(str(link))
+    assert stat.S_ISLNK(os.lstat(link).st_mode)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink + 0o444 semantics differ on Windows")
+@pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0,
+    reason="root can write a 0o444 file, so following the symlink would not raise",
+)
+def test_raise_on_not_writable_file_does_not_follow_symlink_to_readonly(tmp_path: Path) -> None:
+    target = tmp_path / "readonly"
+    target.write_text("x", encoding="utf-8")
+    target.chmod(0o444)
+    link = tmp_path / "my.lock"
+    link.symlink_to(target)
+    # Following the symlink would see a read-only file and raise PermissionError; the link itself is writable.
+    raise_on_not_writable_file(str(link))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="real dir raises PermissionError on Windows")
+def test_raise_on_not_writable_file_still_rejects_real_directory(tmp_path: Path) -> None:
+    path = tmp_path / "a_dir"
+    path.mkdir()
+    with pytest.raises(IsADirectoryError):
+        raise_on_not_writable_file(str(path))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only files in the same way")
+@pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0,
+    reason="root can write a 0o444 file",
+)
+def test_raise_on_not_writable_file_still_rejects_readonly_file(tmp_path: Path) -> None:
+    path = tmp_path / "ro.lock"
+    path.write_text("x", encoding="utf-8")
+    path.chmod(0o444)
+    try:
+        with pytest.raises(PermissionError):
+            raise_on_not_writable_file(str(path))
+    finally:
+        path.chmod(0o644)
