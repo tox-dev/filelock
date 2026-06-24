@@ -19,7 +19,7 @@ class Timeout(TimeoutError):  # noqa: N818
 
     @property
     def lock_file(self) -> str:
-        """:returns: The path of the file lock."""
+        """The path of the file lock."""
         return self._lock_file
 
 

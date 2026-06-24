@@ -257,7 +257,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def is_singleton(self) -> bool:
         """
-        :returns: a flag indicating if this lock is singleton or not
+        A flag indicating if this lock is singleton or not.
 
         .. versionadded:: 3.13.0
 
@@ -266,13 +266,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
     @property
     def lock_file(self) -> str:
-        """:returns: path to the lock file"""
+        """Path to the lock file."""
         return self._context.lock_file
 
     @property
     def timeout(self) -> float:
         """
-        :returns: the default timeout value, in seconds
+        The default timeout value, in seconds.
 
         .. versionadded:: 2.0.0
 
@@ -292,7 +292,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def blocking(self) -> bool:
         """
-        :returns: whether the locking is blocking or not
+        Whether the locking is blocking or not.
 
         .. versionadded:: 3.14.0
 
@@ -312,7 +312,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def poll_interval(self) -> float:
         """
-        :returns: the default polling interval, in seconds
+        The default polling interval, in seconds.
 
         .. versionadded:: 3.24.0
 
@@ -332,7 +332,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def lifetime(self) -> float | None:
         """
-        :returns: the lock lifetime in seconds, or ``None`` if the lock never expires
+        The lock lifetime in seconds, or ``None`` if the lock never expires.
 
         .. versionadded:: 3.24.0
 
@@ -351,12 +351,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
     @property
     def mode(self) -> int:
-        """:returns: the file permissions for the lockfile"""
+        """The file permissions for the lockfile."""
         return 0o644 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
 
     @property
     def has_explicit_mode(self) -> bool:
-        """:returns: whether the file permissions were explicitly set"""
+        """Whether the file permissions were explicitly set."""
         return self._context.mode != _UNSET_FILE_MODE
 
     def _open_mode(self) -> int:
@@ -390,7 +390,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     @property
     def is_locked(self) -> bool:
         """
-        :returns: A boolean indicating if the lock file is holding the lock currently.
+        A boolean indicating if the lock file is holding the lock currently.
 
         .. versionchanged:: 2.0.0
 
@@ -401,7 +401,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
     @property
     def lock_counter(self) -> int:
-        """:returns: The number of times this lock has been acquired (but not yet released)."""
+        """The number of times this lock has been acquired (but not yet released)."""
         return self._context.lock_counter
 
     @staticmethod

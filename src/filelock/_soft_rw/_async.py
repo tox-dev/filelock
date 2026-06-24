@@ -83,27 +83,27 @@ class AsyncSoftReadWriteLock:
 
     @property
     def lock_file(self) -> str:
-        """:returns: the path to the lock file passed to the constructor."""
+        """The path to the lock file passed to the constructor."""
         return self._lock.lock_file
 
     @property
     def timeout(self) -> float:
-        """:returns: the default timeout applied when ``acquire_read`` / ``acquire_write`` is called without one."""
+        """The default timeout applied when ``acquire_read`` / ``acquire_write`` is called without one."""
         return self._lock.timeout
 
     @property
     def blocking(self) -> bool:
-        """:returns: whether ``acquire_*`` defaults to blocking; ``False`` makes contention raise immediately."""
+        """Whether ``acquire_*`` defaults to blocking; ``False`` makes contention raise immediately."""
         return self._lock.blocking
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
-        """:returns: the event loop used for ``run_in_executor``, or ``None`` for the running loop."""
+        """The event loop used for ``run_in_executor``, or ``None`` for the running loop."""
         return self._loop
 
     @property
     def executor(self) -> futures.Executor | None:
-        """:returns: the executor used for ``run_in_executor``, or ``None`` for the default executor."""
+        """The executor used for ``run_in_executor``, or ``None`` for the default executor."""
         return self._executor
 
     async def acquire_read(

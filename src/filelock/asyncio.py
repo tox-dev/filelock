@@ -181,12 +181,12 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     @property
     def run_in_executor(self) -> bool:
-        """:returns: whether run in executor."""
+        """Whether run in executor."""
         return self._context.run_in_executor
 
     @property
     def executor(self) -> futures.Executor | None:
-        """:returns: the executor."""
+        """The executor."""
         return self._context.executor
 
     @executor.setter
@@ -201,7 +201,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
-        """:returns: the event loop."""
+        """The event loop."""
         return self._context.loop
 
     async def acquire(  # ty: ignore[invalid-method-override]

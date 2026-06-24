@@ -74,27 +74,27 @@ class AsyncReadWriteLock:
 
     @property
     def lock_file(self) -> str:
-        """:returns: the path to the lock file."""
+        """The path to the lock file."""
         return self._lock.lock_file
 
     @property
     def timeout(self) -> float:
-        """:returns: the default timeout."""
+        """The default timeout."""
         return self._lock.timeout
 
     @property
     def blocking(self) -> bool:
-        """:returns: whether blocking is enabled by default."""
+        """Whether blocking is enabled by default."""
         return self._lock.blocking
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
-        """:returns: the event loop (or ``None`` for the running loop)."""
+        """The event loop (or ``None`` for the running loop)."""
         return self._loop
 
     @property
     def executor(self) -> futures.Executor:
-        """:returns: the executor used for ``run_in_executor`` (a dedicated single-thread one if none was supplied)."""
+        """The executor used for ``run_in_executor`` (a dedicated single-thread one if none was supplied)."""
         return self._executor
 
     async def _run(self, func: Callable[..., object], *args: object, **kwargs: object) -> object:
