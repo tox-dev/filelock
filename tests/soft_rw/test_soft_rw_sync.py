@@ -95,7 +95,7 @@ def _cleanup(processes: list[Process]) -> Generator[None]:
                 proc.join(timeout=2)
 
 
-@pytest.fixture(autouse=True)  # noqa: RUF076
+@pytest.fixture(autouse=True)
 def _clear_singletons() -> Generator[None]:
     SoftReadWriteLock._instances.clear()
     yield
