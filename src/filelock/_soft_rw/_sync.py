@@ -397,6 +397,40 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 return
             _unlink(self._paths.write)
 
+    def _claim_writer_marker(self, token: str) -> bool:
+        # Claim the writer slot for ``token``. Must be called holding ``self._locks.state``. Evicts a
+        # stale marker first, then refuses to claim while a live ``.write`` exists so a peer holding the
+        # slot is waited out instead of overwritten.
+        _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
+        if _file_exists(self._paths.write):
+            return False
+        try:
+            _atomic_create_marker(self._paths.write, token)
+        except FileExistsError:
+            return False
+        return True
+
+    def _touch_writer_marker_if_ours(self, token: str) -> bool:
+        # Refresh the writer marker through a single O_NOFOLLOW fd, but only while it still carries our
+        # token. Returns False when the marker is gone or now belongs to a peer that reclaimed the slot,
+        # so the caller can re-claim rather than keep a stranger's marker alive. Mirrors _refresh_marker.
+        fd = _open_marker(self._paths.write)
+        if fd is None:
+            return False
+        try:
+            try:
+                data = os.read(fd, _MAX_MARKER_SIZE + 1)
+            except OSError:  # pragma: no cover - e.g. EAGAIN from a hostile FIFO that has a writer attached
+                return False
+            info = _parse_marker_bytes(data)
+            if info is None or not hmac.compare_digest(info.token, token):
+                return False
+            with suppress(OSError):
+                _touch(self._paths.write, fd=fd)
+            return True
+        finally:
+            os.close(fd)
+
     @classmethod
     def get_lock(
         cls,
@@ -524,21 +558,21 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         def try_claim_writer() -> bool:
             with self._locks.state:
-                _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
-                if _file_exists(self._paths.write):
-                    return False
-                try:
-                    _atomic_create_marker(self._paths.write, token)
-                except FileExistsError:
-                    return False
-            return True
+                return self._claim_writer_marker(token)
 
         def readers_drained_touching() -> bool:
             with self._locks.state:
-                # Refresh our writer marker on every scan iteration. Otherwise phase 2 can exceed
-                # ``stale_threshold`` under contention and a peer would treat us as stale and evict us.
-                with suppress(OSError):
-                    _touch(self._paths.write)
+                # Refresh our writer marker every scan iteration so phase 2 does not exceed
+                # ``stale_threshold`` under contention and get evicted. The refresh only happens while
+                # the marker is still ours: if we were paused past ``stale_threshold`` a peer can evict
+                # the stale marker and reclaim ``.write`` with its own token, and touching that path
+                # blindly would keep the peer's live marker alive and let this acquire finish as though
+                # we still held the slot, admitting a second writer. When the claim is no longer ours we
+                # re-claim the slot here (waiting behind the peer if it currently holds it) rather than
+                # trusting the foreign marker, mirroring the token re-check the stale-break and release
+                # paths already rely on.
+                if not self._touch_writer_marker_if_ours(token) and not self._claim_writer_marker(token):
+                    return False
                 self._break_stale_readers(time.time())
                 return not self._any_readers()
 

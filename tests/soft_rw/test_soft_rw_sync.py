@@ -625,6 +625,40 @@ def test_release_keeps_a_peers_writer_marker(lock_file: str) -> None:
         lock.close()
 
 
+def test_writer_phase2_does_not_complete_on_a_peers_marker(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # If a writer is paused past stale_threshold during phase 2 (waiting for readers to drain) a peer can
+    # evict its stale marker and reclaim .write with its own token. Phase 2 must notice the foreign marker
+    # rather than keep touching it and completing the acquire as if we still held the slot, which would let
+    # two writers run at once. A live reader keeps phase 2 looping; on the first poll sleep we simulate the
+    # eviction by overwriting .write with a peer token and draining the reader.
+    reader = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
+    reader.acquire_read(timeout=2)
+    writer = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
+    write_marker = f"{lock_file}.write"
+    peer_marker = b"a" * 32 + b"\n1\npeerhost\n"
+    real_sleep = time.sleep
+    swapped = threading.Event()
+
+    def hook(seconds: float) -> None:  # noqa: ARG001
+        if not swapped.is_set():
+            swapped.set()
+            Path(write_marker).write_bytes(peer_marker)
+            reader.release()
+        real_sleep(0.005)
+
+    monkeypatch.setattr(sync_mod.time, "sleep", hook)
+    try:
+        with pytest.raises(Timeout):
+            writer.acquire_write(timeout=0.6)
+        assert swapped.is_set()
+        # The peer's live marker was never overwritten or kept alive by us.
+        assert Path(write_marker).read_bytes() == peer_marker
+    finally:
+        monkeypatch.setattr(sync_mod.time, "sleep", real_sleep)
+        writer.close()
+        reader.close()
+
+
 def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
     # On the NFS-style filesystems this lock targets a transient ESTALE / EIO on the heartbeat touch is
     # routine; it must not kill the heartbeat and silently drop the lease while we still believe we hold it.
