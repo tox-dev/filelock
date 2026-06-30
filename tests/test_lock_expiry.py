@@ -73,6 +73,34 @@ def test_lifetime_default_none(tmp_path: Path) -> None:
     assert lock.lifetime is None
 
 
+@pytest.mark.parametrize("bad_value", [-1, -0.5, -1e9])
+def test_lifetime_setter_rejects_negative_number(bad_value: float, tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "test.lock")
+    with pytest.raises(ValueError, match="non-negative"):
+        lock.lifetime = bad_value
+
+
+@pytest.mark.parametrize("bad_value", ["5", b"5", object(), [1], {1: 2}, complex(1, 0)])
+def test_lifetime_setter_rejects_non_numeric(bad_value: object, tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "test.lock")
+    with pytest.raises(TypeError, match="lifetime must be"):
+        lock.lifetime = bad_value  # ty: ignore[invalid-assignment]
+
+
+@pytest.mark.parametrize("bad_value", [True, False])  # bool is an int subclass; reject it so it can't read as 1s/0s
+def test_lifetime_setter_rejects_bool(bad_value: bool, tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "test.lock")
+    with pytest.raises(TypeError, match="lifetime must be"):
+        lock.lifetime = bad_value
+
+
+@pytest.mark.parametrize("value", [0, 0.0])
+def test_lifetime_setter_accepts_zero(value: float, tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "test.lock")
+    lock.lifetime = value
+    assert lock.lifetime == 0
+
+
 def test_lifetime_singleton_mismatch(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     lock1 = FileLock(lock_path, is_singleton=True, lifetime=10.0)
