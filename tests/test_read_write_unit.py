@@ -624,6 +624,38 @@ def test_release_rollback_serialised_against_concurrent_acquire(lock_file: str) 
     lock.release()
 
 
+def test_read_acquire_rolls_back_begin_when_select_loses_lock_race(lock_file: str) -> None:
+    # A read acquire runs BEGIN (a deferred transaction that takes no lock) and only then the SELECT that takes
+    # the SHARED lock. If a writer grabs EXCLUSIVE between the two, the SELECT fails but BEGIN's transaction is
+    # left open on the shared connection; without a rollback the next acquire's BEGIN dies with "cannot start a
+    # transaction within a transaction" and the instance is wedged. Force that interleaving and confirm the
+    # connection is rolled back and the instance still works.
+    reader = ReadWriteLock(lock_file, is_singleton=False)
+    writer = ReadWriteLock(lock_file, is_singleton=False)
+    real_con = reader._con
+
+    class _RaceCon:
+        def execute(self, sql: str, *args: object) -> object:  # noqa: PLR6301
+            if sql.lstrip().upper().startswith("SELECT") and not writer._con.in_transaction:
+                writer.acquire_write()  # writer slips in between the reader's BEGIN and SELECT
+            return real_con.execute(sql, *args)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(real_con, name)
+
+    reader._con = _RaceCon()  # ty: ignore[invalid-assignment]
+    with pytest.raises(Timeout):
+        reader.acquire_read(timeout=0.3)
+    reader._con = real_con
+    assert real_con.in_transaction is False
+
+    writer.release()
+    with reader.read_lock(timeout=1):
+        assert reader._current_mode == "read"
+    reader.close()
+    writer.close()
+
+
 def test_pytest_session_finish_calls_cleanup(mocker: MockerFixture) -> None:
     mock = mocker.patch("conftest._cleanup_connections")
     pytest_sessionfinish()
