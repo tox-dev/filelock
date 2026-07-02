@@ -220,10 +220,18 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._acquire_transaction_lock(blocking=blocking, timeout=timeout)
         try:
             return self._do_acquire_inner(mode, timeout, blocking=blocking, start_time=start_time)
-        except sqlite3.OperationalError as exc:
-            if "database is locked" not in str(exc):
-                raise
-            raise Timeout(self.lock_file) from None
+        except BaseException as exc:
+            # A read acquire runs BEGIN (a deferred transaction that takes no database lock) and only then the
+            # SELECT that actually takes the SHARED lock. If a writer grabs the EXCLUSIVE lock between the two,
+            # the SELECT fails but BEGIN's transaction is left open on the shared connection. Roll it back here,
+            # while we still hold _transaction_lock, otherwise the next acquire's BEGIN dies with "cannot start a
+            # transaction within a transaction" and the instance is wedged for good. Only reachable on failure,
+            # so a successfully acquired lock is never rolled back.
+            with suppress(sqlite3.Error):
+                self._con.rollback()
+            if isinstance(exc, sqlite3.OperationalError) and "database is locked" in str(exc):
+                raise Timeout(self.lock_file) from None
+            raise
         finally:
             self._transaction_lock.release()
 
