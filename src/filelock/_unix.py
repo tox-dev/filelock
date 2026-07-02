@@ -38,9 +38,9 @@ else:  # pragma: win32 no cover
         """
         Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems.
 
-        Lock file cleanup: Unix and macOS delete the lock file reliably after release, even in
-        multi-threaded scenarios. Unlike Windows, Unix allows unlinking files that other processes
-        have open.
+        The lock file is intentionally left in place after release. Unlinking a locked file on Unix
+        can split waiters across different inodes and break mutual exclusion for processes that
+        coordinate via the same path.
         """
 
         def _acquire(self) -> None:  # noqa: C901, PLR0912
@@ -103,10 +103,8 @@ else:  # pragma: win32 no cover
         def _release(self) -> None:
             fd = cast("int", self._context.lock_file_fd)
             self._context.lock_file_fd = None
-            with suppress(OSError):
-                Path(self.lock_file).unlink()
             fcntl.flock(fd, fcntl.LOCK_UN)
-            with suppress(OSError):  # close can raise EIO on FUSE/Docker bind-mount filesystems after unlink
+            with suppress(OSError):  # close can raise EIO on FUSE/Docker bind-mount filesystems
                 os.close(fd)
 
 
