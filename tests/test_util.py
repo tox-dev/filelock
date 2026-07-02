@@ -78,12 +78,10 @@ def test_break_lock_file_break_path_not_targetable_by_a_peer(tmp_path: Path, moc
     # re-verify lstat and the unlink, and we would delete a live lock the inode check just approved.
     predictable = tmp_path / f"test.lock.break.{os.getpid()}"
     real_lstat = os.lstat
-    fired = {"x": False}
 
     def lstat_hook(path: str) -> os.stat_result:
         result = real_lstat(path)
-        if not fired["x"] and ".break." in path:
-            fired["x"] = True
+        if ".break." in path and not predictable.exists():  # once: the peer recreates a live lock at its own name
             lock.write_text("live", encoding="utf-8")
             lock.rename(predictable)
         return result
