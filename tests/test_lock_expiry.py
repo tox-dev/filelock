@@ -73,6 +73,40 @@ def test_lifetime_default_none(tmp_path: Path) -> None:
     assert lock.lifetime is None
 
 
+@pytest.mark.parametrize("bad_value", [-1, -0.5, -1e9])
+def test_lifetime_setter_rejects_negative_number(bad_value: float, tmp_path: Path) -> None:
+    """Negative lifetime would always be considered expired and is rejected at the setter."""
+    lock = FileLock(tmp_path / "test.lock")
+    with pytest.raises(ValueError, match="non-negative"):
+        lock.lifetime = bad_value
+
+
+@pytest.mark.parametrize("bad_value", ["5", b"5", object(), [1], {1: 2}, complex(1, 0)])
+def test_lifetime_setter_rejects_non_numeric(bad_value: object, tmp_path: Path) -> None:
+    """Only None, int, and float are accepted by the lifetime setter."""
+    lock = FileLock(tmp_path / "test.lock")
+    with pytest.raises(TypeError, match="lifetime must be"):
+        lock.lifetime = bad_value  # type: ignore[assignment]
+
+
+def test_lifetime_setter_rejects_bool(tmp_path: Path) -> None:
+    """``bool`` is an ``int`` subclass in Python, so it would silently pass an int check; reject it explicitly."""
+    lock = FileLock(tmp_path / "test.lock")
+    with pytest.raises(TypeError, match="lifetime must be"):
+        lock.lifetime = True  # type: ignore[assignment]
+    with pytest.raises(TypeError, match="lifetime must be"):
+        lock.lifetime = False  # type: ignore[assignment]
+
+
+def test_lifetime_setter_accepts_zero(tmp_path: Path) -> None:
+    """Zero is the smallest legal value: an existing lock is considered expired immediately on the next acquire."""
+    lock = FileLock(tmp_path / "test.lock")
+    lock.lifetime = 0
+    assert lock.lifetime == 0
+    lock.lifetime = 0.0
+    assert lock.lifetime == 0.0
+
+
 def test_lifetime_singleton_mismatch(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     lock1 = FileLock(lock_path, is_singleton=True, lifetime=10.0)

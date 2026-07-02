@@ -346,7 +346,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
         :param value: the new value in seconds, or ``None`` to disable expiration
 
+        :raises ValueError: if *value* is a negative number
+        :raises TypeError: if *value* is not ``None`` and not a real number
+
         """
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                msg = f"lifetime must be a non-negative number or None, not {type(value).__name__}"
+                raise TypeError(msg)
+            if value < 0:
+                msg = f"lifetime must be non-negative, not {value!r}"
+                raise ValueError(msg)
         self._context.lifetime = value
 
     @property
