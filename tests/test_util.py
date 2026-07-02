@@ -68,6 +68,32 @@ def test_break_lock_file_missing_source_raises(tmp_path: Path) -> None:
         break_lock_file(str(tmp_path / "nope.lock"), 0.0, 0)
 
 
+def test_break_lock_file_break_path_not_targetable_by_a_peer(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = tmp_path / "test.lock"
+    lock.write_text("stale", encoding="utf-8")
+    st = os.lstat(lock)
+
+    # A second breaker in the same process independently computes this name (no random token). If break_lock_file
+    # used it too, the peer could rename a freshly recreated live lock onto our break path in the window between the
+    # re-verify lstat and the unlink, and we would delete a live lock the inode check just approved.
+    predictable = tmp_path / f"test.lock.break.{os.getpid()}"
+    real_lstat = os.lstat
+    fired = {"x": False}
+
+    def lstat_hook(path: str) -> os.stat_result:
+        result = real_lstat(path)
+        if not fired["x"] and ".break." in path:
+            fired["x"] = True
+            lock.write_text("live", encoding="utf-8")
+            lock.rename(predictable)
+        return result
+
+    mocker.patch("filelock._util.os.lstat", side_effect=lstat_hook)
+    break_lock_file(str(lock), st.st_mtime, st.st_ino)
+
+    assert predictable.read_text(encoding="utf-8") == "live"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink-to-dir raises IsADirectoryError only on Unix")
 def test_raise_on_not_writable_file_does_not_follow_symlink_to_dir(tmp_path: Path) -> None:
     target = tmp_path / "targetdir"
