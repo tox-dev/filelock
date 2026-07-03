@@ -7,7 +7,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from errno import ENOSYS
+from errno import EAGAIN, ENOSYS, EWOULDBLOCK
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
@@ -994,10 +994,10 @@ def test_lock_acquired_after_release_keeps_path(tmp_path: Path) -> None:
     assert lock_path.exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
 def test_waiter_fd_cannot_split_lock_after_release(tmp_path: Path) -> None:
+    if sys.platform == "win32":  # pragma: win32 cover  # Unix flock semantics; also narrows fcntl for the type checker
+        return
     import fcntl
-    from errno import EAGAIN, EWOULDBLOCK
 
     lock_path = tmp_path / "test.lock"
     first = FileLock(str(lock_path), is_singleton=False)
