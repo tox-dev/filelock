@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import EAGAIN, ENOSYS, EWOULDBLOCK
@@ -833,6 +834,32 @@ def test_singleton_locks_are_the_same(lock_type: type[BaseFileLock], tmp_path: P
 
     lock_2 = lock_type(str(lock_path), is_singleton=True)
     assert lock_2 is lock_1
+
+
+def test_singleton_locks_survive_concurrent_first_construction(tmp_path: Path) -> None:
+    # Two threads constructing the same is_singleton=True lock at once must still share one instance. A slow
+    # __init__ widens the window between the cache miss and the store so the race is hit deterministically.
+    lock_path = tmp_path / "a"
+
+    class _SlowLock(SoftFileLock):
+        def __init__(self, lock_file: str, *, is_singleton: bool = True) -> None:
+            time.sleep(0.05)
+            super().__init__(lock_file, is_singleton=is_singleton)
+
+    results: list[BaseFileLock] = []
+    barrier = threading.Barrier(2)
+
+    def build() -> None:
+        barrier.wait()
+        results.append(_SlowLock(str(lock_path), is_singleton=True))
+
+    threads = [threading.Thread(target=build) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert results[0] is results[1]
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])

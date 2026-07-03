@@ -9,7 +9,7 @@ import time
 import warnings
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from threading import local
+from threading import Lock, local
 from typing import TYPE_CHECKING, Any, TypeVar
 from weakref import WeakValueDictionary
 
@@ -112,6 +112,7 @@ _T = TypeVar("_T", bound="BaseFileLock")
 
 class FileLockMeta(ABCMeta):
     _instances: WeakValueDictionary[str, BaseFileLock]
+    _instances_lock: Lock
 
     def __call__(  # noqa: PLR0913
         cls: type[_T],
@@ -126,33 +127,79 @@ class FileLockMeta(ABCMeta):
         lifetime: float | None = None,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
-        if is_singleton:
+        if not is_singleton:
+            return cls._create_instance(
+                lock_file,
+                timeout,
+                mode,
+                thread_local,
+                blocking=blocking,
+                is_singleton=is_singleton,
+                poll_interval=poll_interval,
+                lifetime=lifetime,
+                **kwargs,
+            )
+
+        # The lookup, construction and store have to happen under one lock. Without it two threads racing the
+        # first construction for a path each miss the cache and build their own instance, so callers that pass
+        # is_singleton to get reentrant locking across instances end up holding two different "singletons" and
+        # the deadlock check in acquire() then rejects a legitimate reentrant acquire. The unguarded writes to
+        # the shared WeakValueDictionary are a data race in their own right. ReadWriteLock and SoftReadWriteLock
+        # already serialise their singleton caches this way.
+        with cls._instances_lock:
             instance = cls._instances.get(str(lock_file))
-            if instance:
-                params_to_check = {
-                    "thread_local": (thread_local, instance.is_thread_local()),
-                    "timeout": (timeout, instance.timeout),
-                    "mode": (mode, instance._context.mode),  # noqa: SLF001
-                    "blocking": (blocking, instance.blocking),
-                    "poll_interval": (poll_interval, instance.poll_interval),
-                    "lifetime": (lifetime, instance.lifetime),
-                }
+            if instance is None:
+                instance = cls._create_instance(
+                    lock_file,
+                    timeout,
+                    mode,
+                    thread_local,
+                    blocking=blocking,
+                    is_singleton=is_singleton,
+                    poll_interval=poll_interval,
+                    lifetime=lifetime,
+                    **kwargs,
+                )
+                cls._instances[str(lock_file)] = instance
+                return instance
 
-                non_matching_params = {
-                    name: (passed_param, set_param)
-                    for name, (passed_param, set_param) in params_to_check.items()
-                    if passed_param != set_param
-                }
-                if not non_matching_params:
-                    return instance  # ty: ignore[invalid-return-type]  # https://github.com/astral-sh/ty/issues/3231
+        params_to_check = {
+            "thread_local": (thread_local, instance.is_thread_local()),
+            "timeout": (timeout, instance.timeout),
+            "mode": (mode, instance._context.mode),  # noqa: SLF001
+            "blocking": (blocking, instance.blocking),
+            "poll_interval": (poll_interval, instance.poll_interval),
+            "lifetime": (lifetime, instance.lifetime),
+        }
 
-                # parameters do not match; raise error
-                msg = "Singleton lock instances cannot be initialized with differing arguments"
-                msg += "\nNon-matching arguments: "
-                for param_name, (passed_param, set_param) in non_matching_params.items():
-                    msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
-                raise ValueError(msg)
+        non_matching_params = {
+            name: (passed_param, set_param)
+            for name, (passed_param, set_param) in params_to_check.items()
+            if passed_param != set_param
+        }
+        if not non_matching_params:
+            return instance  # ty: ignore[invalid-return-type]  # https://github.com/astral-sh/ty/issues/3231
 
+        # parameters do not match; raise error
+        msg = "Singleton lock instances cannot be initialized with differing arguments"
+        msg += "\nNon-matching arguments: "
+        for param_name, (passed_param, set_param) in non_matching_params.items():
+            msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
+        raise ValueError(msg)
+
+    def _create_instance(  # noqa: PLR0913
+        cls: type[_T],
+        lock_file: str | os.PathLike[str],
+        timeout: float,
+        mode: int,
+        thread_local: bool,  # noqa: FBT001
+        *,
+        blocking: bool,
+        is_singleton: bool,
+        poll_interval: float,
+        lifetime: float | None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> _T:
         # Workaround to make `__init__`'s params optional in subclasses
         # E.g. virtualenv changes the signature of the `__init__` method in the `BaseFileLock` class descendant
         # (https://github.com/tox-dev/filelock/pull/340)
@@ -171,12 +218,7 @@ class FileLockMeta(ABCMeta):
         present_params = inspect.signature(cls.__init__).parameters
         init_params = {key: value for key, value in all_params.items() if key in present_params}
 
-        instance = super().__call__(lock_file, **init_params)
-
-        if is_singleton:
-            cls._instances[str(lock_file)] = instance
-
-        return instance
+        return super().__call__(lock_file, **init_params)
 
 
 class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
@@ -190,11 +232,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     """
 
     _instances: WeakValueDictionary[str, BaseFileLock]
+    _instances_lock: Lock
 
     def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
         """Setup unique state for lock subclasses."""
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
+        cls._instances_lock = Lock()
 
     def __init__(  # noqa: PLR0913
         self,
