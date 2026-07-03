@@ -624,6 +624,78 @@ def test_release_rollback_serialised_against_concurrent_acquire(lock_file: str) 
     lock.release()
 
 
+def test_read_acquire_rolls_back_begin_when_select_loses_lock_race(lock_file: str) -> None:
+    # A read acquire runs BEGIN (a deferred transaction that takes no lock) and only then the SELECT that takes
+    # the SHARED lock. If a writer grabs EXCLUSIVE between the two, the SELECT fails but BEGIN's transaction is
+    # left open on the shared connection; without a rollback the next acquire's BEGIN dies with "cannot start a
+    # transaction within a transaction" and the instance is wedged. Force that interleaving and confirm the
+    # connection is rolled back and the instance still works.
+    reader = ReadWriteLock(lock_file, is_singleton=False)
+    writer = ReadWriteLock(lock_file, is_singleton=False)
+    real_con = reader._con
+
+    class _RaceCon:
+        def execute(self, sql: str) -> object:  # noqa: PLR6301
+            if sql.lstrip().upper().startswith("SELECT") and not writer._con.in_transaction:
+                writer.acquire_write()  # writer slips in between the reader's BEGIN and SELECT
+            return real_con.execute(sql)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(real_con, name)
+
+    reader._con = _RaceCon()  # ty: ignore[invalid-assignment]
+    with pytest.raises(Timeout):
+        reader.acquire_read(timeout=0.3)
+    reader._con = real_con
+    assert real_con.in_transaction is False
+
+    writer.release()
+    with reader.read_lock(timeout=1):
+        assert reader._current_mode == "read"
+    reader.close()
+    writer.close()
+
+
+def test_failed_reentrant_double_check_keeps_a_concurrent_holders_lock(lock_file: str) -> None:
+    # The acquire-failure handler must not roll back on a reentrant-validation RuntimeError: a writer that reaches
+    # _do_acquire_inner's double-check after a reader took the lock would otherwise roll back the reader's still-open
+    # transaction on the shared connection, dropping a lock the reader believes it holds. Force that interleaving.
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    writer_at_gate = threading.Event()
+    reader_acquired = threading.Event()
+    real_acquire_tx = lock._acquire_transaction_lock
+    writer_tid: dict[str, int] = {}
+    errors: dict[str, RuntimeError] = {}
+
+    def gated(*, blocking: bool, timeout: float) -> None:
+        if threading.get_ident() == writer_tid.get("id"):  # writer has passed its early check at lock_level == 0
+            writer_at_gate.set()
+            reader_acquired.wait(5)  # let the reader fully acquire (and open its transaction) first
+        real_acquire_tx(blocking=blocking, timeout=timeout)
+
+    def acquire_write_in_thread() -> None:
+        writer_tid["id"] = threading.get_ident()
+        try:
+            lock.acquire_write(timeout=5)
+        except RuntimeError as exc:
+            errors["writer"] = exc
+
+    lock._acquire_transaction_lock = gated  # ty: ignore[invalid-assignment]
+    thread = threading.Thread(target=acquire_write_in_thread)
+    thread.start()
+    assert writer_at_gate.wait(5)
+    lock.acquire_read(timeout=5)  # reader opens the SHARED transaction on the shared connection
+    reader_acquired.set()
+    thread.join(5)
+
+    assert "writer" in errors  # the upgrade was rejected with RuntimeError, as expected
+    assert lock._con.in_transaction is True  # the reader's transaction survived the writer's failure
+    assert lock._lock_level == 1
+    assert lock._current_mode == "read"
+    lock.release()
+    lock.close()
+
+
 def test_pytest_session_finish_calls_cleanup(mocker: MockerFixture) -> None:
     mock = mocker.patch("conftest._cleanup_connections")
     pytest_sessionfinish()
