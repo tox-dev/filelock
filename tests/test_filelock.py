@@ -7,7 +7,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from errno import ENOSYS
+from errno import EAGAIN, ENOSYS, EWOULDBLOCK
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
@@ -945,7 +945,7 @@ def test_mtime_zero_exit_branch(
         lock.acquire(timeout=0)
 
 
-@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize("lock_type", [SoftFileLock])
 def test_lock_file_removed_after_release(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     lock_path = tmp_path / "test.lock"
     lock = lock_type(str(lock_path))
@@ -955,7 +955,7 @@ def test_lock_file_removed_after_release(tmp_path: Path, lock_type: type[BaseFil
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
-def test_concurrent_acquire_release_removes_lock_file(tmp_path: Path) -> None:
+def test_concurrent_acquire_release_keeps_lock_file(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     errors: list[Exception] = []
 
@@ -974,11 +974,11 @@ def test_concurrent_acquire_release_removes_lock_file(tmp_path: Path) -> None:
     for thread in threads:
         thread.join(timeout=30)
     assert not errors, errors
-    assert not lock_path.exists()
+    assert lock_path.exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
-def test_lock_acquired_after_release_unlinks(tmp_path: Path) -> None:
+def test_lock_acquired_after_release_keeps_path(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     first = FileLock(str(lock_path), is_singleton=False)
     second = FileLock(str(lock_path), is_singleton=False)
@@ -986,12 +986,39 @@ def test_lock_acquired_after_release_unlinks(tmp_path: Path) -> None:
     first.acquire()
     assert lock_path.exists()
     first.release()
-    assert not lock_path.exists()
+    assert lock_path.exists()
 
     second.acquire()
     assert lock_path.exists()
     second.release()
-    assert not lock_path.exists()
+    assert lock_path.exists()
+
+
+def test_waiter_fd_cannot_split_lock_after_release(tmp_path: Path) -> None:
+    if sys.platform == "win32":  # pragma: win32 cover  # Unix flock semantics; also narrows fcntl for the type checker
+        return
+    import fcntl
+
+    lock_path = tmp_path / "test.lock"
+    first = FileLock(str(lock_path), is_singleton=False)
+    replacement = FileLock(str(lock_path), is_singleton=False)
+
+    first.acquire()
+    waiter_fd = os.open(lock_path, os.O_RDWR)
+
+    try:
+        first.release()
+        assert lock_path.exists()
+
+        replacement.acquire()
+        try:
+            with pytest.raises(BlockingIOError) as exc_info:
+                fcntl.flock(waiter_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert exc_info.value.errno in {EAGAIN, EWOULDBLOCK}
+        finally:
+            replacement.release()
+    finally:
+        os.close(waiter_fd)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
