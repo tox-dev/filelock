@@ -9,7 +9,7 @@ import time
 import warnings
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from threading import local
+from threading import Lock, local
 from typing import TYPE_CHECKING, Any, TypeVar
 from weakref import WeakValueDictionary
 
@@ -112,6 +112,7 @@ _T = TypeVar("_T", bound="BaseFileLock")
 
 class FileLockMeta(ABCMeta):
     _instances: WeakValueDictionary[str, BaseFileLock]
+    _instances_lock: Lock
 
     def __call__(  # noqa: PLR0913
         cls: type[_T],
@@ -126,38 +127,7 @@ class FileLockMeta(ABCMeta):
         lifetime: float | None = None,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
-        if is_singleton:
-            instance = cls._instances.get(str(lock_file))
-            if instance:
-                params_to_check = {
-                    "thread_local": (thread_local, instance.is_thread_local()),
-                    "timeout": (timeout, instance.timeout),
-                    "mode": (mode, instance._context.mode),  # noqa: SLF001
-                    "blocking": (blocking, instance.blocking),
-                    "poll_interval": (poll_interval, instance.poll_interval),
-                    "lifetime": (lifetime, instance.lifetime),
-                }
-
-                non_matching_params = {
-                    name: (passed_param, set_param)
-                    for name, (passed_param, set_param) in params_to_check.items()
-                    if passed_param != set_param
-                }
-                if not non_matching_params:
-                    return instance  # ty: ignore[invalid-return-type]  # https://github.com/astral-sh/ty/issues/3231
-
-                # parameters do not match; raise error
-                msg = "Singleton lock instances cannot be initialized with differing arguments"
-                msg += "\nNon-matching arguments: "
-                for param_name, (passed_param, set_param) in non_matching_params.items():
-                    msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
-                raise ValueError(msg)
-
-        # Workaround to make `__init__`'s params optional in subclasses
-        # E.g. virtualenv changes the signature of the `__init__` method in the `BaseFileLock` class descendant
-        # (https://github.com/tox-dev/filelock/pull/340)
-
-        all_params = {
+        params = {
             "timeout": timeout,
             "mode": mode,
             "thread_local": thread_local,
@@ -167,16 +137,50 @@ class FileLockMeta(ABCMeta):
             "lifetime": lifetime,
             **kwargs,
         }
+        if not is_singleton:
+            return cls._create_instance(lock_file, params)
 
+        # Look up, build and store under one lock. Without it two threads racing the first construction for a
+        # path both miss the cache and each build their own instance, so callers relying on is_singleton for
+        # reentrant locking across instances end up with two "singletons" and acquire()'s deadlock check then
+        # rejects a legitimate reentrant acquire; the unguarded writes to the WeakValueDictionary are a data
+        # race besides. ReadWriteLock and SoftReadWriteLock already guard their singleton caches this way.
+        with cls._instances_lock:
+            if (instance := cls._instances.get(str(lock_file))) is None:
+                instance = cls._create_instance(lock_file, params)
+                cls._instances[str(lock_file)] = instance
+                return instance
+
+        params_to_check = {
+            "thread_local": (thread_local, instance.is_thread_local()),
+            "timeout": (timeout, instance.timeout),
+            "mode": (mode, instance._context.mode),  # noqa: SLF001
+            "blocking": (blocking, instance.blocking),
+            "poll_interval": (poll_interval, instance.poll_interval),
+            "lifetime": (lifetime, instance.lifetime),
+        }
+
+        non_matching_params = {
+            name: (passed_param, set_param)
+            for name, (passed_param, set_param) in params_to_check.items()
+            if passed_param != set_param
+        }
+        if not non_matching_params:
+            return instance  # ty: ignore[invalid-return-type]  # https://github.com/astral-sh/ty/issues/3231
+
+        # parameters do not match; raise error
+        msg = "Singleton lock instances cannot be initialized with differing arguments"
+        msg += "\nNon-matching arguments: "
+        for param_name, (passed_param, set_param) in non_matching_params.items():
+            msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
+        raise ValueError(msg)
+
+    def _create_instance(cls: type[_T], lock_file: str | os.PathLike[str], params: dict[str, Any]) -> _T:
+        # Keep only the params this subclass's __init__ accepts: virtualenv narrows the signature of its
+        # BaseFileLock descendant, so passing the full set would break it (https://github.com/tox-dev/filelock/pull/340).
         present_params = inspect.signature(cls.__init__).parameters
-        init_params = {key: value for key, value in all_params.items() if key in present_params}
-
-        instance = super().__call__(lock_file, **init_params)
-
-        if is_singleton:
-            cls._instances[str(lock_file)] = instance
-
-        return instance
+        init_params = {key: value for key, value in params.items() if key in present_params}
+        return super().__call__(lock_file, **init_params)
 
 
 class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
@@ -190,11 +194,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     """
 
     _instances: WeakValueDictionary[str, BaseFileLock]
+    _instances_lock: Lock
 
     def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
         """Setup unique state for lock subclasses."""
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
+        cls._instances_lock = Lock()
 
     def __init__(  # noqa: PLR0913
         self,
