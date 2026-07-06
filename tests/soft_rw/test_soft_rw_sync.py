@@ -1042,6 +1042,10 @@ def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:
 
 @requires_fork
 @pytest.mark.timeout(15)
+# Holding the write lock keeps the heartbeat thread alive, so this fork is necessarily from a multi-threaded
+# process and Python 3.15 warns that it may deadlock. That is the scenario under test, and it is already safe:
+# register_at_fork resets inherited state in the child (any child use raises "invalidated by fork()"). Expected.
+@pytest.mark.filterwarnings("ignore:.*multi-threaded, use of fork.*:DeprecationWarning")
 def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:
     path = str(tmp_path / "foo.lock")
     lock = SoftReadWriteLock(path, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
