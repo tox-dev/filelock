@@ -927,7 +927,7 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("lock_type", "expected_exc"),
     [
-        (SoftFileLock, TimeoutError),
+        (SoftFileLock, PermissionError),
         (FileLock, TimeoutError) if sys.platform == "win32" else (FileLock, PermissionError),
     ],
 )

@@ -28,17 +28,25 @@ def raise_on_not_writable_file(filename: str) -> None:
     except OSError:
         return  # swallow does not exist or other errors
 
-    if file_stat.st_mtime != 0:  # if os.stat returns but modification is zero that's an invalid os.stat - ignore it
-        if not (file_stat.st_mode & stat.S_IWUSR):
-            raise PermissionError(EACCES, "Permission denied", filename)
+    # The previous guard `if file_stat.st_mtime != 0` was meant to skip the checks on platforms where
+    # ``os.stat`` could return an all-zero struct (some very old NFS / Linux combinations), but it
+    # also silenced the checks whenever a user (or a test) explicitly set the mtime to 0 — leaving
+    # a read-only file or a directory in the lock path silently treated as a missing file and the
+    # subsequent ``os.open`` succeeding as root, which then makes the rest of the acquire path
+    # block forever (or, in the worst case, take a lock on a file that nothing else can write to).
+    # Modern Python (``stat`` docs: "the result is well-defined on every supported platform") never
+    # returns an all-zero struct for an existing file, so the guard is dead and removing it lets
+    # the writability and is-dir checks fire as documented.
+    if not (file_stat.st_mode & stat.S_IWUSR):
+        raise PermissionError(EACCES, "Permission denied", filename)
 
-        if stat.S_ISDIR(file_stat.st_mode):
-            if sys.platform == "win32":  # pragma: win32 cover
-                # On Windows, this is PermissionError
-                raise PermissionError(EACCES, "Permission denied", filename)
-            else:  # pragma: win32 no cover # noqa: RET506
-                # On linux / macOS, this is IsADirectoryError
-                raise IsADirectoryError(EISDIR, "Is a directory", filename)
+    if stat.S_ISDIR(file_stat.st_mode):
+        if sys.platform == "win32":  # pragma: win32 cover
+            # On Windows, this is PermissionError
+            raise PermissionError(EACCES, "Permission denied", filename)
+        else:  # pragma: win32 no cover # noqa: RET506
+            # On linux / macOS, this is IsADirectoryError
+            raise IsADirectoryError(EISDIR, "Is a directory", filename)
 
 
 def ensure_directory_exists(filename: Path | str) -> None:
