@@ -140,3 +140,30 @@ def test_raise_on_not_writable_file_still_rejects_readonly_file(tmp_path: Path) 
             raise_on_not_writable_file(str(path))
     finally:
         path.chmod(0o644)
+
+
+# raise_on_not_writable_file no longer short-circuits on mtime == 0 (the old `if st_mtime != 0` guard existed for
+# very old NFS/Linux quirks where os.lstat could return an all-zero struct; it can't today). Writability is
+# independent of mtime, so both an mtime of 0 and a far-future mtime must still reject a read-only file — the
+# latter case pins that a later patch can't narrow the check to one mtime range. The verdict is mode-based, not
+# access-based, so it holds regardless of euid (no root skip, unlike the acquire-level test in test_filelock.py).
+@pytest.mark.parametrize("mtime", [0, 2_000_000_000], ids=["mtime-zero", "mtime-future"])
+def test_raise_on_not_writable_file_rejects_readonly_file_any_mtime(tmp_path: Path, mtime: int) -> None:
+    path = tmp_path / "ro.lock"
+    path.write_text("x", encoding="utf-8")
+    path.chmod(0o444)
+    try:
+        os.utime(path, (mtime, mtime))
+        with pytest.raises(PermissionError):
+            raise_on_not_writable_file(str(path))
+    finally:
+        path.chmod(0o644)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a real directory raises PermissionError on Windows")
+def test_raise_on_not_writable_file_rejects_directory_with_mtime_zero(tmp_path: Path) -> None:
+    path = tmp_path / "a_dir"
+    path.mkdir()
+    os.utime(path, (0, 0))
+    with pytest.raises(IsADirectoryError):
+        raise_on_not_writable_file(str(path))

@@ -951,25 +951,20 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
     assert lock.lock_file == str(lock_path) + ".lock"
 
 
-@pytest.mark.parametrize(
-    ("lock_type", "expected_exc"),
-    [
-        (SoftFileLock, TimeoutError),
-        (FileLock, TimeoutError) if sys.platform == "win32" else (FileLock, PermissionError),
-    ],
-)
-def test_mtime_zero_exit_branch(
-    lock_type: type[BaseFileLock], expected_exc: type[BaseException], tmp_path: Path
-) -> None:
+@pytest.mark.skipif(sys.platform != "win32" and os.geteuid() == 0, reason="root can open a 0o444 file for writing")
+@pytest.mark.parametrize("lock_type", [SoftFileLock, FileLock])
+def test_readonly_lock_file_with_mtime_zero_raises(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    # A read-only lock file whose mtime is 0 must still be rejected: acquire() no longer short-circuits the
+    # writability check on mtime == 0, so it reports the file can never be opened for writing.
     lock_path = tmp_path / "z.lock"
     lock_path.touch()
-    Path(lock_path).chmod(0o444)
+    lock_path.chmod(0o444)
     os.utime(lock_path, (0, 0))
-
-    lock = lock_type(str(lock_path))
-
-    with pytest.raises(expected_exc):
-        lock.acquire(timeout=0)
+    try:
+        with pytest.raises(PermissionError):
+            lock_type(str(lock_path)).acquire(timeout=0)
+    finally:
+        lock_path.chmod(0o644)
 
 
 @pytest.mark.parametrize("lock_type", [SoftFileLock])

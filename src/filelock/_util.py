@@ -29,17 +29,20 @@ def raise_on_not_writable_file(filename: str) -> None:
     except OSError:
         return  # swallow does not exist or other errors
 
-    if file_stat.st_mtime != 0:  # if os.stat returns but modification is zero that's an invalid os.stat - ignore it
-        if not (file_stat.st_mode & stat.S_IWUSR):
-            raise PermissionError(EACCES, "Permission denied", filename)
+    # No mtime guard: the old `if st_mtime != 0` skip existed for very old NFS/Linux quirks where os.lstat could
+    # return an all-zero struct, which it never does today for a file that exists. Skipping the checks when mtime
+    # happened to be 0 let a read-only file or a directory in the lock path pass as missing, so acquire() then
+    # blocked forever waiting on an open that cannot succeed (or locked a file nothing else can write).
+    if not (file_stat.st_mode & stat.S_IWUSR):
+        raise PermissionError(EACCES, "Permission denied", filename)
 
-        if stat.S_ISDIR(file_stat.st_mode):
-            if sys.platform == "win32":  # pragma: win32 cover
-                # On Windows, this is PermissionError
-                raise PermissionError(EACCES, "Permission denied", filename)
-            else:  # pragma: win32 no cover # noqa: RET506
-                # On linux / macOS, this is IsADirectoryError
-                raise IsADirectoryError(EISDIR, "Is a directory", filename)
+    if stat.S_ISDIR(file_stat.st_mode):
+        if sys.platform == "win32":  # pragma: win32 cover
+            # On Windows, this is PermissionError
+            raise PermissionError(EACCES, "Permission denied", filename)
+        else:  # pragma: win32 no cover # noqa: RET506
+            # On linux / macOS, this is IsADirectoryError
+            raise IsADirectoryError(EISDIR, "Is a directory", filename)
 
 
 def ensure_directory_exists(filename: Path | str) -> None:
