@@ -127,39 +127,27 @@ class FileLockMeta(ABCMeta):
         lifetime: float | None = None,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
+        params = {
+            "timeout": timeout,
+            "mode": mode,
+            "thread_local": thread_local,
+            "blocking": blocking,
+            "is_singleton": is_singleton,
+            "poll_interval": poll_interval,
+            "lifetime": lifetime,
+            **kwargs,
+        }
         if not is_singleton:
-            return cls._create_instance(
-                lock_file,
-                timeout,
-                mode,
-                thread_local,
-                blocking=blocking,
-                is_singleton=is_singleton,
-                poll_interval=poll_interval,
-                lifetime=lifetime,
-                **kwargs,
-            )
+            return cls._create_instance(lock_file, params)
 
-        # The lookup, construction and store have to happen under one lock. Without it two threads racing the
-        # first construction for a path each miss the cache and build their own instance, so callers that pass
-        # is_singleton to get reentrant locking across instances end up holding two different "singletons" and
-        # the deadlock check in acquire() then rejects a legitimate reentrant acquire. The unguarded writes to
-        # the shared WeakValueDictionary are a data race in their own right. ReadWriteLock and SoftReadWriteLock
-        # already serialise their singleton caches this way.
+        # Look up, build and store under one lock. Without it two threads racing the first construction for a
+        # path both miss the cache and each build their own instance, so callers relying on is_singleton for
+        # reentrant locking across instances end up with two "singletons" and acquire()'s deadlock check then
+        # rejects a legitimate reentrant acquire; the unguarded writes to the WeakValueDictionary are a data
+        # race besides. ReadWriteLock and SoftReadWriteLock already guard their singleton caches this way.
         with cls._instances_lock:
-            instance = cls._instances.get(str(lock_file))
-            if instance is None:
-                instance = cls._create_instance(
-                    lock_file,
-                    timeout,
-                    mode,
-                    thread_local,
-                    blocking=blocking,
-                    is_singleton=is_singleton,
-                    poll_interval=poll_interval,
-                    lifetime=lifetime,
-                    **kwargs,
-                )
+            if (instance := cls._instances.get(str(lock_file))) is None:
+                instance = cls._create_instance(lock_file, params)
                 cls._instances[str(lock_file)] = instance
                 return instance
 
@@ -187,37 +175,11 @@ class FileLockMeta(ABCMeta):
             msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
         raise ValueError(msg)
 
-    def _create_instance(  # noqa: PLR0913
-        cls: type[_T],
-        lock_file: str | os.PathLike[str],
-        timeout: float,
-        mode: int,
-        thread_local: bool,  # noqa: FBT001
-        *,
-        blocking: bool,
-        is_singleton: bool,
-        poll_interval: float,
-        lifetime: float | None,
-        **kwargs: Any,  # noqa: ANN401
-    ) -> _T:
-        # Workaround to make `__init__`'s params optional in subclasses
-        # E.g. virtualenv changes the signature of the `__init__` method in the `BaseFileLock` class descendant
-        # (https://github.com/tox-dev/filelock/pull/340)
-
-        all_params = {
-            "timeout": timeout,
-            "mode": mode,
-            "thread_local": thread_local,
-            "blocking": blocking,
-            "is_singleton": is_singleton,
-            "poll_interval": poll_interval,
-            "lifetime": lifetime,
-            **kwargs,
-        }
-
+    def _create_instance(cls: type[_T], lock_file: str | os.PathLike[str], params: dict[str, Any]) -> _T:
+        # Keep only the params this subclass's __init__ accepts: virtualenv narrows the signature of its
+        # BaseFileLock descendant, so passing the full set would break it (https://github.com/tox-dev/filelock/pull/340).
         present_params = inspect.signature(cls.__init__).parameters
-        init_params = {key: value for key, value in all_params.items() if key in present_params}
-
+        init_params = {key: value for key, value in params.items() if key in present_params}
         return super().__call__(lock_file, **init_params)
 
 
