@@ -28,15 +28,10 @@ def raise_on_not_writable_file(filename: str) -> None:
     except OSError:
         return  # swallow does not exist or other errors
 
-    # The previous guard `if file_stat.st_mtime != 0` was meant to skip the checks on platforms where
-    # ``os.stat`` could return an all-zero struct (some very old NFS / Linux combinations), but it
-    # also silenced the checks whenever a user (or a test) explicitly set the mtime to 0 — leaving
-    # a read-only file or a directory in the lock path silently treated as a missing file and the
-    # subsequent ``os.open`` succeeding as root, which then makes the rest of the acquire path
-    # block forever (or, in the worst case, take a lock on a file that nothing else can write to).
-    # Modern Python (``stat`` docs: "the result is well-defined on every supported platform") never
-    # returns an all-zero struct for an existing file, so the guard is dead and removing it lets
-    # the writability and is-dir checks fire as documented.
+    # No mtime guard: the old `if st_mtime != 0` skip existed for very old NFS/Linux quirks where os.lstat could
+    # return an all-zero struct, which it never does today for a file that exists. Skipping the checks when mtime
+    # happened to be 0 let a read-only file or a directory in the lock path pass as missing, so acquire() then
+    # blocked forever waiting on an open that cannot succeed (or locked a file nothing else can write).
     if not (file_stat.st_mode & stat.S_IWUSR):
         raise PermissionError(EACCES, "Permission denied", filename)
 
