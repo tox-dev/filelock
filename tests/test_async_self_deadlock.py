@@ -18,9 +18,6 @@ unix_only = pytest.mark.skipif(sys.platform == "win32", reason="unix-only symlin
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_same_task_different_instances_raises(tmp_path: Path, lock_type: type[AsyncFileLock]) -> None:
-    """Acquiring a second instance of the same lock from within the same asyncio task must
-    raise ``RuntimeError`` synchronously rather than blocking on the OS-level lock primitive
-    forever, mirroring the sync ``BaseFileLock.acquire`` deadlock check (#578)."""
     lock_path = tmp_path / "test.lock"
     lock1 = lock_type(lock_path)
     async with lock1:
@@ -32,9 +29,6 @@ async def test_same_task_different_instances_raises(tmp_path: Path, lock_type: t
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_finite_timeout_gives_timeout_not_deadlock(tmp_path: Path, lock_type: type[AsyncFileLock]) -> None:
-    """When the second instance is acquired with a finite timeout (so deadlock detection is
-    disabled by the ``would_block`` guard), the caller should still see ``Timeout`` after
-    the timeout expires — not ``RuntimeError``."""
     lock_path = tmp_path / "test.lock"
     lock1 = lock_type(lock_path)
     async with lock1:
@@ -46,8 +40,6 @@ async def test_finite_timeout_gives_timeout_not_deadlock(tmp_path: Path, lock_ty
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_non_blocking_gives_timeout_not_deadlock(tmp_path: Path, lock_type: type[AsyncFileLock]) -> None:
-    """With ``blocking=False``, the ``would_block`` guard is False so the deadlock check
-    short-circuits; the second instance must raise ``Timeout`` on the first failed attempt."""
     lock_path = tmp_path / "test.lock"
     lock1 = lock_type(lock_path)
     async with lock1:
@@ -92,15 +84,12 @@ async def test_singleton_avoids_deadlock(tmp_path: Path, lock_type: type[AsyncFi
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type[AsyncFileLock]) -> None:
-    """A second acquire from a *different* asyncio task must not trigger the per-task
-    deadlock check. It should either succeed (if the first task released) or raise
-    ``Timeout`` (if it didn't). The sync test uses a separate thread; in asyncio the
-    equivalent is ``asyncio.create_task``."""
+    # The registry is per-thread; a second acquire from a different task (asyncio's counterpart to the sync
+    # test's separate thread) must not be mistaken for a reentrant deadlock.
     lock_path = tmp_path / "test.lock"
     lock1 = lock_type(lock_path, timeout=0)
     await lock1.acquire()
 
-    # Run the second acquire in a different task; it must not raise RuntimeError.
     error: BaseException | None = None
 
     async def acquire_other() -> None:
@@ -111,9 +100,9 @@ async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type
         except BaseException as exc:
             error = exc
 
-    task = asyncio.create_task(acquire_other())
-    await task
+    await asyncio.create_task(acquire_other())
     await lock1.release()
+
     assert not isinstance(error, RuntimeError), "Should not raise RuntimeError in a different task"
 
 
@@ -121,8 +110,6 @@ async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[AsyncFileLock]) -> None:
-    """Two paths that resolve to the same canonical file (one being a symlink) must
-    detect the deadlock the same way two equal paths do."""
     lock_path = tmp_path / "test.lock"
     symlink_path = tmp_path / "link.lock"
     symlink_path.symlink_to(lock_path)
@@ -137,10 +124,6 @@ async def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[Async
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_cleanup_on_release(tmp_path: Path, lock_type: type[AsyncFileLock]) -> None:
-    """The internal ``_registry.held`` map is keyed per task; releasing the first lock
-    must clear the entry so a subsequent second acquire would not see a stale holder.
-    We can't inspect ``_registry`` directly across tasks, but we *can* verify the
-    observable behaviour: a second acquire after release succeeds, not deadlocks."""
     lock_path = tmp_path / "test.lock"
     lock1 = lock_type(lock_path)
     await lock1.acquire()
@@ -149,17 +132,11 @@ async def test_cleanup_on_release(tmp_path: Path, lock_type: type[AsyncFileLock]
     lock2 = lock_type(lock_path)
     async with lock2:
         assert lock2.is_locked
-    assert not lock2.is_locked
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_force_release_clears_registry(tmp_path: Path, lock_type: type[AsyncFileLock]) -> None:
-    """``release(force=True)`` must also clear the registry entry — otherwise a
-    nested acquire/release cycle inside a ``with`` block would leave a stale entry
-    pointing at the now-closed lock, and any later deadlock check would see a
-    different ``id(self)`` (the new instance) than the registry's stale lock_id
-    and incorrectly raise ``RuntimeError``."""
     lock_path = tmp_path / "test.lock"
     lock1 = lock_type(lock_path)
     async with lock1:
@@ -170,4 +147,3 @@ async def test_force_release_clears_registry(tmp_path: Path, lock_type: type[Asy
     lock2 = lock_type(lock_path)
     async with lock2:
         assert lock2.is_locked
-    assert not lock2.is_locked

@@ -196,6 +196,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     _instances: WeakValueDictionary[str, BaseFileLock]
     _instances_lock: Lock
 
+    #: How the cross-instance deadlock message names the conflicting holder; the async subclass says "task".
+    _deadlock_holder_desc: str = "FileLock instance in this thread"
+
     def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
         """Setup unique state for lock subclasses."""
         super().__init_subclass__(**kwargs)
@@ -503,19 +506,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         # Increment the number right at the beginning. We can still undo it, if something fails.
         self._context.lock_counter += 1
 
-        lock_id = id(self)
-        lock_filename = self.lock_file
-        canonical = _canonical(lock_filename)
-
-        would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
-        if would_block and (existing := _registry.held.get(canonical)) is not None and existing != lock_id:
-            self._context.lock_counter -= 1
-            msg = (
-                f"Deadlock: lock '{lock_filename}' is already held by a different "
-                f"FileLock instance in this thread. Use is_singleton=True to "
-                f"enable reentrant locking across instances."
-            )
-            raise RuntimeError(msg)
+        canonical = _canonical(self.lock_file)
+        self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
 
         start_time = time.perf_counter()
         try:
@@ -527,13 +519,41 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
                 start_time=start_time,
             )
         except BaseException:
-            self._context.lock_counter = max(0, self._context.lock_counter - 1)
-            if self._context.lock_counter == 0:
-                _registry.held.pop(canonical, None)
+            self._undo_acquire(canonical)
             raise
-        if self._context.lock_counter == 1:
-            _registry.held[canonical] = lock_id
+        self._commit_acquire(canonical)
         return AcquireReturnProxy(lock=self)
+
+    def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
+        """
+        Fail fast when a *different* live instance already holds this path on the current thread/task.
+
+        Only the first, indefinitely-blocking acquire can self-deadlock this way: waiting in the OS primitive would
+        block on a lock this thread already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
+        """
+        would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
+        if would_block and _registry.held.get(canonical) not in {None, id(self)}:
+            self._context.lock_counter -= 1
+            msg = (
+                f"Deadlock: lock '{self.lock_file}' is already held by a different {self._deadlock_holder_desc}. "
+                f"Use is_singleton=True to enable reentrant locking across instances."
+            )
+            raise RuntimeError(msg)
+
+    def _undo_acquire(self, canonical: str) -> None:
+        """Roll back the counter after a failed acquire, dropping the registry entry once nothing holds the path."""
+        self._context.lock_counter = max(0, self._context.lock_counter - 1)
+        if self._context.lock_counter == 0:
+            _registry.held.pop(canonical, None)
+
+    def _commit_acquire(self, canonical: str) -> None:
+        """Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock."""
+        if self._context.lock_counter == 1:
+            _registry.held[canonical] = id(self)
+
+    def _drop_registry_entry(self) -> None:
+        """Forget this path's holder on release so a later cross-instance acquire is not misread as a deadlock."""
+        _registry.held.pop(_canonical(self.lock_file), None)
 
     def _poll_until_acquired(
         self,
@@ -584,7 +604,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                 self._release()
                 self._context.lock_counter = 0
-                _registry.held.pop(_canonical(lock_filename), None)
+                self._drop_registry_entry()
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def __enter__(self) -> Self:
