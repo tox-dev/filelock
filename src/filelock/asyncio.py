@@ -12,7 +12,7 @@ from inspect import iscoroutinefunction
 from threading import local
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
-from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta
+from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta, _canonical, _registry
 from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock
@@ -256,6 +256,20 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         # Increment the number right at the beginning. We can still undo it, if something fails.
         self._context.lock_counter += 1
 
+        lock_id = id(self)
+        lock_filename = self.lock_file
+        canonical = _canonical(lock_filename)
+
+        would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
+        if would_block and (existing := _registry.held.get(canonical)) is not None and existing != lock_id:
+            self._context.lock_counter -= 1
+            msg = (
+                f"Deadlock: lock '{lock_filename}' is already held by a different "
+                f"BaseAsyncFileLock instance in this task. Use is_singleton=True to "
+                f"enable reentrant locking across instances."
+            )
+            raise RuntimeError(msg)
+
         start_time = time.perf_counter()
         try:
             await self._async_poll_until_acquired(
@@ -267,7 +281,11 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             )
         except BaseException:  # Something did go wrong, so decrement the counter.
             self._context.lock_counter = max(0, self._context.lock_counter - 1)
+            if self._context.lock_counter == 0:
+                _registry.held.pop(canonical, None)
             raise
+        if self._context.lock_counter == 1:
+            _registry.held[canonical] = lock_id
         return AsyncAcquireReturnProxy(lock=self)
 
     async def _async_poll_until_acquired(
@@ -319,6 +337,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                 await self._run_internal_method(self._release)
                 self._context.lock_counter = 0
+                _registry.held.pop(_canonical(lock_filename), None)
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     async def _run_internal_method(self, method: Callable[[], Any]) -> None:
