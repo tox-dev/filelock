@@ -758,7 +758,7 @@ def test_stale_malformed_marker_is_evicted(lock_file: str, content: bytes) -> No
 
 def test_fifo_write_marker_does_not_block(lock_file: str) -> None:
     if sys.platform == "win32":
-        pytest.skip("os.mkfifo is unix-only")
+        pytest.skip("os.mkfifo is unix-only")  # also narrows sys.platform so ty resolves os.mkfifo below
     marker = f"{lock_file}.write"
     os.mkfifo(marker)
     past = time.time() - 1000
@@ -770,6 +770,28 @@ def test_fifo_write_marker_does_not_block(lock_file: str) -> None:
             pass
     finally:
         lock.close()
+
+
+def test_fifo_write_marker_with_writer_is_evicted(lock_file: str) -> None:
+    if sys.platform == "win32":
+        pytest.skip("os.mkfifo is unix-only")  # also narrows sys.platform so ty resolves os.mkfifo below
+    marker = f"{lock_file}.write"
+    os.mkfifo(marker)
+    past = time.time() - 1000
+    os.utime(marker, (past, past))
+    # A writer attached to the FIFO makes the non-blocking read raise EAGAIN on every platform, matching how a
+    # writerless FIFO already behaves on FreeBSD (#587). The stale marker must still be evicted by mtime, not
+    # read, so the acquire completes instead of timing out.
+    reader_fd = os.open(marker, os.O_RDONLY | os.O_NONBLOCK)
+    writer_fd = os.open(marker, os.O_WRONLY)
+    lock = _make_lock(lock_file)
+    try:
+        with lock.write_lock(timeout=2):
+            pass
+    finally:
+        lock.close()
+        os.close(writer_fd)
+        os.close(reader_fd)
 
 
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW required")

@@ -781,11 +781,16 @@ def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo |
     if fd is None:
         return None
     try:
-        try:
-            st = os.fstat(fd)
-            data = os.read(fd, _MAX_MARKER_SIZE + 1)
-        except OSError:  # pragma: no cover - e.g. EAGAIN from a hostile FIFO that has a writer attached
-            return None
+        st = os.fstat(fd)
+        # A legitimate marker is always a regular file, so anything else at the path -- above all a FIFO -- is
+        # reported as a malformed marker (its mtime still drives stale eviction) without being read. Reading is
+        # where platforms diverge: an empty non-blocking read yields 0 bytes on Linux/macOS but EAGAIN on
+        # FreeBSD, and the EAGAIN used to abort the stale-break and wedge the acquire until timeout (#587).
+        if not stat.S_ISREG(st.st_mode):
+            return None, st.st_mtime
+        data = os.read(fd, _MAX_MARKER_SIZE + 1)
+    except OSError:  # pragma: no cover - marker vanished or turned unreadable between open and read
+        return None
     finally:
         os.close(fd)
     return _parse_marker_bytes(data), st.st_mtime
