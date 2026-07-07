@@ -12,7 +12,7 @@ from inspect import iscoroutinefunction
 from threading import local
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
-from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta
+from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta, _canonical
 from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock
@@ -113,6 +113,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     .. versionadded:: 3.15.0
 
     """
+
+    _deadlock_holder_desc: str = "BaseAsyncFileLock instance in this task"
 
     def __init__(  # noqa: PLR0913
         self,
@@ -256,6 +258,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         # Increment the number right at the beginning. We can still undo it, if something fails.
         self._context.lock_counter += 1
 
+        canonical = _canonical(self.lock_file)
+        self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
+
         start_time = time.perf_counter()
         try:
             await self._async_poll_until_acquired(
@@ -266,8 +271,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 start_time=start_time,
             )
         except BaseException:  # Something did go wrong, so decrement the counter.
-            self._context.lock_counter = max(0, self._context.lock_counter - 1)
+            self._undo_acquire(canonical)
             raise
+        self._commit_acquire(canonical)
         return AsyncAcquireReturnProxy(lock=self)
 
     async def _async_poll_until_acquired(
@@ -319,6 +325,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
                 await self._run_internal_method(self._release)
                 self._context.lock_counter = 0
+                self._drop_registry_entry()
                 _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     async def _run_internal_method(self, method: Callable[[], Any]) -> None:
