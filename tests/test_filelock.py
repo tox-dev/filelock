@@ -954,8 +954,7 @@ def test_file_lock_positional_argument(tmp_path: Path) -> None:
 @pytest.mark.skipif(sys.platform != "win32" and os.geteuid() == 0, reason="root can open a 0o444 file for writing")
 @pytest.mark.parametrize("lock_type", [SoftFileLock, FileLock])
 def test_readonly_lock_file_with_mtime_zero_raises(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # A read-only lock file whose mtime is 0 must still be rejected: acquire() no longer short-circuits the
-    # writability check on mtime == 0, so it reports the file can never be opened for writing.
+    # acquire() no longer short-circuits the writability check on mtime 0, so a read-only lock file is still rejected.
     lock_path = tmp_path / "z.lock"
     lock_path.touch()
     lock_path.chmod(0o444)
