@@ -142,11 +142,9 @@ def test_raise_on_not_writable_file_still_rejects_readonly_file(tmp_path: Path) 
         path.chmod(0o644)
 
 
-# raise_on_not_writable_file no longer short-circuits on mtime == 0 (the old `if st_mtime != 0` guard existed for
-# very old NFS/Linux quirks where os.lstat could return an all-zero struct; it can't today). Writability is
-# independent of mtime, so both an mtime of 0 and a far-future mtime must still reject a read-only file — the
-# latter case pins that a later patch can't narrow the check to one mtime range. The verdict is mode-based, not
-# access-based, so it holds regardless of euid (no root skip, unlike the acquire-level test in test_filelock.py).
+# Writability follows the mode bits, so a read-only file is rejected whatever its mtime. The far-future row pins that
+# a later patch cannot narrow the check back to a single mtime range. The check reads the mode rather than probing
+# real access, so it holds for root too and needs no euid skip.
 @pytest.mark.parametrize("mtime", [0, 2_000_000_000], ids=["mtime-zero", "mtime-future"])
 def test_raise_on_not_writable_file_rejects_readonly_file_any_mtime(tmp_path: Path, mtime: int) -> None:
     path = tmp_path / "ro.lock"

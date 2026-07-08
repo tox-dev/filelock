@@ -12,37 +12,32 @@ def raise_on_not_writable_file(filename: str) -> None:
     """
     Raise an exception if attempting to open the file for writing would fail.
 
-    This is done so files that will never be writable can be separated from files that are writable but currently
-    locked.
+    Separates files that can never be written from files that are writable but currently locked.
 
     :param filename: file to check
 
     :raises OSError: as if the file was opened for writing.
 
     """
-    try:  # use lstat to do exists + can write to check without race condition
-        # lstat, not stat: a hostile symlink planted at the lock path would otherwise make this check inspect the
-        # link target, so an attacker could turn a contended acquire into a misleading PermissionError /
-        # IsADirectoryError and probe the target's attributes. The actual open uses O_NOFOLLOW and refuses the
-        # symlink anyway, so reading the link itself here keeps the handling consistent with the rest of the module.
+    try:
+        # lstat, not stat: it settles exists-and-writable in one syscall, and a hostile symlink planted at the lock
+        # path would otherwise make this inspect the link target, letting an attacker turn a contended acquire into a
+        # misleading PermissionError / IsADirectoryError and probe that target's attributes. The real open passes
+        # O_NOFOLLOW and refuses the symlink anyway.
         file_stat = os.lstat(filename)
     except OSError:
-        return  # swallow does not exist or other errors
+        return  # does not exist, or an error the caller cannot act on
 
-    # No mtime guard: the old `if st_mtime != 0` skip existed for very old NFS/Linux quirks where os.lstat could
-    # return an all-zero struct, which it never does today for a file that exists. Skipping the checks when mtime
-    # happened to be 0 let a read-only file or a directory in the lock path pass as missing, so acquire() then
-    # blocked forever waiting on an open that cannot succeed (or locked a file nothing else can write).
+    # No mtime guard: the old `if st_mtime != 0` skip existed for NFS/Linux quirks where os.lstat could return an
+    # all-zero struct, which it no longer does. Skipping on mtime 0 let a read-only file or a directory at the lock
+    # path pass as missing, so acquire() blocked forever on an open that cannot succeed.
     if not (file_stat.st_mode & stat.S_IWUSR):
         raise PermissionError(EACCES, "Permission denied", filename)
 
     if stat.S_ISDIR(file_stat.st_mode):
         if sys.platform == "win32":  # pragma: win32 cover
-            # On Windows, this is PermissionError
             raise PermissionError(EACCES, "Permission denied", filename)
-        else:  # pragma: win32 no cover # noqa: RET506
-            # On linux / macOS, this is IsADirectoryError
-            raise IsADirectoryError(EISDIR, "Is a directory", filename)
+        raise IsADirectoryError(EISDIR, "Is a directory", filename)  # pragma: win32 no cover
 
 
 def ensure_directory_exists(filename: Path | str) -> None:
