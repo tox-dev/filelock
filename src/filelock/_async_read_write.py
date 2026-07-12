@@ -17,41 +17,23 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 
-class AsyncAcquireReadWriteReturnProxy:
-    """Context-aware object that releases the async read/write lock on exit."""
-
-    def __init__(self, lock: AsyncReadWriteLock) -> None:
-        self.lock = lock
-
-    async def __aenter__(self) -> AsyncReadWriteLock:
-        return self.lock
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.lock.release()
-
-
 class AsyncReadWriteLock:
     """
     Async wrapper around :class:`ReadWriteLock` for use in ``asyncio`` applications.
 
-    Because Python's :mod:`sqlite3` module has no async API, all blocking SQLite operations are dispatched to a thread
-    pool via ``loop.run_in_executor()``. Reentrancy, upgrade/downgrade rules, and singleton behavior are delegated
-    to the underlying :class:`ReadWriteLock`.
+    This wrapper dispatches every blocking SQLite operation to a thread pool via ``loop.run_in_executor()`` because
+    Python's :mod:`sqlite3` module has no async API. It delegates reentrancy, upgrade/downgrade rules, and singleton
+    behavior to the underlying :class:`ReadWriteLock`.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
     :param is_singleton: if ``True``, reuse existing :class:`ReadWriteLock` instances for the same resolved path
     :param loop: event loop for ``run_in_executor``; ``None`` uses the running loop
-    :param executor: executor for ``run_in_executor``. When ``None`` a dedicated single-thread executor is created
-        and owned by this lock, ensuring every operation runs on the same thread (required for SQLite affinity); it
-        is shut down by :meth:`close`. A caller-supplied executor is used as-is and never shut down here, so when no
-        executor is passed remember to call :meth:`close` to release the owned one.
+    :param executor: executor for ``run_in_executor``. When ``None`` this lock creates and owns a dedicated
+        single-thread executor so every operation runs on the same thread (SQLite affinity requires this) and shuts it
+        down in :meth:`close`. This lock uses a caller-supplied executor as-is and never shuts it down, so after passing
+        no executor call :meth:`close` to release the owned one.
 
     .. versionadded:: 3.21.0
 
@@ -97,9 +79,47 @@ class AsyncReadWriteLock:
         """The executor used for ``run_in_executor`` (a dedicated single-thread one if none was supplied)."""
         return self._executor
 
-    async def _run(self, func: Callable[..., object], *args: object, **kwargs: object) -> object:
-        loop = self._loop or asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor, functools.partial(func, *args, **kwargs))
+    @asynccontextmanager
+    async def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> AsyncGenerator[None]:
+        """
+        Async context manager that acquires and releases a shared read lock.
+
+        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
+
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+
+        """
+        if timeout is None:
+            timeout = self._lock.timeout
+        if blocking is None:
+            blocking = self._lock.blocking
+        await self.acquire_read(timeout, blocking=blocking)
+        try:
+            yield
+        finally:
+            await self.release()
+
+    @asynccontextmanager
+    async def write_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> AsyncGenerator[None]:
+        """
+        Async context manager that acquires and releases an exclusive write lock.
+
+        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
+
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+
+        """
+        if timeout is None:
+            timeout = self._lock.timeout
+        if blocking is None:
+            blocking = self._lock.blocking
+        await self.acquire_write(timeout, blocking=blocking)
+        try:
+            yield
+        finally:
+            await self.release()
 
     async def acquire_read(self, timeout: float = -1, *, blocking: bool = True) -> AsyncAcquireReadWriteReturnProxy:
         """
@@ -150,48 +170,6 @@ class AsyncReadWriteLock:
         """
         await self._run(self._lock.release, force=force)
 
-    @asynccontextmanager
-    async def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> AsyncGenerator[None]:
-        """
-        Async context manager that acquires and releases a shared read lock.
-
-        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
-
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
-        """
-        if timeout is None:
-            timeout = self._lock.timeout
-        if blocking is None:
-            blocking = self._lock.blocking
-        await self.acquire_read(timeout, blocking=blocking)
-        try:
-            yield
-        finally:
-            await self.release()
-
-    @asynccontextmanager
-    async def write_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> AsyncGenerator[None]:
-        """
-        Async context manager that acquires and releases an exclusive write lock.
-
-        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
-
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
-        """
-        if timeout is None:
-            timeout = self._lock.timeout
-        if blocking is None:
-            blocking = self._lock.blocking
-        await self.acquire_write(timeout, blocking=blocking)
-        try:
-            yield
-        finally:
-            await self.release()
-
     async def close(self) -> None:
         """
         Release the lock (if held) and close the underlying SQLite connection.
@@ -203,11 +181,33 @@ class AsyncReadWriteLock:
         if self._owns_executor:
             self._executor.shutdown(wait=False)
 
+    async def _run(self, func: Callable[..., object], *args: object, **kwargs: object) -> object:
+        loop = self._loop or asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, functools.partial(func, *args, **kwargs))
+
     def __del__(self) -> None:
-        # Safety net: if close() was never called, still shut down the executor we created so its worker thread does
-        # not outlive the lock. A caller-supplied executor is left untouched. shutdown(wait=False) never blocks.
+        # Safety net when close() was never called: shut down the executor we own so its worker thread does not
+        # outlive the lock. shutdown(wait=False) never blocks.
         if getattr(self, "_owns_executor", False):
             self._executor.shutdown(wait=False)
+
+
+class AsyncAcquireReadWriteReturnProxy:
+    """Context-aware object that releases the async read/write lock on exit."""
+
+    def __init__(self, lock: AsyncReadWriteLock) -> None:
+        self.lock = lock
+
+    async def __aenter__(self) -> AsyncReadWriteLock:
+        return self.lock
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.lock.release()
 
 
 __all__ = [

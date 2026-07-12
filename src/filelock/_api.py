@@ -10,16 +10,15 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import Lock, local
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Final, TypeVar
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
 from ._util import break_lock_file
 
-#: Sentinel indicating that no explicit file permission mode was passed.
-#: When used, lock files are created with 0o666 (letting umask and default ACLs control the final permissions)
-#: and fchmod is skipped so that POSIX default ACL inheritance is preserved.
-_UNSET_FILE_MODE: int = -1
+#: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
+#: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
+_UNSET_FILE_MODE: Final[int] = -1
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,11 +33,11 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 
-_LOGGER = logging.getLogger("filelock")
+_LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 
 # On Windows os.path.realpath calls CreateFileW with share_mode=0, which blocks concurrent DeleteFileW and causes
 # livelocks under threaded contention with SoftFileLock. os.path.abspath is purely string-based and avoids this.
-_canonical = os.path.abspath if sys.platform == "win32" else os.path.realpath
+_canonical: Final[Callable[[str], str]] = os.path.abspath if sys.platform == "win32" else os.path.realpath
 
 
 class _ThreadLocalRegistry(local):
@@ -47,64 +46,7 @@ class _ThreadLocalRegistry(local):
         self.held: dict[str, int] = {}
 
 
-_registry = _ThreadLocalRegistry()
-
-
-# This is a helper class which is returned by :meth:`BaseFileLock.acquire` and wraps the lock to make sure __enter__
-# is not called twice when entering the with statement. If we would simply return *self*, the lock would be acquired
-# again in the *__enter__* method of the BaseFileLock, but not released again automatically. issue #37 (memory leak)
-class AcquireReturnProxy:
-    """A context-aware object that will release the lock file when exiting."""
-
-    def __init__(self, lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock) -> None:
-        self.lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock = lock
-
-    def __enter__(self) -> BaseFileLock | ReadWriteLock | SoftReadWriteLock:
-        return self.lock
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        self.lock.release()
-
-
-@dataclass
-class FileLockContext:
-    """A dataclass which holds the context for a ``BaseFileLock`` object."""
-
-    # The context is held in a separate class to allow optional use of thread local storage via the
-    # ThreadLocalFileContext class.
-
-    #: The path to the lock file.
-    lock_file: str
-
-    #: The default timeout value.
-    timeout: float
-
-    #: The mode for the lock files
-    mode: int
-
-    #: Whether the lock should be blocking or not
-    blocking: bool
-
-    #: The default polling interval value.
-    poll_interval: float
-
-    #: The lock lifetime in seconds; ``None`` means the lock never expires.
-    lifetime: float | None = None
-
-    #: The file descriptor for the *_lock_file* as it is returned by the os.open() function, not None when lock held
-    lock_file_fd: int | None = None
-
-    #: The lock counter is used for implementing the nested locking mechanism.
-    lock_counter: int = 0  # When the lock is acquired is increased and the lock is only released, when this value is 0
-
-
-class ThreadLocalFileContext(FileLockContext, local):
-    """A thread local version of the ``FileLockContext`` class."""
+_registry: Final[_ThreadLocalRegistry] = _ThreadLocalRegistry()
 
 
 _T = TypeVar("_T", bound="BaseFileLock")
@@ -159,7 +101,6 @@ class FileLockMeta(ABCMeta):
             "poll_interval": (poll_interval, instance.poll_interval),
             "lifetime": (lifetime, instance.lifetime),
         }
-
         non_matching_params = {
             name: (passed_param, set_param)
             for name, (passed_param, set_param) in params_to_check.items()
@@ -168,7 +109,6 @@ class FileLockMeta(ABCMeta):
         if not non_matching_params:
             return instance  # ty: ignore[invalid-return-type]  # https://github.com/astral-sh/ty/issues/3231
 
-        # parameters do not match; raise error
         msg = "Singleton lock instances cannot be initialized with differing arguments"
         msg += "\nNon-matching arguments: "
         for param_name, (passed_param, set_param) in non_matching_params.items():
@@ -176,11 +116,10 @@ class FileLockMeta(ABCMeta):
         raise ValueError(msg)
 
     def _create_instance(cls: type[_T], lock_file: str | os.PathLike[str], params: dict[str, Any]) -> _T:
-        # Keep only the params this subclass's __init__ accepts: virtualenv narrows the signature of its
-        # BaseFileLock descendant, so passing the full set would break it (https://github.com/tox-dev/filelock/pull/340).
+        # Keep only the params this subclass's __init__ accepts. virtualenv narrows its BaseFileLock
+        # descendant's signature, so passing the full set breaks it (tox-dev/filelock#340).
         present_params = inspect.signature(cls.__init__).parameters
-        init_params = {key: value for key, value in params.items() if key in present_params}
-        return super().__call__(lock_file, **init_params)
+        return super().__call__(lock_file, **{key: value for key, value in params.items() if key in present_params})
 
 
 class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
@@ -200,7 +139,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     _deadlock_holder_desc: str = "FileLock instance in this thread"
 
     def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
-        """Setup unique state for lock subclasses."""
+        """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
         cls._instances_lock = Lock()
@@ -247,8 +186,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
 
-        # Create the context. Note that external code should not work with the context directly and should instead use
-        # properties of this class.
+        # External code reaches these values through the public properties, not through _context directly.
         kwargs: dict[str, Any] = {
             "lock_file": os.fspath(lock_file),
             "timeout": timeout,
@@ -379,32 +317,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         return self._context.mode != _UNSET_FILE_MODE
 
     def _open_mode(self) -> int:
-        """:returns: the mode for os.open() — 0o666 when unset (let umask/ACLs decide), else the explicit mode"""
+        """Mode for ``os.open``: 0o666 when unset so umask and ACLs decide, otherwise the explicit mode."""
         return 0o666 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
-
-    def _try_break_expired_lock(self) -> None:
-        """Remove the lock file if its modification time exceeds the configured :attr:`lifetime`."""
-        if (lifetime := self._context.lifetime) is None:
-            return
-        with contextlib.suppress(OSError):
-            # lstat, not stat: an attacker with write access to the lock directory can replace a held
-            # lock file with a symlink pointing at an old file, making stat() report the target's stale
-            # mtime so a waiter breaks a live lock and two processes hold it at once. lstat reads the
-            # symlink's own mtime, matching the O_NOFOLLOW reads elsewhere.
-            st = os.lstat(self.lock_file)
-            if time.time() - st.st_mtime < lifetime:
-                return
-            break_lock_file(self.lock_file, st.st_mtime, st.st_ino)
-
-    @abstractmethod
-    def _acquire(self) -> None:
-        """If the file lock could be acquired, self._context.lock_file_fd holds the file descriptor of the lock file."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def _release(self) -> None:
-        """Releases the lock and sets self._context.lock_file_fd to None."""
-        raise NotImplementedError
 
     @property
     def is_locked(self) -> bool:
@@ -423,26 +337,28 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         """The number of times this lock has been acquired (but not yet released)."""
         return self._context.lock_counter
 
-    @staticmethod
-    def _check_give_up(  # noqa: PLR0913
-        lock_id: int,
-        lock_filename: str,
-        *,
-        blocking: bool,
-        cancel_check: Callable[[], bool] | None,
-        timeout: float,
-        start_time: float,
-    ) -> bool:
-        if blocking is False:
-            _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
-            return True
-        if cancel_check is not None and cancel_check():
-            _LOGGER.debug("Cancellation requested for lock %s on %s", lock_id, lock_filename)
-            return True
-        if 0 <= timeout < time.perf_counter() - start_time:
-            _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
-            return True
-        return False
+    def __enter__(self) -> Self:
+        """
+        Acquire the lock.
+
+        :returns: the lock object
+
+        """
+        self.acquire()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Release the lock."""
+        self.release()
+
+    def __del__(self) -> None:
+        """Force-release so a dropped reference never leaks a held lock."""
+        self.release(force=True)
 
     def acquire(
         self,
@@ -489,7 +405,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             without side effects.
 
         """
-        # Use the default timeout, if no timeout is provided.
         if timeout is None:
             timeout = self._context.timeout
 
@@ -503,7 +418,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
         poll_interval = poll_interval if poll_interval is not None else self._context.poll_interval
 
-        # Increment the number right at the beginning. We can still undo it, if something fails.
+        # Bump the counter up front; _undo_acquire rolls it back if acquisition fails.
         self._context.lock_counter += 1
 
         canonical = _canonical(self.lock_file)
@@ -524,6 +439,26 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         self._commit_acquire(canonical)
         return AcquireReturnProxy(lock=self)
 
+    def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
+        """
+        Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
+        itself may be deleted automatically, the behavior is platform-specific.
+
+        :param force: If true, the lock counter is ignored and the lock is released in every case.
+
+        """
+        if self.is_locked:
+            self._context.lock_counter -= 1
+
+            if self._context.lock_counter == 0 or force:
+                lock_id, lock_filename = id(self), self.lock_file
+
+                _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
+                self._release()
+                self._context.lock_counter = 0
+                self._drop_registry_entry()
+                _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         """
         Fail fast when a *different* live instance already holds this path on the current thread/task.
@@ -539,21 +474,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
                 f"Use is_singleton=True to enable reentrant locking across instances."
             )
             raise RuntimeError(msg)
-
-    def _undo_acquire(self, canonical: str) -> None:
-        """Roll back the counter after a failed acquire, dropping the registry entry once nothing holds the path."""
-        self._context.lock_counter = max(0, self._context.lock_counter - 1)
-        if self._context.lock_counter == 0:
-            _registry.held.pop(canonical, None)
-
-    def _commit_acquire(self, canonical: str) -> None:
-        """Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock."""
-        if self._context.lock_counter == 1:
-            _registry.held[canonical] = id(self)
-
-    def _drop_registry_entry(self) -> None:
-        """Forget this path's holder on release so a later cross-instance acquire is not misread as a deadlock."""
-        _registry.held.pop(_canonical(self.lock_file), None)
 
     def _poll_until_acquired(
         self,
@@ -587,35 +507,77 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
             time.sleep(poll_interval)
 
-    def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
-        """
-        Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
-        itself may be deleted automatically, the behavior is platform-specific.
+    def _undo_acquire(self, canonical: str) -> None:
+        """Roll back the counter after a failed acquire, dropping the registry entry once nothing holds the path."""
+        self._context.lock_counter = max(0, self._context.lock_counter - 1)
+        if self._context.lock_counter == 0:
+            _registry.held.pop(canonical, None)
 
-        :param force: If true, the lock counter is ignored and the lock is released in every case.
+    def _commit_acquire(self, canonical: str) -> None:
+        """Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock."""
+        if self._context.lock_counter == 1:
+            _registry.held[canonical] = id(self)
 
-        """
-        if self.is_locked:
-            self._context.lock_counter -= 1
+    def _drop_registry_entry(self) -> None:
+        """Forget this path's holder on release so a later cross-instance acquire is not misread as a deadlock."""
+        _registry.held.pop(_canonical(self.lock_file), None)
 
-            if self._context.lock_counter == 0 or force:
-                lock_id, lock_filename = id(self), self.lock_file
+    def _try_break_expired_lock(self) -> None:
+        """Remove the lock file if its modification time exceeds the configured :attr:`lifetime`."""
+        if (lifetime := self._context.lifetime) is None:
+            return
+        with contextlib.suppress(OSError):
+            # lstat, not stat: an attacker with write access to the lock directory can replace a held
+            # lock file with a symlink pointing at an old file, making stat() report the target's stale
+            # mtime so a waiter breaks a live lock and two processes hold it at once. lstat reads the
+            # symlink's own mtime, matching the O_NOFOLLOW reads elsewhere.
+            st = os.lstat(self.lock_file)
+            if time.time() - st.st_mtime < lifetime:
+                return
+            break_lock_file(self.lock_file, st.st_mtime, st.st_ino)
 
-                _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
-                self._release()
-                self._context.lock_counter = 0
-                self._drop_registry_entry()
-                _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+    @staticmethod
+    def _check_give_up(  # noqa: PLR0913
+        lock_id: int,
+        lock_filename: str,
+        *,
+        blocking: bool,
+        cancel_check: Callable[[], bool] | None,
+        timeout: float,
+        start_time: float,
+    ) -> bool:
+        if blocking is False:
+            _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
+            return True
+        if cancel_check is not None and cancel_check():
+            _LOGGER.debug("Cancellation requested for lock %s on %s", lock_id, lock_filename)
+            return True
+        if 0 <= timeout < time.perf_counter() - start_time:
+            _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
+            return True
+        return False
 
-    def __enter__(self) -> Self:
-        """
-        Acquire the lock.
+    @abstractmethod
+    def _acquire(self) -> None:
+        """If the file lock could be acquired, self._context.lock_file_fd holds the file descriptor of the lock file."""
+        raise NotImplementedError
 
-        :returns: the lock object
+    @abstractmethod
+    def _release(self) -> None:
+        """Releases the lock and sets self._context.lock_file_fd to None."""
+        raise NotImplementedError
 
-        """
-        self.acquire()
-        return self
+
+# acquire() returns this wrapper instead of self so entering the with-statement does not call __enter__ a second
+# time; returning self would re-acquire the lock in BaseFileLock.__enter__ without a matching release (issue #37).
+class AcquireReturnProxy:
+    """A context-aware object that will release the lock file when exiting."""
+
+    def __init__(self, lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock) -> None:
+        self.lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock = lock
+
+    def __enter__(self) -> BaseFileLock | ReadWriteLock | SoftReadWriteLock:
+        return self.lock
 
     def __exit__(
         self,
@@ -623,19 +585,33 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """
-        Release the lock.
+        self.lock.release()
 
-        :param exc_type: the exception type if raised
-        :param exc_value: the exception value if raised
-        :param traceback: the exception traceback if raised
 
-        """
-        self.release()
+@dataclass
+class FileLockContext:
+    """Holds the context for a ``BaseFileLock`` object."""
 
-    def __del__(self) -> None:
-        """Called when the lock object is deleted."""
-        self.release(force=True)
+    # A separate class so ThreadLocalFileContext can make the whole context thread-local.
+
+    lock_file: str
+    timeout: float
+    mode: int
+    blocking: bool
+    poll_interval: float
+
+    #: The lock lifetime in seconds; ``None`` means the lock never expires.
+    lifetime: float | None = None
+
+    #: File descriptor from os.open for the lock file; not None while the lock is held.
+    lock_file_fd: int | None = None
+
+    #: Depth of nested acquisitions; the lock is released only when it returns to 0.
+    lock_counter: int = 0
+
+
+class ThreadLocalFileContext(FileLockContext, local):
+    """A thread local version of the ``FileLockContext`` class."""
 
 
 __all__ = [

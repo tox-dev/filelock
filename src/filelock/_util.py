@@ -20,17 +20,17 @@ def raise_on_not_writable_file(filename: str) -> None:
 
     """
     try:
-        # lstat, not stat: it settles exists-and-writable in one syscall, and a hostile symlink planted at the lock
-        # path would otherwise make this inspect the link target, letting an attacker turn a contended acquire into a
-        # misleading PermissionError / IsADirectoryError and probe that target's attributes. The real open passes
-        # O_NOFOLLOW and refuses the symlink anyway.
+        # lstat, not stat: settles exists-and-writable in one syscall, and a hostile symlink at the lock path would
+        # make stat inspect the link target, letting an attacker turn a contended acquire into a misleading
+        # PermissionError / IsADirectoryError and probe that target's attributes. The real open passes O_NOFOLLOW and
+        # refuses the symlink anyway.
         file_stat = os.lstat(filename)
     except OSError:
         return  # does not exist, or an error the caller cannot act on
 
-    # No mtime guard: the old `if st_mtime != 0` skip existed for NFS/Linux quirks where os.lstat could return an
-    # all-zero struct, which it no longer does. Skipping on mtime 0 let a read-only file or a directory at the lock
-    # path pass as missing, so acquire() blocked forever on an open that cannot succeed.
+    # No mtime guard: the old `if st_mtime != 0` skip covered NFS/Linux quirks where os.lstat returned an all-zero
+    # struct, which it no longer does. Skipping on mtime 0 let a read-only file or a directory at the lock path pass
+    # as missing, so acquire() blocked forever on an open that cannot succeed.
     if not (file_stat.st_mode & stat.S_IWUSR):
         raise PermissionError(EACCES, "Permission denied", filename)
 
@@ -52,23 +52,23 @@ def ensure_directory_exists(filename: Path | str) -> None:
 
 def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> None:
     """
-    Atomically break a stale lock file that was judged stale at modification time *mtime_before*.
+    Atomically break a stale lock file judged stale at modification time *mtime_before*.
 
-    The file is renamed to a process-private name before being unlinked, so two processes breaking the same lock
-    cannot delete each other's work (only one rename of a given inode succeeds; the loser gets ``OSError``). After the
-    rename the file is re-checked: a newer modification time, or a different inode than *ino_before*, means a peer
-    recreated the lock between the stale decision and the rename, so we grabbed a live file and must abort, leaving the
-    renamed file in place rather than rolling back (a rollback rename is itself racy — same trade-off as the soft
-    read/write marker break). The inode check matters because filesystems with coarse modification-time granularity
-    (NFS, FAT) can give a same-second recreation the old mtime, so mtime alone would not catch it and a live lock would
-    be unlinked; the inode is the reliable identity, mirroring the token re-check in the soft read/write marker break.
-    ``lstat`` is used so a hostile symlink swapped in after the decision is not followed.
+    Rename the file to a process-private name before unlinking it, so two processes breaking the same lock cannot
+    delete each other's work: only one rename of a given inode wins, the loser gets ``OSError``. After the rename,
+    re-check the file. A newer modification time, or a different inode than *ino_before*, means a peer recreated the
+    lock between the stale decision and the rename, so we grabbed a live file and abort, leaving the renamed file in
+    place. A rollback rename is itself racy, the same trade-off as the soft read/write marker break. The inode check
+    matters because filesystems with coarse modification-time granularity (NFS, FAT) can give a same-second recreation
+    the old mtime, so mtime alone would miss it and unlink a live lock; the inode is the reliable identity, mirroring
+    the token re-check in the soft read/write marker break. ``lstat`` avoids following a hostile symlink swapped in
+    after the decision.
 
     The break name carries a random token so it is unguessable and unique per attempt. Without it two breakers in the
-    same process share ``<lock>.break.<pid>``, and a second break can rename a freshly recreated live lock onto that
-    path in the window between the re-verify ``lstat`` above and the ``unlink`` below, so we would delete a live lock
-    the inode check just approved. A private name means nobody else can target our break path, matching the soft
-    read/write marker break.
+    same process share ``<lock>.break.<pid>``, and a second break can rename a recreated live lock onto that path in
+    the window between the re-verify ``lstat`` above and the ``unlink`` below, deleting a live lock the inode check
+    just approved. A private name keeps anyone else from targeting our break path, matching the soft read/write marker
+    break.
 
     :param lock_file: path to the lock file to break.
     :param mtime_before: modification time observed when the lock was judged stale.

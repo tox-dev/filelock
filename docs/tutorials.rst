@@ -2,8 +2,8 @@
  Tutorials
 ###########
 
-This section guides you through the fundamentals of file locking. We'll learn by doing, starting with the basics and
-building up to more advanced patterns.
+This section guides you through the fundamentals of file locking, starting with the basics and building up to advanced
+patterns.
 
 *****************
  Your first lock
@@ -11,7 +11,7 @@ building up to more advanced patterns.
 
 Let's create our first lock and use it to coordinate between processes.
 
-First, we'll import what we need and create a lock object:
+We import what we need and create a lock object:
 
 .. code-block:: python
 
@@ -30,14 +30,14 @@ statement):
         print("I have the lock!")
     # Outside this block, the lock is released
 
-Run this code multiple times in different terminal windows at the same time. You'll see that only one process prints the
-message at a time—the others wait for their turn. The lock is working correctly!
+Run this code in several terminal windows at the same time. Only one process prints the message at a time; the others
+wait for their turn.
 
 ************************
  Protecting shared data
 ************************
 
-File locks are most useful when protecting data that multiple processes access. Let's see how:
+File locks are most useful when protecting data that multiple processes access:
 
 .. code-block:: python
 
@@ -57,9 +57,9 @@ File locks are most useful when protecting data that multiple processes access. 
         with data_file.open("a") as f:
             f.write("Hello from Process B\n")
 
-The key pattern here: **Before making changes, check what's already done.** Process A checks if the file exists before
-writing. Process B doesn't need to check because it's just appending. But both use the lock to ensure only one process
-modifies the file at a time.
+The key pattern: **before making changes, check what's already done.** Process A checks whether the file exists before
+writing. Process B appends, so it skips the check. Both use the lock so that only one process modifies the file at a
+time.
 
 Run this code from two different processes. The file will contain messages from both in a consistent order.
 
@@ -86,8 +86,8 @@ Sometimes you need to acquire the same lock multiple times from the same process
         helper_function()  # Can acquire the same lock again
         print("Still have the lock")
 
-No deadlock occurs—the lock counts how many times it's been acquired and releases only when the count reaches zero. You
-can inspect this counter and the lock state at any time:
+No deadlock occurs. The lock counts how many times you acquire it and releases only when the count reaches zero. You can
+inspect this counter and the lock state at any time:
 
 .. code-block:: python
 
@@ -111,7 +111,7 @@ can inspect this counter and the lock state at any time:
     print(lock.lock_counter)  # 0 — fully released
     print(lock.is_locked)     # False
 
-Key lesson: You can safely call functions that acquire a lock, even if you already hold the lock.
+You can call functions that acquire a lock even while you already hold it.
 
 *****************************
  Multiple ways to use a lock
@@ -142,7 +142,7 @@ Always use a ``try/finally`` block to guarantee the lock is released, even if an
 
     protected_operation()  # Lock is acquired, function runs, lock is released
 
-Choose whichever feels most natural for your code. The ``with`` statement is usually clearest.
+Choose whichever feels most natural for your code. The ``with`` statement reads clearest.
 
 Important: Always use the context manager
 =========================================
@@ -171,8 +171,8 @@ Instead, always keep a reference to the lock object:
  Thread-local by default
 **************************
 
-By default, each lock uses thread-local state (``thread_local=True``). This means each thread tracks its own lock
-counter independently. Two threads holding the same ``FileLock`` object each get their own reentrant state.
+By default, each lock uses thread-local state (``thread_local=True``): each thread tracks its own lock counter. Two
+threads holding the same ``FileLock`` object each get their own reentrant state.
 
 Async locks default to ``thread_local=False`` because they run in a thread pool where the acquiring thread may differ
 from the releasing thread.
@@ -218,8 +218,8 @@ Key differences from ``PIDLockFile``:
  Reader/writer locks on a shared NFS
 *************************************
 
-If your lock file lives on a network filesystem — a slurm-mounted home directory, a Lustre cluster scratch
-space, or any NFS share — use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` rather than
+If your lock file lives on a network filesystem (a slurm-mounted home directory, a Lustre cluster scratch space, or any
+NFS share), use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` rather than
 :class:`ReadWriteLock <filelock.ReadWriteLock>`. ``ReadWriteLock`` is SQLite-backed and unsafe on NFS.
 ``SoftReadWriteLock`` is built on :class:`SoftFileLock <filelock.SoftFileLock>` primitives and handles cross-host stale detection via a
 background heartbeat thread.

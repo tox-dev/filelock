@@ -204,8 +204,7 @@ def test_release_force_resets_level(lock_file: str) -> None:
 )
 def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    ctx = lock.read_lock() if mode == "read" else lock.write_lock()
-    with ctx:
+    with lock.read_lock() if mode == "read" else lock.write_lock():
         assert lock._lock_level == 1
         assert lock._current_mode == mode
     assert lock._lock_level == 0
@@ -221,8 +220,7 @@ def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) ->
 )
 def test_lock_uses_instance_defaults(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file, timeout=3.0, blocking=True, is_singleton=False)
-    ctx = lock.read_lock() if mode == "read" else lock.write_lock()
-    with ctx:
+    with lock.read_lock() if mode == "read" else lock.write_lock():
         assert lock._current_mode == mode
 
 
@@ -284,11 +282,9 @@ def test_write_lock_reentrant_from_different_thread_prohibited(lock_file: str) -
 )
 def test_sequential_mode_switch(lock_file: str, first: str, second: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    first_ctx = lock.read_lock() if first == "read" else lock.write_lock()
-    second_ctx = lock.read_lock() if second == "read" else lock.write_lock()
-    with first_ctx:
+    with lock.read_lock() if first == "read" else lock.write_lock():
         pass
-    with second_ctx:
+    with lock.read_lock() if second == "read" else lock.write_lock():
         pass
 
 
@@ -386,9 +382,8 @@ def test_non_blocking_transaction_lock_timeout(lock_file: str, mode: Literal["re
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock._transaction_lock.acquire()
     try:
-        acquire = lock.acquire_read if mode == "read" else lock.acquire_write
         with pytest.raises(Timeout):
-            acquire(blocking=False)
+            (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False)
     finally:
         lock._transaction_lock.release()
 
@@ -404,9 +399,8 @@ def test_non_blocking_with_timeout_no_value_error(lock_file: str, mode: Literal[
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock._transaction_lock.acquire()
     try:
-        acquire = lock.acquire_read if mode == "read" else lock.acquire_write
         with pytest.raises(Timeout):
-            acquire(blocking=False, timeout=5.0)
+            (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False, timeout=5.0)
     finally:
         lock._transaction_lock.release()
 
@@ -422,9 +416,8 @@ def test_finite_timeout_transaction_lock(lock_file: str, mode: Literal["read", "
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock._transaction_lock.acquire()
     try:
-        acquire = lock.acquire_read if mode == "read" else lock.acquire_write
         with pytest.raises(Timeout):
-            acquire(timeout=0.1)
+            (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=0.1)
     finally:
         lock._transaction_lock.release()
 
@@ -499,9 +492,8 @@ def test_double_check_wrong_mode_raises(
     mock_lock.acquire = fake_acquire
     mock_lock.release = real_lock.release
     lock._transaction_lock = mock_lock
-    acquire = lock.acquire_read if acquire_mode == "read" else lock.acquire_write
     with pytest.raises(RuntimeError, match=match):
-        acquire()
+        (lock.acquire_read if acquire_mode == "read" else lock.acquire_write)()
     lock._lock_level = 0
     lock._current_mode = None
 
@@ -531,9 +523,8 @@ def test_operational_error_handling(
     con_mock = mocker.MagicMock()
     con_mock.execute.side_effect = sqlite3.OperationalError(error_msg)
     lock._con = con_mock
-    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
     with pytest.raises(expected_exception):
-        acquire()
+        (lock.acquire_read if mode == "read" else lock.acquire_write)()
 
 
 def test_write_lock_context_manager_overrides_defaults(lock_file: str) -> None:
@@ -555,8 +546,7 @@ def test_busy_timeout_recomputed_after_journal_mode(
     counter = iter([0.0, 0.0, 0.5])
     mocker.patch("filelock._read_write.time.perf_counter", side_effect=counter)
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
-    acquire(timeout=2.0)
+    (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=2.0)
     lock.release()
 
 
@@ -657,7 +647,7 @@ def test_read_acquire_rolls_back_begin_when_select_loses_lock_race(lock_file: st
 
 
 def test_failed_reentrant_double_check_keeps_a_concurrent_holders_lock(lock_file: str) -> None:
-    # The acquire-failure handler must not roll back on a reentrant-validation RuntimeError: a writer that reaches
+    # The acquire-failure handler must not roll back on a reentrant-validation RuntimeError. A writer that reaches
     # _do_acquire_inner's double-check after a reader took the lock would otherwise roll back the reader's still-open
     # transaction on the shared connection, dropping a lock the reader believes it holds. Force that interleaving.
     lock = ReadWriteLock(lock_file, is_singleton=False)
@@ -670,7 +660,7 @@ def test_failed_reentrant_double_check_keeps_a_concurrent_holders_lock(lock_file
     def gated(*, blocking: bool, timeout: float) -> None:
         if threading.get_ident() == writer_tid.get("id"):  # writer has passed its early check at lock_level == 0
             writer_at_gate.set()
-            reader_acquired.wait(5)  # let the reader fully acquire (and open its transaction) first
+            reader_acquired.wait(5)  # let the reader acquire (and open its transaction) first
         real_acquire_tx(blocking=blocking, timeout=timeout)
 
     def acquire_write_in_thread() -> None:
@@ -688,7 +678,7 @@ def test_failed_reentrant_double_check_keeps_a_concurrent_holders_lock(lock_file
     reader_acquired.set()
     thread.join(5)
 
-    assert "writer" in errors  # the upgrade was rejected with RuntimeError, as expected
+    assert "writer" in errors  # writer's upgrade rejected with RuntimeError
     assert lock._con.in_transaction is True  # the reader's transaction survived the writer's failure
     assert lock._lock_level == 1
     assert lock._current_mode == "read"

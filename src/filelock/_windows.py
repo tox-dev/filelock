@@ -5,7 +5,7 @@ import sys
 from contextlib import suppress
 from errno import EACCES
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 from ._api import BaseFileLock
 from ._util import ensure_directory_exists, raise_on_not_writable_file
@@ -15,72 +15,41 @@ if sys.platform == "win32":  # pragma: win32 cover
     import msvcrt
     from ctypes import wintypes
 
-    # Windows API constants for reparse point detection
-    FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
-    INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
+    _FILE_ATTRIBUTE_REPARSE_POINT: Final[int] = 0x00000400
+    _INVALID_FILE_ATTRIBUTES: Final[int] = 0xFFFFFFFF
 
-    # Load kernel32.dll
-    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32: Final[ctypes.WinDLL] = ctypes.WinDLL("kernel32", use_last_error=True)
     _kernel32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
     _kernel32.GetFileAttributesW.restype = wintypes.DWORD
-
-    def _is_reparse_point(path: str) -> bool:
-        """
-        Check if a path is a reparse point (symlink, junction, etc.) on Windows.
-
-        :param path: Path to check
-
-        :returns: True if path is a reparse point, False otherwise
-
-        :raises OSError: If GetFileAttributesW fails for reasons other than file-not-found
-
-        """
-        attrs = _kernel32.GetFileAttributesW(path)
-        if attrs == INVALID_FILE_ATTRIBUTES:
-            # File doesn't exist yet - that's fine, we'll create it
-            err = ctypes.get_last_error()
-            if err == 2:  # noqa: PLR2004  # ERROR_FILE_NOT_FOUND
-                return False
-            if err == 3:  # noqa: PLR2004 # ERROR_PATH_NOT_FOUND
-                return False
-            # Some other error - let caller handle it
-            return False
-        return bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT)
 
     class WindowsFileLock(BaseFileLock):
         """
         Uses the :func:`msvcrt.locking` function to hard lock the lock file on Windows systems.
 
-        Lock file cleanup: Windows attempts to delete the lock file after release, but deletion is
-        not guaranteed in multi-threaded scenarios where another thread holds an open handle. The lock
-        file may persist on disk, which does not affect lock correctness.
+        ``_release`` unlinks the lock file, but the unlink can fail while another thread still holds an
+        open handle. A surviving lock file on disk does not affect lock correctness.
         """
 
         def _acquire(self) -> None:
             raise_on_not_writable_file(self.lock_file)
             ensure_directory_exists(self.lock_file)
 
-            # Security check: Refuse to open reparse points (symlinks, junctions)
-            # This prevents TOCTOU symlink attacks (CVE-TBD)
+            # Refuse a reparse point (symlink/junction) at the lock path to blunt a symlink-swap attack.
             if _is_reparse_point(self.lock_file):
                 msg = f"Lock file is a reparse point (symlink/junction): {self.lock_file}"
                 raise OSError(msg)
 
-            flags = (
-                os.O_RDWR  # open for read and write
-                | os.O_CREAT  # create file if not exists
-            )
             try:
-                fd = os.open(self.lock_file, flags, self._open_mode())
+                fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT, self._open_mode())
             except OSError as exception:
-                if exception.errno != EACCES:  # has no access to this lock
+                if exception.errno != EACCES:
                     raise
             else:
                 try:
                     msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 except OSError as exception:
-                    os.close(fd)  # close file first
-                    if exception.errno != EACCES:  # file is already locked
+                    os.close(fd)
+                    if exception.errno != EACCES:  # EACCES means another holder owns the byte-range lock
                         raise
                 else:
                     self._context.lock_file_fd = fd
@@ -93,6 +62,13 @@ if sys.platform == "win32":  # pragma: win32 cover
 
             with suppress(OSError):
                 Path(self.lock_file).unlink()
+
+    def _is_reparse_point(path: str) -> bool:
+        # A missing path reports INVALID_FILE_ATTRIBUTES; the caller creates it, so treat that as
+        # not-a-reparse-point and reject only an existing reparse-point attribute.
+        if (attrs := _kernel32.GetFileAttributesW(path)) == _INVALID_FILE_ATTRIBUTES:
+            return False
+        return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 else:  # pragma: win32 no cover
 

@@ -16,39 +16,39 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_default_mode_property_returns_0o644(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    lock = lock_type(tmp_path / "a.lock")
-    assert lock.mode == 0o644
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        pytest.param(_UNSET_FILE_MODE, 0o644, id="default"),
+        pytest.param(0o600, 0o600, id="explicit"),
+    ],
+)
+def test_mode_property(lock_type: type[BaseFileLock], mode: int, expected: int, tmp_path: Path) -> None:
+    assert lock_type(tmp_path / "a.lock", mode=mode).mode == expected
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_explicit_mode_property_returns_value(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    lock = lock_type(tmp_path / "a.lock", mode=0o600)
-    assert lock.mode == 0o600
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        pytest.param(_UNSET_FILE_MODE, False, id="default"),
+        pytest.param(0o644, True, id="explicit"),
+    ],
+)
+def test_has_explicit_mode(lock_type: type[BaseFileLock], mode: int, expected: bool, tmp_path: Path) -> None:
+    assert lock_type(tmp_path / "a.lock", mode=mode).has_explicit_mode is expected
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_has_explicit_mode_false_by_default(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    lock = lock_type(tmp_path / "a.lock")
-    assert lock.has_explicit_mode is False
-
-
-@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_has_explicit_mode_true_when_set(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    lock = lock_type(tmp_path / "a.lock", mode=0o644)
-    assert lock.has_explicit_mode is True
-
-
-@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_open_mode_returns_0o666_when_unset(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    lock = lock_type(tmp_path / "a.lock")
-    assert lock._open_mode() == 0o666
-
-
-@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_open_mode_returns_explicit_value(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    lock = lock_type(tmp_path / "a.lock", mode=0o600)
-    assert lock._open_mode() == 0o600
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        pytest.param(_UNSET_FILE_MODE, 0o666, id="default"),
+        pytest.param(0o600, 0o600, id="explicit"),
+    ],
+)
+def test_open_mode(lock_type: type[BaseFileLock], mode: int, expected: int, tmp_path: Path) -> None:
+    assert lock_type(tmp_path / "a.lock", mode=mode)._open_mode() == expected
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not apply umask to file permissions")
@@ -61,9 +61,7 @@ def test_default_mode_respects_umask(lock_type: type[BaseFileLock], tmp_path: Pa
     try:
         lock.acquire()
         assert lock.is_locked
-
-        mode = filemode(lock_path.stat().st_mode)
-        assert mode == "-rw-r--r--"
+        assert filemode(lock_path.stat().st_mode) == "-rw-r--r--"
     finally:
         os.umask(initial_umask)
 
@@ -72,8 +70,7 @@ def test_default_mode_respects_umask(lock_type: type[BaseFileLock], tmp_path: Pa
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
 def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:
-    lock_path = tmp_path / "a.lock"
-    lock = FileLock(str(lock_path))
+    lock = FileLock(str(tmp_path / "a.lock"))
 
     fchmod_spy = mocker.patch("os.fchmod")
     lock.acquire()
@@ -84,8 +81,7 @@ def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
 def test_explicit_mode_calls_fchmod(tmp_path: Path, mocker: MagicMock) -> None:
-    lock_path = tmp_path / "a.lock"
-    lock = FileLock(str(lock_path), mode=0o644)
+    lock = FileLock(str(tmp_path / "a.lock"), mode=0o644)
 
     fchmod_spy = mocker.spy(os, "fchmod")
     lock.acquire()
@@ -104,34 +100,30 @@ def test_explicit_mode_overrides_umask(tmp_path: Path) -> None:
     try:
         lock.acquire()
         assert lock.is_locked
-
-        mode = filemode(lock_path.stat().st_mode)
-        assert mode == "-rw-rw-rw-"
+        assert filemode(lock_path.stat().st_mode) == "-rw-rw-rw-"
     finally:
         os.umask(initial_umask)
 
     lock.release()
 
 
-def test_singleton_default_mode_matches(tmp_path: Path) -> None:
-    lock_path = tmp_path / "a.lock"
-    lock_1 = FileLock(str(lock_path), is_singleton=True)
-    lock_2 = FileLock(str(lock_path), is_singleton=True)
-    assert lock_1 is lock_2
-
-
-def test_singleton_explicit_mode_matches(tmp_path: Path) -> None:
-    lock_path = tmp_path / "a.lock"
-    lock_1 = FileLock(str(lock_path), mode=0o600, is_singleton=True)
-    lock_2 = FileLock(str(lock_path), mode=0o600, is_singleton=True)
-    assert lock_1 is lock_2
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(_UNSET_FILE_MODE, id="default"),
+        pytest.param(0o600, id="explicit"),
+    ],
+)
+def test_singleton_same_mode_matches(mode: int, tmp_path: Path) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    assert FileLock(lock_path, mode=mode, is_singleton=True) is FileLock(lock_path, mode=mode, is_singleton=True)
 
 
 def test_singleton_default_vs_explicit_mode_differ(tmp_path: Path) -> None:
-    lock_path = tmp_path / "a.lock"
-    lock = FileLock(str(lock_path), is_singleton=True)
+    lock_path = str(tmp_path / "a.lock")
+    lock = FileLock(lock_path, is_singleton=True)
     with pytest.raises(ValueError, match="mode"):
-        FileLock(str(lock_path), mode=0o644, is_singleton=True)
+        FileLock(lock_path, mode=0o644, is_singleton=True)
     del lock
 
 

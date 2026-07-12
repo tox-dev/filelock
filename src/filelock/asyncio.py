@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from inspect import iscoroutinefunction
 from threading import local
-from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
+from typing import TYPE_CHECKING, Any, Final, NoReturn, TypeVar
 
 from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta, _canonical
 from ._error import Timeout
@@ -30,44 +30,7 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 
-_LOGGER = logging.getLogger("filelock")
-
-
-@dataclass
-class AsyncFileLockContext(FileLockContext):
-    """A dataclass which holds the context for a ``BaseAsyncFileLock`` object."""
-
-    #: Whether run in executor
-    run_in_executor: bool = True
-
-    #: The executor
-    executor: futures.Executor | None = None
-
-    #: The loop
-    loop: asyncio.AbstractEventLoop | None = None
-
-
-class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
-    """A thread local version of the ``FileLockContext`` class."""
-
-
-class AsyncAcquireReturnProxy:
-    """A context-aware object that will release the lock file when exiting."""
-
-    def __init__(self, lock: BaseAsyncFileLock) -> None:  # noqa: D107
-        self.lock = lock
-
-    async def __aenter__(self) -> BaseAsyncFileLock:  # noqa: D105
-        return self.lock
-
-    async def __aexit__(  # noqa: D105
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.lock.release()
-
+_LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 
 _AT = TypeVar("_AT", bound="BaseAsyncFileLock")
 
@@ -164,8 +127,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
 
-        # Create the context. Note that external code should not work with the context directly and should instead use
-        # properties of this class.
+        # External code goes through this class's properties, not the context directly.
         kwargs: dict[str, Any] = {
             "lock_file": os.fspath(lock_file),
             "timeout": timeout,
@@ -245,7 +207,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 lock.release()
 
         """
-        # Use the default timeout, if no timeout is provided.
         if timeout is None:
             timeout = self._context.timeout
 
@@ -255,22 +216,21 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         if poll_interval is None:
             poll_interval = self._context.poll_interval
 
-        # Increment the number right at the beginning. We can still undo it, if something fails.
+        # Bump early; _undo_acquire rolls it back if acquisition fails.
         self._context.lock_counter += 1
 
         canonical = _canonical(self.lock_file)
         self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
 
-        start_time = time.perf_counter()
         try:
             await self._async_poll_until_acquired(
                 blocking=blocking,
                 cancel_check=cancel_check,
                 timeout=timeout,
                 poll_interval=poll_interval,
-                start_time=start_time,
+                start_time=time.perf_counter(),
             )
-        except BaseException:  # Something did go wrong, so decrement the counter.
+        except BaseException:
             self._undo_acquire(canonical)
             raise
         self._commit_acquire(canonical)
@@ -304,8 +264,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 start_time=start_time,
             ):
                 raise Timeout(lock_filename)
-            msg = "Lock %s not acquired on %s, waiting %s seconds ..."
-            _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
+            _LOGGER.debug("Lock %s not acquired on %s, waiting %s seconds ...", lock_id, lock_filename, poll_interval)
             await asyncio.sleep(poll_interval)
 
     async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # noqa: FBT001, FBT002
@@ -383,7 +342,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                # No running loop — try stored loop or create one
                 loop = self._context.loop if self._context.loop and not self._context.loop.is_closed() else None
             if loop is None:
                 return
@@ -391,6 +349,42 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 loop.run_until_complete(self.release(force=True))
             else:
                 loop.create_task(self.release(force=True))
+
+
+@dataclass
+class AsyncFileLockContext(FileLockContext):
+    """A dataclass which holds the context for a ``BaseAsyncFileLock`` object."""
+
+    #: Whether run in executor
+    run_in_executor: bool = True
+
+    #: The executor
+    executor: futures.Executor | None = None
+
+    #: The loop
+    loop: asyncio.AbstractEventLoop | None = None
+
+
+class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
+    """A thread local version of the ``FileLockContext`` class."""
+
+
+class AsyncAcquireReturnProxy:
+    """A context-aware object that will release the lock file when exiting."""
+
+    def __init__(self, lock: BaseAsyncFileLock) -> None:  # noqa: D107
+        self.lock = lock
+
+    async def __aenter__(self) -> BaseAsyncFileLock:  # noqa: D105
+        return self.lock
+
+    async def __aexit__(  # noqa: D105
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.lock.release()
 
 
 class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):

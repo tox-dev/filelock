@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gc
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 
@@ -33,113 +33,76 @@ def lock_file(tmp_path: Path) -> str:
     return str(tmp_path / "test_lock.db")
 
 
+@pytest.mark.parametrize("mode", ["read", "write"])
 @pytest.mark.asyncio
-async def test_acquire_release_read(lock_file: str) -> None:
+async def test_acquire_release(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    proxy = await lock.acquire_read()
+    proxy = await (lock.acquire_read() if mode == "read" else lock.acquire_write())
     assert lock._lock._lock_level == 1
-    assert lock._lock._current_mode == "read"
+    assert lock._lock._current_mode == mode
     await lock.release()
     assert lock._lock._lock_level == 0
     assert lock._lock._current_mode is None
     assert isinstance(proxy, object)
 
 
+@pytest.mark.parametrize("mode", ["read", "write"])
 @pytest.mark.asyncio
-async def test_acquire_release_write(lock_file: str) -> None:
+async def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    await lock.acquire_write()
-    assert lock._lock._lock_level == 1
-    assert lock._lock._current_mode == "write"
-    await lock.release()
-    assert lock._lock._lock_level == 0
-    assert lock._lock._current_mode is None
-
-
-@pytest.mark.asyncio
-async def test_read_lock_context_manager(lock_file: str) -> None:
-    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    async with lock.read_lock():
+    ctx = lock.read_lock() if mode == "read" else lock.write_lock()
+    async with ctx:
         assert lock._lock._lock_level == 1
-        assert lock._lock._current_mode == "read"
+        assert lock._lock._current_mode == mode
     assert lock._lock._lock_level == 0
     assert lock._lock._current_mode is None
 
 
+@pytest.mark.parametrize("mode", ["read", "write"])
 @pytest.mark.asyncio
-async def test_write_lock_context_manager(lock_file: str) -> None:
+async def test_reentrant(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    async with lock.write_lock():
-        assert lock._lock._lock_level == 1
-        assert lock._lock._current_mode == "write"
-    assert lock._lock._lock_level == 0
-    assert lock._lock._current_mode is None
-
-
-@pytest.mark.asyncio
-async def test_reentrant_read(lock_file: str) -> None:
-    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    await lock.acquire_read()
-    await lock.acquire_read()
+    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
+    await acquire()
+    await acquire()
     assert lock._lock._lock_level == 2
     await lock.release()
     assert lock._lock._lock_level == 1
-    assert lock._lock._current_mode == "read"
+    assert lock._lock._current_mode == mode
     await lock.release()
     assert lock._lock._lock_level == 0
 
 
+@pytest.mark.parametrize(
+    ("held", "requested", "match"),
+    [
+        pytest.param("read", "write", r"already holding a read lock.*upgrade not allowed", id="upgrade"),
+        pytest.param("write", "read", r"already holding a write lock.*downgrade not allowed", id="downgrade"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_reentrant_write(lock_file: str) -> None:
+async def test_mode_change_prohibited(
+    lock_file: str,
+    held: Literal["read", "write"],
+    requested: Literal["read", "write"],
+    match: str,
+) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    await lock.acquire_write()
-    await lock.acquire_write()
-    assert lock._lock._lock_level == 2
+    await (lock.acquire_read() if held == "read" else lock.acquire_write())
+    with pytest.raises(RuntimeError, match=match):
+        await (lock.acquire_read() if requested == "read" else lock.acquire_write())
     await lock.release()
-    assert lock._lock._lock_level == 1
-    assert lock._lock._current_mode == "write"
-    await lock.release()
-    assert lock._lock._lock_level == 0
 
 
+@pytest.mark.parametrize("mode", ["read", "write"])
 @pytest.mark.asyncio
-async def test_upgrade_prohibited(lock_file: str) -> None:
-    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    await lock.acquire_read()
-    with pytest.raises(RuntimeError, match=r"already holding a read lock.*upgrade not allowed"):
-        await lock.acquire_write()
-    await lock.release()
-
-
-@pytest.mark.asyncio
-async def test_downgrade_prohibited(lock_file: str) -> None:
-    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    await lock.acquire_write()
-    with pytest.raises(RuntimeError, match=r"already holding a write lock.*downgrade not allowed"):
-        await lock.acquire_read()
-    await lock.release()
-
-
-@pytest.mark.asyncio
-async def test_non_blocking_read(lock_file: str) -> None:
+async def test_non_blocking_conflict(lock_file: str, mode: Literal["read", "write"]) -> None:
     holder = ReadWriteLock(lock_file, is_singleton=False)
-    holder.acquire_write()
+    (holder.acquire_write if mode == "read" else holder.acquire_read)()
     try:
         lock = AsyncReadWriteLock(lock_file, is_singleton=False)
         with pytest.raises(Timeout):
-            await lock.acquire_read(blocking=False)
-    finally:
-        holder.release()
-
-
-@pytest.mark.asyncio
-async def test_non_blocking_write(lock_file: str) -> None:
-    holder = ReadWriteLock(lock_file, is_singleton=False)
-    holder.acquire_read()
-    try:
-        lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-        with pytest.raises(Timeout):
-            await lock.acquire_write(blocking=False)
+            await (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False)
     finally:
         holder.release()
 
@@ -226,7 +189,7 @@ async def test_close_shuts_down_owned_executor(lock_file: str) -> None:
     assert lock._owns_executor is True
     executor = lock.executor
     await lock.close()
-    with pytest.raises(RuntimeError):  # submitting after shutdown is rejected
+    with pytest.raises(RuntimeError):
         executor.submit(int)
 
 
@@ -236,14 +199,14 @@ async def test_close_keeps_provided_executor_open(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
     assert lock._owns_executor is False
     await lock.close()
-    assert executor.submit(int).result(timeout=5) == 0  # still usable
+    assert executor.submit(int).result(timeout=5) == 0
     executor.shutdown(wait=False)
 
 
 def test_del_shuts_down_owned_executor(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     executor = lock.executor
-    lock._lock.close()  # close the connection so only the executor lifecycle is under test
+    lock._lock.close()  # isolate the executor lifecycle from the sqlite connection
     del lock
     gc.collect()
     with pytest.raises(RuntimeError):
@@ -269,23 +232,14 @@ async def test_acquire_return_proxy_context_manager(lock_file: str) -> None:
     assert lock._lock._lock_level == 0
 
 
+@pytest.mark.parametrize("mode", ["read", "write"])
 @pytest.mark.asyncio
-async def test_nested_read_context_managers(lock_file: str) -> None:
+async def test_nested_context_managers(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    async with lock.read_lock():
+    make_ctx = lock.read_lock if mode == "read" else lock.write_lock
+    async with make_ctx():
         assert lock._lock._lock_level == 1
-        async with lock.read_lock():
-            assert lock._lock._lock_level == 2
-        assert lock._lock._lock_level == 1
-    assert lock._lock._lock_level == 0
-
-
-@pytest.mark.asyncio
-async def test_nested_write_context_managers(lock_file: str) -> None:
-    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    async with lock.write_lock():
-        assert lock._lock._lock_level == 1
-        async with lock.write_lock():
+        async with make_ctx():
             assert lock._lock._lock_level == 2
         assert lock._lock._lock_level == 1
     assert lock._lock._lock_level == 0

@@ -7,15 +7,16 @@ import time
 from contextlib import suppress
 from errno import EACCES, EEXIST, EPERM, ESRCH
 from pathlib import Path
+from typing import Final
 
 from ._api import BaseFileLock
 from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file
 
-_WIN_SYNCHRONIZE = 0x100000
-_WIN_ERROR_INVALID_PARAMETER = 87
-_WIN_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-_MALFORMED_LOCK_AGE_THRESHOLD = 2.0
-_MAX_LOCK_FILE_SIZE = 1024
+_WIN_SYNCHRONIZE: Final[int] = 0x100000
+_WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
+_WIN_PROCESS_QUERY_LIMITED_INFORMATION: Final[int] = 0x1000
+_MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
+_MAX_LOCK_FILE_SIZE: Final[int] = 1024
 
 
 class SoftFileLock(BaseFileLock):
@@ -35,12 +36,9 @@ class SoftFileLock(BaseFileLock):
     def _acquire(self) -> None:
         raise_on_not_writable_file(self.lock_file)
         ensure_directory_exists(self.lock_file)
-        flags = (
-            os.O_WRONLY  # open for writing only
-            | os.O_CREAT
-            | os.O_EXCL  # together with above raise EEXIST if the file specified by filename exists
-            | os.O_TRUNC  # truncate the file to zero byte
-        )
+        # O_CREAT | O_EXCL makes the create fail with EEXIST when the file already exists, so a successful open
+        # means this process now holds the lock.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
         if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
             flags |= o_nofollow
         try:
@@ -74,11 +72,11 @@ class SoftFileLock(BaseFileLock):
 
             if self._is_process_alive(pid):
                 if sys.platform != "win32" or creation_time is None:  # pragma: win32 no cover
-                    return  # same process, or no creation time to disambiguate a recycled PID — don't evict
+                    return  # same process, or no creation time to disambiguate a recycled PID, so don't evict
                 actual = self._get_process_creation_time(pid)  # pragma: win32 cover
                 if actual is None or actual == creation_time:  # pragma: win32 cover
-                    return  # same process or can't verify — don't evict
-                # else: PID alive but creation time differs — the PID was recycled, so the lock is stale.
+                    return  # same process or can't verify, so don't evict
+                # PID alive but creation time differs, so the PID was recycled and the lock is stale.
 
             break_lock_file(self.lock_file, mtime, ino)
 
@@ -220,7 +218,7 @@ def _read_lock_file(path: str) -> tuple[str | None, float, int]:
 
 def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | None:
     # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<creation_time>\n" third line on Windows.
-    # Anything else — wrong line count, a non-integer PID or creation time, empty or unreadable content — is
+    # Anything else (wrong line count, a non-integer PID or creation time, empty or unreadable content) is
     # unparsable; returning None lets the caller treat it as a malformed lock to self-heal rather than a holder.
     if not content or len(lines := content.strip().splitlines()) not in {2, 3}:
         return None

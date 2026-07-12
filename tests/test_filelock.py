@@ -13,7 +13,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -39,7 +39,6 @@ def test_simple(
 ) -> None:
     caplog.set_level(logging.DEBUG)
 
-    # test lock creation by passing a `str`
     lock_path = tmp_path / filename
     lock = lock_type(path_type(lock_path))
     with lock as locked:
@@ -105,7 +104,7 @@ def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
         lock.acquire()
 
 
-WindowsOnly = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+_WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -127,8 +126,10 @@ WindowsOnly = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
             )
         ),
     ]
-    + [pytest.param(OSError, "Invalid argument", i, id=f"invalid_{i}", marks=WindowsOnly) for i in '<>:"|?*\a']
-    + [pytest.param(PermissionError, "Permission denied:", i, id=f"permission_{i}", marks=WindowsOnly) for i in "/\\"],
+    + [pytest.param(OSError, "Invalid argument", i, id=f"invalid_{i}", marks=_WINDOWS_ONLY) for i in '<>:"|?*\a']
+    + [
+        pytest.param(PermissionError, "Permission denied:", i, id=f"permission_{i}", marks=_WINDOWS_ONLY) for i in "/\\"
+    ],
 )
 @pytest.mark.timeout(5)  # timeout in case of infinite loop
 def test_bad_lock_file(
@@ -145,7 +146,6 @@ def test_bad_lock_file(
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_nested_context_manager(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # lock is not released before the most outer with statement that locked the lock, is left
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
@@ -168,7 +168,6 @@ def test_nested_context_manager(lock_type: type[BaseFileLock], tmp_path: Path) -
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_nested_acquire(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # lock is not released before the most outer with statement that locked the lock, is left
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
@@ -191,7 +190,6 @@ def test_nested_acquire(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_nested_forced_release(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # acquires the lock using a with-statement and releases the lock before leaving the with-statement
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
@@ -208,7 +206,6 @@ def test_nested_forced_release(lock_type: type[BaseFileLock], tmp_path: Path) ->
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_nested_contruct(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # lock is re-entrant for a given file even if it is constructed multiple times
     lock_path = tmp_path / "a"
 
     with lock_type(str(lock_path), is_singleton=True, timeout=2) as lock_1:
@@ -251,8 +248,6 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path)
             "thread contention (EACCES from antivirus/indexer), orphaning the lock file with no recovery path"
         )
 
-    # Runs 100 threads, which need the filelock. The lock must be acquired if at least one thread required it and
-    # released, as soon as all threads stopped.
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
@@ -275,8 +270,6 @@ def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_pat
     if sys.platform == "win32" and (hasattr(sys, "pypy_version_info") or lock_type.__name__ == "SoftFileLock"):
         pytest.skip("SoftFileLock on Windows has race conditions under heavy threading")
 
-    # Runs multiple threads, which acquire the same lock file with a different FileLock object. When thread group 1
-    # acquired the lock, thread group 2 must not hold their lock.
     def t_1() -> None:
         for _ in range(1000):
             with lock_1:
@@ -306,22 +299,18 @@ def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_pat
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # raises Timeout error when the lock cannot be acquired
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
 
-    # acquire lock 1
     lock_1.acquire()
     assert lock_1.is_locked
     assert not lock_2.is_locked
 
-    # try to acquire lock 2
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_2.acquire(timeout=0.1)
     assert not lock_2.is_locked
     assert lock_1.is_locked
 
-    # release lock 1
     lock_1.release()
     assert not lock_1.is_locked
     assert not lock_2.is_locked
@@ -329,14 +318,12 @@ def test_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_non_blocking(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # raises Timeout error when the lock cannot be acquired
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
     lock_3 = lock_type(str(lock_path), blocking=False)
     lock_4 = lock_type(str(lock_path), timeout=0)
     lock_5 = lock_type(str(lock_path), blocking=False, timeout=-1)
 
-    # acquire lock 1
     lock_1.acquire()
     assert lock_1.is_locked
     assert not lock_2.is_locked
@@ -344,50 +331,42 @@ def test_non_blocking(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert not lock_4.is_locked
     assert not lock_5.is_locked
 
-    # try to acquire lock 2
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_2.acquire(blocking=False)
     assert not lock_2.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `blocking=False` lock 3 with `acquire`
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_3.acquire()
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `blocking=False` lock 3 with context manager
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."), lock_3:
         pass
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `timeout=0` lock 4 with `acquire`
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_4.acquire()
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `timeout=0` lock 4 with context manager
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."), lock_4:
         pass
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
     # blocking precedence over timeout
-    # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with `acquire`
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_5.acquire()
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with context manager
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."), lock_5:
         pass
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
-    # release lock 1
     lock_1.release()
     assert not lock_1.is_locked
     assert not lock_2.is_locked
@@ -398,17 +377,14 @@ def test_non_blocking(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_default_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # test if the default timeout parameter works
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path), timeout=0.1)
     assert lock_2.timeout == pytest.approx(0.1)
 
-    # acquire lock 1
     lock_1.acquire()
     assert lock_1.is_locked
     assert not lock_2.is_locked
 
-    # try to acquire lock 2
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_2.acquire()
     assert not lock_2.is_locked
@@ -422,7 +398,6 @@ def test_default_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert not lock_2.is_locked
     assert lock_1.is_locked
 
-    # release lock 1
     lock_1.release()
     assert not lock_1.is_locked
     assert not lock_2.is_locked
@@ -430,7 +405,6 @@ def test_default_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_context_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # lock is released when an exception is thrown in a with-statement
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
@@ -445,7 +419,6 @@ def test_context_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_acquire_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # lock is released when an exception is thrown in a acquire statement
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
@@ -461,20 +434,16 @@ def test_acquire_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
 @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    # lock is released when the object is deleted
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
 
-    # acquire lock 1
     lock_1.acquire()
     assert lock_1.is_locked
     assert not lock_2.is_locked
 
-    # try to acquire lock 2
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         lock_2.acquire(timeout=0.1)
 
-    # delete lock 1 and try to acquire lock 2 again
     del lock_1
 
     lock_2.acquire()
@@ -484,7 +453,6 @@ def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
 
 
 def test_cleanup_soft_lock(tmp_path: Path) -> None:
-    # tests if the lock file is removed after use
     lock_path = tmp_path / "a"
 
     with SoftFileLock(lock_path):
@@ -498,8 +466,8 @@ def test_poll_intervall_deprecated(lock_type: type[BaseFileLock], tmp_path: Path
     lock = lock_type(str(lock_path))
 
     with pytest.deprecated_call(match="use poll_interval instead of poll_intervall") as checker:
-        lock.acquire(poll_intervall=0.05)  # the deprecation warning will be captured by the checker
-        frame_info = getframeinfo(stack()[0][0])  # get frame info of current file and lineno (+1 than the above lineno)
+        lock.acquire(poll_intervall=0.05)
+        frame_info = getframeinfo(stack()[0][0])  # lineno here is one past the acquire() call above
         for warning in checker:
             if warning.filename == frame_info.filename and warning.lineno + 1 == frame_info.lineno:  # pragma: no cover
                 break
@@ -571,18 +539,15 @@ def test_context_decorator(lock_type: type[BaseFileLock], tmp_path: Path) -> Non
 
 
 def test_lock_mode(tmp_path: Path) -> None:
-    # test file lock permissions are independent of umask
     lock_path = tmp_path / "a.lock"
     lock = FileLock(str(lock_path), mode=0o666)
 
-    # set umask so permissions can be anticipated
-    initial_umask = os.umask(0o022)
+    initial_umask = os.umask(0o022)  # pin umask so the resulting permissions are predictable
     try:
         lock.acquire()
         assert lock.is_locked
 
-        mode = filemode(lock_path.stat().st_mode)
-        assert mode == "-rw-rw-rw-"
+        assert filemode(lock_path.stat().st_mode) == "-rw-rw-rw-"
     finally:
         os.umask(initial_umask)
 
@@ -590,21 +555,15 @@ def test_lock_mode(tmp_path: Path) -> None:
 
 
 def test_lock_mode_soft(tmp_path: Path) -> None:
-    # test soft lock permissions are dependent of umask
     lock_path = tmp_path / "a.lock"
     lock = SoftFileLock(str(lock_path), mode=0o666)
 
-    # set umask so permissions can be anticipated
-    initial_umask = os.umask(0o022)
+    initial_umask = os.umask(0o022)  # pin umask so the resulting permissions are predictable
     try:
         lock.acquire()
         assert lock.is_locked
 
-        mode = filemode(lock_path.stat().st_mode)
-        if sys.platform == "win32":
-            assert mode == "-rw-rw-rw-"
-        else:
-            assert mode == "-rw-r--r--"
+        assert filemode(lock_path.stat().st_mode) == ("-rw-rw-rw-" if sys.platform == "win32" else "-rw-r--r--")
     finally:
         os.umask(initial_umask)
 
@@ -744,13 +703,10 @@ def test_lock_can_be_non_thread_local(
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_thread_local_setter_visibility(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    """Document that property setters are per-thread when thread_local=True.
+    """Property setters stay per-thread when thread_local=True.
 
-    Setting ``poll_interval`` on the constructing thread must not affect the
-    value observed from a different thread. The other thread sees the value
-    supplied to the constructor (``threading.local`` re-applies the original
-    constructor arguments the first time each new thread accesses the
-    context).
+    A ``poll_interval`` set on the constructing thread stays invisible to other threads: ``threading.local`` re-applies
+    the constructor arguments the first time each new thread touches the context, so the reader sees the default.
     """
     lock = lock_type(tmp_path / "x.lock", thread_local=True, poll_interval=0.05)
     lock.poll_interval = 0.5
@@ -764,7 +720,6 @@ def test_thread_local_setter_visibility(lock_type: type[BaseFileLock], tmp_path:
     t.start()
     t.join()
 
-    # setter is local to the writing thread; reader sees the constructor default
     assert observed == [pytest.approx(0.05)]
 
 
@@ -886,8 +841,8 @@ def test_singleton_locks_must_be_initialized_with_the_same_args(lock_type: type[
 
     lock = lock_type(str(lock_path), is_singleton=True, **args)
 
+    general_msg = "Singleton lock instances cannot be initialized with differing arguments"
     for arg_name in args:
-        general_msg = "Singleton lock instances cannot be initialized with differing arguments"
         altered_args = args.copy()
         altered_args[arg_name] = alternate_args[arg_name]
         with pytest.raises(ValueError, match=general_msg) as exc_info:
@@ -1214,7 +1169,7 @@ def test_cancel_check_log_message(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="unix-only test")
 def test_filenotfound_on_fuse_nfs_retries(tmp_path: Path, mocker: MockerFixture) -> None:
-    """FileNotFoundError from FUSE/NFS os.open(O_CREAT) race is handled by retry."""
+    """Retry recovers from the FUSE/NFS os.open(O_CREAT) race that raises FileNotFoundError."""
     lock_path = tmp_path / "test.lock"
     lock = FileLock(str(lock_path), is_singleton=False)
 
@@ -1224,15 +1179,13 @@ def test_filenotfound_on_fuse_nfs_retries(tmp_path: Path, mocker: MockerFixture)
     def open_enoent_then_succeed(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         nonlocal call_count
         call_count += 1
-        # Simulate FUSE/NFS race: first call to os.open(O_CREAT) fails with ENOENT
-        if call_count == 1 and flags & os.O_CREAT and "test.lock" in path:
+        if call_count == 1 and flags & os.O_CREAT and "test.lock" in path:  # first O_CREAT hits the FUSE/NFS ENOENT
             raise FileNotFoundError(2, "No such file or directory", path)
         return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
 
     mocker.patch("os.open", side_effect=open_enoent_then_succeed)
     lock.acquire()
     assert lock.is_locked
-    # First call failed with ENOENT, retry succeeded
     assert call_count >= 2
     lock.release()
 

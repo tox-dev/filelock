@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from ._api import AcquireReturnProxy, BaseFileLock
 from ._error import Timeout
@@ -44,7 +44,7 @@ from .asyncio import (
 from .version import version
 
 #: version of the project as a string
-__version__: str = version
+__version__: Final[str] = version
 
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -57,8 +57,7 @@ else:  # pragma: win32 no cover # noqa: PLR5501
     else:
         _FileLock = SoftFileLock
         _AsyncFileLock = AsyncSoftFileLock
-        if warnings is not None:
-            warnings.warn("only soft file lock is available", stacklevel=2)
+        warnings.warn("only soft file lock is available", stacklevel=2)
 
 if TYPE_CHECKING:
     FileLock = SoftFileLock

@@ -9,7 +9,8 @@ class Timeout(TimeoutError):  # noqa: N818
         self._lock_file = lock_file
 
     def __reduce__(self) -> tuple[type[Timeout], tuple[str]]:
-        return self.__class__, (self._lock_file,)  # Properly pickle the exception
+        # __init__ needs lock_file, so pickle must restore it as a constructor arg
+        return self.__class__, (self._lock_file,)
 
     def __str__(self) -> str:
         return f"The file lock '{self._lock_file}' could not be acquired."

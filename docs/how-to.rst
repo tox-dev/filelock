@@ -42,7 +42,7 @@ You can also pass ``timeout`` directly to ``acquire()``:
  Use non-blocking locks
 ************************
 
-Sometimes you want to attempt the lock exactly once—either you get it immediately or you don't.
+Sometimes you want to try the lock once. Either you get it immediately or you don't.
 
 Set ``blocking=False``:
 
@@ -60,7 +60,7 @@ Set ``blocking=False``:
 
 When ``blocking=False``, the lock makes only one attempt and raises ``Timeout`` if it can't acquire immediately.
 
-The ``blocking`` parameter takes precedence over ``timeout``\ —if you set both, ``blocking`` wins:
+The ``blocking`` parameter takes precedence over ``timeout``. If you set both, ``blocking`` wins:
 
 .. code-block:: python
 
@@ -121,7 +121,7 @@ For async code, use the async variants with ``async with``:
 
 .. warning::
 
-   ``with`` does not work on async locks — ``acquire`` and ``release`` are coroutines and must be awaited.
+   ``with`` does not work on async locks. ``acquire`` and ``release`` are coroutines; await them.
    Use ``async with`` as shown above.
 
 By default, async locks run blocking I/O in a thread pool. You can customize this:
@@ -146,12 +146,12 @@ You can also pass a specific event loop:
     loop = asyncio.new_event_loop()
     lock = AsyncFileLock("work.lock", loop=loop)
 
-Note that async locks default to ``thread_local=False`` (unlike sync locks which default to ``True``) because the
+Async locks default to ``thread_local=False`` (unlike sync locks which default to ``True``) because the
 acquiring and releasing threads may differ when using an executor.
 
 Available async lock classes:
 
-- :class:`AsyncFileLock <filelock.AsyncFileLock>` — platform-aware (recommended).
+- :class:`AsyncFileLock <filelock.AsyncFileLock>`, platform-aware (recommended).
 - :class:`AsyncSoftFileLock <filelock.AsyncSoftFileLock>`.
 - :class:`AsyncUnixFileLock <filelock.AsyncUnixFileLock>`.
 - :class:`AsyncWindowsFileLock <filelock.AsyncWindowsFileLock>`.
@@ -348,12 +348,12 @@ preemption). ``heartbeat_interval`` should be roughly ``stale_threshold / 3``; t
 its ``LeaseKeepAlive``. Lower ``poll_interval`` reduces acquire latency under contention at the cost of more
 NFS ``stat`` calls per waiting client.
 
-Writer acquisition is two-phase and writer-preferring: phase one claims the writer marker (which immediately
-blocks any new reader), phase two waits for existing readers to drain. This rules out writer starvation even
-under a read-heavy workload like the 99/1 reader-to-writer mix typical of slurm job queues.
+Writer acquisition is two-phase and writer-preferring: phase one claims the writer marker (which blocks any
+new reader), phase two waits for existing readers to drain. This rules out writer starvation even under a
+read-heavy workload like the 99/1 reader-to-writer mix typical of slurm job queues.
 
-**Fork caveat.** A process that forks while holding a ``SoftReadWriteLock`` loses the lock in the child. The
-inherited instance is marked fork-invalidated; ``release()`` on it becomes a no-op, and the child must call
+**Fork caveat.** A process that forks while holding a ``SoftReadWriteLock`` loses the lock in the child. filelock marks the
+inherited instance fork-invalidated; ``release()`` on it becomes a no-op, and the child must call
 ``SoftReadWriteLock(path)`` again to get a fresh instance before acquiring. Matches the semantics of
 :class:`threading.Lock` and PyMongo's connection pools.
 
@@ -402,7 +402,7 @@ Low-level ``acquire_read``/``acquire_write``/``release`` methods are also availa
         await rw.release()
 
 The same reentrancy and upgrade/downgrade rules as the synchronous :class:`ReadWriteLock <filelock.ReadWriteLock>`
-apply — see :ref:`how-to:Use shared read / exclusive write locks` for details.
+apply. See :ref:`how-to:Use shared read / exclusive write locks` for details.
 
 For network filesystems, use :class:`AsyncSoftReadWriteLock <filelock.AsyncSoftReadWriteLock>`, which wraps
 :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` the same way:
@@ -421,9 +421,9 @@ For network filesystems, use :class:`AsyncSoftReadWriteLock <filelock.AsyncSoftR
 **************************************
 
 :class:`SoftFileLock <filelock.SoftFileLock>` stores the PID and hostname of the lock holder. It can detect when the
-holding process has died and automatically break stale locks on all platforms.
+holding process has died and break stale locks on all platforms.
 
-This happens automatically—you don't need to do anything special:
+This happens automatically. You don't need to do anything special:
 
 .. code-block:: python
 
@@ -438,8 +438,8 @@ This happens automatically—you don't need to do anything special:
 
 Stale lock detection only detects locks from the same host. Cross-host stale locks still require manual removal.
 
-On Windows, the lock file additionally stores the process creation time to guard against PID recycling. Malformed lock
-files (empty or corrupted) are evicted automatically after a brief safety window.
+On Windows, the lock file additionally stores the process creation time to guard against PID recycling. filelock evicts
+malformed lock files (empty or corrupted) after a brief safety window.
 
 *****************************************
  Inspect and manage PID locks
@@ -505,7 +505,7 @@ library:
  Set lock lifetime
 *******************
 
-You can create locks that automatically expire after a certain time:
+You can create locks that expire after a set time:
 
 .. code-block:: python
 
@@ -519,7 +519,7 @@ You can create locks that automatically expire after a certain time:
         pass
 
 This is useful for distributed systems where a process might crash and leave a lock behind. After the lifetime expires,
-other processes can acquire it automatically.
+other processes can acquire it.
 
 **************************
  Cancel lock acquisition
