@@ -8,10 +8,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from errno import EAGAIN, ENOSYS, EWOULDBLOCK
+from errno import EAGAIN, ENOSPC, ENOSYS, EWOULDBLOCK
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
-from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
+from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
@@ -105,6 +105,9 @@ def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
 
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+_UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform == "win32", reason="native flock semantics are Unix-only"
+)
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -1312,3 +1315,61 @@ def test_force_release_cleans_registry(tmp_path: Path, lock_type: type[BaseFileL
     lock2 = lock_type(lock_path)
     with lock2:
         assert lock2.is_locked
+
+
+@pytest.fixture
+def held_lock_path(tmp_path: Path) -> Iterator[Path]:
+    path = tmp_path / "resource.lock"
+    with FileLock(path, timeout=0):
+        yield path
+
+
+@_UNIX_FLOCK_ONLY
+def test_winner_truncates_stale_content(tmp_path: Path) -> None:
+    lock_path = tmp_path / "resource.lock"
+    lock_path.write_text("stale from a previous holder", encoding="utf-8")
+
+    with FileLock(lock_path, timeout=0):
+        assert lock_path.stat().st_size == 0
+
+
+@_UNIX_FLOCK_ONLY
+def test_contender_preserves_holder_contents(held_lock_path: Path) -> None:
+    held_lock_path.write_text("holder metadata", encoding="utf-8")
+
+    with pytest.raises(Timeout):
+        FileLock(held_lock_path, timeout=0).acquire()
+
+    assert held_lock_path.read_text(encoding="utf-8") == "holder metadata"
+
+
+@_UNIX_FLOCK_ONLY
+def test_contender_preserves_holder_mode(held_lock_path: Path) -> None:
+    held_lock_path.chmod(0o600)
+
+    with pytest.raises(Timeout):
+        FileLock(held_lock_path, timeout=0, mode=0o644).acquire()
+
+    assert S_IMODE(held_lock_path.stat().st_mode) == 0o600
+
+
+@_UNIX_FLOCK_ONLY
+def test_contender_does_not_fchmod(held_lock_path: Path, mocker: MockerFixture) -> None:
+    fchmod_spy = mocker.spy(os, "fchmod")
+
+    with pytest.raises(Timeout):
+        FileLock(held_lock_path, timeout=0, mode=0o644).acquire()
+
+    fchmod_spy.assert_not_called()
+
+
+@_UNIX_FLOCK_ONLY
+def test_post_lock_truncate_failure_closes_fd(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("os.ftruncate", side_effect=OSError(ENOSPC, "No space left on device"))
+    open_spy = mocker.spy(os, "open")
+    close_spy = mocker.spy(os, "close")
+
+    with pytest.raises(OSError, match="No space left on device"):
+        FileLock(tmp_path / "resource.lock", timeout=0).acquire()
+
+    assert any(call.args and call.args[0] == open_spy.spy_return for call in close_spy.call_args_list)

@@ -42,9 +42,12 @@ else:  # pragma: win32 no cover
         same path.
         """
 
-        def _acquire(self) -> None:  # noqa: C901, PLR0912
+        def _acquire(self) -> None:  # noqa: C901
             ensure_directory_exists(self.lock_file)
-            open_flags = os.O_RDWR | os.O_TRUNC
+            # Open without O_TRUNC and defer truncation and fchmod until after flock succeeds: a contender that loses
+            # the lock must not truncate the holder's file (erasing caller diagnostics) or change its mode. The winner
+            # truncates and normalizes mode once it owns the lock (#591).
+            open_flags = os.O_RDWR
             if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
                 open_flags |= o_nofollow
             open_flags |= os.O_CREAT
@@ -67,9 +70,6 @@ else:  # pragma: win32 no cover
                     fd = os.open(self.lock_file, open_flags & ~os.O_CREAT, open_mode)
                 except FileNotFoundError:
                     return
-            if self.has_explicit_mode:
-                with suppress(PermissionError):
-                    os.fchmod(fd, self._context.mode)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exception:
@@ -83,12 +83,30 @@ else:  # pragma: win32 no cover
                 if exception.errno not in {EAGAIN, EWOULDBLOCK}:
                     raise
             else:
-                # A concurrent _release() may unlink the file between our open() and flock(). A lock on an
-                # unlinked inode is useless, so discard it and let the retry loop start fresh.
-                if os.fstat(fd).st_nlink == 0:
-                    os.close(fd)
-                else:
-                    self._context.lock_file_fd = fd
+                self._finalize_locked_fd(fd)
+
+        def _finalize_locked_fd(self, fd: int) -> None:
+            # Runs with the flock held. Truncate and normalize mode under a guard so any failure closes fd rather than
+            # leaking it and its lock. A concurrent _release() may have unlinked the inode between our open() and
+            # flock() (st_nlink 0), leaving a useless dead-inode lock; drop it and let the retry loop start fresh.
+            keep = False
+            try:
+                if os.fstat(fd).st_nlink != 0:
+                    os.ftruncate(fd, 0)
+                    self._apply_explicit_mode(fd)
+                    keep = True
+            except OSError:
+                os.close(fd)
+                raise
+            if keep:
+                self._context.lock_file_fd = fd
+            else:
+                os.close(fd)
+
+        def _apply_explicit_mode(self, fd: int) -> None:
+            if self.has_explicit_mode:
+                with suppress(PermissionError):
+                    os.fchmod(fd, self._context.mode)
 
         def _fallback_to_soft_lock(self) -> None:
             from ._soft import SoftFileLock  # noqa: PLC0415
