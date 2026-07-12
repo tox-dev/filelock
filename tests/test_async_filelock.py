@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
@@ -475,3 +476,17 @@ async def test_force_release_clears_registry(tmp_path: Path, lock_type: type[Bas
     lock2 = lock_type(lock_path)
     async with lock2:
         assert lock2.is_locked
+
+
+@pytest.mark.asyncio
+async def test_async_opener_is_used(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def opener(path: str, flags: int, mode: int) -> int:
+        calls.append(path)
+        return os.open(path, flags, mode)
+
+    async with AsyncFileLock(tmp_path / "a.lock", opener=opener) as lock:
+        assert lock.is_locked
+
+    assert calls == [str(tmp_path / "a.lock")]

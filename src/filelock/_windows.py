@@ -40,7 +40,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 raise OSError(msg)
 
             try:
-                fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT, self._open_mode())
+                fd = self._open(self.lock_file, os.O_RDWR | os.O_CREAT, self._open_mode())
             except OSError as exception:
                 if exception.errno != EACCES:
                     raise

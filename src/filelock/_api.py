@@ -10,7 +10,7 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import Lock, local
-from typing import TYPE_CHECKING, Any, Final, TypeVar
+from typing import TYPE_CHECKING, Any, Final, Protocol, TypeVar
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
@@ -19,6 +19,22 @@ from ._util import break_lock_file
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
 _UNSET_FILE_MODE: Final[int] = -1
+
+
+class FileOpener(Protocol):
+    """Opener for the lock-file descriptor, standing in for the ``os.open`` call a backend would otherwise make."""
+
+    def __call__(self, path: str, flags: int, mode: int, /) -> int:
+        """:returns: an open file descriptor for *path*, opened with *flags* and *mode*."""
+
+
+class _OpenerFailed(Exception):  # noqa: N818
+    """Carries an opener's own exception past backend contention handling so acquire can re-raise it unchanged."""
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__()
+        self.cause = cause
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -67,6 +83,7 @@ class FileLockMeta(ABCMeta):
         is_singleton: bool = False,
         poll_interval: float = 0.05,
         lifetime: float | None = None,
+        opener: FileOpener | None = None,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
         params = {
@@ -77,6 +94,7 @@ class FileLockMeta(ABCMeta):
             "is_singleton": is_singleton,
             "poll_interval": poll_interval,
             "lifetime": lifetime,
+            "opener": opener,
             **kwargs,
         }
         if not is_singleton:
@@ -101,11 +119,15 @@ class FileLockMeta(ABCMeta):
             "poll_interval": (poll_interval, instance.poll_interval),
             "lifetime": (lifetime, instance.lifetime),
         }
-        non_matching_params = {
+        non_matching_params: dict[str, tuple[Any, Any]] = {
             name: (passed_param, set_param)
             for name, (passed_param, set_param) in params_to_check.items()
             if passed_param != set_param
         }
+        # An opener is a callback: two equal-but-distinct callables would still open differently, so require the
+        # same object rather than value equality (a stateful callable could even compare equal to another).
+        if opener is not instance._context.opener:  # noqa: SLF001
+            non_matching_params["opener"] = (opener, instance._context.opener)  # noqa: SLF001
         if not non_matching_params:
             return instance  # ty: ignore[invalid-return-type]  # https://github.com/astral-sh/ty/issues/3231
 
@@ -155,6 +177,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         is_singleton: bool = False,
         poll_interval: float = 0.05,
         lifetime: float | None = None,
+        opener: FileOpener | None = None,
     ) -> None:
         """
         Create a new lock object.
@@ -181,6 +204,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set, a waiting
             process will break a lock whose file modification time is older than ``lifetime`` seconds. ``None`` (the
             default) means locks never expire.
+        :param opener: optional callback ``(path, flags, mode) -> fd`` used to open the lock-file descriptor in place of
+            :func:`os.open`. ``None`` (the default) keeps the backend's own open. The library still owns polling,
+            locking, release, and contention handling; the callback only creates the descriptor, letting callers apply
+            stricter platform-specific open semantics without subclassing.
 
         """
         self._is_thread_local = thread_local
@@ -194,6 +221,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             "blocking": blocking,
             "poll_interval": poll_interval,
             "lifetime": lifetime,
+            "opener": opener,
         }
         self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(**kwargs)
 
@@ -320,6 +348,28 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         """Mode for ``os.open``: 0o666 when unset so umask and ACLs decide, otherwise the explicit mode."""
         return 0o666 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
 
+    def _open(self, path: str, flags: int, mode: int) -> int:
+        """
+        Open the lock-file descriptor, routing through a caller-supplied :attr:`opener` when one is set.
+
+        :returns: an open file descriptor for *path*.
+
+        :raises ValueError: if the opener does not return a non-negative integer descriptor.
+
+        """
+        if (opener := self._context.opener) is None:
+            return os.open(path, flags, mode)
+        try:
+            fd = opener(path, flags, mode)
+        except Exception as exc:
+            # A backend classifies its own os.open errors as contention (EEXIST/EACCES); an opener's failure is the
+            # caller's, so wrap it in a non-OSError the backend won't swallow and surface it verbatim from acquire.
+            raise _OpenerFailed(exc) from exc
+        if not isinstance(fd, int) or isinstance(fd, bool) or fd < 0:
+            msg = f"opener must return a non-negative file descriptor, got {fd!r}"
+            raise ValueError(msg)
+        return fd
+
     @property
     def is_locked(self) -> bool:
         """
@@ -433,6 +483,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
                 poll_interval=poll_interval,
                 start_time=start_time,
             )
+        except _OpenerFailed as failure:
+            self._undo_acquire(canonical)
+            raise failure.cause from None
         except BaseException:
             self._undo_acquire(canonical)
             raise
@@ -603,6 +656,9 @@ class FileLockContext:
     #: The lock lifetime in seconds; ``None`` means the lock never expires.
     lifetime: float | None = None
 
+    #: Optional caller-supplied opener for the lock-file descriptor; ``None`` uses the backend's own ``os.open``.
+    opener: FileOpener | None = None
+
     #: File descriptor from os.open for the lock file; not None while the lock is held.
     lock_file_fd: int | None = None
 
@@ -618,4 +674,5 @@ __all__ = [
     "_UNSET_FILE_MODE",
     "AcquireReturnProxy",
     "BaseFileLock",
+    "FileOpener",
 ]

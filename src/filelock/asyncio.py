@@ -12,7 +12,7 @@ from inspect import iscoroutinefunction
 from threading import local
 from typing import TYPE_CHECKING, Any, Final, NoReturn, TypeVar
 
-from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta, _canonical
+from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta, _canonical, _OpenerFailed
 from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock
@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from concurrent import futures
     from types import TracebackType
+
+    from ._api import FileOpener
 
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
         from typing import Self
@@ -47,6 +49,7 @@ class AsyncFileLockMeta(FileLockMeta):
         is_singleton: bool = False,
         poll_interval: float = 0.05,
         lifetime: float | None = None,
+        opener: FileOpener | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -63,6 +66,7 @@ class AsyncFileLockMeta(FileLockMeta):
             is_singleton=is_singleton,
             poll_interval=poll_interval,
             lifetime=lifetime,
+            opener=opener,
             loop=loop,
             run_in_executor=run_in_executor,
             executor=executor,
@@ -90,6 +94,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         is_singleton: bool = False,
         poll_interval: float = 0.05,
         lifetime: float | None = None,
+        opener: FileOpener | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -119,6 +124,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set, a waiting
             process will break a lock whose file modification time is older than ``lifetime`` seconds. ``None`` (the
             default) means locks never expire.
+        :param opener: optional callback ``(path, flags, mode) -> fd`` used to open the lock-file descriptor in place of
+            :func:`os.open`. ``None`` (the default) keeps the backend's own open.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
@@ -135,6 +142,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             "blocking": blocking,
             "poll_interval": poll_interval,
             "lifetime": lifetime,
+            "opener": opener,
             "loop": loop,
             "run_in_executor": run_in_executor,
             "executor": executor,
@@ -230,6 +238,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 poll_interval=poll_interval,
                 start_time=time.perf_counter(),
             )
+        except _OpenerFailed as failure:
+            self._undo_acquire(canonical)
+            raise failure.cause from None
         except BaseException:
             self._undo_acquire(canonical)
             raise

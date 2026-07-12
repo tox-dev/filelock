@@ -50,7 +50,7 @@ else:  # pragma: win32 no cover
             open_flags |= os.O_CREAT
             open_mode = self._open_mode()
             try:
-                fd = os.open(self.lock_file, open_flags, open_mode)
+                fd = self._open(self.lock_file, open_flags, open_mode)
             except FileNotFoundError:
                 # On FUSE/NFS, os.open(O_CREAT) is not atomic; a split LOOKUP + CREATE lets a concurrent unlink()
                 # delete the file between them. For a valid path, treat ENOENT as transient contention. For an
@@ -64,7 +64,7 @@ else:  # pragma: win32 no cover
                 if not Path(self.lock_file).exists():
                     raise
                 try:
-                    fd = os.open(self.lock_file, open_flags & ~os.O_CREAT, open_mode)
+                    fd = self._open(self.lock_file, open_flags & ~os.O_CREAT, open_mode)
                 except FileNotFoundError:
                     return
             if self.has_explicit_mode:

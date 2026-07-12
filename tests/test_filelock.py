@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import inspect
 import logging
 import os
@@ -8,7 +9,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from errno import EAGAIN, ENOSYS, EWOULDBLOCK
+from errno import EAGAIN, EEXIST, ENOSYS, EWOULDBLOCK
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IWGRP, S_IWOTH, S_IWUSR, filemode
@@ -19,6 +20,7 @@ from weakref import WeakValueDictionary
 
 import pytest
 
+import filelock
 from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
 
 if TYPE_CHECKING:
@@ -105,6 +107,9 @@ def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
 
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+_UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform == "win32", reason="native flock contention is Unix-only"
+)
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -1312,3 +1317,106 @@ def test_force_release_cleans_registry(tmp_path: Path, lock_type: type[BaseFileL
     lock2 = lock_type(lock_path)
     with lock2:
         assert lock2.is_locked
+
+
+def test_file_opener_is_exported() -> None:
+    assert "FileOpener" in filelock.__all__
+
+
+def test_opener_receives_path_flags_mode_once(tmp_path: Path) -> None:
+    calls: list[tuple[str, int, int]] = []
+
+    def opener(path: str, flags: int, mode: int) -> int:
+        calls.append((path, flags, mode))
+        return os.open(path, flags, mode)
+
+    with FileLock(tmp_path / "a.lock", opener=opener) as lock:
+        assert lock.is_locked
+
+    assert len(calls) == 1
+    path, flags, mode = calls[0]
+    assert path == str(tmp_path / "a.lock")
+    assert isinstance(flags, int)
+    assert isinstance(mode, int)
+
+
+def test_opener_default_uses_os_open(tmp_path: Path, mocker: MockerFixture) -> None:
+    os_open_spy = mocker.spy(os, "open")
+    with FileLock(tmp_path / "a.lock") as lock:
+        assert lock.is_locked
+    assert os_open_spy.called
+
+
+@pytest.mark.parametrize("bad", [-1, "5", True, None, 1.0])
+def test_opener_invalid_descriptor_raises(bad: object, tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "a.lock", opener=lambda *_: bad)  # ty: ignore[invalid-argument-type]
+    with pytest.raises(ValueError, match="file descriptor"):
+        lock.acquire()
+
+
+def test_opener_exception_propagates(tmp_path: Path) -> None:
+    def boom(_path: str, _flags: int, _mode: int) -> int:
+        msg = "opener failed"
+        raise RuntimeError(msg)
+
+    lock = FileLock(tmp_path / "a.lock", opener=boom, timeout=0)
+    with pytest.raises(RuntimeError, match="opener failed"):
+        lock.acquire()
+
+
+def test_opener_oserror_propagates_not_timeout(tmp_path: Path) -> None:
+    def opener(_path: str, _flags: int, _mode: int) -> int:
+        raise FileExistsError(EEXIST, "already exists")
+
+    lock = SoftFileLock(tmp_path / "a.lock", opener=opener, timeout=0)
+    with pytest.raises(FileExistsError):
+        lock.acquire()
+
+
+def test_singleton_opener_match(tmp_path: Path) -> None:
+    lock1 = FileLock(tmp_path / "a.lock", is_singleton=True, opener=os.open)
+    lock2 = FileLock(tmp_path / "a.lock", is_singleton=True, opener=os.open)
+    assert lock1 is lock2
+
+
+def test_singleton_opener_mismatch(tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "a.lock", is_singleton=True, opener=os.open)
+    with pytest.raises(ValueError, match="opener"):
+        FileLock(tmp_path / "a.lock", is_singleton=True, opener=functools.partial(os.open))
+    del lock
+
+
+def test_singleton_opener_compared_by_identity(tmp_path: Path) -> None:
+    class EqualEverything:
+        def __call__(self, path: str, flags: int, mode: int) -> int:
+            return os.open(path, flags, mode)
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, EqualEverything)
+
+        def __hash__(self) -> int:
+            return 0
+
+    lock = FileLock(tmp_path / "a.lock", is_singleton=True, opener=EqualEverything())
+    with pytest.raises(ValueError, match="opener"):
+        FileLock(tmp_path / "a.lock", is_singleton=True, opener=EqualEverything())
+    del lock
+
+
+@_UNIX_FLOCK_ONLY
+def test_opener_descriptor_closed_on_contention(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "a.lock"
+    opened: list[int] = []
+
+    def opener(path: str, flags: int, mode: int) -> int:
+        fd = os.open(path, flags, mode)
+        opened.append(fd)
+        return fd
+
+    with FileLock(lock_path, timeout=0):
+        close_spy = mocker.spy(os, "close")
+        with pytest.raises(Timeout):
+            FileLock(lock_path, timeout=0, opener=opener).acquire()
+
+        assert opened
+        assert any(call.args and call.args[0] == opened[-1] for call in close_spy.call_args_list)
