@@ -162,6 +162,40 @@ def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
     assert SoftFileLock(lock_path).pid is None
 
 
+def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None:
+    if sys.platform == "win32":
+        pytest.skip("os.mkfifo is unix-only")
+    # A same-UID peer can plant a FIFO with a writer attached so a non-blocking read would raise EAGAIN. The lstat
+    # guard classifies it as a malformed lock before any open, so an aged FIFO self-heals like any other node.
+    os.mkfifo(lock_path)
+    reader = os.open(lock_path, os.O_RDONLY | os.O_NONBLOCK)
+    writer = os.open(lock_path, os.O_WRONLY | os.O_NONBLOCK)  # attached but never written, so reads get EAGAIN
+    try:
+        os.utime(lock_path, (0, 0))
+        _assert_self_heals(lock_path)
+    finally:
+        os.close(reader)
+        os.close(writer)
+
+
+def test_socket_lock_file_self_heals(lock_path: Path) -> None:
+    if sys.platform == "win32":
+        pytest.skip("AF_UNIX sockets are unix-only")
+    sock = socket.socket(socket.AF_UNIX)
+    try:
+        sock.bind(str(lock_path))
+    except OSError:
+        sock.close()
+        pytest.skip("AF_UNIX path too long for this temp dir")
+    # A Unix-domain socket cannot be os.open()ed as a file. Before the lstat guard the failed open was swallowed by
+    # stale detection so acquisition wedged; an aged socket now self-heals like any other non-regular node.
+    try:
+        os.utime(lock_path, (0, 0))
+        _assert_self_heals(lock_path)
+    finally:
+        sock.close()
+
+
 def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     mock_read: MagicMock = mocker.patch("filelock._soft._read_lock_file", side_effect=OSError("read failed"))
