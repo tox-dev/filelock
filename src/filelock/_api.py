@@ -82,15 +82,17 @@ class FileLockMeta(ABCMeta):
         if not is_singleton:
             return cls._create_instance(lock_file, params)
 
+        cache_key = _canonical(os.fspath(lock_file))
+
         # Look up, build and store under one lock. Without it two threads racing the first construction for a
         # path both miss the cache and each build their own instance, so callers relying on is_singleton for
         # reentrant locking across instances end up with two "singletons" and acquire()'s deadlock check then
         # rejects a legitimate reentrant acquire; the unguarded writes to the WeakValueDictionary are a data
         # race besides. ReadWriteLock and SoftReadWriteLock already guard their singleton caches this way.
         with cls._instances_lock:
-            if (instance := cls._instances.get(str(lock_file))) is None:
+            if (instance := cls._instances.get(cache_key)) is None:
                 instance = cls._create_instance(lock_file, params)
-                cls._instances[str(lock_file)] = instance
+                cls._instances[cache_key] = instance
                 return instance
 
         params_to_check = {

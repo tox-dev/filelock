@@ -791,6 +791,17 @@ def test_singleton_locks_are_the_same(lock_type: type[BaseFileLock], tmp_path: P
     assert lock_2 is lock_1
 
 
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_singleton_locks_are_the_same_for_equivalent_paths(
+    lock_type: type[BaseFileLock], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    lock_1 = lock_type("a", is_singleton=True)
+
+    lock_2 = lock_type(tmp_path / "a", is_singleton=True)
+    assert lock_2 is lock_1
+
+
 def test_singleton_locks_survive_concurrent_first_construction(tmp_path: Path) -> None:
     # Two threads constructing the same is_singleton=True lock at once must still share one instance. A slow
     # __init__ widens the window between the cache miss and the store so the race is hit deterministically.
