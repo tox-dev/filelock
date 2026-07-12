@@ -25,7 +25,6 @@ async def test_simple(
 ) -> None:
     caplog.set_level(logging.DEBUG)
 
-    # test lock creation by passing a `str`
     lock_path = tmp_path / filename
     lock = lock_type(path_type(lock_path))
     async with lock as locked:
@@ -57,7 +56,6 @@ async def test_acquire(
 ) -> None:
     caplog.set_level(logging.DEBUG)
 
-    # test lock creation by passing a `str`
     lock_path = tmp_path / filename
     lock = lock_type(path_type(lock_path))
     async with await lock.acquire() as locked:
@@ -79,14 +77,12 @@ async def test_acquire(
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
-    # raises Timeout error when the lock cannot be acquired
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
     lock_3 = lock_type(str(lock_path), blocking=False)
     lock_4 = lock_type(str(lock_path), timeout=0)
     lock_5 = lock_type(str(lock_path), blocking=False, timeout=-1)
 
-    # acquire lock 1
     await lock_1.acquire()
     assert lock_1.is_locked
     assert not lock_2.is_locked
@@ -94,32 +90,27 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
     assert not lock_4.is_locked
     assert not lock_5.is_locked
 
-    # try to acquire lock 2
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         await lock_2.acquire(blocking=False)
     assert not lock_2.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `blocking=False` lock 3 with `acquire`
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         await lock_3.acquire()
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `blocking=False` lock 3 with context manager
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_3:
             pass
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `timeout=0` lock 4 with `acquire`
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         await lock_4.acquire()
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `timeout=0` lock 4 with context manager
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_4:
             pass
@@ -127,20 +118,17 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
     assert lock_1.is_locked
 
     # blocking precedence over timeout
-    # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with `acquire`
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         await lock_5.acquire()
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
-    # try to acquire pre-parametrized `timeout=-1,blocking=False` lock 5 with context manager
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_5:
             pass
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
-    # release lock 1
     await lock_1.release()
     assert not lock_1.is_locked
     assert not lock_2.is_locked
@@ -153,8 +141,7 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 @pytest.mark.parametrize("thread_local", [True, False])
 @pytest.mark.asyncio
 async def test_non_executor(lock_type: type[BaseAsyncFileLock], thread_local: bool, tmp_path: Path) -> None:
-    lock_path = tmp_path / "a"
-    lock = lock_type(str(lock_path), thread_local=thread_local, run_in_executor=False)
+    lock = lock_type(str(tmp_path / "a"), thread_local=thread_local, run_in_executor=False)
     async with lock as locked:
         assert lock.is_locked
         assert lock is locked
@@ -241,8 +228,8 @@ async def test_attempting_to_release(
     caplog.set_level(logging.DEBUG)
     lock = lock_type(str(tmp_path / "a.lock"), run_in_executor=False)
 
-    await lock.acquire(timeout=0.1)  # lock_counter = 1, is_locked = True
-    await lock.acquire(timeout=0.1)  # lock_counter = 2 (reentrant)
+    await lock.acquire(timeout=0.1)
+    await lock.acquire(timeout=0.1)  # reentrant acquire
     await lock.release(force=True)
 
     assert any("Attempting to release lock" in m for m in caplog.messages)
@@ -267,7 +254,7 @@ async def test_release_nonzero_counter_exit(
     lock = lock_type(str(tmp_path / "a.lock"), run_in_executor=False)
     await lock.acquire()
     await lock.acquire()
-    await lock.release()  # counter goes 2→1
+    await lock.release()
     assert lock.lock_counter == 1
     assert lock.is_locked
     assert not any("Attempting to release" in m for m in caplog.messages)
@@ -292,8 +279,7 @@ async def test_cancel_check_triggers(lock_type: type[BaseAsyncFileLock], tmp_pat
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_cancel_check_not_called_when_lock_available(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
-    lock_path = tmp_path / "a"
-    lock = lock_type(str(lock_path))
+    lock = lock_type(str(tmp_path / "a"))
 
     called = False
 
@@ -330,7 +316,7 @@ async def test_cancel_check_log_message(
     [pytest.param(AsyncFileLock, id="async"), pytest.param(AsyncSoftFileLock, id="soft")],
 )
 def test_sync_with_raises_not_implemented_error(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
-    # __exit__ must exist so Python can call it after __enter__ raises — without it AttributeError masks the real error
+    # __exit__ must exist so Python can call it after __enter__ raises; without it AttributeError hides the real error
     with pytest.raises(NotImplementedError, match=r"async with"), lock_type(str(tmp_path / "test.lock")):
         pass  # pragma: no cover
 
@@ -340,7 +326,7 @@ def test_sync_with_raises_not_implemented_error(lock_type: type[BaseAsyncFileLoc
     [pytest.param(AsyncFileLock, id="async"), pytest.param(AsyncSoftFileLock, id="soft")],
 )
 def test_del_after_loop_close_does_not_raise(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
-    # __del__ must not call get_running_loop() — it raises RuntimeError when no loop is running
+    # __del__ must not call get_running_loop(); it raises RuntimeError when no loop is running
     def _run() -> None:
         lock = lock_type(str(tmp_path / "test.lock"))
         loop = asyncio.new_event_loop()
@@ -427,8 +413,7 @@ async def test_singleton_avoids_deadlock(tmp_path: Path, lock_type: type[BaseAsy
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
-    # The registry is per-thread; a second acquire from a different task (asyncio's counterpart to the sync
-    # test's separate thread) must not be mistaken for a reentrant deadlock.
+    # The registry is per-thread, so a second acquire from a different task must not look like a reentrant deadlock.
     lock_path = tmp_path / "test.lock"
     lock1 = lock_type(lock_path, timeout=0)
     await lock1.acquire()

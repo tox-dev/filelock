@@ -11,7 +11,6 @@ from typing import cast
 from ._api import BaseFileLock
 from ._util import ensure_directory_exists
 
-#: a flag to indicate if the fcntl API is available
 has_fcntl = False
 if sys.platform == "win32":  # pragma: win32 cover
 
@@ -38,25 +37,24 @@ else:  # pragma: win32 no cover
         """
         Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems.
 
-        The lock file is intentionally left in place after release. Unlinking a locked file on Unix
-        can split waiters across different inodes and break mutual exclusion for processes that
-        coordinate via the same path.
+        We leave the lock file in place after release. Unlinking a locked file on Unix splits
+        waiters across inodes and breaks mutual exclusion for processes that coordinate via the
+        same path.
         """
 
         def _acquire(self) -> None:  # noqa: C901, PLR0912
             ensure_directory_exists(self.lock_file)
             open_flags = os.O_RDWR | os.O_TRUNC
-            o_nofollow = getattr(os, "O_NOFOLLOW", None)
-            if o_nofollow is not None:
+            if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
                 open_flags |= o_nofollow
             open_flags |= os.O_CREAT
             open_mode = self._open_mode()
             try:
                 fd = os.open(self.lock_file, open_flags, open_mode)
             except FileNotFoundError:
-                # On FUSE/NFS, os.open(O_CREAT) is not atomic: LOOKUP + CREATE can be split, allowing a concurrent
-                # unlink() to delete the file between them. For valid paths, treat ENOENT as transient contention.
-                # For invalid paths (e.g., empty string), re-raise to avoid infinite retry loops.
+                # On FUSE/NFS, os.open(O_CREAT) is not atomic; a split LOOKUP + CREATE lets a concurrent unlink()
+                # delete the file between them. For a valid path, treat ENOENT as transient contention. For an
+                # invalid path (e.g. empty string), re-raise to avoid an infinite retry loop.
                 if self.lock_file and Path(self.lock_file).parent.exists():
                     return
                 raise
@@ -85,8 +83,8 @@ else:  # pragma: win32 no cover
                 if exception.errno not in {EAGAIN, EWOULDBLOCK}:
                     raise
             else:
-                # The file may have been unlinked by a concurrent _release() between our open() and flock().
-                # A lock on an unlinked inode is useless — discard and let the retry loop start fresh.
+                # A concurrent _release() may unlink the file between our open() and flock(). A lock on an
+                # unlinked inode is useless, so discard it and let the retry loop start fresh.
                 if os.fstat(fd).st_nlink == 0:
                     os.close(fd)
                 else:

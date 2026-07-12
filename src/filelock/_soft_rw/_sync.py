@@ -16,7 +16,7 @@ import uuid
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 from weakref import WeakValueDictionary
 
 from filelock._api import AcquireReturnProxy
@@ -29,58 +29,23 @@ if TYPE_CHECKING:
 
 
 _Mode = Literal["read", "write"]
-_BREAK_SUFFIX = ".break"
-_MAX_MARKER_SIZE = 1024
-_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_BREAK_SUFFIX: Final[str] = ".break"
+_MAX_MARKER_SIZE: Final[int] = 1024
+_O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
+_O_NONBLOCK: Final[int] = getattr(os, "O_NONBLOCK", 0)
 # Retargeting os.utime to an open fd lets the heartbeat refresh the exact inode it just verified instead of
 # re-resolving the path; Windows read-only handles cannot set times that way, so keep it Unix-only.
-_SUPPORTS_UTIME_FD = sys.platform != "win32" and os.utime in os.supports_fd
+_SUPPORTS_UTIME_FD: Final[bool] = sys.platform != "win32" and os.utime in os.supports_fd
 # os.utime follows symlinks unless told not to; not every platform can refuse the follow, so probe support.
-_SUPPORTS_UTIME_NOFOLLOW = os.utime in os.supports_follow_symlinks
+_SUPPORTS_UTIME_NOFOLLOW: Final[bool] = os.utime in os.supports_follow_symlinks
 # dirfd-relative I/O is a Unix-only optimization; Windows cannot ``os.open()`` a directory at all, and
 # its ``os`` module skips dir_fd support entirely. When disabled, callers fall back to full-path ops.
-_SUPPORTS_DIR_FD = sys.platform != "win32" and os.open in os.supports_dir_fd
+_SUPPORTS_DIR_FD: Final[bool] = sys.platform != "win32" and os.open in os.supports_dir_fd
 
-_all_instances: WeakValueDictionary[Path, SoftReadWriteLock] = WeakValueDictionary()
+_all_instances: Final[WeakValueDictionary[Path, SoftReadWriteLock]] = WeakValueDictionary()
 _all_instances_lock = threading.Lock()
 _atexit_registered = False
 _fork_registered = False
-
-
-@dataclass(frozen=True)
-class _Paths:
-    state: str
-    write: str
-    readers: str
-
-
-@dataclass
-class _Locks:
-    internal: threading.Lock
-    transaction: threading.Lock
-    state: SoftFileLock
-
-
-@dataclass(frozen=True)
-class _MarkerInfo:
-    token: str
-    pid: int
-    hostname: str
-
-
-@dataclass
-class _Hold:
-    """Everything that exists only while a lock is held; ``None`` when the instance has no lock."""
-
-    level: int
-    mode: _Mode
-    write_thread_id: int | None
-    marker_name: str
-    is_reader: bool
-    token: str
-    heartbeat_thread: _HeartbeatThread
-    heartbeat_stop: threading.Event
 
 
 class _SoftRWMeta(type):
@@ -322,6 +287,28 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         """
         return self._acquire("write", timeout, blocking=blocking)
 
+    @classmethod
+    def get_lock(
+        cls,
+        lock_file: str | os.PathLike[str],
+        timeout: float = -1,
+        *,
+        blocking: bool = True,
+    ) -> SoftReadWriteLock:
+        """
+        Return the singleton :class:`SoftReadWriteLock` for *lock_file*.
+
+        :param lock_file: path to the lock file; sidecar state/write/readers live next to it
+        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+
+        :returns: the singleton lock instance
+
+        :raises ValueError: if an instance already exists for this path with different *timeout* or *blocking* values
+
+        """
+        return cls(lock_file, timeout, blocking=blocking)
+
     def close(self) -> None:
         """
         Release any held lock and release internal filesystem resources.
@@ -371,9 +358,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 return
             self._hold = None
 
-        # Order matters: signal → join → unlink. A late tick on a deleted marker is harmless, and the
-        # token check in the heartbeat callback would catch any re-acquisition race, but joining first
-        # removes even that theoretical race.
+        # Order matters: signal → join → unlink. A late tick on a deleted marker is harmless and the
+        # heartbeat's token check would catch a re-acquisition race, but joining first removes that race.
         hold.heartbeat_stop.set()
         hold.heartbeat_thread.join(timeout=self.heartbeat_interval + 1.0)
         if hold.is_reader:
@@ -389,69 +375,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # serializes this against a concurrent break/claim, and the heartbeat is already stopped, so the
         # token we read is authoritative. Mirrors the token re-check the stale-break path already does.
         with self._locks.state:
-            read = _read_marker(self._paths.write)
-            if read is None:
+            if (read := _read_marker(self._paths.write)) is None:
                 return
             info, _ = read
             if info is None or not hmac.compare_digest(info.token, token):
                 return
             _unlink(self._paths.write)
-
-    def _claim_writer_marker(self, token: str) -> bool:
-        # Claim the writer slot for ``token``. Must be called holding ``self._locks.state``. Evicts a
-        # stale marker first, then refuses to claim while a live ``.write`` exists so a peer holding the
-        # slot is waited out instead of overwritten.
-        _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
-        if _file_exists(self._paths.write):
-            return False
-        try:
-            _atomic_create_marker(self._paths.write, token)
-        except FileExistsError:
-            return False
-        return True
-
-    def _touch_writer_marker_if_ours(self, token: str) -> bool:
-        # Refresh the writer marker through a single O_NOFOLLOW fd, but only while it still carries our
-        # token. Returns False when the marker is gone or now belongs to a peer that reclaimed the slot,
-        # so the caller can re-claim rather than keep a stranger's marker alive. Mirrors _refresh_marker.
-        fd = _open_marker(self._paths.write)
-        if fd is None:
-            return False
-        try:
-            try:
-                data = os.read(fd, _MAX_MARKER_SIZE + 1)
-            except OSError:  # pragma: no cover - e.g. EAGAIN from a hostile FIFO that has a writer attached
-                return False
-            info = _parse_marker_bytes(data)
-            if info is None or not hmac.compare_digest(info.token, token):
-                return False
-            with suppress(OSError):
-                _touch(self._paths.write, fd=fd)
-            return True
-        finally:
-            os.close(fd)
-
-    @classmethod
-    def get_lock(
-        cls,
-        lock_file: str | os.PathLike[str],
-        timeout: float = -1,
-        *,
-        blocking: bool = True,
-    ) -> SoftReadWriteLock:
-        """
-        Return the singleton :class:`SoftReadWriteLock` for *lock_file*.
-
-        :param lock_file: path to the lock file; sidecar state/write/readers live next to it
-        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
-
-        :returns: the singleton lock instance
-
-        :raises ValueError: if an instance already exists for this path with different *timeout* or *blocking* values
-
-        """
-        return cls(lock_file, timeout, blocking=blocking)
 
     def _acquire(
         self,
@@ -586,6 +515,40 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             raise
         return self._paths.write, False
 
+    def _claim_writer_marker(self, token: str) -> bool:
+        # Claim the writer slot for ``token``. Must be called holding ``self._locks.state``. Evicts a
+        # stale marker first, then refuses to claim while a live ``.write`` exists so a peer holding the
+        # slot is waited out instead of overwritten.
+        _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
+        if _file_exists(self._paths.write):
+            return False
+        try:
+            _atomic_create_marker(self._paths.write, token)
+        except FileExistsError:
+            return False
+        return True
+
+    def _touch_writer_marker_if_ours(self, token: str) -> bool:
+        # Refresh the writer marker through a single O_NOFOLLOW fd, but only while it still carries our
+        # token. Returns False when the marker is gone or now belongs to a peer that reclaimed the slot,
+        # so the caller can re-claim rather than keep a stranger's marker alive. Mirrors _refresh_marker.
+        fd = _open_marker(self._paths.write)
+        if fd is None:
+            return False
+        try:
+            try:
+                data = os.read(fd, _MAX_MARKER_SIZE + 1)
+            except OSError:  # pragma: no cover - e.g. EAGAIN from a hostile FIFO that has a writer attached
+                return False
+            info = _parse_marker_bytes(data)
+            if info is None or not hmac.compare_digest(info.token, token):
+                return False
+            with suppress(OSError):
+                _touch(self._paths.write, fd=fd)
+            return True
+        finally:
+            os.close(fd)
+
     def _acquire_reader_slot(
         self,
         token: str,
@@ -643,8 +606,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             msg = f"{self._paths.readers} exists but is not a directory or is a symlink; refusing to use it"
             raise RuntimeError(msg)
         if self._readers_dir_fd is None and _SUPPORTS_DIR_FD:
-            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW
-            self._readers_dir_fd = os.open(self._paths.readers, flags)
+            self._readers_dir_fd = os.open(
+                self._paths.readers, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW
+            )
 
     def _any_readers(self) -> bool:
         for _ in self._iter_reader_entries():
@@ -689,11 +653,11 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             token = hold.token
             dir_fd = self._readers_dir_fd if hold.is_reader else None
 
-        # Open once with O_NOFOLLOW and touch that exact descriptor. Doing the refresh through the verified fd
+        # Open once with O_NOFOLLOW and touch that exact descriptor. Refreshing through the verified fd
         # (instead of re-opening by name) closes the window where a peer unlinks our marker and drops a symlink
         # or a different file at the path between the read and the touch: utime then lands on the inode we
-        # verified, or nowhere. A failed open means the marker is gone or was swapped out -- a peer evicted us
-        # -- so stop the heartbeat at once instead of waiting a tick.
+        # verified, or nowhere. A failed open means the marker is gone or was swapped out (a peer evicted us),
+        # so stop the heartbeat now instead of waiting a tick.
         fd = _open_marker(marker_name, dir_fd=dir_fd)
         if fd is None:
             return False
@@ -750,19 +714,24 @@ class _HeartbeatThread(threading.Thread):
                 return
 
 
-def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -> None:
-    # O_NOFOLLOW blocks the symlink-overwrite attack where an attacker pre-creates the marker path as a
-    # symlink pointing at a victim file. Mode 0o600 keeps the token unreadable to other users.
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | _O_NOFOLLOW
-    if _SUPPORTS_DIR_FD and dir_fd is not None:
-        fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
-    else:
-        fd = os.open(name, flags, 0o600)
+def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo | None, float] | None:
+    fd = _open_marker(name, dir_fd=dir_fd)
+    if fd is None:
+        return None
     try:
-        content = f"{token}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii")
-        os.write(fd, content)
+        st = os.fstat(fd)
+        # A legitimate marker is a regular file, so anything else at the path (a FIFO, say) is reported as a
+        # malformed marker (its mtime still drives stale eviction) without being read. Reading is where
+        # platforms diverge: an empty non-blocking read yields 0 bytes on Linux/macOS but EAGAIN on FreeBSD,
+        # and the EAGAIN used to abort the stale-break and wedge the acquire until timeout (#587).
+        if not stat.S_ISREG(st.st_mode):
+            return None, st.st_mtime
+        data = os.read(fd, _MAX_MARKER_SIZE + 1)
+    except OSError:  # pragma: no cover - marker vanished or turned unreadable between open and read
+        return None
     finally:
         os.close(fd)
+    return _parse_marker_bytes(data), st.st_mtime
 
 
 def _open_marker(name: str, *, dir_fd: int | None = None) -> int | None:
@@ -774,26 +743,6 @@ def _open_marker(name: str, *, dir_fd: int | None = None) -> int | None:
         return os.open(name, flags, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.open(name, flags)
     except OSError:
         return None
-
-
-def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo | None, float] | None:
-    fd = _open_marker(name, dir_fd=dir_fd)
-    if fd is None:
-        return None
-    try:
-        st = os.fstat(fd)
-        # A legitimate marker is always a regular file, so anything else at the path -- above all a FIFO -- is
-        # reported as a malformed marker (its mtime still drives stale eviction) without being read. Reading is
-        # where platforms diverge: an empty non-blocking read yields 0 bytes on Linux/macOS but EAGAIN on
-        # FreeBSD, and the EAGAIN used to abort the stale-break and wedge the acquire until timeout (#587).
-        if not stat.S_ISREG(st.st_mode):
-            return None, st.st_mtime
-        data = os.read(fd, _MAX_MARKER_SIZE + 1)
-    except OSError:  # pragma: no cover - marker vanished or turned unreadable between open and read
-        return None
-    finally:
-        os.close(fd)
-    return _parse_marker_bytes(data), st.st_mtime
 
 
 def _parse_marker_bytes(data: bytes) -> _MarkerInfo | None:
@@ -826,6 +775,15 @@ def _parse_marker_bytes(data: bytes) -> _MarkerInfo | None:
     return _MarkerInfo(token=match["token"], pid=pid, hostname=match["hostname"])
 
 
+def _unlink(name: str, *, dir_fd: int | None = None) -> None:
+    with suppress(FileNotFoundError):
+        if _SUPPORTS_DIR_FD and dir_fd is not None:
+            # Path.unlink has no dir_fd support, so we stay on os.unlink for the dirfd path.
+            os.unlink(name, dir_fd=dir_fd)
+        else:
+            Path(name).unlink()
+
+
 def _break_stale_marker(  # noqa: PLR0911
     name: str,
     *,
@@ -837,8 +795,7 @@ def _break_stale_marker(  # noqa: PLR0911
     # private name nobody else can touch; if the re-verify sees a newer mtime or a different token, the
     # legitimate holder's heartbeat fired between read and rename and we must abort (leaving the .break.*
     # file behind rather than rollback-renaming, because rollback is itself racy).
-    read_result = _read_marker(name, dir_fd=dir_fd)
-    if read_result is None:
+    if (read_result := _read_marker(name, dir_fd=dir_fd)) is None:
         return False
     info_before, mtime_before = read_result
     if now - mtime_before <= stale_threshold:
@@ -871,20 +828,25 @@ def _break_stale_marker(  # noqa: PLR0911
     return True
 
 
-def _unlink(name: str, *, dir_fd: int | None = None) -> None:
-    with suppress(FileNotFoundError):
-        if _SUPPORTS_DIR_FD and dir_fd is not None:
-            # Path.unlink has no dir_fd support, so we stay on os.unlink for the dirfd path.
-            os.unlink(name, dir_fd=dir_fd)
-        else:
-            Path(name).unlink()
+def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -> None:
+    # O_NOFOLLOW blocks the symlink-overwrite attack where an attacker pre-creates the marker path as a
+    # symlink pointing at a victim file. Mode 0o600 keeps the token unreadable to other users.
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | _O_NOFOLLOW
+    if _SUPPORTS_DIR_FD and dir_fd is not None:
+        fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
+    else:
+        fd = os.open(name, flags, 0o600)
+    try:
+        os.write(fd, f"{token}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii"))
+    finally:
+        os.close(fd)
 
 
 def _touch(name: str, *, fd: int | None = None) -> None:
     # Prefer the already-open, already-verified fd so a peer that swaps a symlink or a different file in at the
     # path after our O_NOFOLLOW read cannot redirect the touch: utime then targets the inode behind the fd.
     # Where the platform cannot utime an fd, fall back to a path-based touch that still refuses to follow a
-    # symlink where supported -- matching the O_NOFOLLOW reads used everywhere else here.
+    # symlink where supported, matching the O_NOFOLLOW reads used elsewhere here.
     if fd is not None and _SUPPORTS_UTIME_FD:
         os.utime(fd, None)
         return
@@ -903,20 +865,39 @@ def _is_housekeeping_name(name: str) -> bool:
     return name.startswith(".") or _BREAK_SUFFIX in name
 
 
-def _reset_all_after_fork() -> None:  # pragma: no cover - fork child, not tracked by coverage
-    global _all_instances_lock  # noqa: PLW0603
-    # User-created threading locks do not auto-reset across fork: any lock held by a parent thread stays
-    # locked in the child with no owner to release it. Replace the module-level lock and every instance's
-    # locks with fresh ones; the child is single-threaded at this point so no synchronization is needed.
-    _all_instances_lock = threading.Lock()
-    for instance in list(_all_instances.values()):
-        instance._reset_after_fork_in_child()  # noqa: SLF001
+@dataclass(frozen=True)
+class _Paths:
+    state: str
+    write: str
+    readers: str
 
 
-def _cleanup_all_instances() -> None:  # pragma: no cover - runs from atexit at interpreter shutdown
-    for instance in list(_all_instances.values()):
-        with suppress(Exception):
-            instance.release(force=True)
+@dataclass
+class _Locks:
+    internal: threading.Lock
+    transaction: threading.Lock
+    state: SoftFileLock
+
+
+@dataclass(frozen=True)
+class _MarkerInfo:
+    token: str
+    pid: int
+    hostname: str
+
+
+@dataclass
+class _Hold:
+    """Everything that exists only while a lock is held; ``None`` when the instance has no lock."""
+
+    level: int
+    mode: _Mode
+    write_thread_id: int | None
+    marker_name: str
+    is_reader: bool
+    token: str
+    heartbeat_thread: _HeartbeatThread
+    heartbeat_stop: threading.Event
 
 
 def _register_hooks() -> None:
@@ -928,6 +909,22 @@ def _register_hooks() -> None:
     if not _fork_registered and hasattr(os, "register_at_fork"):
         os.register_at_fork(after_in_child=_reset_all_after_fork)
         _fork_registered = True
+
+
+def _cleanup_all_instances() -> None:  # pragma: no cover - runs from atexit at interpreter shutdown
+    for instance in list(_all_instances.values()):
+        with suppress(Exception):
+            instance.release(force=True)
+
+
+def _reset_all_after_fork() -> None:  # pragma: no cover - fork child, not tracked by coverage
+    global _all_instances_lock  # noqa: PLW0603
+    # User-created threading locks do not auto-reset across fork: any lock held by a parent thread stays
+    # locked in the child with no owner to release it. Replace the module-level lock and every instance's
+    # locks with fresh ones; the child is single-threaded at this point so no synchronization is needed.
+    _all_instances_lock = threading.Lock()
+    for instance in list(_all_instances.values()):
+        instance._reset_after_fork_in_child()  # noqa: SLF001
 
 
 __all__ = [

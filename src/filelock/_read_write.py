@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager, suppress
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 from weakref import WeakValueDictionary
 
 from ._api import AcquireReturnProxy
@@ -17,10 +17,10 @@ from ._error import Timeout
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-_LOGGER = logging.getLogger("filelock")
+_LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 
-_all_connections: set[sqlite3.Connection] = set()
-_all_connections_lock = threading.Lock()
+_all_connections: Final[set[sqlite3.Connection]] = set()
+_all_connections_lock: Final[threading.Lock] = threading.Lock()
 
 
 def _cleanup_connections() -> None:
@@ -34,34 +34,15 @@ def _cleanup_connections() -> None:
 atexit.register(_cleanup_connections)
 
 # sqlite3_busy_timeout() accepts a C int, max 2_147_483_647 on 32-bit. Use a lower value to be safe (~23 days).
-_MAX_SQLITE_TIMEOUT_MS = 2_000_000_000 - 1
-
-
-def timeout_for_sqlite(timeout: float, *, blocking: bool, already_waited: float) -> int:
-    if blocking is False:
-        return 0
-
-    if timeout == -1:
-        return _MAX_SQLITE_TIMEOUT_MS
-
-    if timeout < 0:
-        msg = "timeout must be a non-negative number or -1"
-        raise ValueError(msg)
-
-    remaining = max(timeout - already_waited, 0) if timeout > 0 else timeout
-    timeout_ms = int(remaining * 1000)
-    if timeout_ms > _MAX_SQLITE_TIMEOUT_MS or timeout_ms < 0:
-        _LOGGER.warning("timeout %s is too large for SQLite, using %s ms instead", timeout, _MAX_SQLITE_TIMEOUT_MS)
-        return _MAX_SQLITE_TIMEOUT_MS
-    return timeout_ms
+_MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
 
 
 class _ReadWriteLockMeta(type):
     """
-    Metaclass that handles singleton resolution when is_singleton=True.
+    Resolve singleton instances for ``is_singleton=True`` construction.
 
-    Singleton logic lives here rather than in ReadWriteLock.get_lock so that ``ReadWriteLock(path)`` transparently
-    returns cached instances without a 2-arg ``super()`` call that type checkers cannot verify.
+    This logic lives here rather than in ReadWriteLock.get_lock so ``ReadWriteLock(path)`` returns cached instances
+    without a 2-arg ``super()`` call that type checkers cannot verify.
 
     """
 
@@ -158,104 +139,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         with _all_connections_lock:
             _all_connections.add(self._con)
 
-    def _acquire_transaction_lock(self, *, blocking: bool, timeout: float) -> None:
-        if not blocking:
-            acquired = self._transaction_lock.acquire(blocking=False)
-        elif timeout == -1:
-            acquired = self._transaction_lock.acquire(blocking=True)
-        else:
-            acquired = self._transaction_lock.acquire(blocking=True, timeout=timeout)
-        if not acquired:
-            raise Timeout(self.lock_file) from None
-
-    def _validate_reentrant(self, mode: Literal["read", "write"]) -> AcquireReturnProxy:
-        opposite = "write" if mode == "read" else "read"
-        direction = "downgrade" if mode == "read" else "upgrade"
-        if self._current_mode != mode:
-            msg = (
-                f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): "
-                f"already holding a {opposite} lock ({direction} not allowed)"
-            )
-            raise RuntimeError(msg)
-        if mode == "write" and (cur := threading.get_ident()) != self._write_thread_id:
-            msg = (
-                f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {cur} while it is held by thread {self._write_thread_id}"
-            )
-            raise RuntimeError(msg)
-        self._lock_level += 1
-        return AcquireReturnProxy(lock=self)
-
-    def _configure_and_begin(
-        self, mode: Literal["read", "write"], timeout: float, *, blocking: bool, start_time: float
-    ) -> None:
-        waited = time.perf_counter() - start_time
-        timeout_ms = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
-        self._con.execute(f"PRAGMA busy_timeout={timeout_ms};").close()
-        # Use legacy journal mode (not WAL) because WAL does not block readers when a concurrent EXCLUSIVE
-        # write transaction is active, making read-write locking impossible without modifying table data.
-        # MEMORY is safe here since no actual writes happen — crashes cannot corrupt the DB.
-        # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
-        #
-        # Set here (not in __init__) because this pragma itself may block on a locked database,
-        # so it must run after busy_timeout is configured above.
-        self._con.execute("PRAGMA journal_mode=MEMORY;").close()
-        # Recompute remaining timeout after the potentially blocking journal_mode pragma.
-        waited = time.perf_counter() - start_time
-        if (recomputed := timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)) != timeout_ms:
-            self._con.execute(f"PRAGMA busy_timeout={recomputed};").close()
-        stmt = "BEGIN EXCLUSIVE TRANSACTION;" if mode == "write" else "BEGIN TRANSACTION;"
-        self._con.execute(stmt).close()
-        if mode == "read":
-            # A SELECT is needed to force SQLite to actually acquire the SHARED lock on the database.
-            # https://www.sqlite.org/lockingv3.html#transaction_control
-            self._con.execute("SELECT name FROM sqlite_schema LIMIT 1;").close()
-
-    def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
-        with self._internal_lock:
-            if self._lock_level > 0:
-                return self._validate_reentrant(mode)
-
-        start_time = time.perf_counter()
-        self._acquire_transaction_lock(blocking=blocking, timeout=timeout)
-        try:
-            return self._do_acquire_inner(mode, timeout, blocking=blocking, start_time=start_time)
-        except sqlite3.Error as exc:
-            # A read acquire runs BEGIN (a deferred transaction that takes no database lock) and only then the
-            # SELECT that actually takes the SHARED lock. If a writer grabs the EXCLUSIVE lock between the two,
-            # the SELECT fails but BEGIN's transaction is left open on the shared connection. Roll it back here,
-            # while we still hold _transaction_lock, otherwise the next acquire's BEGIN dies with "cannot start a
-            # transaction within a transaction" and the instance is wedged for good. Catch only sqlite3.Error: a
-            # reentrant-validation RuntimeError from _do_acquire_inner's double-check must not roll back, or it
-            # would drop a transaction another thread legitimately holds on the shared connection.
-            with suppress(sqlite3.Error):
-                self._con.rollback()
-            if isinstance(exc, sqlite3.OperationalError) and "database is locked" in str(exc):
-                raise Timeout(self.lock_file) from None
-            raise
-        finally:
-            self._transaction_lock.release()
-
-    def _do_acquire_inner(
-        self,
-        mode: Literal["read", "write"],
-        timeout: float,
-        *,
-        blocking: bool,
-        start_time: float,
-    ) -> AcquireReturnProxy:
-        # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
-        with self._internal_lock:
-            if self._lock_level > 0:
-                return self._validate_reentrant(mode)
-        self._configure_and_begin(mode, timeout, blocking=blocking, start_time=start_time)
-        with self._internal_lock:
-            self._current_mode = mode
-            self._lock_level = 1
-            if mode == "write":
-                self._write_thread_id = threading.get_ident()
-        return AcquireReturnProxy(lock=self)
-
     def acquire_read(self, timeout: float = -1, *, blocking: bool = True) -> AcquireReturnProxy:
         """
         Acquire a shared read lock.
@@ -293,42 +176,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         """
         return self._acquire("write", timeout, blocking=blocking)
-
-    def release(self, *, force: bool = False) -> None:
-        """
-        Release one level of the current lock.
-
-        When the lock level reaches zero the underlying SQLite transaction is rolled back, releasing the database lock.
-
-        :param force: if ``True``, release the lock completely regardless of the current lock level
-
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``
-
-        """
-        should_rollback = False
-        with self._internal_lock:
-            if self._lock_level == 0:
-                if force:
-                    return
-                msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
-                raise RuntimeError(msg)
-            if force:
-                self._lock_level = 0
-            else:
-                self._lock_level -= 1
-            if self._lock_level == 0:
-                self._current_mode = None
-                self._write_thread_id = None
-                should_rollback = True
-        if should_rollback:
-            # The rollback ends the transaction on the shared connection, so it has to be serialized against
-            # acquire()'s BEGIN the same way acquire() already serializes itself with _transaction_lock. Without
-            # this, another thread that sees lock_level back at 0 can start its BEGIN while this rollback's
-            # transaction is still open (raising "cannot start a transaction within a transaction") or, in the
-            # other ordering, have its freshly started transaction rolled back here, dropping the database lock
-            # while it still believes it holds it.
-            with self._transaction_lock:
-                self._con.rollback()
 
     @contextmanager
     def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
@@ -372,6 +219,42 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         finally:
             self.release()
 
+    def release(self, *, force: bool = False) -> None:
+        """
+        Release one level of the current lock.
+
+        When the lock level reaches zero the underlying SQLite transaction is rolled back, releasing the database lock.
+
+        :param force: if ``True``, release the lock completely regardless of the current lock level
+
+        :raises RuntimeError: if no lock is currently held and *force* is ``False``
+
+        """
+        should_rollback = False
+        with self._internal_lock:
+            if self._lock_level == 0:
+                if force:
+                    return
+                msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
+                raise RuntimeError(msg)
+            if force:
+                self._lock_level = 0
+            else:
+                self._lock_level -= 1
+            if self._lock_level == 0:
+                self._current_mode = None
+                self._write_thread_id = None
+                should_rollback = True
+        if should_rollback:
+            # The rollback ends the transaction on the shared connection, so it has to be serialized against
+            # acquire()'s BEGIN the same way acquire() already serializes itself with _transaction_lock. Without
+            # this, another thread that sees lock_level back at 0 can start its BEGIN while this rollback's
+            # transaction is still open (raising "cannot start a transaction within a transaction") or, in the
+            # other ordering, have its freshly started transaction rolled back here, dropping the database lock
+            # while it still believes it holds it.
+            with self._transaction_lock:
+                self._con.rollback()
+
     def close(self) -> None:
         """
         Release the lock (if held) and close the underlying SQLite connection.
@@ -383,3 +266,118 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._con.close()
         with _all_connections_lock:
             _all_connections.discard(self._con)
+
+    def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
+        with self._internal_lock:
+            if self._lock_level > 0:
+                return self._validate_reentrant(mode)
+
+        start_time = time.perf_counter()
+        self._acquire_transaction_lock(blocking=blocking, timeout=timeout)
+        try:
+            return self._do_acquire_inner(mode, timeout, blocking=blocking, start_time=start_time)
+        except sqlite3.Error as exc:
+            # A read acquire runs BEGIN (a deferred transaction that takes no database lock) and only then the
+            # SELECT that takes the SHARED lock. If a writer grabs the EXCLUSIVE lock between the two, the SELECT
+            # fails but BEGIN's transaction is left open on the shared connection. Roll it back here, while we still
+            # hold _transaction_lock, otherwise the next acquire's BEGIN dies with "cannot start a transaction
+            # within a transaction" and the instance is wedged for good. Catch only sqlite3.Error: a
+            # reentrant-validation RuntimeError from _do_acquire_inner's double-check must not roll back, or it
+            # would drop a transaction another thread holds on the shared connection.
+            with suppress(sqlite3.Error):
+                self._con.rollback()
+            if isinstance(exc, sqlite3.OperationalError) and "database is locked" in str(exc):
+                raise Timeout(self.lock_file) from None
+            raise
+        finally:
+            self._transaction_lock.release()
+
+    def _do_acquire_inner(
+        self,
+        mode: Literal["read", "write"],
+        timeout: float,
+        *,
+        blocking: bool,
+        start_time: float,
+    ) -> AcquireReturnProxy:
+        # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
+        with self._internal_lock:
+            if self._lock_level > 0:
+                return self._validate_reentrant(mode)
+        self._configure_and_begin(mode, timeout, blocking=blocking, start_time=start_time)
+        with self._internal_lock:
+            self._current_mode = mode
+            self._lock_level = 1
+            if mode == "write":
+                self._write_thread_id = threading.get_ident()
+        return AcquireReturnProxy(lock=self)
+
+    def _configure_and_begin(
+        self, mode: Literal["read", "write"], timeout: float, *, blocking: bool, start_time: float
+    ) -> None:
+        waited = time.perf_counter() - start_time
+        timeout_ms = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
+        self._con.execute(f"PRAGMA busy_timeout={timeout_ms};").close()
+        # Use legacy journal mode (not WAL) because WAL does not block readers while a concurrent EXCLUSIVE
+        # write transaction is active, which makes read-write locking impossible without modifying table data.
+        # MEMORY is safe here since no writes happen, so a crash cannot corrupt the DB.
+        # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
+        #
+        # Set here (not in __init__) because this pragma may block on a locked database, so it must run after
+        # busy_timeout is configured above.
+        self._con.execute("PRAGMA journal_mode=MEMORY;").close()
+        # Recompute the remaining timeout after the blocking journal_mode pragma.
+        waited = time.perf_counter() - start_time
+        if (recomputed := timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)) != timeout_ms:
+            self._con.execute(f"PRAGMA busy_timeout={recomputed};").close()
+        self._con.execute("BEGIN EXCLUSIVE TRANSACTION;" if mode == "write" else "BEGIN TRANSACTION;").close()
+        if mode == "read":
+            # SQLite takes the SHARED lock only when a statement reads; BEGIN alone stays deferred.
+            # https://www.sqlite.org/lockingv3.html#transaction_control
+            self._con.execute("SELECT name FROM sqlite_schema LIMIT 1;").close()
+
+    def _validate_reentrant(self, mode: Literal["read", "write"]) -> AcquireReturnProxy:
+        if self._current_mode != mode:
+            opposite = "write" if mode == "read" else "read"
+            direction = "downgrade" if mode == "read" else "upgrade"
+            msg = (
+                f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): "
+                f"already holding a {opposite} lock ({direction} not allowed)"
+            )
+            raise RuntimeError(msg)
+        if mode == "write" and (cur := threading.get_ident()) != self._write_thread_id:
+            msg = (
+                f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {cur} while it is held by thread {self._write_thread_id}"
+            )
+            raise RuntimeError(msg)
+        self._lock_level += 1
+        return AcquireReturnProxy(lock=self)
+
+    def _acquire_transaction_lock(self, *, blocking: bool, timeout: float) -> None:
+        if not blocking:
+            acquired = self._transaction_lock.acquire(blocking=False)
+        elif timeout == -1:
+            acquired = self._transaction_lock.acquire(blocking=True)
+        else:
+            acquired = self._transaction_lock.acquire(blocking=True, timeout=timeout)
+        if not acquired:
+            raise Timeout(self.lock_file) from None
+
+
+def timeout_for_sqlite(timeout: float, *, blocking: bool, already_waited: float) -> int:
+    if blocking is False:
+        return 0
+
+    if timeout == -1:
+        return _MAX_SQLITE_TIMEOUT_MS
+
+    if timeout < 0:
+        msg = "timeout must be a non-negative number or -1"
+        raise ValueError(msg)
+
+    timeout_ms = int((max(timeout - already_waited, 0) if timeout > 0 else timeout) * 1000)
+    if timeout_ms > _MAX_SQLITE_TIMEOUT_MS or timeout_ms < 0:
+        _LOGGER.warning("timeout %s is too large for SQLite, using %s ms instead", timeout, _MAX_SQLITE_TIMEOUT_MS)
+        return _MAX_SQLITE_TIMEOUT_MS
+    return timeout_ms

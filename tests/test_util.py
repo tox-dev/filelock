@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
@@ -13,6 +13,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pytest_mock import MockerFixture
+
+_SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0,
+    reason="root can write a 0o444 file",
+)
 
 
 def test_break_lock_file_unlinks_unchanged_file(tmp_path: Path) -> None:
@@ -27,8 +32,8 @@ def test_break_lock_file_unlinks_unchanged_file(tmp_path: Path) -> None:
 def test_break_lock_file_preserves_file_when_mtime_advanced(tmp_path: Path) -> None:
     lock = tmp_path / "test.lock"
     lock.write_text("live", encoding="utf-8")
-    # A mtime_before older than the file's real mtime models a peer recreating the lock after our stale read: the
-    # live file is renamed aside but must not be unlinked, so the holder's content survives instead of two holders.
+    # An mtime_before older than the file's real mtime models a peer recreating the lock after our stale read.
+    # break_lock_file renames the live file aside but must not unlink it, so we never end with two live holders.
     break_lock_file(str(lock), mtime_before=0.0, ino_before=os.lstat(lock).st_ino)
     assert not lock.exists()
     leftover = list(tmp_path.glob("test.lock.break.*"))
@@ -104,10 +109,7 @@ def test_raise_on_not_writable_file_does_not_follow_symlink_to_dir(tmp_path: Pat
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink + 0o444 semantics differ on Windows")
-@pytest.mark.skipif(
-    sys.platform != "win32" and os.geteuid() == 0,
-    reason="root can write a 0o444 file, so following the symlink would not raise",
-)
+@_SKIP_AS_ROOT
 def test_raise_on_not_writable_file_does_not_follow_symlink_to_readonly(tmp_path: Path) -> None:
     target = tmp_path / "readonly"
     target.write_text("x", encoding="utf-8")
@@ -127,10 +129,7 @@ def test_raise_on_not_writable_file_still_rejects_real_directory(tmp_path: Path)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only files in the same way")
-@pytest.mark.skipif(
-    sys.platform != "win32" and os.geteuid() == 0,
-    reason="root can write a 0o444 file",
-)
+@_SKIP_AS_ROOT
 def test_raise_on_not_writable_file_still_rejects_readonly_file(tmp_path: Path) -> None:
     path = tmp_path / "ro.lock"
     path.write_text("x", encoding="utf-8")

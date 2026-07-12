@@ -16,31 +16,13 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 
-class AsyncAcquireSoftReadWriteReturnProxy:
-    """Async context-aware object that releases an :class:`AsyncSoftReadWriteLock` on exit."""
-
-    def __init__(self, lock: AsyncSoftReadWriteLock) -> None:
-        self.lock = lock
-
-    async def __aenter__(self) -> AsyncSoftReadWriteLock:
-        return self.lock
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.lock.release()
-
-
 class AsyncSoftReadWriteLock:
     """
     Async wrapper around :class:`SoftReadWriteLock` for ``asyncio`` applications.
 
-    The sync class's blocking filesystem operations run on a thread pool via ``loop.run_in_executor()``.
-    Reentrancy, upgrade/downgrade rules, fork handling, heartbeat and TTL stale detection, and singleton
-    behavior are delegated to the underlying :class:`SoftReadWriteLock`.
+    The sync class's blocking filesystem operations run on a thread pool via ``loop.run_in_executor()``. The
+    underlying :class:`SoftReadWriteLock` handles reentrancy, upgrade/downgrade rules, fork handling, heartbeat and
+    TTL stale detection, and singleton behavior.
 
     :param lock_file: path to the lock file; sidecar state/write/readers live next to it
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
@@ -106,62 +88,6 @@ class AsyncSoftReadWriteLock:
         """The executor used for ``run_in_executor``, or ``None`` for the default executor."""
         return self._executor
 
-    async def acquire_read(
-        self, timeout: float | None = None, *, blocking: bool | None = None
-    ) -> AsyncAcquireSoftReadWriteReturnProxy:
-        """
-        Acquire a shared read lock.
-
-        See :meth:`SoftReadWriteLock.acquire_read` for the full reentrancy / upgrade / fork semantics. The blocking
-        work runs inside ``run_in_executor`` so other coroutines on the same loop continue to progress while this
-        call waits.
-
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
-        :returns: a proxy usable as an async context manager to release the lock
-
-        :raises RuntimeError: if a write lock is already held, if this instance was invalidated by
-            :func:`os.fork`, or if :meth:`close` was called
-        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-
-        """
-        await self._run(self._lock.acquire_read, timeout, blocking=blocking)
-        return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
-
-    async def acquire_write(
-        self, timeout: float | None = None, *, blocking: bool | None = None
-    ) -> AsyncAcquireSoftReadWriteReturnProxy:
-        """
-        Acquire an exclusive write lock.
-
-        See :meth:`SoftReadWriteLock.acquire_write` for the two-phase writer-preferring semantics. The blocking
-        work runs inside ``run_in_executor``.
-
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
-        :returns: a proxy usable as an async context manager to release the lock
-
-        :raises RuntimeError: if a read lock is already held, if a write lock is held by a different thread, if
-            this instance was invalidated by :func:`os.fork`, or if :meth:`close` was called
-        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-
-        """
-        await self._run(self._lock.acquire_write, timeout, blocking=blocking)
-        return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
-
-    async def release(self, *, force: bool = False) -> None:
-        """
-        Release one level of the current lock.
-
-        :param force: if ``True``, release the lock completely regardless of the current lock level
-
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``
-
-        """
-        await self._run(self._lock.release, force=force)
-
     @asynccontextmanager
     async def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> AsyncGenerator[None]:
         """
@@ -198,6 +124,61 @@ class AsyncSoftReadWriteLock:
         finally:
             await self.release()
 
+    async def acquire_read(
+        self, timeout: float | None = None, *, blocking: bool | None = None
+    ) -> AsyncAcquireSoftReadWriteReturnProxy:
+        """
+        Acquire a shared read lock.
+
+        See :meth:`SoftReadWriteLock.acquire_read` for reentrancy / upgrade / fork semantics. The blocking work runs
+        inside ``run_in_executor`` so other coroutines on the same loop keep progressing while this call waits.
+
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+
+        :returns: a proxy usable as an async context manager to release the lock
+
+        :raises RuntimeError: if a write lock is already held, if this instance was invalidated by
+            :func:`os.fork`, or if :meth:`close` was called
+        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+
+        """
+        await self._run(self._lock.acquire_read, timeout, blocking=blocking)
+        return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
+
+    async def acquire_write(
+        self, timeout: float | None = None, *, blocking: bool | None = None
+    ) -> AsyncAcquireSoftReadWriteReturnProxy:
+        """
+        Acquire an exclusive write lock.
+
+        See :meth:`SoftReadWriteLock.acquire_write` for the two-phase writer-preferring semantics. The blocking work
+        runs inside ``run_in_executor``.
+
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+
+        :returns: a proxy usable as an async context manager to release the lock
+
+        :raises RuntimeError: if a read lock is already held, if a write lock is held by a different thread, if
+            this instance was invalidated by :func:`os.fork`, or if :meth:`close` was called
+        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+
+        """
+        await self._run(self._lock.acquire_write, timeout, blocking=blocking)
+        return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
+
+    async def release(self, *, force: bool = False) -> None:
+        """
+        Release one level of the current lock.
+
+        :param force: if ``True``, release the lock completely regardless of the current lock level
+
+        :raises RuntimeError: if no lock is currently held and *force* is ``False``
+
+        """
+        await self._run(self._lock.release, force=force)
+
     async def close(self) -> None:
         """Release any held lock and release the underlying filesystem resources. Idempotent."""
         await self._run(self._lock.close)
@@ -205,6 +186,24 @@ class AsyncSoftReadWriteLock:
     async def _run(self, func: Callable[..., object], *args: object, **kwargs: object) -> object:
         loop = self._loop or asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, functools.partial(func, *args, **kwargs))
+
+
+class AsyncAcquireSoftReadWriteReturnProxy:
+    """Async context-aware object that releases an :class:`AsyncSoftReadWriteLock` on exit."""
+
+    def __init__(self, lock: AsyncSoftReadWriteLock) -> None:
+        self.lock = lock
+
+    async def __aenter__(self) -> AsyncSoftReadWriteLock:
+        return self.lock
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.lock.release()
 
 
 __all__ = [
