@@ -116,9 +116,11 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             same object around.
         :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback value
             in the acquire method, if no poll_interval value (``None``) is given.
-        :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set, a waiting
-            process will break a lock whose file modification time is older than ``lifetime`` seconds. ``None`` (the
-            default) means locks never expire.
+        :param lifetime: for :class:`AsyncSoftFileLock`, the maximum time in seconds a lock may be held before it
+            expires: a waiting process breaks a lock file whose modification time is older than ``lifetime`` seconds,
+            even if the holder is still alive. ``None`` (the default) means locks never expire. Native OS locks
+            (:class:`AsyncFileLock`) cannot be revoked by file age and ignore a non-``None`` ``lifetime``, with a
+            warning.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
