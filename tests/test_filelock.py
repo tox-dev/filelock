@@ -8,7 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from errno import EAGAIN, EIO, ENOSPC, ENOSYS, EWOULDBLOCK
+from errno import EAGAIN, EINTR, EIO, ENOSPC, ENOSYS, EWOULDBLOCK
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
@@ -1595,5 +1595,109 @@ def test_singleton_rejects_different_context_policy(tmp_path: Path) -> None:
     try:
         with pytest.raises(ValueError, match="context_error_policy"):
             SoftFileLock(path, is_singleton=True, context_error_policy="group")
+    finally:
+        first.release(force=True)
+
+
+def _fail_close_of(mocker: MockerFixture, lock: BaseFileLock, error: OSError) -> list[int]:
+    # Fail os.close only for this lock's own descriptor, and record each attempt on it. A blanket patch would also hit
+    # the close another test's lock runs from __del__ during this test, turning an unrelated garbage collection into a
+    # spurious failure. Returns the list of attempts so a caller can assert close is not retried.
+    fd = lock._context.lock_file_fd
+    real_close = os.close
+    attempts: list[int] = []
+
+    def close(target: int) -> None:
+        if target == fd:
+            attempts.append(target)
+            raise error
+        real_close(target)
+
+    mocker.patch("filelock._api.os.close", side_effect=close)
+    return attempts
+
+
+@_UNIX_FLOCK_ONLY
+def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"))  # default policy
+    lock.acquire()
+    _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
+    lock.release()  # Unix default drops a FUSE/Docker EIO
+    assert not lock.is_locked
+
+
+@_WINDOWS_ONLY
+def test_close_error_default_raises_on_windows(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"))  # default policy
+    lock.acquire()
+    _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
+    with pytest.raises(OSError, match="close failed"):
+        lock.release()
+    assert not lock.is_locked
+
+
+def test_close_error_suppress(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"), close_error_policy="suppress")
+    lock.acquire()
+    _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
+    lock.release()
+    assert not lock.is_locked
+
+
+@pytest.mark.parametrize("errno", [EINTR, EIO, ENOSPC])
+def test_close_error_raise_is_exact_and_committed(tmp_path: Path, mocker: MockerFixture, errno: int) -> None:
+    lock = FileLock(str(tmp_path / "a"), close_error_policy="raise")
+    lock.acquire()
+    injected = OSError(errno, "close failed")
+    attempts = _fail_close_of(mocker, lock, injected)
+    with pytest.raises(OSError, match="close failed") as info:
+        lock.release()
+    assert info.value is injected  # the original error, no wrapper
+    assert len(attempts) == 1  # os.close is never retried, even after EINTR
+    assert not lock.is_locked  # the unlock committed even though close failed
+    assert lock.lock_counter == 0
+
+
+@_UNIX_FLOCK_ONLY
+def test_close_not_reached_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"), close_error_policy="raise")
+    lock.acquire()
+    fd = lock._context.lock_file_fd
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None])
+    real_close = os.close
+    closed: list[int] = []
+    mocker.patch("filelock._api.os.close", side_effect=lambda target: closed.append(target) or real_close(target))
+    with pytest.raises(OSError, match="unlock failed"):
+        lock.release()
+    assert lock.is_locked  # the kernel unlock failed, so the lock is still held
+    assert fd not in closed  # close is not reached while the lock is still held
+    lock.release()  # retry: unlock succeeds and close runs
+    assert not lock.is_locked
+    assert fd in closed
+
+
+def test_dual_body_and_close_failure_grouped(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"), close_error_policy="raise", context_error_policy="group")
+    lock.acquire()
+    _fail_close_of(mocker, lock, OSError("close failed"))
+    body = ValueError("body failed")
+    with pytest.raises(ExceptionGroup) as info:
+        lock._release_in_context(body)  # what __exit__ runs; the close failure joins the body failure
+    leaf_body, close = info.value.exceptions
+    assert isinstance(leaf_body, ValueError)
+    assert isinstance(close, OSError)
+
+
+def test_invalid_close_error_policy_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="close_error_policy must be"):
+        FileLock(str(tmp_path / "a"), close_error_policy="explode")  # ty: ignore[invalid-argument-type]
+
+
+def test_singleton_rejects_different_close_policy(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    first = FileLock(path, is_singleton=True, close_error_policy="raise")
+    try:
+        with pytest.raises(ValueError, match="close_error_policy"):
+            FileLock(path, is_singleton=True, close_error_policy="suppress")
     finally:
         first.release(force=True)

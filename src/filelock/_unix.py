@@ -123,8 +123,7 @@ else:  # pragma: win32 no cover
             # cleanup; a close failure (EIO on FUSE/Docker bind mounts) does not make the kernel lock held again.
             fcntl.flock(fd, fcntl.LOCK_UN)
             self._context.lock_file_fd = None
-            with suppress(OSError):
-                os.close(fd)
+            self._close_released_fd(fd, default_suppresses=True)
 
 
 __all__ = [

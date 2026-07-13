@@ -148,7 +148,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             # commits do close and unlink run as post-unlock cleanup; their failure cannot make the lock held again.
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             self._context.lock_file_fd = None
-            os.close(fd)
+            self._close_released_fd(fd, default_suppresses=False)
             with suppress(OSError):
                 Path(self.lock_file).unlink()
 

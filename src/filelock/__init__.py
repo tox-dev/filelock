@@ -12,7 +12,7 @@ import sys
 import warnings
 from typing import TYPE_CHECKING, Final
 
-from ._api import AcquireReturnProxy, BaseFileLock, ContextErrorPolicy
+from ._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy
 from ._error import Timeout
 
 if TYPE_CHECKING:
@@ -81,6 +81,7 @@ __all__ = [
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",
     "BaseFileLock",
+    "CloseErrorPolicy",
     "ContextErrorPolicy",
     "FileLock",
     "ReadWriteLock",
