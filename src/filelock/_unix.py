@@ -109,8 +109,10 @@ else:  # pragma: win32 no cover
             with suppress(OSError):
                 identity = (fstat := os.fstat(fd)).st_dev, fstat.st_ino
             os.close(fd)
-            if not self._fallback_to_soft:
-                raise missing_flock  # fail closed: the caller opted out of existence-lock semantics (#603)
+            if not self._fallback_to_soft or self._preserve_lock_file:
+                # Fail closed: the caller opted out of existence-lock semantics (#603), or asked to preserve the
+                # pathname (#605), which the soft fallback would unlink to release.
+                raise missing_flock
             with suppress(OSError):
                 current = os.lstat(self.lock_file)
                 if identity == (current.st_dev, current.st_ino):

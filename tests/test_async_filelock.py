@@ -642,3 +642,19 @@ async def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: M
         await lock.acquire()
     assert not lock.is_locked
     assert type(lock).__name__ == "AsyncUnixFileLock"  # not swapped to the soft class
+
+
+def test_preserve_lock_file_async_soft_rejects(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="preserve_lock_file"):
+        AsyncSoftFileLock(str(tmp_path / "a"), preserve_lock_file=True)
+
+
+@_UNIX_FLOCK_ONLY
+@pytest.mark.asyncio
+async def test_preserve_lock_file_async_release_keeps_pathname(tmp_path: Path) -> None:
+    path = tmp_path / "a"
+    lock = AsyncFileLock(str(path), preserve_lock_file=True)
+    await lock.acquire()
+    await lock.release()
+    assert path.exists()  # the native pathname survives an async release
+    assert type(lock).__name__ == "AsyncUnixFileLock"

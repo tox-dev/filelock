@@ -201,8 +201,9 @@ if sys.platform == "win32":  # pragma: win32 cover
             _unlock_fd(fd)
             self._context.lock_file_fd = None
             self._close_released_fd(fd, default_suppresses=False)
-            with suppress(OSError):
-                Path(self.lock_file).unlink()
+            if not self._preserve_lock_file:  # preserve_lock_file keeps a stable file identity for the caller (#605)
+                with suppress(OSError):
+                    Path(self.lock_file).unlink()
 
     def _open_non_reparse_fd(path: str, mode: int) -> int | None:
         """

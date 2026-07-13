@@ -59,6 +59,7 @@ class AsyncFileLockMeta(FileLockMeta):
         context_error_policy: ContextErrorPolicy = "chain",
         close_error_policy: CloseErrorPolicy = "default",
         fallback_to_soft: bool = True,
+        preserve_lock_file: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -78,6 +79,7 @@ class AsyncFileLockMeta(FileLockMeta):
             context_error_policy=context_error_policy,
             close_error_policy=close_error_policy,
             fallback_to_soft=fallback_to_soft,
+            preserve_lock_file=preserve_lock_file,
             loop=loop,
             run_in_executor=run_in_executor,
             executor=executor,
@@ -108,6 +110,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         context_error_policy: ContextErrorPolicy = "chain",
         close_error_policy: CloseErrorPolicy = "default",
         fallback_to_soft: bool = True,
+        preserve_lock_file: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -148,6 +151,10 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             ``"raise"`` always propagates the ``OSError``, and ``"suppress"`` always ignores it.
         :param fallback_to_soft: for :class:`AsyncFileLock`, whether to fall back to soft existence locking when
             ``flock`` returns ``ENOSYS``. ``True`` (default) keeps the fallback; ``False`` propagates the error.
+        :param preserve_lock_file: for native locks (:class:`AsyncFileLock`), whether filelock promises not to unlink
+            the lock pathname on release. ``False`` (default) keeps each backend's cleanup; ``True`` keeps a stable file
+            identity (Windows skips its unlink, Unix refuses the ``ENOSYS`` soft fallback). :class:`AsyncSoftFileLock`
+            rejects ``True``.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
@@ -158,6 +165,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self._context_error_policy = context_error_policy  # already validated by the metaclass
         self._close_error_policy = close_error_policy  # already validated by the metaclass
         self._fallback_to_soft = fallback_to_soft
+        self._preserve_lock_file = preserve_lock_file  # already validated by the metaclass
 
         # External code goes through this class's properties, not the context directly.
         kwargs: dict[str, Any] = {

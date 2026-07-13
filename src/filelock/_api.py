@@ -124,6 +124,15 @@ def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str)
     return lifetime
 
 
+def _resolve_preserve_lock_file(preserve: bool, *, supported: bool, cls_name: str) -> bool:  # noqa: FBT001
+    # An existence lock unlinks its marker to release, so preserving the pathname would defeat unlocking. Reject the
+    # request rather than silently ignore it, since a caller asking for a stable identity must know it cannot be kept.
+    if preserve and not supported:
+        msg = f"preserve_lock_file=True is not supported by {cls_name}: unlinking its marker is how it releases"
+        raise ValueError(msg)
+    return preserve
+
+
 class _ThreadLocalRegistry(local):
     def __init__(self) -> None:
         super().__init__()
@@ -154,6 +163,7 @@ class FileLockMeta(ABCMeta):
         context_error_policy: ContextErrorPolicy = "chain",
         close_error_policy: CloseErrorPolicy = "default",
         fallback_to_soft: bool = True,
+        preserve_lock_file: bool = False,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
         lifetime = _resolve_lifetime(lifetime, supported=cls._lifetime_supported, cls_name=cls.__name__)
@@ -161,6 +171,9 @@ class FileLockMeta(ABCMeta):
         # __del__ then trips over the missing context.
         context_error_policy = _resolve_context_error_policy(context_error_policy)
         close_error_policy = _resolve_close_error_policy(close_error_policy)
+        preserve_lock_file = _resolve_preserve_lock_file(
+            preserve_lock_file, supported=cls._preserve_lock_file_supported, cls_name=cls.__name__
+        )
         params = {
             "timeout": timeout,
             "mode": mode,
@@ -172,6 +185,7 @@ class FileLockMeta(ABCMeta):
             "context_error_policy": context_error_policy,
             "close_error_policy": close_error_policy,
             "fallback_to_soft": fallback_to_soft,
+            "preserve_lock_file": preserve_lock_file,
             **kwargs,
         }
         if not is_singleton:
@@ -201,6 +215,7 @@ class FileLockMeta(ABCMeta):
             "context_error_policy": (context_error_policy, instance.context_error_policy),
             "close_error_policy": (close_error_policy, instance.close_error_policy),
             "fallback_to_soft": (fallback_to_soft, instance.fallback_to_soft),
+            "preserve_lock_file": (preserve_lock_file, instance.preserve_lock_file),
         }
         non_matching_params = {
             name: (passed_param, set_param)
@@ -243,6 +258,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     #: unlinking a pathname); native OS locks leave it ``False`` since a kernel lock cannot be revoked by file age.
     _lifetime_supported: bool = False
 
+    #: Whether :attr:`preserve_lock_file` may be ``True``. Native locks keep the pathname on release, so they support
+    #: it; existence locks unlink their marker to release and reject it.
+    _preserve_lock_file_supported: bool = True
+
     def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
         """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
@@ -263,6 +282,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         context_error_policy: ContextErrorPolicy = "chain",
         close_error_policy: CloseErrorPolicy = "default",
         fallback_to_soft: bool = True,
+        preserve_lock_file: bool = False,
     ) -> None:
         """
         Create a new lock object.
@@ -303,6 +323,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             filesystem's ``flock`` returns ``ENOSYS``. ``True`` (the default) keeps the historical fallback;
             ``False`` fails closed, letting the ``ENOSYS`` propagate so a caller that needs kernel-enforced
             locking is never silently downgraded. It has no effect on Windows or :class:`SoftFileLock`.
+        :param preserve_lock_file: for native locks (:class:`FileLock`), whether filelock promises not to unlink the
+            lock pathname on release. ``False`` (the default) keeps each backend's cleanup: Windows removes the lock
+            file, Unix already leaves it. ``True`` keeps a stable file identity for ACLs, auditing, and holder metadata:
+            Windows skips its post-release unlink and Unix refuses to enter the ``ENOSYS`` soft fallback (which releases
+            by unlinking). :class:`SoftFileLock` rejects ``True``. The promise covers filelock's own release path only;
+            it cannot stop another process or the filesystem from removing the pathname.
 
         """
         self._is_thread_local = thread_local
@@ -310,6 +336,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         self._context_error_policy = context_error_policy  # already validated by the metaclass
         self._close_error_policy = close_error_policy  # already validated by the metaclass
         self._fallback_to_soft = fallback_to_soft
+        self._preserve_lock_file = preserve_lock_file  # already validated by the metaclass
 
         # External code reaches these values through the public properties, not through _context directly.
         kwargs: dict[str, Any] = {
@@ -380,6 +407,19 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
         """
         return self._fallback_to_soft
+
+    @property
+    def preserve_lock_file(self) -> bool:
+        """
+        Whether filelock promises not to unlink the lock pathname on release.
+
+        When ``True``, Windows skips its post-release unlink and Unix refuses the ``ENOSYS`` soft fallback.
+        :class:`SoftFileLock` rejects ``True`` because unlinking its marker is how it releases.
+
+        .. versionadded:: 3.27.0
+
+        """
+        return self._preserve_lock_file
 
     @property
     def lock_file(self) -> str:
