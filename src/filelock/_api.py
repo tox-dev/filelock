@@ -86,7 +86,22 @@ def _raise_body_and_release(body_error: BaseException, release_error: BaseExcept
 
 # On Windows os.path.realpath calls CreateFileW with share_mode=0, which blocks concurrent DeleteFileW and causes
 # livelocks under threaded contention with SoftFileLock. os.path.abspath is purely string-based and avoids this.
-_canonical: Final[Callable[[str], str]] = os.path.abspath if sys.platform == "win32" else os.path.realpath
+_resolve_dir: Final[Callable[[str], str]] = os.path.abspath if sys.platform == "win32" else os.path.realpath
+
+
+def _canonical(path: str | os.PathLike[str]) -> str:
+    """
+    Return one stable key for *path*, collapsing equivalent spellings without following a final symlink.
+
+    Relative, absolute, and ``./`` spellings of one lock file must map to a single singleton instance, deadlock-registry
+    entry, and removal key. Resolving the whole path with ``realpath`` would follow a final symlink and alias a lock
+    target the backend deliberately rejects, so the registry identity would differ from the backend's. Resolving only
+    the parent directory and re-appending the literal final component collapses the equivalent spellings while keeping a
+    final symlink a distinct key. On Windows the parent is resolved with ``abspath`` so junctions and reparse points are
+    not followed either.
+    """
+    parent, name = os.path.split(os.fspath(path))
+    return os.path.join(_resolve_dir(parent or os.curdir), name)  # noqa: PTH118  # string join matches abspath/realpath
 
 
 def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str) -> float | None:
@@ -165,10 +180,13 @@ class FileLockMeta(ABCMeta):
         # reentrant locking across instances end up with two "singletons" and acquire()'s deadlock check then
         # rejects a legitimate reentrant acquire; the unguarded writes to the WeakValueDictionary are a data
         # race besides. ReadWriteLock and SoftReadWriteLock already guard their singleton caches this way.
+        # Key the cache on the canonical form so equivalent spellings of one path share a singleton, and it matches the
+        # deadlock-registry key acquire() uses.
+        singleton_key = _canonical(lock_file)
         with cls._instances_lock:
-            if (instance := cls._instances.get(str(lock_file))) is None:
+            if (instance := cls._instances.get(singleton_key)) is None:
                 instance = cls._create_instance(lock_file, params)
-                cls._instances[str(lock_file)] = instance
+                cls._instances[singleton_key] = instance
                 return instance
 
         params_to_check = {

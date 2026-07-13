@@ -454,13 +454,14 @@ async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
-    lock_path = tmp_path / "test.lock"
-    symlink_path = tmp_path / "link.lock"
-    symlink_path.symlink_to(lock_path)
+    # A symlinked parent directory resolves to the same canonical key; the final component stays literal.
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    (tmp_path / "link").symlink_to(real_dir)
 
-    lock1 = lock_type(lock_path)
+    lock1 = lock_type(str(real_dir / "test.lock"))
     async with lock1:
-        lock2 = lock_type(symlink_path)
+        lock2 = lock_type(str(tmp_path / "link" / "test.lock"))
         with pytest.raises(RuntimeError, match="Deadlock"):
             await lock2.acquire()
 
