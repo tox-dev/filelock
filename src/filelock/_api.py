@@ -24,6 +24,10 @@ _UNSET_FILE_MODE: Final[int] = -1
 ContextErrorPolicy = Literal["chain", "group"]
 _CONTEXT_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"chain", "group"})
 
+#: What a native backend does with an ``os.close`` failure after the OS unlock committed (see the property).
+CloseErrorPolicy = Literal["default", "raise", "suppress"]
+_CLOSE_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"default", "raise", "suppress"})
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from types import TracebackType
@@ -62,6 +66,13 @@ def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
             msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
             raise ValueError(msg) from exc
     return cast("ContextErrorPolicy", policy)
+
+
+def _resolve_close_error_policy(policy: str) -> CloseErrorPolicy:
+    if policy not in _CLOSE_ERROR_POLICIES:
+        msg = f"close_error_policy must be 'default', 'raise', or 'suppress', got {policy!r}"
+        raise ValueError(msg)
+    return cast("CloseErrorPolicy", policy)
 
 
 def _raise_body_and_release(body_error: BaseException, release_error: BaseException) -> NoReturn:
@@ -126,12 +137,14 @@ class FileLockMeta(ABCMeta):
         poll_interval: float = 0.05,
         lifetime: float | None = None,
         context_error_policy: ContextErrorPolicy = "chain",
+        close_error_policy: CloseErrorPolicy = "default",
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
         lifetime = _resolve_lifetime(lifetime, supported=cls._lifetime_supported, cls_name=cls.__name__)
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
         # __del__ then trips over the missing context.
         context_error_policy = _resolve_context_error_policy(context_error_policy)
+        close_error_policy = _resolve_close_error_policy(close_error_policy)
         params = {
             "timeout": timeout,
             "mode": mode,
@@ -141,6 +154,7 @@ class FileLockMeta(ABCMeta):
             "poll_interval": poll_interval,
             "lifetime": lifetime,
             "context_error_policy": context_error_policy,
+            "close_error_policy": close_error_policy,
             **kwargs,
         }
         if not is_singleton:
@@ -165,6 +179,7 @@ class FileLockMeta(ABCMeta):
             "poll_interval": (poll_interval, instance.poll_interval),
             "lifetime": (lifetime, instance.lifetime),
             "context_error_policy": (context_error_policy, instance.context_error_policy),
+            "close_error_policy": (close_error_policy, instance.close_error_policy),
         }
         non_matching_params = {
             name: (passed_param, set_param)
@@ -225,6 +240,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         poll_interval: float = 0.05,
         lifetime: float | None = None,
         context_error_policy: ContextErrorPolicy = "chain",
+        close_error_policy: CloseErrorPolicy = "default",
     ) -> None:
         """
         Create a new lock object.
@@ -256,11 +272,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             releasing on exit. ``"chain"`` (the default) keeps Python's behavior: the release error propagates with the
             body error in its ``__context__``. ``"group"`` raises a :class:`BaseExceptionGroup` holding the body error
             first and the release error second, so neither hides the other.
+        :param close_error_policy: for native locks (:class:`FileLock`), what to do with an ``os.close`` failure after
+            the OS unlock has already committed. ``"default"`` keeps each platform's historical behavior (Unix drops a
+            FUSE/Docker ``EIO``, Windows propagates); ``"raise"`` always propagates the ``OSError``; ``"suppress"``
+            always ignores it. Held state is released either way. It does not affect unlock failures or lock-file
+            deletion.
 
         """
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
+        self._close_error_policy = close_error_policy  # already validated by the metaclass
 
         # External code reaches these values through the public properties, not through _context directly.
         kwargs: dict[str, Any] = {
@@ -296,6 +318,28 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
         """
         return self._context_error_policy
+
+    @property
+    def close_error_policy(self) -> CloseErrorPolicy:
+        """
+        What a native lock does with an ``os.close`` failure after the OS unlock committed.
+
+        .. versionadded:: 3.27.0
+
+        """
+        return self._close_error_policy
+
+    def _close_released_fd(self, fd: int, *, default_suppresses: bool) -> None:
+        # Close the descriptor after the OS unlock has committed. CPython never retries close() after EINTR because the
+        # descriptor number may already be reused, so neither does this. close_error_policy decides the error's fate:
+        # "raise" propagates, "suppress" drops it, "default" keeps the backend's historical behavior (Unix suppresses a
+        # FUSE/Docker EIO, Windows propagates). Held state is already cleared, so the lock stays released either way.
+        try:
+            os.close(fd)
+        except OSError:
+            if self._close_error_policy == "suppress" or (self._close_error_policy == "default" and default_suppresses):
+                return
+            raise
 
     @property
     def lock_file(self) -> str:

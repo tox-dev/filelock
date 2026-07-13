@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -595,3 +596,37 @@ async def test_context_group_base_exception_leaf_is_base_group(tmp_path: Path, m
             raise KeyboardInterrupt
     assert not isinstance(info.value, ExceptionGroup)
     assert [type(leaf) for leaf in info.value.exceptions] == [KeyboardInterrupt, OSError]
+
+
+def _fail_close_of(mocker: MockerFixture, lock: BaseAsyncFileLock, error: OSError) -> None:
+    # Fail os.close only for this lock's descriptor, so an unrelated lock's __del__ close during the test is untouched.
+    fd = lock._context.lock_file_fd
+    real_close = os.close
+
+    def close(target: int) -> None:
+        if target == fd:
+            raise error
+        real_close(target)
+
+    mocker.patch("filelock._api.os.close", side_effect=close)
+
+
+@_UNIX_FLOCK_ONLY
+@pytest.mark.asyncio
+async def test_close_error_raise_propagates(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncFileLock(str(tmp_path / "a"), close_error_policy="raise")
+    await lock.acquire()
+    _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
+    with pytest.raises(OSError, match="close failed"):
+        await lock.release()
+    assert not lock.is_locked
+
+
+@_UNIX_FLOCK_ONLY
+@pytest.mark.asyncio
+async def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncFileLock(str(tmp_path / "a"))  # default policy
+    await lock.acquire()
+    _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
+    await lock.release()
+    assert not lock.is_locked

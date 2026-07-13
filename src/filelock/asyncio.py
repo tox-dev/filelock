@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Final, NoReturn, TypeVar
 from ._api import (
     _UNSET_FILE_MODE,
     BaseFileLock,
+    CloseErrorPolicy,
     ContextErrorPolicy,
     FileLockContext,
     FileLockMeta,
@@ -56,6 +57,7 @@ class AsyncFileLockMeta(FileLockMeta):
         poll_interval: float = 0.05,
         lifetime: float | None = None,
         context_error_policy: ContextErrorPolicy = "chain",
+        close_error_policy: CloseErrorPolicy = "default",
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -73,6 +75,7 @@ class AsyncFileLockMeta(FileLockMeta):
             poll_interval=poll_interval,
             lifetime=lifetime,
             context_error_policy=context_error_policy,
+            close_error_policy=close_error_policy,
             loop=loop,
             run_in_executor=run_in_executor,
             executor=executor,
@@ -101,6 +104,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         poll_interval: float = 0.05,
         lifetime: float | None = None,
         context_error_policy: ContextErrorPolicy = "chain",
+        close_error_policy: CloseErrorPolicy = "default",
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -136,6 +140,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             releasing on exit. ``"chain"`` (the default) keeps Python's behavior: the release error propagates with the
             body error in its ``__context__``. ``"group"`` raises a :class:`BaseExceptionGroup` holding the body error
             first and the release error second, so neither hides the other.
+        :param close_error_policy: for native locks (:class:`AsyncFileLock`), what to do with an ``os.close`` failure
+            after the OS unlock has already committed. ``"default"`` keeps each platform's historical behavior,
+            ``"raise"`` always propagates the ``OSError``, and ``"suppress"`` always ignores it.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
@@ -144,6 +151,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
+        self._close_error_policy = close_error_policy  # already validated by the metaclass
 
         # External code goes through this class's properties, not the context directly.
         kwargs: dict[str, Any] = {
