@@ -5,6 +5,7 @@ import gc
 import logging
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from errno import EIO, ENOSYS
@@ -658,3 +659,43 @@ async def test_preserve_lock_file_async_release_keeps_pathname(tmp_path: Path) -
     await lock.release()
     assert path.exists()  # the native pathname survives an async release
     assert type(lock).__name__ == "AsyncUnixFileLock"
+
+
+def _failing_on_acquired(_fd: int) -> None:
+    msg = "hook failed"
+    raise RuntimeError(msg)
+
+
+def test_on_acquired_async_soft_rejects(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="on_acquired"):
+        AsyncSoftFileLock(str(tmp_path / "a"), on_acquired=lambda _fd: None)
+
+
+@_UNIX_FLOCK_ONLY
+@pytest.mark.asyncio
+async def test_on_acquired_runs_in_backend_executor(tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def hook(fd: int) -> None:
+        seen["thread"] = threading.get_ident()
+        seen["held"] = lock.is_locked
+        seen["fd_is_int"] = isinstance(fd, int)
+
+    lock = AsyncFileLock(str(tmp_path / "a"), thread_local=False, on_acquired=hook)
+    await lock.acquire()
+    try:
+        assert seen["held"] is True
+        assert seen["fd_is_int"] is True
+        assert seen["thread"] != threading.get_ident()  # ran in the executor, not the event-loop thread
+    finally:
+        await lock.release()
+
+
+@_UNIX_FLOCK_ONLY
+@pytest.mark.asyncio
+async def test_on_acquired_async_failure_releases(tmp_path: Path) -> None:
+    lock = AsyncFileLock(str(tmp_path / "a"), thread_local=False, on_acquired=_failing_on_acquired)
+    with pytest.raises(RuntimeError, match="hook failed"):
+        await lock.acquire()
+    assert not lock.is_locked
+    assert lock.lock_counter == 0

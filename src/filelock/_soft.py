@@ -41,6 +41,9 @@ class SoftFileLock(BaseFileLock):
     #: An existence lock unlinks its marker to release, so it cannot promise to keep the pathname.
     _preserve_lock_file_supported: bool = False
 
+    #: An existence lock keeps protocol state in its marker, so it cannot lend the descriptor to an on_acquired hook.
+    _on_acquired_supported: bool = False
+
     def _acquire(self) -> None:
         raise_on_not_writable_file(self.lock_file)
         ensure_directory_exists(self.lock_file)

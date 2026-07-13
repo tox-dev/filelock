@@ -109,9 +109,9 @@ else:  # pragma: win32 no cover
             with suppress(OSError):
                 identity = (fstat := os.fstat(fd)).st_dev, fstat.st_ino
             os.close(fd)
-            if not self._fallback_to_soft or self._preserve_lock_file:
-                # Fail closed: the caller opted out of existence-lock semantics (#603), or asked to preserve the
-                # pathname (#605), which the soft fallback would unlink to release.
+            if not self._fallback_to_soft or self._preserve_lock_file or self._on_acquired is not None:
+                # Fail closed: the caller opted out of existence-lock semantics (#603), asked to preserve the pathname
+                # (#605), or set an on_acquired hook (#607), none of which a soft lock can honor.
                 raise missing_flock
             with suppress(OSError):
                 current = os.lstat(self.lock_file)
@@ -134,7 +134,8 @@ else:  # pragma: win32 no cover
                 os.close(fd)
                 raise
             if keep:
-                self._context.lock_file_fd = fd
+                self._context.lock_file_fd = fd  # the lock is held; run the hook now that truncation and mode are set
+                self._invoke_on_acquired()
             else:
                 os.close(fd)
 
