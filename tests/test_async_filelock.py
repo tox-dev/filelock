@@ -4,12 +4,20 @@ import asyncio
 import gc
 import logging
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
+from errno import EIO
 from pathlib import Path, PurePath
+from typing import TYPE_CHECKING
 
 import pytest
 
 from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, Timeout
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
+_UNIX_FLOCK_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="native flock semantics are Unix-only")
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -475,3 +483,33 @@ async def test_force_release_clears_registry(tmp_path: Path, lock_type: type[Bas
     lock2 = lock_type(lock_path)
     async with lock2:
         assert lock2.is_locked
+
+
+@_UNIX_FLOCK_ONLY
+@pytest.mark.asyncio
+async def test_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncFileLock(str(tmp_path / "a"))
+    await lock.acquire()
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None])
+    with pytest.raises(OSError, match="unlock failed"):
+        await lock.release()
+    assert lock.is_locked
+    assert lock.lock_counter == 1
+    await lock.release()
+    assert not lock.is_locked
+
+
+@_UNIX_FLOCK_ONLY
+@pytest.mark.asyncio
+async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncFileLock(str(tmp_path / "a"))
+    await lock.acquire()
+    # A slow unlock lets the cancellation land mid-release; shield must still drive it to completion.
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=lambda _fd, _op: time.sleep(0.2))
+    task = asyncio.ensure_future(lock.release())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not lock.is_locked
+    assert lock.lock_counter == 0

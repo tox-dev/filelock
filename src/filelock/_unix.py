@@ -118,9 +118,12 @@ else:  # pragma: win32 no cover
 
         def _release(self) -> None:
             fd = cast("int", self._context.lock_file_fd)
-            self._context.lock_file_fd = None
+            # Retain the descriptor until flock succeeds: a failed unlock leaves the kernel lock held, so is_locked
+            # must keep reporting held for a retry. Once flock commits, clear held state and close as post-unlock
+            # cleanup; a close failure (EIO on FUSE/Docker bind mounts) does not make the kernel lock held again.
             fcntl.flock(fd, fcntl.LOCK_UN)
-            with suppress(OSError):  # close can raise EIO on FUSE/Docker bind-mount filesystems
+            self._context.lock_file_fd = None
+            with suppress(OSError):
                 os.close(fd)
 
 

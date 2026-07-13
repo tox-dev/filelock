@@ -89,10 +89,12 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         def _release(self) -> None:
             fd = cast("int", self._context.lock_file_fd)
-            self._context.lock_file_fd = None
+            # Retain the descriptor until the OS unlock succeeds: if msvcrt.locking raises, the byte-range lock is
+            # still held, so is_locked must keep reporting held rather than losing the fd. Only after the unlock
+            # commits do close and unlink run as post-unlock cleanup; their failure cannot make the lock held again.
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            self._context.lock_file_fd = None
             os.close(fd)
-
             with suppress(OSError):
                 Path(self.lock_file).unlink()
 

@@ -277,17 +277,35 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
         """
-        if self.is_locked:
+        if not self.is_locked:
+            return
+        if not force and self._context.lock_counter > 1:
             self._context.lock_counter -= 1
+            return
 
-            if self._context.lock_counter == 0 or force:
-                lock_id, lock_filename = id(self), self.lock_file
+        lock_id, lock_filename = id(self), self.lock_file
+        _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
+        # Run release as its own task and shield it: a cancellation arriving mid-release must not stop the state
+        # transition halfway. On cancellation, wait for the task to finish before letting the cancel reach the caller.
+        release_task = asyncio.ensure_future(self._run_internal_method(self._release))
+        try:
+            await asyncio.shield(release_task)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await release_task
+            self._commit_release_if_released()
+            raise
+        except Exception:
+            self._commit_release_if_released()
+            raise
+        self._commit_release()
+        _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
-                _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
-                await self._run_internal_method(self._release)
-                self._context.lock_counter = 0
-                self._drop_registry_entry()
-                _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+    def _commit_release_if_released(self) -> None:
+        # Commit only when the backend actually unlocked (close or unlink failed after the OS unlock). If the lock is
+        # still held, keep the counter so a later release can retry.
+        if not self.is_locked:
+            self._commit_release()
 
     async def _run_internal_method(self, method: Callable[[], Any]) -> None:
         if iscoroutinefunction(method):
