@@ -19,7 +19,17 @@ from weakref import WeakValueDictionary
 
 import pytest
 
-from filelock import BaseFileLock, ContextErrorPolicy, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
+from filelock import (
+    BaseFileLock,
+    ContextErrorPolicy,
+    FileLock,
+    SoftFileLock,
+    Timeout,
+    UnixFileLock,
+    WindowsFileLock,
+    lock_descriptor,
+    unlock_descriptor,
+)
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup
@@ -1458,7 +1468,7 @@ def test_unix_context_exit_propagates_unlock_failure(tmp_path: Path, mocker: Moc
 def test_windows_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
-    mocker.patch("filelock._windows.msvcrt.locking", side_effect=[OSError(EIO, "unlock failed"), None])
+    mocker.patch("filelock._windows._unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None])
     with pytest.raises(OSError, match="unlock failed"):
         lock.release()
     assert lock.is_locked
@@ -1807,3 +1817,114 @@ def test_singleton_rejects_different_fallback_to_soft(tmp_path: Path) -> None:
             FileLock(path, is_singleton=True, fallback_to_soft=False)
     finally:
         first.release(force=True)
+
+
+def test_lock_descriptor_roundtrip(tmp_path: Path) -> None:
+    fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
+    try:
+        assert lock_descriptor(fd, blocking=False) is True
+        os.write(fd, b"held")  # the descriptor stays usable while locked
+        unlock_descriptor(fd)
+        os.lseek(fd, 0, os.SEEK_SET)
+        assert os.read(fd, 4) == b"held"  # and after unlock
+    finally:
+        os.close(fd)
+
+
+def test_lock_descriptor_nonblocking_contention(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    holder = os.open(path, os.O_RDWR | os.O_CREAT)
+    contender = os.open(path, os.O_RDWR | os.O_CREAT)
+    try:
+        assert lock_descriptor(holder, blocking=False) is True
+        assert lock_descriptor(contender, blocking=False) is False  # a second descriptor sees the lock
+        unlock_descriptor(holder)
+        assert lock_descriptor(contender, blocking=False) is True  # free once the holder releases
+        unlock_descriptor(contender)
+    finally:
+        os.close(holder)
+        os.close(contender)
+
+
+def test_lock_descriptor_invalid_fd_raises(tmp_path: Path) -> None:
+    fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
+    os.close(fd)  # a closed descriptor is invalid; the native lock must raise, not silently succeed or contend
+    with pytest.raises(OSError, match=r"Bad file descriptor|not open|invalid"):
+        lock_descriptor(fd, blocking=False)
+
+
+@pytest.mark.parametrize("direction", ["filelock_first", "descriptor_first"])
+def test_filelock_and_descriptor_contend(tmp_path: Path, direction: str) -> None:
+    path = str(tmp_path / "a")
+    lock = FileLock(path)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT)
+    try:
+        if direction == "filelock_first":
+            lock.acquire()
+            assert lock_descriptor(fd, blocking=False) is False  # the path lock blocks the descriptor lock
+            lock.release()
+            assert lock_descriptor(fd, blocking=False) is True
+            unlock_descriptor(fd)
+        else:
+            assert lock_descriptor(fd, blocking=False) is True
+            with pytest.raises(Timeout):
+                lock.acquire(timeout=0.2)  # the descriptor lock blocks the path lock
+            unlock_descriptor(fd)
+            lock.acquire()
+            lock.release()
+    finally:
+        os.close(fd)
+
+
+@_UNIX_FLOCK_ONLY
+def test_lock_descriptor_touches_no_paths(tmp_path: Path) -> None:
+    path = tmp_path / "a"
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT)
+    try:
+        os.write(fd, b"payload")
+        before = os.fstat(fd)
+        assert lock_descriptor(fd, blocking=False) is True
+        unlock_descriptor(fd)
+        after = os.fstat(fd)
+        # The adapter works purely on the descriptor: our fd stays open on the same inode with its size and mode
+        # intact, and the file keeps its contents. That rules out any open, close, unlink, truncate or chmod on our
+        # behalf without spying on hot global os functions, which unrelated tempfile cleanup would race and pollute.
+        assert (after.st_ino, after.st_dev, after.st_size, after.st_mode) == (
+            before.st_ino,
+            before.st_dev,
+            before.st_size,
+            before.st_mode,
+        )
+        assert path.read_bytes() == b"payload"
+    finally:
+        os.close(fd)
+
+
+@_UNIX_FLOCK_ONLY
+def test_unlock_descriptor_failure_allows_retry(tmp_path: Path, mocker: MockerFixture) -> None:
+    fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
+    try:
+        assert lock_descriptor(fd, blocking=False) is True
+        mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None])
+        with pytest.raises(OSError, match="unlock failed"):
+            unlock_descriptor(fd)
+        unlock_descriptor(fd)  # the same descriptor can retry
+    finally:
+        os.close(fd)
+
+
+def test_lock_descriptor_blocking_retries_until_free(tmp_path: Path, mocker: MockerFixture) -> None:
+    path = str(tmp_path / "a")
+    holder = os.open(path, os.O_RDWR | os.O_CREAT)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT)
+    assert lock_descriptor(holder, blocking=False) is True
+    # Drive the real blocking loop: the first attempt sees contention, the mocked sleep frees the holder, and the
+    # second attempt wins. Only the clock is mocked, so a single sleep call proves exactly one retry happened.
+    sleep = mocker.patch("filelock._descriptor.time.sleep", side_effect=lambda _: unlock_descriptor(holder))
+    try:
+        assert lock_descriptor(fd, blocking=True, poll_interval=0.01) is True
+        sleep.assert_called_once_with(0.01)
+        unlock_descriptor(fd)
+    finally:
+        os.close(holder)
+        os.close(fd)

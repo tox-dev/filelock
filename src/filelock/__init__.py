@@ -13,6 +13,7 @@ import warnings
 from typing import TYPE_CHECKING, Final
 
 from ._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy
+from ._descriptor import lock_descriptor, unlock_descriptor
 from ._error import Timeout
 
 if TYPE_CHECKING:
@@ -91,4 +92,6 @@ __all__ = [
     "UnixFileLock",
     "WindowsFileLock",
     "__version__",
+    "lock_descriptor",
+    "unlock_descriptor",
 ]
