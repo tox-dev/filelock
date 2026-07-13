@@ -2035,16 +2035,17 @@ def test_on_acquired_property_reflects_argument(tmp_path: Path) -> None:
 
 
 def test_on_acquired_runs_before_acquire_returns(tmp_path: Path) -> None:
-    observed: dict[str, object] = {}
+    fd_while_held = -1
 
     def hook(fd: int) -> None:
-        observed["fd_is_int"] = isinstance(fd, int)
-        observed["held_during_hook"] = lock.is_locked
+        nonlocal fd_while_held
+        if lock.is_locked:
+            fd_while_held = fd
 
     lock = FileLock(str(tmp_path / "a"), on_acquired=hook)
     lock.acquire()
     try:
-        assert observed == {"fd_is_int": True, "held_during_hook": True}
+        assert fd_while_held >= 0  # the hook ran, saw the lock held, and got a real descriptor, all before acquire()
     finally:
         lock.release()
 

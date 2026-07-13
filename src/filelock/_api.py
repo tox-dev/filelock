@@ -55,26 +55,6 @@ def _exception_group_cls() -> type[BaseException]:
     return _Backport  # pragma: no cover (<py311)
 
 
-def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
-    if policy not in _CONTEXT_ERROR_POLICIES:
-        msg = f"context_error_policy must be 'chain' or 'group', got {policy!r}"
-        raise ValueError(msg)
-    if policy == "group":  # fail fast at construction rather than only when a dual failure happens to occur
-        try:
-            _exception_group_cls()
-        except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
-            msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
-            raise ValueError(msg) from exc
-    return cast("ContextErrorPolicy", policy)
-
-
-def _resolve_close_error_policy(policy: str) -> CloseErrorPolicy:
-    if policy not in _CLOSE_ERROR_POLICIES:
-        msg = f"close_error_policy must be 'default', 'raise', or 'suppress', got {policy!r}"
-        raise ValueError(msg)
-    return cast("CloseErrorPolicy", policy)
-
-
 def _raise_body_and_release(body_error: BaseException, release_error: BaseException) -> NoReturn:
     # Group mode: surface the body failure and the release failure as sibling leaves instead of letting one hide in the
     # other's __context__. BaseExceptionGroup returns a plain ExceptionGroup when both leaves subclass Exception, so
@@ -102,55 +82,6 @@ def _canonical(path: str | os.PathLike[str]) -> str:
     """
     parent, name = os.path.split(os.fspath(path))
     return os.path.join(_resolve_dir(parent or os.curdir), name)  # noqa: PTH118  # string join matches abspath/realpath
-
-
-def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str) -> float | None:
-    """
-    Drop a ``lifetime`` a lock cannot honor.
-
-    ``lifetime`` is a deliberate age-based lease: a lock file older than ``lifetime`` is broken even while its holder is
-    still alive. That is only safe for existence locks (:class:`SoftFileLock`), where breaking means unlinking a
-    pathname the protocol already treats as reclaimable. A native OS lock lives on the inode, so unlinking the pathname
-    by age cannot revoke the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590).
-    Ignore the request with a warning rather than accept a setting that breaks mutual exclusion.
-    """
-    if lifetime is not None and not supported:
-        warnings.warn(
-            f"lifetime is ignored for {cls_name}: a native OS lock cannot be broken safely by file age; "
-            f"only SoftFileLock supports lifetime-based expiry",
-            stacklevel=3,
-        )
-        return None
-    return lifetime
-
-
-def _resolve_preserve_lock_file(preserve: bool, *, supported: bool, cls_name: str) -> bool:  # noqa: FBT001
-    # An existence lock unlinks its marker to release, so preserving the pathname would defeat unlocking. Reject the
-    # request rather than silently ignore it, since a caller asking for a stable identity must know it cannot be kept.
-    if preserve and not supported:
-        msg = f"preserve_lock_file=True is not supported by {cls_name}: unlinking its marker is how it releases"
-        raise ValueError(msg)
-    return preserve
-
-
-def _resolve_on_acquired(
-    on_acquired: Callable[[int], None] | None, *, supported: bool, cls_name: str
-) -> Callable[[int], None] | None:
-    if on_acquired is None:
-        return None
-    # An existence lock stores protocol state in its marker, so a caller writing through the descriptor would corrupt
-    # stale detection and ownership metadata; only native locks lend out the descriptor.
-    if not supported:
-        msg = f"on_acquired is not supported by {cls_name}: only native locks expose the lock descriptor"
-        raise ValueError(msg)
-    # A hook that fails and then also fails to release surfaces both errors as a BaseExceptionGroup. Require that class
-    # at construction rather than at the rare moment both fail, matching how context_error_policy='group' validates.
-    try:
-        _exception_group_cls()
-    except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
-        msg = "on_acquired requires Python 3.11+ or the 'exceptiongroup' backport for its rollback error path"
-        raise ValueError(msg) from exc
-    return on_acquired
 
 
 class _ThreadLocalRegistry(local):
@@ -264,6 +195,75 @@ class FileLockMeta(ABCMeta):
         # descendant's signature, so passing the full set breaks it (tox-dev/filelock#340).
         present_params = inspect.signature(cls.__init__).parameters
         return super().__call__(lock_file, **{key: value for key, value in params.items() if key in present_params})
+
+
+def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str) -> float | None:
+    """
+    Drop a ``lifetime`` a lock cannot honor.
+
+    ``lifetime`` is a deliberate age-based lease: a lock file older than ``lifetime`` is broken even while its holder is
+    still alive. That is only safe for existence locks (:class:`SoftFileLock`), where breaking means unlinking a
+    pathname the protocol already treats as reclaimable. A native OS lock lives on the inode, so unlinking the pathname
+    by age cannot revoke the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590).
+    Ignore the request with a warning rather than accept a setting that breaks mutual exclusion.
+    """
+    if lifetime is not None and not supported:
+        warnings.warn(
+            f"lifetime is ignored for {cls_name}: a native OS lock cannot be broken safely by file age; "
+            f"only SoftFileLock supports lifetime-based expiry",
+            stacklevel=3,
+        )
+        return None
+    return lifetime
+
+
+def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
+    if policy not in _CONTEXT_ERROR_POLICIES:
+        msg = f"context_error_policy must be 'chain' or 'group', got {policy!r}"
+        raise ValueError(msg)
+    if policy == "group":  # fail fast at construction rather than only when a dual failure happens to occur
+        try:
+            _exception_group_cls()
+        except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
+            msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
+            raise ValueError(msg) from exc
+    return cast("ContextErrorPolicy", policy)
+
+
+def _resolve_close_error_policy(policy: str) -> CloseErrorPolicy:
+    if policy not in _CLOSE_ERROR_POLICIES:
+        msg = f"close_error_policy must be 'default', 'raise', or 'suppress', got {policy!r}"
+        raise ValueError(msg)
+    return cast("CloseErrorPolicy", policy)
+
+
+def _resolve_preserve_lock_file(preserve: bool, *, supported: bool, cls_name: str) -> bool:  # noqa: FBT001
+    # An existence lock unlinks its marker to release, so preserving the pathname would defeat unlocking. Reject the
+    # request rather than silently ignore it, since a caller asking for a stable identity must know it cannot be kept.
+    if preserve and not supported:
+        msg = f"preserve_lock_file=True is not supported by {cls_name}: unlinking its marker is how it releases"
+        raise ValueError(msg)
+    return preserve
+
+
+def _resolve_on_acquired(
+    on_acquired: Callable[[int], None] | None, *, supported: bool, cls_name: str
+) -> Callable[[int], None] | None:
+    if on_acquired is None:
+        return None
+    # An existence lock stores protocol state in its marker, so a caller writing through the descriptor would corrupt
+    # stale detection and ownership metadata; only native locks lend out the descriptor.
+    if not supported:
+        msg = f"on_acquired is not supported by {cls_name}: only native locks expose the lock descriptor"
+        raise ValueError(msg)
+    # A hook that fails and then also fails to release surfaces both errors as a BaseExceptionGroup. Require that class
+    # at construction rather than at the rare moment both fail, matching how context_error_policy='group' validates.
+    try:
+        _exception_group_cls()
+    except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
+        msg = "on_acquired requires Python 3.11+ or the 'exceptiongroup' backport for its rollback error path"
+        raise ValueError(msg) from exc
+    return on_acquired
 
 
 class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa: PLR0904  # public config properties

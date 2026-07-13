@@ -674,19 +674,20 @@ def test_on_acquired_async_soft_rejects(tmp_path: Path) -> None:
 @_UNIX_FLOCK_ONLY
 @pytest.mark.asyncio
 async def test_on_acquired_runs_in_backend_executor(tmp_path: Path) -> None:
-    seen: dict[str, object] = {}
+    hook_thread = -1
+    fd_while_held = -1
 
     def hook(fd: int) -> None:
-        seen["thread"] = threading.get_ident()
-        seen["held"] = lock.is_locked
-        seen["fd_is_int"] = isinstance(fd, int)
+        nonlocal hook_thread, fd_while_held
+        hook_thread = threading.get_ident()
+        if lock.is_locked:
+            fd_while_held = fd
 
     lock = AsyncFileLock(str(tmp_path / "a"), thread_local=False, on_acquired=hook)
     await lock.acquire()
     try:
-        assert seen["held"] is True
-        assert seen["fd_is_int"] is True
-        assert seen["thread"] != threading.get_ident()  # ran in the executor, not the event-loop thread
+        assert fd_while_held >= 0  # the hook ran while the lock was held, with a real descriptor
+        assert hook_thread != threading.get_ident()  # in the backend executor, not the event-loop thread
     finally:
         await lock.release()
 
