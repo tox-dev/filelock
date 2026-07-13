@@ -8,7 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from errno import EAGAIN, ENOSPC, ENOSYS, EWOULDBLOCK
+from errno import EAGAIN, EIO, ENOSPC, ENOSYS, EWOULDBLOCK
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
@@ -1395,3 +1395,75 @@ def test_windows_reparse_point_lock_file_rejected(tmp_path: Path) -> None:
         FileLock(link).acquire()
 
     assert target.read_text(encoding="utf-8") == "sensitive"
+
+
+def test_release_keeps_lock_until_final_hold(tmp_path: Path) -> None:
+    lock = FileLock(str(tmp_path / "a"))
+    lock.acquire()
+    lock.acquire()
+    lock.release()
+    assert lock.is_locked
+    assert lock.lock_counter == 1
+    lock.release()
+    assert not lock.is_locked
+    assert lock.lock_counter == 0
+
+
+def test_forced_release_drops_all_holds(tmp_path: Path) -> None:
+    lock = FileLock(str(tmp_path / "a"))
+    lock.acquire()
+    lock.acquire()
+    lock.release(force=True)
+    assert not lock.is_locked
+    assert lock.lock_counter == 0
+
+
+@_UNIX_FLOCK_ONLY
+def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"))
+    lock.acquire()
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None])
+    with pytest.raises(OSError, match="unlock failed"):
+        lock.release()
+    assert lock.is_locked
+    assert lock.lock_counter == 1
+    lock.release()
+    assert not lock.is_locked
+
+
+@_UNIX_FLOCK_ONLY
+def test_unix_context_exit_propagates_unlock_failure(tmp_path: Path, mocker: MockerFixture) -> None:
+    # One LOCK_EX for acquire, then one LOCK_UN per release; fail only the first unlock so __exit__ propagates it.
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=[None, OSError(EIO, "unlock failed"), None])
+    lock = FileLock(str(tmp_path / "a"))
+    with pytest.raises(OSError, match="unlock failed"), lock:
+        assert lock.is_locked
+    assert lock.is_locked
+    lock.release()
+    assert not lock.is_locked
+
+
+@_WINDOWS_ONLY
+def test_windows_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"))
+    lock.acquire()
+    mocker.patch("filelock._windows.msvcrt.locking", side_effect=[OSError(EIO, "unlock failed"), None])
+    with pytest.raises(OSError, match="unlock failed"):
+        lock.release()
+    assert lock.is_locked
+    assert lock.lock_counter == 1
+    lock.release()
+    assert not lock.is_locked
+
+
+@_WINDOWS_ONLY
+def test_windows_close_failure_still_commits_release(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"))
+    lock.acquire()
+    # The OS unlock succeeds, so the lock is released; the later close failure propagates but must not leave the
+    # counter or registry believing the lock is still held.
+    mocker.patch("filelock._windows.os.close", side_effect=OSError(EIO, "close failed"))
+    with pytest.raises(OSError, match="close failed"):
+        lock.release()
+    assert not lock.is_locked
+    assert lock.lock_counter == 0

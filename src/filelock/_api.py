@@ -475,17 +475,25 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
         """
-        if self.is_locked:
+        if not self.is_locked:
+            return
+        if not force and self._context.lock_counter > 1:
             self._context.lock_counter -= 1
+            return
 
-            if self._context.lock_counter == 0 or force:
-                lock_id, lock_filename = id(self), self.lock_file
-
-                _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
-                self._release()
-                self._context.lock_counter = 0
-                self._drop_registry_entry()
-                _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+        lock_id, lock_filename = id(self), self.lock_file
+        _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
+        try:
+            self._release()
+        except BaseException:
+            # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
+            # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
+            # A failure that left the lock held keeps the counter so a later release can retry the OS unlock.
+            if not self.is_locked:
+                self._commit_release()
+            raise
+        self._commit_release()
+        _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         """
@@ -549,6 +557,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     def _drop_registry_entry(self) -> None:
         """Forget this path's holder on release so a later cross-instance acquire is not misread as a deadlock."""
         _registry.held.pop(_canonical(self.lock_file), None)
+
+    def _commit_release(self) -> None:
+        """Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry."""
+        self._context.lock_counter = 0
+        self._drop_registry_entry()
 
     def _try_break_expired_lock(self) -> None:
         """Remove the lock file if its modification time exceeds the configured :attr:`lifetime`."""
