@@ -12,9 +12,16 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, Timeout
+from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, ContextErrorPolicy, Timeout
+
+if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
+    from builtins import BaseExceptionGroup, ExceptionGroup
+else:  # pragma: no cover (<py311)
+    from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from pytest_mock import MockerFixture
 
 _UNIX_FLOCK_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="native flock semantics are Unix-only")
@@ -523,3 +530,68 @@ async def test_async_zero_write_rolls_back_acquire(tmp_path: Path, mocker: Mocke
     with pytest.raises(OSError, match="0 bytes"):
         await lock.acquire()
     assert not lock.is_locked
+
+
+async def _acquire_cm(lock: AsyncSoftFileLock, *, use_proxy: bool) -> AbstractAsyncContextManager[BaseAsyncFileLock]:
+    return await lock.acquire() if use_proxy else lock  # proxy exercises AsyncAcquireReturnProxy.__aexit__
+
+
+@pytest.mark.parametrize("use_proxy", [False, True], ids=["direct", "proxy"])
+@pytest.mark.asyncio
+async def test_context_group_reports_both_failures(tmp_path: Path, mocker: MockerFixture, use_proxy: bool) -> None:
+    lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy="group")
+    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
+    cm = await _acquire_cm(lock, use_proxy=use_proxy)
+    with pytest.raises(ExceptionGroup) as info:
+        async with cm:
+            raise ValueError
+    body, release = info.value.exceptions
+    assert isinstance(body, ValueError)
+    assert isinstance(release, OSError)
+
+
+@pytest.mark.parametrize("use_proxy", [False, True], ids=["direct", "proxy"])
+@pytest.mark.asyncio
+async def test_context_chain_keeps_release_error_with_body_in_context(
+    tmp_path: Path, mocker: MockerFixture, use_proxy: bool
+) -> None:
+    lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy="chain")
+    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
+    cm = await _acquire_cm(lock, use_proxy=use_proxy)
+    with pytest.raises(OSError, match="release failed") as info:
+        async with cm:
+            raise ValueError
+    assert isinstance(info.value.__context__, ValueError)
+
+
+@pytest.mark.parametrize("policy", ["chain", "group"])
+@pytest.mark.asyncio
+async def test_context_body_only_failure_propagates_body(tmp_path: Path, policy: ContextErrorPolicy) -> None:
+    lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy=policy)
+    body = ValueError("body failed")
+    with pytest.raises(ValueError, match="body failed"):
+        async with lock:
+            raise body
+
+
+@pytest.mark.parametrize("policy", ["chain", "group"])
+@pytest.mark.asyncio
+async def test_context_release_only_failure_propagates_release(
+    tmp_path: Path, mocker: MockerFixture, policy: ContextErrorPolicy
+) -> None:
+    lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy=policy)
+    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
+    with pytest.raises(OSError, match="release failed"):
+        async with lock:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_context_group_base_exception_leaf_is_base_group(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy="group")
+    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
+    with pytest.raises(BaseExceptionGroup) as info:
+        async with lock:
+            raise KeyboardInterrupt
+    assert not isinstance(info.value, ExceptionGroup)
+    assert [type(leaf) for leaf in info.value.exceptions] == [KeyboardInterrupt, OSError]
