@@ -39,20 +39,15 @@ if sys.platform == "win32":  # pragma: win32 cover
                 msg = f"Lock file is a reparse point (symlink/junction): {self.lock_file}"
                 raise OSError(msg)
 
+            fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT, self._open_mode())
             try:
-                fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT, self._open_mode())
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             except OSError as exception:
-                if exception.errno != EACCES:
+                os.close(fd)
+                if exception.errno != EACCES:  # EACCES means another holder owns the byte-range lock
                     raise
             else:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                except OSError as exception:
-                    os.close(fd)
-                    if exception.errno != EACCES:  # EACCES means another holder owns the byte-range lock
-                        raise
-                else:
-                    self._context.lock_file_fd = fd
+                self._context.lock_file_fd = fd
 
         def _release(self) -> None:
             fd = cast("int", self._context.lock_file_fd)
