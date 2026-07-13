@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import socket
+import stat
 import sys
 import time
 from contextlib import suppress
@@ -203,14 +204,22 @@ class SoftFileLock(BaseFileLock):
 
 
 def _read_lock_file(path: str) -> tuple[str | None, float, int]:
-    # The lock file is created with O_EXCL | O_NOFOLLOW, so a symlink here is a hostile replacement and must
-    # not be followed. O_NONBLOCK keeps an attacker-placed FIFO from stalling the open (O_NOFOLLOW alone only
-    # rejects a symlink, not a real FIFO at the path), and the capped read stops a huge file (e.g. /dev/zero)
-    # from exhausting memory. Content is None when the file is too large or not UTF-8, but the mtime and inode
-    # still flow back so the caller can evict it as a stale, malformed lock and verify identity before breaking.
+    # A legitimate lock file is always a regular file. Classify the path with lstat first, so any other node (symlink,
+    # FIFO, socket, device) is reported as a malformed lock the caller can evict, without an os.open that would follow
+    # a symlink, stall on a FIFO, or fail on a socket and leave acquisition wedged. The mtime and inode still flow back
+    # for the identity-checked stale break. lstat, not stat, so a hostile symlink is never followed onto its target.
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode):
+        return None, st.st_mtime, st.st_ino
+    # Re-check on the opened handle: O_NOFOLLOW refuses a symlink swapped in after the lstat, O_NONBLOCK stops a FIFO
+    # swapped in from stalling the open, and the fstat catches any other non-regular replacement race before we read.
+    # The capped read stops a huge regular file (e.g. one filled from /dev/zero) from exhausting memory.
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     try:
-        st, data = os.fstat(fd), os.read(fd, _MAX_LOCK_FILE_SIZE + 1)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):  # pragma: no cover  # only a non-regular node swapped in after the lstat
+            return None, st.st_mtime, st.st_ino
+        data = os.read(fd, _MAX_LOCK_FILE_SIZE + 1)
     finally:
         os.close(fd)
     if len(data) <= _MAX_LOCK_FILE_SIZE:
