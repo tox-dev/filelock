@@ -10,7 +10,7 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import Lock, local
-from typing import TYPE_CHECKING, Any, Final, TypeVar
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypeVar, cast
 from weakref import WeakValueDictionary
 
 from ._error import Timeout
@@ -19,6 +19,10 @@ from ._util import break_lock_file
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
 _UNSET_FILE_MODE: Final[int] = -1
+
+#: How a context manager reconciles a body failure with a release failure on exit (see the property of this name).
+ContextErrorPolicy = Literal["chain", "group"]
+_CONTEXT_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"chain", "group"})
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,6 +38,40 @@ if TYPE_CHECKING:
 
 
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
+
+
+def _exception_group_cls() -> type[BaseException]:
+    # BaseExceptionGroup is a builtin on 3.11+; on 3.10 it needs the exceptiongroup backport. filelock keeps zero
+    # runtime dependencies, so the backport is imported lazily rather than required, and only group mode needs it.
+    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
+        return BaseExceptionGroup  # noqa: F821  # builtin on 3.11+
+    # Alias the import so BaseExceptionGroup above stays the builtin rather than an unbound local of this function.
+    from exceptiongroup import BaseExceptionGroup as _Backport  # noqa: PLC0415  # pragma: no cover (<py311)
+
+    return _Backport  # pragma: no cover (<py311)
+
+
+def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
+    if policy not in _CONTEXT_ERROR_POLICIES:
+        msg = f"context_error_policy must be 'chain' or 'group', got {policy!r}"
+        raise ValueError(msg)
+    if policy == "group":  # fail fast at construction rather than only when a dual failure happens to occur
+        try:
+            _exception_group_cls()
+        except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
+            msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
+            raise ValueError(msg) from exc
+    return cast("ContextErrorPolicy", policy)
+
+
+def _raise_body_and_release(body_error: BaseException, release_error: BaseException) -> NoReturn:
+    # Group mode: surface the body failure and the release failure as sibling leaves instead of letting one hide in the
+    # other's __context__. BaseExceptionGroup returns a plain ExceptionGroup when both leaves subclass Exception, so
+    # ``except*`` and ``except Exception`` still catch them; a BaseException leaf (KeyboardInterrupt, CancelledError)
+    # keeps the group outside ordinary handlers. ``from None`` stops the group itself gaining a redundant __context__.
+    msg = "lock body and release both failed"
+    raise _exception_group_cls()(msg, (body_error, release_error)) from None
+
 
 # On Windows os.path.realpath calls CreateFileW with share_mode=0, which blocks concurrent DeleteFileW and causes
 # livelocks under threaded contention with SoftFileLock. os.path.abspath is purely string-based and avoids this.
@@ -87,9 +125,13 @@ class FileLockMeta(ABCMeta):
         is_singleton: bool = False,
         poll_interval: float = 0.05,
         lifetime: float | None = None,
+        context_error_policy: ContextErrorPolicy = "chain",
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
         lifetime = _resolve_lifetime(lifetime, supported=cls._lifetime_supported, cls_name=cls.__name__)
+        # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
+        # __del__ then trips over the missing context.
+        context_error_policy = _resolve_context_error_policy(context_error_policy)
         params = {
             "timeout": timeout,
             "mode": mode,
@@ -98,6 +140,7 @@ class FileLockMeta(ABCMeta):
             "is_singleton": is_singleton,
             "poll_interval": poll_interval,
             "lifetime": lifetime,
+            "context_error_policy": context_error_policy,
             **kwargs,
         }
         if not is_singleton:
@@ -121,6 +164,7 @@ class FileLockMeta(ABCMeta):
             "blocking": (blocking, instance.blocking),
             "poll_interval": (poll_interval, instance.poll_interval),
             "lifetime": (lifetime, instance.lifetime),
+            "context_error_policy": (context_error_policy, instance.context_error_policy),
         }
         non_matching_params = {
             name: (passed_param, set_param)
@@ -180,6 +224,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         is_singleton: bool = False,
         poll_interval: float = 0.05,
         lifetime: float | None = None,
+        context_error_policy: ContextErrorPolicy = "chain",
     ) -> None:
         """
         Create a new lock object.
@@ -207,10 +252,15 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             waiting process breaks a lock file whose modification time is older than ``lifetime`` seconds, even if the
             holder is still alive. ``None`` (the default) means locks never expire. Native OS locks (:class:`FileLock`)
             cannot be revoked by file age and ignore a non-``None`` ``lifetime`` with a warning.
+        :param context_error_policy: how a context manager reconciles a failure in its body with a failure while
+            releasing on exit. ``"chain"`` (the default) keeps Python's behavior: the release error propagates with the
+            body error in its ``__context__``. ``"group"`` raises a :class:`BaseExceptionGroup` holding the body error
+            first and the release error second, so neither hides the other.
 
         """
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
+        self._context_error_policy = context_error_policy  # already validated by the metaclass
 
         # External code reaches these values through the public properties, not through _context directly.
         kwargs: dict[str, Any] = {
@@ -236,6 +286,16 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
 
         """
         return self._is_singleton
+
+    @property
+    def context_error_policy(self) -> ContextErrorPolicy:
+        """
+        How a context manager reconciles a body failure with a release failure on exit.
+
+        .. versionadded:: 3.27.0
+
+        """
+        return self._context_error_policy
 
     @property
     def lock_file(self) -> str:
@@ -381,8 +441,18 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Release the lock."""
-        self.release()
+        """Release the lock, reconciling a release failure with any body failure per :attr:`context_error_policy`."""
+        self._release_in_context(exc_value)
+
+    def _release_in_context(self, body_error: BaseException | None) -> None:
+        # Release from a context-manager exit. "chain" lets a release failure propagate with the body error already in
+        # its __context__ (Python's default); "group" raises both as sibling leaves so neither one hides the other.
+        try:
+            self.release()
+        except BaseException as release_error:
+            if body_error is None or self._context_error_policy == "chain":
+                raise
+            _raise_body_and_release(body_error, release_error)
 
     def __del__(self) -> None:
         """Force-release so a dropped reference never leaks a held lock."""
@@ -626,7 +696,10 @@ class AcquireReturnProxy:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self.lock.release()
+        if isinstance(self.lock, BaseFileLock):
+            self.lock._release_in_context(exc_value)  # noqa: SLF001
+        else:  # a reader/writer lock does not carry a context_error_policy
+            self.lock.release()
 
 
 @dataclass

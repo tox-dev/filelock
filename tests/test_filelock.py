@@ -19,10 +19,16 @@ from weakref import WeakValueDictionary
 
 import pytest
 
-from filelock import BaseFileLock, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
+from filelock import BaseFileLock, ContextErrorPolicy, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
+
+if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
+    from builtins import BaseExceptionGroup, ExceptionGroup
+else:  # pragma: no cover (<py311)
+    from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from contextlib import AbstractContextManager
 
     from pytest_mock import MockerFixture
 
@@ -1512,3 +1518,82 @@ def test_windows_delete_in_progress_is_contention_not_denial(tmp_path: Path) -> 
             FileLock(target, timeout=0.3).acquire()
     finally:
         kernel32.CloseHandle(handle)
+
+
+def _enter_direct(lock: SoftFileLock) -> AbstractContextManager[object]:
+    return lock
+
+
+def _enter_proxy(lock: SoftFileLock) -> AbstractContextManager[object]:
+    return lock.acquire()  # exercises AcquireReturnProxy.__exit__ instead of BaseFileLock.__exit__
+
+
+_CONTEXT_ENTRIES: Final = [pytest.param(_enter_direct, id="direct"), pytest.param(_enter_proxy, id="proxy")]
+
+
+@pytest.mark.parametrize("enter", _CONTEXT_ENTRIES)
+def test_context_group_reports_both_failures(
+    tmp_path: Path, mocker: MockerFixture, enter: Callable[[SoftFileLock], AbstractContextManager[object]]
+) -> None:
+    lock = SoftFileLock(str(tmp_path / "a"), context_error_policy="group")
+    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
+    with pytest.raises(ExceptionGroup) as info, enter(lock):
+        raise ValueError
+    body, release = info.value.exceptions
+    assert isinstance(body, ValueError)
+    assert isinstance(release, OSError)
+    assert body.__traceback__ is not None  # leaves keep their own frames
+    assert release.__traceback__ is not None
+
+
+@pytest.mark.parametrize("enter", _CONTEXT_ENTRIES)
+def test_context_chain_keeps_release_error_with_body_in_context(
+    tmp_path: Path, mocker: MockerFixture, enter: Callable[[SoftFileLock], AbstractContextManager[object]]
+) -> None:
+    lock = SoftFileLock(str(tmp_path / "a"), context_error_policy="chain")
+    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
+    with pytest.raises(OSError, match="release failed") as info, enter(lock):
+        raise ValueError
+    assert isinstance(info.value.__context__, ValueError)
+
+
+@pytest.mark.parametrize("policy", ["chain", "group"])
+def test_context_body_only_failure_propagates_body(tmp_path: Path, policy: ContextErrorPolicy) -> None:
+    lock = SoftFileLock(str(tmp_path / "a"), context_error_policy=policy)
+    body = ValueError("body failed")
+    with pytest.raises(ValueError, match="body failed"), lock:
+        raise body
+
+
+@pytest.mark.parametrize("policy", ["chain", "group"])
+def test_context_release_only_failure_propagates_release(
+    tmp_path: Path, mocker: MockerFixture, policy: ContextErrorPolicy
+) -> None:
+    lock = SoftFileLock(str(tmp_path / "a"), context_error_policy=policy)
+    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
+    with pytest.raises(OSError, match="release failed"), lock:
+        pass
+
+
+def test_context_group_base_exception_leaf_is_base_group(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(str(tmp_path / "a"), context_error_policy="group")
+    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
+    with pytest.raises(BaseExceptionGroup) as info, lock:
+        raise KeyboardInterrupt
+    assert not isinstance(info.value, ExceptionGroup)  # a BaseException leaf stays outside except Exception
+    assert [type(leaf) for leaf in info.value.exceptions] == [KeyboardInterrupt, OSError]
+
+
+def test_invalid_context_error_policy_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="context_error_policy must be"):
+        SoftFileLock(str(tmp_path / "a"), context_error_policy="explode")  # ty: ignore[invalid-argument-type]
+
+
+def test_singleton_rejects_different_context_policy(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    first = SoftFileLock(path, is_singleton=True, context_error_policy="chain")
+    try:
+        with pytest.raises(ValueError, match="context_error_policy"):
+            SoftFileLock(path, is_singleton=True, context_error_policy="group")
+    finally:
+        first.release(force=True)

@@ -12,7 +12,15 @@ from inspect import iscoroutinefunction
 from threading import local
 from typing import TYPE_CHECKING, Any, Final, NoReturn, TypeVar
 
-from ._api import _UNSET_FILE_MODE, BaseFileLock, FileLockContext, FileLockMeta, _canonical
+from ._api import (
+    _UNSET_FILE_MODE,
+    BaseFileLock,
+    ContextErrorPolicy,
+    FileLockContext,
+    FileLockMeta,
+    _canonical,
+    _raise_body_and_release,
+)
 from ._error import Timeout
 from ._soft import SoftFileLock
 from ._unix import UnixFileLock
@@ -47,6 +55,7 @@ class AsyncFileLockMeta(FileLockMeta):
         is_singleton: bool = False,
         poll_interval: float = 0.05,
         lifetime: float | None = None,
+        context_error_policy: ContextErrorPolicy = "chain",
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -63,6 +72,7 @@ class AsyncFileLockMeta(FileLockMeta):
             is_singleton=is_singleton,
             poll_interval=poll_interval,
             lifetime=lifetime,
+            context_error_policy=context_error_policy,
             loop=loop,
             run_in_executor=run_in_executor,
             executor=executor,
@@ -90,6 +100,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         is_singleton: bool = False,
         poll_interval: float = 0.05,
         lifetime: float | None = None,
+        context_error_policy: ContextErrorPolicy = "chain",
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -121,6 +132,10 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             even if the holder is still alive. ``None`` (the default) means locks never expire. Native OS locks
             (:class:`AsyncFileLock`) cannot be revoked by file age and ignore a non-``None`` ``lifetime``, with a
             warning.
+        :param context_error_policy: how a context manager reconciles a failure in its body with a failure while
+            releasing on exit. ``"chain"`` (the default) keeps Python's behavior: the release error propagates with the
+            body error in its ``__context__``. ``"group"`` raises a :class:`BaseExceptionGroup` holding the body error
+            first and the release error second, so neither hides the other.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
@@ -128,6 +143,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
+        self._context_error_policy = context_error_policy  # already validated by the metaclass
 
         # External code goes through this class's properties, not the context directly.
         kwargs: dict[str, Any] = {
@@ -347,14 +363,25 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         traceback: TracebackType | None,
     ) -> None:
         """
-        Release the lock.
+        Release the lock, reconciling a release failure with any body failure per :attr:`context_error_policy`.
 
         :param exc_type: the exception type if raised
         :param exc_value: the exception value if raised
         :param traceback: the exception traceback if raised
 
         """
-        await self.release()
+        await self._release_in_context(exc_value)
+
+    async def _release_in_context(  # ty: ignore[invalid-method-override]
+        self, body_error: BaseException | None
+    ) -> None:
+        # The async counterpart of BaseFileLock._release_in_context: await release, then apply the same policy.
+        try:
+            await self.release()
+        except BaseException as release_error:
+            if body_error is None or self._context_error_policy == "chain":
+                raise
+            _raise_body_and_release(body_error, release_error)
 
     def __del__(self) -> None:
         """Release on deletion — safe to call during GC even when no event loop is running."""
@@ -404,7 +431,7 @@ class AsyncAcquireReturnProxy:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        await self.lock.release()
+        await self.lock._release_in_context(exc_value)  # noqa: SLF001
 
 
 class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
