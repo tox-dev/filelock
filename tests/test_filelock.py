@@ -2015,3 +2015,160 @@ def test_preserve_lock_file_windows_kept_after_forced_release(tmp_path: Path) ->
     lock.release(force=True)  # drop every level and run the release path once
     assert not lock.is_locked
     assert path.exists()  # preserved even through a forced release
+
+
+def _noop_on_acquired(_fd: int) -> None:
+    pass
+
+
+def _failing_on_acquired(_fd: int) -> None:
+    msg = "hook failed"
+    raise RuntimeError(msg)
+
+
+def test_on_acquired_defaults_none(tmp_path: Path) -> None:
+    assert FileLock(str(tmp_path / "a")).on_acquired is None
+
+
+def test_on_acquired_property_reflects_argument(tmp_path: Path) -> None:
+    assert FileLock(str(tmp_path / "a"), on_acquired=_noop_on_acquired).on_acquired is _noop_on_acquired
+
+
+def test_on_acquired_runs_before_acquire_returns(tmp_path: Path) -> None:
+    fd_while_held = -1
+
+    def hook(fd: int) -> None:
+        nonlocal fd_while_held
+        if lock.is_locked:
+            fd_while_held = fd
+
+    lock = FileLock(str(tmp_path / "a"), on_acquired=hook)
+    lock.acquire()
+    try:
+        assert fd_while_held >= 0  # the hook ran, saw the lock held, and got a real descriptor, all before acquire()
+    finally:
+        lock.release()
+
+
+def test_on_acquired_fires_once_per_physical_acquire(tmp_path: Path) -> None:
+    calls: list[int] = []
+    lock = FileLock(str(tmp_path / "a"), on_acquired=calls.append)
+    lock.acquire()
+    lock.acquire()  # recursive: the poll loop skips _acquire, so the hook does not run again
+    try:
+        assert len(calls) == 1
+    finally:
+        lock.release()
+        lock.release()
+
+
+def test_on_acquired_not_called_for_contender(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    holder = FileLock(path)
+    holder.acquire()
+    calls: list[int] = []
+    contender = FileLock(path, on_acquired=calls.append)
+    try:
+        with pytest.raises(Timeout):
+            contender.acquire(timeout=0.1)
+        assert calls == []  # a contender that never acquires never runs the hook
+    finally:
+        holder.release()
+
+
+@_UNIX_FLOCK_ONLY
+def test_on_acquired_runs_after_truncation_and_mode(tmp_path: Path) -> None:
+    path = tmp_path / "a"
+    path.write_bytes(b"stale content")
+    seen: dict[str, int] = {}
+
+    def hook(fd: int) -> None:
+        stat_result = os.fstat(fd)
+        seen["size"] = stat_result.st_size
+        seen["mode"] = S_IMODE(stat_result.st_mode)
+
+    lock = FileLock(str(path), mode=0o600, on_acquired=hook)
+    lock.acquire()
+    try:
+        assert seen == {"size": 0, "mode": 0o600}  # backend truncation and mode setup finished before the hook
+    finally:
+        lock.release()
+
+
+@_UNIX_FLOCK_ONLY
+def test_on_acquired_writes_survive_contention(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+
+    def write_metadata(fd: int) -> None:
+        os.write(fd, b"holder-metadata")
+
+    writer = FileLock(path, on_acquired=write_metadata)
+    writer.acquire()
+    try:
+        contender = FileLock(path)
+        with pytest.raises(Timeout):
+            contender.acquire(timeout=0.1)  # a losing contender must not truncate the holder's file
+        assert Path(path).read_bytes() == b"holder-metadata"
+    finally:
+        writer.release()
+
+
+def test_on_acquired_failure_releases_lock(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    lock = FileLock(path, on_acquired=_failing_on_acquired)
+    with pytest.raises(RuntimeError, match="hook failed"):
+        lock.acquire()
+    assert not lock.is_locked
+    assert lock.lock_counter == 0
+    other = FileLock(path)
+    other.acquire()  # the native lock was released, so a fresh acquire succeeds at once
+    other.release()
+
+
+@_UNIX_FLOCK_ONLY
+def test_on_acquired_and_release_failure_group(tmp_path: Path, mocker: MockerFixture) -> None:
+    path = str(tmp_path / "a")
+    lock = FileLock(path, on_acquired=_failing_on_acquired)
+    mocker.patch("filelock._unix._unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None])
+    with pytest.raises(BaseExceptionGroup) as info:
+        lock.acquire()
+    assert {type(error) for error in info.value.exceptions} == {RuntimeError, OSError}
+    assert lock.is_locked  # the OS unlock failed, so the lock stays held for a retry
+    assert lock.lock_counter == 1
+    lock.release()  # the second unlock succeeds
+
+
+@_UNIX_FLOCK_ONLY
+def test_on_acquired_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
+    calls: list[int] = []
+    lock = FileLock(str(tmp_path / "a"), on_acquired=calls.append)
+    with pytest.raises(OSError, match="no flock"):
+        lock.acquire()
+    assert not lock.is_locked
+    assert type(lock).__name__ == "UnixFileLock"  # a soft lock cannot run the hook, so no fallback
+    assert calls == []
+
+
+def test_on_acquired_rejected_by_soft_lock(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="on_acquired"):
+        SoftFileLock(str(tmp_path / "a"), on_acquired=_noop_on_acquired)
+
+
+def test_singleton_shares_same_on_acquired(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    first = FileLock(path, is_singleton=True, on_acquired=_noop_on_acquired)
+    try:
+        assert FileLock(path, is_singleton=True, on_acquired=_noop_on_acquired) is first
+    finally:
+        first.release(force=True)
+
+
+def test_singleton_rejects_different_on_acquired(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    first = FileLock(path, is_singleton=True, on_acquired=_noop_on_acquired)
+    try:
+        with pytest.raises(ValueError, match="on_acquired"):
+            FileLock(path, is_singleton=True, on_acquired=_failing_on_acquired)
+    finally:
+        first.release(force=True)

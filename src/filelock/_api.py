@@ -55,26 +55,6 @@ def _exception_group_cls() -> type[BaseException]:
     return _Backport  # pragma: no cover (<py311)
 
 
-def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
-    if policy not in _CONTEXT_ERROR_POLICIES:
-        msg = f"context_error_policy must be 'chain' or 'group', got {policy!r}"
-        raise ValueError(msg)
-    if policy == "group":  # fail fast at construction rather than only when a dual failure happens to occur
-        try:
-            _exception_group_cls()
-        except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
-            msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
-            raise ValueError(msg) from exc
-    return cast("ContextErrorPolicy", policy)
-
-
-def _resolve_close_error_policy(policy: str) -> CloseErrorPolicy:
-    if policy not in _CLOSE_ERROR_POLICIES:
-        msg = f"close_error_policy must be 'default', 'raise', or 'suppress', got {policy!r}"
-        raise ValueError(msg)
-    return cast("CloseErrorPolicy", policy)
-
-
 def _raise_body_and_release(body_error: BaseException, release_error: BaseException) -> NoReturn:
     # Group mode: surface the body failure and the release failure as sibling leaves instead of letting one hide in the
     # other's __context__. BaseExceptionGroup returns a plain ExceptionGroup when both leaves subclass Exception, so
@@ -102,35 +82,6 @@ def _canonical(path: str | os.PathLike[str]) -> str:
     """
     parent, name = os.path.split(os.fspath(path))
     return os.path.join(_resolve_dir(parent or os.curdir), name)  # noqa: PTH118  # string join matches abspath/realpath
-
-
-def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str) -> float | None:
-    """
-    Drop a ``lifetime`` a lock cannot honor.
-
-    ``lifetime`` is a deliberate age-based lease: a lock file older than ``lifetime`` is broken even while its holder is
-    still alive. That is only safe for existence locks (:class:`SoftFileLock`), where breaking means unlinking a
-    pathname the protocol already treats as reclaimable. A native OS lock lives on the inode, so unlinking the pathname
-    by age cannot revoke the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590).
-    Ignore the request with a warning rather than accept a setting that breaks mutual exclusion.
-    """
-    if lifetime is not None and not supported:
-        warnings.warn(
-            f"lifetime is ignored for {cls_name}: a native OS lock cannot be broken safely by file age; "
-            f"only SoftFileLock supports lifetime-based expiry",
-            stacklevel=3,
-        )
-        return None
-    return lifetime
-
-
-def _resolve_preserve_lock_file(preserve: bool, *, supported: bool, cls_name: str) -> bool:  # noqa: FBT001
-    # An existence lock unlinks its marker to release, so preserving the pathname would defeat unlocking. Reject the
-    # request rather than silently ignore it, since a caller asking for a stable identity must know it cannot be kept.
-    if preserve and not supported:
-        msg = f"preserve_lock_file=True is not supported by {cls_name}: unlinking its marker is how it releases"
-        raise ValueError(msg)
-    return preserve
 
 
 class _ThreadLocalRegistry(local):
@@ -164,6 +115,7 @@ class FileLockMeta(ABCMeta):
         close_error_policy: CloseErrorPolicy = "default",
         fallback_to_soft: bool = True,
         preserve_lock_file: bool = False,
+        on_acquired: Callable[[int], None] | None = None,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
         lifetime = _resolve_lifetime(lifetime, supported=cls._lifetime_supported, cls_name=cls.__name__)
@@ -174,6 +126,7 @@ class FileLockMeta(ABCMeta):
         preserve_lock_file = _resolve_preserve_lock_file(
             preserve_lock_file, supported=cls._preserve_lock_file_supported, cls_name=cls.__name__
         )
+        on_acquired = _resolve_on_acquired(on_acquired, supported=cls._on_acquired_supported, cls_name=cls.__name__)
         params = {
             "timeout": timeout,
             "mode": mode,
@@ -186,6 +139,7 @@ class FileLockMeta(ABCMeta):
             "close_error_policy": close_error_policy,
             "fallback_to_soft": fallback_to_soft,
             "preserve_lock_file": preserve_lock_file,
+            "on_acquired": on_acquired,
             **kwargs,
         }
         if not is_singleton:
@@ -222,13 +176,18 @@ class FileLockMeta(ABCMeta):
             for name, (passed_param, set_param) in params_to_check.items()
             if passed_param != set_param
         }
-        if not non_matching_params:
+        # Callables compare by identity, not equality: two equal callables can close over different state, so a
+        # singleton must reject a different hook object even if it compares equal. Keep it out of the scalar dict above.
+        hook_mismatch = on_acquired is not instance.on_acquired
+        if not non_matching_params and not hook_mismatch:
             return instance  # ty: ignore[invalid-return-type]  # https://github.com/astral-sh/ty/issues/3231
 
         msg = "Singleton lock instances cannot be initialized with differing arguments"
         msg += "\nNon-matching arguments: "
         for param_name, (passed_param, set_param) in non_matching_params.items():
             msg += f"\n\t{param_name} (existing lock has {set_param} but {passed_param} was passed)"
+        if hook_mismatch:
+            msg += f"\n\ton_acquired (existing lock has {instance.on_acquired} but {on_acquired} was passed)"
         raise ValueError(msg)
 
     def _create_instance(cls: type[_T], lock_file: str | os.PathLike[str], params: dict[str, Any]) -> _T:
@@ -236,6 +195,75 @@ class FileLockMeta(ABCMeta):
         # descendant's signature, so passing the full set breaks it (tox-dev/filelock#340).
         present_params = inspect.signature(cls.__init__).parameters
         return super().__call__(lock_file, **{key: value for key, value in params.items() if key in present_params})
+
+
+def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str) -> float | None:
+    """
+    Drop a ``lifetime`` a lock cannot honor.
+
+    ``lifetime`` is a deliberate age-based lease: a lock file older than ``lifetime`` is broken even while its holder is
+    still alive. That is only safe for existence locks (:class:`SoftFileLock`), where breaking means unlinking a
+    pathname the protocol already treats as reclaimable. A native OS lock lives on the inode, so unlinking the pathname
+    by age cannot revoke the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590).
+    Ignore the request with a warning rather than accept a setting that breaks mutual exclusion.
+    """
+    if lifetime is not None and not supported:
+        warnings.warn(
+            f"lifetime is ignored for {cls_name}: a native OS lock cannot be broken safely by file age; "
+            f"only SoftFileLock supports lifetime-based expiry",
+            stacklevel=3,
+        )
+        return None
+    return lifetime
+
+
+def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
+    if policy not in _CONTEXT_ERROR_POLICIES:
+        msg = f"context_error_policy must be 'chain' or 'group', got {policy!r}"
+        raise ValueError(msg)
+    if policy == "group":  # fail fast at construction rather than only when a dual failure happens to occur
+        try:
+            _exception_group_cls()
+        except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
+            msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
+            raise ValueError(msg) from exc
+    return cast("ContextErrorPolicy", policy)
+
+
+def _resolve_close_error_policy(policy: str) -> CloseErrorPolicy:
+    if policy not in _CLOSE_ERROR_POLICIES:
+        msg = f"close_error_policy must be 'default', 'raise', or 'suppress', got {policy!r}"
+        raise ValueError(msg)
+    return cast("CloseErrorPolicy", policy)
+
+
+def _resolve_preserve_lock_file(preserve: bool, *, supported: bool, cls_name: str) -> bool:  # noqa: FBT001
+    # An existence lock unlinks its marker to release, so preserving the pathname would defeat unlocking. Reject the
+    # request rather than silently ignore it, since a caller asking for a stable identity must know it cannot be kept.
+    if preserve and not supported:
+        msg = f"preserve_lock_file=True is not supported by {cls_name}: unlinking its marker is how it releases"
+        raise ValueError(msg)
+    return preserve
+
+
+def _resolve_on_acquired(
+    on_acquired: Callable[[int], None] | None, *, supported: bool, cls_name: str
+) -> Callable[[int], None] | None:
+    if on_acquired is None:
+        return None
+    # An existence lock stores protocol state in its marker, so a caller writing through the descriptor would corrupt
+    # stale detection and ownership metadata; only native locks lend out the descriptor.
+    if not supported:
+        msg = f"on_acquired is not supported by {cls_name}: only native locks expose the lock descriptor"
+        raise ValueError(msg)
+    # A hook that fails and then also fails to release surfaces both errors as a BaseExceptionGroup. Require that class
+    # at construction rather than at the rare moment both fail, matching how context_error_policy='group' validates.
+    try:
+        _exception_group_cls()
+    except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
+        msg = "on_acquired requires Python 3.11+ or the 'exceptiongroup' backport for its rollback error path"
+        raise ValueError(msg) from exc
+    return on_acquired
 
 
 class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa: PLR0904  # public config properties
@@ -262,6 +290,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     #: it; existence locks unlink their marker to release and reject it.
     _preserve_lock_file_supported: bool = True
 
+    #: Whether an :attr:`on_acquired` hook may be set. Native locks lend the descriptor out; existence locks keep
+    #: protocol state in the marker and reject it.
+    _on_acquired_supported: bool = True
+
     def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
         """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
@@ -283,6 +315,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         close_error_policy: CloseErrorPolicy = "default",
         fallback_to_soft: bool = True,
         preserve_lock_file: bool = False,
+        on_acquired: Callable[[int], None] | None = None,
     ) -> None:
         """
         Create a new lock object.
@@ -329,6 +362,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             Windows skips its post-release unlink and Unix refuses to enter the ``ENOSYS`` soft fallback (which releases
             by unlinking). :class:`SoftFileLock` rejects ``True``. The promise covers filelock's own release path only;
             it cannot stop another process or the filesystem from removing the pathname.
+        :param on_acquired: for native locks (:class:`FileLock`), a callable invoked with the borrowed lock descriptor
+            once per physical acquisition, after filelock holds the native lock and finished backend initialization but
+            before :meth:`acquire` returns. Recursive acquisitions do not call it again. The callback may read, write,
+            seek, truncate, or set metadata through ``os`` on the descriptor, but must not close, unlock, or take
+            ownership of it, and filelock does not fsync its writes. If it raises, filelock releases the lock and
+            re-raises. :class:`SoftFileLock` rejects the hook.
 
         """
         self._is_thread_local = thread_local
@@ -337,6 +376,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         self._close_error_policy = close_error_policy  # already validated by the metaclass
         self._fallback_to_soft = fallback_to_soft
         self._preserve_lock_file = preserve_lock_file  # already validated by the metaclass
+        self._on_acquired = on_acquired  # already validated by the metaclass
 
         # External code reaches these values through the public properties, not through _context directly.
         kwargs: dict[str, Any] = {
@@ -420,6 +460,19 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
         """
         return self._preserve_lock_file
+
+    @property
+    def on_acquired(self) -> Callable[[int], None] | None:
+        """
+        The callback run with the borrowed lock descriptor once per physical acquisition, or ``None``.
+
+        Native locks only. It runs after the native lock is held and backend initialization finished, before
+        :meth:`acquire` returns; a raise rolls back the acquisition. :class:`SoftFileLock` rejects it.
+
+        .. versionadded:: 3.27.0
+
+        """
+        return self._on_acquired
 
     @property
     def lock_file(self) -> str:
@@ -656,7 +709,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
                 start_time=start_time,
             )
         except BaseException:
-            self._undo_acquire(canonical)
+            self._reconcile_failed_acquire(canonical)
             raise
         self._commit_acquire(canonical)
         return AcquireReturnProxy(lock=self)
@@ -736,6 +789,34 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             msg = "Lock %s not acquired on %s, waiting %s seconds ..."
             _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
             time.sleep(poll_interval)
+
+    def _reconcile_failed_acquire(self, canonical: str) -> None:
+        # An acquire that raised while still holding the native lock (a hook that failed and whose rollback could not
+        # release) must keep the registry entry so a later release can retry the OS unlock; otherwise roll the counter
+        # back. is_locked was already reconciled by whichever release ran.
+        if self.is_locked:
+            self._commit_acquire(canonical)
+        else:
+            self._undo_acquire(canonical)
+
+    def _invoke_on_acquired(self) -> None:
+        # Runs inside the backend _acquire (in the executor for async locks), once the native lock is held and the
+        # descriptor is set, before acquire() commits the registry. Fires once per physical acquisition; a recursive
+        # acquire never reaches here because the poll loop skips _acquire while the lock is held.
+        if self._on_acquired is None or self._context.lock_counter != 1:
+            return
+        try:
+            self._on_acquired(cast("int", self._context.lock_file_fd))
+        except BaseException as callback_error:  # arbitrary caller code; roll back on any failure
+            # Undo the native acquisition so the failed hook does not leave the lock held. Call the backend _release
+            # directly rather than the public release(): the counter and thread-local deadlock registry are reconciled
+            # by acquire() on the owning thread, and the async release() is a coroutine this synchronous path cannot
+            # await. A release that also fails surfaces both errors; is_locked then tells acquire() how to reconcile.
+            try:
+                self._release()
+            except BaseException as release_error:  # noqa: BLE001  # both errors surface via the group below
+                _raise_body_and_release(callback_error, release_error)
+            raise
 
     def _undo_acquire(self, canonical: str) -> None:
         """Roll back the counter after a failed acquire, dropping the registry entry once nothing holds the path."""

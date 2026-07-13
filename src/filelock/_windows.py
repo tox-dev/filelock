@@ -190,6 +190,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 raise
             if locked:
                 self._context.lock_file_fd = fd
+                self._invoke_on_acquired()
             else:
                 os.close(fd)  # another holder owns the byte-range lock; let the retry loop try again
 
