@@ -1761,3 +1761,49 @@ def test_separate_lock_classes_keep_separate_registries(tmp_path: Path) -> None:
     finally:
         native.release(force=True)
         soft.release(force=True)
+
+
+@_UNIX_FLOCK_ONLY
+def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
+    lock = FileLock(str(tmp_path / "a"), fallback_to_soft=False)
+    with pytest.raises(OSError, match="no flock") as info:
+        lock.acquire()
+    assert info.value.errno == ENOSYS  # the original error, not a soft-lock timeout
+    assert not lock.is_locked
+    assert type(lock).__name__ == "UnixFileLock"  # the class is not swapped to SoftFileLock
+    assert lock.lock_counter == 0  # the failed acquire left no holder count
+
+
+@_UNIX_FLOCK_ONLY
+def test_fallback_to_soft_default_switches_to_soft(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
+    lock = FileLock(str(tmp_path / "a"))  # default fallback_to_soft=True
+    with pytest.warns(UserWarning, match="falling back to SoftFileLock"):
+        lock.acquire()
+    try:
+        assert lock.is_locked
+        assert isinstance(lock, SoftFileLock)  # switched to existence-lock semantics
+    finally:
+        lock.release()
+
+
+@_UNIX_FLOCK_ONLY
+def test_fallback_disabled_recursive_reraises(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
+    lock = FileLock(str(tmp_path / "a"), fallback_to_soft=False)
+    for _ in range(2):  # a repeat acquire keeps failing the same way, never a soft downgrade
+        with pytest.raises(OSError, match="no flock"):
+            lock.acquire()
+        assert not lock.is_locked
+
+
+@_UNIX_FLOCK_ONLY
+def test_singleton_rejects_different_fallback_to_soft(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    first = FileLock(path, is_singleton=True, fallback_to_soft=True)
+    try:
+        with pytest.raises(ValueError, match="fallback_to_soft"):
+            FileLock(path, is_singleton=True, fallback_to_soft=False)
+    finally:
+        first.release(force=True)

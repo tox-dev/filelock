@@ -58,6 +58,7 @@ class AsyncFileLockMeta(FileLockMeta):
         lifetime: float | None = None,
         context_error_policy: ContextErrorPolicy = "chain",
         close_error_policy: CloseErrorPolicy = "default",
+        fallback_to_soft: bool = True,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -76,6 +77,7 @@ class AsyncFileLockMeta(FileLockMeta):
             lifetime=lifetime,
             context_error_policy=context_error_policy,
             close_error_policy=close_error_policy,
+            fallback_to_soft=fallback_to_soft,
             loop=loop,
             run_in_executor=run_in_executor,
             executor=executor,
@@ -105,6 +107,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         lifetime: float | None = None,
         context_error_policy: ContextErrorPolicy = "chain",
         close_error_policy: CloseErrorPolicy = "default",
+        fallback_to_soft: bool = True,
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
@@ -143,6 +146,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param close_error_policy: for native locks (:class:`AsyncFileLock`), what to do with an ``os.close`` failure
             after the OS unlock has already committed. ``"default"`` keeps each platform's historical behavior,
             ``"raise"`` always propagates the ``OSError``, and ``"suppress"`` always ignores it.
+        :param fallback_to_soft: for :class:`AsyncFileLock`, whether to fall back to soft existence locking when
+            ``flock`` returns ``ENOSYS``. ``True`` (default) keeps the fallback; ``False`` propagates the error.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
@@ -152,6 +157,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
         self._close_error_policy = close_error_policy  # already validated by the metaclass
+        self._fallback_to_soft = fallback_to_soft
 
         # External code goes through this class's properties, not the context directly.
         kwargs: dict[str, Any] = {

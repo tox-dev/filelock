@@ -73,13 +73,23 @@ else:  # pragma: win32 no cover
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exception:
-                os.close(fd)
                 if exception.errno == ENOSYS:
+                    # The filesystem does not implement flock. Capture the opened file's identity before closing so
+                    # the cleanup below removes only this attempt's placeholder, not a peer's replacement.
+                    identity: tuple[int, int] | None = None
                     with suppress(OSError):
-                        Path(self.lock_file).unlink()
+                        identity = (fstat := os.fstat(fd)).st_dev, fstat.st_ino
+                    os.close(fd)
+                    if not self._fallback_to_soft:
+                        raise  # fail closed: the caller opted out of switching to existence-lock semantics (#603)
+                    with suppress(OSError):
+                        current = os.lstat(self.lock_file)
+                        if identity == (current.st_dev, current.st_ino):
+                            Path(self.lock_file).unlink()
                     self._fallback_to_soft_lock()
                     self._acquire()
                     return
+                os.close(fd)
                 if exception.errno not in {EAGAIN, EWOULDBLOCK}:
                     raise
             else:
