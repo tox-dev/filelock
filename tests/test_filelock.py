@@ -19,7 +19,17 @@ from weakref import WeakValueDictionary
 
 import pytest
 
-from filelock import BaseFileLock, ContextErrorPolicy, FileLock, SoftFileLock, Timeout, UnixFileLock, WindowsFileLock
+from filelock import (
+    BaseFileLock,
+    ContextErrorPolicy,
+    FileLock,
+    SoftFileLock,
+    Timeout,
+    UnixFileLock,
+    WindowsFileLock,
+    lock_descriptor,
+    unlock_descriptor,
+)
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup
@@ -1810,8 +1820,6 @@ def test_singleton_rejects_different_fallback_to_soft(tmp_path: Path) -> None:
 
 
 def test_lock_descriptor_roundtrip(tmp_path: Path) -> None:
-    from filelock import lock_descriptor, unlock_descriptor
-
     fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
     try:
         assert lock_descriptor(fd, blocking=False) is True
@@ -1824,8 +1832,6 @@ def test_lock_descriptor_roundtrip(tmp_path: Path) -> None:
 
 
 def test_lock_descriptor_nonblocking_contention(tmp_path: Path) -> None:
-    from filelock import lock_descriptor, unlock_descriptor
-
     path = str(tmp_path / "a")
     holder = os.open(path, os.O_RDWR | os.O_CREAT)
     contender = os.open(path, os.O_RDWR | os.O_CREAT)
@@ -1841,8 +1847,6 @@ def test_lock_descriptor_nonblocking_contention(tmp_path: Path) -> None:
 
 
 def test_lock_descriptor_invalid_fd_raises(tmp_path: Path) -> None:
-    from filelock import lock_descriptor
-
     fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
     os.close(fd)  # a closed descriptor is invalid; the native lock must raise, not silently succeed or contend
     with pytest.raises(OSError, match=r"Bad file descriptor|not open|invalid"):
@@ -1851,8 +1855,6 @@ def test_lock_descriptor_invalid_fd_raises(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("direction", ["filelock_first", "descriptor_first"])
 def test_filelock_and_descriptor_contend(tmp_path: Path, direction: str) -> None:
-    from filelock import lock_descriptor, unlock_descriptor
-
     path = str(tmp_path / "a")
     lock = FileLock(path)
     fd = os.open(path, os.O_RDWR | os.O_CREAT)
@@ -1876,8 +1878,6 @@ def test_filelock_and_descriptor_contend(tmp_path: Path, direction: str) -> None
 
 @_UNIX_FLOCK_ONLY
 def test_lock_descriptor_touches_no_paths(tmp_path: Path) -> None:
-    from filelock import lock_descriptor, unlock_descriptor
-
     path = tmp_path / "a"
     fd = os.open(str(path), os.O_RDWR | os.O_CREAT)
     try:
@@ -1902,8 +1902,6 @@ def test_lock_descriptor_touches_no_paths(tmp_path: Path) -> None:
 
 @_UNIX_FLOCK_ONLY
 def test_unlock_descriptor_failure_allows_retry(tmp_path: Path, mocker: MockerFixture) -> None:
-    from filelock import lock_descriptor, unlock_descriptor
-
     fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
     try:
         assert lock_descriptor(fd, blocking=False) is True
@@ -1916,14 +1914,17 @@ def test_unlock_descriptor_failure_allows_retry(tmp_path: Path, mocker: MockerFi
 
 
 def test_lock_descriptor_blocking_retries_until_free(tmp_path: Path, mocker: MockerFixture) -> None:
-    from filelock import lock_descriptor
-
-    fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
-    attempt = mocker.patch("filelock._descriptor._lock_fd_nonblocking", side_effect=[False, True])
-    sleep = mocker.patch("filelock._descriptor.time.sleep")
+    path = str(tmp_path / "a")
+    holder = os.open(path, os.O_RDWR | os.O_CREAT)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT)
+    assert lock_descriptor(holder, blocking=False) is True
+    # Drive the real blocking loop: the first attempt sees contention, the mocked sleep frees the holder, and the
+    # second attempt wins. Only the clock is mocked, so a single sleep call proves exactly one retry happened.
+    sleep = mocker.patch("filelock._descriptor.time.sleep", side_effect=lambda _: unlock_descriptor(holder))
     try:
         assert lock_descriptor(fd, blocking=True, poll_interval=0.01) is True
-        assert attempt.call_count == 2  # retried once after contention
         sleep.assert_called_once_with(0.01)
+        unlock_descriptor(fd)
     finally:
+        os.close(holder)
         os.close(fd)

@@ -151,10 +151,9 @@ if sys.platform == "win32":  # pragma: win32 cover
         # One nonblocking exclusive LockFileEx attempt shared by WindowsFileLock and lock_descriptor, over the one-byte
         # range at offset 0. True on acquisition, False on contention, raise otherwise. The caller owns fd; the handle
         # from get_osfhandle belongs to the CRT descriptor and must not be closed here.
-        handle = msvcrt.get_osfhandle(fd)
         overlapped = _OVERLAPPED()  # zero-initialized, so Offset/OffsetHigh/hEvent are 0
         flags = _LOCKFILE_EXCLUSIVE_LOCK | _LOCKFILE_FAIL_IMMEDIATELY
-        if _kernel32.LockFileEx(handle, flags, 0, 1, 0, ctypes.byref(overlapped)):
+        if _kernel32.LockFileEx(msvcrt.get_osfhandle(fd), flags, 0, 1, 0, ctypes.byref(overlapped)):
             return True
         err = ctypes.get_last_error()
         if err == _ERROR_LOCK_VIOLATION:
@@ -162,9 +161,8 @@ if sys.platform == "win32":  # pragma: win32 cover
         raise ctypes.WinError(err)
 
     def _unlock_fd(fd: int) -> None:
-        handle = msvcrt.get_osfhandle(fd)
         overlapped = _OVERLAPPED()  # the same offset 0 and one-byte length the lock used
-        if not _kernel32.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(overlapped)):
+        if not _kernel32.UnlockFileEx(msvcrt.get_osfhandle(fd), 0, 1, 0, ctypes.byref(overlapped)):
             raise ctypes.WinError(ctypes.get_last_error())
 
     class WindowsFileLock(BaseFileLock):
