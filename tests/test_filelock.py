@@ -1295,13 +1295,15 @@ def test_different_threads_no_false_positive(tmp_path: Path, lock_type: type[Bas
 @pytest.mark.skipif(sys.platform == "win32", reason="unix-only symlink test")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
-    lock_path = tmp_path / "test.lock"
-    symlink_path = tmp_path / "link.lock"
-    symlink_path.symlink_to(lock_path)
+    # A symlinked parent directory resolves to the same canonical key (the final component is kept literal, so a final
+    # symlink stays distinct — see test_final_symlink_stays_a_distinct_key).
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    (tmp_path / "link").symlink_to(real_dir)
 
-    lock1 = lock_type(lock_path)
+    lock1 = lock_type(str(real_dir / "test.lock"))
     with lock1:
-        lock2 = lock_type(symlink_path)
+        lock2 = lock_type(str(tmp_path / "link" / "test.lock"))
         with pytest.raises(RuntimeError, match="Deadlock"):
             lock2.acquire()
 
@@ -1701,3 +1703,55 @@ def test_singleton_rejects_different_close_policy(tmp_path: Path) -> None:
             FileLock(path, is_singleton=True, close_error_policy="suppress")
     finally:
         first.release(force=True)
+
+
+def test_singleton_shares_across_equivalent_spellings(tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    absolute = FileLock(str(tmp_path / "a"), is_singleton=True)
+    dot = FileLock(str(tmp_path) + "/./a", is_singleton=True)
+    dotdot = FileLock(str(tmp_path / "sub") + "/../a", is_singleton=True)
+    try:
+        assert absolute is dot is dotdot  # one instance for equivalent spellings of one path
+    finally:
+        absolute.release(force=True)
+
+
+@_UNIX_FLOCK_ONLY
+def test_singleton_shares_through_symlinked_parent(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    via_real = FileLock(str(real / "a"), is_singleton=True)
+    via_link = FileLock(str(tmp_path / "link" / "a"), is_singleton=True)
+    try:
+        assert via_real is via_link  # a symlinked parent directory resolves to the same key
+    finally:
+        via_real.release(force=True)
+
+
+@_UNIX_FLOCK_ONLY
+def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.write_text("")
+    (tmp_path / "link").symlink_to(target)
+    on_link = FileLock(str(tmp_path / "link"), is_singleton=True)
+    on_target = FileLock(str(target), is_singleton=True)
+    try:
+        assert on_link is not on_target  # the final component is not resolved, so the symlink is its own key
+    finally:
+        on_link.release(force=True)
+        on_target.release(force=True)
+    # and the backend still refuses to lock through the final symlink (O_NOFOLLOW rejects it)
+    with pytest.raises(OSError, match=r"Too many levels of symbolic links|symbolic link"):
+        FileLock(str(tmp_path / "link")).acquire()
+
+
+def test_separate_lock_classes_keep_separate_registries(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    native = FileLock(path, is_singleton=True)
+    soft = SoftFileLock(path, is_singleton=True)
+    try:
+        assert native is not soft  # each class caches its own singletons
+    finally:
+        native.release(force=True)
+        soft.release(force=True)
