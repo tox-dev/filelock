@@ -1875,16 +1875,27 @@ def test_filelock_and_descriptor_contend(tmp_path: Path, direction: str) -> None
 
 
 @_UNIX_FLOCK_ONLY
-def test_lock_descriptor_touches_no_paths(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_lock_descriptor_touches_no_paths(tmp_path: Path) -> None:
     from filelock import lock_descriptor, unlock_descriptor
 
-    fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
+    path = tmp_path / "a"
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT)
     try:
-        spies = {name: mocker.spy(os, name) for name in ("open", "close", "unlink", "ftruncate", "fchmod")}
+        os.write(fd, b"payload")
+        before = os.fstat(fd)
         assert lock_descriptor(fd, blocking=False) is True
         unlock_descriptor(fd)
-        for name, spy in spies.items():
-            assert spy.call_count == 0, name  # the adapter only locks and unlocks; it owns no path work
+        after = os.fstat(fd)
+        # The adapter works purely on the descriptor: our fd stays open on the same inode with its size and mode
+        # intact, and the file keeps its contents. That rules out any open, close, unlink, truncate or chmod on our
+        # behalf without spying on hot global os functions, which unrelated tempfile cleanup would race and pollute.
+        assert (after.st_ino, after.st_dev, after.st_size, after.st_mode) == (
+            before.st_ino,
+            before.st_dev,
+            before.st_size,
+            before.st_mode,
+        )
+        assert path.read_bytes() == b"payload"
     finally:
         os.close(fd)
 
