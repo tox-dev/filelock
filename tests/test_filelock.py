@@ -1741,7 +1741,13 @@ def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
     finally:
         on_link.release(force=True)
         on_target.release(force=True)
-    # and the backend still refuses to lock through the final symlink (O_NOFOLLOW rejects it)
+
+
+@_UNIX_FLOCK_ONLY
+def test_final_symlink_backend_refuses_to_lock(tmp_path: Path) -> None:
+    (tmp_path / "target").write_text("")
+    (tmp_path / "link").symlink_to(tmp_path / "target")
+    # Keeping the final symlink a distinct key is safe because the backend still refuses to lock through it.
     with pytest.raises(OSError, match=r"Too many levels of symbolic links|symbolic link"):
         FileLock(str(tmp_path / "link")).acquire()
 
