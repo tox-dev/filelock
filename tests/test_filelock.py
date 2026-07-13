@@ -1928,3 +1928,90 @@ def test_lock_descriptor_blocking_retries_until_free(tmp_path: Path, mocker: Moc
     finally:
         os.close(holder)
         os.close(fd)
+
+
+def test_preserve_lock_file_defaults_off(tmp_path: Path) -> None:
+    assert FileLock(str(tmp_path / "a")).preserve_lock_file is False
+
+
+def test_preserve_lock_file_property_reflects_argument(tmp_path: Path) -> None:
+    assert FileLock(str(tmp_path / "a"), preserve_lock_file=True).preserve_lock_file is True
+
+
+def test_preserve_lock_file_rejected_by_soft_lock(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="preserve_lock_file"):
+        SoftFileLock(str(tmp_path / "a"), preserve_lock_file=True)
+
+
+def test_singleton_rejects_different_preserve_lock_file(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    first = FileLock(path, is_singleton=True, preserve_lock_file=False)
+    try:
+        with pytest.raises(ValueError, match="preserve_lock_file"):
+            FileLock(path, is_singleton=True, preserve_lock_file=True)
+    finally:
+        first.release(force=True)
+
+
+@_UNIX_FLOCK_ONLY
+def test_preserve_lock_file_unix_keeps_pathname(tmp_path: Path) -> None:
+    path = tmp_path / "a"
+    lock = FileLock(str(path), preserve_lock_file=True)
+    lock.acquire()
+    lock.release()
+    assert path.exists()  # Unix leaves the native pathname in place
+    assert type(lock).__name__ == "UnixFileLock"
+
+
+@_UNIX_FLOCK_ONLY
+def test_preserve_lock_file_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
+    lock = FileLock(str(tmp_path / "a"), preserve_lock_file=True)  # fallback_to_soft still defaults to True
+    with pytest.raises(OSError, match="no flock"):
+        lock.acquire()
+    assert not lock.is_locked
+    assert type(lock).__name__ == "UnixFileLock"  # preserve overrides the soft fallback that would unlink to release
+
+
+@_WINDOWS_ONLY
+def test_preserve_lock_file_windows_default_removes_file(tmp_path: Path) -> None:
+    path = tmp_path / "a"
+    lock = FileLock(str(path))
+    lock.acquire()
+    lock.release()
+    assert not path.exists()  # the default Windows cleanup unlinks the lock file
+
+
+@_WINDOWS_ONLY
+def test_preserve_lock_file_windows_keeps_file(tmp_path: Path) -> None:
+    path = tmp_path / "a"
+    lock = FileLock(str(path), preserve_lock_file=True)
+    lock.acquire()
+    lock.release()
+    assert path.exists()  # preserve_lock_file skips the post-release unlink
+
+
+@_WINDOWS_ONLY
+def test_preserve_lock_file_windows_reacquires_same_identity(tmp_path: Path) -> None:
+    path = tmp_path / "a"
+    lock = FileLock(str(path), preserve_lock_file=True)
+    lock.acquire()
+    lock.release()
+    kept = path.stat()
+    lock.acquire()
+    try:
+        current = path.stat()
+        assert (current.st_dev, current.st_ino) == (kept.st_dev, kept.st_ino)  # same file across acquisitions
+    finally:
+        lock.release()
+
+
+@_WINDOWS_ONLY
+def test_preserve_lock_file_windows_kept_after_forced_release(tmp_path: Path) -> None:
+    path = tmp_path / "a"
+    lock = FileLock(str(path), preserve_lock_file=True)
+    lock.acquire()
+    lock.acquire()  # reentrant second level
+    lock.release(force=True)  # drop every level and run the release path once
+    assert not lock.is_locked
+    assert path.exists()  # preserved even through a forced release

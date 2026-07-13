@@ -38,6 +38,9 @@ class SoftFileLock(BaseFileLock):
     #: Existence locks reclaim by unlinking a pathname, so an age-based lease may break one; a native inode lock cannot.
     _lifetime_supported: bool = True
 
+    #: An existence lock unlinks its marker to release, so it cannot promise to keep the pathname.
+    _preserve_lock_file_supported: bool = False
+
     def _acquire(self) -> None:
         raise_on_not_writable_file(self.lock_file)
         ensure_directory_exists(self.lock_file)
