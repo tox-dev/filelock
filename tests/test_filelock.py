@@ -114,7 +114,10 @@ _UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 @pytest.mark.parametrize(
     ("expected_error", "match", "bad_lock_file"),
     [
-        pytest.param(FileNotFoundError, "No such file or directory:", "", id="blank_filename"),
+        # WindowsFileLock raises the real Win32 error now, so accept its wording alongside os.open's.
+        pytest.param(
+            FileNotFoundError, "No such file or directory:|cannot find the (path|file)", "", id="blank_filename"
+        ),
         pytest.param(ValueError, "embedded null (byte|character)", "\0", id="null_byte"),
         # Should be PermissionError on Windows
         (
@@ -129,7 +132,10 @@ _UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
             )
         ),
     ]
-    + [pytest.param(OSError, "Invalid argument", i, id=f"invalid_{i}", marks=_WINDOWS_ONLY) for i in '<>:"|?*\a']
+    + [
+        pytest.param(OSError, "Invalid argument|syntax is incorrect", i, id=f"invalid_{i}", marks=_WINDOWS_ONLY)
+        for i in '<>:"|?*\a'
+    ]
     + [
         pytest.param(PermissionError, "Permission denied:", i, id=f"permission_{i}", marks=_WINDOWS_ONLY) for i in "/\\"
     ],
@@ -1373,3 +1379,19 @@ def test_post_lock_truncate_failure_closes_fd(tmp_path: Path, mocker: MockerFixt
         FileLock(tmp_path / "resource.lock", timeout=0).acquire()
 
     assert any(call.args and call.args[0] == open_spy.spy_return for call in close_spy.call_args_list)
+
+
+@_WINDOWS_ONLY
+def test_windows_reparse_point_lock_file_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("sensitive", encoding="utf-8")
+    link = tmp_path / "resource.lock"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("cannot create symlinks (needs Developer Mode or administrator)")
+
+    with pytest.raises(OSError, match="reparse point"):
+        FileLock(link).acquire()
+
+    assert target.read_text(encoding="utf-8") == "sensitive"
