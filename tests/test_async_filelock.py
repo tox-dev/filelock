@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from errno import EIO
+from errno import EIO, ENOSYS
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
@@ -636,9 +636,7 @@ async def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: Mo
 @_UNIX_FLOCK_ONLY
 @pytest.mark.asyncio
 async def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
-    import errno
-
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(errno.ENOSYS, "no flock"))
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = AsyncFileLock(str(tmp_path / "a"), fallback_to_soft=False)
     with pytest.raises(OSError, match="no flock"):
         await lock.acquire()
