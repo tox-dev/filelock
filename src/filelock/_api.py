@@ -40,6 +40,26 @@ _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 _canonical: Final[Callable[[str], str]] = os.path.abspath if sys.platform == "win32" else os.path.realpath
 
 
+def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str) -> float | None:
+    """
+    Drop a ``lifetime`` a lock cannot honor.
+
+    ``lifetime`` is a deliberate age-based lease: a lock file older than ``lifetime`` is broken even while its holder is
+    still alive. That is only safe for existence locks (:class:`SoftFileLock`), where breaking means unlinking a
+    pathname the protocol already treats as reclaimable. A native OS lock lives on the inode, so unlinking the pathname
+    by age cannot revoke the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590).
+    Ignore the request with a warning rather than accept a setting that breaks mutual exclusion.
+    """
+    if lifetime is not None and not supported:
+        warnings.warn(
+            f"lifetime is ignored for {cls_name}: a native OS lock cannot be broken safely by file age; "
+            f"only SoftFileLock supports lifetime-based expiry",
+            stacklevel=3,
+        )
+        return None
+    return lifetime
+
+
 class _ThreadLocalRegistry(local):
     def __init__(self) -> None:
         super().__init__()
@@ -69,6 +89,7 @@ class FileLockMeta(ABCMeta):
         lifetime: float | None = None,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
+        lifetime = _resolve_lifetime(lifetime, supported=cls._lifetime_supported, cls_name=cls.__name__)
         params = {
             "timeout": timeout,
             "mode": mode,
@@ -138,6 +159,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
     #: How the cross-instance deadlock message names the conflicting holder; the async subclass says "task".
     _deadlock_holder_desc: str = "FileLock instance in this thread"
 
+    #: Whether an age-based :attr:`lifetime` lease may break this lock. Only existence locks set it (they reclaim by
+    #: unlinking a pathname); native OS locks leave it ``False`` since a kernel lock cannot be revoked by file age.
+    _lifetime_supported: bool = False
+
     def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
         """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
@@ -178,9 +203,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             same object around.
         :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback value
             in the acquire method, if no poll_interval value (``None``) is given.
-        :param lifetime: maximum time in seconds a lock can be held before it is considered expired. When set, a waiting
-            process will break a lock whose file modification time is older than ``lifetime`` seconds. ``None`` (the
-            default) means locks never expire.
+        :param lifetime: for :class:`SoftFileLock`, the maximum time in seconds a lock may be held before it expires: a
+            waiting process breaks a lock file whose modification time is older than ``lifetime`` seconds, even if the
+            holder is still alive. ``None`` (the default) means locks never expire. Native OS locks (:class:`FileLock`)
+            cannot be revoked by file age and ignore a non-``None`` ``lifetime`` with a warning.
 
         """
         self._is_thread_local = thread_local
@@ -304,7 +330,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             if value < 0:
                 msg = f"lifetime must be non-negative, not {value!r}"
                 raise ValueError(msg)
-        self._context.lifetime = value
+        self._context.lifetime = _resolve_lifetime(
+            value, supported=self._lifetime_supported, cls_name=type(self).__name__
+        )
 
     @property
     def mode(self) -> int:
