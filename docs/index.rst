@@ -126,7 +126,7 @@ Choose the right lock for your use case:
     .. grid-item-card::
         **Unix / macOS**
 
-        Uses ``fcntl.flock``. POSIX standard, kernel-enforced.
+        Uses ``fcntl.flock``. Common on Unix but not POSIX; kernel-enforced.
 
         - ✓ Native support
         - ✓ Stale detection

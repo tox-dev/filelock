@@ -145,14 +145,14 @@ the lock file additionally stores the process creation time to guard against PID
     correctness.
 
 **Unix and macOS**
-    Uses the :class:`UnixFileLock <filelock.UnixFileLock>` class, backed by ``fcntl.flock``. This is the POSIX standard
-    for file locking and enforced by the kernel.
+    Uses the :class:`UnixFileLock <filelock.UnixFileLock>` class, backed by the kernel's ``fcntl.flock`` interface. The
+    interface is common on Unix systems but is not specified by POSIX. The lock is exclusive and enforced by the kernel.
 
-    Works best on local filesystems. Network filesystems (NFS) may have issues; locking isn't always reliable on NFS even
-    in POSIX-compliant systems.
+    Works best on local filesystems. Network filesystems (NFS) may have issues; locking isn't always reliable on NFS.
 
-    Lock file cleanup: Unix and macOS delete the lock file reliably after release, even in multi-threaded scenarios.
-    Unlike Windows, Unix allows unlinking files that other processes have open.
+    Lock file cleanup: the native lock file remains after release. A persistent empty file does not indicate ownership.
+    Keeping one pathname prevents contenders from coordinating through different inodes, which would break mutual
+    exclusion; remove the file only after the complete lock protocol has stopped using it.
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,
