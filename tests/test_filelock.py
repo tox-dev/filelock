@@ -114,9 +114,12 @@ _UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 @pytest.mark.parametrize(
     ("expected_error", "match", "bad_lock_file"),
     [
-        # WindowsFileLock raises the real Win32 error now, so accept its wording alongside os.open's.
+        # WindowsFileLock raises the real Win32 error the NTSTATUS maps to, so accept its wording alongside os.open's.
         pytest.param(
-            FileNotFoundError, "No such file or directory:|cannot find the (path|file)", "", id="blank_filename"
+            OSError,
+            "No such file or directory:|cannot find the (path|file)|syntax is incorrect|Access is denied",
+            "",
+            id="blank_filename",
         ),
         pytest.param(ValueError, "embedded null (byte|character)", "\0", id="null_byte"),
         # Should be PermissionError on Windows
@@ -1467,3 +1470,45 @@ def test_windows_close_failure_still_commits_release(tmp_path: Path, mocker: Moc
         lock.release()
     assert not lock.is_locked
     assert lock.lock_counter == 0
+
+
+@_WINDOWS_ONLY
+def test_windows_delete_pending_is_treated_as_contention(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._windows._nt_open", return_value=(0, 0xC0000056))  # STATUS_DELETE_PENDING
+    with pytest.raises(Timeout):
+        FileLock(str(tmp_path / "a"), timeout=0.2).acquire()
+
+
+@_WINDOWS_ONLY
+def test_windows_permanent_denial_raises_without_timeout(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._windows._nt_open", return_value=(0, 0xC0000022))  # STATUS_ACCESS_DENIED
+    with pytest.raises(PermissionError):
+        FileLock(str(tmp_path / "a"), timeout=5).acquire()
+
+
+def test_windows_delete_in_progress_is_contention_not_denial(tmp_path: Path) -> None:
+    if sys.platform != "win32":
+        pytest.skip("windows-only")
+    import ctypes
+
+    target = str(tmp_path / "dp.lock")
+    kernel32 = ctypes.windll.kernel32
+    delete_access, generic_read, share_all, create_always, delete_on_close = (
+        0x10000,
+        0x80000000,
+        0x1 | 0x2 | 0x4,
+        2,
+        0x04000000,
+    )
+    # Open with delete-on-close so the name is marked for deletion but the live handle keeps it around: a fresh open
+    # sees the deletion in progress (delete-pending or a sharing violation), which acquire must retry rather than
+    # mistake for a permanent PermissionError.
+    handle = kernel32.CreateFileW(
+        target, delete_access | generic_read, share_all, None, create_always, delete_on_close, None
+    )
+    assert handle not in {0, ctypes.c_void_p(-1).value}
+    try:
+        with pytest.raises(Timeout):
+            FileLock(target, timeout=0.3).acquire()
+    finally:
+        kernel32.CloseHandle(handle)
