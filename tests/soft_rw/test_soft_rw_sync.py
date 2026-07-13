@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator
     from multiprocessing.synchronize import Event as EventType
 
+    from pytest_mock import MockerFixture
+
 
 _REQUIRES_POSIX_SIGNALS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX signals required"
@@ -1090,3 +1092,12 @@ def _fork_event() -> EventType:
         msg = "fork context is POSIX only"
         raise RuntimeError(msg)
     return mp.get_context("fork").Event()
+
+
+def test_write_marker_zero_write_rolls_back(lock_file: str, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._util.os.write", return_value=0)
+
+    lock = SoftReadWriteLock(lock_file, is_singleton=False)
+    with pytest.raises(OSError, match="0 bytes"):
+        lock.acquire_write(timeout=1)
+    assert not Path(f"{lock_file}.write").exists()

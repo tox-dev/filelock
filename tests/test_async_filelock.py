@@ -513,3 +513,13 @@ async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: Mo
         await task
     assert not lock.is_locked
     assert lock.lock_counter == 0
+
+
+@pytest.mark.asyncio
+async def test_async_zero_write_rolls_back_acquire(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._util.os.write", return_value=0)
+
+    lock = AsyncSoftFileLock(str(tmp_path / "a"))
+    with pytest.raises(OSError, match="0 bytes"):
+        await lock.acquire()
+    assert not lock.is_locked

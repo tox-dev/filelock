@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Final
 
 from ._api import BaseFileLock
-from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file
+from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file, write_all
 
 _WIN_SYNCHRONIZE: Final[int] = 0x100000
 _WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
 _WIN_PROCESS_QUERY_LIMITED_INFORMATION: Final[int] = 0x1000
 _MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
+_UNLINK_MAX_RETRIES: Final[int] = 10
 
 
 class SoftFileLock(BaseFileLock):
@@ -46,16 +47,31 @@ class SoftFileLock(BaseFileLock):
         if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
             flags |= o_nofollow
         try:
-            file_handler = os.open(self.lock_file, flags, self._open_mode())
+            fd = os.open(self.lock_file, flags, self._open_mode())
         except OSError as exception:
             if not (
                 exception.errno == EEXIST or (exception.errno == EACCES and sys.platform == "win32")
             ):  # pragma: win32 no cover
                 raise
             self._try_break_stale_lock()
-        else:
-            self._write_lock_info(file_handler)
-            self._context.lock_file_fd = file_handler
+            return
+        self._publish_held_marker(fd)
+
+    def _publish_held_marker(self, fd: int) -> None:
+        # Publish held state only once the record is fully on disk. On any failure, including cancellation, close the
+        # descriptor and unlink the path only while it still names the file we opened, so a rollback never deletes a
+        # successor's marker that replaced ours at the same path after our lease expired.
+        identity: tuple[int, int] | None = None
+        try:
+            identity = _file_identity(os.fstat(fd))
+            self._write_lock_info(fd)
+        except BaseException:
+            os.close(fd)
+            with suppress(OSError):
+                if identity is not None and _file_identity(os.lstat(self.lock_file)) == identity:
+                    Path(self.lock_file).unlink()
+            raise
+        self._context.lock_file_fd = fd
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
@@ -136,11 +152,12 @@ class SoftFileLock(BaseFileLock):
 
     @staticmethod
     def _write_lock_info(fd: int) -> None:
-        with suppress(OSError):
-            info = f"{os.getpid()}\n{socket.gethostname()}\n"
-            if sys.platform == "win32" and (ct := SoftFileLock._get_process_creation_time(os.getpid())) is not None:
-                info += f"{ct}\n"
-            os.write(fd, info.encode())
+        # No suppression: a write failure must reach the acquisition rollback so it never publishes a half-written
+        # marker as held state.
+        info = f"{os.getpid()}\n{socket.gethostname()}\n"
+        if sys.platform == "win32" and (ct := SoftFileLock._get_process_creation_time(os.getpid())) is not None:
+            info += f"{ct}\n"
+        write_all(fd, info.encode())
 
     @property
     def pid(self) -> int | None:
@@ -177,30 +194,48 @@ class SoftFileLock(BaseFileLock):
             Path(self.lock_file).unlink()
 
     def _release(self) -> None:
-        assert self._context.lock_file_fd is not None  # noqa: S101
-        os.close(self._context.lock_file_fd)
+        fd = self._context.lock_file_fd
+        assert fd is not None  # noqa: S101
+        # Capture the held file's identity before closing so cleanup can refuse to unlink a successor's marker. A
+        # supported lifetime lease lets a peer break our expired marker and create its own at this path before we
+        # release; unlinking by path alone would then delete the successor's lock.
+        identity: tuple[int, int] | None = None
+        with suppress(OSError):
+            identity = _file_identity(os.fstat(fd))
+        os.close(fd)
         self._context.lock_file_fd = None
+        if identity is None:
+            return
         if sys.platform == "win32":
-            self._windows_unlink_with_retry()
+            self._windows_unlink_if_ours(identity)
         else:
             with suppress(OSError):
-                Path(self.lock_file).unlink()
+                if _file_identity(os.lstat(self.lock_file)) == identity:
+                    Path(self.lock_file).unlink()
 
-    def _windows_unlink_with_retry(self) -> None:
-        max_retries = 10
+    def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:
         retry_delay = 0.001
-        for attempt in range(max_retries):
-            # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink
+        for attempt in range(_UNLINK_MAX_RETRIES):
+            # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck
+            # identity each attempt: a failed unlink leaves a window for a successor to replace the marker at this path.
             try:
+                if _file_identity(os.lstat(self.lock_file)) != identity:
+                    return
                 Path(self.lock_file).unlink()
             except OSError as exc:  # noqa: PERF203
                 if exc.errno not in {EACCES, EPERM}:
                     return
-                if attempt < max_retries - 1:
+                if attempt < _UNLINK_MAX_RETRIES - 1:
                     time.sleep(retry_delay)
                     retry_delay *= 2
             else:
                 return
+
+
+def _file_identity(st: os.stat_result) -> tuple[int, int]:
+    # (st_dev, st_ino) names the concrete inode behind a path, so a marker recreated at the same pathname after an
+    # expired lease reads as a different file. CPython populates both on Windows from the volume serial and file index.
+    return st.st_dev, st.st_ino
 
 
 def _read_lock_file(path: str) -> tuple[str | None, float, int]:
