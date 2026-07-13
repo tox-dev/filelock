@@ -669,6 +669,22 @@ def test_stale_malformed_marker_is_evicted(lock_file: str, content: bytes) -> No
         lock.close()
 
 
+def test_reader_marker_write_failure_fails_closed(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A marker whose payload cannot be written in full must not be published as a hold: it parses as malformed,
+    # the holder's heartbeat stops, and a peer breaks it as stale while this object still records the read lock.
+    # A persistent write failure therefore fails the acquire and leaves no marker behind in the readers dir.
+    monkeypatch.setattr(sync_mod, "write_all", lambda *_: (_ for _ in ()).throw(OSError("write failed")))
+    lock = _make_lock(lock_file)
+    try:
+        with pytest.raises((OSError, Timeout)):
+            lock.acquire_read(timeout=0.5)
+        readers = Path(f"{lock_file}.readers")
+        live = [e.name for e in os.scandir(readers) if not sync_mod._is_housekeeping_name(e.name)]
+        assert live == []
+    finally:
+        lock.close()
+
+
 def test_fifo_write_marker_does_not_block(lock_file: str) -> None:
     if sys.platform == "win32":
         pytest.skip("os.mkfifo is unix-only")  # also narrows sys.platform so ty resolves os.mkfifo below

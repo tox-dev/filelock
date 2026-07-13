@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock._util import break_lock_file, raise_on_not_writable_file
+from filelock._util import break_lock_file, raise_on_not_writable_file, write_all
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -18,6 +18,34 @@ _SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform != "win32" and os.geteuid() == 0,
     reason="root can write a 0o444 file",
 )
+
+
+def test_write_all_writes_full_payload_over_short_writes(tmp_path: Path, mocker: MockerFixture) -> None:
+    path = tmp_path / "data"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    payload = b"1234\nsome-host\n"
+    real_write = os.write
+
+    def short_once(actual_fd: int, data: bytes) -> int:
+        # first write lands a single byte; write_all must loop to finish the rest
+        return real_write(actual_fd, data[:1] if actual_fd == fd else data)
+
+    mocker.patch("filelock._util.os.write", side_effect=short_once)
+    try:
+        write_all(fd, payload)
+    finally:
+        os.close(fd)
+    assert path.read_bytes() == payload
+
+
+def test_write_all_propagates_write_error(tmp_path: Path, mocker: MockerFixture) -> None:
+    fd = os.open(tmp_path / "data", os.O_WRONLY | os.O_CREAT, 0o600)
+    mocker.patch("filelock._util.os.write", side_effect=OSError("boom"))
+    try:
+        with pytest.raises(OSError, match="boom"):
+            write_all(fd, b"payload")
+    finally:
+        os.close(fd)
 
 
 def test_break_lock_file_unlinks_unchanged_file(tmp_path: Path) -> None:

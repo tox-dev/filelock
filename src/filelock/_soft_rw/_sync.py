@@ -22,7 +22,7 @@ from weakref import WeakValueDictionary
 from filelock._api import AcquireReturnProxy
 from filelock._error import Timeout
 from filelock._soft import SoftFileLock
-from filelock._util import ensure_directory_exists
+from filelock._util import ensure_directory_exists, write_all
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -837,7 +837,14 @@ def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -
     else:
         fd = os.open(name, flags, 0o600)
     try:
-        os.write(fd, f"{token}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii"))
+        # Write the whole token/pid/hostname payload or none of it: a marker missing part of its payload parses as
+        # malformed, so the holder's own heartbeat stops refreshing it and a peer breaks it as stale while the caller
+        # still records the hold, admitting a second holder. On a partial write remove the marker and fail the claim.
+        try:
+            write_all(fd, f"{token}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii"))
+        except OSError:
+            _unlink(name, dir_fd=dir_fd)
+            raise
     finally:
         os.close(fd)
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Final
 
 from ._api import BaseFileLock
-from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file
+from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file, write_all
 
 _WIN_SYNCHRONIZE: Final[int] = 0x100000
 _WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
@@ -54,7 +54,17 @@ class SoftFileLock(BaseFileLock):
                 raise
             self._try_break_stale_lock()
         else:
-            self._write_lock_info(file_handler)
+            try:
+                self._write_lock_info(file_handler)
+            except OSError:
+                # Fail closed: a lock file without a complete pid/hostname record parses as malformed, and once
+                # it ages past the grace threshold a contender breaks it and acquires a fresh inode while we still
+                # hold this descriptor, so both processes own the lock. Drop the half-written file (it is ours, just
+                # created under O_EXCL) and let the poll loop retry rather than publish a reclaimable live lock.
+                os.close(file_handler)
+                with suppress(OSError):
+                    Path(self.lock_file).unlink()
+                return
             self._context.lock_file_fd = file_handler
 
     def _try_break_stale_lock(self) -> None:
@@ -136,11 +146,10 @@ class SoftFileLock(BaseFileLock):
 
     @staticmethod
     def _write_lock_info(fd: int) -> None:
-        with suppress(OSError):
-            info = f"{os.getpid()}\n{socket.gethostname()}\n"
-            if sys.platform == "win32" and (ct := SoftFileLock._get_process_creation_time(os.getpid())) is not None:
-                info += f"{ct}\n"
-            os.write(fd, info.encode())
+        info = f"{os.getpid()}\n{socket.gethostname()}\n"
+        if sys.platform == "win32" and (ct := SoftFileLock._get_process_creation_time(os.getpid())) is not None:
+            info += f"{ct}\n"
+        write_all(fd, info.encode())
 
     @property
     def pid(self) -> int | None:

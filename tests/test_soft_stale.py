@@ -295,13 +295,38 @@ def test_break_lock(lock_path: Path, *, exists: bool) -> None:
     assert not lock_path.exists()
 
 
-def test_write_lock_info_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
+def test_write_lock_info_failure_fails_closed(lock_path: Path, mocker: MockerFixture) -> None:
+    # A holder record that cannot be written in full must not be published as a held lock: an empty/partial
+    # file parses as malformed and a contender reclaims it after the grace period while this object still owns
+    # the descriptor, so both hold the lock. A persistent write error therefore times out instead of acquiring.
     mocker.patch("filelock._soft.os.write", side_effect=OSError("write failed"))
 
-    lock = SoftFileLock(lock_path)
+    lock = SoftFileLock(lock_path, timeout=0.3)
+    with pytest.raises(TimeoutError):
+        lock.acquire()
+    assert not lock.is_locked
+    assert not lock_path.exists()
+
+
+def test_write_lock_info_short_write_completes(lock_path: Path, mocker: MockerFixture) -> None:
+    # A short os.write (fewer bytes than requested) must be retried until the whole record lands, not left partial.
+    real_write = os.write
+    calls = {"n": 0}
+
+    def short_once(fd: int, data: bytes) -> int:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_write(fd, data[:1])
+        return real_write(fd, data)
+
+    mocker.patch("filelock._soft.os.write", side_effect=short_once)
+
+    lock = SoftFileLock(lock_path, timeout=1)
     with lock:
         assert lock.is_locked
-        assert not lock_path.read_text(encoding="utf-8")
+        # The full record landed despite the short first write, so it parses back to this process.
+        assert lock.pid == os.getpid()
+        assert lock_path.read_text(encoding="utf-8").startswith(f"{os.getpid()}\n{_HOST}\n")
 
 
 def _assert_self_heals(lock_path: Path) -> None:

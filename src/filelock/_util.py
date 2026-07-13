@@ -50,6 +50,31 @@ def ensure_directory_exists(filename: Path | str) -> None:
     Path(filename).parent.mkdir(parents=True, exist_ok=True)
 
 
+def write_all(fd: int, data: bytes) -> None:
+    """
+    Write every byte of *data* to *fd*, looping over short writes.
+
+    ``os.write`` may write fewer bytes than requested, and a lock file or marker left with a partial holder record
+    parses as malformed. A peer then reclaims it after the malformed-lock grace period while this process still holds
+    the descriptor, so both own the same logical lock. The published record is coordination state, not diagnostics, so
+    it has to be written in full or not published at all.
+
+    :param fd: file descriptor to write to.
+    :param data: bytes to write in their entirety.
+
+    :raises OSError: if the underlying write fails before all bytes are written.
+
+    """
+    view = memoryview(data)
+    written = 0
+    while written < len(view):
+        count = os.write(fd, view[written:])
+        if count == 0:  # pragma: no cover - a blocking regular-file write never reports 0 for a non-empty buffer
+            msg = "wrote 0 bytes to the lock file"
+            raise OSError(msg)
+        written += count
+
+
 def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> None:
     """
     Atomically break a stale lock file judged stale at modification time *mtime_before*.
@@ -92,4 +117,5 @@ __all__ = [
     "break_lock_file",
     "ensure_directory_exists",
     "raise_on_not_writable_file",
+    "write_all",
 ]
