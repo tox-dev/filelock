@@ -17,31 +17,57 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     _GENERIC_READ: Final[int] = 0x80000000
     _GENERIC_WRITE: Final[int] = 0x40000000
+    _SYNCHRONIZE: Final[int] = 0x00100000
+    _DESIRED_ACCESS: Final[int] = _GENERIC_READ | _GENERIC_WRITE | _SYNCHRONIZE
     _FILE_SHARE_READ_WRITE: Final[int] = (
         0x00000001 | 0x00000002
     )  # read | write; matches os.open (_SH_DENYNO), no delete
-    _OPEN_ALWAYS: Final[int] = 4  # open the file if it exists, create it otherwise
+    _FILE_OPEN_IF: Final[int] = 3  # open the file if it exists, create it otherwise; the NtCreateFile OPEN_ALWAYS
     _FILE_ATTRIBUTE_READONLY: Final[int] = 0x00000001
+    _FILE_ATTRIBUTE_NORMAL: Final[int] = 0x00000080
     _FILE_ATTRIBUTE_REPARSE_POINT: Final[int] = 0x00000400
-    _FILE_FLAG_OPEN_REPARSE_POINT: Final[int] = 0x00200000  # open the reparse point itself instead of following it
-    _INVALID_HANDLE_VALUE: Final[int] = cast("int", wintypes.HANDLE(-1).value)  # non-null handle, never None
-    _ERROR_ACCESS_DENIED: Final[int] = 5
-    _ERROR_SHARING_VIOLATION: Final[int] = 32
+    # CreateOptions: keep the handle synchronous (the CRT and msvcrt.locking rely on a maintained file position),
+    # refuse a directory, and open a reparse point rather than following it so the check below acts on the link itself.
+    _FILE_SYNCHRONOUS_IO_NONALERT: Final[int] = 0x00000020
+    _FILE_NON_DIRECTORY_FILE: Final[int] = 0x00000040
+    _FILE_OPEN_REPARSE_POINT: Final[int] = 0x00200000
+    _CREATE_OPTIONS: Final[int] = _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_NON_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT
+    _OBJ_CASE_INSENSITIVE: Final[int] = 0x00000040  # Win32 name lookups are case-insensitive
     _OWNER_WRITE: Final[int] = 0o200
 
+    # NtCreateFile returns the raw NTSTATUS as its value, where CreateFileW collapses several of these into one
+    # ERROR_ACCESS_DENIED. Telling them apart is the point (#604): a name pending deletion or a share conflict is
+    # transient and worth a retry, a real access denial is not.
+    _STATUS_SUCCESS: Final[int] = 0x00000000
+    _STATUS_ACCESS_DENIED: Final[int] = 0xC0000022
+    _STATUS_SHARING_VIOLATION: Final[int] = 0xC0000043
+    _STATUS_DELETE_PENDING: Final[int] = 0xC0000056
+
+    _ntdll: Final[ctypes.WinDLL] = ctypes.WinDLL("ntdll")
     _kernel32: Final[ctypes.WinDLL] = ctypes.WinDLL("kernel32", use_last_error=True)
-    _kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    _kernel32.CreateFileW.restype = wintypes.HANDLE
-    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    _kernel32.CloseHandle.restype = wintypes.BOOL
+
+    class _UNICODE_STRING(ctypes.Structure):  # noqa: N801  # mirrors the Win32 struct name
+        _fields_ = (
+            ("Length", wintypes.USHORT),  # byte length, not character count
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", wintypes.LPWSTR),
+        )
+
+    class _OBJECT_ATTRIBUTES(ctypes.Structure):  # noqa: N801  # mirrors the Win32 struct name
+        _fields_ = (
+            ("Length", wintypes.ULONG),
+            ("RootDirectory", wintypes.HANDLE),
+            ("ObjectName", ctypes.POINTER(_UNICODE_STRING)),
+            ("Attributes", wintypes.ULONG),
+            ("SecurityDescriptor", ctypes.c_void_p),
+            ("SecurityQualityOfService", ctypes.c_void_p),
+        )
+
+    class _IO_STATUS_BLOCK(ctypes.Structure):  # noqa: N801  # mirrors the Win32 struct name
+        _fields_ = (
+            ("Status", ctypes.c_void_p),  # a union of NTSTATUS and PVOID, so it is pointer-sized
+            ("Information", ctypes.c_void_p),
+        )
 
     class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):  # noqa: N801  # mirrors the Win32 struct name
         _fields_ = (
@@ -57,6 +83,34 @@ if sys.platform == "win32":  # pragma: win32 cover
             ("nFileIndexLow", wintypes.DWORD),
         )
 
+    _ntdll.NtCreateFile.restype = wintypes.LONG  # NTSTATUS
+    _ntdll.NtCreateFile.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        ctypes.POINTER(_OBJECT_ATTRIBUTES),
+        ctypes.POINTER(_IO_STATUS_BLOCK),
+        ctypes.POINTER(ctypes.c_longlong),  # PLARGE_INTEGER AllocationSize
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+    ]
+    _ntdll.RtlDosPathNameToNtPathName_U_WithStatus.restype = wintypes.LONG  # NTSTATUS
+    _ntdll.RtlDosPathNameToNtPathName_U_WithStatus.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(_UNICODE_STRING),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    _ntdll.RtlFreeUnicodeString.restype = None
+    _ntdll.RtlFreeUnicodeString.argtypes = [ctypes.POINTER(_UNICODE_STRING)]
+    _ntdll.RtlNtStatusToDosError.restype = wintypes.ULONG
+    _ntdll.RtlNtStatusToDosError.argtypes = [wintypes.LONG]
+
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
     _kernel32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION)]
     _kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
 
@@ -77,7 +131,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             # through a check-then-open TOCTOU race.
             fd = _open_non_reparse_fd(self.lock_file, self._open_mode())
             if fd is None:
-                return  # access/sharing contention on open; let the retry loop try again
+                return  # open contention (share conflict or a name pending deletion); let the retry loop try again
             try:
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             except OSError as exception:
@@ -102,13 +156,19 @@ if sys.platform == "win32":  # pragma: win32 cover
         """
         Open *path* for locking while refusing reparse points, bound to the handle actually locked.
 
-        The file is opened with ``FILE_FLAG_OPEN_REPARSE_POINT`` so a symlink or junction planted at the path is not
-        followed, and the reparse decision is read from *that* handle via ``GetFileInformationByHandle`` rather than
-        from a prior pathname query. Reading the held handle closes the check-then-open race: an attacker cannot swap
-        the path between validation and use because both now act on the same handle. Share mode omits delete so a peer
-        cannot unlink or rename the file out from under a live holder, matching ``os.open``'s ``_SH_DENYNO``.
+        The file is opened through ``NtCreateFile`` with ``FILE_OPEN_REPARSE_POINT`` so a symlink or junction planted
+        at the path is not followed, and the reparse decision is read from *that* handle via
+        ``GetFileInformationByHandle`` rather than from a prior pathname query. Reading the held handle closes the
+        check-then-open race: an attacker cannot swap the path between validation and use because both act on the same
+        handle. Share mode omits delete so a peer cannot unlink or rename the file out from under a live holder,
+        matching ``os.open``'s ``_SH_DENYNO``.
 
-        The flag only guards the final path component; Windows still follows reparse points in intermediate
+        ``NtCreateFile`` is used instead of ``CreateFileW`` because its return value carries the raw ``NTSTATUS``.
+        Windows collapses a transient delete-pending name and a permanent access denial into the same Win32
+        ``ERROR_ACCESS_DENIED``; the status keeps them apart, so a real denial fails fast instead of spinning until the
+        caller's timeout (#604).
+
+        The reparse option only guards the final path component; Windows still follows reparse points in intermediate
         directories. This assumes the lock file sits in a lock directory untrusted users cannot modify — a path with
         attacker-controlled parent directories would need component-by-component handle validation.
 
@@ -117,39 +177,20 @@ if sys.platform == "win32":  # pragma: win32 cover
             read-only. The attribute only takes effect when the file is created, not when an existing one is opened.
 
         :returns: a file descriptor owning the opened handle, or ``None`` on a sharing violation or a delete-pending
-            access denial the caller should treat as contention and retry.
+            name the caller should treat as contention and retry.
 
         :raises OSError: if the path resolves to a reparse point, or the open fails for any other reason, raised with
-            its real Windows error code rather than masked as contention.
+            the Win32 error the status maps to.
 
         """
         # Emit the audit event os.open would, so consumers watching "open" still see the path-level open and can veto.
         sys.audit("open", path, None, os.O_RDWR | os.O_CREAT)
-        flags_and_attributes = _FILE_FLAG_OPEN_REPARSE_POINT
-        if not mode & _OWNER_WRITE:
-            flags_and_attributes |= _FILE_ATTRIBUTE_READONLY
-        handle = _kernel32.CreateFileW(
-            path,
-            _GENERIC_READ | _GENERIC_WRITE,
-            _FILE_SHARE_READ_WRITE,
-            None,
-            _OPEN_ALWAYS,
-            flags_and_attributes,
-            None,
-        )
-        if handle == _INVALID_HANDLE_VALUE:
-            err = ctypes.get_last_error()
-            if err in {_ERROR_SHARING_VIOLATION, _ERROR_ACCESS_DENIED}:
-                # Both are contention, not permanent failure. A conflicting share mode reports a sharing violation. A
-                # lock file another holder just unlinked lingers in Windows' delete-pending state, where CreateFileW
-                # returns access-denied until the last handle closes; os.open reports the same case as EACCES and the
-                # backend has always retried it. Permanent denials (a read-only file, a directory at the path) are
-                # already rejected up front by raise_on_not_writable_file.
+        handle, status = _nt_open(path, read_only=not mode & _OWNER_WRITE)
+        if status != _STATUS_SUCCESS:
+            if status in {_STATUS_SHARING_VIOLATION, _STATUS_DELETE_PENDING}:
                 return None
-            # Raise the real Windows failure with the pathname. A second os.open() to reshape the exception could
-            # observe a swapped path (a fresh TOCTOU) and would mask the true error, so map the captured code directly:
-            # winerror selects the right OSError subclass (FileNotFoundError for a missing path, and so on).
-            raise OSError(None, ctypes.FormatError(err).strip(), path, err)
+            winerror = _ntdll.RtlNtStatusToDosError(status)
+            raise OSError(None, ctypes.FormatError(winerror).strip(), path, winerror)
 
         info = _BY_HANDLE_FILE_INFORMATION()
         if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
@@ -167,6 +208,48 @@ if sys.platform == "win32":  # pragma: win32 cover
         except BaseException:  # open_osfhandle audits too; a hook raising anything must not leak the handle
             _kernel32.CloseHandle(handle)
             raise
+
+    def _nt_open(path: str, *, read_only: bool) -> tuple[int, int]:
+        """
+        Open *path* through ``NtCreateFile`` and return ``(handle, status)``.
+
+        ``RtlDosPathNameToNtPathName_U_WithStatus`` translates the Win32 path to the NT namespace, handling relative,
+        drive, UNC and extended-length path forms as Win32 itself would, and allocates a buffer that
+        ``RtlFreeUnicodeString`` releases. The handle is ``0`` unless the status is ``STATUS_SUCCESS``.
+        """
+        nt_name = _UNICODE_STRING()
+        status = _ntdll.RtlDosPathNameToNtPathName_U_WithStatus(path, ctypes.byref(nt_name), None, None) & 0xFFFFFFFF
+        if status != _STATUS_SUCCESS:
+            return 0, status
+        try:
+            attributes = _OBJECT_ATTRIBUTES()
+            attributes.Length = ctypes.sizeof(_OBJECT_ATTRIBUTES)
+            attributes.ObjectName = ctypes.pointer(nt_name)
+            attributes.Attributes = _OBJ_CASE_INSENSITIVE
+            handle = wintypes.HANDLE()
+            io_status = _IO_STATUS_BLOCK()
+            file_attributes = _FILE_ATTRIBUTE_READONLY if read_only else _FILE_ATTRIBUTE_NORMAL
+            status = (
+                _ntdll.NtCreateFile(
+                    ctypes.byref(handle),
+                    _DESIRED_ACCESS,
+                    ctypes.byref(attributes),
+                    ctypes.byref(io_status),
+                    None,
+                    file_attributes,
+                    _FILE_SHARE_READ_WRITE,
+                    _FILE_OPEN_IF,
+                    _CREATE_OPTIONS,
+                    None,
+                    0,
+                )
+                & 0xFFFFFFFF
+            )
+        finally:
+            _ntdll.RtlFreeUnicodeString(ctypes.byref(nt_name))
+        if status != _STATUS_SUCCESS:
+            return 0, status
+        return handle.value or 0, status
 
 else:  # pragma: win32 no cover
 
