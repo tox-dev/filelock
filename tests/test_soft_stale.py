@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
-from errno import ENODEV, EPERM
+from errno import ENODEV, ENOSPC, EPERM
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -295,13 +295,14 @@ def test_break_lock(lock_path: Path, *, exists: bool) -> None:
     assert not lock_path.exists()
 
 
-def test_write_lock_info_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._soft.os.write", side_effect=OSError("write failed"))
+def test_write_failure_rolls_back_acquire(lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
 
     lock = SoftFileLock(lock_path)
-    with lock:
-        assert lock.is_locked
-        assert not lock_path.read_text(encoding="utf-8")
+    with pytest.raises(OSError, match="No space left on device"):
+        lock.acquire()
+    assert not lock.is_locked
+    assert not lock_path.exists()
 
 
 def _assert_self_heals(lock_path: Path) -> None:
@@ -313,3 +314,78 @@ def _assert_self_heals(lock_path: Path) -> None:
 def _assert_times_out(lock_path: Path) -> None:
     with pytest.raises(TimeoutError):
         SoftFileLock(lock_path, timeout=0.1).acquire()
+
+
+def _hold_reports_foreign_identity(mocker: MockerFixture) -> None:
+    # Make the held descriptor report a different inode than the file on disk, as if a peer replaced the marker at the
+    # path. fstat runs only on our own lock fd, so nothing else in acquire or release is disturbed.
+    mocker.patch("filelock._soft.os.fstat", return_value=mocker.Mock(st_dev=1, st_ino=999))
+
+
+def test_short_writes_still_write_the_whole_record(lock_path: Path, mocker: MockerFixture) -> None:
+    real_write = os.write
+    mocker.patch("filelock._util.os.write", side_effect=lambda fd, data: real_write(fd, bytes(data[:1])))
+
+    with SoftFileLock(lock_path):
+        lines = lock_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == str(os.getpid())
+    assert lines[1] == _HOST
+
+
+def test_zero_write_rolls_back_acquire(lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._util.os.write", return_value=0)
+
+    lock = SoftFileLock(lock_path)
+    with pytest.raises(OSError, match="0 bytes"):
+        lock.acquire()
+    assert not lock.is_locked
+    assert not lock_path.exists()
+
+
+def test_failed_acquire_cleanup_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
+    _hold_reports_foreign_identity(mocker)
+
+    lock = SoftFileLock(lock_path)
+    with pytest.raises(OSError, match="No space left on device"):
+        lock.acquire()
+    assert lock_path.exists()
+
+
+def test_release_without_identity_skips_unlink(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    # The held descriptor can no longer be identified, so release cannot prove the path is still ours: it closes and
+    # clears held state without unlinking rather than risk deleting a successor's marker.
+    mocker.patch("filelock._soft.os.fstat", side_effect=OSError)
+    lock.release()
+    assert not lock.is_locked
+    assert lock_path.exists()
+
+
+def test_normal_release_removes_own_marker(lock_path: Path) -> None:
+    with SoftFileLock(lock_path):
+        assert lock_path.exists()
+    assert not lock_path.exists()
+
+
+@_UNIX_ONLY
+def test_stale_release_spares_a_successor(lock_path: Path) -> None:
+    holder = SoftFileLock(lock_path)
+    holder.acquire()
+    # A peer breaks the stale marker and installs its own at the same path; unlink first so it gets a fresh inode.
+    lock_path.unlink()
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    holder.release()
+    assert lock_path.exists()
+    assert str(_DEAD_PID) in lock_path.read_text(encoding="utf-8")
+
+
+@_WINDOWS_ONLY
+def test_windows_release_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    _hold_reports_foreign_identity(mocker)
+    lock.release()
+    assert lock_path.exists()
+    lock_path.unlink()

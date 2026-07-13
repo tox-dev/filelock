@@ -4,8 +4,29 @@ import os
 import secrets
 import stat
 import sys
-from errno import EACCES, EISDIR
+from errno import EACCES, EIO, EISDIR
 from pathlib import Path
+
+
+def write_all(fd: int, data: bytes) -> None:
+    """
+    Write the whole buffer to *fd*, looping over the short writes ``os.write`` is allowed to make.
+
+    A marker written with a bare ``os.write`` can land partially: a peer reading it mid-write parses a truncated record
+    as malformed or as a foreign holder. Looping until the buffer drains keeps the record atomic in the process and
+    kernel view. No ``fsync``: filelock needs a complete record, not crash-durable storage.
+
+    :param fd: file descriptor open for writing.
+    :param data: bytes to write in full.
+
+    :raises OSError: if a write reports zero progress before the record is complete.
+
+    """
+    remaining = memoryview(data)
+    while remaining:
+        if (written := os.write(fd, remaining)) == 0:
+            raise OSError(EIO, "os.write wrote 0 bytes before the record was complete")
+        remaining = remaining[written:]
 
 
 def raise_on_not_writable_file(filename: str) -> None:
@@ -92,4 +113,5 @@ __all__ = [
     "break_lock_file",
     "ensure_directory_exists",
     "raise_on_not_writable_file",
+    "write_all",
 ]

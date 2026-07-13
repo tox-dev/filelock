@@ -22,7 +22,7 @@ from weakref import WeakValueDictionary
 from filelock._api import AcquireReturnProxy
 from filelock._error import Timeout
 from filelock._soft import SoftFileLock
-from filelock._util import ensure_directory_exists
+from filelock._util import ensure_directory_exists, write_all
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -836,10 +836,28 @@ def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -
         fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
     else:
         fd = os.open(name, flags, 0o600)
+    # Write the whole record before the marker counts as created. On failure remove it only while the path still names
+    # the file we opened, so a rollback never deletes a marker a concurrent reader recreated at this name.
+    identity: tuple[int, int] | None = None
     try:
-        os.write(fd, f"{token}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii"))
-    finally:
+        st = os.fstat(fd)
+        identity = st.st_dev, st.st_ino
+        write_all(fd, f"{token}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii"))
+    except BaseException:
         os.close(fd)
+        if identity is not None and _same_file(name, identity, dir_fd=dir_fd):
+            _unlink(name, dir_fd=dir_fd)
+        raise
+    else:
+        os.close(fd)
+
+
+def _same_file(name: str, identity: tuple[int, int], *, dir_fd: int | None) -> bool:
+    try:
+        st = os.lstat(name, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.lstat(name)
+    except OSError:
+        return False
+    return (st.st_dev, st.st_ino) == identity
 
 
 def _touch(name: str, *, fd: int | None = None) -> None:
