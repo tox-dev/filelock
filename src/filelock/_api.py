@@ -153,6 +153,7 @@ class FileLockMeta(ABCMeta):
         lifetime: float | None = None,
         context_error_policy: ContextErrorPolicy = "chain",
         close_error_policy: CloseErrorPolicy = "default",
+        fallback_to_soft: bool = True,
         **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
     ) -> _T:
         lifetime = _resolve_lifetime(lifetime, supported=cls._lifetime_supported, cls_name=cls.__name__)
@@ -170,6 +171,7 @@ class FileLockMeta(ABCMeta):
             "lifetime": lifetime,
             "context_error_policy": context_error_policy,
             "close_error_policy": close_error_policy,
+            "fallback_to_soft": fallback_to_soft,
             **kwargs,
         }
         if not is_singleton:
@@ -198,6 +200,7 @@ class FileLockMeta(ABCMeta):
             "lifetime": (lifetime, instance.lifetime),
             "context_error_policy": (context_error_policy, instance.context_error_policy),
             "close_error_policy": (close_error_policy, instance.close_error_policy),
+            "fallback_to_soft": (fallback_to_soft, instance.fallback_to_soft),
         }
         non_matching_params = {
             name: (passed_param, set_param)
@@ -220,7 +223,7 @@ class FileLockMeta(ABCMeta):
         return super().__call__(lock_file, **{key: value for key, value in params.items() if key in present_params})
 
 
-class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
+class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa: PLR0904  # public config properties
     """
     Abstract base class for a file lock object.
 
@@ -259,6 +262,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
         lifetime: float | None = None,
         context_error_policy: ContextErrorPolicy = "chain",
         close_error_policy: CloseErrorPolicy = "default",
+        fallback_to_soft: bool = True,
     ) -> None:
         """
         Create a new lock object.
@@ -295,12 +299,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             FUSE/Docker ``EIO``, Windows propagates); ``"raise"`` always propagates the ``OSError``; ``"suppress"``
             always ignores it. Held state is released either way. It does not affect unlock failures or lock-file
             deletion.
+        :param fallback_to_soft: for :class:`UnixFileLock`, whether to switch to :class:`SoftFileLock` when the
+            filesystem's ``flock`` returns ``ENOSYS``. ``True`` (the default) keeps the historical fallback;
+            ``False`` fails closed, letting the ``ENOSYS`` propagate so a caller that needs kernel-enforced
+            locking is never silently downgraded. It has no effect on Windows or :class:`SoftFileLock`.
 
         """
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
         self._close_error_policy = close_error_policy  # already validated by the metaclass
+        self._fallback_to_soft = fallback_to_soft
 
         # External code reaches these values through the public properties, not through _context directly.
         kwargs: dict[str, Any] = {
@@ -358,6 +367,19 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):
             if self._close_error_policy == "suppress" or (self._close_error_policy == "default" and default_suppresses):
                 return
             raise
+
+    @property
+    def fallback_to_soft(self) -> bool:
+        """
+        Whether a :class:`FileLock` falls back to :class:`SoftFileLock` when the filesystem lacks ``flock``.
+
+        Only :class:`UnixFileLock` acts on it: when ``False`` an ``ENOSYS`` from ``flock`` propagates instead of
+        switching to existence-lock semantics.
+
+        .. versionadded:: 3.27.0
+
+        """
+        return self._fallback_to_soft
 
     @property
     def lock_file(self) -> str:

@@ -631,3 +631,16 @@ async def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: Mo
     _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
     await lock.release()
     assert not lock.is_locked
+
+
+@_UNIX_FLOCK_ONLY
+@pytest.mark.asyncio
+async def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
+    import errno
+
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(errno.ENOSYS, "no flock"))
+    lock = AsyncFileLock(str(tmp_path / "a"), fallback_to_soft=False)
+    with pytest.raises(OSError, match="no flock"):
+        await lock.acquire()
+    assert not lock.is_locked
+    assert type(lock).__name__ == "AsyncUnixFileLock"  # not swapped to the soft class
