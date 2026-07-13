@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import suppress
-from errno import EACCES
 from pathlib import Path
 from typing import Final, cast
 
@@ -34,6 +33,14 @@ if sys.platform == "win32":  # pragma: win32 cover
     _CREATE_OPTIONS: Final[int] = _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_NON_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT
     _OBJ_CASE_INSENSITIVE: Final[int] = 0x00000040  # Win32 name lookups are case-insensitive
     _OWNER_WRITE: Final[int] = 0o200
+
+    # LockFileEx locks a byte range at an offset carried in OVERLAPPED, independent of the descriptor's file position.
+    # msvcrt.locking starts at the current position instead, so a metadata write between lock and unlock could shift
+    # the byte a later unlock targets; the explicit offset removes that hazard for both the path lock and #608's
+    # descriptor lock.
+    _LOCKFILE_FAIL_IMMEDIATELY: Final[int] = 0x00000001
+    _LOCKFILE_EXCLUSIVE_LOCK: Final[int] = 0x00000002
+    _ERROR_LOCK_VIOLATION: Final[int] = 33  # another handle holds the byte range
 
     # NtCreateFile returns the raw NTSTATUS as its value, where CreateFileW collapses several of these into one
     # ERROR_ACCESS_DENIED. Telling them apart is the point (#604): a name pending deletion or a share conflict is
@@ -67,6 +74,15 @@ if sys.platform == "win32":  # pragma: win32 cover
         _fields_ = (
             ("Status", ctypes.c_void_p),  # a union of NTSTATUS and PVOID, so it is pointer-sized
             ("Information", ctypes.c_void_p),
+        )
+
+    class _OVERLAPPED(ctypes.Structure):  # mirrors the Win32 struct name
+        _fields_ = (
+            ("Internal", ctypes.c_void_p),  # ULONG_PTR: pointer-sized, not DWORD, or the x64 layout corrupts Offset
+            ("InternalHigh", ctypes.c_void_p),
+            ("Offset", wintypes.DWORD),  # the DUMMYUNIONNAME struct, flattened: low 32 bits of the byte offset
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
         )
 
     class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):  # noqa: N801  # mirrors the Win32 struct name
@@ -113,10 +129,47 @@ if sys.platform == "win32":  # pragma: win32 cover
     _kernel32.CloseHandle.restype = wintypes.BOOL
     _kernel32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION)]
     _kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    _kernel32.LockFileEx.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_OVERLAPPED),
+    ]
+    _kernel32.LockFileEx.restype = wintypes.BOOL
+    _kernel32.UnlockFileEx.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_OVERLAPPED),
+    ]
+    _kernel32.UnlockFileEx.restype = wintypes.BOOL
+
+    def _lock_fd_nonblocking(fd: int) -> bool:
+        # One nonblocking exclusive LockFileEx attempt shared by WindowsFileLock and lock_descriptor, over the one-byte
+        # range at offset 0. True on acquisition, False on contention, raise otherwise. The caller owns fd; the handle
+        # from get_osfhandle belongs to the CRT descriptor and must not be closed here.
+        handle = msvcrt.get_osfhandle(fd)
+        overlapped = _OVERLAPPED()  # zero-initialized, so Offset/OffsetHigh/hEvent are 0
+        flags = _LOCKFILE_EXCLUSIVE_LOCK | _LOCKFILE_FAIL_IMMEDIATELY
+        if _kernel32.LockFileEx(handle, flags, 0, 1, 0, ctypes.byref(overlapped)):
+            return True
+        err = ctypes.get_last_error()
+        if err == _ERROR_LOCK_VIOLATION:
+            return False
+        raise ctypes.WinError(err)
+
+    def _unlock_fd(fd: int) -> None:
+        handle = msvcrt.get_osfhandle(fd)
+        overlapped = _OVERLAPPED()  # the same offset 0 and one-byte length the lock used
+        if not _kernel32.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(overlapped)):
+            raise ctypes.WinError(ctypes.get_last_error())
 
     class WindowsFileLock(BaseFileLock):
         """
-        Uses the :func:`msvcrt.locking` function to hard lock the lock file on Windows systems.
+        Uses ``LockFileEx`` to hard lock a byte range of the lock file on Windows systems.
 
         Lock file cleanup: Windows attempts to delete the lock file after release, but deletion is
         not guaranteed in multi-threaded scenarios where another thread holds an open handle. The lock
@@ -133,20 +186,21 @@ if sys.platform == "win32":  # pragma: win32 cover
             if fd is None:
                 return  # open contention (share conflict or a name pending deletion); let the retry loop try again
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            except OSError as exception:
+                locked = _lock_fd_nonblocking(fd)
+            except BaseException:
                 os.close(fd)
-                if exception.errno != EACCES:  # EACCES means another holder owns the byte-range lock
-                    raise
-            else:
+                raise
+            if locked:
                 self._context.lock_file_fd = fd
+            else:
+                os.close(fd)  # another holder owns the byte-range lock; let the retry loop try again
 
         def _release(self) -> None:
             fd = cast("int", self._context.lock_file_fd)
-            # Retain the descriptor until the OS unlock succeeds: if msvcrt.locking raises, the byte-range lock is
-            # still held, so is_locked must keep reporting held rather than losing the fd. Only after the unlock
-            # commits do close and unlink run as post-unlock cleanup; their failure cannot make the lock held again.
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            # Retain the descriptor until the OS unlock succeeds: if UnlockFileEx raises, the byte-range lock is still
+            # held, so is_locked must keep reporting held rather than losing the fd. Only after the unlock commits do
+            # close and unlink run as post-unlock cleanup; their failure cannot make the lock held again.
+            _unlock_fd(fd)
             self._context.lock_file_fd = None
             self._close_released_fd(fd, default_suppresses=False)
             with suppress(OSError):
@@ -254,7 +308,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 else:  # pragma: win32 no cover
 
     class WindowsFileLock(BaseFileLock):
-        """Uses the :func:`msvcrt.locking` function to hard lock the lock file on Windows systems."""
+        """Uses ``LockFileEx`` to hard lock a byte range of the lock file on Windows systems."""
 
         def _acquire(self) -> None:
             raise NotImplementedError
