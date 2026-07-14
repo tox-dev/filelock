@@ -1,0 +1,1 @@
+Correct the Unix lock-file cleanup and ``flock`` documentation.

@@ -32,6 +32,8 @@ def lock_descriptor(fd: int, *, blocking: bool = True, poll_interval: float = 0.
 
     :raises OSError: for a permanent native failure, such as an invalid descriptor. The descriptor is left open.
 
+    .. versionadded:: 3.30.0
+
     """
     if not blocking:
         return _lock_fd_nonblocking(fd)
@@ -47,6 +49,8 @@ def unlock_descriptor(fd: int) -> None:
     :param fd: the descriptor a prior :func:`lock_descriptor` locked; the caller still owns and must close it.
 
     :raises OSError: if the native unlock fails; the caller may retry on the same descriptor.
+
+    .. versionadded:: 3.30.0
 
     """
     _unlock_fd(fd)

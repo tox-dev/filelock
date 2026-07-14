@@ -223,7 +223,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         caller's timeout (#604).
 
         The reparse option only guards the final path component; Windows still follows reparse points in intermediate
-        directories. This assumes the lock file sits in a lock directory untrusted users cannot modify — a path with
+        directories. This assumes the lock file sits in a lock directory untrusted users cannot modify. A path with
         attacker-controlled parent directories would need component-by-component handle validation.
 
         :param path: the lock file path.
@@ -282,7 +282,6 @@ if sys.platform == "win32":  # pragma: win32 cover
             attributes.Attributes = _OBJ_CASE_INSENSITIVE
             handle = wintypes.HANDLE()
             io_status = _IO_STATUS_BLOCK()
-            file_attributes = _FILE_ATTRIBUTE_READONLY if read_only else _FILE_ATTRIBUTE_NORMAL
             status = (
                 _ntdll.NtCreateFile(
                     ctypes.byref(handle),
@@ -290,7 +289,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                     ctypes.byref(attributes),
                     ctypes.byref(io_status),
                     None,
-                    file_attributes,
+                    _FILE_ATTRIBUTE_READONLY if read_only else _FILE_ATTRIBUTE_NORMAL,
                     _FILE_SHARE_READ_WRITE,
                     _FILE_OPEN_IF,
                     _CREATE_OPTIONS,

@@ -1,0 +1,1 @@
+Add an ``on_acquired`` hook that runs a callback on the locked descriptor once the lock is held.

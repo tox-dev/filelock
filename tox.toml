@@ -145,3 +145,9 @@ description = "dev environment with all deps at {envdir}"
 package = "editable"
 dependency_groups = [ "dev" ]
 commands = [ [ "uv", "pip", "list", "--format=columns" ], [ "python", "-c", 'print(r"{env_python}")' ] ]
+
+[env.release]
+description = "build the changelog from the news fragments for the given version, e.g. tox r -e release -- 3.30.0"
+skip_install = true
+dependency_groups = [ "release" ]
+commands = [ [ "towncrier", "build", "--yes", "--version", "{posargs}" ] ]

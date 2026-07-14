@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from docutils.nodes import Element, Text, reference
@@ -32,9 +33,15 @@ extensions = [
     "sphinx_design",
     "sphinx_sitemap",
     "sphinxcontrib.mermaid",
+    "sphinxcontrib.towncrier.ext",  # render unreleased news fragments as a draft "Unreleased" section
     "sphinxext.opengraph",
 ]
 mermaid_output_format = "raw"
+
+# sphinxcontrib-towncrier: the .. towncrier-draft-entries:: directive in changelog.rst shows the unreleased fragments.
+towncrier_draft_autoversion_mode = "draft"
+towncrier_draft_include_empty = True  # keep the docs build green right after a release, when no fragments remain
+towncrier_draft_working_directory = Path(__file__).parent.parent
 
 # sphinx-copybutton: add copy button to code blocks
 copybutton_prompt_is_regexp = True
@@ -57,13 +64,14 @@ html_favicon = "logo.svg"
 html_title, html_last_updated_fmt = name, now.isoformat()
 html_baseurl = "https://py-filelock.readthedocs.io/"
 pygments_style, pygments_dark_style = "sphinx", "monokai"
-autoclass_content, autodoc_member_order, autodoc_typehints = "class", "bysource", "none"
+autoclass_content, autodoc_member_order, autodoc_typehints = "both", "bysource", "none"
 autodoc_default_options = {"member-order": "bysource", "undoc-members": True, "show-inheritance": True}
 autosectionlabel_prefix_document = True
 
 intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
 nitpicky = True
-nitpick_ignore = []
+# Towncrier news fragments are rST snippets folded into changelog.rst at release; they are not standalone pages.
+exclude_patterns = ["changelog/*"]
 extlinks = {
     "issue": ("https://github.com/tox-dev/py-filelock/issues/%s", "issue #%s"),
     "pr": ("https://github.com/tox-dev/py-filelock/issues/%s", "PR #%s"),

@@ -159,9 +159,10 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             identity (Windows skips its unlink, Unix refuses the ``ENOSYS`` soft fallback). :class:`AsyncSoftFileLock`
             rejects ``True``.
         :param on_acquired: for native locks (:class:`AsyncFileLock`), a callable invoked with the borrowed lock
-            descriptor once per physical acquisition, after the lock is held but before :meth:`acquire` returns. With
-            ``run_in_executor=True`` (the default) it runs in the backend executor. It must not close or unlock the
-            descriptor; a raise rolls the acquisition back. :class:`AsyncSoftFileLock` rejects it.
+            descriptor once per physical acquisition, after the lock is held but before
+            :meth:`~BaseAsyncFileLock.acquire` returns. With ``run_in_executor=True`` (the default) it runs in the
+            backend executor. It must not close or unlock the descriptor; a raise rolls the acquisition back.
+            :class:`AsyncSoftFileLock` rejects it.
         :param loop: The event loop to use. If not specified, the running event loop will be used.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
@@ -363,7 +364,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     def __enter__(self) -> NoReturn:
         """Sync context manager entry is not supported because lock acquisition is a coroutine."""
-        msg = "Use `async with` — acquire/release are coroutines and cannot be awaited in a sync context manager."
+        msg = "Use `async with`: acquire/release are coroutines and cannot be awaited in a sync context manager."
         raise NotImplementedError(msg)
 
     def __exit__(
@@ -373,7 +374,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         traceback: object,
     ) -> None:
         """Sync context manager exit is not supported because lock release is a coroutine."""
-        msg = "Use `async with` — acquire/release are coroutines and cannot be awaited in a sync context manager."
+        msg = "Use `async with`: acquire/release are coroutines and cannot be awaited in a sync context manager."
         raise NotImplementedError(msg)
 
     async def __aenter__(self) -> Self:
@@ -414,7 +415,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             _raise_body_and_release(body_error, release_error)
 
     def __del__(self) -> None:
-        """Release on deletion — safe to call during GC even when no event loop is running."""
+        """Release on deletion; safe to call during GC even when no event loop is running."""
         with contextlib.suppress(Exception):
             try:
                 loop = asyncio.get_running_loop()

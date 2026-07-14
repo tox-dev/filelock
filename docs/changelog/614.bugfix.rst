@@ -1,0 +1,1 @@
+Write a soft lock's holder record atomically so a short write cannot create overlapping holders.

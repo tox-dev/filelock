@@ -57,7 +57,7 @@ File locks are most useful when protecting data that multiple processes access:
         with data_file.open("a") as f:
             f.write("Hello from Process B\n")
 
-The key pattern: **before making changes, check what's already done.** Process A checks whether the file exists before
+Before making changes, check what is already done. Process A checks whether the file exists before
 writing. Process B appends, so it skips the check. Both use the lock so that only one process modifies the file at a
 time.
 
@@ -104,11 +104,11 @@ inspect this counter and the lock state at any time:
     print(lock.lock_counter)  # 2
 
     lock.release()
-    print(lock.lock_counter)  # 1 — still locked
+    print(lock.lock_counter)  # 1, still locked
     print(lock.is_locked)     # True
 
     lock.release()
-    print(lock.lock_counter)  # 0 — fully released
+    print(lock.lock_counter)  # 0, fully released
     print(lock.is_locked)     # False
 
 You can call functions that acquire a lock even while you already hold it.

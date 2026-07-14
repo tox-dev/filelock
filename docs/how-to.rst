@@ -212,7 +212,7 @@ Acquiring through one reference counts toward the same lock depth:
 .. code-block:: python
 
     lock_a.acquire()
-    lock_b.acquire()  # Reentrant—lock counter is now 2
+    lock_b.acquire()  # reentrant, lock counter is now 2
     lock_b.release()  # Lock counter is 1
     lock_a.release()  # Lock is fully released
 
@@ -349,8 +349,8 @@ its ``LeaseKeepAlive``. Lower ``poll_interval`` reduces acquire latency under co
 NFS ``stat`` calls per waiting client.
 
 Writer acquisition is two-phase and writer-preferring: phase one claims the writer marker (which blocks any
-new reader), phase two waits for existing readers to drain. This rules out writer starvation even under a
-read-heavy workload like the 99/1 reader-to-writer mix typical of slurm job queues.
+new reader), phase two waits for existing readers to drain. This rules out writer starvation under read-heavy
+workloads. See :doc:`concepts` for the full model.
 
 **Fork caveat.** A process that forks while holding a ``SoftReadWriteLock`` loses the lock in the child. filelock marks the
 inherited instance fork-invalidated; ``release()`` on it becomes a no-op, and the child must call
@@ -505,21 +505,27 @@ library:
  Set lock lifetime
 *******************
 
-You can create locks that expire after a set time:
+Only :class:`SoftFileLock <filelock.SoftFileLock>` honors ``lifetime``. A waiting process breaks a lock file whose
+modification time is older than ``lifetime`` seconds, even if the holder is still alive:
 
 .. code-block:: python
 
-    from filelock import FileLock
+    from filelock import SoftFileLock
 
     # Lock expires after 3600 seconds (1 hour)
-    lock = FileLock("work.lock", lifetime=3600)
+    lock = SoftFileLock("work.lock", lifetime=3600)
 
     with lock:
-        # Lock is held, but will auto-expire after 1 hour
+        # Lock is held; a waiter may break it once the lock file is older than 1 hour
         pass
 
-This is useful for distributed systems where a process might crash and leave a lock behind. After the lifetime expires,
-other processes can acquire it.
+This helps distributed systems where a process might crash and leave a lock behind. After the lifetime expires, other
+processes can acquire it.
+
+Native locks (:class:`FileLock <filelock.FileLock>`, :class:`UnixFileLock <filelock.UnixFileLock>`,
+:class:`WindowsFileLock <filelock.WindowsFileLock>`) ignore a non-``None`` ``lifetime`` and emit a warning. A kernel
+lock lives on the inode, so unlinking the pathname by age cannot revoke it, and a contender would lock a fresh inode
+while the holder is still live. Use ``SoftFileLock`` when you need age-based expiry.
 
 **************************
  Cancel lock acquisition
@@ -584,7 +590,7 @@ regardless of the counter, pass ``force=True``:
     print(lock.lock_counter)  # 2
 
     lock.release(force=True)
-    print(lock.is_locked)  # False — fully released
+    print(lock.is_locked)  # False, fully released
 
 This is useful in error recovery or cleanup handlers where you need to ensure the lock is fully released:
 
@@ -633,3 +639,146 @@ acquire with ``blocking=False``:
             print("Lock was free")
     except Timeout:
         print("Lock is held by another process")
+
+***************************************
+ Reconcile body and release failures
+***************************************
+
+When a ``with`` block fails and releasing the lock on exit also fails, Python's default keeps the body error in the
+release error's ``__context__``. That buries one error inside the other. Set ``context_error_policy="group"`` to raise
+both as siblings of a :class:`BaseExceptionGroup`, body first, release second:
+
+.. code-block:: python
+
+    from filelock import FileLock
+
+    lock = FileLock("work.lock", context_error_policy="group")
+
+    with lock:
+        raise RuntimeError("body failed")
+    # if release() then also fails, both surface as a BaseExceptionGroup
+
+``"group"`` needs Python 3.11+ or the ``exceptiongroup`` backport; filelock checks this when you construct the lock.
+When both errors subclass :class:`Exception`, the group is a plain :class:`ExceptionGroup`, so ``except*`` and
+``except Exception`` still catch it. The default ``"chain"`` keeps Python's behavior.
+
+*****************************************
+ Handle a close failure after unlock
+*****************************************
+
+Native locks close the lock descriptor after the OS unlock has committed. On FUSE and Docker overlay filesystems
+``os.close`` can fail with ``EIO`` even though the lock already released. ``close_error_policy`` decides the outcome:
+
+- ``"default"`` keeps each platform's historical behavior: Unix drops the error, Windows propagates it.
+- ``"raise"`` always propagates the ``OSError``.
+- ``"suppress"`` always ignores it.
+
+.. code-block:: python
+
+    from filelock import FileLock
+
+    lock = FileLock("work.lock", close_error_policy="suppress")
+
+The lock is released in every case; the policy only governs the post-unlock ``os.close``. It does not affect unlock
+failures or lock-file deletion.
+
+***********************************************
+ Fail closed instead of downgrading to soft
+***********************************************
+
+On Unix, when the filesystem's ``flock`` returns ``ENOSYS`` (some network mounts), :class:`FileLock
+<filelock.FileLock>` switches to :class:`SoftFileLock <filelock.SoftFileLock>` semantics by default, trading
+kernel-enforced locking for cooperative existence locking. If your code needs kernel enforcement, pass
+``fallback_to_soft=False`` so the ``ENOSYS`` propagates instead of a silent downgrade to soft locking:
+
+.. code-block:: python
+
+    from filelock import FileLock
+
+    lock = FileLock("work.lock", fallback_to_soft=False)
+
+It has no effect on Windows or :class:`SoftFileLock <filelock.SoftFileLock>`.
+
+*********************************
+ Keep the lock file on release
+*********************************
+
+Native backends handle the lock pathname differently: Windows unlinks it after release, Unix leaves it in place. Pass
+``preserve_lock_file=True`` for a stable file identity across releases, which matters for ACLs, auditing, or holder
+metadata written through :ref:`on_acquired <how-to:Run a callback once the lock is held>`:
+
+.. code-block:: python
+
+    from filelock import FileLock
+
+    lock = FileLock("work.lock", preserve_lock_file=True)
+
+Windows then skips its post-release unlink, and Unix refuses the ``ENOSYS`` soft fallback (which releases by
+unlinking). :class:`SoftFileLock <filelock.SoftFileLock>` rejects ``True`` because unlinking its marker is how it
+releases. The promise covers filelock's own release path; it cannot stop another process or the filesystem from
+removing the file.
+
+*****************************************
+ Run a callback once the lock is held
+*****************************************
+
+``on_acquired`` runs once per physical acquisition, after filelock holds the native lock and finished backend
+initialization, before :meth:`acquire() <filelock.BaseFileLock.acquire>` returns. filelock passes the borrowed lock
+descriptor. The callback may read,
+write, seek, truncate, or set metadata through ``os`` on it, but must not close, unlock, or take ownership of the
+descriptor. A recursive acquire does not call it again. If the callback raises, filelock releases the lock and
+re-raises.
+
+A common use is stamping holder metadata into the lock file:
+
+.. code-block:: python
+
+    import json
+    import os
+    import socket
+
+    from filelock import FileLock
+
+
+    def write_holder(fd: int) -> None:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, json.dumps({"pid": os.getpid(), "host": socket.gethostname()}).encode())
+
+
+    lock = FileLock("work.lock", on_acquired=write_holder, preserve_lock_file=True)
+
+    with lock:
+        ...  # while held, other processes can read the holder metadata from work.lock
+
+filelock does not ``fsync`` the descriptor's writes. Native locks only; :class:`SoftFileLock
+<filelock.SoftFileLock>` rejects the hook because it keeps its own protocol state in the marker file.
+
+*******************************************
+ Lock a descriptor you already own
+*******************************************
+
+:func:`lock_descriptor <filelock.lock_descriptor>` and :func:`unlock_descriptor <filelock.unlock_descriptor>` take and
+release the same one-byte native lock :class:`FileLock <filelock.FileLock>` uses, but on a file descriptor you opened
+and own. They add no path handling: no open, truncate, close, unlink, chmod, canonicalize, or fallback. A descriptor
+lock and a ``FileLock`` path lock on the same file contend with each other.
+
+.. code-block:: python
+
+    import os
+
+    from filelock import lock_descriptor, unlock_descriptor
+
+    fd = os.open("work.lock", os.O_RDWR | os.O_CREAT)
+    try:
+        lock_descriptor(fd)  # blocks until the lock is held
+        try:
+            ...  # critical section
+        finally:
+            unlock_descriptor(fd)
+    finally:
+        os.close(fd)
+
+Pass ``blocking=False`` for a single attempt that returns ``False`` on contention. There is no async wrapper: run it in
+an executor, or drive ``blocking=False`` from your own polling loop. On Windows *fd* must be a synchronous descriptor.
+For timeout, reentrancy, singleton, lifetime, or stale-break behavior, use :class:`FileLock <filelock.FileLock>`.

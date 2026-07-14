@@ -1,0 +1,1 @@
+Open the Windows lock file via ``NtCreateFile`` so a real access denial is raised, not reported as a timeout.
