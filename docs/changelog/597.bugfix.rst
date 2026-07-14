@@ -1,0 +1,1 @@
+Evict a non-regular soft lock file without reading it.

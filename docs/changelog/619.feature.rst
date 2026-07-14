@@ -1,0 +1,1 @@
+Add ``close_error_policy`` to control an ``os.close`` failure after the OS unlock.

@@ -1,0 +1,1 @@
+Canonicalize singleton keys so equivalent path spellings share an instance, without following a final symlink.

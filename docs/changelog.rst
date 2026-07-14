@@ -2,6 +2,41 @@
  Changelog
 ###########
 
+.. towncrier-draft-entries:: Unreleased
+
+.. towncrier release notes start
+
+********************
+ 3.29.7 (2026-07-07)
+********************
+
+- _util: drop the dead st_mtime=0 short-circuit in raise_on_not_writable_file :pr:`589` - by :user:`HrachShah`
+- soft_rw: evict a non-regular write marker without reading it :pr:`588`
+- asyncio: detect cross-instance reentrant deadlocks before the poll loop :pr:`586` - by :user:`HrachShah`
+
+********************
+ 3.29.6 (2026-07-06)
+********************
+
+- test: silence fork DeprecationWarning on 3.15 :pr:`585`
+- _util: drop the dead st_mtime=0 short-circuit in raise_on_not_writable_file :pr:`582` - by :user:`HrachShah`
+- serialise singleton construction in FileLockMeta :pr:`581` - by :user:`dxbjavid`
+- surface GitHub Sponsors and thanks.dev
+
+********************
+ 3.29.5 (2026-07-02)
+********************
+
+- lifetime: reject negative, non-numeric, and bool values at the setter :pr:`573` - by :user:`HrachShah`
+- roll back a read acquire's open transaction when its SELECT fails :pr:`575` - by :user:`dxbjavid`
+- keep Unix lock files after release :pr:`577` - by :user:`itscloud0`
+- use a private break name in break_lock_file :pr:`576` - by :user:`dxbjavid`
+- don't complete a writer acquire on a peer's reclaimed marker :pr:`571` - by :user:`dxbjavid`
+- don't follow symlinks in raise_on_not_writable_file :pr:`567` - by :user:`dxbjavid`
+- only unlink the writer marker on release if it is still ours :pr:`566` - by :user:`dxbjavid`
+- don't follow symlinks when refreshing soft read/write lock markers :pr:`565` - by :user:`dxbjavid`
+- serialise read/write release rollback against a concurrent acquire :pr:`563` - by :user:`dxbjavid`
+
 ********************
  3.29.4 (2026-06-13)
 ********************

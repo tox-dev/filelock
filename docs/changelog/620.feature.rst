@@ -1,0 +1,1 @@
+Add ``lock_descriptor`` and ``unlock_descriptor`` to lock a caller-owned file descriptor.

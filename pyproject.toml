@@ -80,7 +80,9 @@ docs = [
   "sphinx-design>=0.7",
   "sphinx-sitemap>=2.9",
   "sphinxcontrib-mermaid>=2.0.1",
+  "sphinxcontrib-towncrier>=0.5.0a0",
   "sphinxext-opengraph>=0.13",
+  "towncrier>=24.8",
 ]
 coverage = [
   "covdefaults>=2.3",
@@ -96,9 +98,7 @@ pkg-meta = [
   "uv>=0.11.5",
 ]
 release = [
-  "gitpython>=3.1.46",
-  "pygithub>=2.9",
-  "pyyaml>=6.0.3",
+  "towncrier>=24.8",
 ]
 
 [tool.hatch]
@@ -211,3 +211,18 @@ paths.source = [
 report.fail_under = 76
 html.show_contexts = true
 html.skip_covered = false
+
+[tool.towncrier]
+name = "filelock"
+directory = "docs/changelog"
+filename = "docs/changelog.rst"
+template = "docs/changelog/template.jinja2"
+title_format = false
+issue_format = ":pr:`{issue}`"
+type = [
+  { directory = "breaking", name = "Backward incompatible changes", showcontent = true },
+  { directory = "feature", name = "Features", showcontent = true },
+  { directory = "bugfix", name = "Bug fixes", showcontent = true },
+  { directory = "doc", name = "Improved documentation", showcontent = true },
+  { directory = "packaging", name = "Packaging updates", showcontent = true },
+]

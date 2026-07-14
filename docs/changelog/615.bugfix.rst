@@ -1,0 +1,1 @@
+Make native lock release transactional so a failed unlock is retried, not dropped.

@@ -1,0 +1,1 @@
+Bind the Windows reparse-point check to the locked handle to close a symlink-swap race.

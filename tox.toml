@@ -140,6 +140,12 @@ description = "run type check on code base"
 dependency_groups = [ "type" ]
 commands = [ [ "ty", "check", "--output-format", "concise", "--error-on-warning", "." ] ]
 
+[env.release]
+description = "build the changelog from the news fragments for the given version, e.g. tox r -e release -- 3.30.0"
+skip_install = true
+dependency_groups = [ "release" ]
+commands = [ [ "towncrier", "build", "--yes", "--version", "{posargs}" ] ]
+
 [env.dev]
 description = "dev environment with all deps at {envdir}"
 package = "editable"
