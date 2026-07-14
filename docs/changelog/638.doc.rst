@@ -1,0 +1,1 @@
+Drop automated bot entries from the changelog and link its code references to the API docs and the Python standard library.

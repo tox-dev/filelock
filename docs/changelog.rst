@@ -10,7 +10,7 @@
  3.29.7 (2026-07-07)
 ********************
 
-- _util: drop the dead st_mtime=0 short-circuit in raise_on_not_writable_file :pr:`589` - by :user:`HrachShah`
+- _util: drop the dead ``st_mtime=0`` short-circuit in ``raise_on_not_writable_file`` :pr:`589` - by :user:`HrachShah`
 - soft_rw: evict a non-regular write marker without reading it :pr:`588`
 - asyncio: detect cross-instance reentrant deadlocks before the poll loop :pr:`586` - by :user:`HrachShah`
 
@@ -19,8 +19,8 @@
 ********************
 
 - test: silence fork DeprecationWarning on 3.15 :pr:`585`
-- _util: drop the dead st_mtime=0 short-circuit in raise_on_not_writable_file :pr:`582` - by :user:`HrachShah`
-- serialize singleton construction in FileLockMeta :pr:`581` - by :user:`dxbjavid`
+- _util: drop the dead ``st_mtime=0`` short-circuit in ``raise_on_not_writable_file`` :pr:`582` - by :user:`HrachShah`
+- serialize singleton construction in ``FileLockMeta`` :pr:`581` - by :user:`dxbjavid`
 - surface GitHub Sponsors and thanks.dev
 
 ********************
@@ -30,9 +30,9 @@
 - lifetime: reject negative, non-numeric, and bool values at the setter :pr:`573` - by :user:`HrachShah`
 - roll back a read acquire's open transaction when its SELECT fails :pr:`575` - by :user:`dxbjavid`
 - keep Unix lock files after release :pr:`577` - by :user:`itscloud0`
-- use a private break name in break_lock_file :pr:`576` - by :user:`dxbjavid`
+- use a private break name in ``break_lock_file`` :pr:`576` - by :user:`dxbjavid`
 - don't complete a writer acquire on a peer's reclaimed marker :pr:`571` - by :user:`dxbjavid`
-- don't follow symlinks in raise_on_not_writable_file :pr:`567` - by :user:`dxbjavid`
+- don't follow symlinks in ``raise_on_not_writable_file`` :pr:`567` - by :user:`dxbjavid`
 - only unlink the writer marker on release if it is still ours :pr:`566` - by :user:`dxbjavid`
 - don't follow symlinks when refreshing soft read/write lock markers :pr:`565` - by :user:`dxbjavid`
 - serialize read/write release rollback against a concurrent acquire :pr:`563` - by :user:`dxbjavid`
@@ -42,24 +42,21 @@
 ********************
 
 - keep the read/write heartbeat alive on a transient touch error :pr:`562` - by :user:`dxbjavid`
-- verify inode in break_lock_file before unlinking a stale lock :pr:`561` - by :user:`dxbjavid`
+- verify inode in ``break_lock_file`` before unlinking a stale lock :pr:`561` - by :user:`dxbjavid`
 
 ********************
  3.29.3 (2026-06-10)
 ********************
 
 - 🐛 fix(ci): restore release environment on tag job :pr:`559`
-- validate pid range in _parse_lock_holder :pr:`556` - by :user:`dxbjavid`
+- validate pid range in ``_parse_lock_holder`` :pr:`556` - by :user:`dxbjavid`
 - 🔧 ci(release): publish to PyPI on tag push :pr:`557`
-- build(deps): bump astral-sh/setup-uv from 8.1.0 to 8.2.0 :pr:`558` - by :user:`dependabot[bot]`
 
 ********************
  3.29.2 (2026-06-10)
 ********************
 
-- build(deps): bump actions/checkout from 6.0.2 to 6.0.3 :pr:`555` - by :user:`dependabot[bot]`
-- [pre-commit.ci] pre-commit autoupdate :pr:`554` - by :user:`pre-commit-ci[bot]`
-- check hostname in is_lock_held_by_us :pr:`553` - by :user:`dxbjavid`
+- check hostname in ``is_lock_held_by_us`` :pr:`553` - by :user:`dxbjavid`
 - 🔒 fix(soft): harden stale-lock breaking and self-heal malformed locks :pr:`551`
 - open marker reads non-blocking to refuse attacker-placed fifo :pr:`549` - by :user:`dxbjavid`
 
@@ -68,19 +65,11 @@
 ********************
 
 - 🐛 fix(soft): refuse to follow symlinks when reading the lock file :pr:`548` - by :user:`dxbjavid`
-- [pre-commit.ci] pre-commit autoupdate :pr:`547` - by :user:`pre-commit-ci[bot]`
-- [pre-commit.ci] pre-commit autoupdate :pr:`546` - by :user:`pre-commit-ci[bot]`
 - chore: improve filelock maintenance path :pr:`545` - by :user:`lphuc2250gma`
 - chore: improve filelock maintenance path :pr:`544` - by :user:`lphuc2250gma`
 - chore: improve filelock maintenance path :pr:`542` - by :user:`lphuc2250gma`
-- docs: clarify per-thread scope of FileLock configuration :pr:`543` - by :user:`Gares95`
-- [pre-commit.ci] pre-commit autoupdate :pr:`541` - by :user:`pre-commit-ci[bot]`
-- docs: fix API docs of `release()` :pr:`540` - by :user:`MrAnno`
-- [pre-commit.ci] pre-commit autoupdate :pr:`539` - by :user:`pre-commit-ci[bot]`
-- [pre-commit.ci] pre-commit autoupdate :pr:`538` - by :user:`pre-commit-ci[bot]`
-- [pre-commit.ci] pre-commit autoupdate :pr:`537` - by :user:`pre-commit-ci[bot]`
-- build(deps): bump astral-sh/setup-uv from 8.0.0 to 8.1.0 :pr:`536` - by :user:`dependabot[bot]`
-- [pre-commit.ci] pre-commit autoupdate :pr:`535` - by :user:`pre-commit-ci[bot]`
+- docs: clarify per-thread scope of :class:`~filelock.FileLock` configuration :pr:`543` - by :user:`Gares95`
+- docs: fix API docs of :meth:`~filelock.BaseFileLock.release` :pr:`540` - by :user:`MrAnno`
 
 ********************
  3.29.0 (2026-04-19)
@@ -88,7 +77,6 @@
 
 - ✨ feat(soft): enable stale lock detection on Windows :pr:`534`
 - 🐛 fix(async): use single-thread executor for lock consistency :pr:`533`
-- build(deps): bump actions/upload-artifact from 7.0.0 to 7.0.1 :pr:`530` - by :user:`dependabot[bot]`
 
 ********************
  3.28.0 (2026-04-14)
@@ -100,62 +88,51 @@
  3.26.1 (2026-04-09)
 ********************
 
-- 🐛 fix(asyncio): add __exit__ to BaseAsyncFileLock and fix __del__ loop handling :pr:`518` - by :user:`naarob`
-- build(deps): bump pypa/gh-action-pypi-publish from 1.13.0 to 1.14.0 :pr:`525` - by :user:`dependabot[bot]`
+- 🐛 fix(asyncio): add ``__exit__`` to :class:`~filelock.BaseAsyncFileLock` and fix ``__del__`` loop handling :pr:`518` - by :user:`naarob`
 
 ********************
  3.26.0 (2026-04-06)
 ********************
 
 - ✨ feat(soft): add PID inspection and lock breaking :pr:`524`
-- [pre-commit.ci] pre-commit autoupdate :pr:`523` - by :user:`pre-commit-ci[bot]`
-- build(deps): bump astral-sh/setup-uv from 7.6.0 to 8.0.0 :pr:`522` - by :user:`dependabot[bot]`
 - Remove persist-credentials: false from release job :pr:`520`
-- [pre-commit.ci] pre-commit autoupdate :pr:`519` - by :user:`pre-commit-ci[bot]`
 - 🔒 ci(workflows): add zizmor security auditing :pr:`517`
-- [pre-commit.ci] pre-commit autoupdate :pr:`516` - by :user:`pre-commit-ci[bot]`
-- [pre-commit.ci] pre-commit autoupdate :pr:`514` - by :user:`pre-commit-ci[bot]`
 
 ********************
  3.25.2 (2026-03-11)
 ********************
 
-- 🐛 fix(unix): suppress EIO on close in Docker bind mounts :pr:`513`
+- 🐛 fix(unix): suppress ``EIO`` on close in Docker bind mounts :pr:`513`
 
 ********************
  3.25.1 (2026-03-09)
 ********************
 
-- [pre-commit.ci] pre-commit autoupdate :pr:`510` - by :user:`pre-commit-ci[bot]`
 - 🐛 fix(win): restore best-effort lock file cleanup on release :pr:`511`
-- [pre-commit.ci] pre-commit autoupdate :pr:`508` - by :user:`pre-commit-ci[bot]`
 - 📝 docs(logo): add branded project logo :pr:`507`
 
 ********************
  3.25.0 (2026-03-01)
 ********************
 
-- ✨ feat(async): add AsyncReadWriteLock :pr:`506`
+- ✨ feat(async): add :class:`~filelock.AsyncReadWriteLock` :pr:`506`
 - Standardize .github files to .yaml suffix
-- build(deps): bump actions/download-artifact from 7 to 8 :pr:`503` - by :user:`dependabot[bot]`
-- build(deps): bump actions/upload-artifact from 6 to 7 :pr:`502` - by :user:`dependabot[bot]`
 - Move SECURITY.md to .github/SECURITY.md
 - Add security policy
 - Add permissions to check workflow :pr:`500`
-- [pre-commit.ci] pre-commit autoupdate :pr:`499` - by :user:`pre-commit-ci[bot]`
 
 ********************
  3.24.3 (2026-02-19)
 ********************
 
-- 🐛 fix(unix): handle ENOENT race on FUSE/NFS during acquire :pr:`495`
+- 🐛 fix(unix): handle ``ENOENT`` race on FUSE/NFS during acquire :pr:`495`
 - 🐛 fix(ci): add trailing blank line after changelog entries :pr:`492`
 
 ********************
  3.24.2 (2026-02-16)
 ********************
 
-- 🐛 fix(rw): close sqlite3 cursors and skip SoftFileLock Windows race :pr:`491`
+- 🐛 fix(rw): close :mod:`sqlite3` cursors and skip :class:`~filelock.SoftFileLock` Windows race :pr:`491`
 - 🐛 fix(test): resolve flaky write non-starvation test :pr:`490`
 - 📝 docs: restructure using Diataxis framework :pr:`489`
 
@@ -169,13 +146,13 @@
  3.24.0 (2026-02-14)
 *********************
 
-- ✨ feat(lock): add lifetime parameter for lock expiration (#68) :pr:`486`
-- ✨ feat(lock): add cancel_check to acquire (#309) :pr:`487`
+- ✨ feat(lock): add ``lifetime`` parameter for lock expiration (#68) :pr:`486`
+- ✨ feat(lock): add ``cancel_check`` to :meth:`~filelock.BaseFileLock.acquire` (#309) :pr:`487`
 - 🐛 fix(api): detect same-thread self-deadlock :pr:`481`
 - ✨ feat(mode): respect POSIX default ACLs (#378) :pr:`483`
 - 🐛 fix(win): eliminate lock file race in threaded usage :pr:`484`
-- ✨ feat(lock): add poll_interval to constructor :pr:`482`
-- 🐛 fix(unix): auto-fallback to SoftFileLock on ENOSYS :pr:`480`
+- ✨ feat(lock): add ``poll_interval`` to constructor :pr:`482`
+- 🐛 fix(unix): auto-fallback to :class:`~filelock.SoftFileLock` on ``ENOSYS`` :pr:`480`
 
 *********************
  3.23.0 (2026-02-14)
@@ -195,13 +172,13 @@
  3.21.2 (2026-02-13)
 *********************
 
-- 🐛 fix: catch ImportError for missing sqlite3 C library :pr:`475`
+- 🐛 fix: catch :exc:`ImportError` for missing :mod:`sqlite3` C library :pr:`475`
 
 *********************
  3.21.1 (2026-02-12)
 *********************
 
-- 🐛 fix: gracefully handle missing `sqlite3` when importing `ReadWriteLock` :pr:`473` - by :user:`bayandin`
+- 🐛 fix: gracefully handle missing :mod:`sqlite3` when importing :class:`~filelock.ReadWriteLock` :pr:`473` - by :user:`bayandin`
 - 🐛 fix(ci): make release workflow robust
 
 *********************
@@ -212,20 +189,20 @@
 - 👷 ci(release): commit changelog and use release config :pr:`472`
 - 👷 ci(release): consolidate to two jobs :pr:`471`
 - ✨ feat(unix): delete lock file on release :pr:`408` - by :user:`sbc100`
-- ✨ feat(lock): add SQLite-based ReadWriteLock :pr:`399` - by :user:`leventov`
+- ✨ feat(lock): add SQLite-based :class:`~filelock.ReadWriteLock` :pr:`399` - by :user:`leventov`
 - 🔧 chore: modernize tooling and bump deps :pr:`470`
 
 **********************
  v3.20.3 (2026-01-09)
 **********************
 
-- Fix TOCTOU symlink vulnerability in :class:`SoftFileLock <filelock.SoftFileLock>` :pr:`465`.
+- Fix TOCTOU symlink vulnerability in :class:`~filelock.SoftFileLock` :pr:`465`.
 
 **********************
  v3.20.2 (2026-01-02)
 **********************
 
-- Support Unix systems without ``O_NOFOLLOW`` :pr:`463`.
+- Support Unix systems without :data:`os.O_NOFOLLOW` :pr:`463`.
 
 **********************
  v3.20.1 (2025-12-15)
@@ -256,7 +233,7 @@
  v3.18.0 (2025-03-11)
 **********************
 
-- Support ``fcntl`` check on Emscripten :pr:`398`.
+- Support :mod:`fcntl` check on Emscripten :pr:`398`.
 - Indicate that locks are exclusive/write locks :pr:`394`.
 
 **********************
@@ -306,7 +283,7 @@
 **********************
 
 - Add asyncio support :pr:`332`.
-- Don't re-initialize ``BaseFileLock`` when returning existing singleton instance :pr:`334`.
+- Don't re-initialize :class:`~filelock.BaseFileLock` when returning existing singleton instance :pr:`334`.
 
 **********************
  v3.14.0 (2024-04-27)
@@ -336,7 +313,7 @@
  v3.13.1 (2023-10-30)
 **********************
 
-- Allow users to subclass ``FileLock`` with custom keyword arguments :pr:`284`.
+- Allow users to subclass :class:`~filelock.FileLock` with custom keyword arguments :pr:`284`.
 
 **********************
  v3.13.0 (2023-10-27)
@@ -361,7 +338,7 @@
  v3.12.2 (2023-06-12)
 **********************
 
-- Restore ``if TYPE_CHECKING`` syntax for ``FileLock`` definition :pr:`245`.
+- Restore ``if TYPE_CHECKING`` syntax for :class:`~filelock.FileLock` definition :pr:`245`.
 
 **********************
  v3.12.1 (2023-06-10)
@@ -388,7 +365,7 @@
  v3.10.7 (2023-03-27)
 **********************
 
-- Use ``fchmod`` instead of ``chmod`` to work around bug in PyPy via Anaconda.
+- Use :func:`os.fchmod` instead of :func:`os.chmod` to work around bug in PyPy via Anaconda.
 
 **********************
  v3.10.6 (2023-03-25)
@@ -424,7 +401,7 @@
  v3.10.1 (2023-03-22)
 **********************
 
-- Handle pickle for :class:`filelock.Timeout` :pr:`203` - by :user:`TheMatt2`.
+- Handle pickle for :class:`~filelock.Timeout` :pr:`203` - by :user:`TheMatt2`.
 
 **********************
  v3.10.0 (2023-03-15)
@@ -436,7 +413,7 @@
  v3.9.1 (2023-03-14)
 *********************
 
-- Use ``time.perf_counter`` instead of ``time.monotonic`` for calculating timeouts.
+- Use :func:`time.perf_counter` instead of :func:`time.monotonic` for calculating timeouts.
 
 *********************
  v3.9.0 (2022-12-28)
@@ -448,7 +425,7 @@
  v3.8.1 (2022-12-04)
 *********************
 
-- Fix mypy does not accept ``filelock.FileLock`` as a valid type
+- Fix mypy does not accept :class:`~filelock.FileLock` as a valid type
 
 *********************
  v3.8.0 (2022-12-04)
@@ -474,16 +451,16 @@
  v3.6.0 (2022-02-17)
 *********************
 
-- Fix pylint warning "Abstract class :class:`WindowsFileLock <filelock.WindowsFileLock>` with abstract methods
+- Fix pylint warning "Abstract class :class:`~filelock.WindowsFileLock` with abstract methods
   instantiated" :pr:`135` - by :user:`vonschultz`
-- Fix pylint warning "Abstract class :class:`UnixFileLock <filelock.UnixFileLock>` with abstract methods instantiated"
+- Fix pylint warning "Abstract class :class:`~filelock.UnixFileLock` with abstract methods instantiated"
   :pr:`135` - by :user:`vonschultz`
 
 *********************
  v3.5.1 (2022-02-16)
 *********************
 
-- Use ``time.monotonic`` instead of ``time.time`` for calculating timeouts.
+- Use :func:`time.monotonic` instead of :func:`time.time` for calculating timeouts.
 
 *********************
  v3.5.0 (2022-02-15)
@@ -507,14 +484,14 @@
  v3.4.0 (2021-11-16)
 *********************
 
-- Add correct spelling of poll interval parameter for :meth:`acquire <filelock.BaseFileLock.acquire>` method, raise
+- Add correct spelling of poll interval parameter for :meth:`~filelock.BaseFileLock.acquire` method, raise
   deprecation warning when using the misspelled form :pr:`119` - by :user:`XuehaiPan`.
 
 *********************
  v3.3.2 (2021-10-29)
 *********************
 
-- Accept path types (like ``pathlib.Path`` and ``pathlib.PurePath``) in the constructor for ``FileLock`` objects.
+- Accept path types (like :class:`pathlib.Path` and :class:`pathlib.PurePath`) in the constructor for :class:`~filelock.FileLock` objects.
 
 *********************
  v3.3.1 (2021-10-15)
@@ -631,7 +608,7 @@
 
 - *updated* README (added navigation)
 - *updated* documentation :issue:`22`
-- *fix* the ``SoftFileLock`` test was influenced by the test for ``FileLock``
+- *fix* the :class:`~filelock.SoftFileLock` test was influenced by the test for :class:`~filelock.FileLock`
 - *undo* ``cb1d83d`` :issue:`31`
 
 *********************
@@ -640,7 +617,7 @@
 
 - *updated* major version number due to :issue:`29` and :issue:`27`
 - *fixed* use proper Python3 ``reraise`` method
-- Attempting to clean up lock file on Unix after ``release``
+- Attempting to clean up lock file on Unix after :meth:`~filelock.BaseFileLock.release`
 
 **********************
  v2.0.13 (2017-11-05)
@@ -713,7 +690,7 @@
  v2.0.3 (2015-07-29)
 *********************
 
-- *added* The ``SoftFileLock`` is now always tested
+- *added* The :class:`~filelock.SoftFileLock` is now always tested
 
 *********************
  v2.0.2 (2015-07-29)
