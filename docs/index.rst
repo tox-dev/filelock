@@ -65,10 +65,10 @@ Choose the right lock for your use case:
     .. grid-item-card::
         **FileLock**
 
-        Platform-aware alias. Uses OS-level locking (``fcntl``/``msvcrt``) with automatic fallback to soft locks.
+        Platform-aware alias. Uses OS-level locking (``fcntl``/``LockFileEx``) with automatic fallback to soft locks.
 
         - ✓ Recommended default
-        - ✓ Lifetime expiration, cancellable acquire
+        - ✓ Cancellable acquire
         - ✓ Self-deadlock detection
 
     .. grid-item-card::
@@ -118,7 +118,7 @@ Choose the right lock for your use case:
     .. grid-item-card::
         **Windows**
 
-        Uses ``msvcrt.locking``. Enforced by the kernel.
+        Uses ``LockFileEx`` on a byte range. Enforced by the kernel.
 
         - ✓ Native support
         - ✓ Most reliable
@@ -129,7 +129,7 @@ Choose the right lock for your use case:
         Uses ``fcntl.flock``. Common on Unix but not POSIX; kernel-enforced.
 
         - ✓ Native support
-        - ✓ Stale detection
+        - ✓ Released automatically on crash
 
     .. grid-item-card::
         **Other Platforms**

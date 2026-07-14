@@ -82,7 +82,7 @@ acquires raise :class:`Timeout <filelock.Timeout>` as usual.
  How file locking works
 ************************
 
-There are two fundamentally different approaches to file locking on modern systems:
+File locking takes two approaches:
 
 **OS-level locking** (FileLock on Windows/Unix, UnixFileLock, WindowsFileLock)
 
@@ -94,7 +94,7 @@ file handle can lock it. When a process dies, the OS automatically releases its 
 
     - - Pros
       - Cons
-    - - ✓ Enforced by the kernel, so it is foolproof.
+    - - ✓ Enforced by the kernel.
       - ✗ Exclusive only, with no reader/writer distinction (use ReadWriteLock for that).
     - - ✓ Works even if your process crashes.
       - ✗ Unreliable on some network filesystems.
@@ -110,8 +110,8 @@ A separate "lock file" indicates that a resource is in use. The lock file contai
 deleting it.
 
 This is the same concept as a traditional **PID lock file** (as used by Unix daemons and the deprecated `lockfile <https://pypi.org/project/lockfile/>`_
-library's ``PIDLockFile``). The PID stored in the file enables two important capabilities: identifying the lock holder
-via the :attr:`~filelock.SoftFileLock.pid` property, and detecting stale locks when the holding process has died.
+library's ``PIDLockFile``). The PID stored in the file identifies the lock holder via the
+:attr:`~filelock.SoftFileLock.pid` property and lets a waiter detect stale locks when the holding process has died.
 
 On all platforms, processes can check if the lock holder is still alive and break stale locks automatically. On Windows,
 the lock file additionally stores the process creation time to guard against PID recycling.
@@ -133,16 +133,18 @@ the lock file additionally stores the process creation time to guard against PID
 ***************************
 
 **Windows**
-    Uses the :class:`WindowsFileLock <filelock.WindowsFileLock>` class, backed by ``msvcrt.locking``. This is enforced
-    by Windows, so all code running on the system respects it, whether it uses filelock or not.
+    Uses the :class:`WindowsFileLock <filelock.WindowsFileLock>` class, backed by ``LockFileEx``/``UnlockFileEx`` over a
+    one-byte range on a handle opened with ``NtCreateFile``. This is enforced by Windows, so all code running on the
+    system respects it, whether it uses filelock or not.
 
     The lock is exclusive and works reliably on local filesystems. Network filesystem (SMB) support is available but
     considered less reliable.
 
     Lock file cleanup: Windows attempts to delete the lock file after release, but deletion is not guaranteed in
     multi-threaded scenarios. Windows cannot delete files with open handles, so if another thread acquires the lock
-    before the previous holder finishes cleanup, the lock file persists. This is by design and does not affect lock
-    correctness.
+    before the previous holder finishes cleanup, the lock file persists. It does not affect lock correctness. To keep a
+    stable pathname across releases, construct the lock with ``preserve_lock_file=True`` (see :ref:`how-to:Keep the lock
+    file on release`).
 
 **Unix and macOS**
     Uses the :class:`UnixFileLock <filelock.UnixFileLock>` class, backed by the kernel's ``fcntl.flock`` interface. The
@@ -257,7 +259,7 @@ Lock types compared
       - No
       - No (content is not a public API)
     - - Lifetime expiration
-      - Yes
+      - No (ignored with a warning)
       - Yes
       - No
       - Yes (``heartbeat_interval`` / ``stale_threshold``)
@@ -335,8 +337,8 @@ On older platforms without ``O_NOFOLLOW``, prefer :class:`UnixFileLock <filelock
             data = open("data.txt").read()
 
 **Locks on network filesystems**
-    OS-level locks (FileLock on Windows/Unix) are unreliable on network filesystems (NFS, SMB). This is a fundamental
-    limitation of how network filesystems work; they don't reliably support locking semantics.
+    OS-level locks (FileLock on Windows/Unix) are unreliable on network filesystems (NFS, SMB). Network filesystems do
+    not reliably support locking semantics.
 
     For **exclusive locking** on NFS, use :class:`SoftFileLock <filelock.SoftFileLock>`. For **reader/writer
     locking** (shared readers + exclusive writers) on NFS, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>`,
@@ -422,7 +424,7 @@ check plus a dirfd-relative open to close symlink races (which ``mkdir`` alone c
 
 Writer acquisition is two-phase and writer-preferring: phase one atomically claims ``<path>.write`` (which blocks
 any new reader as soon as it exists), phase two polls the ``readers/`` directory until every reader has exited.
-Writer starvation is impossible, which matters under read-heavy workloads such as the 99/1 reader-to-writer mix
+Writer starvation is impossible even under read-heavy workloads such as the 99/1 reader-to-writer mix
 typical of slurm job queues.
 
 Cross-host stale detection
@@ -443,7 +445,7 @@ uses a **TTL with a heartbeat** rather than ``SoftFileLock``'s PID-alive check:
   never gets accidentally refreshed.
 
 The trade-off: ``stale_threshold`` must be larger than any realistic pause a holder might hit (GC, syscall delay,
-NFS hiccup). Pick it generously. We assume clock synchronization across compute nodes; every HPC cluster runs
+NFS hiccup). Pick it generously. We assume clock synchronization across compute nodes; HPC clusters run
 NTP or chrony, so this is not an additional constraint in the target environment.
 
 Fork semantics
