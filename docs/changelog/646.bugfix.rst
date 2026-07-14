@@ -1,0 +1,2 @@
+Reject non-default lock options that a narrow subclass constructor cannot honor, and forward all options through
+subclasses that accept arbitrary keyword arguments.

@@ -12,7 +12,7 @@ from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from threading import Lock, local
 from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypeVar, cast
-from weakref import WeakValueDictionary
+from weakref import WeakKeyDictionary, WeakValueDictionary
 
 from ._error import Timeout
 from ._util import break_lock_file
@@ -192,10 +192,57 @@ class FileLockMeta(ABCMeta):
         raise ValueError(msg)
 
     def _create_instance(cls: type[_T], lock_file: str | os.PathLike[str], params: dict[str, Any]) -> _T:
-        # Keep only the params this subclass's __init__ accepts. virtualenv narrows its BaseFileLock
-        # descendant's signature, so passing the full set breaks it (tox-dev/filelock#340).
-        present_params = inspect.signature(cls.__init__).parameters
-        return super().__call__(lock_file, **{key: value for key, value in params.items() if key in present_params})
+        model = _init_parameter_model(cls)
+        if model.accepts_kwargs:
+            return super().__call__(lock_file, **params)
+
+        unsupported = sorted(
+            name
+            for name, value in params.items()
+            if name not in model.accepted_params
+            and ((parameter := model.default_params.get(name)) is None or value != parameter.default)
+        )
+        if unsupported:
+            msg = f"{cls.__name__} does not support non-default lock options: {', '.join(unsupported)}"
+            raise TypeError(msg)
+        # virtualenv narrows a BaseFileLock descendant's signature; omit base defaults it does not accept (#340).
+        return super().__call__(
+            lock_file,
+            **{name: value for name, value in params.items() if name in model.accepted_params},
+        )
+
+
+_INIT_PARAMETER_MODELS: Final[WeakKeyDictionary[type[BaseFileLock], _InitParameterModel]] = WeakKeyDictionary()
+_INIT_PARAMETER_MODELS_LOCK: Final[Lock] = Lock()
+
+
+def _init_parameter_model(cls: type[BaseFileLock]) -> _InitParameterModel:
+    # A strong cache would keep dynamically created subclasses alive for the process lifetime.
+    with _INIT_PARAMETER_MODELS_LOCK:
+        if (model := _INIT_PARAMETER_MODELS.get(cls)) is None:
+            parameters = inspect.signature(cls.__init__).parameters.values()
+            model = _InitParameterModel(
+                accepted_params=frozenset(
+                    parameter.name
+                    for parameter in parameters
+                    if parameter.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+                ),
+                accepts_kwargs=any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters),
+                default_params={
+                    name: parameter
+                    for name, parameter in inspect.signature(type(cls).__call__).parameters.items()
+                    if parameter.default is not inspect.Parameter.empty
+                },
+            )
+            _INIT_PARAMETER_MODELS[cls] = model
+        return model
+
+
+@dataclass(frozen=True)
+class _InitParameterModel:
+    accepted_params: frozenset[str]
+    accepts_kwargs: bool
+    default_params: dict[str, inspect.Parameter]
 
 
 def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str) -> float | None:
