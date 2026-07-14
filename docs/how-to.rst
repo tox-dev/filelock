@@ -343,17 +343,14 @@ filelock cannot make that operation safe.
 
 .. _fork guidance: https://www.sqlite.org/howtocorrupt.html#_carrying_an_open_database_connection_across_a_fork_
 
-***************************************************
- Use read/write locks on network filesystems (NFS)
-***************************************************
+********************************************
+ Use read/write locks on shared filesystems
+********************************************
 
-:class:`ReadWriteLock <filelock.ReadWriteLock>` is SQLite-backed and requires a local filesystem: SQLite's own
-docs warn against running on NFS because POSIX ``fcntl`` locks are unreliable there. For HPC clusters, slurm
-deployments, or any multi-host shared storage, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>`
-instead. It is built on :class:`SoftFileLock <filelock.SoftFileLock>` primitives (atomic
-``O_CREAT | O_EXCL | O_NOFOLLOW``) and runs a daemon heartbeat thread that refreshes each held marker's ``mtime`` so any
-host on any node can evict a stale
-marker when the holder crashes.
+:class:`ReadWriteLock <filelock.ReadWriteLock>` is SQLite-backed and requires a local filesystem supported by the active
+SQLite VFS. On a shared filesystem, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` only after verifying
+exclusive creation, rename, unlink, timestamps, and cache visibility across participating hosts. Its heartbeat permits
+a peer to evict a marker after ``stale_threshold`` even if the old holder later resumes.
 
 .. code-block:: python
 
@@ -379,24 +376,22 @@ that hold locks for seconds-to-minutes. Tune them for your deployment:
         poll_interval=0.25,      # how long to sleep between acquire retries
     )
 
-Pick ``stale_threshold`` larger than any realistic pause a holder could experience (GC, disk flush, kernel
-preemption). ``heartbeat_interval`` should be roughly ``stale_threshold / 3``; that is the ratio etcd uses for
-its ``LeaseKeepAlive``. Lower ``poll_interval`` reduces acquire latency under contention at the cost of more
-NFS ``stat`` calls per waiting client.
+Pick ``stale_threshold`` larger than any realistic process or filesystem pause. ``heartbeat_interval`` should be
+roughly ``stale_threshold / 3``. Lower ``poll_interval`` reduces acquisition latency at the cost of more filesystem
+metadata calls. Synchronize participating clocks and fence protected writes if an expired holder can resume.
 
 Writer acquisition is two-phase and writer-preferring: phase one claims the writer marker (which blocks any
 new reader), phase two waits for existing readers to drain. This rules out writer starvation under read-heavy
 workloads. See :doc:`concepts` for the full model.
 
 **Fork caveat.** A process that forks while holding a ``SoftReadWriteLock`` loses the lock in the child. filelock marks
-the inherited instance fork-invalidated; ``release()`` on it becomes a no-op, and the child must call
-``SoftReadWriteLock(path)`` again to get a fresh instance before acquiring. Matches the semantics of
-:class:`threading.Lock` and PyMongo's connection pools.
+the inherited instance fork-invalidated; ``release()`` on it becomes a no-op, and the child must construct a fresh
+``SoftReadWriteLock(path)`` before acquiring. This follows the invalidation approach used by PyMongo's connection
+pools.
 
-**Trust boundary.** The class protects against same-UID non-cooperating processes on one host, cross-host
-same-UID processes, and same-host different-UID users (via ``0o600`` / ``0o700`` permissions). It does not
-protect against root compromise, NTP tampering on same-UID cross-host nodes, or multi-tenant mounts where
-hostile co-tenants share the UID.
+**Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
+permissions can exclude another UID. A process with the same effective UID can alter the markers, and incorrect clocks
+or cache behavior can trigger expiry while a holder remains active.
 
 ***********************************
  Use async read / write locks
@@ -440,7 +435,8 @@ Low-level ``acquire_read``/``acquire_write``/``release`` methods are also availa
 The same reentrancy and upgrade/downgrade rules as the synchronous :class:`ReadWriteLock <filelock.ReadWriteLock>`
 apply. See :ref:`how-to:Use shared read / exclusive write locks` for details.
 
-For network filesystems, use :class:`AsyncSoftReadWriteLock <filelock.AsyncSoftReadWriteLock>`, which wraps
+For a shared filesystem whose marker and cache behavior has been verified, use
+:class:`AsyncSoftReadWriteLock <filelock.AsyncSoftReadWriteLock>`, which wraps
 :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` the same way:
 
 .. code-block:: python
@@ -456,8 +452,8 @@ For network filesystems, use :class:`AsyncSoftReadWriteLock <filelock.AsyncSoftR
  Detect stale locks (soft locks only)
 **************************************
 
-:class:`SoftFileLock <filelock.SoftFileLock>` stores the PID and hostname of the lock holder. It can detect when the
-holding process has died and break stale locks on all platforms.
+:class:`SoftFileLock <filelock.SoftFileLock>` stores the PID and hostname of the lock holder. A same-host contender may
+remove the marker when it can prove that PID does not exist.
 
 This happens automatically. You don't need to do anything special:
 
@@ -472,10 +468,11 @@ This happens automatically. You don't need to do anything special:
         # another process will automatically clean up the stale lock
         pass
 
-Stale lock detection only detects locks from the same host. Cross-host stale locks still require manual removal.
+Cross-host records remain because their PID cannot be interpreted locally. On platforms without process-start identity,
+a reused PID can also keep a dead owner's marker in place.
 
-On Windows, the lock file additionally stores the process creation time to guard against PID recycling. filelock evicts
-malformed lock files (empty or corrupted) after a brief safety window.
+On Windows, the marker also stores process creation time to guard against PID recycling. Malformed records follow a
+different rule: a waiter may evict them after two seconds. That recovery path is not fail closed.
 
 *****************************************
  Inspect and manage PID locks
@@ -537,31 +534,50 @@ library:
     handler = logging.StreamHandler()
     logging.getLogger("filelock").addHandler(handler)
 
-*******************
- Set lock lifetime
-*******************
+***********************************
+ Configure legacy age-based expiry
+***********************************
 
-Only :class:`SoftFileLock <filelock.SoftFileLock>` honors ``lifetime``. A waiting process breaks a lock file whose
-modification time is older than ``lifetime`` seconds, even if the holder is still alive:
+Only :class:`SoftFileLock <filelock.SoftFileLock>` honors ``lifetime``. The value sets the marker age that permits
+removal. A waiter may enter after that age even while the previous holder continues its protected operation:
 
 .. code-block:: python
 
     from filelock import SoftFileLock
 
-    # Lock expires after 3600 seconds (1 hour)
+    # A waiter may remove this marker after one hour.
     lock = SoftFileLock("work.lock", lifetime=3600)
 
     with lock:
-        # Lock is held; a waiter may break it once the lock file is older than 1 hour
+        # This operation can overlap a successor after the marker expires.
         pass
 
-This helps distributed systems where a process might crash and leave a lock behind. After the lifetime expires, other
-processes can acquire it.
+Constructing or assigning a non-``None`` value emits
+:class:`SoftFileLockLifetimeWarning <filelock.SoftFileLockLifetimeWarning>`. Migrate to ``SoftFileLease`` when expiry
+is required or ``StrictSoftFileLock`` when unknown and stale claims must fail closed. Async callers use
+``AsyncSoftFileLease`` or ``AsyncStrictSoftFileLock``. ``lifetime=None`` disables age-based removal; same-host dead-PID
+and malformed-record recovery still apply.
 
-Native locks (:class:`FileLock <filelock.FileLock>`, :class:`UnixFileLock <filelock.UnixFileLock>`,
-:class:`WindowsFileLock <filelock.WindowsFileLock>`) ignore a non-``None`` ``lifetime`` and emit a warning. A kernel
-lock lives on the inode, so unlinking the pathname by age cannot revoke it, and a contender would lock a fresh inode
-while the holder is still live. Use ``SoftFileLock`` when you need age-based expiry.
+.. list-table:: ``lifetime`` behavior
+    :header-rows: 1
+
+    - - Backend and value
+      - Behavior
+      - Mutual-exclusion limit
+    - - ``SoftFileLock``, ``None``
+      - Disables age-based removal.
+      - Shared-marker recovery and forced breaking can still remove the marker.
+    - - ``SoftFileLock``, non-``None``
+      - Removes a marker after the configured age.
+      - A live holder may overlap its successor.
+    - - Native lock, non-``None``
+      - Emits a warning and ignores the value.
+      - Kernel lock ownership is unchanged.
+
+Native locks (:class:`UnixFileLock <filelock.UnixFileLock>` and
+:class:`WindowsFileLock <filelock.WindowsFileLock>`) ignore a non-``None`` value and emit a warning. The same is true
+when :class:`FileLock <filelock.FileLock>` selects one of those backends; on a build without ``fcntl``, ``FileLock`` may
+instead alias ``SoftFileLock``. A kernel lock lives on the inode, so pathname age cannot revoke it.
 
 **************************
  Cancel lock acquisition
@@ -726,18 +742,18 @@ cleanup after a close error.
  Fail closed instead of downgrading to soft
 ***********************************************
 
-On Unix, when the filesystem's ``flock`` returns ``ENOSYS`` (some network mounts), :class:`FileLock
-<filelock.FileLock>` switches to :class:`SoftFileLock <filelock.SoftFileLock>` semantics by default, trading
-kernel-enforced locking for cooperative existence locking. If your code needs kernel enforcement, pass
-``fallback_to_soft=False`` so the ``ENOSYS`` propagates instead of a silent downgrade to soft locking:
+On Unix, when ``flock`` returns ``ENOSYS``, :class:`UnixFileLock <filelock.UnixFileLock>` switches to
+:class:`SoftFileLock <filelock.SoftFileLock>` semantics by default. If the application requires the native backend,
+construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propagates:
 
 .. code-block:: python
 
-    from filelock import FileLock
+    from filelock import UnixFileLock
 
-    lock = FileLock("work.lock", fallback_to_soft=False)
+    lock = UnixFileLock("work.lock", fallback_to_soft=False)
 
-It has no effect on Windows or :class:`SoftFileLock <filelock.SoftFileLock>`.
+This option does not change ``FileLock`` on a build where the alias is already ``SoftFileLock`` because ``fcntl`` is
+unavailable. It has no effect on Windows or an explicitly constructed ``SoftFileLock``.
 
 *********************************
  Keep the lock file on release

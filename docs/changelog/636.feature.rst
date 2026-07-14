@@ -1,0 +1,1 @@
+Warn when `SoftFileLock.lifetime` enables age-based expiry, and direct callers to strict-lock or lease interfaces.

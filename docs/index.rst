@@ -65,7 +65,7 @@ Choose the right lock for your use case:
     .. grid-item-card::
         **FileLock**
 
-        Platform-aware alias. Uses OS-level locking (``fcntl``/``LockFileEx``) with automatic fallback to soft locks.
+        Platform-aware alias. Selects a native backend where available and a soft marker otherwise.
 
         - ✓ Recommended default
         - ✓ Cancellable acquire
@@ -74,11 +74,11 @@ Choose the right lock for your use case:
     .. grid-item-card::
         **SoftFileLock**
 
-        File-existence based locking. Works on any filesystem including network mounts.
+        Cooperative file-existence marker. Verify shared-filesystem semantics before deployment.
 
-        - ✓ Network filesystems
-        - ✓ Stale detection
-        - ✓ Lifetime expiration, cancellable acquire
+        - ✓ No native locking API required
+        - ✓ Same-host PID inspection
+        - ✓ Optional age-based expiry, with overlap risk
 
     .. grid-item-card::
         **ReadWriteLock**
@@ -92,11 +92,11 @@ Choose the right lock for your use case:
     .. grid-item-card::
         **SoftReadWriteLock**
 
-        NFS and HPC-cluster reader/writer lock with TTL-based cross-host stale detection.
+        Reader/writer marker lease for tested shared filesystems.
 
-        - ✓ Works on NFS / Lustre / shared storage
-        - ✓ Cross-host stale detection via heartbeat
-        - ✓ Writer-preferring, starvation-free
+        - ✓ Heartbeat-based marker expiry
+        - ✓ Writer preference
+        - ✓ Explicit clock and filesystem requirements
         - ✓ Async via AsyncSoftReadWriteLock
 
     .. grid-item-card::
@@ -134,10 +134,10 @@ Choose the right lock for your use case:
     .. grid-item-card::
         **Other Platforms**
 
-        Automatic fallback to ``SoftFileLock``. Portable across all filesystems.
+        Automatic fallback to the cooperative ``SoftFileLock`` marker protocol.
 
-        - ✓ Full compatibility
-        - ✓ Network filesystems
+        - ✓ No native locking API required
+        - ✓ Usable where creation and cache behavior have been verified
 
 *******************
  Similar libraries

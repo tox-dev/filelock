@@ -118,6 +118,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     """
 
     _deadlock_holder_desc: str = "BaseAsyncFileLock instance in this task"
+    _constructor_lifetime_warning_stacklevel: int = 4
 
     def __init__(  # noqa: PLR0913
         self,
@@ -161,11 +162,10 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             same object around.
         :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback value
             in the acquire method, if no poll_interval value (``None``) is given.
-        :param lifetime: for :class:`AsyncSoftFileLock`, the maximum time in seconds a lock may be held before it
-            expires: a waiting process breaks a lock file whose modification time is older than ``lifetime`` seconds,
-            even if the holder is still alive. ``None`` (the default) means locks never expire. Native OS locks
-            (:class:`AsyncFileLock`) cannot be revoked by file age and ignore a non-``None`` ``lifetime``, with a
-            warning.
+        :param lifetime: for :class:`AsyncSoftFileLock`, the age in seconds after which a waiting process may delete
+            the marker, even while its holder remains alive. This legacy expiry mode does not provide strict mutual
+            exclusion. ``None`` (the default) disables age-based expiry. Native OS locks (:class:`AsyncFileLock`)
+            cannot be revoked by file age and ignore a non-``None`` ``lifetime`` with a warning.
         :param context_error_policy: how a context manager reconciles a failure in its body with a failure while
             releasing on exit. ``"chain"`` (the default) keeps Python's behavior: the release error propagates with the
             body error in its ``__context__``. ``"group"`` raises a :class:`BaseExceptionGroup` holding the body error
@@ -713,6 +713,8 @@ class AsyncAcquireReturnProxy:
 
 class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
     """Simply watches the existence of the lock file."""
+
+    _lifetime_replacements: tuple[str, str] | None = ("AsyncStrictSoftFileLock", "AsyncSoftFileLease")
 
 
 class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):

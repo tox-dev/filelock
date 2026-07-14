@@ -42,20 +42,25 @@ _UNLINK_MAX_RETRIES: Final[int] = 10
 
 class SoftFileLock(BaseFileLock):
     """
-    Portable file lock based on file existence.
+    Cooperative file lock based on a shared existence marker.
 
     Unlike :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`WindowsFileLock <filelock.WindowsFileLock>`, this
     lock does not use OS-level locking primitives. Instead, it creates the lock file with ``O_CREAT | O_EXCL`` and
-    treats its existence as the lock indicator. This makes it work on any filesystem but leaves stale lock files behind
-    if the process crashes without releasing the lock.
+    treats its existence as the lock indicator. The filesystem must provide coherent exclusive creation and directory
+    updates to each participating process. A crash can leave the marker behind.
 
-    To mitigate stale locks, the lock file contains the PID and hostname of the holding process. On contention, if the
-    holder is on the same host and its PID no longer exists, the stale lock is broken automatically.
+    The marker contains the holder's PID and hostname. A contender may remove it when it can no longer find a same-host
+    process with that PID. A configured :attr:`~filelock.BaseFileLock.lifetime` also permits removal based on marker
+    age, including while the holder remains alive. Age-based expiry can overlap protected operations and does not
+    provide strict mutual exclusion.
 
     """
 
     #: Existence locks reclaim by unlinking a pathname, so an age-based lease may break one; a native inode lock cannot.
     _lifetime_supported: bool = True
+
+    #: Age-based expiry preserves historical behavior but does not provide strict mutual exclusion.
+    _lifetime_replacements: tuple[str, str] | None = ("StrictSoftFileLock", "SoftFileLease")
 
     #: An existence lock unlinks its marker to release, so it cannot promise to keep the pathname.
     _preserve_lock_file_supported: bool = False

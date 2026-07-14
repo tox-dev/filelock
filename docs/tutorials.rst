@@ -183,8 +183,9 @@ See :ref:`how-to:Use locks with multiple threads` for practical examples of cont
  Migrating from lockfile.PIDLockFile
 ***************************************
 
-If you're migrating from the deprecated `lockfile <https://pypi.org/project/lockfile/>`_ library, :class:`SoftFileLock <filelock.SoftFileLock>` is the
-direct replacement for ``PIDLockFile``. It writes the process ID to the lock file and can detect stale locks.
+If you're migrating from the deprecated `lockfile <https://pypi.org/project/lockfile/>`_ library,
+:class:`SoftFileLock <filelock.SoftFileLock>` is the direct replacement for ``PIDLockFile``. It writes the process ID to
+the lock file and can detect stale locks.
 
 .. code-block:: python
 
@@ -214,15 +215,14 @@ Key differences from ``PIDLockFile``:
 - Stale lock detection happens automatically on acquire (all platforms)
 - Supports context managers, reentrant locking, timeouts, and all other filelock features
 
-*************************************
- Reader/writer locks on a shared NFS
-*************************************
+*******************************************
+ Reader/writer locks on shared filesystems
+*******************************************
 
-If your lock file lives on a network filesystem (a slurm-mounted home directory, a Lustre cluster scratch space, or any
-NFS share), use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` rather than
-:class:`ReadWriteLock <filelock.ReadWriteLock>`. ``ReadWriteLock`` is SQLite-backed and unsafe on NFS.
-``SoftReadWriteLock`` is built on :class:`SoftFileLock <filelock.SoftFileLock>` primitives and handles cross-host stale detection via a
-background heartbeat thread.
+Keep SQLite-backed :class:`ReadWriteLock <filelock.ReadWriteLock>` on a local filesystem supported by the active SQLite
+VFS. On a shared filesystem, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` only after verifying exclusive
+creation, rename, unlink, timestamps, and cache visibility across participating hosts. Heartbeat expiry permits another
+holder to enter if an old process pauses and later resumes.
 
 .. code-block:: python
 
@@ -231,11 +231,11 @@ background heartbeat thread.
     rw = SoftReadWriteLock("/shared/nfs/work.lock")
 
     with rw.read_lock():
-        # Any number of processes on any host can be here at the same time.
+        # Cooperating readers can hold the lock together.
         data = open("/shared/nfs/data.json").read()
 
     with rw.write_lock():
-        # Exactly one process anywhere can be here. New readers wait behind a pending writer.
+        # New readers wait behind an observed writer marker.
         open("/shared/nfs/data.json", "w").write(new_data)
 
 While the lock is held, you will see a few sidecar files on disk next to ``work.lock``:
@@ -246,10 +246,9 @@ While the lock is held, you will see a few sidecar files on disk next to ``work.
     work.lock.write         # writer marker, exists while a writer is claiming or holding
     work.lock.readers/      # directory with one file per active reader
 
-A daemon heartbeat thread refreshes each marker's ``mtime`` every ``heartbeat_interval`` seconds (default 30).
-If a compute node crashes while holding a lock, any other node will evict the stale marker after
-``stale_threshold`` seconds of no refresh (default 90, following etcd's ``LeaseKeepAlive`` convention of
-``TTL / 3``). Both values are constructor arguments, so HPC deployments that hold locks for hours can raise them:
+A daemon heartbeat thread refreshes each marker's ``mtime`` every ``heartbeat_interval`` seconds. A peer may evict a
+marker after ``stale_threshold`` seconds without a refresh. Set the threshold above expected process and filesystem
+pauses, synchronize participating clocks, and fence protected writes if an expired process can resume:
 
 .. code-block:: python
 

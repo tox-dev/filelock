@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Final
 
 from ._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy
 from ._descriptor import lock_descriptor, unlock_descriptor
-from ._error import Timeout
+from ._error import SoftFileLockLifetimeWarning, Timeout
 
 if TYPE_CHECKING:
     from ._async_read_write import (
@@ -87,6 +87,7 @@ __all__ = [
     "FileLock",
     "ReadWriteLock",
     "SoftFileLock",
+    "SoftFileLockLifetimeWarning",
     "SoftReadWriteLock",
     "Timeout",
     "UnixFileLock",

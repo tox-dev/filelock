@@ -17,7 +17,7 @@ from threading import Condition, RLock, get_ident, local
 from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
-from ._error import Timeout
+from ._error import SoftFileLockLifetimeWarning, Timeout
 from ._util import break_lock_file
 
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
@@ -335,7 +335,13 @@ class FileLockMeta(ABCMeta):
         **kwargs: _ExtraValue,
     ) -> _T:
         _ensure_current_process()
-        lifetime = _resolve_lifetime(lifetime, supported=cls._lifetime_supported, cls_name=cls.__name__)
+        lifetime = _resolve_lifetime(
+            lifetime,
+            supported=cls._lifetime_supported,
+            replacements=cls._lifetime_replacements,
+            cls_name=cls.__name__,
+            stacklevel=cls._constructor_lifetime_warning_stacklevel,
+        )
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
         # __del__ then trips over the missing context.
         context_error_policy = _resolve_context_error_policy(context_error_policy)
@@ -474,15 +480,22 @@ class _InitParameterModel:
     default_params: dict[str, inspect.Parameter]
 
 
-def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str) -> float | None:
+def _resolve_lifetime(
+    lifetime: float | None,
+    *,
+    supported: bool,
+    replacements: tuple[str, str] | None,
+    cls_name: str,
+    stacklevel: int,
+) -> float | None:
     """
     Validate ``lifetime`` and drop a value the backend cannot honor.
 
     ``lifetime`` is a deliberate age-based lease: a lock file older than ``lifetime`` is broken even while its holder is
-    still alive. That is only safe for existence locks (:class:`SoftFileLock`), where breaking means unlinking a
-    pathname the protocol already treats as reclaimable. A native OS lock lives on the inode, so unlinking the pathname
-    by age cannot revoke the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590).
-    Ignore the request with a warning rather than accept a setting that breaks mutual exclusion.
+    still alive. Existence locks (:class:`SoftFileLock`) implement that behavior by unlinking a reclaimable pathname,
+    which can overlap a live holder. A native OS lock lives on the inode, so unlinking the pathname by age cannot revoke
+    the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590). Ignore the request with a
+    warning rather than accept a setting that breaks mutual exclusion.
     """
     if lifetime is not None:
         if isinstance(lifetime, bool) or not isinstance(lifetime, (int, float)):
@@ -495,9 +508,17 @@ def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str)
         warnings.warn(
             f"lifetime is ignored for {cls_name}: a native OS lock cannot be broken safely by file age; "
             f"only SoftFileLock supports lifetime-based expiry",
-            stacklevel=3,
+            stacklevel=stacklevel,
         )
         return None
+    if lifetime is not None and replacements is not None:
+        strict_lock, lease = replacements
+        warnings.warn(
+            f"{cls_name}(lifetime=...) uses age-based expiry and can overlap a live holder; "
+            f"use {lease} for expiry or {strict_lock} for fail-closed locking",
+            SoftFileLockLifetimeWarning,
+            stacklevel=stacklevel,
+        )
     return lifetime
 
 
@@ -554,9 +575,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     """
     Abstract base class for a file lock object.
 
-    Provides a reentrant, cross-process exclusive lock backed by OS-level primitives. Subclasses implement the actual
-    locking mechanism (:class:`UnixFileLock <filelock.UnixFileLock>`, :class:`WindowsFileLock
-    <filelock.WindowsFileLock>`, :class:`SoftFileLock <filelock.SoftFileLock>`).
+    Provides the common reentrant API and state management. Subclasses implement the locking mechanism
+    (:class:`UnixFileLock <filelock.UnixFileLock>`, :class:`WindowsFileLock <filelock.WindowsFileLock>`,
+    :class:`SoftFileLock <filelock.SoftFileLock>`).
 
     """
 
@@ -570,6 +591,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     #: Whether an age-based :attr:`lifetime` lease may break this lock. Only existence locks set it (they reclaim by
     #: unlinking a pathname); native OS locks leave it ``False`` since a kernel lock cannot be revoked by file age.
     _lifetime_supported: bool = False
+
+    #: Strict-lock and lease replacements for a backend with legacy age-based expiry.
+    _lifetime_replacements: tuple[str, str] | None = None
+
+    #: Async construction adds one metaclass frame before lifetime validation.
+    _constructor_lifetime_warning_stacklevel: int = 3
 
     #: Whether :attr:`preserve_lock_file` may be ``True``. Native locks keep the pathname on release, so they support
     #: it; existence locks unlink their marker to release and reject it.
@@ -632,10 +659,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             same object around.
         :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback value
             in the acquire method, if no poll_interval value (``None``) is given.
-        :param lifetime: for :class:`SoftFileLock`, the maximum time in seconds a lock may be held before it expires: a
-            waiting process breaks a lock file whose modification time is older than ``lifetime`` seconds, even if the
-            holder is still alive. ``None`` (the default) means locks never expire. Native OS locks (:class:`FileLock`)
-            cannot be revoked by file age and ignore a non-``None`` ``lifetime`` with a warning.
+        :param lifetime: for :class:`SoftFileLock`, the age in seconds after which a waiting process may delete the
+            marker, even while its holder remains alive. This legacy expiry mode does not provide strict mutual
+            exclusion. ``None`` (the default) disables age-based expiry. Native OS locks (:class:`FileLock`) cannot be
+            revoked by file age and ignore a non-``None`` ``lifetime`` with a warning.
         :param context_error_policy: how a context manager reconciles a failure in its body with a failure while
             releasing on exit. ``"chain"`` (the default) keeps Python's behavior: the release error propagates with the
             body error in its ``__context__``. ``"group"`` raises a :class:`BaseExceptionGroup` holding the body error
@@ -833,7 +860,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     @property
     def lifetime(self) -> float | None:
         """
-        The lock lifetime in seconds, or ``None`` if the lock never expires.
+        The soft marker age in seconds that permits expiry, or ``None`` to disable age-based expiry.
+
+        A non-``None`` value permits a waiter to enter while the previous holder remains active, so it does not provide
+        strict mutual exclusion. Native locks ignore the value with a warning.
 
         .. versionadded:: 3.24.0
 
@@ -843,7 +873,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     @lifetime.setter
     def lifetime(self, value: float | None) -> None:
         """
-        Change the lock lifetime.
+        Change the legacy age-based expiry threshold.
 
         :param value: the new value in seconds, or ``None`` to disable expiration
 
@@ -852,7 +882,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
         """
         self._context.lifetime = _resolve_lifetime(
-            value, supported=self._lifetime_supported, cls_name=type(self).__name__
+            value,
+            supported=self._lifetime_supported,
+            replacements=self._lifetime_replacements,
+            cls_name=type(self).__name__,
+            stacklevel=3,
         )
 
     @property

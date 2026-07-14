@@ -24,6 +24,11 @@ class Timeout(TimeoutError):  # noqa: N818
         return self._lock_file
 
 
+class SoftFileLockLifetimeWarning(DeprecationWarning):
+    """The configured soft-lock lifetime permits overlapping live holders after expiry."""
+
+
 __all__ = [
+    "SoftFileLockLifetimeWarning",
     "Timeout",
 ]
