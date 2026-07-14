@@ -29,7 +29,6 @@ from ._api import (
     _raise_cleanup_errors,
     _raise_grouped_errors,
     _register_fork_object,
-    _resolve_lifetime,
 )
 from ._async import (
     _AsyncTransitionGate,

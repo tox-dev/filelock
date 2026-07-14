@@ -1413,6 +1413,9 @@ class FileLockContext:
     #: Canonical registry key captured when the first physical acquisition commits.
     lock_file_key: str | None = None
 
+    #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
+    owner_claim_paths: tuple[str, ...] = ()
+
 
 class ThreadLocalFileContext(FileLockContext, local):
     """A thread local version of the ``FileLockContext`` class."""

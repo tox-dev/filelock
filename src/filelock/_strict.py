@@ -45,7 +45,8 @@ class StrictSoftFileLock(BaseFileLock):
     _on_acquired_supported: bool = False
 
     def _acquire(self) -> None:
-        lock_path = Path(cast("str", self._context.acquisition_lock_file_key))
+        # lock_file_key only lands once an acquisition commits, so derive the canonical path the claims hang off here.
+        lock_path = Path(_canonical(self.lock_file))
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
         ensure_directory_exists(os.fspath(lock_path))
