@@ -1,5 +1,3 @@
-Keep SQLite read-write locks held by a parent after a forked child exits. Open a connection for each outer transaction,
-close it on final release, and reject inherited databases in the child until ``exec()`` when the fork copied an active
-connection. Exit a child forked from a SQLite call boundary when an earlier audit hook blocks filelock's
-guard. Reject read-write locks in a PyPy fork child after the parent used SQLite because closed connections can leave
-process-wide state unsafe there.
+Open a SQLite connection per outer acquisition and close it on final release, so a forked child can no longer close its
+parent's handle. A child rejects inherited databases until ``exec()``, and a PyPy child rejects read-write locks once the
+parent has used SQLite.
