@@ -13,7 +13,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -1248,6 +1248,19 @@ def test_non_blocking_gives_timeout_not_deadlock(tmp_path: Path, lock_type: type
             lock2.acquire()
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [pytest.param("finite", id="finite"), pytest.param("nonblocking", id="nonblocking")],
+)
+def test_failed_acquire_keeps_holder_registered(tmp_path: Path, mode: Literal["finite", "nonblocking"]) -> None:
+    lock_path = tmp_path / "test.lock"
+    with FileLock(lock_path):
+        with pytest.raises(Timeout):
+            _acquire_for_mode(FileLock(lock_path), mode)
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            FileLock(lock_path).acquire(cancel_check=lambda: True)
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_different_paths_no_conflict(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     lock1 = lock_type(tmp_path / "a.lock")
@@ -1318,6 +1331,44 @@ def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLoc
             lock2.acquire()
 
 
+@_UNIX_FLOCK_ONLY
+@pytest.mark.parametrize(
+    ("depth", "force"),
+    [
+        pytest.param(1, False, id="direct"),
+        pytest.param(2, False, id="nested"),
+        pytest.param(2, True, id="forced"),
+    ],
+)
+def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, depth: int, force: bool) -> None:
+    lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
+    lock = FileLock(lock_path)
+    for _depth in range(depth):
+        lock.acquire()
+    _retarget_parent(lock_path, replacement_path)
+
+    if force:
+        lock.release(force=True)
+    else:
+        for _depth in range(depth):
+            lock.release()
+
+    with FileLock(original_path) as successor:
+        assert successor.is_locked
+
+
+@_UNIX_FLOCK_ONLY
+def test_release_keeps_retargeted_parent_holder_registered(tmp_path: Path) -> None:
+    lock_path, _original_path, replacement_path = _symlinked_lock_paths(tmp_path)
+    original = FileLock(lock_path)
+    original.acquire()
+    _retarget_parent(lock_path, replacement_path)
+    with FileLock(replacement_path):
+        original.release()
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            FileLock(replacement_path).acquire(cancel_check=lambda: True)
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_deadlock_registry_cleanup_on_release(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     lock_path = tmp_path / "test.lock"
@@ -1342,6 +1393,29 @@ def test_force_release_cleans_registry(tmp_path: Path, lock_type: type[BaseFileL
     lock2 = lock_type(lock_path)
     with lock2:
         assert lock2.is_locked
+
+
+def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:
+    original = tmp_path / "original"
+    replacement = tmp_path / "replacement"
+    original.mkdir()
+    replacement.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(original, target_is_directory=True)
+    return link / "test.lock", original / "test.lock", replacement / "test.lock"
+
+
+def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:
+    link = lock_path.parent
+    link.unlink()
+    link.symlink_to(replacement_path.parent, target_is_directory=True)
+
+
+def _acquire_for_mode(lock: BaseFileLock, mode: Literal["finite", "nonblocking"]) -> None:
+    if mode == "finite":
+        lock.acquire(timeout=0)
+    else:
+        lock.acquire(blocking=False)
 
 
 @pytest.fixture

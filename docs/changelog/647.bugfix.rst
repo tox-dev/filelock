@@ -1,0 +1,2 @@
+Release now removes the path identity that acquisition recorded instead of resolving a symlinked parent again. When
+acquisition raises, its rollback no longer deletes the holder's deadlock record.
