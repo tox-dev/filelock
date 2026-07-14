@@ -712,6 +712,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
         """
         self._creator_pid = os.getpid()
+        self._transition_lock = RLock()
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
@@ -1045,19 +1046,53 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
 
         start_time = time.perf_counter()
+        with self._transition_admission(
+            blocking=blocking,
+            cancel_check=cancel_check,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            start_time=start_time,
+        ):
+            try:
+                self._poll_until_acquired(
+                    blocking=blocking,
+                    cancel_check=cancel_check,
+                    timeout=timeout,
+                    poll_interval=poll_interval,
+                    start_time=start_time,
+                )
+            except BaseException:
+                self._reconcile_failed_acquire(canonical)
+                raise
+            self._commit_acquire(canonical)
+            return AcquireReturnProxy(lock=self)
+
+    @contextlib.contextmanager
+    def _transition_admission(
+        self,
+        *,
+        blocking: bool,
+        cancel_check: Callable[[], bool] | None,
+        timeout: float,
+        poll_interval: float,
+        start_time: float,
+    ) -> Generator[None]:
+        # One thread at a time drives the physical transition of a shared instance. A protocol that publishes several
+        # files per owner leaves a half-built claim visible otherwise, and a second thread would read it as a holder.
+        # A thread-local context gives each thread its own state, so it needs no gate.
+        if self._is_thread_local:
+            yield
+            return
+        while not self._transition_lock.acquire(blocking=False):
+            if not blocking or (cancel_check is not None and cancel_check()):
+                raise Timeout(self.lock_file)
+            if timeout >= 0 and time.perf_counter() - start_time >= timeout:
+                raise Timeout(self.lock_file)
+            time.sleep(poll_interval)
         try:
-            self._poll_until_acquired(
-                blocking=blocking,
-                cancel_check=cancel_check,
-                timeout=timeout,
-                poll_interval=poll_interval,
-                start_time=start_time,
-            )
-        except BaseException:
-            self._reconcile_failed_acquire(canonical)
-            raise
-        self._commit_acquire(canonical)
-        return AcquireReturnProxy(lock=self)
+            yield
+        finally:
+            self._transition_lock.release()
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
         """
@@ -1067,25 +1102,28 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
         """
-        if self._creator_pid != os.getpid() or not self.is_locked:
-            return
-        if not force and self._context.lock_counter > 1:
-            self._context.lock_counter -= 1
-            return
+        # A shared instance releases under the same gate its acquisition ran through, so a thread entering the lock
+        # never observes a partially torn-down owner.
+        with self._transition_lock if not self._is_thread_local else contextlib.nullcontext():
+            if self._creator_pid != os.getpid() or not self.is_locked:
+                return
+            if not force and self._context.lock_counter > 1:
+                self._context.lock_counter -= 1
+                return
 
-        lock_id, lock_filename = id(self), self.lock_file
-        _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
-        try:
-            self._release_with_fork_tracking()
-        except BaseException:
-            # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
-            # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
-            # A failure that left the lock held keeps the counter so a later release can retry the OS unlock.
-            if not self.is_locked:
-                self._commit_release()
-            raise
-        self._commit_release()
-        _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+            lock_id, lock_filename = id(self), self.lock_file
+            _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
+            try:
+                self._release_with_fork_tracking()
+            except BaseException:
+                # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
+                # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
+                # A failure that left the lock held keeps the counter so a later release can retry the OS unlock.
+                if not self.is_locked:
+                    self._commit_release()
+                raise
+            self._commit_release()
+            _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def _raise_if_inherited(self) -> None:
         if self._creator_pid != os.getpid():  # pragma: no cover - exercised only in fork children
@@ -1109,6 +1147,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         self._context.lock_file_fd_identity = None
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - exercised in fork children
+        # fork copies the lock in whatever state the parent's threads left it, so give the child an unheld one.
+        self._transition_lock = RLock()
+        self._context.owner_claim_paths = ()
+        self._context.claim_root = None
         self._context.lock_file_fd = None
         self._context.lock_file_fd_token = None
         self._context.lock_file_fd_identity = None

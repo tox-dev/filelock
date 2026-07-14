@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -31,14 +32,14 @@ async def test_async_strict_treats_a_foreign_marker_as_contention(marker: Path) 
 
 
 @pytest.mark.asyncio
-async def test_async_strict_publishes_its_owner(marker: Path) -> None:
+async def test_async_strict_publishes_a_held_claim(marker: Path) -> None:
     lock = AsyncStrictSoftFileLock(str(marker))
 
     async with lock:
-        owner = lock.owner
+        held = lock.claims
 
-    assert owner is not None
-    assert owner.mode == "strict"
+    assert tuple(claim.state for claim in held) == ("held",)
+    assert held[0].pid == os.getpid()
 
 
 @pytest.mark.asyncio
