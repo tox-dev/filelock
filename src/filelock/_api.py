@@ -1416,6 +1416,10 @@ class FileLockContext:
     #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
     owner_claim_paths: tuple[str, ...] = ()
 
+    #: Canonical lock path resolved when an acquisition starts. A waiter polling a relative path must keep publishing
+    #: into the directory it started in, even when another thread changes the working directory mid-wait.
+    claim_root: str | None = None
+
 
 class ThreadLocalFileContext(FileLockContext, local):
     """A thread local version of the ``FileLockContext`` class."""

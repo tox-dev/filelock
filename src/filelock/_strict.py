@@ -45,8 +45,11 @@ class StrictSoftFileLock(BaseFileLock):
     _on_acquired_supported: bool = False
 
     def _acquire(self) -> None:
-        # lock_file_key only lands once an acquisition commits, so derive the canonical path the claims hang off here.
-        lock_path = Path(_canonical(self.lock_file))
+        # Resolve once per acquisition, not per poll: a waiter on a relative path must keep publishing into the
+        # directory it started waiting in even when another thread changes the working directory mid-wait.
+        if (claim_root := self._context.claim_root) is None:
+            claim_root = self._context.claim_root = _canonical(self.lock_file)
+        lock_path = Path(claim_root)
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
         ensure_directory_exists(os.fspath(lock_path))
@@ -137,8 +140,15 @@ class StrictSoftFileLock(BaseFileLock):
         if (cleanup_error := _unlink_in_directory(self._claim_directory, claim_name)) is not None:
             raise cleanup_error
 
+    def _reconcile_failed_acquire(self, canonical: str) -> None:
+        # The acquisition is over, so the next one resolves the working directory again rather than reuse this one's.
+        if not self.is_locked:
+            self._context.claim_root = None
+        super()._reconcile_failed_acquire(canonical)
+
     def _release(self) -> None:
         fd = cast("int", self._context.lock_file_fd)
+        self._context.claim_root = None
         remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
         self._context.owner_claim_paths = tuple(remaining)
         if remaining:
