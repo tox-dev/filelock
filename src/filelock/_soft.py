@@ -10,7 +10,7 @@ from errno import EACCES, EEXIST, EPERM, ESRCH
 from pathlib import Path
 from typing import Final
 
-from ._api import BaseFileLock
+from ._api import BaseFileLock, _raise_grouped_errors
 from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file, write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -220,8 +220,25 @@ class SoftFileLock(BaseFileLock):
         identity: tuple[int, int] | None = None
         with suppress(OSError):
             identity = _file_identity(os.fstat(fd))
-        os.close(fd)
+        # A failed close may already have released and recycled the descriptor number. Relinquish it before the one
+        # close attempt so no later release can close an unrelated descriptor that reused the same integer.
         self._context.lock_file_fd = None
+        try:
+            self._close_released_fd(fd, default_suppresses=False)
+        # Marker cleanup must also run for control-flow exceptions, and both failures must remain observable.
+        except BaseException as close_error:
+            try:
+                self._unlink_held_marker(identity)
+            except BaseException as cleanup_error:  # noqa: BLE001  # preserve control-flow cleanup failures
+                _raise_grouped_errors(
+                    "lock descriptor close and marker cleanup both failed",
+                    close_error,
+                    cleanup_error,
+                )
+            raise
+        self._unlink_held_marker(identity)
+
+    def _unlink_held_marker(self, identity: tuple[int, int] | None) -> None:
         if identity is None:
             return
         if sys.platform == "win32":

@@ -666,21 +666,25 @@ When both errors subclass :class:`Exception`, the group is a plain :class:`Excep
  Handle a close failure after unlock
 *****************************************
 
-Native locks close the lock descriptor after the OS unlock has committed. On FUSE and Docker overlay filesystems
-``os.close`` can fail with ``EIO`` even though the lock already released. ``close_error_policy`` decides the outcome:
+Native locks close their descriptor after the OS unlock commits. Soft locks close the marker descriptor after they
+capture its identity for safe cleanup. ``os.close`` can fail even though filelock has relinquished ownership;
+``close_error_policy`` decides the outcome:
 
-- ``"default"`` keeps each platform's historical behavior: Unix drops the error, Windows propagates it.
+- ``"default"`` keeps historical behavior: Unix native locks drop the error, while Windows native and soft locks
+  propagate it.
 - ``"raise"`` always propagates the ``OSError``.
 - ``"suppress"`` always ignores it.
 
 .. code-block:: python
 
-    from filelock import FileLock
+    from filelock import FileLock, SoftFileLock
 
-    lock = FileLock("work.lock", close_error_policy="suppress")
+    native_lock = FileLock("native.lock", close_error_policy="suppress")
+    soft_lock = SoftFileLock("soft.lock", close_error_policy="suppress")
 
-The lock is released in every case; the policy only governs the post-unlock ``os.close``. It does not affect unlock
-failures or lock-file deletion.
+Filelock relinquishes descriptor ownership before applying this policy and never retries the descriptor number. The
+policy does not affect native unlock failures or marker deletion. A soft lock still attempts identity-checked marker
+cleanup after a close error.
 
 ***********************************************
  Fail closed instead of downgrading to soft

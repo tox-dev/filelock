@@ -3,16 +3,23 @@ from __future__ import annotations
 import os
 import socket
 import sys
-from errno import ENODEV, ENOSPC, EPERM
+from contextlib import contextmanager
+from errno import EINTR, ENODEV, ENOSPC, EPERM
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock import SoftFileLock
+from filelock import CloseErrorPolicy, SoftFileLock
 from filelock._soft import _MAX_LOCK_FILE_SIZE
 
+if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
+    from builtins import ExceptionGroup
+else:  # pragma: no cover (<py311)
+    from exceptiongroup import ExceptionGroup
+
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from unittest.mock import MagicMock
 
     from pytest_mock import MockerFixture
@@ -438,3 +445,145 @@ def test_windows_release_spares_a_replacement(lock_path: Path, mocker: MockerFix
     lock.release()
     assert lock_path.exists()
     lock_path.unlink()
+
+
+@pytest.mark.parametrize(
+    ("policy", "surfaces"),
+    [
+        pytest.param("default", True, id="default"),
+        pytest.param("raise", True, id="raise"),
+        pytest.param("suppress", False, id="suppress"),
+    ],
+)
+def test_close_error_policy_cleans_marker(
+    lock_path: Path,
+    mocker: MockerFixture,
+    policy: CloseErrorPolicy,
+    *,
+    surfaces: bool,
+) -> None:
+    lock = SoftFileLock(lock_path, close_error_policy=policy)
+    lock.acquire()
+    with _close_after_commit(mocker) as (close_error, attempts):
+        if surfaces:
+            with pytest.raises(OSError, match="close failed") as info:
+                lock.release()
+            assert info.value is close_error
+        else:
+            lock.release()
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
+
+
+@pytest.mark.parametrize(
+    ("depth", "force"),
+    [pytest.param(2, False, id="nested"), pytest.param(2, True, id="forced")],
+)
+def test_close_error_suppression_releases_once(
+    lock_path: Path,
+    mocker: MockerFixture,
+    depth: int,
+    *,
+    force: bool,
+) -> None:
+    lock = SoftFileLock(lock_path, close_error_policy="suppress")
+    for _acquisition in range(depth):
+        lock.acquire()
+    with _close_after_commit(mocker) as (_, attempts):
+        if force:
+            lock.release(force=True)
+        else:
+            for _release in range(depth):
+                lock.release()
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
+
+
+@pytest.mark.parametrize(
+    "use_proxy",
+    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
+)
+def test_context_surfaces_close_error_after_cleanup(
+    lock_path: Path,
+    mocker: MockerFixture,
+    *,
+    use_proxy: bool,
+) -> None:
+    lock = SoftFileLock(lock_path)
+    with (
+        _close_after_commit(mocker) as (close_error, attempts),
+        pytest.raises(OSError, match="close failed") as info,
+        lock.acquire() if use_proxy else lock,
+    ):
+        pass
+    assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, False)
+
+
+def test_second_release_does_not_close_reused_descriptor(
+    lock_path: Path,
+    tmp_path: Path,
+    mocker: MockerFixture,
+) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    with _close_after_commit(mocker) as (close_error, attempts), pytest.raises(OSError, match="close failed") as info:
+        lock.release()
+    assert info.value is close_error
+    reused_fd = os.open(tmp_path / "reused", os.O_CREAT | os.O_WRONLY)
+    assert reused_fd == attempts[0]
+    try:
+        lock.release()
+        os.fstat(reused_fd)
+    finally:
+        os.close(reused_fd)
+
+
+@_UNIX_ONLY
+def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixture) -> None:
+    holder = SoftFileLock(lock_path)
+    holder.acquire()
+    lock_path.unlink()
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    with _close_after_commit(mocker) as (_, _attempts), pytest.raises(OSError, match="close failed"):
+        holder.release()
+    assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
+
+
+@_UNIX_ONLY
+def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    cleanup_error = RuntimeError("cleanup failed")
+    unlink_mock = mocker.patch("filelock._soft.Path.unlink", side_effect=cleanup_error)
+    with _close_after_commit(mocker) as (close_error, _attempts), pytest.raises(ExceptionGroup) as info:
+        lock.release()
+    mocker.stop(unlink_mock)
+    assert (
+        info.value.message,
+        info.value.exceptions,
+        close_error.__context__,
+        cleanup_error.__context__,
+        lock.is_locked,
+    ) == (
+        "lock descriptor close and marker cleanup both failed",
+        (close_error, cleanup_error),
+        None,
+        None,
+        False,
+    )
+
+
+@contextmanager
+def _close_after_commit(mocker: MockerFixture) -> Iterator[tuple[OSError, list[int]]]:
+    real_close = os.close
+    close_error = OSError(EINTR, "close failed")
+    attempts: list[int] = []
+
+    def close(fd: int) -> None:
+        real_close(fd)
+        attempts.append(fd)
+        raise close_error
+
+    close_mock = mocker.patch("filelock._soft.os.close", side_effect=close)
+    try:
+        yield close_error, attempts
+    finally:
+        mocker.stop(close_mock)

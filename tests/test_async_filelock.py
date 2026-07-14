@@ -9,13 +9,14 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from errno import EIO, ENOSYS
+from contextlib import contextmanager
+from errno import EINTR, EIO, ENOSYS
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, ContextErrorPolicy, Timeout
+from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, CloseErrorPolicy, ContextErrorPolicy, Timeout
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup
@@ -23,7 +24,7 @@ else:  # pragma: no cover (<py311)
     from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from pytest_mock import MockerFixture
 
@@ -611,6 +612,112 @@ async def test_async_zero_write_rolls_back_acquire(tmp_path: Path, mocker: Mocke
     with pytest.raises(OSError, match="0 bytes"):
         await lock.acquire()
     assert not lock.is_locked
+
+
+@pytest.mark.parametrize(
+    ("policy", "surfaces"),
+    [pytest.param("default", True, id="default"), pytest.param("suppress", False, id="suppress")],
+)
+@pytest.mark.asyncio
+async def test_soft_close_error_policy_cleans_marker(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    policy: CloseErrorPolicy,
+    *,
+    surfaces: bool,
+) -> None:
+    lock_path = tmp_path / "a"
+    lock = AsyncSoftFileLock(lock_path, close_error_policy=policy, run_in_executor=False)
+    await lock.acquire()
+    with _close_after_commit(mocker) as (close_error, attempts):
+        if surfaces:
+            with pytest.raises(OSError, match="close failed") as info:
+                await lock.release()
+            assert info.value is close_error
+        else:
+            await lock.release()
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
+
+
+@pytest.mark.parametrize(
+    ("depth", "force"),
+    [pytest.param(2, False, id="nested"), pytest.param(2, True, id="forced")],
+)
+@pytest.mark.asyncio
+async def test_soft_close_error_suppression_releases_once(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    depth: int,
+    *,
+    force: bool,
+) -> None:
+    lock_path = tmp_path / "a"
+    lock = AsyncSoftFileLock(lock_path, close_error_policy="suppress", run_in_executor=False)
+    for _acquisition in range(depth):
+        await lock.acquire()
+    with _close_after_commit(mocker) as (_, attempts):
+        if force:
+            await lock.release(force=True)
+        else:
+            for _release in range(depth):
+                await lock.release()
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
+
+
+@pytest.mark.parametrize(
+    "use_proxy",
+    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
+)
+@pytest.mark.asyncio
+async def test_soft_context_surfaces_close_error_after_cleanup(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    *,
+    use_proxy: bool,
+) -> None:
+    lock_path = tmp_path / "a"
+    lock = AsyncSoftFileLock(lock_path, run_in_executor=False)
+    with _close_after_commit(mocker) as (close_error, attempts), pytest.raises(OSError, match="close failed") as info:
+        async with await lock.acquire() if use_proxy else lock:
+            pass
+    assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, False)
+
+
+@pytest.mark.asyncio
+async def test_soft_second_release_does_not_close_reused_descriptor(
+    tmp_path: Path,
+    mocker: MockerFixture,
+) -> None:
+    lock = AsyncSoftFileLock(tmp_path / "a", run_in_executor=False)
+    await lock.acquire()
+    with _close_after_commit(mocker) as (close_error, attempts), pytest.raises(OSError, match="close failed") as info:
+        await lock.release()
+    assert info.value is close_error
+    reused_fd = os.open(tmp_path / "reused", os.O_CREAT | os.O_WRONLY)
+    assert reused_fd == attempts[0]
+    try:
+        await lock.release()
+        os.fstat(reused_fd)
+    finally:
+        os.close(reused_fd)
+
+
+@contextmanager
+def _close_after_commit(mocker: MockerFixture) -> Iterator[tuple[OSError, list[int]]]:
+    real_close = os.close
+    close_error = OSError(EINTR, "close failed")
+    attempts: list[int] = []
+
+    def close(fd: int) -> None:
+        real_close(fd)
+        attempts.append(fd)
+        raise close_error
+
+    close_mock = mocker.patch("filelock._soft.os.close", side_effect=close)
+    try:
+        yield close_error, attempts
+    finally:
+        mocker.stop(close_mock)
 
 
 @pytest.mark.parametrize(
