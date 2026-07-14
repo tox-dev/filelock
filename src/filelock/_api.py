@@ -25,7 +25,7 @@ _UNSET_FILE_MODE: Final[int] = -1
 ContextErrorPolicy = Literal["chain", "group"]
 _CONTEXT_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"chain", "group"})
 
-#: What a native backend does with an ``os.close`` failure after the OS unlock committed (see the property).
+#: What a descriptor-owning backend does with an ``os.close`` failure after relinquishing ownership (see the property).
 CloseErrorPolicy = Literal["default", "raise", "suppress"]
 _CLOSE_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"default", "raise", "suppress"})
 
@@ -56,15 +56,18 @@ def _exception_group_cls() -> type[BaseException]:
     return _Backport  # pragma: no cover (<py311)
 
 
+def _raise_grouped_errors(message: str, first_error: BaseException, second_error: BaseException) -> NoReturn:
+    if second_error.__context__ is first_error:
+        second_error.__context__ = None
+    raise _exception_group_cls()(message, (first_error, second_error)) from None
+
+
 def _raise_body_and_release(body_error: BaseException, release_error: BaseException) -> NoReturn:
     # Group mode: surface the body failure and the release failure as sibling leaves instead of letting one hide in the
     # other's __context__. BaseExceptionGroup returns a plain ExceptionGroup when both leaves subclass Exception, so
     # ``except*`` and ``except Exception`` still catch them; a BaseException leaf (KeyboardInterrupt, CancelledError)
     # keeps the group outside ordinary handlers. ``from None`` stops the group itself gaining a redundant __context__.
-    if release_error.__context__ is body_error:
-        release_error.__context__ = None
-    msg = "lock body and release both failed"
-    raise _exception_group_cls()(msg, (body_error, release_error)) from None
+    _raise_grouped_errors("lock body and release both failed", body_error, release_error)
 
 
 # On Windows os.path.realpath calls CreateFileW with share_mode=0, which blocks concurrent DeleteFileW and causes
@@ -404,11 +407,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             releasing on exit. ``"chain"`` (the default) keeps Python's behavior: the release error propagates with the
             body error in its ``__context__``. ``"group"`` raises a :class:`BaseExceptionGroup` holding the body error
             first and the release error second, so neither hides the other.
-        :param close_error_policy: for native locks (:class:`FileLock`), what to do with an ``os.close`` failure after
-            the OS unlock has already committed. ``"default"`` keeps each platform's historical behavior (Unix drops a
-            FUSE/Docker ``EIO``, Windows propagates); ``"raise"`` always propagates the ``OSError``; ``"suppress"``
-            always ignores it. Held state is released either way. It does not affect unlock failures or lock-file
-            deletion.
+        :param close_error_policy: what to do with an ``os.close`` failure after relinquishing descriptor ownership.
+            ``"default"`` keeps each backend's historical behavior (Unix native locks drop a FUSE/Docker ``EIO``;
+            Windows native locks and :class:`SoftFileLock` propagate); ``"raise"`` always propagates the ``OSError``;
+            ``"suppress"`` always ignores it. Held state is released either way. It does not affect unlock failures or
+            lock-file deletion.
         :param fallback_to_soft: for :class:`UnixFileLock`, whether to switch to :class:`SoftFileLock` when the
             filesystem's ``flock`` returns ``ENOSYS``. ``True`` (the default) keeps the historical fallback;
             ``False`` fails closed, letting the ``ENOSYS`` propagate so a caller that needs kernel-enforced
@@ -473,7 +476,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     @property
     def close_error_policy(self) -> CloseErrorPolicy:
         """
-        What a native lock does with an ``os.close`` failure after the OS unlock committed.
+        What a lock does with an ``os.close`` failure after relinquishing descriptor ownership.
 
         .. versionadded:: 3.30.0
 
@@ -481,10 +484,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         return self._close_error_policy
 
     def _close_released_fd(self, fd: int, *, default_suppresses: bool) -> None:
-        # Close the descriptor after the OS unlock has committed. CPython never retries close() after EINTR because the
-        # descriptor number may already be reused, so neither does this. close_error_policy decides the error's fate:
-        # "raise" propagates, "suppress" drops it, "default" keeps the backend's historical behavior (Unix suppresses a
-        # FUSE/Docker EIO, Windows propagates). Held state is already cleared, so the lock stays released either way.
+        # CPython never retries close() after EINTR because the descriptor number may already be reused, so neither does
+        # this. close_error_policy decides the error's fate after the backend relinquishes descriptor ownership.
         try:
             os.close(fd)
         except OSError:
@@ -1000,4 +1001,5 @@ __all__ = [
     "FileLockMeta",
     "_canonical",
     "_raise_body_and_release",
+    "_raise_grouped_errors",
 ]
