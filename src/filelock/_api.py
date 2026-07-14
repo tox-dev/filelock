@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count, starmap
 from threading import Condition, RLock, get_ident, local
-from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
 from ._error import SoftFileLockLifetimeWarning, Timeout
@@ -72,6 +72,23 @@ _ExtraValue = TypeVar("_ExtraValue")
 _MarkerValue = TypeVar("_MarkerValue")
 _SubclassValue = TypeVar("_SubclassValue")
 _LockInitValue = float | int | bool | str | None | Callable[[int], None]
+
+
+class LockOptions(TypedDict, total=False):
+    """Every option the metaclass forwards, so a subclass adding its own can still type what it passes through."""
+
+    timeout: float
+    mode: int
+    thread_local: bool
+    blocking: bool
+    is_singleton: bool
+    poll_interval: float
+    lifetime: float | None
+    context_error_policy: ContextErrorPolicy
+    close_error_policy: CloseErrorPolicy
+    fallback_to_soft: bool
+    preserve_lock_file: bool
+    on_acquired: Callable[[int], None] | None
 
 
 def _exception_group_cls() -> type[BaseException]:
@@ -339,6 +356,7 @@ class FileLockMeta(ABCMeta):
             lifetime,
             supported=cls._lifetime_supported,
             replacements=cls._lifetime_replacements,
+            reason=cls._lifetime_unsupported_reason,
             cls_name=cls.__name__,
             stacklevel=cls._constructor_lifetime_warning_stacklevel,
         )
@@ -480,11 +498,12 @@ class _InitParameterModel:
     default_params: dict[str, inspect.Parameter]
 
 
-def _resolve_lifetime(
+def _resolve_lifetime(  # noqa: PLR0913
     lifetime: float | None,
     *,
     supported: bool,
     replacements: tuple[str, str] | None,
+    reason: str,
     cls_name: str,
     stacklevel: int,
 ) -> float | None:
@@ -506,8 +525,7 @@ def _resolve_lifetime(
             raise ValueError(msg)
     if lifetime is not None and not supported:
         warnings.warn(
-            f"lifetime is ignored for {cls_name}: a native OS lock cannot be broken safely by file age; "
-            f"only SoftFileLock supports lifetime-based expiry",
+            f"lifetime is ignored for {cls_name}: {reason}; only SoftFileLock supports lifetime-based expiry",
             stacklevel=stacklevel,
         )
         return None
@@ -594,6 +612,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
     #: Strict-lock and lease replacements for a backend with legacy age-based expiry.
     _lifetime_replacements: tuple[str, str] | None = None
+
+    #: Why a backend that refuses ``lifetime`` cannot honor it, named in the warning that drops the value.
+    _lifetime_unsupported_reason: str = "a native OS lock cannot be broken safely by file age"
 
     #: Async construction adds one metaclass frame before lifetime validation.
     _constructor_lifetime_warning_stacklevel: int = 3
@@ -885,6 +906,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             value,
             supported=self._lifetime_supported,
             replacements=self._lifetime_replacements,
+            reason=self._lifetime_unsupported_reason,
             cls_name=type(self).__name__,
             stacklevel=3,
         )
@@ -1700,6 +1722,7 @@ __all__ = [
     "ContextErrorPolicy",
     "FileLockContext",
     "FileLockMeta",
+    "LockOptions",
     "_append_exception_context",
     "_canonical",
     "_ensure_current_process",

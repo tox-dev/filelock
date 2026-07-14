@@ -175,12 +175,11 @@ class SoftFileLock(BaseFileLock):
             _KERNEL32.CloseHandle(handle)
         return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
 
-    @staticmethod
-    def _write_lock_info(fd: int) -> None:
+    def _write_lock_info(self, fd: int) -> None:
         # No suppression: a write failure must reach the acquisition rollback so it never publishes a half-written
         # marker as held state.
         info = f"{os.getpid()}\n{socket.gethostname()}\n"
-        if sys.platform == "win32" and (ct := SoftFileLock._get_process_creation_time(os.getpid())) is not None:
+        if sys.platform == "win32" and (ct := self._get_process_creation_time(os.getpid())) is not None:
             info += f"{ct}\n"
         write_all(fd, info.encode())
 

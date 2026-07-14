@@ -534,6 +534,58 @@ library:
     handler = logging.StreamHandler()
     logging.getLogger("filelock").addHandler(handler)
 
+*******************************
+ Choose a soft-lock contract
+*******************************
+
+:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` never reclaims a marker. A malformed record, an owner on
+another host, a dead PID and an old marker all read as held, so acquisition waits rather than overlap a holder that may
+still be alive. A crashed holder leaves a marker no contender removes; clear it with
+:meth:`force_break <filelock.MarkerSoftFileLock.force_break>`, which voids mutual exclusion for whoever is still
+running.
+
+:class:`SoftFileLease <filelock.SoftFileLease>` trades exclusion for progress. The holder refreshes its claim, and a
+peer takes the marker once it is ``lease_duration`` seconds stale. The expired holder keeps running and keeps using
+whatever the lock protects, so a lease says who *should* be working, not who alone is. ``on_compromise`` fires when the
+claim is lost. :attr:`token <filelock.SoftFileLease.token>` names a claim but does not fence one: to reject a superseded
+holder, the protected resource must be linearizable and fence on a monotonic generation it controls.
+
+.. code-block:: python
+
+    from filelock import SoftFileLease, StrictSoftFileLock
+
+    with StrictSoftFileLock("work.lock", timeout=30):
+        pass  # no peer enters while this holder lives
+
+    def stop_working(compromise):
+        print("lost the claim:", compromise.reason)
+
+    with SoftFileLease("work.lock", lease_duration=60, on_compromise=stop_working):
+        pass  # a peer may enter 60s after the last refresh
+
+Every contender for a path must agree on ``lease_duration``; one that disagrees raises
+:class:`LeaseSettingsMismatch <filelock.LeaseSettingsMismatch>` instead of applying its own expiry to a peer that never
+agreed to it. Native locks reject lease settings outright, because pathname age cannot revoke a kernel lock on an inode.
+Async callers use ``AsyncStrictSoftFileLock`` and ``AsyncSoftFileLease``.
+
+**Do not mix contracts on one path.** Both classes publish a protocol 2 record.
+:class:`SoftFileLock <filelock.SoftFileLock>` reads that record as malformed and evicts it once past its grace period,
+so a legacy contender can delete a live strict marker or a live lease. Only these combinations hold:
+
+.. list-table:: Mutual exclusion between contenders
+    :header-rows: 1
+
+    - - Contenders on one path
+      - Holds?
+    - - ``StrictSoftFileLock`` with ``StrictSoftFileLock``
+      - Yes.
+    - - ``SoftFileLease`` with ``SoftFileLease``, same ``lease_duration``
+      - Until a claim expires; then the old holder overlaps its successor.
+    - - ``SoftFileLock`` with ``StrictSoftFileLock`` or ``SoftFileLease``
+      - No. The legacy contender evicts the protocol 2 marker.
+    - - ``StrictSoftFileLock`` with ``SoftFileLease``
+      - The lease waits out a strict holder, but a strict contender never reclaims an expired lease.
+
 ***********************************
  Configure legacy age-based expiry
 ***********************************

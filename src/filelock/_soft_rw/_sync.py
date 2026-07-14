@@ -31,7 +31,7 @@ from filelock._api import (
 )
 from filelock._error import Timeout
 from filelock._soft import SoftFileLock
-from filelock._util import ensure_directory_exists, write_all
+from filelock._util import ensure_directory_exists, touch, write_all
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -42,11 +42,6 @@ _BREAK_SUFFIX: Final[str] = ".break"
 _MAX_MARKER_SIZE: Final[int] = 1024
 _O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
 _O_NONBLOCK: Final[int] = getattr(os, "O_NONBLOCK", 0)
-# Retargeting os.utime to an open fd lets the heartbeat refresh the exact inode it just verified instead of
-# re-resolving the path; Windows read-only handles cannot set times that way, so keep it Unix-only.
-_SUPPORTS_UTIME_FD: Final[bool] = sys.platform != "win32" and os.utime in os.supports_fd
-# os.utime follows symlinks unless told not to; not every platform can refuse the follow, so probe support.
-_SUPPORTS_UTIME_NOFOLLOW: Final[bool] = os.utime in os.supports_follow_symlinks
 # dirfd-relative I/O is a Unix-only optimization; Windows cannot ``os.open()`` a directory at all, and
 # its ``os`` module skips dir_fd support entirely. When disabled, callers fall back to full-path ops.
 _SUPPORTS_DIR_FD: Final[bool] = sys.platform != "win32" and os.open in os.supports_dir_fd
@@ -569,7 +564,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             if info is None or not hmac.compare_digest(info.token, token):
                 return False
             with suppress(OSError):
-                _touch(self._paths.write, fd=fd)
+                touch(self._paths.write, fd=fd)
             return True
         finally:
             os.close(fd)
@@ -713,7 +708,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             # kill the heartbeat thread: the read above just confirmed the marker is still ours, so swallow the
             # error and retry on the next tick rather than letting the lease lapse while we still hold the lock.
             with suppress(OSError):
-                _touch(marker_name, fd=fd)
+                touch(marker_name, fd=fd)
             return True
         finally:
             os.close(fd)
@@ -893,17 +888,6 @@ def _same_file(name: str, identity: tuple[int, int], *, dir_fd: int | None) -> b
     except OSError:
         return False
     return (st.st_dev, st.st_ino) == identity
-
-
-def _touch(name: str, *, fd: int | None = None) -> None:
-    # Prefer the already-open, already-verified fd so a peer that swaps a symlink or a different file in at the
-    # path after our O_NOFOLLOW read cannot redirect the touch: utime then targets the inode behind the fd.
-    # Where the platform cannot utime an fd, fall back to a path-based touch that still refuses to follow a
-    # symlink where supported, matching the O_NOFOLLOW reads used elsewhere here.
-    if fd is not None and _SUPPORTS_UTIME_FD:
-        os.utime(fd, None)
-        return
-    os.utime(name, None, follow_symlinks=not _SUPPORTS_UTIME_NOFOLLOW)
 
 
 def _file_exists(path: str) -> bool:

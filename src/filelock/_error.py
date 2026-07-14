@@ -28,7 +28,12 @@ class SoftFileLockLifetimeWarning(DeprecationWarning):
     """The configured soft-lock lifetime permits overlapping live holders after expiry."""
 
 
+class LeaseSettingsMismatch(ValueError):  # noqa: N818
+    """A lease contender disagrees with the published claim about how long the lease lasts."""
+
+
 __all__ = [
+    "LeaseSettingsMismatch",
     "SoftFileLockLifetimeWarning",
     "Timeout",
 ]

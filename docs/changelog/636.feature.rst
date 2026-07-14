@@ -1,1 +1,3 @@
-Warn when `SoftFileLock.lifetime` enables age-based expiry, and direct callers to strict-lock or lease interfaces.
+Add ``StrictSoftFileLock``, which treats every marker it did not publish as contention, and ``SoftFileLease``, whose
+claim expires and whose holder learns through ``on_compromise`` when it is lost. ``SoftFileLock(lifetime=...)`` now warns
+and names them. Both publish a record ``SoftFileLock`` evicts, so do not mix contracts on one path.

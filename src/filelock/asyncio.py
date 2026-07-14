@@ -21,6 +21,7 @@ from ._api import (
     FileLockMeta,
     _append_exception_context,
     _canonical,
+    _ExtraValue,
     _fork_transition,
     _grouped_errors,
     _raise_body_and_release,
@@ -40,7 +41,9 @@ from ._async import (
     _wait_until_done,
 )
 from ._error import Timeout
+from ._lease import SoftFileLease
 from ._soft import SoftFileLock
+from ._strict import StrictSoftFileLock
 from ._unix import UnixFileLock
 from ._windows import WindowsFileLock
 
@@ -66,7 +69,7 @@ _AT = TypeVar("_AT", bound="BaseAsyncFileLock")
 
 
 class AsyncFileLockMeta(FileLockMeta):
-    def __call__(  # ty: ignore[invalid-method-override]  # noqa: PLR0913
+    def __call__(  # noqa: PLR0913
         cls: type[_AT],  # noqa: N805
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -85,11 +88,13 @@ class AsyncFileLockMeta(FileLockMeta):
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
+        **kwargs: _ExtraValue,
     ) -> _AT:
         if thread_local and run_in_executor:
             msg = "run_in_executor is not supported when thread_local is True"
             raise ValueError(msg)
-        return super().__call__(
+        return super().__call__(  # a subclass may add options of its own, as AsyncSoftFileLease does
+            **kwargs,
             lock_file=lock_file,
             timeout=timeout,
             mode=mode,
@@ -717,6 +722,14 @@ class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
     _lifetime_replacements: tuple[str, str] | None = ("AsyncStrictSoftFileLock", "AsyncSoftFileLease")
 
 
+class AsyncStrictSoftFileLock(StrictSoftFileLock, BaseAsyncFileLock):
+    """Fail-closed existence lock: a marker this process did not publish always means contention."""
+
+
+class AsyncSoftFileLease(SoftFileLease, BaseAsyncFileLock):
+    """Existence lock whose claim expires, so a peer may take it while the previous holder still runs."""
+
+
 class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):
     """Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems."""
 
@@ -727,7 +740,9 @@ class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):
 
 __all__ = [
     "AsyncAcquireReturnProxy",
+    "AsyncSoftFileLease",
     "AsyncSoftFileLock",
+    "AsyncStrictSoftFileLock",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",

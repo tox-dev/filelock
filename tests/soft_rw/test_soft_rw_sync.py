@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import Timeout
+from filelock import _util as util_mod
 from filelock._soft_rw import SoftReadWriteLock
 from filelock._soft_rw import _sync as sync_mod
 
@@ -591,7 +592,7 @@ def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: p
     try:
         hold = lock._hold
         assert hold is not None
-        monkeypatch.setattr(sync_mod, "_touch", boom)
+        monkeypatch.setattr(sync_mod, "touch", boom)
         time.sleep(0.2)  # ~10 ticks, every one failing the touch
         assert hold.heartbeat_thread.is_alive()
         assert not hold.heartbeat_stop.is_set()
@@ -736,13 +737,13 @@ def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:
     marker = Path(f"{lock_file}.write")
     marker.symlink_to(victim)
 
-    sync_mod._touch(str(marker))
+    util_mod.touch(str(marker))
 
     assert victim.stat().st_mtime == past
     assert victim.read_text() == "do-not-touch"
 
 
-@pytest.mark.skipif(not sync_mod._SUPPORTS_UTIME_FD, reason="os.utime cannot target an fd on this platform")
+@pytest.mark.skipif(not util_mod._SUPPORTS_UTIME_FD, reason="os.utime cannot target an fd on this platform")
 def test_refresh_touches_verified_fd_not_swapped_path(
     lock_file: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
