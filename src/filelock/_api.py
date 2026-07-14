@@ -1039,13 +1039,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
         poll_interval = poll_interval if poll_interval is not None else self._context.poll_interval
 
-        # Bump the counter up front; _undo_acquire rolls it back if acquisition fails.
-        self._context.lock_counter += 1
-
-        canonical = _canonical(self.lock_file)
-        self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
-
         start_time = time.perf_counter()
+        # Wait for admission before touching any state: a caller refused entry must leave the counter, the registry and
+        # the descriptor exactly as it found them.
         with self._transition_admission(
             blocking=blocking,
             cancel_check=cancel_check,
@@ -1053,6 +1049,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             poll_interval=poll_interval,
             start_time=start_time,
         ):
+            # Bump the counter up front; _undo_acquire rolls it back if acquisition fails.
+            self._context.lock_counter += 1
+
+            canonical = _canonical(self.lock_file)
+            self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
+
             try:
                 self._poll_until_acquired(
                     blocking=blocking,
