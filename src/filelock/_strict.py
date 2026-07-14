@@ -140,6 +140,15 @@ class StrictSoftFileLock(BaseFileLock):
         if (cleanup_error := _unlink_in_directory(self._claim_directory, claim_name)) is not None:
             raise cleanup_error
 
+    def _rollback_failed_acquire(self, acquisition_error: BaseException) -> None:
+        # _acquire already reconciles a failed doorway through _discard_doorway: it either closes the pending
+        # descriptor or, when a held claim cannot be removed, commits it as owned so a later release retries and
+        # raises the cleanup errors. A base rollback would release that owned descriptor again and report each
+        # failure a second time, so leave the reconciled state alone.
+        if self.is_locked:
+            return
+        super()._rollback_failed_acquire(acquisition_error)
+
     def _reconcile_failed_acquire(self, canonical: str) -> None:
         # The acquisition is over, so the next one resolves the working directory again rather than reuse this one's.
         if not self.is_locked:
