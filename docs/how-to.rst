@@ -297,7 +297,9 @@ But upgrading from read to write (or downgrading) raises an error:
         with rw.write_lock():  # RuntimeError
             pass
 
-When you're done with a ``ReadWriteLock``, close it to release the underlying SQLite connection:
+``ReadWriteLock`` opens a SQLite connection for an outer acquisition and closes it after the final matching
+``release()``. Reentrant acquisitions share that transaction. Call ``close()`` to release a held lock and invalidate the
+instance:
 
 .. code-block:: python
 
@@ -306,7 +308,40 @@ When you're done with a ``ReadWriteLock``, close it to release the underlying SQ
         with rw.read_lock():
             data = get_shared_data()
     finally:
-        rw.close()  # releases any held lock and closes the SQLite connection
+        rw.close()
+
+SQLite prohibits using or closing a database connection inherited across ``fork()``. filelock invalidates an
+inherited ``ReadWriteLock`` or ``AsyncReadWriteLock`` in the child. Acquisition raises ``RuntimeError``; ``release()``
+and ``close()`` do nothing so context-manager cleanup cannot release the parent's transaction. On CPython, if no
+SQLite connection was active at the fork, construct a new lock in the child before acquiring:
+
+.. code-block:: python
+
+    child_rw = ReadWriteLock("data.db")
+    with child_rw.read_lock():
+        data = get_shared_data()
+
+See SQLite's `fork guidance`_.
+PyPy can leave process-wide SQLite state unsafe after a fork even when every known connection was closed. If the parent
+used SQLite after importing filelock, a PyPy child therefore rejects every ``ReadWriteLock`` and
+``AsyncReadWriteLock`` until ``exec()`` or exit. Importing filelock only in the child cannot detect SQLite use that
+happened in the parent.
+
+If a connection was active, filelock rejects every lock for the same path or database inode in the child. In the normal
+path, an outer acquisition owns this connection; failed cleanup can also retain one. The child must call ``exec()`` or
+exit before using that database. filelock abandons each inherited active handle until OS process exit, consuming one
+descriptor and its SQLite memory per active lock. CPython 3.10 and 3.11 need an extra raw reference to stop their base
+deallocator from closing the handle; later versions suppress finalization through the connection subclass. Both paths
+avoid the ``sqlite3_close()`` call that SQLite forbids after a fork.
+
+filelock normally rejects ``fork()`` from a callback that runs during a SQLite operation. If another audit hook blocks
+that guard from registering, a child created at this boundary exits with status 70 before it can touch the inherited
+connection; the parent operation continues.
+
+A native or signal callback that forks while its thread is executing inside SQLite can resume in inherited C state;
+filelock cannot make that operation safe.
+
+.. _fork guidance: https://www.sqlite.org/howtocorrupt.html#_carrying_an_open_database_connection_across_a_fork_
 
 ***************************************************
  Use read/write locks on network filesystems (NFS)
@@ -315,8 +350,9 @@ When you're done with a ``ReadWriteLock``, close it to release the underlying SQ
 :class:`ReadWriteLock <filelock.ReadWriteLock>` is SQLite-backed and requires a local filesystem: SQLite's own
 docs warn against running on NFS because POSIX ``fcntl`` locks are unreliable there. For HPC clusters, slurm
 deployments, or any multi-host shared storage, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>`
-instead. It is built on :class:`SoftFileLock <filelock.SoftFileLock>` primitives (atomic ``O_CREAT | O_EXCL | O_NOFOLLOW``) and runs a
-daemon heartbeat thread that refreshes each held marker's ``mtime`` so any host on any node can evict a stale
+instead. It is built on :class:`SoftFileLock <filelock.SoftFileLock>` primitives (atomic
+``O_CREAT | O_EXCL | O_NOFOLLOW``) and runs a daemon heartbeat thread that refreshes each held marker's ``mtime`` so any
+host on any node can evict a stale
 marker when the holder crashes.
 
 .. code-block:: python
@@ -352,8 +388,8 @@ Writer acquisition is two-phase and writer-preferring: phase one claims the writ
 new reader), phase two waits for existing readers to drain. This rules out writer starvation under read-heavy
 workloads. See :doc:`concepts` for the full model.
 
-**Fork caveat.** A process that forks while holding a ``SoftReadWriteLock`` loses the lock in the child. filelock marks the
-inherited instance fork-invalidated; ``release()`` on it becomes a no-op, and the child must call
+**Fork caveat.** A process that forks while holding a ``SoftReadWriteLock`` loses the lock in the child. filelock marks
+the inherited instance fork-invalidated; ``release()`` on it becomes a no-op, and the child must call
 ``SoftReadWriteLock(path)`` again to get a fresh instance before acquiring. Matches the semantics of
 :class:`threading.Lock` and PyMongo's connection pools.
 
