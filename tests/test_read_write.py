@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import sys
 import time
 from contextlib import contextmanager
-from multiprocessing import Event, Process, Value
-from typing import TYPE_CHECKING, Final, Literal
+from multiprocessing import Event, Process, Value, set_start_method
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pytest
 
@@ -14,6 +15,9 @@ import sqlite3
 from read_write_helpers import assert_read_write_lock_state
 
 from filelock import ReadWriteLock, Timeout
+
+if sys.implementation.name == "pypy":
+    set_start_method("spawn", force=True)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -326,6 +330,39 @@ def test_sequential_lock_modes(
 
 
 @pytest.mark.parametrize(
+    "path_change",
+    [pytest.param("cwd", id="relative-cwd"), pytest.param("symlink", id="retargeted-symlink")],
+)
+def test_read_write_lock_keeps_constructed_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_change: Literal["cwd", "symlink"]
+) -> None:
+    first_directory = tmp_path / "first"
+    second_directory = tmp_path / "second"
+    first_directory.mkdir()
+    second_directory.mkdir()
+    first_database = first_directory / "lock.db"
+    second_database = second_directory / "lock.db"
+    if path_change == "cwd":
+        monkeypatch.chdir(first_directory)
+        lock = ReadWriteLock("lock.db", is_singleton=False)
+        monkeypatch.chdir(second_directory)
+    else:
+        lock_path = tmp_path / "lock.db"
+        try:
+            lock_path.symlink_to(first_database)
+        except OSError as error:  # pragma: no cover - platform policy can deny symlink creation
+            pytest.skip(str(error))
+        lock = ReadWriteLock(lock_path, is_singleton=False)
+        lock_path.unlink()
+        lock_path.symlink_to(second_database)
+
+    with lock.read_lock():
+        assert_read_write_lock_state(str(first_database), "write", available=False)
+        assert_read_write_lock_state(str(second_database), "write", available=True)
+    lock.close()
+
+
+@pytest.mark.parametrize(
     ("held_mode", "probe_mode"),
     [
         pytest.param("read", "write", id="read"),
@@ -348,7 +385,7 @@ def test_release_rollback_failure_reconciles_lock_state(
     after_rollback: bool,
     available_after_failure: bool,
 ) -> None:
-    rollback_error = _patch_rollback_failure(lock_file, mocker, after_rollback=after_rollback)
+    rollback_error = _patch_rollback_failure(mocker, after_rollback=after_rollback)
     lock = ReadWriteLock(lock_file, is_singleton=False)
     (lock.acquire_read if held_mode == "read" else lock.acquire_write)()
 
@@ -366,40 +403,55 @@ def test_release_rollback_failure_reconciles_lock_state(
     lock.close()
 
 
-def _patch_rollback_failure(lock_file: str, mocker: MockerFixture, *, after_rollback: bool) -> sqlite3.OperationalError:
-    real_connection = sqlite3.connect(lock_file, check_same_thread=False)
+def _patch_rollback_failure(mocker: MockerFixture, *, after_rollback: bool) -> sqlite3.OperationalError:
+    real_connect = sqlite3.connect
     rollback_error = sqlite3.OperationalError("rollback failed")
-    failed = False
+    connection_count = 0
 
-    def fail_first_rollback() -> None:
-        nonlocal failed
-        if failed:
-            real_connection.rollback()
-            return
-        failed = True
-        if after_rollback:
-            real_connection.rollback()
-        raise rollback_error
+    def connect(
+        database: str,
+        *,
+        factory: type[sqlite3.Connection],
+        timeout: float,
+    ) -> sqlite3.Connection:
+        nonlocal connection_count
+        connection_count += 1
+        real_connection = real_connect(
+            database,
+            check_same_thread=False,
+            factory=factory,
+            cached_statements=0,
+            timeout=timeout,
+        )
+        if connection_count != 2:
+            return real_connection
 
-    connection = mocker.MagicMock(
-        spec_set=sqlite3.Connection,
-        wraps=real_connection,
-        **{"rollback.side_effect": fail_first_rollback},
-    )
-    mocker.patch.object(
-        type(connection),
-        "in_transaction",
-        new_callable=mocker.PropertyMock,
-        create=True,
-        side_effect=lambda: real_connection.in_transaction,
-    )
-    sqlite_module = mocker.MagicMock(
-        spec_set=sqlite3,
-        Error=sqlite3.Error,
-        OperationalError=sqlite3.OperationalError,
-        connect=mocker.create_autospec(sqlite3.connect, return_value=connection),
-    )
-    mocker.patch("filelock._read_write.sqlite3", sqlite_module)
+        rollback_failed = False
+
+        def rollback() -> None:
+            nonlocal rollback_failed
+            if not rollback_failed:
+                rollback_failed = True
+                if after_rollback:
+                    real_connection.rollback()
+                raise rollback_error
+            real_connection.rollback()
+
+        connection = mocker.MagicMock(
+            spec_set=type(real_connection),
+            wraps=real_connection,
+            **{"rollback.side_effect": rollback},
+        )
+        mocker.patch.object(
+            type(connection),
+            "in_transaction",
+            new_callable=mocker.PropertyMock,
+            create=True,
+            side_effect=lambda: real_connection.in_transaction,
+        )
+        return cast("sqlite3.Connection", connection)
+
+    mocker.patch("filelock._read_write._connect", side_effect=connect)
     return rollback_error
 
 
@@ -437,6 +489,7 @@ def cleanup_processes(processes: list[Process]) -> Generator[None]:
         for proc in processes:
             proc.terminate()
             proc.join(timeout=1)
+            proc.close()
 
 
 def chain_reader(

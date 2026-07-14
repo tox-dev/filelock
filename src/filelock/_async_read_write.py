@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import os
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
-from ._api import _append_exception_context, _raise_chained_errors
+from ._api import (
+    _append_exception_context,
+    _ensure_current_process,
+    _fork_transition,
+    _raise_chained_errors,
+    _register_fork_object,
+)
 from ._async import _BackendOutcome, _capture_call, _drain_future, _future_result, _wait_until_done
 from ._read_write import ReadWriteLock
 
 if TYPE_CHECKING:
-    import os
     from collections.abc import AsyncGenerator, Callable
     from concurrent import futures
     from types import TracebackType
@@ -57,10 +64,19 @@ class AsyncReadWriteLock:
         loop: asyncio.AbstractEventLoop | None = None,
         executor: futures.Executor | None = None,
     ) -> None:
-        self._lock = ReadWriteLock(lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
-        self._loop = loop
-        self._owns_executor = executor is None
-        self._executor = executor or ThreadPoolExecutor(max_workers=1)
+        creator_pid = os.getpid()
+        self._creator_pid = creator_pid
+        self._fork_invalidated = False
+        self._closed = False
+        _register_fork_object(self)
+        with _fork_transition():
+            self._lock = ReadWriteLock(lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
+            self._loop = loop
+            self._owns_executor = executor is None
+            self._executor = executor or ThreadPoolExecutor(max_workers=1)
+            if os.getpid() != creator_pid:  # pragma: no cover - exercised only in a forked constructor callback
+                msg = "AsyncReadWriteLock construction cannot continue after fork"
+                raise RuntimeError(msg)
 
     @property
     def lock_file(self) -> str:
@@ -159,10 +175,8 @@ class AsyncReadWriteLock:
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
-        If rollback fails, peers may remain blocked. A later acquisition first retries that cleanup;
-        ``release(force=True)`` retries it without acquiring.
-
         """
+        self._raise_if_unusable()
         await self._run_acquire(functools.partial(self._lock.acquire_read, timeout, blocking=blocking))
         return AsyncAcquireReadWriteReturnProxy(lock=self)
 
@@ -180,10 +194,8 @@ class AsyncReadWriteLock:
         :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
-        If rollback fails, peers may remain blocked. A later acquisition first retries that cleanup;
-        ``release(force=True)`` retries it without acquiring.
-
         """
+        self._raise_if_unusable()
         await self._run_acquire(functools.partial(self._lock.acquire_write, timeout, blocking=blocking))
         return AsyncAcquireReadWriteReturnProxy(lock=self)
 
@@ -193,12 +205,14 @@ class AsyncReadWriteLock:
 
         See :meth:`ReadWriteLock.release` for full semantics.
 
-        :param force: if ``True``, release the lock completely regardless of the current lock level and retry cleanup
-            from a failed acquisition
+        :param force: if ``True``, release the lock completely regardless of the current lock level
 
         :raises RuntimeError: if no lock is currently held and *force* is ``False``
 
         """
+        _ensure_current_process()
+        if self._inherited:
+            return
         await self._run(self._lock.release, force=force)
 
     async def close(self) -> None:
@@ -208,6 +222,11 @@ class AsyncReadWriteLock:
         After calling this method, the lock instance is no longer usable.
 
         """
+        _ensure_current_process()
+        if self._inherited:
+            return
+        if self._closed:
+            return
         close_future = self._submit(self._lock.close)
         try:
             await _wait_until_done(close_future)
@@ -216,9 +235,11 @@ class AsyncReadWriteLock:
                 await _drain_future(close_future)
             except BaseException as error:  # noqa: BLE001  # reported with the cancellation below
                 self._raise_cancelled_error(cancellation, error)
+            self._closed = True
             self._shutdown_owned_executor()
             raise
         _future_result(close_future)
+        self._closed = True
         self._shutdown_owned_executor()
 
     async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
@@ -273,10 +294,26 @@ class AsyncReadWriteLock:
         if self._owns_executor:
             self._executor.shutdown(wait=False)
 
+    @property
+    def _inherited(self) -> bool:
+        return self._fork_invalidated or os.getpid() != self._creator_pid
+
+    def _raise_if_unusable(self) -> None:
+        _ensure_current_process()
+        if self._inherited:
+            msg = f"AsyncReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
+            raise RuntimeError(msg)
+        if self._closed:
+            msg = "Cannot operate on a closed database."
+            raise sqlite3.ProgrammingError(msg)
+
+    def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - exercised in fork children
+        self._fork_invalidated = True
+
     def __del__(self) -> None:
         # Safety net when close() was never called: shut down the executor we own so its worker thread does not
         # outlive the lock. shutdown(wait=False) never blocks.
-        if getattr(self, "_owns_executor", False):
+        if os.getpid() == getattr(self, "_creator_pid", None) and getattr(self, "_owns_executor", False):
             self._executor.shutdown(wait=False)
 
 

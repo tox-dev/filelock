@@ -13,7 +13,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count, starmap
-from threading import Condition, Lock, RLock, get_ident, local
+from threading import Condition, RLock, get_ident, local
 from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
@@ -1376,7 +1376,7 @@ class _ForkTransitionContext(local):
 
 class _ForkState:
     def __init__(self) -> None:
-        self.gate = Condition(Lock())
+        self.gate = Condition(RLock())
         self.registry_lock = RLock()
         self.parameter_models_lock = RLock()
         self.transition_context = _ForkTransitionContext()
@@ -1390,7 +1390,7 @@ class _ForkState:
         self.pid = os.getpid()
 
     def reset_synchronization(self) -> None:  # pragma: no cover - exercised in fork children
-        self.gate = Condition(Lock())
+        self.gate = Condition(RLock())
         self.registry_lock = RLock()
         self.parameter_models_lock = RLock()
         self.transition_context = _ForkTransitionContext()
