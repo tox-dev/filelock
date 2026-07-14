@@ -159,8 +159,8 @@ jobs:
     runs-on: ubuntu-24.04
     # A PR must add a docs/changelog/<pr>.<type>.rst fragment; automated dependency and pre-commit bumps are exempt.
     if: >-
-      github.event_name == 'pull_request' &&
-      !contains(fromJSON('["dependabot[bot]", "pre-commit-ci[bot]"]'), github.actor)
+      github.event_name == 'pull_request' && !contains(fromJSON('["dependabot[bot]", "pre-commit-ci[bot]"]'),
+      github.actor)
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
