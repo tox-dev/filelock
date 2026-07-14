@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import os
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from ._sync import SoftReadWriteLock
 
 if TYPE_CHECKING:
-    import os
     from collections.abc import AsyncGenerator, Callable
     from concurrent import futures
     from types import TracebackType
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 
 class AsyncSoftReadWriteLock:
@@ -51,6 +54,7 @@ class AsyncSoftReadWriteLock:
         loop: asyncio.AbstractEventLoop | None = None,
         executor: futures.Executor | None = None,
     ) -> None:
+        self._creator_pid = os.getpid()
         self._lock = SoftReadWriteLock(
             lock_file,
             timeout,
@@ -143,6 +147,7 @@ class AsyncSoftReadWriteLock:
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
+        self._raise_if_inherited()
         await self._run(self._lock.acquire_read, timeout, blocking=blocking)
         return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
 
@@ -165,6 +170,7 @@ class AsyncSoftReadWriteLock:
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
+        self._raise_if_inherited()
         await self._run(self._lock.acquire_write, timeout, blocking=blocking)
         return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
 
@@ -177,13 +183,20 @@ class AsyncSoftReadWriteLock:
         :raises RuntimeError: if no lock is currently held and *force* is ``False``
 
         """
-        await self._run(self._lock.release, force=force)
+        if self._creator_pid == os.getpid():
+            await self._run(self._lock.release, force=force)
 
     async def close(self) -> None:
         """Release any held lock and release the underlying filesystem resources. Idempotent."""
-        await self._run(self._lock.close)
+        if self._creator_pid == os.getpid():
+            await self._run(self._lock.close)
 
-    async def _run(self, func: Callable[..., object], *args: object, **kwargs: object) -> object:
+    def _raise_if_inherited(self) -> None:
+        if self._creator_pid != os.getpid():  # pragma: no cover - exercised only in fork children
+            msg = f"AsyncSoftReadWriteLock on {self.lock_file} was inherited across fork; construct a new instance"
+            raise RuntimeError(msg)
+
+    async def _run(self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs) -> _R:
         loop = self._loop or asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, functools.partial(func, *args, **kwargs))
 

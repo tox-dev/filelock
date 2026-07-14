@@ -1,0 +1,6 @@
+Preserve parent lock ownership across ``fork()``. A child closes an inherited descriptor only while its identity still
+matches, so it neither unlocks nor unlinks the parent's lock. It clears inherited ownership state and singleton caches,
+then requires a new lock instance before acquiring. Fork-time construction replaces inherited cache mutexes and omits
+an instance whose construction crossed into the child from the cache. If ``fstat()`` cannot establish the identity,
+child cleanup skips the descriptor number because an earlier fork callback may have reused it. Descriptor tracking
+also covers third-party backends that fail after assigning a descriptor.

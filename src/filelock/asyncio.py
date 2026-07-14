@@ -21,10 +21,13 @@ from ._api import (
     FileLockMeta,
     _append_exception_context,
     _canonical,
+    _fork_transition,
     _grouped_errors,
     _raise_body_and_release,
     _raise_chained_errors,
+    _raise_cleanup_errors,
     _raise_grouped_errors,
+    _register_fork_object,
 )
 from ._async import (
     _AsyncTransitionGate,
@@ -43,7 +46,7 @@ from ._windows import WindowsFileLock
 
 if TYPE_CHECKING:
     import sys
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Awaitable, Callable, Coroutine
     from concurrent import futures
     from types import TracebackType
 
@@ -186,6 +189,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param executor: The executor to use. If not specified, the default executor will be used.
 
         """
+        self._creator_pid = os.getpid()
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
@@ -206,6 +210,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             run_in_executor=run_in_executor,
             executor=executor,
         )
+        _register_fork_object(self)
 
     @property
     def run_in_executor(self) -> bool:
@@ -271,6 +276,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 lock.release()
 
         """
+        self._raise_if_inherited()
         if timeout is None:
             timeout = self._context.timeout
 
@@ -337,10 +343,12 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         lock_id = id(self)
         lock_filename = self.lock_file
         while True:
+            self._raise_if_inherited()
             if not self.is_locked:
                 self._try_break_expired_lock()
                 _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
                 await self._run_acquire_attempt()
+                self._raise_if_inherited()
             if self.is_locked:
                 _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                 return
@@ -357,7 +365,11 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             await asyncio.sleep(poll_interval)
 
     async def _run_acquire_attempt(self) -> None:
-        acquire_future = self._start_internal_method(self._acquire)
+        acquire_future = self._start_internal_method(
+            self._acquire_with_fork_tracking_async
+            if iscoroutinefunction(self._acquire)
+            else self._acquire_with_fork_tracking
+        )
         try:
             await _wait_until_done(acquire_future)
         except asyncio.CancelledError as cancellation:
@@ -370,7 +382,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             rollback_error: BaseException | None = None
             if self.is_locked:
                 try:
-                    await _drain_future(self._start_internal_method(self._release))
+                    await _drain_future(self._start_tracked_release())
                 except BaseException as error:  # noqa: BLE001  # reported with the cancellation below
                     rollback_error = error
 
@@ -398,7 +410,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     async def _rollback_backend_cancelled_acquire(self, acquire_error: asyncio.CancelledError) -> NoReturn:
         if self.is_locked:
             try:
-                await _drain_future(self._start_internal_method(self._release))
+                await _drain_future(self._start_tracked_release())
             except BaseException as rollback_error:  # noqa: BLE001  # both backend errors must surface
                 self._raise_acquire_rollback_errors(acquire_error, rollback_error)
         raise acquire_error
@@ -439,7 +451,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
         """
-        if not self.is_locked:
+        if self._creator_pid != os.getpid() or not self.is_locked:
             return
         async with self._transition_gate.hold():
             await self._release_serialized(force=force)
@@ -453,7 +465,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
         lock_id, lock_filename = id(self), self.lock_file
         _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
-        release_future = self._start_internal_method(self._release)
+        release_future = self._start_tracked_release()
         try:
             await _wait_until_done(release_future)
         except asyncio.CancelledError as cancellation:
@@ -490,6 +502,96 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         future: asyncio.Future[_BackendOutcome[None]] = loop.create_future()
         future.set_result(_capture_call(sync_method))
         return future
+
+    def _start_tracked_release(self) -> asyncio.Future[_BackendOutcome[None]]:
+        return self._start_internal_method(
+            self._release_with_fork_tracking_async
+            if iscoroutinefunction(self._release)
+            else self._release_with_fork_tracking
+        )
+
+    async def _acquire_with_fork_tracking_async(self) -> None:
+        with _fork_transition(self):
+            try:
+                await cast("Callable[[], Awaitable[None]]", self._acquire)()
+            except BaseException as acquisition_error:
+                await self._rollback_failed_acquire_async(acquisition_error)
+                raise
+            try:
+                self._register_context_descriptor()
+            except BaseException as registration_error:  # cancellation must roll back the descriptor
+                await self._rollback_failed_registration_async(registration_error)
+                raise
+        if self.is_locked:
+            await self._invoke_on_acquired_async()
+
+    async def _rollback_failed_acquire_async(self, acquisition_error: BaseException) -> None:
+        if not self.is_locked:
+            return
+        registration_error: BaseException | None = None
+        tracking_error: BaseException | None = None
+        try:
+            self._register_context_descriptor()
+        except BaseException as error:  # noqa: BLE001  # preserve registration and acquisition failures
+            registration_error = error
+            try:
+                # Rollback may fail too; retain the fd so a child can close it without another identity probe.
+                self._register_unverified_context_descriptor()
+            except BaseException as error:  # noqa: BLE001  # pragma: no cover - allocation/control-flow during fallback
+                tracking_error = error
+        try:
+            await _drain_future(self._start_tracked_release())
+        except BaseException as rollback_error:  # noqa: BLE001  # preserve rollback and acquisition failures
+            if registration_error is None and tracking_error is None:
+                self._raise_acquire_rollback_errors(acquisition_error, rollback_error)
+            _raise_cleanup_errors(
+                "lock acquisition cleanup failed",
+                acquisition_error,
+                registration_error,
+                tracking_error,
+                rollback_error,
+            )
+        if registration_error is not None:
+            _raise_cleanup_errors(
+                "lock acquisition cleanup failed", acquisition_error, registration_error, tracking_error
+            )
+
+    async def _rollback_failed_registration_async(self, registration_error: BaseException) -> None:
+        tracking_error: BaseException | None = None
+        try:
+            # Rollback may fail too; retain the fd so a child can close it without another identity probe.
+            self._register_unverified_context_descriptor()
+        except BaseException as error:  # noqa: BLE001  # pragma: no cover - allocation/control-flow during fallback
+            tracking_error = error
+        try:
+            await _drain_future(self._start_tracked_release())
+        except BaseException as rollback_error:  # noqa: BLE001  # preserve rollback and registration failures
+            _raise_cleanup_errors(
+                "descriptor registration cleanup failed", registration_error, tracking_error, rollback_error
+            )
+        if tracking_error is not None:  # pragma: no cover - requires failed in-memory fallback
+            _raise_cleanup_errors("descriptor registration cleanup failed", registration_error, tracking_error)
+
+    async def _invoke_on_acquired_async(self) -> None:
+        if self._on_acquired is None or self._context.lock_counter != 1:
+            return
+        try:
+            self._on_acquired(cast("int", self._context.lock_file_fd))
+        except BaseException as callback_error:  # caller control-flow errors must release the lock
+            callback_context = callback_error.__context__
+            try:
+                await _drain_future(self._start_tracked_release())
+            except BaseException as release_error:  # noqa: BLE001  # both errors surface via the group below
+                _raise_body_and_release(callback_error, release_error)
+            callback_error.__context__ = callback_context
+            raise
+
+    async def _release_with_fork_tracking_async(self) -> None:
+        with _fork_transition(self):
+            try:
+                await cast("Callable[[], Awaitable[None]]", self._release)()
+            finally:
+                self._unregister_released_descriptor()
 
     def __enter__(self) -> NoReturn:
         """Sync context manager entry is not supported because lock acquisition is a coroutine."""
@@ -558,6 +660,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     def __del__(self) -> None:
         """Release on deletion; safe to call during GC even when no event loop is running."""
+        if vars(self).get("_creator_pid") != os.getpid():
+            return  # pragma: no cover - exercised in fork children
         with contextlib.suppress(Exception):
             try:
                 loop = asyncio.get_running_loop()

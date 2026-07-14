@@ -19,7 +19,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 from weakref import WeakValueDictionary
 
-from filelock._api import AcquireReturnProxy
+from filelock._api import (
+    AcquireReturnProxy,
+    _ensure_current_process,
+    _fork_transition,
+    _raise_grouped_errors,
+    _register_fork_class,
+    _register_fork_object,
+    _register_owned_descriptor,
+    _unregister_owned_descriptor,
+)
 from filelock._error import Timeout
 from filelock._soft import SoftFileLock
 from filelock._util import ensure_directory_exists, write_all
@@ -42,15 +51,14 @@ _SUPPORTS_UTIME_NOFOLLOW: Final[bool] = os.utime in os.supports_follow_symlinks
 # its ``os`` module skips dir_fd support entirely. When disabled, callers fall back to full-path ops.
 _SUPPORTS_DIR_FD: Final[bool] = sys.platform != "win32" and os.open in os.supports_dir_fd
 
-_all_instances: Final[WeakValueDictionary[Path, SoftReadWriteLock]] = WeakValueDictionary()
-_all_instances_lock = threading.Lock()
-_atexit_registered = False
-_fork_registered = False
+_ALL_INSTANCES: Final[WeakValueDictionary[int, SoftReadWriteLock]] = WeakValueDictionary()
+_ALL_INSTANCES_LOCK: threading.Lock = threading.Lock()
+_SINGLETONS_UNDER_CONSTRUCTION: Final[set[Path]] = set()
 
 
 class _SoftRWMeta(type):
     _instances: WeakValueDictionary[Path, SoftReadWriteLock]
-    _instances_lock: threading.Lock
+    _instances_lock: threading.RLock
 
     def __call__(  # noqa: PLR0913
         cls,
@@ -63,6 +71,7 @@ class _SoftRWMeta(type):
         stale_threshold: float | None = None,
         poll_interval: float = 0.25,
     ) -> SoftReadWriteLock:
+        _ensure_current_process()
         if not is_singleton:
             return super().__call__(
                 lock_file,
@@ -78,15 +87,26 @@ class _SoftRWMeta(type):
         with cls._instances_lock:
             instance = cls._instances.get(normalized)
             if instance is None:
-                instance = super().__call__(
-                    lock_file,
-                    timeout,
-                    blocking=blocking,
-                    is_singleton=is_singleton,
-                    heartbeat_interval=heartbeat_interval,
-                    stale_threshold=stale_threshold,
-                    poll_interval=poll_interval,
-                )
+                if normalized in _SINGLETONS_UNDER_CONSTRUCTION:
+                    msg = f"Singleton lock construction is already active for {lock_file!s}"
+                    raise RuntimeError(msg)
+                construction_pid = os.getpid()
+                _SINGLETONS_UNDER_CONSTRUCTION.add(normalized)
+                try:
+                    instance = super().__call__(
+                        lock_file,
+                        timeout,
+                        blocking=blocking,
+                        is_singleton=is_singleton,
+                        heartbeat_interval=heartbeat_interval,
+                        stale_threshold=stale_threshold,
+                        poll_interval=poll_interval,
+                    )
+                finally:
+                    _SINGLETONS_UNDER_CONSTRUCTION.discard(normalized)
+                if os.getpid() != construction_pid:
+                    msg = "Lock construction cannot continue after fork; construct a new lock in the child"
+                    raise RuntimeError(msg)
                 cls._instances[normalized] = instance
             elif instance.timeout != timeout or instance.blocking != blocking:
                 msg = (
@@ -122,9 +142,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     Reentrancy, upgrade/downgrade rules, thread pinning, and singleton caching by resolved path match
     :class:`~filelock.ReadWriteLock`.
 
-    Forking while holding a lock invalidates the inherited instance in the child so the child cannot
-    double-own the lock with its parent; ``release()`` on a fork-invalidated instance is a no-op, and
-    the child must re-acquire if it needs a lock.
+    Forking invalidates the inherited instance in the child so the child cannot double-own the lock with its parent;
+    ``release()`` on that instance is a no-op, and the child must construct a new instance if it needs a lock.
 
     Trust boundary: protects against same-UID non-cooperating processes (one host or cross-host) and
     same-host different-UID users via ``0o600`` / ``0o700`` permissions. Does not protect against root
@@ -145,7 +164,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     """
 
     _instances: WeakValueDictionary[Path, SoftReadWriteLock] = WeakValueDictionary()
-    _instances_lock = threading.Lock()
+    _instances_lock = threading.RLock()
 
     def __init__(  # noqa: PLR0913
         self,
@@ -158,6 +177,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         stale_threshold: float | None = None,
         poll_interval: float = 0.25,
     ) -> None:
+        self._creator_pid = os.getpid()
         if heartbeat_interval <= 0:
             msg = f"heartbeat_interval must be positive, got {heartbeat_interval}"
             raise ValueError(msg)
@@ -189,13 +209,21 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             state=SoftFileLock(self._paths.state, timeout=-1),
         )
         self._readers_dir_fd: int | None = None
+        self._readers_dir_fd_token: int | None = None
         self._hold: _Hold | None = None
-        self._fork_invalidated: bool = False
         self._closed: bool = False
 
-        with _all_instances_lock:
-            _all_instances[Path(self.lock_file).resolve()] = self
-            _register_hooks()
+        with _ALL_INSTANCES_LOCK:
+            _ALL_INSTANCES[id(self)] = self
+        _register_fork_object(self)
+
+    @classmethod
+    def _reset_class_after_fork(cls) -> None:  # pragma: no cover - exercised in fork children
+        global _ALL_INSTANCES_LOCK  # noqa: PLW0603
+        _ALL_INSTANCES_LOCK = threading.Lock()
+        cls._instances = WeakValueDictionary()
+        cls._instances_lock = threading.RLock()
+        _SINGLETONS_UNDER_CONSTRUCTION.clear()
 
     @contextmanager
     def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
@@ -316,15 +344,21 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         Idempotent. After calling this method the instance can no longer acquire locks — subsequent acquires raise
         :class:`RuntimeError`. A fork-invalidated instance is closed without raising.
         """
+        if self._creator_pid != os.getpid():  # pragma: no cover - exercised only in fork children
+            return
         self.release(force=True)
         with self._locks.internal:
             if self._closed:
                 return
             self._closed = True
             if self._readers_dir_fd is not None:
-                with suppress(OSError):
-                    os.close(self._readers_dir_fd)
-                self._readers_dir_fd = None
+                with _fork_transition():
+                    if self._readers_dir_fd_token is not None:
+                        _unregister_owned_descriptor(self._readers_dir_fd_token)
+                    self._readers_dir_fd_token = None
+                    fd, self._readers_dir_fd = self._readers_dir_fd, None
+                    with suppress(OSError):
+                        os.close(fd)
 
     def release(self, *, force: bool = False) -> None:
         """
@@ -339,11 +373,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :raises RuntimeError: if no lock is currently held and *force* is ``False``
 
         """
+        if self._creator_pid != os.getpid():  # pragma: no cover - exercised only in fork children
+            return
         with self._locks.internal:
-            if self._fork_invalidated:
-                # Inherited state from the parent is meaningless in the child; clear any counters and return.
-                self._hold = None
-                return
             hold = self._hold
             if hold is None:
                 if force:
@@ -389,13 +421,13 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         *,
         blocking: bool | None,
     ) -> AcquireReturnProxy:
+        if self._creator_pid != os.getpid():  # pragma: no cover - exercised only in fork children
+            msg = f"SoftReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
+            raise RuntimeError(msg)
         timeout = self.timeout if timeout is None else timeout
         blocking = self.blocking if blocking is None else blocking
 
         with self._locks.internal:
-            if self._fork_invalidated:
-                msg = f"SoftReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
-                raise RuntimeError(msg)
             if self._closed:
                 msg = f"SoftReadWriteLock on {self.lock_file} has been closed"
                 raise RuntimeError(msg)
@@ -491,15 +523,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         def readers_drained_touching() -> bool:
             with self._locks.state:
-                # Refresh our writer marker every scan iteration so phase 2 does not exceed
-                # ``stale_threshold`` under contention and get evicted. The refresh only happens while
-                # the marker is still ours: if we were paused past ``stale_threshold`` a peer can evict
-                # the stale marker and reclaim ``.write`` with its own token, and touching that path
-                # blindly would keep the peer's live marker alive and let this acquire finish as though
-                # we still held the slot, admitting a second writer. When the claim is no longer ours we
-                # re-claim the slot here (waiting behind the peer if it currently holds it) rather than
-                # trusting the foreign marker, mirroring the token re-check the stale-break and release
-                # paths already rely on.
+                # A peer may replace an expired marker while this process pauses. Refresh only our token; touching a
+                # successor's marker would let this acquisition proceed without owning the writer slot.
                 if not self._touch_writer_marker_if_ours(token) and not self._claim_writer_marker(token):
                     return False
                 self._break_stale_readers(time.time())
@@ -606,9 +631,22 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             msg = f"{self._paths.readers} exists but is not a directory or is a symlink; refusing to use it"
             raise RuntimeError(msg)
         if self._readers_dir_fd is None and _SUPPORTS_DIR_FD:
-            self._readers_dir_fd = os.open(
-                self._paths.readers, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW
-            )
+            with _fork_transition():
+                fd = os.open(self._paths.readers, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW)
+                try:
+                    token = _register_owned_descriptor(fd)
+                except BaseException as registration_error:
+                    try:
+                        os.close(fd)
+                    except BaseException as close_error:  # noqa: BLE001  # both errors surface via the group below
+                        _raise_grouped_errors(
+                            "reader directory registration and descriptor close both failed",
+                            registration_error,
+                            close_error,
+                        )
+                    raise
+                self._readers_dir_fd = fd
+                self._readers_dir_fd_token = token
 
     def _any_readers(self) -> bool:
         for _ in self._iter_reader_entries():
@@ -680,18 +718,15 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         finally:
             os.close(fd)
 
-    def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - fork child not tracked
-        # Replace every lock this instance owns with a fresh one; the inherited locks may still be held
-        # by threads that no longer exist in the child. The readers dirfd and the SoftFileLock state
-        # mutex both get dropped for the same reason — the child re-creates them on its next acquire.
+    def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - exercised in fork children
         self._locks = _Locks(
             internal=threading.Lock(),
             transaction=threading.Lock(),
-            state=SoftFileLock(self._paths.state, timeout=-1),
+            state=self._locks.state,
         )
         self._hold = None
         self._readers_dir_fd = None
-        self._fork_invalidated = True
+        self._readers_dir_fd_token = None
 
 
 class _HeartbeatThread(threading.Thread):
@@ -918,31 +953,14 @@ class _Hold:
     heartbeat_stop: threading.Event
 
 
-def _register_hooks() -> None:
-    global _atexit_registered, _fork_registered  # noqa: PLW0603
-    if not _atexit_registered:
-        atexit.register(_cleanup_all_instances)
-        _atexit_registered = True
-    # after_in_child replaces inherited state so the child cannot double-own any lock the parent held.
-    if not _fork_registered and hasattr(os, "register_at_fork"):
-        os.register_at_fork(after_in_child=_reset_all_after_fork)
-        _fork_registered = True
-
-
 def _cleanup_all_instances() -> None:  # pragma: no cover - runs from atexit at interpreter shutdown
-    for instance in list(_all_instances.values()):
+    for instance in list(_ALL_INSTANCES.values()):
         with suppress(Exception):
             instance.release(force=True)
 
 
-def _reset_all_after_fork() -> None:  # pragma: no cover - fork child, not tracked by coverage
-    global _all_instances_lock  # noqa: PLW0603
-    # User-created threading locks do not auto-reset across fork: any lock held by a parent thread stays
-    # locked in the child with no owner to release it. Replace the module-level lock and every instance's
-    # locks with fresh ones; the child is single-threaded at this point so no synchronization is needed.
-    _all_instances_lock = threading.Lock()
-    for instance in list(_all_instances.values()):
-        instance._reset_after_fork_in_child()  # noqa: SLF001
+atexit.register(_cleanup_all_instances)
+_register_fork_class(SoftReadWriteLock)
 
 
 __all__ = [
