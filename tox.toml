@@ -45,21 +45,6 @@ commands = [
   ], extend = true },
 ]
 
-[env."3.14"]
-set_env.FILELOCK_OLD_CLIENT_PATH = "{env_tmp_dir}{/}filelock-3.20.0"
-commands_pre = [
-  [
-    "uv",
-    "pip",
-    "install",
-    "--target",
-    "{env_tmp_dir}{/}filelock-3.20.0",
-    "--no-deps",
-    "--reinstall",
-    "filelock==3.20.0",
-  ],
-]
-
 [env.coverage]
 description = "combine coverage files and generate diff (against DIFF_AGAINST defaulting to origin/main)"
 skip_install = true
@@ -166,3 +151,18 @@ description = "build the changelog from the news fragments for the given version
 skip_install = true
 dependency_groups = [ "release" ]
 commands = [ [ "towncrier", "build", "--yes", "--version", "{posargs}" ] ]
+
+[env."3.14"]
+set_env.FILELOCK_OLD_CLIENT_PATH = "{env_tmp_dir}{/}filelock-3.20.0"
+commands_pre = [
+  [
+    "uv",
+    "pip",
+    "install",
+    "--target",
+    "{env_tmp_dir}{/}filelock-3.20.0",
+    "--no-deps",
+    "--reinstall",
+    "filelock==3.20.0",
+  ],
+]
