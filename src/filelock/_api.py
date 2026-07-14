@@ -61,6 +61,8 @@ def _raise_body_and_release(body_error: BaseException, release_error: BaseExcept
     # other's __context__. BaseExceptionGroup returns a plain ExceptionGroup when both leaves subclass Exception, so
     # ``except*`` and ``except Exception`` still catch them; a BaseException leaf (KeyboardInterrupt, CancelledError)
     # keeps the group outside ordinary handlers. ``from None`` stops the group itself gaining a redundant __context__.
+    if release_error.__context__ is body_error:
+        release_error.__context__ = None
     msg = "lock body and release both failed"
     raise _exception_group_cls()(msg, (body_error, release_error)) from None
 
@@ -994,4 +996,8 @@ __all__ = [
     "BaseFileLock",
     "CloseErrorPolicy",
     "ContextErrorPolicy",
+    "FileLockContext",
+    "FileLockMeta",
+    "_canonical",
+    "_raise_body_and_release",
 ]
