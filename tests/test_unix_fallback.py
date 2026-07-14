@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import socket
+import subprocess  # noqa: S404  # a clean interpreter isolates the blocked fcntl import
 import sys
 from errno import EIO, ENOSYS
+from textwrap import dedent
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -17,6 +19,51 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 _UNIX_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform == "win32", reason="unix-only flock fallback")
+
+
+@_UNIX_ONLY
+def test_import_without_fcntl_uses_soft_aliases_and_descriptor_errors() -> None:
+    script: Final[str] = dedent(
+        """
+        import json
+        import sys
+        import warnings
+        from collections.abc import Callable
+        from errno import ENOSYS
+
+        sys.modules["fcntl"] = None
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            import filelock
+
+        def operation_errno(operation: Callable[[int], bool | None]) -> int | None:
+            try:
+                operation(-1)
+            except OSError as exception:
+                return exception.errno
+            return None
+
+        print(json.dumps({
+            "aliases": [
+                filelock.FileLock is filelock.SoftFileLock,
+                filelock.AsyncFileLock is filelock.AsyncSoftFileLock,
+            ],
+            "errors": [
+                operation_errno(filelock.lock_descriptor) == ENOSYS,
+                operation_errno(filelock.unlock_descriptor) == ENOSYS,
+            ],
+            "warnings": [str(item.message) for item in caught],
+        }, sort_keys=True))
+        """,
+    )
+    result: Final[subprocess.CompletedProcess[str]] = subprocess.run(
+        [sys.executable, "-c", script], check=True, capture_output=True, text=True
+    )
+
+    assert (result.stdout, result.stderr) == (
+        '{"aliases": [true, true], "errors": [true, true], "warnings": ["only soft file lock is available"]}\n',
+        "",
+    )
 
 
 @_UNIX_ONLY

@@ -192,6 +192,9 @@ run.concurrency = [
   "thread",
 ]
 run.parallel = true
+run.patch = [
+  "subprocess",
+]
 run.plugins = [
   "covdefaults",
 ]

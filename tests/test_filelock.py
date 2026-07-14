@@ -124,6 +124,13 @@ _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != 
 _UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform == "win32", reason="native flock semantics are Unix-only"
 )
+_INVALID_DESCRIPTOR_POLL_INTERVALS: Final = (
+    pytest.param(0.0, id="zero"),
+    pytest.param(-0.01, id="negative"),
+    pytest.param(float("nan"), id="nan"),
+    pytest.param(float("inf"), id="positive-infinity"),
+    pytest.param(float("-inf"), id="negative-infinity"),
+)
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -1987,6 +1994,28 @@ def test_lock_descriptor_invalid_fd_raises(tmp_path: Path) -> None:
         lock_descriptor(fd, blocking=False)
 
 
+@pytest.mark.parametrize(
+    "poll_interval",
+    _INVALID_DESCRIPTOR_POLL_INTERVALS,
+)
+def test_lock_descriptor_rejects_invalid_blocking_poll_interval(poll_interval: float) -> None:
+    with pytest.raises(ValueError, match="poll_interval must be finite and greater than 0"):
+        lock_descriptor(-1, poll_interval=poll_interval)
+
+
+@pytest.mark.parametrize(
+    "poll_interval",
+    _INVALID_DESCRIPTOR_POLL_INTERVALS,
+)
+def test_lock_descriptor_nonblocking_ignores_poll_interval(tmp_path: Path, poll_interval: float) -> None:
+    fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
+    try:
+        assert lock_descriptor(fd, blocking=False, poll_interval=poll_interval) is True
+        unlock_descriptor(fd)
+    finally:
+        os.close(fd)
+
+
 @pytest.mark.parametrize("direction", ["filelock_first", "descriptor_first"])
 def test_filelock_and_descriptor_contend(tmp_path: Path, direction: str) -> None:
     path = str(tmp_path / "a")
@@ -2062,6 +2091,34 @@ def test_lock_descriptor_blocking_retries_until_free(tmp_path: Path, mocker: Moc
     finally:
         os.close(holder)
         os.close(fd)
+
+
+def test_lock_descriptor_blocking_wait_does_not_spin(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    holder = os.open(path, os.O_RDWR | os.O_CREAT)
+    contender = os.open(path, os.O_RDWR | os.O_CREAT)
+    assert lock_descriptor(holder, blocking=False) is True
+    started = threading.Event()
+
+    def acquire() -> float:
+        started.set()
+        before = time.thread_time()
+        lock_descriptor(contender, poll_interval=0.01)
+        return time.thread_time() - before
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(acquire)
+            try:
+                assert started.wait(timeout=1)
+                time.sleep(0.2)
+            finally:
+                unlock_descriptor(holder)
+            assert future.result(timeout=2) < 0.05
+            unlock_descriptor(contender)
+    finally:
+        os.close(holder)
+        os.close(contender)
 
 
 def test_preserve_lock_file_defaults_off(tmp_path: Path) -> None:

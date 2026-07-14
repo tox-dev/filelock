@@ -29,28 +29,33 @@ else:  # pragma: win32 no cover
 
         _ = (fcntl.flock, fcntl.LOCK_EX, fcntl.LOCK_NB, fcntl.LOCK_UN)
     except (ImportError, AttributeError):
-        pass
+        _FCNTL_UNAVAILABLE: Final[str] = "fcntl is unavailable"
+
+        def _lock_fd_nonblocking(_fd: int) -> bool:
+            raise OSError(ENOSYS, _FCNTL_UNAVAILABLE)
+
+        def _unlock_fd(_fd: int) -> None:
+            raise OSError(ENOSYS, _FCNTL_UNAVAILABLE)
+
     else:
         has_fcntl = True
+        # Contention errnos for a nonblocking flock. EAGAIN/EWOULDBLOCK are the usual "held elsewhere" codes; some
+        # filesystems report EACCES instead, so treat it as contention too rather than a permanent error.
+        _CONTENTION_ERRNOS: Final[frozenset[int]] = frozenset({EACCES, EAGAIN, EWOULDBLOCK})
 
-    # Contention errnos for a nonblocking flock. EAGAIN/EWOULDBLOCK are the usual "held elsewhere" codes; some
-    # filesystems report EACCES instead, so treat it as contention too rather than a permanent error.
-    _CONTENTION_ERRNOS: Final[frozenset[int]] = frozenset({EACCES, EAGAIN, EWOULDBLOCK})
+        def _lock_fd_nonblocking(fd: int) -> bool:
+            # One nonblocking exclusive flock attempt shared by UnixFileLock and lock_descriptor, so both contend on
+            # the same lock and classify errors identically. The caller owns fd; this never closes it.
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exception:
+                if exception.errno in _CONTENTION_ERRNOS:
+                    return False
+                raise
+            return True
 
-    def _lock_fd_nonblocking(fd: int) -> bool:
-        # One nonblocking exclusive flock attempt shared by UnixFileLock and lock_descriptor, so both contend on the
-        # same lock and classify errors identically. True on acquisition, False on contention, raise otherwise. The
-        # caller owns fd; this never closes it.
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exception:
-            if exception.errno in _CONTENTION_ERRNOS:
-                return False
-            raise
-        return True
-
-    def _unlock_fd(fd: int) -> None:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        def _unlock_fd(fd: int) -> None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
     class UnixFileLock(BaseFileLock):
         """
@@ -162,7 +167,7 @@ else:  # pragma: win32 no cover
             self._close_released_fd(fd, default_suppresses=True)
 
 
-__all__ = [
-    "UnixFileLock",
-    "has_fcntl",
-]
+if sys.platform == "win32":  # pragma: win32 cover
+    __all__ = ["UnixFileLock", "has_fcntl"]
+else:  # pragma: win32 no cover
+    __all__ = ["UnixFileLock", "_lock_fd_nonblocking", "_unlock_fd", "has_fcntl"]
