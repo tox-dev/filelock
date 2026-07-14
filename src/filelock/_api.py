@@ -9,9 +9,10 @@ import sys
 import time
 import warnings
 from abc import ABCMeta, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock, local
-from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
 from ._error import Timeout
@@ -30,8 +31,8 @@ CloseErrorPolicy = Literal["default", "raise", "suppress"]
 _CLOSE_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"default", "raise", "suppress"})
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from types import TracebackType
+    from typing import Protocol
 
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
@@ -41,8 +42,12 @@ if TYPE_CHECKING:
     else:  # pragma: no cover (<py311)
         from typing_extensions import Self
 
-
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
+
+_ExtraValue = TypeVar("_ExtraValue")
+_MarkerValue = TypeVar("_MarkerValue")
+_SubclassValue = TypeVar("_SubclassValue")
+_LockInitValue = float | int | bool | str | None | Callable[[int], None]
 
 
 def _exception_group_cls() -> type[BaseException]:
@@ -56,10 +61,178 @@ def _exception_group_cls() -> type[BaseException]:
     return _Backport  # pragma: no cover (<py311)
 
 
-def _raise_grouped_errors(message: str, first_error: BaseException, second_error: BaseException) -> NoReturn:
-    if second_error.__context__ is first_error:
-        second_error.__context__ = None
-    raise _exception_group_cls()(message, (first_error, second_error)) from None
+def _raise_grouped_errors(
+    message: str,
+    first_error: BaseException,
+    second_error: BaseException,
+    *additional_errors: BaseException,
+    marker: tuple[str, _MarkerValue] | None = None,
+) -> NoReturn:
+    errors = (first_error, second_error, *additional_errors)
+    _detach_grouped_contexts(errors)
+    group = _exception_group_cls()(message, errors)
+    if marker is not None:
+        setattr(group, marker[0], marker[1])
+    raise group from None
+
+
+def _detach_grouped_contexts(errors: tuple[BaseException, ...]) -> None:
+    seen: set[int] = set()
+    pending = list(errors)
+    while pending:
+        error = pending.pop()
+        if id(error) in seen:
+            continue
+        seen.add(id(error))
+        if (context := error.__context__) is not None and (
+            context is error
+            or _same_exception_tree(error, context)
+            or any(context is root or _contains_exception(root, context) for root in errors)
+        ):
+            error.__context__ = None
+        elif context is not None:
+            pending.append(context)
+        if error.__cause__ is not None:
+            pending.append(error.__cause__)
+        if isinstance(error, _exception_group_cls()):
+            pending.extend(cast("_ExceptionGroupProtocol", error).exceptions)
+
+
+def _same_exception_tree(first: BaseException, second: BaseException) -> bool:
+    pending = [(first, second)]
+    seen: set[tuple[int, int]] = set()
+    while pending:
+        first_error, second_error = pending.pop()
+        if first_error is second_error:
+            continue
+        if (pair := (id(first_error), id(second_error))) in seen:
+            continue
+        seen.add(pair)
+        if (
+            type(first_error) is not type(second_error)
+            or not isinstance(first_error, _exception_group_cls())
+            or not isinstance(second_error, _exception_group_cls())
+        ):
+            return False
+        first_group = cast("_ExceptionGroupProtocol", first_error)
+        second_group = cast("_ExceptionGroupProtocol", second_error)
+        if first_group.message != second_group.message or len(first_group.exceptions) != len(second_group.exceptions):
+            return False
+        pending.extend(zip(first_group.exceptions, second_group.exceptions, strict=True))
+    return True
+
+
+def _contains_exception(error: BaseException, target: BaseException | None) -> bool:
+    if target is None or not isinstance(error, _exception_group_cls()):
+        return False
+    pending = list(cast("_ExceptionGroupProtocol", error).exceptions)
+    seen: set[int] = set()
+    while pending:
+        child = pending.pop()
+        if child is target:
+            return True
+        if id(child) in seen:
+            continue
+        seen.add(id(child))
+        if isinstance(child, _exception_group_cls()):
+            pending.extend(cast("_ExceptionGroupProtocol", child).exceptions)
+    return False
+
+
+def _append_exception_context(error: BaseException, context: BaseException) -> None:
+    if _exception_graph_contains(error, context) or _exception_graph_contains(context, error):
+        return
+    if error.__context__ is None:
+        error.__context__ = context
+        return
+    tail = error
+    seen: set[int] = set()
+    while id(tail) not in seen:
+        seen.add(id(tail))
+        if (next_error := tail.__cause__ if tail.__cause__ is not None else tail.__context__) is None:
+            tail.__context__ = context
+            return
+        tail = next_error
+
+
+def _exception_graph_contains(error: BaseException, target: BaseException) -> bool:
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is target:
+            return True
+        if id(current) in seen:  # pragma: no cover - arbitrary caller exceptions can contain cycles
+            continue
+        seen.add(id(current))
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+        if isinstance(current, _exception_group_cls()):
+            pending.extend(cast("_ExceptionGroupProtocol", current).exceptions)
+    return False
+
+
+def _grouped_errors(
+    error: BaseException, message: str, marker: tuple[str, _MarkerValue]
+) -> tuple[BaseException, ...] | None:
+    if not isinstance(error, _exception_group_cls()):
+        return None
+    group = cast("_ExceptionGroupProtocol", error)
+    return group.exceptions if group.message == message and getattr(group, marker[0], None) is marker[1] else None
+
+
+if TYPE_CHECKING:
+
+    class _ExceptionGroupProtocol(Protocol):
+        @property
+        def message(self) -> str: ...
+
+        @property
+        def exceptions(self) -> tuple[BaseException, ...]: ...
+
+
+def _raise_chained_errors(first_error: BaseException, second_error: BaseException | None = None) -> NoReturn:
+    if second_error is None:
+        first_context = first_error.__context__
+        try:
+            raise first_error  # noqa: TRY301  # the handler restores caller-supplied context before propagation
+        except BaseException:
+            first_error.__context__ = first_context
+            raise
+    if (second_context := second_error.__context__) is not None and second_context is not first_error:
+        _detach_exception_context(second_context, first_error)
+        _append_exception_context(first_error, second_context)
+    first_context = first_error.__context__
+    try:
+        raise first_error  # noqa: TRY301  # the second raise needs this error as implicit context
+    except BaseException:  # noqa: BLE001  # first_error may be a control-flow exception
+        first_error.__context__ = first_context
+        try:
+            raise second_error  # noqa: TRY301  # the handler makes the chain interpreter-independent
+        except BaseException:
+            second_error.__context__ = first_error
+            first_error.__context__ = first_context
+            raise
+
+
+def _detach_exception_context(error: BaseException, target: BaseException) -> None:
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if current.__context__ is target:
+            current.__context__ = None
+        elif current.__context__ is not None:
+            pending.append(current.__context__)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if isinstance(current, _exception_group_cls()):
+            pending.extend(cast("_ExceptionGroupProtocol", current).exceptions)
 
 
 def _raise_body_and_release(body_error: BaseException, release_error: BaseException) -> NoReturn:
@@ -122,7 +295,7 @@ class FileLockMeta(ABCMeta):
         fallback_to_soft: bool = True,
         preserve_lock_file: bool = False,
         on_acquired: Callable[[int], None] | None = None,
-        **kwargs: Any,  # capture remaining kwargs for subclasses  # noqa: ANN401
+        **kwargs: _ExtraValue,
     ) -> _T:
         lifetime = _resolve_lifetime(lifetime, supported=cls._lifetime_supported, cls_name=cls.__name__)
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
@@ -133,7 +306,7 @@ class FileLockMeta(ABCMeta):
             preserve_lock_file, supported=cls._preserve_lock_file_supported, cls_name=cls.__name__
         )
         on_acquired = _resolve_on_acquired(on_acquired, supported=cls._on_acquired_supported, cls_name=cls.__name__)
-        params = {
+        params: dict[str, _LockInitValue | _ExtraValue] = {
             "timeout": timeout,
             "mode": mode,
             "thread_local": thread_local,
@@ -196,7 +369,9 @@ class FileLockMeta(ABCMeta):
             msg += f"\n\ton_acquired (existing lock has {instance.on_acquired} but {on_acquired} was passed)"
         raise ValueError(msg)
 
-    def _create_instance(cls: type[_T], lock_file: str | os.PathLike[str], params: dict[str, Any]) -> _T:
+    def _create_instance(
+        cls: type[_T], lock_file: str | os.PathLike[str], params: dict[str, _LockInitValue | _ExtraValue]
+    ) -> _T:
         model = _init_parameter_model(cls)
         if model.accepts_kwargs:
             return super().__call__(lock_file, **params)
@@ -354,7 +529,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     #: protocol state in the marker and reject it.
     _on_acquired_supported: bool = True
 
-    def __init_subclass__(cls, **kwargs: dict[str, Any]) -> None:
+    def __init_subclass__(cls, **kwargs: _SubclassValue) -> None:
         """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
@@ -438,16 +613,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         self._preserve_lock_file = preserve_lock_file  # already validated by the metaclass
         self._on_acquired = on_acquired  # already validated by the metaclass
 
-        # External code reaches these values through the public properties, not through _context directly.
-        kwargs: dict[str, Any] = {
-            "lock_file": os.fspath(lock_file),
-            "timeout": timeout,
-            "mode": mode,
-            "blocking": blocking,
-            "poll_interval": poll_interval,
-            "lifetime": lifetime,
-        }
-        self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(**kwargs)
+        self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(
+            lock_file=os.fspath(lock_file),
+            timeout=timeout,
+            mode=mode,
+            blocking=blocking,
+            poll_interval=poll_interval,
+            lifetime=lifetime,
+        )
 
     def is_thread_local(self) -> bool:
         """:returns: a flag indicating if this lock is thread local or not"""
@@ -859,6 +1032,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         try:
             self._on_acquired(cast("int", self._context.lock_file_fd))
         except BaseException as callback_error:  # arbitrary caller code; roll back on any failure
+            callback_context = callback_error.__context__
             # Undo the native acquisition so the failed hook does not leave the lock held. Call the backend _release
             # directly rather than the public release(): the counter and thread-local deadlock registry are reconciled
             # by acquire() on the owning thread, and the async release() is a coroutine this synchronous path cannot
@@ -867,6 +1041,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
                 self._release()
             except BaseException as release_error:  # noqa: BLE001  # both errors surface via the group below
                 _raise_body_and_release(callback_error, release_error)
+            callback_error.__context__ = callback_context
             raise
 
     def _undo_acquire(self) -> None:
@@ -999,7 +1174,10 @@ __all__ = [
     "ContextErrorPolicy",
     "FileLockContext",
     "FileLockMeta",
+    "_append_exception_context",
     "_canonical",
+    "_grouped_errors",
     "_raise_body_and_release",
+    "_raise_chained_errors",
     "_raise_grouped_errors",
 ]

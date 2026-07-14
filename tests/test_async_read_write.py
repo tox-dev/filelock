@@ -10,8 +10,7 @@ pytest.importorskip("sqlite3")
 
 import sqlite3
 
-from filelock import AsyncReadWriteLock, Timeout
-from filelock._read_write import ReadWriteLock
+from filelock import AsyncReadWriteLock, ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -33,20 +32,19 @@ def lock_file(tmp_path: Path) -> str:
     return str(tmp_path / "test_lock.db")
 
 
-@pytest.mark.parametrize("mode", ["read", "write"])
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
 async def test_acquire_release(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     proxy = await (lock.acquire_read() if mode == "read" else lock.acquire_write())
-    assert lock._lock._lock_level == 1
-    assert lock._lock._current_mode == mode
-    await lock.release()
-    assert lock._lock._lock_level == 0
-    assert lock._lock._current_mode is None
-    assert isinstance(proxy, object)
+    async with proxy as held:
+        assert held is lock
+    with pytest.raises(RuntimeError, match="not held"):
+        await lock.release()
+    await lock.close()
 
 
-@pytest.mark.parametrize("mode", ["read", "write"])
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
 async def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
@@ -58,7 +56,7 @@ async def test_lock_context_manager(lock_file: str, mode: Literal["read", "write
     assert lock._lock._current_mode is None
 
 
-@pytest.mark.parametrize("mode", ["read", "write"])
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
 async def test_reentrant(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
@@ -94,7 +92,7 @@ async def test_mode_change_prohibited(
     await lock.release()
 
 
-@pytest.mark.parametrize("mode", ["read", "write"])
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
 async def test_non_blocking_conflict(lock_file: str, mode: Literal["read", "write"]) -> None:
     holder = ReadWriteLock(lock_file, is_singleton=False)
@@ -232,7 +230,7 @@ async def test_acquire_return_proxy_context_manager(lock_file: str) -> None:
     assert lock._lock._lock_level == 0
 
 
-@pytest.mark.parametrize("mode", ["read", "write"])
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
 async def test_nested_context_managers(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)

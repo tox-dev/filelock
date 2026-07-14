@@ -11,7 +11,7 @@ from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, Final, Literal
 from weakref import WeakValueDictionary
 
-from ._api import AcquireReturnProxy
+from ._api import AcquireReturnProxy, _raise_chained_errors
 from ._error import Timeout
 
 if TYPE_CHECKING:
@@ -154,6 +154,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
+        If cleanup from a previous failed acquisition also failed, this method retries that rollback before starting a
+        new transaction. Until cleanup succeeds, other processes may remain blocked. :meth:`release` with ``force=True``
+        retries the same cleanup without acquiring.
+
         """
         return self._acquire("read", timeout, blocking=blocking)
 
@@ -173,6 +177,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+
+        If cleanup from a previous failed acquisition also failed, this method retries that rollback before starting a
+        new transaction. Until cleanup succeeds, other processes may remain blocked. :meth:`release` with ``force=True``
+        retries the same cleanup without acquiring.
 
         """
         return self._acquire("write", timeout, blocking=blocking)
@@ -225,35 +233,34 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         When the lock level reaches zero the underlying SQLite transaction is rolled back, releasing the database lock.
 
-        :param force: if ``True``, release the lock completely regardless of the current lock level
+        :param force: if ``True``, release the lock completely regardless of the current lock level and retry cleanup
+            from a failed acquisition
 
         :raises RuntimeError: if no lock is currently held and *force* is ``False``
 
         """
-        should_rollback = False
-        with self._internal_lock:
+        with self._transaction_lock, self._internal_lock:
             if self._lock_level == 0:
-                if force:
+                if force and not self._con.in_transaction:
                     return
-                msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
-                raise RuntimeError(msg)
-            if force:
-                self._lock_level = 0
-            else:
+                if not force:
+                    msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
+                    raise RuntimeError(msg)
+            if not force and self._lock_level > 1:
                 self._lock_level -= 1
-            if self._lock_level == 0:
-                self._current_mode = None
-                self._write_thread_id = None
-                should_rollback = True
-        if should_rollback:
-            # The rollback ends the transaction on the shared connection, so it has to be serialized against
-            # acquire()'s BEGIN the same way acquire() already serializes itself with _transaction_lock. Without
-            # this, another thread that sees lock_level back at 0 can start its BEGIN while this rollback's
-            # transaction is still open (raising "cannot start a transaction within a transaction") or, in the
-            # other ordering, have its freshly started transaction rolled back here, dropping the database lock
-            # while it still believes it holds it.
-            with self._transaction_lock:
+                return
+            try:
                 self._con.rollback()
+            except sqlite3.Error:
+                if not self._con.in_transaction:
+                    self._clear_lock_state()
+                raise
+            self._clear_lock_state()
+
+    def _clear_lock_state(self) -> None:
+        self._lock_level = 0
+        self._current_mode = None
+        self._write_thread_id = None
 
     def close(self) -> None:
         """
@@ -276,19 +283,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._acquire_transaction_lock(blocking=blocking, timeout=timeout)
         try:
             return self._do_acquire_inner(mode, timeout, blocking=blocking, start_time=start_time)
-        except sqlite3.Error as exc:
-            # A read acquire runs BEGIN (a deferred transaction that takes no database lock) and only then the
-            # SELECT that takes the SHARED lock. If a writer grabs the EXCLUSIVE lock between the two, the SELECT
-            # fails but BEGIN's transaction is left open on the shared connection. Roll it back here, while we still
-            # hold _transaction_lock, otherwise the next acquire's BEGIN dies with "cannot start a transaction
-            # within a transaction" and the instance is wedged for good. Catch only sqlite3.Error: a
-            # reentrant-validation RuntimeError from _do_acquire_inner's double-check must not roll back, or it
-            # would drop a transaction another thread holds on the shared connection.
-            with suppress(sqlite3.Error):
-                self._con.rollback()
-            if isinstance(exc, sqlite3.OperationalError) and "database is locked" in str(exc):
-                raise Timeout(self.lock_file) from None
-            raise
         finally:
             self._transaction_lock.release()
 
@@ -304,7 +298,24 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         with self._internal_lock:
             if self._lock_level > 0:
                 return self._validate_reentrant(mode)
-        self._configure_and_begin(mode, timeout, blocking=blocking, start_time=start_time)
+        if self._con.in_transaction:
+            self._con.rollback()
+        try:
+            self._configure_and_begin(mode, timeout, blocking=blocking, start_time=start_time)
+        except sqlite3.Error as error:
+            acquisition_error: BaseException
+            if isinstance(error, sqlite3.OperationalError) and "database is locked" in str(error):
+                acquisition_error = Timeout(self.lock_file)
+            else:
+                acquisition_error = error
+            if self._con.in_transaction:
+                try:
+                    self._con.rollback()
+                except sqlite3.Error as rollback_error:
+                    _raise_chained_errors(acquisition_error, rollback_error)
+            if acquisition_error is not error:
+                raise acquisition_error from None
+            raise
         with self._internal_lock:
             self._current_mode = mode
             self._lock_level = 1

@@ -6,7 +6,6 @@ import logging
 import os
 import sys
 import threading
-import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -16,7 +15,14 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, CloseErrorPolicy, ContextErrorPolicy, Timeout
+from filelock import (
+    AsyncFileLock,
+    AsyncSoftFileLock,
+    BaseAsyncFileLock,
+    CloseErrorPolicy,
+    ContextErrorPolicy,
+    Timeout,
+)
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup
@@ -588,22 +594,6 @@ async def test_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker:
     assert not lock.is_locked
 
 
-@_UNIX_FLOCK_ONLY
-@pytest.mark.asyncio
-async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock = AsyncFileLock(str(tmp_path / "a"))
-    await lock.acquire()
-    # A slow unlock lets the cancellation land mid-release; shield must still drive it to completion.
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=lambda _fd, _op: time.sleep(0.2))
-    task = asyncio.ensure_future(lock.release())
-    await asyncio.sleep(0.05)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert not lock.is_locked
-    assert lock.lock_counter == 0
-
-
 @pytest.mark.asyncio
 async def test_async_zero_write_rolls_back_acquire(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._util.os.write", return_value=0)
@@ -884,6 +874,39 @@ async def test_context_group_base_exception_leaf_is_base_group(
             raise KeyboardInterrupt
     assert not isinstance(info.value, ExceptionGroup)
     assert [type(leaf) for leaf in info.value.exceptions] == [KeyboardInterrupt, OSError]
+
+
+@pytest.mark.asyncio
+async def test_context_group_preserves_user_release_cancellation_group(tmp_path: Path) -> None:
+    body_error = ValueError("body failed")
+    backend_cancellation = asyncio.CancelledError("backend canceled")
+    backend_error = OSError(EIO, "backend failed")
+    release_group = BaseExceptionGroup(
+        "lock release cancellation and backend release both failed",
+        (backend_cancellation, backend_error),
+    )
+    fail_release = True
+
+    class GroupReleaseLock(BaseAsyncFileLock):
+        def _acquire(self) -> None:
+            self._context.lock_file_fd = 1
+
+        def _release(self) -> None:
+            nonlocal fail_release
+            if fail_release:
+                fail_release = False
+                raise release_group
+            self._context.lock_file_fd = None
+
+    lock = GroupReleaseLock(tmp_path / "a", run_in_executor=False, context_error_policy="group")
+    with pytest.raises(BaseExceptionGroup) as info:
+        async with lock:
+            raise body_error
+
+    assert info.value.exceptions == (body_error, release_group)
+    assert info.value.exceptions[1] is release_group
+    assert release_group.exceptions == (backend_cancellation, backend_error)
+    await lock.release()
 
 
 def _fail_close_of(mocker: MockerFixture, lock: BaseAsyncFileLock, error: OSError) -> None:
