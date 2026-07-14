@@ -206,8 +206,8 @@ paths.other = [
 ]
 paths.source = [
   "src",
-  ".tox/*/lib/*/site-packages",
-  ".tox\\*\\Lib\\site-packages",
+  "*/.tox/*/lib/*/site-packages",
+  "*/.tox/*/Lib/site-packages",
   "**/src",
   "**\\src",
 ]
