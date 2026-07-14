@@ -8,7 +8,7 @@ import stat
 import sys
 import time
 from dataclasses import dataclass
-from errno import EACCES, EEXIST, ENOENT, ENOSYS, ENOTSUP, EPERM, EXDEV
+from errno import EACCES, EEXIST, EINVAL, ENOENT, ENOSYS, ENOTSUP, EPERM, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -36,6 +36,9 @@ _PRIVATE_RECORD_GRACE: Final[float] = 2.0
 _UNLINK_MAX_RETRIES: Final[int] = 10
 _LEGACY_SENTINEL: Final[bytes] = STRICT_SOFT_SENTINEL_RECORD.encode()
 _WINDOWS_HARD_LINK_UNSUPPORTED: Final[frozenset[int]] = frozenset({1, 17, 50})
+
+#: Set once a runtime rejects os.link(follow_symlinks=False) with EINVAL, so later links skip the refused option.
+_LINK_FOLLOW_SYMLINKS_REFUSED: bool = False
 
 
 class StrictSoftFileLock(BaseFileLock):
@@ -543,19 +546,32 @@ def _open_relative(directory_ref: tuple[str, int | None], name: str, flags: int,
 def _link_relative(directory_ref: tuple[str, int | None], source_name: str, destination_name: str) -> None:
     directory, directory_fd = directory_ref
     if directory_fd is not None and os.link in os.supports_dir_fd:
-        os.link(
-            source_name,
-            destination_name,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
+        _link_no_follow(source_name, destination_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
         return
-    os.link(
-        Path(directory, source_name),
-        Path(directory, destination_name),
-        follow_symlinks=False,
-    )
+    _link_no_follow(Path(directory, source_name), Path(directory, destination_name))
+
+
+def _link_no_follow(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    src_dir_fd: int | None = None,
+    dst_dir_fd: int | None = None,
+) -> None:
+    # The source is a private record this process created with O_CREAT | O_EXCL, so follow_symlinks guards nothing an
+    # attacker can reach. PyPy advertises the option through os.supports_follow_symlinks yet its linkat rejects it with
+    # EINVAL on some platforms, so drop the option once the runtime refuses it rather than trust the advertised set.
+    global _LINK_FOLLOW_SYMLINKS_REFUSED  # noqa: PLW0603
+    if not _LINK_FOLLOW_SYMLINKS_REFUSED:
+        try:
+            os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False)
+        except OSError as error:
+            if error.errno != EINVAL:
+                raise
+            _LINK_FOLLOW_SYMLINKS_REFUSED = True
+        else:
+            return
+    os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
 
 def _unlink_relative(directory_ref: tuple[str, int | None], name: str) -> None:
@@ -572,13 +588,7 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
     if os.link in os.supports_dir_fd:
         directory_fd = _open_directory(str(directory))
         try:
-            os.link(
-                source_name,
-                destination_name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-                follow_symlinks=False,
-            )
+            _link_no_follow(source_name, destination_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
         except BaseException as link_error:  # preserve link and directory cleanup errors
             try:
                 os.close(directory_fd)
@@ -590,7 +600,7 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
         except BaseException as close_error:  # noqa: BLE001  # caller records the held path before raising
             return close_error
         return None
-    os.link(directory / source_name, directory / destination_name, follow_symlinks=False)  # pragma: win32 cover
+    _link_no_follow(directory / source_name, directory / destination_name)  # pragma: win32 cover
     return None
 
 
