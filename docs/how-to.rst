@@ -779,6 +779,11 @@ lock and a ``FileLock`` path lock on the same file contend with each other.
     finally:
         os.close(fd)
 
-Pass ``blocking=False`` for a single attempt that returns ``False`` on contention. There is no async wrapper: run it in
-an executor, or drive ``blocking=False`` from your own polling loop. On Windows *fd* must be a synchronous descriptor.
-For timeout, reentrancy, singleton, lifetime, or stale-break behavior, use :class:`FileLock <filelock.FileLock>`.
+Pass ``blocking=False`` for a single attempt that returns ``False`` on contention and ignores ``poll_interval``.
+Blocking calls require a finite, positive ``poll_interval``. There is no async wrapper. Run it in an executor, or drive
+``blocking=False`` from your own polling loop. On Windows *fd* must be a synchronous descriptor.
+
+Both functions raise ``OSError`` with :data:`errno.ENOSYS` when the Python build lacks the native locking primitive.
+The :class:`FileLock <filelock.FileLock>` and :class:`AsyncFileLock <filelock.AsyncFileLock>` aliases continue to select
+their soft implementations on those builds. For timeout, reentrancy, singleton, lifetime, or stale-break behavior, use
+:class:`FileLock <filelock.FileLock>`.
