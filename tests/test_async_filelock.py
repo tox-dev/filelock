@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from errno import EIO, ENOSYS
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 
@@ -394,6 +394,20 @@ async def test_non_blocking_gives_timeout_not_deadlock(tmp_path: Path, lock_type
             await lock2.acquire()
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [pytest.param("finite", id="finite"), pytest.param("nonblocking", id="nonblocking")],
+)
+@pytest.mark.asyncio
+async def test_failed_acquire_keeps_holder_registered(tmp_path: Path, mode: Literal["finite", "nonblocking"]) -> None:
+    lock_path = tmp_path / "test.lock"
+    async with AsyncFileLock(lock_path, run_in_executor=False):
+        with pytest.raises(Timeout):
+            await _acquire_for_mode(AsyncFileLock(lock_path, run_in_executor=False), mode)
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            await AsyncFileLock(lock_path, run_in_executor=False).acquire(cancel_check=lambda: True)
+
+
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_different_paths_no_conflict(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
@@ -467,6 +481,46 @@ async def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseA
             await lock2.acquire()
 
 
+@_UNIX_FLOCK_ONLY
+@pytest.mark.parametrize(
+    ("depth", "force"),
+    [
+        pytest.param(1, False, id="direct"),
+        pytest.param(2, False, id="nested"),
+        pytest.param(2, True, id="forced"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, depth: int, force: bool) -> None:
+    lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
+    lock = AsyncFileLock(lock_path, run_in_executor=False)
+    for _depth in range(depth):
+        await lock.acquire()
+    _retarget_parent(lock_path, replacement_path)
+
+    if force:
+        await lock.release(force=True)
+    else:
+        for _depth in range(depth):
+            await lock.release()
+
+    async with AsyncFileLock(original_path, run_in_executor=False) as successor:
+        assert successor.is_locked
+
+
+@_UNIX_FLOCK_ONLY
+@pytest.mark.asyncio
+async def test_release_keeps_retargeted_parent_holder_registered(tmp_path: Path) -> None:
+    lock_path, _original_path, replacement_path = _symlinked_lock_paths(tmp_path)
+    original = AsyncFileLock(lock_path, run_in_executor=False)
+    await original.acquire()
+    _retarget_parent(lock_path, replacement_path)
+    async with AsyncFileLock(replacement_path, run_in_executor=False):
+        await original.release()
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            await AsyncFileLock(replacement_path, run_in_executor=False).acquire(cancel_check=lambda: True)
+
+
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_deadlock_registry_cleanup_on_release(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
@@ -493,6 +547,29 @@ async def test_force_release_clears_registry(tmp_path: Path, lock_type: type[Bas
     lock2 = lock_type(lock_path)
     async with lock2:
         assert lock2.is_locked
+
+
+def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:
+    original = tmp_path / "original"
+    replacement = tmp_path / "replacement"
+    original.mkdir()
+    replacement.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(original, target_is_directory=True)
+    return link / "test.lock", original / "test.lock", replacement / "test.lock"
+
+
+def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:
+    link = lock_path.parent
+    link.unlink()
+    link.symlink_to(replacement_path.parent, target_is_directory=True)
+
+
+async def _acquire_for_mode(lock: BaseAsyncFileLock, mode: Literal["finite", "nonblocking"]) -> None:
+    if mode == "finite":
+        await lock.acquire(timeout=0)
+    else:
+        await lock.acquire(blocking=False)
 
 
 @_UNIX_FLOCK_ONLY

@@ -845,7 +845,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         if self.is_locked:
             self._commit_acquire(canonical)
         else:
-            self._undo_acquire(canonical)
+            self._undo_acquire()
 
     def _invoke_on_acquired(self) -> None:
         # Runs inside the backend _acquire (in the executor for async locks), once the native lock is held and the
@@ -866,20 +866,24 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
                 _raise_body_and_release(callback_error, release_error)
             raise
 
-    def _undo_acquire(self, canonical: str) -> None:
+    def _undo_acquire(self) -> None:
         """Roll back the counter after a failed acquire, dropping the registry entry once nothing holds the path."""
         self._context.lock_counter = max(0, self._context.lock_counter - 1)
         if self._context.lock_counter == 0:
-            _registry.held.pop(canonical, None)
+            self._drop_registry_entry()
 
     def _commit_acquire(self, canonical: str) -> None:
         """Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock."""
         if self._context.lock_counter == 1:
+            self._context.lock_file_key = canonical
             _registry.held[canonical] = id(self)
 
     def _drop_registry_entry(self) -> None:
-        """Forget this path's holder on release so a later cross-instance acquire is not misread as a deadlock."""
-        _registry.held.pop(_canonical(self.lock_file), None)
+        """Forget the key owned by this hold without resolving a mutable path again."""
+        canonical = self._context.lock_file_key
+        self._context.lock_file_key = None
+        if canonical is not None:
+            _registry.held.pop(canonical, None)
 
     def _commit_release(self) -> None:
         """Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry."""
@@ -975,6 +979,9 @@ class FileLockContext:
 
     #: Depth of nested acquisitions; the lock is released only when it returns to 0.
     lock_counter: int = 0
+
+    #: Canonical registry key captured when the first physical acquisition commits.
+    lock_file_key: str | None = None
 
 
 class ThreadLocalFileContext(FileLockContext, local):
