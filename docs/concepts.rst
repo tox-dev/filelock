@@ -115,6 +115,34 @@ process has died.
 Same-host contenders can check whether the recorded PID exists. Windows also records process creation time to
 distinguish a reused PID. Other platforms can mistake a reused PID for the original holder and remain blocked.
 
+**Strict soft locks** (:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`) use immutable owner claims instead of
+replacing one shared marker. Each contender writes a complete private record, publishes a unique intent through a hard
+link, and publishes a unique held claim only after it wins the intent order. The winner rescans before entering. Release
+removes its held claim by name, so it cannot detach or delete a successor at another pathname.
+
+.. versionadded:: 3.30.0
+
+The protocol keeps ``<path>`` as a permanent compatibility sentinel and stores claims under
+``<path>.filelock/claims``. A legacy :class:`SoftFileLock <filelock.SoftFileLock>` holder can finish before the first
+strict acquisition. Once strict mode activates the path, the sentinel prevents legacy clients from entering again.
+Every strict participant needs filelock 3.30.0 or newer. Legacy clients configured with ``lifetime``, callers of
+``break_lock()``, and code that deletes lock files can remove the sentinel; mixing them with strict clients voids mutual
+exclusion.
+
+Strict claims require coherent directory reads and atomic no-replace hard links. The class reports a protocol error
+when the filesystem reports that it cannot publish hard links. NFS and SMB remain outside this guarantee until their
+mount and server combination passes the protocol tests. Linux documents the hard-link lock pattern in `open(2)
+<https://man7.org/linux/man-pages/man2/open.2.html>`_; Microsoft documents NTFS hard links in `Hard Links and Junctions
+<https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions>`_.
+
+Strict locks do not infer that an owner died. An orphaned, damaged, or newer-version claim blocks entry. filelock
+therefore avoids overlapping a paused holder at the cost of operator recovery after a crash. See
+:ref:`how-to:Use fail-closed soft locks` for inspection and recovery.
+
+Private publication records are not ownership claims. Each attempt uses a fresh random name. Linked private names are
+discarded immediately, while unlinked records left by a crash receive a two-second grace period before reclamation.
+Losing a private name makes the publisher retry; it never converts an unpublished record into ownership.
+
 .. list-table::
     :header-rows: 1
 

@@ -81,6 +81,15 @@ Choose the right lock for your use case:
         - ✓ Optional age-based expiry, with overlap risk
 
     .. grid-item-card::
+        **StrictSoftFileLock**
+
+        Fail-closed owner claims for filesystems with coherent directory reads and atomic hard links.
+
+        - ✓ Never guesses that an owner died
+        - ✓ Removes claims by unique name
+        - ✓ Manual recovery with owner metadata
+
+    .. grid-item-card::
         **ReadWriteLock**
 
         SQLite-backed multiple readers + one writer. Singleton by default.

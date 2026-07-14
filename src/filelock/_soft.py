@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Final
 
 from ._api import BaseFileLock, _raise_grouped_errors
+from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file, write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -108,6 +109,8 @@ class SoftFileLock(BaseFileLock):
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
             content, mtime, ino = _read_lock_file(self.lock_file)
+            if content == STRICT_SOFT_SENTINEL_RECORD:
+                return
             holder = _parse_lock_holder(content)
 
             if holder is None:
