@@ -24,6 +24,8 @@ _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != 
 
 _HOST: Final[str] = socket.gethostname()
 _DEAD_PID: Final[int] = 2**22 + 1
+_WIN_ERROR_ACCESS_DENIED: Final[int] = 5
+_WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
 
 
 @pytest.fixture
@@ -204,45 +206,74 @@ def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixtur
 
 
 @_WINDOWS_ONLY
-def test_windows_stale_lock_broken_when_pid_recycled(lock_path: Path, mocker: MockerFixture) -> None:
-    lock_path.write_text(_holder(1234, creation_time=100000000), encoding="utf-8")
-    mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=True)
-    mocker.patch.object(SoftFileLock, "_get_process_creation_time", return_value=999999999)
+@pytest.mark.parametrize(
+    ("captured_error", "ambient_error", "acquires"),
+    [
+        pytest.param(_WIN_ERROR_INVALID_PARAMETER, _WIN_ERROR_ACCESS_DENIED, True, id="dead"),
+        pytest.param(_WIN_ERROR_ACCESS_DENIED, _WIN_ERROR_INVALID_PARAMETER, False, id="access-denied"),
+    ],
+)
+def test_windows_stale_lock_uses_captured_process_error(
+    lock_path: Path,
+    mocker: MockerFixture,
+    captured_error: int,
+    ambient_error: int,
+    *,
+    acquires: bool,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("windows-only")
+    import ctypes
+
+    def fail_open_process(_access: int, _inherit_handle: bool, _pid: int) -> None:
+        ctypes.set_last_error(captured_error)
+        ctypes.windll.kernel32.SetLastError(ambient_error)
+
+    # ctypes function pointers do not expose a Python signature for autospec.
+    mocker.patch("filelock._soft._KERNEL32.OpenProcess", side_effect=fail_open_process)
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    if acquires:
+        _assert_self_heals(lock_path)
+    else:
+        _assert_times_out(lock_path)
+
+
+@_WINDOWS_ONLY
+def test_windows_stale_lock_broken_when_pid_recycled(lock_path: Path) -> None:
+    process_marker = lock_path.with_suffix(".process")
+    with SoftFileLock(process_marker):
+        creation_time = int(process_marker.read_text(encoding="utf-8").splitlines()[2])
+    lock_path.write_text(_holder(os.getpid(), creation_time=creation_time + 1), encoding="utf-8")
     _assert_self_heals(lock_path)
 
 
 @_WINDOWS_ONLY
-def test_windows_stale_lock_not_broken_same_creation_time(lock_path: Path, mocker: MockerFixture) -> None:
-    creation_time = 100000000
-    lock_path.write_text(_holder(1234, creation_time=creation_time), encoding="utf-8")
-    mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=True)
-    mocker.patch.object(SoftFileLock, "_get_process_creation_time", return_value=creation_time)
+def test_windows_live_process_marker_retained(lock_path: Path) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    try:
+        _assert_times_out(lock_path)
+    finally:
+        lock.release()
+
+
+@_WINDOWS_ONLY
+def test_windows_live_process_marker_without_creation_time_retained(lock_path: Path) -> None:
+    lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     _assert_times_out(lock_path)
 
 
 @_WINDOWS_ONLY
-def test_windows_stale_lock_conservative_without_creation_time(lock_path: Path, mocker: MockerFixture) -> None:
-    lock_path.write_text(_holder(1234), encoding="utf-8")
-    mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=True)
-    _assert_times_out(lock_path)
-
-
-@_WINDOWS_ONLY
-def test_get_process_creation_time_returns_int_on_windows() -> None:
-    result = SoftFileLock._get_process_creation_time(os.getpid())
-    assert result is not None
-    assert isinstance(result, int)
-    assert result > 0
-
-
-@_WINDOWS_ONLY
-def test_get_process_creation_time_returns_none_for_dead_pid() -> None:
-    assert SoftFileLock._get_process_creation_time(_DEAD_PID) is None
-
-
-@_UNIX_ONLY
-def test_get_process_creation_time_returns_none_on_unix() -> None:
-    assert SoftFileLock._get_process_creation_time(os.getpid()) is None
+def test_windows_process_probe_closes_handles(lock_path: Path) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    try:
+        handle_count = _current_process_handle_count()
+        for _attempt in range(50):
+            _assert_times_out(lock_path, timeout=0)
+        assert _current_process_handle_count() == handle_count
+    finally:
+        lock.release()
 
 
 @pytest.mark.parametrize(
@@ -311,9 +342,27 @@ def _assert_self_heals(lock_path: Path) -> None:
         assert lock.is_locked
 
 
-def _assert_times_out(lock_path: Path) -> None:
+def _assert_times_out(lock_path: Path, *, timeout: float = 0.1) -> None:
     with pytest.raises(TimeoutError):
-        SoftFileLock(lock_path, timeout=0.1).acquire()
+        SoftFileLock(lock_path, timeout=timeout).acquire()
+
+
+def _current_process_handle_count() -> int:
+    if sys.platform != "win32":
+        pytest.skip("windows-only")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessHandleCount.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetProcessHandleCount.restype = wintypes.BOOL
+    count = wintypes.DWORD()
+    assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count)), ctypes.WinError(
+        ctypes.get_last_error()
+    )
+    return count.value
 
 
 def _hold_reports_foreign_identity(mocker: MockerFixture) -> None:

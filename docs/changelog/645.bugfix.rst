@@ -1,0 +1,1 @@
+Read the saved Windows process-probe error before deciding that a soft-lock holder has exited.
