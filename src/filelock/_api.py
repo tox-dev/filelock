@@ -10,8 +10,10 @@ import time
 import warnings
 from abc import ABCMeta, abstractmethod
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
-from threading import Lock, local
+from itertools import count, starmap
+from threading import Condition, Lock, RLock, get_ident, local
 from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
@@ -31,11 +33,31 @@ CloseErrorPolicy = Literal["default", "raise", "suppress"]
 _CLOSE_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"default", "raise", "suppress"})
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from types import TracebackType
     from typing import Protocol
 
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
+
+    class _ForkResettable(Protocol):
+        def _reset_after_fork_in_child(self) -> None: ...
+
+    class _ForkDescriptorOwner(Protocol):
+        def _descriptors_for_fork(self) -> tuple[tuple[int, tuple[int, int] | None], ...]: ...
+
+    class _ForkResettableClass(Protocol):
+        @classmethod
+        def _reset_class_after_fork(cls) -> None: ...
+
+    class _RegisterAtFork(Protocol):
+        def __call__(
+            self,
+            *,
+            before: Callable[[], None] | None = None,
+            after_in_parent: Callable[[], None] | None = None,
+            after_in_child: Callable[[], None] | None = None,
+        ) -> None: ...
 
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
         from typing import Self
@@ -43,6 +65,8 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
+_REGISTER_AT_FORK: Final[_RegisterAtFork | None] = cast("_RegisterAtFork | None", getattr(os, "register_at_fork", None))
+_HAS_REGISTER_AT_FORK: Final[bool] = _REGISTER_AT_FORK is not None
 
 _ExtraValue = TypeVar("_ExtraValue")
 _MarkerValue = TypeVar("_MarkerValue")
@@ -243,6 +267,18 @@ def _raise_body_and_release(body_error: BaseException, release_error: BaseExcept
     _raise_grouped_errors("lock body and release both failed", body_error, release_error)
 
 
+def _raise_cleanup_errors(
+    message: str,
+    primary_error: BaseException,
+    *cleanup_errors: BaseException | None,
+) -> NoReturn:
+    _raise_grouped_errors(
+        message,
+        primary_error,
+        *(error for error in cleanup_errors if error is not None),
+    )
+
+
 # On Windows os.path.realpath calls CreateFileW with share_mode=0, which blocks concurrent DeleteFileW and causes
 # livelocks under threaded contention with SoftFileLock. os.path.abspath is purely string-based and avoids this.
 _resolve_dir: Final[Callable[[str], str]] = os.path.abspath if sys.platform == "win32" else os.path.realpath
@@ -277,7 +313,8 @@ _T = TypeVar("_T", bound="BaseFileLock")
 
 class FileLockMeta(ABCMeta):
     _instances: WeakValueDictionary[str, BaseFileLock]
-    _instances_lock: Lock
+    _instances_lock: RLock
+    _instances_under_construction: set[str]
 
     def __call__(  # noqa: PLR0913
         cls: type[_T],
@@ -297,6 +334,7 @@ class FileLockMeta(ABCMeta):
         on_acquired: Callable[[int], None] | None = None,
         **kwargs: _ExtraValue,
     ) -> _T:
+        _ensure_current_process()
         lifetime = _resolve_lifetime(lifetime, supported=cls._lifetime_supported, cls_name=cls.__name__)
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
         # __del__ then trips over the missing context.
@@ -334,7 +372,19 @@ class FileLockMeta(ABCMeta):
         singleton_key = _canonical(lock_file)
         with cls._instances_lock:
             if (instance := cls._instances.get(singleton_key)) is None:
-                instance = cls._create_instance(lock_file, params)
+                if singleton_key in cls._instances_under_construction:
+                    msg = f"Singleton lock construction is already active for {lock_file!s}"
+                    raise RuntimeError(msg)
+                construction_registry = cls._instances_under_construction
+                construction_pid = os.getpid()
+                construction_registry.add(singleton_key)
+                try:
+                    instance = cls._create_instance(lock_file, params)
+                finally:
+                    construction_registry.discard(singleton_key)
+                if os.getpid() != construction_pid:
+                    msg = "Lock construction cannot continue after fork; construct a new lock in the child"
+                    raise RuntimeError(msg)
                 cls._instances[singleton_key] = instance
                 return instance
 
@@ -393,12 +443,11 @@ class FileLockMeta(ABCMeta):
 
 
 _INIT_PARAMETER_MODELS: Final[WeakKeyDictionary[type[BaseFileLock], _InitParameterModel]] = WeakKeyDictionary()
-_INIT_PARAMETER_MODELS_LOCK: Final[Lock] = Lock()
 
 
 def _init_parameter_model(cls: type[BaseFileLock]) -> _InitParameterModel:
     # A strong cache would keep dynamically created subclasses alive for the process lifetime.
-    with _INIT_PARAMETER_MODELS_LOCK:
+    with _fork_transition(), _FORK_STATE.parameter_models_lock:
         if (model := _INIT_PARAMETER_MODELS.get(cls)) is None:
             parameters = inspect.signature(cls.__init__).parameters.values()
             model = _InitParameterModel(
@@ -512,7 +561,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     """
 
     _instances: WeakValueDictionary[str, BaseFileLock]
-    _instances_lock: Lock
+    _instances_lock: RLock
+    _instances_under_construction: set[str]
 
     #: How the cross-instance deadlock message names the conflicting holder; the async subclass says "task".
     _deadlock_holder_desc: str = "FileLock instance in this thread"
@@ -533,7 +583,15 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
         cls._instances = WeakValueDictionary()
-        cls._instances_lock = Lock()
+        cls._instances_lock = RLock()
+        cls._instances_under_construction = set()
+        _register_fork_class(cls)
+
+    @classmethod
+    def _reset_class_after_fork(cls) -> None:  # pragma: no cover - exercised in fork children
+        cls._instances = WeakValueDictionary()
+        cls._instances_lock = RLock()
+        cls._instances_under_construction = set()
 
     def __init__(  # noqa: PLR0913
         self,
@@ -605,6 +663,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             and re-raises. :class:`SoftFileLock` rejects the hook.
 
         """
+        self._creator_pid = os.getpid()
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
@@ -621,6 +680,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             poll_interval=poll_interval,
             lifetime=lifetime,
         )
+        _register_fork_object(self)
 
     def is_thread_local(self) -> bool:
         """:returns: a flag indicating if this lock is thread local or not"""
@@ -819,11 +879,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             This was previously a method and is now a property.
 
         """
+        _ensure_current_process()
         return self._context.lock_file_fd is not None
 
     @property
     def lock_counter(self) -> int:
         """The number of times this lock has been acquired (but not yet released)."""
+        _ensure_current_process()
         return self._context.lock_counter
 
     def __enter__(self) -> Self:
@@ -857,6 +919,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
     def __del__(self) -> None:
         """Force-release so a dropped reference never leaks a held lock."""
+        if vars(self).get("_creator_pid") != os.getpid():
+            return  # pragma: no cover - exercised in fork children
         self.release(force=True)
 
     def acquire(
@@ -904,6 +968,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             without side effects.
 
         """
+        self._raise_if_inherited()
         if timeout is None:
             timeout = self._context.timeout
 
@@ -946,7 +1011,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
         """
-        if not self.is_locked:
+        if self._creator_pid != os.getpid() or not self.is_locked:
             return
         if not force and self._context.lock_counter > 1:
             self._context.lock_counter -= 1
@@ -955,7 +1020,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         lock_id, lock_filename = id(self), self.lock_file
         _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
         try:
-            self._release()
+            self._release_with_fork_tracking()
         except BaseException:
             # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
             # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
@@ -965,6 +1030,44 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             raise
         self._commit_release()
         _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+
+    def _raise_if_inherited(self) -> None:
+        if self._creator_pid != os.getpid():  # pragma: no cover - exercised only in fork children
+            msg = f"{type(self).__name__} on {self.lock_file} was inherited across fork; construct a new instance"
+            raise RuntimeError(msg)
+
+    def _mark_descriptor_owned(self, fd: int, identity: tuple[int, int] | None = None) -> None:
+        self._context.pending_lock_file_fd = None
+        self._context.pending_lock_file_fd_identity = None
+        self._context.lock_file_fd = fd
+        self._context.lock_file_fd_identity = identity
+
+    def _mark_descriptor_pending(self, fd: int, identity: tuple[int, int] | None = None) -> None:
+        self._context.pending_lock_file_fd = fd
+        self._context.pending_lock_file_fd_identity = identity
+
+    def _mark_descriptor_released(self) -> None:
+        self._context.pending_lock_file_fd = None
+        self._context.pending_lock_file_fd_identity = None
+        self._context.lock_file_fd = None
+        self._context.lock_file_fd_identity = None
+
+    def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - exercised in fork children
+        self._context.lock_file_fd = None
+        self._context.lock_file_fd_token = None
+        self._context.lock_file_fd_identity = None
+        self._context.pending_lock_file_fd = None
+        self._context.pending_lock_file_fd_identity = None
+        self._context.lock_counter = 0
+        self._context.lock_file_key = None
+
+    def _descriptors_for_fork(self) -> tuple[tuple[int, tuple[int, int] | None], ...]:
+        descriptors: list[tuple[int, tuple[int, int] | None]] = []
+        if self._context.lock_file_fd is not None and self._context.lock_file_fd_token is None:
+            descriptors.append((self._context.lock_file_fd, self._context.lock_file_fd_identity))
+        if self._context.pending_lock_file_fd is not None:
+            descriptors.append((self._context.pending_lock_file_fd, self._context.pending_lock_file_fd_identity))
+        return tuple(descriptors)
 
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         """
@@ -994,10 +1097,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         lock_id = id(self)
         lock_filename = self.lock_file
         while True:
+            self._raise_if_inherited()
             if not self.is_locked:
                 self._try_break_expired_lock()
                 _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                self._acquire()
+                self._acquire_with_fork_tracking()
+                self._raise_if_inherited()
             if self.is_locked:
                 _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                 return
@@ -1024,25 +1129,104 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             self._undo_acquire()
 
     def _invoke_on_acquired(self) -> None:
-        # Runs inside the backend _acquire (in the executor for async locks), once the native lock is held and the
-        # descriptor is set, before acquire() commits the registry. Fires once per physical acquisition; a recursive
-        # acquire never reaches here because the poll loop skips _acquire while the lock is held.
+        # The wrapper runs in the backend executor for async locks, preserving the callback's documented thread.
         if self._on_acquired is None or self._context.lock_counter != 1:
             return
         try:
             self._on_acquired(cast("int", self._context.lock_file_fd))
         except BaseException as callback_error:  # arbitrary caller code; roll back on any failure
             callback_context = callback_error.__context__
-            # Undo the native acquisition so the failed hook does not leave the lock held. Call the backend _release
-            # directly rather than the public release(): the counter and thread-local deadlock registry are reconciled
-            # by acquire() on the owning thread, and the async release() is a coroutine this synchronous path cannot
-            # await. A release that also fails surfaces both errors; is_locked then tells acquire() how to reconcile.
             try:
-                self._release()
+                self._release_with_fork_tracking()
             except BaseException as release_error:  # noqa: BLE001  # both errors surface via the group below
                 _raise_body_and_release(callback_error, release_error)
             callback_error.__context__ = callback_context
             raise
+
+    def _acquire_with_fork_tracking(self) -> None:
+        with _fork_transition(self):
+            try:
+                self._acquire()
+            except BaseException as acquisition_error:
+                self._rollback_failed_acquire(acquisition_error)
+                raise
+            try:
+                self._register_context_descriptor()
+            except BaseException as registration_error:
+                self._rollback_failed_registration(registration_error)
+                raise
+        if self.is_locked:
+            self._invoke_on_acquired()
+
+    def _rollback_failed_acquire(self, acquisition_error: BaseException) -> None:
+        if not self.is_locked:
+            return
+        registration_error: BaseException | None = None
+        tracking_error: BaseException | None = None
+        try:
+            self._register_context_descriptor()
+        except BaseException as error:  # noqa: BLE001  # preserve registration and acquisition failures
+            registration_error = error
+            try:
+                # Rollback may fail too; retain the fd so a child can close it without another identity probe.
+                self._register_unverified_context_descriptor()
+            except BaseException as error:  # noqa: BLE001  # pragma: no cover - allocation/control-flow during fallback
+                tracking_error = error
+        try:
+            self._release_with_fork_tracking()
+        except BaseException as rollback_error:  # noqa: BLE001  # preserve rollback and acquisition failures
+            _raise_cleanup_errors(
+                "lock acquisition cleanup failed",
+                acquisition_error,
+                registration_error,
+                tracking_error,
+                rollback_error,
+            )
+        if registration_error is not None:
+            _raise_cleanup_errors(
+                "lock acquisition cleanup failed", acquisition_error, registration_error, tracking_error
+            )
+
+    def _rollback_failed_registration(self, registration_error: BaseException) -> None:
+        tracking_error: BaseException | None = None
+        try:
+            # Rollback may fail too; retain the fd so a child can close it without another identity probe.
+            self._register_unverified_context_descriptor()
+        except BaseException as error:  # noqa: BLE001  # pragma: no cover - allocation/control-flow during fallback
+            tracking_error = error
+        try:
+            self._release_with_fork_tracking()
+        except BaseException as rollback_error:  # noqa: BLE001  # preserve rollback and registration failures
+            _raise_cleanup_errors(
+                "descriptor registration cleanup failed", registration_error, tracking_error, rollback_error
+            )
+        if tracking_error is not None:  # pragma: no cover - requires failed in-memory fallback
+            _raise_cleanup_errors("descriptor registration cleanup failed", registration_error, tracking_error)
+
+    def _release_with_fork_tracking(self) -> None:
+        with _fork_transition(self):
+            try:
+                self._release()
+            finally:
+                self._unregister_released_descriptor()
+
+    def _register_context_descriptor(self) -> None:
+        if self._context.lock_file_fd is not None and self._context.lock_file_fd_token is None:
+            self._context.lock_file_fd_token = _register_owned_descriptor(
+                self._context.lock_file_fd,
+                self._context.lock_file_fd_identity,
+            )
+
+    def _register_unverified_context_descriptor(self) -> None:
+        if self._context.lock_file_fd is not None and self._context.lock_file_fd_token is None:
+            self._context.lock_file_fd_token = _register_unverified_owned_descriptor(self._context.lock_file_fd)
+
+    def _unregister_released_descriptor(self) -> None:
+        if self._context.lock_file_fd is None:
+            if (token := self._context.lock_file_fd_token) is not None:
+                _unregister_owned_descriptor(token)
+            self._context.lock_file_fd_token = None
+            self._context.lock_file_fd_identity = None
 
     def _undo_acquire(self) -> None:
         """Roll back the counter after a failed acquire, dropping the registry entry once nothing holds the path."""
@@ -1155,6 +1339,18 @@ class FileLockContext:
     #: File descriptor from os.open for the lock file; not None while the lock is held.
     lock_file_fd: int | None = None
 
+    #: Registry token for the descriptor owned by this thread's context.
+    lock_file_fd_token: int | None = None
+
+    #: Identity captured by a backend that already inspected the descriptor.
+    lock_file_fd_identity: tuple[int, int] | None = None
+
+    #: Descriptor opened by a backend but not yet committed as the held lock.
+    pending_lock_file_fd: int | None = None
+
+    #: Identity captured for a descriptor whose acquisition has not committed.
+    pending_lock_file_fd_identity: tuple[int, int] | None = None
+
     #: Depth of nested acquisitions; the lock is released only when it returns to 0.
     lock_counter: int = 0
 
@@ -1164,6 +1360,302 @@ class FileLockContext:
 
 class ThreadLocalFileContext(FileLockContext, local):
     """A thread local version of the ``FileLockContext`` class."""
+
+
+@dataclass(frozen=True)
+class _OwnedDescriptor:
+    fd: int
+    creator_pid: int
+    device: int | None
+    inode: int | None
+
+
+class _ForkTransitionContext(local):
+    depth: int = 0
+
+
+class _ForkState:
+    def __init__(self) -> None:
+        self.gate = Condition(Lock())
+        self.registry_lock = RLock()
+        self.parameter_models_lock = RLock()
+        self.transition_context = _ForkTransitionContext()
+        self.transitions: dict[int, dict[int, _ForkDescriptorOwner | None]] = {}
+        self.active_transitions = 0
+        self.admission_closed = False
+        self.fork_owner_depths: dict[int, int] = {}
+        self.pinned_objects: dict[int, list[tuple[_ForkResettable, ...]]] = {}
+        self.pinned_classes: dict[int, list[tuple[type[_ForkResettableClass], ...]]] = {}
+        self.provisional_descriptor_tokens: dict[int, list[tuple[int, ...]]] = {}
+        self.pid = os.getpid()
+
+    def reset_synchronization(self) -> None:  # pragma: no cover - exercised in fork children
+        self.gate = Condition(Lock())
+        self.registry_lock = RLock()
+        self.parameter_models_lock = RLock()
+        self.transition_context = _ForkTransitionContext()
+        self.transitions = {}
+        self.active_transitions = 0
+        self.admission_closed = False
+        self.fork_owner_depths = {}
+        self.pinned_objects = {}
+        self.pinned_classes = {}
+        self.provisional_descriptor_tokens = {}
+
+
+_FORK_OBJECTS: Final[WeakValueDictionary[int, _ForkResettable]] = WeakValueDictionary()
+_FORK_CLASSES: Final[WeakValueDictionary[int, type[_ForkResettableClass]]] = WeakValueDictionary()
+_OWNED_DESCRIPTORS: Final[dict[int, _OwnedDescriptor]] = {}
+_DESCRIPTOR_TOKENS: Final[count[int]] = count()
+_TRANSITION_TOKENS: Final[count[int]] = count()
+_FORK_STATE: Final = _ForkState()
+_FORK_AUDIT_EVENTS: Final[frozenset[str]] = frozenset({"os.fork", "os.forkpty"})
+
+
+def _register_fork_hooks() -> None:
+    if _REGISTER_AT_FORK is None:
+        return  # pragma: no cover - platform without register_at_fork
+    sys.addaudithook(_audit_fork_safety)
+    _REGISTER_AT_FORK(
+        before=_pin_fork_objects,
+        after_in_parent=_resume_parent_after_fork,
+        after_in_child=_reset_child_after_fork,
+    )
+
+
+@contextmanager
+def _fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Generator[None]:
+    if not _HAS_REGISTER_AT_FORK:
+        yield  # pragma: no cover - platform without register_at_fork
+        return  # pragma: no cover - platform without register_at_fork
+    _ensure_current_process()
+    creator_pid = os.getpid()
+    token = _enter_fork_transition(descriptor_owner)
+    try:
+        yield
+    finally:
+        if os.getpid() == creator_pid:
+            _leave_fork_transition(token)
+
+
+def _register_fork_object(instance: _ForkResettable) -> None:
+    if not _HAS_REGISTER_AT_FORK:
+        return  # pragma: no cover - platform without register_at_fork
+    with _fork_transition(), _FORK_STATE.registry_lock:
+        _FORK_OBJECTS[id(instance)] = instance
+        _refresh_owner_pins()
+
+
+def _register_fork_class(cls: type[_ForkResettableClass]) -> None:
+    if not _HAS_REGISTER_AT_FORK:
+        return  # pragma: no cover - platform without register_at_fork
+    with _fork_transition(), _FORK_STATE.registry_lock:
+        _FORK_CLASSES[id(cls)] = cls
+        _refresh_owner_pins()
+
+
+def _register_owned_descriptor(fd: int, identity: tuple[int, int] | None = None) -> int | None:
+    if not _HAS_REGISTER_AT_FORK:
+        return None  # pragma: no cover - platform without register_at_fork
+    with _fork_transition():
+        if identity is None:
+            stat_result = os.fstat(fd)
+            identity = stat_result.st_dev, stat_result.st_ino
+        return _record_owned_descriptor(fd, identity)
+
+
+def _register_unverified_owned_descriptor(fd: int) -> int | None:
+    if not _HAS_REGISTER_AT_FORK:
+        return None  # pragma: no cover - platform without register_at_fork
+    with _fork_transition():
+        return _record_owned_descriptor(fd, None)
+
+
+def _record_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int:
+    with _FORK_STATE.registry_lock:
+        token = next(_DESCRIPTOR_TOKENS)
+        _OWNED_DESCRIPTORS[token] = _OwnedDescriptor(
+            fd=fd,
+            creator_pid=os.getpid(),
+            device=None if identity is None else identity[0],
+            inode=None if identity is None else identity[1],
+        )
+    return token
+
+
+def _unregister_owned_descriptor(token: int) -> None:
+    with _fork_transition(), _FORK_STATE.registry_lock:
+        _OWNED_DESCRIPTORS.pop(token, None)
+
+
+def _pin_fork_objects() -> None:
+    _ensure_current_process()
+    thread_id = get_ident()
+    with _FORK_STATE.gate:
+        _FORK_STATE.fork_owner_depths[thread_id] = _FORK_STATE.fork_owner_depths.get(thread_id, 0) + 1
+        _FORK_STATE.admission_closed = True
+        while _FORK_STATE.active_transitions > len(_FORK_STATE.transitions.get(thread_id, ())):
+            _FORK_STATE.gate.wait()
+        transition_owners = tuple(_FORK_STATE.transitions.get(thread_id, {}).values())
+    _verify_unverified_descriptors()
+    owners = {id(owner): owner for owner in transition_owners if owner is not None}
+    provisional_descriptor_tokens = tuple(
+        starmap(
+            _snapshot_descriptor_for_fork,
+            (descriptor for owner in owners.values() for descriptor in owner._descriptors_for_fork()),  # noqa: SLF001
+        )
+    )
+    with _FORK_STATE.registry_lock:
+        _FORK_STATE.provisional_descriptor_tokens.setdefault(thread_id, []).append(provisional_descriptor_tokens)
+        _FORK_STATE.pinned_objects.setdefault(thread_id, []).append(tuple(_FORK_OBJECTS.values()))
+        _FORK_STATE.pinned_classes.setdefault(thread_id, []).append(tuple(_FORK_CLASSES.values()))
+
+
+def _resume_parent_after_fork() -> None:
+    thread_id = get_ident()
+    with _FORK_STATE.registry_lock:
+        for token in _FORK_STATE.provisional_descriptor_tokens[thread_id].pop():
+            _OWNED_DESCRIPTORS.pop(token, None)
+        _FORK_STATE.pinned_objects[thread_id].pop()
+        _FORK_STATE.pinned_classes[thread_id].pop()
+        if not _FORK_STATE.provisional_descriptor_tokens[thread_id]:
+            del _FORK_STATE.provisional_descriptor_tokens[thread_id]
+            del _FORK_STATE.pinned_objects[thread_id]
+            del _FORK_STATE.pinned_classes[thread_id]
+    with _FORK_STATE.gate:
+        if _FORK_STATE.fork_owner_depths[thread_id] == 1:
+            del _FORK_STATE.fork_owner_depths[thread_id]
+        else:  # pragma: no cover - earlier at-fork callbacks may deadlock first
+            _FORK_STATE.fork_owner_depths[thread_id] -= 1
+        _FORK_STATE.admission_closed = bool(_FORK_STATE.fork_owner_depths)
+        _FORK_STATE.gate.notify_all()
+
+
+def _ensure_current_process() -> None:
+    _reset_child_after_fork()
+
+
+def _reset_child_after_fork() -> None:  # pragma: no cover - exercised in fork children
+    if (pid := os.getpid()) == _FORK_STATE.pid:
+        return
+    thread_id = get_ident()
+    pinned_objects = _FORK_STATE.pinned_objects.get(thread_id, [()])[-1]
+    pinned_classes = _FORK_STATE.pinned_classes.get(thread_id, [()])[-1]
+    descriptors: list[_OwnedDescriptor] = []
+    for token, descriptor in tuple(_OWNED_DESCRIPTORS.items()):
+        if descriptor.creator_pid != pid:
+            descriptors.append(_OWNED_DESCRIPTORS.pop(token))
+    _FORK_STATE.reset_synchronization()
+    _FORK_STATE.pid = pid
+    _INIT_PARAMETER_MODELS.clear()
+    _detach_child_state(descriptors, pinned_objects, pinned_classes)
+
+
+def _enter_fork_transition(descriptor_owner: _ForkDescriptorOwner | None) -> int:
+    thread_id = get_ident()
+    with _FORK_STATE.gate:
+        while (
+            _FORK_STATE.admission_closed
+            and thread_id not in _FORK_STATE.fork_owner_depths
+            and thread_id not in _FORK_STATE.transitions
+        ):
+            _FORK_STATE.gate.wait()  # pragma: no cover - exercised in isolated interpreter
+        token = next(_TRANSITION_TOKENS)
+        _FORK_STATE.transitions.setdefault(thread_id, {})[token] = descriptor_owner
+        _FORK_STATE.active_transitions += 1
+    _FORK_STATE.transition_context.depth += 1
+    return token
+
+
+def _leave_fork_transition(token: int) -> None:
+    _FORK_STATE.transition_context.depth -= 1
+    with _FORK_STATE.gate:
+        thread_id = get_ident()
+        del _FORK_STATE.transitions[thread_id][token]
+        if not _FORK_STATE.transitions[thread_id]:
+            del _FORK_STATE.transitions[thread_id]
+        _FORK_STATE.active_transitions -= 1
+        _FORK_STATE.gate.notify_all()
+
+
+def _verify_unverified_descriptors() -> None:
+    with _FORK_STATE.registry_lock:
+        for token, descriptor in tuple(_OWNED_DESCRIPTORS.items()):
+            if descriptor.creator_pid != os.getpid() or descriptor.device is not None:
+                continue
+            try:
+                stat_result = os.fstat(descriptor.fd)
+            except OSError:
+                continue
+            _OWNED_DESCRIPTORS[token] = _OwnedDescriptor(
+                fd=descriptor.fd,
+                creator_pid=descriptor.creator_pid,
+                device=stat_result.st_dev,
+                inode=stat_result.st_ino,
+            )
+
+
+def _snapshot_descriptor_for_fork(fd: int, identity: tuple[int, int] | None) -> int:
+    if identity is None:
+        try:
+            stat_result = os.fstat(fd)
+        except OSError:
+            pass
+        else:
+            identity = stat_result.st_dev, stat_result.st_ino
+    return _record_owned_descriptor(fd, identity)
+
+
+def _detach_child_state(  # pragma: no cover - exercised in fork children
+    descriptors: list[_OwnedDescriptor],
+    pinned_objects: tuple[_ForkResettable, ...],
+    pinned_classes: tuple[type[_ForkResettableClass], ...],
+) -> None:
+    for descriptor in descriptors:
+        if descriptor.device is None:
+            continue
+        try:
+            stat_result = os.fstat(descriptor.fd)
+        except OSError:
+            continue
+        if (stat_result.st_dev, stat_result.st_ino) != (descriptor.device, descriptor.inode):
+            continue
+        with contextlib.suppress(OSError):
+            os.close(descriptor.fd)
+    for instance in pinned_objects:
+        instance._reset_after_fork_in_child()  # noqa: SLF001
+    for cls in pinned_classes:
+        cls._reset_class_after_fork()
+    _registry.held.clear()
+
+
+def _refresh_owner_pins() -> None:
+    with _FORK_STATE.gate:
+        fork_owner_thread_ids = tuple(_FORK_STATE.fork_owner_depths)
+    if get_ident() not in fork_owner_thread_ids:  # pragma: no cover - at-fork callbacks disable tracing
+        return
+    objects = tuple(_FORK_OBJECTS.values())
+    classes = tuple(_FORK_CLASSES.values())
+    for thread_id in fork_owner_thread_ids:
+        if object_snapshots := _FORK_STATE.pinned_objects.get(thread_id):
+            object_snapshots[:] = [objects] * len(object_snapshots)
+            _FORK_STATE.pinned_classes[thread_id][:] = [classes] * len(object_snapshots)
+
+
+# Audit events carry unrelated interpreter-owned values; object is the sole accurate common element type.
+def _audit_fork_safety(  # pragma: no cover - CPython disables tracing while Python audit hooks run
+    event: str, _args: tuple[object, ...]
+) -> None:
+    if event in _FORK_AUDIT_EVENTS:
+        if _FORK_STATE.transition_context.depth or _FORK_STATE.fork_owner_depths:
+            msg = f"{event} is unsafe while filelock is changing descriptor ownership"
+            raise RuntimeError(msg)
+    elif event == "_posixsubprocess.fork_exec" and _FORK_STATE.transition_context.depth:
+        msg = "fork_exec is unsafe while filelock is changing descriptor ownership"
+        raise RuntimeError(msg)
+
+
+_register_fork_hooks()
 
 
 __all__ = [
@@ -1176,8 +1668,15 @@ __all__ = [
     "FileLockMeta",
     "_append_exception_context",
     "_canonical",
+    "_ensure_current_process",
+    "_fork_transition",
     "_grouped_errors",
     "_raise_body_and_release",
     "_raise_chained_errors",
+    "_raise_cleanup_errors",
     "_raise_grouped_errors",
+    "_register_fork_class",
+    "_register_fork_object",
+    "_register_owned_descriptor",
+    "_unregister_owned_descriptor",
 ]

@@ -67,6 +67,11 @@ else:  # pragma: win32 no cover
         """
 
         def _acquire(self) -> None:
+            missing_flock = self._acquire_native()
+            if missing_flock is not None:
+                self._switch_to_soft_lock(*missing_flock)
+
+        def _acquire_native(self) -> tuple[int, OSError] | None:
             ensure_directory_exists(self.lock_file)
             # Open without O_TRUNC and defer truncation and fchmod until after flock succeeds: a contender that loses
             # the lock must not truncate the holder's file (erasing caller diagnostics) or change its mode. The winner
@@ -83,7 +88,7 @@ else:  # pragma: win32 no cover
                 # delete the file between them. For a valid path, treat ENOENT as transient contention. For an
                 # invalid path (e.g. empty string), re-raise to avoid an infinite retry loop.
                 if self.lock_file and Path(self.lock_file).parent.exists():
-                    return
+                    return None
                 raise
             except PermissionError:
                 # Sticky-bit dirs (e.g. /tmp): O_CREAT fails if the file is owned by another user (#317).
@@ -93,19 +98,22 @@ else:  # pragma: win32 no cover
                 try:
                     fd = os.open(self.lock_file, open_flags & ~os.O_CREAT, open_mode)
                 except FileNotFoundError:
-                    return
+                    return None
+            self._mark_descriptor_pending(fd)
             try:
                 locked = _lock_fd_nonblocking(fd)
             except OSError as exception:
                 if exception.errno != ENOSYS:
+                    self._mark_descriptor_released()
                     os.close(fd)
                     raise  # contention returns False from _lock_fd_nonblocking, so any raise here is a real failure
-                self._switch_to_soft_lock(fd, exception)
-                return
+                return fd, exception
             if locked:
                 self._finalize_locked_fd(fd)
             else:
+                self._mark_descriptor_released()
                 os.close(fd)  # contention; let the retry loop try again
+            return None
 
         def _switch_to_soft_lock(self, fd: int, missing_flock: OSError) -> None:
             # The filesystem does not implement flock. Capture the opened file's identity before closing so the cleanup
@@ -113,6 +121,7 @@ else:  # pragma: win32 no cover
             identity: tuple[int, int] | None = None
             with suppress(OSError):
                 identity = (fstat := os.fstat(fd)).st_dev, fstat.st_ino
+            self._mark_descriptor_released()
             os.close(fd)
             if not self._fallback_to_soft or self._preserve_lock_file or self._on_acquired is not None:
                 # Fail closed: the caller opted out of existence-lock semantics (#603), asked to preserve the pathname
@@ -131,17 +140,19 @@ else:  # pragma: win32 no cover
             # flock() (st_nlink 0), leaving a useless dead-inode lock; drop it and let the retry loop start fresh.
             keep = False
             try:
-                if os.fstat(fd).st_nlink != 0:
+                stat_result = os.fstat(fd)
+                if stat_result.st_nlink != 0:
                     os.ftruncate(fd, 0)
                     self._apply_explicit_mode(fd)
                     keep = True
             except OSError:
+                self._mark_descriptor_released()
                 os.close(fd)
                 raise
             if keep:
-                self._context.lock_file_fd = fd  # the lock is held; run the hook now that truncation and mode are set
-                self._invoke_on_acquired()
+                self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
             else:
+                self._mark_descriptor_released()
                 os.close(fd)
 
         def _apply_explicit_mode(self, fd: int) -> None:
@@ -163,7 +174,7 @@ else:  # pragma: win32 no cover
             # must keep reporting held for a retry. Once flock commits, clear held state and close as post-unlock
             # cleanup; a close failure (EIO on FUSE/Docker bind mounts) does not make the kernel lock held again.
             _unlock_fd(fd)
-            self._context.lock_file_fd = None
+            self._mark_descriptor_released()
             self._close_released_fd(fd, default_suppresses=True)
 
 

@@ -185,13 +185,12 @@ if sys.platform == "win32":  # pragma: win32 cover
                 return  # open contention (share conflict or a name pending deletion); let the retry loop try again
             try:
                 locked = _lock_fd_nonblocking(fd)
+                if locked:
+                    self._mark_descriptor_owned(fd)
             except BaseException:
                 os.close(fd)
                 raise
-            if locked:
-                self._context.lock_file_fd = fd
-                self._invoke_on_acquired()
-            else:
+            if not locked:
                 os.close(fd)  # another holder owns the byte-range lock; let the retry loop try again
 
         def _release(self) -> None:
@@ -200,7 +199,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             # held, so is_locked must keep reporting held rather than losing the fd. Only after the unlock commits do
             # close and unlink run as post-unlock cleanup; their failure cannot make the lock held again.
             _unlock_fd(fd)
-            self._context.lock_file_fd = None
+            self._mark_descriptor_released()
             self._close_released_fd(fd, default_suppresses=False)
             if not self._preserve_lock_file:  # preserve_lock_file keeps a stable file identity for the caller (#605)
                 with suppress(OSError):
