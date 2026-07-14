@@ -55,6 +55,10 @@ class SoftFileLease(MarkerSoftFileLock):
     different duration raises :class:`LeaseSettingsMismatch <filelock.LeaseSettingsMismatch>` rather than apply its own
     expiry to a peer that never agreed to it.
 
+    Expiry reclaims less on Windows, which refuses to rename or delete a file another process holds open. A peer there
+    takes an expired claim only once the previous holder's process exits and its handle closes; a holder that lives on
+    but stops refreshing keeps the marker. Unix reclaims the marker either way.
+
     ``on_compromise`` fires from the heartbeat thread when a refresh fails, or when the marker vanishes or names another
     owner. The holder should stop touching the protected resource when it runs. Because it runs on that thread, a
     ``release()`` inside it only takes effect when the lease was built with ``thread_local=False``; the default
@@ -176,11 +180,14 @@ class SoftFileLease(MarkerSoftFileLock):
                 f"{self._lease_duration!r}s; every contender for a path must agree on lease_duration"
             )
             raise LeaseSettingsMismatch(msg)
-        if owner.hostname == socket.gethostname() and not self._is_process_alive(owner.pid):
-            break_lock_file(self.lock_file, mtime, ino)
-            return
-        if time.time() - mtime >= self._lease_duration:
-            break_lock_file(self.lock_file, mtime, ino)
+        # A break can fail for reasons a contender must ride out rather than raise on: a peer broke the marker first,
+        # or Windows refuses to rename a file whose holder still has it open. Poll again instead.
+        with suppress(OSError):
+            if owner.hostname == socket.gethostname() and not self._is_process_alive(owner.pid):
+                break_lock_file(self.lock_file, mtime, ino)
+                return
+            if time.time() - mtime >= self._lease_duration:
+                break_lock_file(self.lock_file, mtime, ino)
 
     def _read_peer(self) -> tuple[OwnerRecord, float, int] | None:
         with suppress(OSError, ValueError):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -50,6 +51,10 @@ async def test_async_lease_heartbeat_keeps_a_live_claim(marker: Path) -> None:
         assert lease.token is not None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows keeps an open marker undeletable, so no peer can take it from a live holder",
+)
 @pytest.mark.asyncio
 async def test_async_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None:
     seen: list[LeaseCompromise] = []

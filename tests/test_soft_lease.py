@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import pytest
 
@@ -25,6 +26,13 @@ if TYPE_CHECKING:
 #: Short enough to keep the suite quick, long enough that a loaded runner still refreshes twice before expiry.
 _DURATION: float = 0.9
 _HEARTBEAT: float = 0.1
+
+#: Windows refuses to rename or delete a file another process holds open, so a live holder's marker cannot be taken
+#: from it. A lease only reclaims there once the holder exits and its handle closes.
+_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows keeps an open marker undeletable, so no peer can take it from a live holder",
+)
 
 
 @pytest.fixture
@@ -82,6 +90,7 @@ def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> N
             _lease(marker).acquire()
 
 
+@_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
 def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) -> None:
     # A wedged holder: its marker stays on disk, but no refresh ever lands on it again, so the claim ages out.
     mocker.patch("filelock._lease.touch")
@@ -107,6 +116,7 @@ def test_lease_reclaims_a_dead_same_host_holder(marker: Path) -> None:
         assert lease.is_lock_held_by_us
 
 
+@_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
 def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None:
     seen: list[LeaseCompromise] = []
     lease = _lease(marker, on_compromise=seen.append)
@@ -119,6 +129,7 @@ def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None
     assert [(c.reason, c.token, c.lock_file) for c in seen] == [("marker-missing", token, str(marker))]
 
 
+@_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
 def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None:
     seen: list[LeaseCompromise] = []
     holder = _lease(marker, on_compromise=seen.append)
@@ -143,6 +154,7 @@ def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: Moc
     assert [(c.reason, c.error) for c in seen] == [("refresh-failed", failure)]
 
 
+@_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
 def test_lease_reports_one_compromise_per_claim(marker: Path) -> None:
     seen: list[LeaseCompromise] = []
     lease = _lease(marker, on_compromise=seen.append)
@@ -154,6 +166,7 @@ def test_lease_reports_one_compromise_per_claim(marker: Path) -> None:
     assert len(seen) == 1
 
 
+@_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
 def test_lease_records_the_compromise_without_a_callback(marker: Path) -> None:
     lease = _lease(marker)
 
@@ -174,6 +187,7 @@ def test_lease_holds_an_uncompromised_claim(marker: Path) -> None:
         assert lease.compromise is None
 
 
+@_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
 def test_lease_can_be_released_from_the_compromise_callback(marker: Path) -> None:
     # The callback runs on the heartbeat thread, so releasing from it needs a context that thread can see, and it must
     # not deadlock joining itself.
@@ -199,6 +213,7 @@ def test_lease_can_be_released_from_the_compromise_callback(marker: Path) -> Non
     assert not lease.is_locked
 
 
+@_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
 def test_lease_release_from_the_callback_needs_a_shared_context(marker: Path) -> None:
     # With the default thread-local context the heartbeat thread sees no claim of its own, so its release() does
     # nothing. Pin the trap the docstring warns about.

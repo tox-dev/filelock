@@ -565,8 +565,12 @@ holder, the protected resource must be linearizable and fence on a monotonic gen
 
 Every contender for a path must agree on ``lease_duration``; one that disagrees raises
 :class:`LeaseSettingsMismatch <filelock.LeaseSettingsMismatch>` instead of applying its own expiry to a peer that never
-agreed to it. Native locks reject lease settings outright, because pathname age cannot revoke a kernel lock on an inode.
-Async callers use ``AsyncStrictSoftFileLock`` and ``AsyncSoftFileLease``.
+agreed to it. Native locks reject lease settings, because pathname age cannot revoke a kernel lock on an inode. Async
+callers use ``AsyncStrictSoftFileLock`` and ``AsyncSoftFileLease``.
+
+Windows refuses to rename or delete a file another process holds open, so a peer takes an expired claim there only once
+the previous holder's process exits and its handle closes. A holder that keeps running but stops refreshing keeps its
+marker on Windows, while Unix lets a peer reclaim it after ``lease_duration``.
 
 **Do not mix contracts on one path.** Both classes publish a protocol 2 record.
 :class:`SoftFileLock <filelock.SoftFileLock>` reads that record as malformed and evicts it once past its grace period,
