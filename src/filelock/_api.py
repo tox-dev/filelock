@@ -364,10 +364,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             it cannot stop another process or the filesystem from removing the pathname.
         :param on_acquired: for native locks (:class:`FileLock`), a callable invoked with the borrowed lock descriptor
             once per physical acquisition, after filelock holds the native lock and finished backend initialization but
-            before :meth:`acquire` returns. Recursive acquisitions do not call it again. The callback may read, write,
-            seek, truncate, or set metadata through ``os`` on the descriptor, but must not close, unlock, or take
-            ownership of it, and filelock does not fsync its writes. If it raises, filelock releases the lock and
-            re-raises. :class:`SoftFileLock` rejects the hook.
+            before :meth:`~BaseFileLock.acquire` returns. Recursive acquisitions do not call it again. The callback may
+            read, write, seek, truncate, or set metadata through ``os`` on the descriptor, but must not close, unlock,
+            or take ownership of it, and filelock does not fsync its writes. If it raises, filelock releases the lock
+            and re-raises. :class:`SoftFileLock` rejects the hook.
 
         """
         self._is_thread_local = thread_local
@@ -408,7 +408,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         """
         How a context manager reconciles a body failure with a release failure on exit.
 
-        .. versionadded:: 3.27.0
+        .. versionadded:: 3.30.0
 
         """
         return self._context_error_policy
@@ -418,7 +418,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         """
         What a native lock does with an ``os.close`` failure after the OS unlock committed.
 
-        .. versionadded:: 3.27.0
+        .. versionadded:: 3.30.0
 
         """
         return self._close_error_policy
@@ -443,7 +443,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         Only :class:`UnixFileLock` acts on it: when ``False`` an ``ENOSYS`` from ``flock`` propagates instead of
         switching to existence-lock semantics.
 
-        .. versionadded:: 3.27.0
+        .. versionadded:: 3.30.0
 
         """
         return self._fallback_to_soft
@@ -456,7 +456,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         When ``True``, Windows skips its post-release unlink and Unix refuses the ``ENOSYS`` soft fallback.
         :class:`SoftFileLock` rejects ``True`` because unlinking its marker is how it releases.
 
-        .. versionadded:: 3.27.0
+        .. versionadded:: 3.30.0
 
         """
         return self._preserve_lock_file
@@ -467,9 +467,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         The callback run with the borrowed lock descriptor once per physical acquisition, or ``None``.
 
         Native locks only. It runs after the native lock is held and backend initialization finished, before
-        :meth:`acquire` returns; a raise rolls back the acquisition. :class:`SoftFileLock` rejects it.
+        :meth:`~BaseFileLock.acquire` returns; a raise rolls back the acquisition. :class:`SoftFileLock` rejects it.
 
-        .. versionadded:: 3.27.0
+        .. versionadded:: 3.30.0
 
         """
         return self._on_acquired
@@ -937,4 +937,6 @@ __all__ = [
     "_UNSET_FILE_MODE",
     "AcquireReturnProxy",
     "BaseFileLock",
+    "CloseErrorPolicy",
+    "ContextErrorPolicy",
 ]
