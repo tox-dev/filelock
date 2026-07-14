@@ -13,8 +13,27 @@ from typing import Final
 from ._api import BaseFileLock
 from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file, write_all
 
+if sys.platform == "win32":  # pragma: win32 cover
+    import ctypes
+    from ctypes import wintypes
+
+    _KERNEL32: Final[ctypes.WinDLL] = ctypes.WinDLL("kernel32", use_last_error=True)
+    _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _KERNEL32.CloseHandle.restype = wintypes.BOOL
+    _KERNEL32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    _KERNEL32.GetProcessTimes.restype = wintypes.BOOL
+    _KERNEL32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _KERNEL32.OpenProcess.restype = wintypes.HANDLE
+
 _WIN_SYNCHRONIZE: Final[int] = 0x100000
 _WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
+_WIN_INHERIT_HANDLE: Final[bool] = False
 _WIN_PROCESS_QUERY_LIMITED_INFORMATION: Final[int] = 0x1000
 _MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
@@ -109,14 +128,11 @@ class SoftFileLock(BaseFileLock):
     @staticmethod
     def _is_process_alive(pid: int) -> bool:
         if sys.platform == "win32":  # pragma: win32 cover
-            import ctypes  # noqa: PLC0415
-
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(_WIN_SYNCHRONIZE, 0, pid)
+            handle = _KERNEL32.OpenProcess(_WIN_SYNCHRONIZE, _WIN_INHERIT_HANDLE, pid)
             if handle:
-                kernel32.CloseHandle(handle)
+                _KERNEL32.CloseHandle(handle)
                 return True
-            return kernel32.GetLastError() != _WIN_ERROR_INVALID_PARAMETER
+            return ctypes.get_last_error() != _WIN_ERROR_INVALID_PARAMETER
         try:
             os.kill(pid, 0)
         except OSError as exc:
@@ -132,11 +148,7 @@ class SoftFileLock(BaseFileLock):
         """Return the process creation FILETIME as an integer on Windows, ``None`` otherwise."""
         if sys.platform != "win32":  # pragma: win32 no cover
             return None
-        import ctypes  # pragma: win32 cover  # noqa: PLC0415
-        from ctypes import wintypes  # noqa: PLC0415
-
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(_WIN_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+        handle = _KERNEL32.OpenProcess(_WIN_PROCESS_QUERY_LIMITED_INFORMATION, _WIN_INHERIT_HANDLE, pid)
         if not handle:
             return None
         try:
@@ -144,7 +156,7 @@ class SoftFileLock(BaseFileLock):
             exit_time = wintypes.FILETIME()
             kernel_time = wintypes.FILETIME()
             user_time = wintypes.FILETIME()
-            if not kernel32.GetProcessTimes(
+            if not _KERNEL32.GetProcessTimes(
                 handle,
                 ctypes.byref(creation),
                 ctypes.byref(exit_time),
@@ -153,7 +165,7 @@ class SoftFileLock(BaseFileLock):
             ):
                 return None
         finally:
-            kernel32.CloseHandle(handle)
+            _KERNEL32.CloseHandle(handle)
         return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
 
     @staticmethod
