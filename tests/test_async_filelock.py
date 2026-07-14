@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from errno import EIO, ENOSYS
 from pathlib import Path, PurePath
@@ -22,7 +23,7 @@ else:  # pragma: no cover (<py311)
     from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
 if TYPE_CHECKING:
-    from contextlib import AbstractAsyncContextManager
+    from collections.abc import Callable
 
     from pytest_mock import MockerFixture
 
@@ -535,64 +536,165 @@ async def test_async_zero_write_rolls_back_acquire(tmp_path: Path, mocker: Mocke
     assert not lock.is_locked
 
 
-async def _acquire_cm(lock: AsyncSoftFileLock, *, use_proxy: bool) -> AbstractAsyncContextManager[BaseAsyncFileLock]:
-    return await lock.acquire() if use_proxy else lock  # proxy exercises AsyncAcquireReturnProxy.__aexit__
-
-
-@pytest.mark.parametrize("use_proxy", [False, True], ids=["direct", "proxy"])
+@pytest.mark.parametrize(
+    "use_proxy",
+    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
+)
 @pytest.mark.asyncio
-async def test_context_group_reports_both_failures(tmp_path: Path, mocker: MockerFixture, use_proxy: bool) -> None:
-    lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy="group")
-    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
-    cm = await _acquire_cm(lock, use_proxy=use_proxy)
+async def test_context_group_detaches_release_context(
+    tmp_path: Path,
+    close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
+    *,
+    use_proxy: bool,
+) -> None:
+    capture, release_error, release_cause = close_failure
+    body_error = ValueError("body failed")
+    body_cause = LookupError("body cause")
+    lock = AsyncFileLock(
+        str(tmp_path / "a"),
+        thread_local=False,
+        context_error_policy="group",
+        close_error_policy="raise",
+        on_acquired=capture,
+    )
     with pytest.raises(ExceptionGroup) as info:
-        async with cm:
-            raise ValueError
-    body, release = info.value.exceptions
-    assert isinstance(body, ValueError)
-    assert isinstance(release, OSError)
+        async with await lock.acquire() if use_proxy else lock:
+            raise body_error from body_cause
+    assert (
+        info.value.exceptions,
+        body_error.__context__,
+        release_error.__context__,
+        body_error.__cause__,
+        release_error.__cause__,
+        body_error.__traceback__ is not None,
+        release_error.__traceback__ is not None,
+    ) == ((body_error, release_error), None, None, body_cause, release_cause, True, True)
 
 
-@pytest.mark.parametrize("use_proxy", [False, True], ids=["direct", "proxy"])
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11")
+@pytest.mark.parametrize(
+    "use_proxy",
+    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
+)
+@pytest.mark.asyncio
+async def test_context_group_renders_independent_leaves(
+    tmp_path: Path,
+    close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
+    *,
+    use_proxy: bool,
+) -> None:
+    capture, release_error, _ = close_failure
+    release_error.__cause__ = None
+    release_error.__suppress_context__ = False
+    body_error = ValueError("body failed")
+    lock = AsyncFileLock(
+        str(tmp_path / "a"),
+        thread_local=False,
+        context_error_policy="group",
+        close_error_policy="raise",
+        on_acquired=capture,
+    )
+    with pytest.raises(ExceptionGroup) as info:
+        async with await lock.acquire() if use_proxy else lock:
+            raise body_error
+    group_rendering = "".join(traceback.format_exception(info.value))
+    release_rendering = "".join(traceback.format_exception(release_error))
+    assert (
+        group_rendering.count("ValueError: body failed"),
+        release_rendering.count("ValueError: body failed"),
+        release_rendering.count("RuntimeError: release cause"),
+        release_rendering.count("OSError: release failed"),
+    ) == (1, 0, 0, 1)
+
+
+@pytest.mark.parametrize(
+    "use_proxy",
+    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
+)
 @pytest.mark.asyncio
 async def test_context_chain_keeps_release_error_with_body_in_context(
-    tmp_path: Path, mocker: MockerFixture, use_proxy: bool
+    tmp_path: Path,
+    close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
+    *,
+    use_proxy: bool,
 ) -> None:
-    lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy="chain")
-    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
-    cm = await _acquire_cm(lock, use_proxy=use_proxy)
+    capture, release_error, _ = close_failure
+    body_error = ValueError("body failed")
+    lock = AsyncFileLock(
+        str(tmp_path / "a"),
+        thread_local=False,
+        context_error_policy="chain",
+        close_error_policy="raise",
+        on_acquired=capture,
+    )
     with pytest.raises(OSError, match="release failed") as info:
-        async with cm:
-            raise ValueError
-    assert isinstance(info.value.__context__, ValueError)
+        async with await lock.acquire() if use_proxy else lock:
+            raise body_error
+    assert (info.value, release_error.__context__) == (release_error, body_error)
 
 
-@pytest.mark.parametrize("policy", ["chain", "group"])
+@pytest.mark.parametrize(
+    "policy",
+    [pytest.param("chain", id="chain"), pytest.param("group", id="group")],
+)
+@pytest.mark.parametrize(
+    "use_proxy",
+    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
+)
 @pytest.mark.asyncio
-async def test_context_body_only_failure_propagates_body(tmp_path: Path, policy: ContextErrorPolicy) -> None:
+async def test_context_body_only_failure_propagates_body(
+    tmp_path: Path, policy: ContextErrorPolicy, *, use_proxy: bool
+) -> None:
     lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy=policy)
     body = ValueError("body failed")
-    with pytest.raises(ValueError, match="body failed"):
-        async with lock:
+    with pytest.raises(ValueError, match="body failed") as info:
+        async with await lock.acquire() if use_proxy else lock:
             raise body
+    assert info.value is body
 
 
-@pytest.mark.parametrize("policy", ["chain", "group"])
+@pytest.mark.parametrize(
+    "policy",
+    [pytest.param("chain", id="chain"), pytest.param("group", id="group")],
+)
+@pytest.mark.parametrize(
+    "use_proxy",
+    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
+)
 @pytest.mark.asyncio
 async def test_context_release_only_failure_propagates_release(
-    tmp_path: Path, mocker: MockerFixture, policy: ContextErrorPolicy
+    tmp_path: Path,
+    close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
+    policy: ContextErrorPolicy,
+    *,
+    use_proxy: bool,
 ) -> None:
-    lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy=policy)
-    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
-    with pytest.raises(OSError, match="release failed"):
-        async with lock:
+    capture, release_error, release_cause = close_failure
+    lock = AsyncFileLock(
+        str(tmp_path / "a"),
+        thread_local=False,
+        context_error_policy=policy,
+        close_error_policy="raise",
+        on_acquired=capture,
+    )
+    with pytest.raises(OSError, match="release failed") as info:
+        async with await lock.acquire() if use_proxy else lock:
             pass
+    assert (info.value, release_error.__context__, release_error.__cause__) == (release_error, None, release_cause)
 
 
 @pytest.mark.asyncio
-async def test_context_group_base_exception_leaf_is_base_group(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy="group")
-    mocker.patch.object(lock, "release", side_effect=OSError("release failed"))
+async def test_context_group_base_exception_leaf_is_base_group(
+    tmp_path: Path, close_failure: tuple[Callable[[int], None], OSError, RuntimeError]
+) -> None:
+    capture, _, _ = close_failure
+    lock = AsyncFileLock(
+        str(tmp_path / "a"),
+        thread_local=False,
+        context_error_policy="group",
+        close_error_policy="raise",
+        on_acquired=capture,
+    )
     with pytest.raises(BaseExceptionGroup) as info:
         async with lock:
             raise KeyboardInterrupt
@@ -700,3 +802,29 @@ async def test_on_acquired_async_failure_releases(tmp_path: Path) -> None:
         await lock.acquire()
     assert not lock.is_locked
     assert lock.lock_counter == 0
+
+
+@pytest.mark.asyncio
+async def test_on_acquired_rollback_group_detaches_release_context(
+    tmp_path: Path, close_failure: tuple[Callable[[int], None], OSError, RuntimeError]
+) -> None:
+    capture, release_error, release_cause = close_failure
+    callback_error = RuntimeError("hook failed")
+    callback_cause = LookupError("hook cause")
+
+    def fail(fd: int) -> None:
+        capture(fd)
+        raise callback_error from callback_cause
+
+    lock = AsyncFileLock(str(tmp_path / "a"), thread_local=False, close_error_policy="raise", on_acquired=fail)
+    with pytest.raises(ExceptionGroup) as info:
+        await lock.acquire()
+    assert (
+        info.value.exceptions,
+        callback_error.__context__,
+        release_error.__context__,
+        callback_error.__cause__,
+        release_error.__cause__,
+        callback_error.__traceback__ is not None,
+        release_error.__traceback__ is not None,
+    ) == ((callback_error, release_error), None, None, callback_cause, release_cause, True, True)
