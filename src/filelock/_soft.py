@@ -80,6 +80,7 @@ class SoftFileLock(BaseFileLock):
                 raise
             self._try_break_stale_lock()
             return
+        self._mark_descriptor_pending(fd)
         self._publish_held_marker(fd)
 
     def _publish_held_marker(self, fd: int) -> None:
@@ -91,12 +92,13 @@ class SoftFileLock(BaseFileLock):
             identity = _file_identity(os.fstat(fd))
             self._write_lock_info(fd)
         except BaseException:
+            self._mark_descriptor_released()
             os.close(fd)
             with suppress(OSError):
                 if identity is not None and _file_identity(os.lstat(self.lock_file)) == identity:
                     Path(self.lock_file).unlink()
             raise
-        self._context.lock_file_fd = fd
+        self._mark_descriptor_owned(fd, identity)
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
@@ -222,7 +224,7 @@ class SoftFileLock(BaseFileLock):
             identity = _file_identity(os.fstat(fd))
         # A failed close may already have released and recycled the descriptor number. Relinquish it before the one
         # close attempt so no later release can close an unrelated descriptor that reused the same integer.
-        self._context.lock_file_fd = None
+        self._mark_descriptor_released()
         try:
             self._close_released_fd(fd, default_suppresses=False)
         # Marker cleanup must also run for control-flow exceptions, and both failures must remain observable.

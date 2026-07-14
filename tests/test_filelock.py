@@ -1640,6 +1640,75 @@ def test_context_group_detaches_release_context(
     ) == ((body_error, release_error), None, None, body_cause, release_cause, True, True)
 
 
+def test_context_group_handles_deep_body_context(
+    tmp_path: Path,
+    close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
+) -> None:
+    capture, release_error, _ = close_failure
+    body_error = ValueError("body failed")
+    context: BaseException = body_error
+    for index in range(2_000):
+        next_context = RuntimeError(str(index))
+        context.__context__ = next_context
+        context = next_context
+    lock = FileLock(str(tmp_path / "a"), context_error_policy="group", close_error_policy="raise", on_acquired=capture)
+
+    with pytest.raises(ExceptionGroup) as info, lock:
+        raise body_error
+
+    assert (info.value.exceptions, release_error.__context__) == ((body_error, release_error), None)
+
+
+def test_context_group_detaches_equivalent_shared_exception_dag(
+    tmp_path: Path,
+    close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
+) -> None:
+    capture, release_error, _ = close_failure
+    body_error: BaseException = ValueError("shared leaf")
+    context_error = body_error
+    for depth in range(25):
+        body_error = ExceptionGroup(str(depth), (body_error, body_error))
+        context_error = ExceptionGroup(str(depth), (context_error, context_error))
+    lock = FileLock(str(tmp_path / "a"), context_error_policy="group", close_error_policy="raise", on_acquired=capture)
+
+    try:
+        raise context_error
+    except ExceptionGroup:
+        with pytest.raises(ExceptionGroup) as info, lock:
+            raise body_error  # noqa: B904  # build the caller-controlled implicit context graph
+
+    assert (info.value.exceptions, body_error.__context__, release_error.__context__) == (
+        (body_error, release_error),
+        None,
+        None,
+    )
+
+
+def test_context_group_preserves_distinct_shared_exception_dag(
+    tmp_path: Path,
+    close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
+) -> None:
+    capture, release_error, _ = close_failure
+    body_error: BaseException = ValueError("body leaf")
+    context_error: BaseException = TypeError("context leaf")
+    for depth in range(25):
+        body_error = ExceptionGroup(str(depth), (body_error, body_error))
+        context_error = ExceptionGroup(str(depth), (context_error, context_error))
+    lock = FileLock(str(tmp_path / "a"), context_error_policy="group", close_error_policy="raise", on_acquired=capture)
+
+    try:
+        raise context_error
+    except ExceptionGroup:
+        with pytest.raises(ExceptionGroup) as info, lock:
+            raise body_error  # noqa: B904  # build the caller-controlled implicit context graph
+
+    assert (info.value.exceptions, body_error.__context__, release_error.__context__) == (
+        (body_error, release_error),
+        context_error,
+        None,
+    )
+
+
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11")
 @pytest.mark.parametrize(
     "use_proxy",

@@ -193,6 +193,7 @@ run.concurrency = [
 ]
 run.parallel = true
 run.patch = [
+  "_exit",
   "subprocess",
 ]
 run.plugins = [

@@ -155,6 +155,24 @@ def test_release_suppresses_eio_on_close(tmp_path: Path, mocker: MockerFixture) 
     assert not lock.is_locked
 
 
+@_UNIX_ONLY
+def test_acquire_flock_error_clears_pending_descriptor(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = UnixFileLock(tmp_path / "test.lock")
+    mocker.patch(
+        "filelock._unix.fcntl.flock",
+        side_effect=[OSError(EIO, "Input/output error"), None, None],
+    )
+
+    with pytest.raises(OSError, match="Input/output error"):
+        lock.acquire(timeout=0)
+    assert not lock.is_locked
+
+    lock.acquire(timeout=0)
+    assert lock.is_locked
+    lock.release()
+    assert not lock.is_locked
+
+
 @pytest.fixture
 def unsupported_flock(mocker: MockerFixture) -> MagicMock:
     return mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "Function not implemented"))
