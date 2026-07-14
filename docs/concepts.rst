@@ -86,8 +86,8 @@ File locking takes two approaches:
 
 **OS-level locking** (FileLock on Windows/Unix, UnixFileLock, WindowsFileLock)
 
-The operating system manages locks. When you create a lock, the OS tracks it and enforces it. Only code with an open
-file handle can lock it. When a process dies, the OS automatically releases its locks.
+The operating system tracks locks on open handles and releases them when a process exits. These locks coordinate code
+that follows the same locking convention; they do not prevent unrelated access to the protected resource.
 
 .. list-table::
     :header-rows: 1
@@ -98,35 +98,34 @@ file handle can lock it. When a process dies, the OS automatically releases its 
       - ✗ Exclusive only, with no reader/writer distinction (use ReadWriteLock for that).
     - - ✓ Works even if your process crashes.
       - ✗ Unreliable on some network filesystems.
-    - - ✓ No network filesystem issues.
-      -
     - - ✓ Lower overhead.
       -
 
 **Soft locks / PID locks** (SoftFileLock, the fallback on systems without fcntl)
 
-A separate "lock file" indicates that a resource is in use. The lock file contains the PID and hostname of the holder
-(one per line). A process acquires a lock by creating this file atomically with ``O_CREAT | O_EXCL``; it releases by
-deleting it.
+A shared marker indicates that a resource is in use. The marker contains the PID and hostname of the holder. A process
+attempts acquisition with ``O_CREAT | O_EXCL`` and releases by deleting the pathname. The filesystem must provide
+coherent exclusive creation and directory updates to every participant.
 
-This is the same concept as a traditional **PID lock file** (as used by Unix daemons and the deprecated `lockfile <https://pypi.org/project/lockfile/>`_
-library's ``PIDLockFile``). The PID stored in the file identifies the lock holder via the
-:attr:`~filelock.SoftFileLock.pid` property and lets a waiter detect stale locks when the holding process has died.
+This is the same concept as a traditional **PID lock file** (as used by Unix daemons and the deprecated
+`lockfile <https://pypi.org/project/lockfile/>`_ library's ``PIDLockFile``). The PID stored in the file identifies the
+lock holder via the :attr:`~filelock.SoftFileLock.pid` property and lets a waiter detect stale locks when the holding
+process has died.
 
-On all platforms, processes can check if the lock holder is still alive and break stale locks automatically. On Windows,
-the lock file additionally stores the process creation time to guard against PID recycling.
+Same-host contenders can check whether the recorded PID exists. Windows also records process creation time to
+distinguish a reused PID. Other platforms can mistake a reused PID for the original holder and remain blocked.
 
 .. list-table::
     :header-rows: 1
 
     - - Pros
       - Cons
-    - - ✓ Works on any filesystem, including network mounts.
-      - ✗ Not enforced; it requires cooperation (a buggy process can ignore it).
-    - - ✓ Portable; the same code works everywhere.
+    - - ✓ Does not require a native file-locking API.
+      - ✗ Not enforced; it requires cooperation.
+    - - ✓ Uses filesystem operations available on supported platforms.
       - ✗ Higher overhead than OS-level locks.
-    - - ✓ Can detect stale locks (all platforms).
-      - ✗ Cross-host detection doesn't work (stale locks from other hosts require manual cleanup).
+    - - ✓ Can inspect same-host PID records.
+      - ✗ Network filesystems require deployment-specific tests for creation and cache coherence.
 
 ***************************
  Platform-specific details
@@ -134,8 +133,7 @@ the lock file additionally stores the process creation time to guard against PID
 
 **Windows**
     Uses the :class:`WindowsFileLock <filelock.WindowsFileLock>` class, backed by ``LockFileEx``/``UnlockFileEx`` over a
-    one-byte range on a handle opened with ``NtCreateFile``. This is enforced by Windows, so all code running on the
-    system respects it, whether it uses filelock or not.
+    one-byte range on a handle opened with ``NtCreateFile``. Processes using the same byte-range convention contend.
 
     The lock is exclusive and works reliably on local filesystems. Network filesystem (SMB) support is available but
     considered less reliable.
@@ -173,17 +171,17 @@ the lock file additionally stores the process creation time to guard against PID
 
     lock = FileLock("work.lock")
 
-This gives you OS-level locking on Windows and Unix/macOS, with an automatic fallback to soft locks on other systems.
-It's the right choice 99% of the time.
+This gives you OS-level locking on Windows and Unix/macOS, with a soft-lock alias on builds without ``fcntl``. To
+require the Unix backend and reject its runtime ``ENOSYS`` fallback, construct
+``UnixFileLock(..., fallback_to_soft=False)`` explicitly. The option cannot change which class ``FileLock`` aliases
+when ``fcntl`` is unavailable.
 
-**Use UnixFileLock or WindowsFileLock** only if you need to force a specific backend. This is rare and usually only
-necessary in testing or if you need platform-specific behavior.
+**Use UnixFileLock or WindowsFileLock** when the application requires that backend or its platform-specific behavior.
 
 **Use SoftFileLock** when:
 
-- You're on a network filesystem where OS-level locking is unavailable (NFS).
-- You need cross-filesystem compatibility and can tolerate the overhead.
-- You need stale lock detection.
+- The filesystem lacks a usable native lock, and operators have verified exclusive creation and cache behavior.
+- Cooperating processes can tolerate shared-marker recovery and its overlap risks.
 
 **Use ReadWriteLock** when:
 
@@ -194,9 +192,8 @@ necessary in testing or if you need platform-specific behavior.
 
 **Use SoftReadWriteLock** when:
 
-- You want reader/writer semantics on a **network filesystem** (NFS, Lustre with ``-o flock``, HPC shared storage).
-- You need cross-host stale detection so a crash on one compute node does not wedge readers on other nodes.
-- You are running on a multi-node slurm/HPC cluster.
+- You need reader/writer semantics on a tested shared filesystem.
+- Callers can stop protected work when heartbeat expiry permits another holder to enter.
 
 Lock selection flowchart:
 
@@ -205,12 +202,16 @@ Lock selection flowchart:
     flowchart TD
         start["Choose a lock type"] --> question1{"Read-heavy workload?"}
         question1 -->|Yes| questionRwNet{"Network<br/>filesystem?"}
-        questionRwNet -->|Yes| srw["Use SoftReadWriteLock"]
+        questionRwNet -->|Yes| questionRwFs{"Verified marker and<br/>cache behavior?"}
+        questionRwFs -->|Yes| srw["Use SoftReadWriteLock"]
+        questionRwFs -->|No| service["Use a lock service"]
         questionRwNet -->|No| questionAsync{"Async code?"}
         questionAsync -->|Yes| arw["Use AsyncReadWriteLock"]
         questionAsync -->|No| rw["Use ReadWriteLock"]
         question1 -->|No| question2{"Need network<br/>filesystem support?"}
-        question2 -->|Yes| soft["Use SoftFileLock"]
+        question2 -->|Yes| questionSoftFs{"Verified exclusive create<br/>and cache behavior?"}
+        questionSoftFs -->|Yes| soft["Use SoftFileLock"]
+        questionSoftFs -->|No| service
         question2 -->|No| question3{"Need platform<br/>specific control?"}
         question3 -->|Yes| platform["Use UnixFileLock<br/>or WindowsFileLock"]
         question3 -->|No| default["Use FileLock<br/>(recommended)"]
@@ -337,18 +338,14 @@ On older platforms without ``O_NOFOLLOW``, prefer :class:`UnixFileLock <filelock
             data = open("data.txt").read()
 
 **Locks on network filesystems**
-    OS-level locks (FileLock on Windows/Unix) are unreliable on network filesystems (NFS, SMB). Network filesystems do
-    not reliably support locking semantics.
-
-    For **exclusive locking** on NFS, use :class:`SoftFileLock <filelock.SoftFileLock>`. For **reader/writer
-    locking** (shared readers + exclusive writers) on NFS, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>`,
-    which is the only variant in filelock that also handles cross-host stale detection. ``ReadWriteLock`` is SQLite-backed
-    and is unsafe on NFS because SQLite itself warns against running on network filesystems.
+    NFS and SMB behavior depends on protocol versions, mount options, servers, and client caching. filelock does not
+    promise one backend across those configurations. Use a soft lock only after verifying exclusive creation, rename,
+    unlink, timestamps, and cache visibility on the target mount. Keep SQLite-backed ``ReadWriteLock`` on a local
+    filesystem supported by the active SQLite VFS.
 
 **Locks across different machines**
-    A lock on one machine doesn't stop another machine from accessing the resource unless they use a centralized locking
-    service, or a shared filesystem plus filelock's soft locks. On a multi-node slurm/HPC cluster,
-    :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` is correct across compute nodes sharing an NFS mount.
+    Separate machines need a central lock service or a shared filesystem with a tested contract. A shared pathname
+    alone does not establish cross-host correctness.
 
 **Read-write semantics**
     FileLock is exclusive only; readers block writers and vice versa. If you need multiple readers with occasional
@@ -374,8 +371,8 @@ On older platforms without ``O_NOFOLLOW``, prefer :class:`UnixFileLock <filelock
 Why not use OS-level locks everywhere?
 ======================================
 
-OS-level locks (FileLock on Windows/Unix) are fast and enforced by the kernel. But they don't work on all network
-filesystems. For portability, filelock includes SoftFileLock as a fallback.
+OS-level locks are fast and enforced by the kernel. Their network-filesystem behavior depends on the server, protocol,
+mount, and client. ``SoftFileLock`` provides a cooperative fallback when its filesystem operations have been verified.
 
 Why does SoftFileLock use a separate file instead of just checking a directory?
 ===============================================================================
@@ -386,13 +383,10 @@ A directory can't reliably be atomically created and deleted across platforms. A
 How does stale lock detection work across platforms?
 ====================================================
 
-Stale lock detection requires: 1. Knowing the PID of the lock holder 2. A way to check if that process is still alive
-3. A way to atomically break the stale lock without corruption.
-
-On Unix/macOS, ``kill(pid, 0)`` checks process liveness and ``rename()`` atomically replaces the lock file. On Windows,
-``OpenProcess`` checks liveness and the lock file additionally stores the process creation time (via
-``GetProcessTimes``) to guard against PID recycling. If the PID is alive but the creation time doesn't match what was
-stored, the lock is recognized as stale from a recycled PID and evicted.
+On Unix and macOS, ``kill(pid, 0)`` checks whether a same-host PID exists. Windows uses ``OpenProcess`` and stores the
+process creation time from ``GetProcessTimes`` to distinguish a reused PID. A valid owner record remains when process
+liveness is ambiguous. A malformed or unparsable record follows a separate rule: a waiter may remove it after two
+seconds, so unknown records do not fail closed.
 
 Why is ReadWriteLock backed by SQLite?
 ======================================
@@ -408,13 +402,14 @@ implementation. Because Python's :mod:`sqlite3` module has no async API, all blo
 thread pool via ``loop.run_in_executor``. This is the same approach used by :class:`BaseAsyncFileLock
 <filelock.BaseAsyncFileLock>`.
 
-How does SoftReadWriteLock work on NFS?
-=======================================
+How does SoftReadWriteLock work on shared filesystems?
+======================================================
 
-:class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` fills the gap left by ``ReadWriteLock`` on network filesystems.
-It stores state as a small directory tree next to the lock file:
+:class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` uses a marker directory tree. Deploy it on a shared filesystem
+only after verifying its required operations and cache behavior:
 
-- ``<path>.state`` is a short-held :class:`SoftFileLock <filelock.SoftFileLock>` used as the state mutex during transitions.
+- ``<path>.state`` is a short-held :class:`SoftFileLock <filelock.SoftFileLock>` used as the state mutex during
+  transitions.
 - ``<path>.write`` is the writer marker; its presence blocks readers and other writers.
 - ``<path>.readers/<host>.<pid>.<uuid>`` is one marker file per active reader.
 
@@ -424,8 +419,7 @@ check plus a dirfd-relative open to close symlink races (which ``mkdir`` alone c
 
 Writer acquisition is two-phase and writer-preferring: phase one atomically claims ``<path>.write`` (which blocks
 any new reader as soon as it exists), phase two polls the ``readers/`` directory until every reader has exited.
-Writer starvation is impossible even under read-heavy workloads such as the 99/1 reader-to-writer mix
-typical of slurm job queues.
+New readers wait behind an observed writer marker, which gives writers preference among cooperating participants.
 
 Cross-host stale detection
 ==========================
@@ -436,8 +430,7 @@ uses a **TTL with a heartbeat** rather than ``SoftFileLock``'s PID-alive check:
 
 - Each lock instance starts a daemon thread on acquire. The thread refreshes the marker's ``mtime`` every
   ``heartbeat_interval`` seconds (default 30 s).
-- Any process on any host may evict a marker whose ``mtime`` has not advanced in ``stale_threshold`` seconds
-  (default 90 s, ratio borrowed from etcd's ``LeaseKeepAlive``).
+- A peer may evict a marker whose ``mtime`` has not advanced in ``stale_threshold`` seconds (default 90 s).
 - Eviction is atomic: read → rename to a unique ``.break.<pid>.<nonce>`` file → re-verify token and mtime →
   unlink. On verification failure the ``.break.*`` file stays for TTL or atexit cleanup; rollback-rename is itself
   racy and is not attempted.
@@ -445,8 +438,8 @@ uses a **TTL with a heartbeat** rather than ``SoftFileLock``'s PID-alive check:
   never gets accidentally refreshed.
 
 The trade-off: ``stale_threshold`` must be larger than any realistic pause a holder might hit (GC, syscall delay,
-NFS hiccup). Pick it generously. We assume clock synchronization across compute nodes; HPC clusters run
-NTP or chrony, so this is not an additional constraint in the target environment.
+filesystem delay). Pick it generously, synchronize participating clocks, and fence protected writes if an expired
+holder can resume.
 
 Fork semantics
 ==============
@@ -459,10 +452,9 @@ fresh ones and marks the instance fork-invalidated. ``release()`` on an invalida
 inherited ``with lock.read_lock():`` block can unwind in the child without raising. The child must construct a
 fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMongo's connection-pool semantics.
 
-**Trust boundary.** The class protects against same-UID non-cooperating processes (one host or cross-host) and
-same-host different-UID users via the ``0o600`` / ``0o700`` permissions on markers and the readers directory.
-It does not protect against root compromise, NTP tampering on same-UID cross-host nodes, or multi-tenant mounts
-where hostile co-tenants share the UID.
+**Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
+permissions can exclude another UID. A process with the same effective UID can alter the markers. Clock errors and
+filesystem cache behavior can also trigger expiry while a holder remains active.
 
 ****************************
  File permissions and mode

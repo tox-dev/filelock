@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pytest
 
@@ -8,6 +8,9 @@ from filelock import AsyncFileLock, AsyncSoftFileLock, FileLock, SoftFileLock
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings("ignore::filelock.SoftFileLockLifetimeWarning")
 
 
 @pytest.mark.parametrize(

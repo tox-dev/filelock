@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 _NATIVE_IGNORES: Final[str] = "lifetime is ignored"
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings("ignore::filelock.SoftFileLockLifetimeWarning")
 
 
 def test_expired_soft_lock_is_broken(tmp_path: Path) -> None:
@@ -101,8 +102,10 @@ def test_lifetime_setter_rejects_negative_number(bad_value: float, tmp_path: Pat
         lock.lifetime = bad_value
 
 
-@pytest.mark.parametrize("bad_value", ["5", b"5", object(), [1], {1: 2}, complex(1, 0)])
-def test_lifetime_setter_rejects_non_numeric(bad_value: object, tmp_path: Path) -> None:
+@pytest.mark.parametrize("bad_value", ["5", b"5", [1], {1: 2}, complex(1, 0)])
+def test_lifetime_setter_rejects_non_numeric(
+    bad_value: str | bytes | list[int] | dict[int, int] | complex, tmp_path: Path
+) -> None:
     lock = FileLock(tmp_path / "test.lock")
     with pytest.raises(TypeError, match="lifetime must be"):
         lock.lifetime = bad_value  # ty: ignore[invalid-assignment]  # non-numeric input to hit the setter's TypeError

@@ -12,9 +12,11 @@ import sys
 import warnings
 from typing import TYPE_CHECKING, Final
 
-from ._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy
+from ._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy, LockOptions
 from ._descriptor import lock_descriptor, unlock_descriptor
-from ._error import Timeout
+from ._error import LeaseSettingsMismatch, SoftFileLockLifetimeWarning, Timeout
+from ._lease import LeaseCompromise, SoftFileLease
+from ._marker import MarkerSoftFileLock, OwnerRecord
 
 if TYPE_CHECKING:
     from ._async_read_write import (
@@ -33,11 +35,14 @@ else:
 
 from ._soft import SoftFileLock
 from ._soft_rw import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
+from ._strict import StrictSoftFileLock
 from ._unix import UnixFileLock, has_fcntl
 from ._windows import WindowsFileLock
 from .asyncio import (
     AsyncAcquireReturnProxy,
+    AsyncSoftFileLease,
     AsyncSoftFileLock,
+    AsyncStrictSoftFileLock,
     AsyncUnixFileLock,
     AsyncWindowsFileLock,
     BaseAsyncFileLock,
@@ -76,8 +81,10 @@ __all__ = [
     "AsyncAcquireSoftReadWriteReturnProxy",
     "AsyncFileLock",
     "AsyncReadWriteLock",
+    "AsyncSoftFileLease",
     "AsyncSoftFileLock",
     "AsyncSoftReadWriteLock",
+    "AsyncStrictSoftFileLock",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",
@@ -85,9 +92,17 @@ __all__ = [
     "CloseErrorPolicy",
     "ContextErrorPolicy",
     "FileLock",
+    "LeaseCompromise",
+    "LeaseSettingsMismatch",
+    "LockOptions",
+    "MarkerSoftFileLock",
+    "OwnerRecord",
     "ReadWriteLock",
+    "SoftFileLease",
     "SoftFileLock",
+    "SoftFileLockLifetimeWarning",
     "SoftReadWriteLock",
+    "StrictSoftFileLock",
     "Timeout",
     "UnixFileLock",
     "WindowsFileLock",

@@ -6,6 +6,7 @@ import stat
 import sys
 from errno import EACCES, EIO, EISDIR
 from pathlib import Path
+from typing import Final
 
 
 def write_all(fd: int, data: bytes) -> None:
@@ -109,9 +110,28 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
     Path(break_path).unlink()
 
 
+def touch(name: str, *, fd: int | None = None) -> None:
+    # Prefer the already-open, already-verified fd so a peer that swaps a symlink or a different file in at the
+    # path after our O_NOFOLLOW read cannot redirect the touch: utime then targets the inode behind the fd.
+    # Where the platform cannot utime an fd, fall back to a path-based touch that still refuses to follow a
+    # symlink where supported, matching the O_NOFOLLOW reads used elsewhere here.
+    if fd is not None and _SUPPORTS_UTIME_FD:
+        os.utime(fd, None)
+        return
+    os.utime(name, None, follow_symlinks=not _SUPPORTS_UTIME_NOFOLLOW)
+
+
+# Retargeting os.utime to an open fd lets a heartbeat refresh the exact inode it verified instead of whatever the
+# pathname now names.
+_SUPPORTS_UTIME_FD: Final[bool] = sys.platform != "win32" and os.utime in os.supports_fd
+# os.utime follows symlinks unless told not to; not every platform can refuse the follow, so probe support.
+_SUPPORTS_UTIME_NOFOLLOW: Final[bool] = os.utime in os.supports_follow_symlinks
+
+
 __all__ = [
     "break_lock_file",
     "ensure_directory_exists",
     "raise_on_not_writable_file",
+    "touch",
     "write_all",
 ]
