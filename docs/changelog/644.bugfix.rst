@@ -1,0 +1,1 @@
+Reject negative and non-finite ``lifetime`` values during lock construction and assignment.
