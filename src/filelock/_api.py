@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import logging
+import math
 import os
 import sys
 import time
@@ -199,7 +200,7 @@ class FileLockMeta(ABCMeta):
 
 def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str) -> float | None:
     """
-    Drop a ``lifetime`` a lock cannot honor.
+    Validate ``lifetime`` and drop a value the backend cannot honor.
 
     ``lifetime`` is a deliberate age-based lease: a lock file older than ``lifetime`` is broken even while its holder is
     still alive. That is only safe for existence locks (:class:`SoftFileLock`), where breaking means unlinking a
@@ -207,6 +208,13 @@ def _resolve_lifetime(lifetime: float | None, *, supported: bool, cls_name: str)
     by age cannot revoke the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590).
     Ignore the request with a warning rather than accept a setting that breaks mutual exclusion.
     """
+    if lifetime is not None:
+        if isinstance(lifetime, bool) or not isinstance(lifetime, (int, float)):
+            msg = f"lifetime must be a finite non-negative number or None, not {type(lifetime).__name__}"
+            raise TypeError(msg)
+        if lifetime < 0 or (isinstance(lifetime, float) and not math.isfinite(lifetime)):
+            msg = f"lifetime must be finite and non-negative, not {lifetime!r}"
+            raise ValueError(msg)
     if lifetime is not None and not supported:
         warnings.warn(
             f"lifetime is ignored for {cls_name}: a native OS lock cannot be broken safely by file age; "
@@ -556,17 +564,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
         :param value: the new value in seconds, or ``None`` to disable expiration
 
-        :raises ValueError: if *value* is a negative number
+        :raises ValueError: if *value* is negative or not finite
         :raises TypeError: if *value* is not ``None`` and not a real number
 
         """
-        if value is not None:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                msg = f"lifetime must be a non-negative number or None, not {type(value).__name__}"
-                raise TypeError(msg)
-            if value < 0:
-                msg = f"lifetime must be non-negative, not {value!r}"
-                raise ValueError(msg)
         self._context.lifetime = _resolve_lifetime(
             value, supported=self._lifetime_supported, cls_name=type(self).__name__
         )
