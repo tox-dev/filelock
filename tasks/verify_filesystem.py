@@ -19,7 +19,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Final
 
-from filelock import FileLock, SoftFileLock, StrictSoftFileLock, Timeout
+from filelock import FileLock, SoftFileLock, StrictSoftFileLock
 
 _PROCESSES: Final[int] = 8
 _INCREMENTS: Final[int] = 200
@@ -75,10 +75,11 @@ def _hammer(name: str, lock_path: str, counter_path: str) -> None:
     counter = Path(counter_path)
     for _ in range(_INCREMENTS):
         try:
-            # A finite timeout means a lock that livelocks (a broken lock never granting the critical section) gives up
-            # and the short counter records the failure, instead of spinning until an outer job timeout kills the run.
+            # A finite timeout means a lock that livelocks gives up rather than spinning until an outer job timeout
+            # kills the run; the OSError catch covers both that Timeout and a lock type the filesystem rejects outright
+            # (the strict claim raises EINVAL on CIFS). Either way the short counter records the failure for this type.
             lock.acquire(timeout=_ACQUIRE_TIMEOUT)
-        except Timeout:
+        except OSError:
             return
         try:
             current = int(counter.read_text(encoding="utf-8"))
