@@ -140,6 +140,12 @@ description = "run type check on code base"
 dependency_groups = [ "type" ]
 commands = [ [ "ty", "check", "--output-format", "concise", "--error-on-warning", "." ] ]
 
+[env.bench]
+description = "measure the performance matrix and print it as a report (a baseline, not a gate)"
+package = "wheel"
+wheel_build_env = ".pkg"
+commands = [ [ "python", "tasks{/}benchmark.py" ] ]
+
 [env.dev]
 description = "dev environment with all deps at {envdir}"
 package = "editable"

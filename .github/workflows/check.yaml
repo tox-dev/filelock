@@ -154,6 +154,36 @@ jobs:
         env:
           UV_PYTHON_PREFERENCE: only-managed
 
+  nfs:
+    name: "🗄️ NFS mutual exclusion"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: "🔄 Install the latest version of uv"
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: false
+      - name: "🗄️ Export and mount a loopback NFS share"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-kernel-server nfs-common
+          sudo mkdir -p /export/filelock
+          sudo chmod 1777 /export/filelock
+          echo "/export/filelock 127.0.0.1(rw,sync,no_subtree_check,no_root_squash,insecure)" | sudo tee /etc/exports
+          sudo exportfs -ra
+          sudo systemctl restart nfs-server
+          sudo mkdir -p /mnt/nfs
+          sudo mount -t nfs -o vers=4.2 127.0.0.1:/export/filelock /mnt/nfs
+          sudo chmod 1777 /mnt/nfs
+          mount | grep /mnt/nfs
+      - name: "🔒 Verify lock mutual exclusion on NFS"
+        run: |
+          uv venv
+          uv pip install .
+          .venv/bin/python tasks/verify_filesystem.py /mnt/nfs
+
   changelog:
     name: "📝 News fragment"
     runs-on: ubuntu-24.04
