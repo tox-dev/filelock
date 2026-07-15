@@ -5,6 +5,7 @@ import inspect
 import logging
 import math
 import os
+import secrets
 import sys
 import time
 import warnings
@@ -631,6 +632,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     #: several files per owner needs it; a single-file backend is atomic and leaves it off to skip the gate entirely.
     _serialize_transitions: bool = False
 
+    #: Ceiling in seconds on the jittered backoff between contended acquisition retries. ``0`` keeps the fixed
+    #: poll cadence; a multi-file backend sets it so contending processes desynchronize instead of livelocking.
+    _poll_backoff_cap: float = 0.0
+
     def __init_subclass__(cls, **kwargs: _SubclassValue) -> None:
         """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
@@ -1201,6 +1206,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     ) -> None:
         lock_id = id(self)
         lock_filename = self.lock_file
+        attempt = 0
         while True:
             self._raise_if_inherited()
             if not self.is_locked:
@@ -1220,9 +1226,20 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
                 start_time=start_time,
             ):
                 raise Timeout(lock_filename)
+            attempt += 1
+            delay = self._poll_delay(poll_interval, attempt)
             msg = "Lock %s not acquired on %s, waiting %s seconds ..."
-            _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
-            time.sleep(poll_interval)
+            _LOGGER.debug(msg, lock_id, lock_filename, delay)
+            time.sleep(delay)
+
+    def _poll_delay(self, poll_interval: float, attempt: int) -> float:
+        # A single-file lock retries on a fixed cadence. A backend that publishes several files per acquisition sets a
+        # cap, and then contending processes back off across a jittered, exponentially widening window instead of
+        # colliding on every poll; poll_interval stays the floor so a lone waiter is still responsive.
+        if not self._poll_backoff_cap:
+            return poll_interval
+        window = min(self._poll_backoff_cap, poll_interval * 2**attempt)
+        return max(poll_interval, secrets.randbelow(int(window * 1_000_000) + 1) / 1_000_000)
 
     def _reconcile_failed_acquire(self, canonical: str) -> None:
         # An acquire that raised while still holding the native lock (a hook that failed and whose rollback could not

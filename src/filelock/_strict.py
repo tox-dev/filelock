@@ -72,6 +72,9 @@ class StrictSoftFileLock(BaseFileLock):
     _on_acquired_supported: bool = False
     #: The claim doorway publishes an intent and a held record per owner, so a shared instance must serialize them.
     _serialize_transitions: bool = True
+    #: Contending processes each publish and rescan several files, so back their retries off across a jittered window
+    #: rather than let them collide on every poll. Seconds; keeps a waiter responsive once it wins.
+    _poll_backoff_cap: float = 0.05
 
     def _acquire(self) -> None:
         # Resolve once per acquisition, not per poll: a waiter on a relative path must keep publishing into the
