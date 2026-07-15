@@ -25,6 +25,9 @@ from ._util import break_lock_file
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
 _UNSET_FILE_MODE: Final[int] = -1
 
+#: Ceiling on the retry counter used as a power of two, so a long contended wait cannot overflow the backoff multiply.
+_MAX_BACKOFF_EXPONENT: Final[int] = 20
+
 #: How a context manager reconciles a body failure with a release failure on exit (see the property of this name).
 ContextErrorPolicy = Literal["chain", "group"]
 _CONTEXT_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"chain", "group"})
@@ -1238,7 +1241,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         # colliding on every poll; poll_interval stays the floor so a lone waiter is still responsive.
         if not self._poll_backoff_cap:
             return poll_interval
-        window = min(self._poll_backoff_cap, poll_interval * 2**attempt)
+        # Cap the exponent before doubling: under heavy contention attempt reaches the thousands, and 2**attempt would
+        # overflow the float multiply long before the window itself stops growing past the cap.
+        window = min(self._poll_backoff_cap, poll_interval * 2 ** min(attempt, _MAX_BACKOFF_EXPONENT))
         return max(poll_interval, secrets.randbelow(int(window * 1_000_000) + 1) / 1_000_000)
 
     def _reconcile_failed_acquire(self, canonical: str) -> None:
