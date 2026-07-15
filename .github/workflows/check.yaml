@@ -191,10 +191,10 @@ jobs:
           mount | grep /mnt/nfs
       - name: "🔒 Verify NFSv4 mutual exclusion across two client caches"
         env:
-          # SoftFileLock over atomic O_EXCL create excludes across both NFS versions with no hard error (only the
-          # starvation timeouts the gate tolerates), so it is the lock the gate enforces on the network filesystems.
-          # The other two print their behaviour ungated: native flock starves hardest under this contention, and
-          # StrictSoftFileLock is clean on v4 but meets an ESTALE storm on v3's claim churn. Exclusion holds for all.
+          # SoftFileLock over atomic O_EXCL create excludes across both NFS versions with a sustained hold count, so it
+          # is the lock the gate enforces on the network filesystems. The other two print their behaviour ungated:
+          # native flock starves hardest under this contention, and StrictSoftFileLock is clean on v4 but meets an
+          # ESTALE storm on v3's claim churn. Exclusion (overlaps=0) holds for all three; only availability differs.
           FILELOCK_VERIFY_LOCKS: SoftFileLock
         run: |
           uv venv

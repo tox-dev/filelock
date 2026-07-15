@@ -27,12 +27,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Final
 
-from filelock import FileLock, SoftFileLock, StrictSoftFileLock, Timeout
+from filelock import FileLock, SoftFileLock, StrictSoftFileLock
 
 _PROCESSES: Final[int] = 8
 _HOLDS: Final[int] = 200
 _ACQUIRE_TIMEOUT: Final[float] = 45.0
 _HOLD_SECONDS: Final[float] = 0.002
+#: A pass needs this many holds completed, so exclusion is not affirmed vacuously when contenders were shut out.
+_MIN_HELD: Final[int] = _PROCESSES * _HOLDS // 4
 _ALL_LOCKS: Final[tuple[str, ...]] = ("FileLock", "SoftFileLock", "StrictSoftFileLock")
 
 
@@ -54,13 +56,14 @@ def _verify_across(mounts: list[Path]) -> int:
     gated = _gated_locks()
     failures = 0
     for name in _ALL_LOCKS:
-        counts, overlaps, reason, fatal = _run_one(name, mounts)
+        counts, overlaps, reason = _run_one(name, mounts)
         expected = _PROCESSES * _HOLDS
-        # The guarantee under test is exclusion: no two holders overlap, and the lock raises no hard error on this
-        # filesystem. A Timeout is tolerated, not fatal: a poll-based lock starves some contender under this contention
-        # on slow network mounts (min drops toward 0) without ever letting two holders in at once, so it drags held and
-        # min down for insight without failing the gate. A hard error (EINVAL on CIFS, an ESTALE storm on NFSv3) does.
-        ok = overlaps == 0 and not fatal
+        # The guarantee under test is exclusion: no two holders overlap, over enough completed holds that the result is
+        # not vacuous. Every other outcome the pathological loopback contention provokes is a failed acquire, which is
+        # fail-closed and safe: a starvation Timeout, an EINVAL where CIFS rejects the strict claim, an ESTALE or EACCES
+        # storm on NFSv3. held and min report throughput and fairness, which the filesystem drags down without ever
+        # letting two holders in at once, so they are shown but do not gate.
+        ok = overlaps == 0 and sum(counts) >= _MIN_HELD
         failures += (not ok) and name in gated
         note = "" if name in gated else " (ungated)"
         tail = f"{note}{f' {reason}' if reason else ''}"
@@ -75,15 +78,14 @@ def _gated_locks() -> frozenset[str]:
     return frozenset(requested.split(","))
 
 
-def _run_one(name: str, mounts: list[Path]) -> tuple[list[int], int, str | None, bool]:
+def _run_one(name: str, mounts: list[Path]) -> tuple[list[int], int, str | None]:
     # Same basename on every mount, so the mounts contend on one server file through their independent caches.
     lock_paths = [str(mounts[index % len(mounts)] / f"{name}.lock") for index in range(_PROCESSES)]
     with ProcessPoolExecutor(max_workers=_PROCESSES) as pool:
         results = list(pool.map(_hammer, [name] * _PROCESSES, lock_paths))
-    counts = [len(intervals) for intervals, _, _ in results]
-    reason = next((reason for _, reason, _ in results if reason is not None), None)
-    fatal = any(is_fatal for _, _, is_fatal in results)
-    return counts, _count_overlaps([intervals for intervals, _, _ in results]), reason, fatal
+    counts = [len(intervals) for intervals, _ in results]
+    reason = next((reason for _, reason in results if reason is not None), None)
+    return counts, _count_overlaps([intervals for intervals, _ in results]), reason
 
 
 def _count_overlaps(per_process: list[list[tuple[float, float]]]) -> int:
@@ -101,18 +103,16 @@ def _count_overlaps(per_process: list[list[tuple[float, float]]]) -> int:
     return overlaps
 
 
-def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str | None, bool]:
+def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str | None]:
     lock = _build(name, lock_path)
     intervals: list[tuple[float, float]] = []
     for _ in range(_HOLDS):
         try:
             lock.acquire(timeout=_ACQUIRE_TIMEOUT)
-        except Timeout:
-            # Starvation, not an exclusion failure: this process never won the lock within the window. Reported so the
-            # short held and min counts are explained, but tolerated by the gate.
-            return intervals, "Timeout", False
-        except Exception as error:  # noqa: BLE001 - the filesystem decides which hard failures appear (EINVAL, ESTALE)
-            return intervals, f"{type(error).__name__}: {error}"[:160], True
+        except Exception as error:  # noqa: BLE001 - every acquire failure the filesystem provokes is fail-closed
+            # A failed acquire never enters the critical section, so it cannot break exclusion. Record why this process
+            # stopped (a starvation Timeout, EINVAL on CIFS, ESTALE or EACCES under NFSv3 churn) and end its run.
+            return intervals, f"{type(error).__name__}: {error}".rstrip(": ")[:160]
         enter = time.monotonic()
         # Hold briefly so a broken lock lets a second holder in during an observable window; a correct lock serialises
         # the holds regardless. enter is stamped after acquire and leave before release, so a correct hand-off can
@@ -121,7 +121,7 @@ def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str |
         leave = time.monotonic()
         lock.release()
         intervals.append((enter, leave))
-    return intervals, None, False
+    return intervals, None
 
 
 def _build(name: str, lock_path: str) -> FileLock | SoftFileLock | StrictSoftFileLock:
