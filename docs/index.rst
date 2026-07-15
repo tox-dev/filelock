@@ -78,7 +78,7 @@ Choose the right lock for your use case:
 
         - ✓ No native locking API required
         - ✓ Same-host PID inspection
-        - ✓ Optional age-based expiry, with overlap risk
+        - ✓ Reclaims a provably-gone owner via process start identity
 
     .. grid-item-card::
         **StrictSoftFileLock**
@@ -88,6 +88,15 @@ Choose the right lock for your use case:
         - ✓ Never guesses that an owner died
         - ✓ Removes claims by unique name
         - ✓ Manual recovery with owner metadata
+
+    .. grid-item-card::
+        **SoftFileLease**
+
+        Expiring claim with a heartbeat, for when overlap is acceptable and progress matters more than exclusion.
+
+        - ✓ A peer can take over a wedged holder
+        - ✓ ``on_compromise`` callback on claim loss
+        - ✓ Fence the resource: a token names a claim, it does not fence one
 
     .. grid-item-card::
         **ReadWriteLock**

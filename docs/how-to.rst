@@ -389,9 +389,10 @@ the inherited instance fork-invalidated; ``release()`` on it becomes a no-op, an
 ``SoftReadWriteLock(path)`` before acquiring. This follows the invalidation approach used by PyMongo's connection
 pools.
 
-**Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
-permissions can exclude another UID. A process with the same effective UID can alter the markers, and incorrect clocks
-or cache behavior can trigger expiry while a holder remains active.
+**Trust boundary.** The class coordinates cooperating processes at one UID. Mode bits (``0o600`` / ``0o700``) keep other
+UIDs out; they do not make a same-UID co-tenant safe, since it owns the markers and can rewrite or delete them directly.
+Incorrect clocks or cache behavior can also trigger expiry while a holder remains active. See
+:ref:`concepts:The same-UID boundary` for the full contract.
 
 ***********************************
  Use async read / write locks
@@ -471,8 +472,10 @@ This happens automatically. You don't need to do anything special:
 Cross-host records remain because their PID cannot be interpreted locally. On platforms without process-start identity,
 a reused PID can also keep a dead owner's marker in place.
 
-On Windows, the marker also stores process creation time to guard against PID recycling. Malformed records follow a
-different rule: a waiter may evict them after two seconds. That recovery path is not fail closed.
+Every platform stores a process start token in the marker to guard against PID recycling: Linux uses the
+``/proc/<pid>/stat`` start time folded with the boot id, macOS reads it through ``sysctl``, and Windows uses the
+``GetProcessTimes`` creation time. Malformed records follow a different rule: a waiter may evict them after two seconds.
+That recovery path is not fail closed.
 
 ********************************
  Use fail-closed soft locks
@@ -625,7 +628,7 @@ library:
 :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` never reclaims a marker. A malformed record, an owner on
 another host, a dead PID and an old marker all read as held, so acquisition waits rather than overlap a holder that may
 still be alive. A crashed holder leaves a marker no contender removes; clear it with
-:meth:`force_break <filelock.MarkerSoftFileLock.force_break>`, which voids mutual exclusion for whoever is still
+:meth:`force_break <filelock.StrictSoftFileLock.force_break>`, which voids mutual exclusion for whoever is still
 running.
 
 :class:`SoftFileLease <filelock.SoftFileLease>` trades exclusion for progress. The holder refreshes its claim, and a
