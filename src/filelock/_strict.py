@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from errno import EACCES, EEXIST, EINVAL, ENOENT, ENOSYS, ENOTSUP, EPERM, EXDEV
+from errno import EACCES, EEXIST, ENOENT, ENOSYS, ENOTSUP, EPERM, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -47,16 +47,18 @@ _LINK_SUPPORTS_DIR_FD: Final[bool] = os.link in os.supports_dir_fd
 
 
 def _probe_link_follow_symlinks() -> bool:
-    # os.supports_follow_symlinks lists os.link on PyPy, but its linkat then rejects follow_symlinks=False with EINVAL.
-    # Link a throwaway file for real so the answer reflects the runtime, not its advertisement. Any other failure is an
-    # environment problem the real link will surface, so treat the option as honored.
+    # os.supports_follow_symlinks lists os.link on PyPy, but its linkat then rejects follow_symlinks=False with EINVAL,
+    # and Windows raises NotImplementedError for the option outright. Link a throwaway file for real so the answer
+    # reflects the runtime rather than its advertisement, and treat any failure as "not honored": the option only
+    # hardens a source this process created with O_EXCL, so skipping it is safe, and a real environment fault surfaces
+    # when the actual link runs.
     try:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory, "probe-source")
             source.touch()
             os.link(source, Path(directory, "probe-link"), follow_symlinks=False)
-    except OSError as error:
-        return error.errno != EINVAL
+    except (OSError, NotImplementedError, ValueError):
+        return False
     return True
 
 
