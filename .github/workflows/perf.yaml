@@ -1,14 +1,11 @@
 name: "📊 performance matrix"
 on:
   workflow_dispatch:
-
 concurrency:
   group: perf-${{ github.ref }}
   cancel-in-progress: true
-
 permissions:
   contents: read
-
 jobs:
   bench:
     name: "📊 bench - ${{ matrix.os }}"
