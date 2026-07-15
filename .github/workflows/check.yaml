@@ -184,6 +184,70 @@ jobs:
           uv pip install .
           .venv/bin/python tasks/verify_filesystem.py /mnt/nfs
 
+  smb:
+    name: "🗄️ SMB mutual exclusion"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: "🔄 Install the latest version of uv"
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: false
+      - name: "🗄️ Export and mount a loopback SMB share"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y samba cifs-utils
+          sudo mkdir -p /srv/filelock
+          sudo chmod 1777 /srv/filelock
+          sudo tee -a /etc/samba/smb.conf >/dev/null <<'CONF'
+          [filelock]
+             path = /srv/filelock
+             writable = yes
+             guest ok = yes
+             create mask = 0666
+             directory mask = 0777
+          CONF
+          sudo sed -i '/\[global\]/a \   map to guest = Bad User\n   server min protocol = SMB2' /etc/samba/smb.conf
+          sudo systemctl restart smbd
+          sudo mkdir -p /mnt/smb
+          sudo mount -t cifs //127.0.0.1/filelock /mnt/smb \
+            -o "guest,uid=$(id -u),gid=$(id -g),file_mode=0777,dir_mode=0777,vers=3.1.1,nobrl=0"
+          mount | grep /mnt/smb
+      - name: "🔒 Verify lock mutual exclusion on SMB"
+        run: |
+          uv venv
+          uv pip install .
+          .venv/bin/python tasks/verify_filesystem.py /mnt/smb
+
+  capability:
+    name: "🧩 without ${{ matrix.block }}"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        block:
+          - fcntl
+          - sqlite3
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: "🔄 Install the latest version of uv"
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: false
+      - name: "🧩 Verify the fallback without ${{ matrix.block }}"
+        env:
+          FILELOCK_BLOCK_MODULE: ${{ matrix.block }}
+        run: |
+          uv venv
+          uv pip install .
+          export PYTHONPATH="$PWD/tasks/capability"
+          .venv/bin/python tasks/capability/assert_fallback.py
+          .venv/bin/python tasks/verify_filesystem.py
+
   changelog:
     name: "📝 News fragment"
     runs-on: ubuntu-24.04

@@ -548,17 +548,20 @@ visibility to every participating process. The table records where that has been
    * - Local Windows (NTFS)
      - Supported
      - Native and soft backends verified in CI.
-   * - NFS (v3, v4)
-     - Unverified
-     - POSIX advisory locking is unreliable across NFS implementations, so keep SQLite-backed
-       :class:`ReadWriteLock <filelock.ReadWriteLock>` off NFS and verify a soft lock's exclusive creation, rename,
-       unlink, timestamps, and cache visibility on the exact mount before relying on it.
-   * - SMB / CIFS
-     - Unverified
-     - Verify the same operations on the target mount and server before use.
+   * - NFS (v4, loopback single server)
+     - Verified in CI
+     - A CI lane exports a loopback NFSv4 share and confirms mutual exclusion under eight-process contention for the
+       native, soft, and strict locks. This covers one client against one server. Multi-client access and NFSv3 stay
+       unverified, and POSIX advisory locking is unreliable across NFS implementations, so keep SQLite-backed
+       :class:`ReadWriteLock <filelock.ReadWriteLock>` off NFS regardless.
+   * - SMB / CIFS (loopback single server)
+     - Verified in CI
+     - A CI lane mounts a loopback Samba share and runs the same contention check. Multi-client access and other server
+       and mount options stay unverified; verify your own mount before relying on it.
 
-Do not read "Unverified" as "broken." It means the project does not yet publish a measured guarantee for that
-filesystem. Record the mount and server settings you tested, because cache and locking options change the result.
+Do not read a loopback "Verified in CI" as a promise for a production multi-client deployment. It means the project
+measured one client against one server; cache and locking options and a second client can change the result, so record
+the mount and server settings you tested.
 
 Migrating from timed stale breaking
 ===================================
