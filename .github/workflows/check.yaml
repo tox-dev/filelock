@@ -179,14 +179,14 @@ jobs:
           sudo systemctl enable --now rpcbind
           sudo systemctl start rpc-statd
           # Mount each version twice, the second with nosharecache, so the two mounts are independent client caches
-          # over one server: contending across them is a real multi-client check, not two views of one cache. actimeo=0
-          # revalidates attributes and directories on every open, so a mount never serves a stale counter or a stale
-          # view of an O_EXCL marker from its own cache — the test then measures lock exclusion, not cache coherence.
+          # over one server: contending across them is a real multi-client check, not two views of one cache. The
+          # verifier records each process's own hold intervals and never reads shared data across the caches, so the
+          # measurement needs no cache-coherence tuning here — only the two independent caches nosharecache provides.
           for m in nfs4a nfs4b nfs3a nfs3b; do sudo mkdir -p "/mnt/$m"; done
-          sudo mount -t nfs -o vers=4.2,actimeo=0 127.0.0.1:/export/filelock /mnt/nfs4a
-          sudo mount -t nfs -o vers=4.2,actimeo=0,nosharecache 127.0.0.1:/export/filelock /mnt/nfs4b
-          sudo mount -t nfs -o vers=3,actimeo=0 127.0.0.1:/export/filelock /mnt/nfs3a
-          sudo mount -t nfs -o vers=3,actimeo=0,nosharecache 127.0.0.1:/export/filelock /mnt/nfs3b
+          sudo mount -t nfs -o vers=4.2 127.0.0.1:/export/filelock /mnt/nfs4a
+          sudo mount -t nfs -o vers=4.2,nosharecache 127.0.0.1:/export/filelock /mnt/nfs4b
+          sudo mount -t nfs -o vers=3 127.0.0.1:/export/filelock /mnt/nfs3a
+          sudo mount -t nfs -o vers=3,nosharecache 127.0.0.1:/export/filelock /mnt/nfs3b
           for m in nfs4a nfs4b nfs3a nfs3b; do sudo chmod 1777 "/mnt/$m"; done
           mount | grep /mnt/nfs
       - name: "🔒 Verify NFSv4 mutual exclusion across two client caches"
