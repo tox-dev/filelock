@@ -174,25 +174,28 @@ jobs:
           echo "/export/filelock 127.0.0.1(rw,sync,no_subtree_check,no_root_squash,insecure)" | sudo tee /etc/exports
           sudo exportfs -ra
           sudo systemctl restart nfs-server
-          # NFSv3 sends flock to the server through the NLM lock manager; without rpcbind and statd running, a flock
-          # over v3 blocks in the kernel forever. NFSv4 has integrated locking and does not need them.
-          sudo systemctl enable --now rpcbind rpc-statd
+          # NFSv3 sends flock to the server through the NLM lock manager. rpcbind must be enabled; rpc-statd is a
+          # static unit that enable cannot touch, so start it explicitly or a v3 flock blocks in the kernel forever.
+          sudo systemctl enable --now rpcbind
+          sudo systemctl start rpc-statd
           # Mount each version twice, the second with nosharecache, so the two mounts are independent client caches
-          # over one server: contending across them is a real multi-client check, not two views of one cache.
+          # over one server: contending across them is a real multi-client check, not two views of one cache. actimeo=0
+          # revalidates attributes and directories on every open, so a mount never serves a stale counter or a stale
+          # view of an O_EXCL marker from its own cache — the test then measures lock exclusion, not cache coherence.
           for m in nfs4a nfs4b nfs3a nfs3b; do sudo mkdir -p "/mnt/$m"; done
-          sudo mount -t nfs -o vers=4.2 127.0.0.1:/export/filelock /mnt/nfs4a
-          sudo mount -t nfs -o vers=4.2,nosharecache 127.0.0.1:/export/filelock /mnt/nfs4b
-          sudo mount -t nfs -o vers=3 127.0.0.1:/export/filelock /mnt/nfs3a
-          sudo mount -t nfs -o vers=3,nosharecache 127.0.0.1:/export/filelock /mnt/nfs3b
+          sudo mount -t nfs -o vers=4.2,actimeo=0 127.0.0.1:/export/filelock /mnt/nfs4a
+          sudo mount -t nfs -o vers=4.2,actimeo=0,nosharecache 127.0.0.1:/export/filelock /mnt/nfs4b
+          sudo mount -t nfs -o vers=3,actimeo=0 127.0.0.1:/export/filelock /mnt/nfs3a
+          sudo mount -t nfs -o vers=3,actimeo=0,nosharecache 127.0.0.1:/export/filelock /mnt/nfs3b
           for m in nfs4a nfs4b nfs3a nfs3b; do sudo chmod 1777 "/mnt/$m"; done
           mount | grep /mnt/nfs
       - name: "🔒 Verify NFSv4 mutual exclusion across two client caches"
         run: |
           uv venv
           uv pip install .
-          timeout 240 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs4a /mnt/nfs4b
+          timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs4a /mnt/nfs4b
       - name: "🔒 Verify NFSv3 mutual exclusion across two client caches"
-        run: timeout 240 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs3a /mnt/nfs3b
+        run: timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs3a /mnt/nfs3b
 
   smb:
     name: "🗄️ SMB mutual exclusion"
