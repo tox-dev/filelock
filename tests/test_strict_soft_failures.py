@@ -679,6 +679,7 @@ def test_strict_soft_sentinel_race_with_non_regular_winner_blocks(tmp_path: Path
     assert lock_path.is_dir()
 
 
+@_REQUIRES_DIR_FD_CLEANUP
 def test_strict_soft_sentinel_remains_after_private_cleanup_failure(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     real_unlink = os.unlink
