@@ -15,7 +15,6 @@ We import what we need and create a lock object:
 
 .. code-block:: python
 
-    from pathlib import Path
     from filelock import FileLock
 
     lock = FileLock("myapp.lock")
@@ -260,9 +259,49 @@ pauses, synchronize participating clocks, and fence protected writes if an expir
 
 See :doc:`concepts` for the full explanation of the heartbeat + TTL model.
 
+*******************************
+ Stronger soft-lock contracts
+*******************************
+
+A plain :class:`SoftFileLock <filelock.SoftFileLock>` is a cooperative marker: it reclaims a marker only once its owner
+is provably gone, but a shared marker cannot promise that two processes never overlap. When you need more, two soft locks
+state an explicit contract.
+
+:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` gives mutual exclusion without a native lock. It never breaks a
+claim by age, so a crashed holder's claim is cleared only by an operator:
+
+.. code-block:: python
+
+    from filelock import StrictSoftFileLock
+
+    lock = StrictSoftFileLock("work.lock")
+    with lock:
+        do_exclusive_work()
+
+    # After a crash, an operator inspects and clears the stale claim by name:
+    stale = StrictSoftFileLock("work.lock")
+    for claim in stale.claims:
+        stale.force_break(claim.name)
+
+:class:`SoftFileLease <filelock.SoftFileLease>` trades exclusion for progress. Its claim expires, so a peer can take over
+if a holder wedges; a callback fires when this process loses its claim. A lease token names a claim but does not fence
+the protected resource, so fence any resource an expired holder could still write:
+
+.. code-block:: python
+
+    from filelock import SoftFileLease
+
+    lease = SoftFileLease("work.lock", lease_duration=30, on_compromise=lambda c: stop_work())
+    with lease:
+        do_resumable_work()
+
+See :ref:`how-to:Choose a soft-lock contract` to pick between them.
+
 ************
  Next steps
 ************
 
+- Need strict exclusion or an expiring lease? See :ref:`how-to:Use fail-closed soft locks` and
+  :ref:`how-to:Choose a soft-lock contract`.
 - Want to handle timeouts, cancellation, or force-release? See :doc:`how-to`.
 - Curious about how locks work across different platforms? Read :doc:`concepts`.

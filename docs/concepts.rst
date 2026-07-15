@@ -103,17 +103,19 @@ that follows the same locking convention; they do not prevent unrelated access t
 
 **Soft locks / PID locks** (SoftFileLock, the fallback on systems without fcntl)
 
-A shared marker indicates that a resource is in use. The marker contains the PID and hostname of the holder. A process
-attempts acquisition with ``O_CREAT | O_EXCL`` and releases by deleting the pathname. The filesystem must provide
-coherent exclusive creation and directory updates to every participant.
+A shared marker indicates that a resource is in use. The marker contains the PID, hostname, and a process start token of
+the holder. A process attempts acquisition with ``O_CREAT | O_EXCL`` and releases by deleting the pathname. The
+filesystem must provide coherent exclusive creation and directory updates to every participant.
 
 This is the same concept as a traditional **PID lock file** (as used by Unix daemons and the deprecated
 `lockfile <https://pypi.org/project/lockfile/>`_ library's ``PIDLockFile``). The PID stored in the file identifies the
 lock holder via the :attr:`~filelock.SoftFileLock.pid` property and lets a waiter detect stale locks when the holding
 process has died.
 
-Same-host contenders can check whether the recorded PID exists. Windows also records process creation time to
-distinguish a reused PID. Other platforms can mistake a reused PID for the original holder and remain blocked.
+Same-host contenders reclaim a marker only when the recorded owner is provably gone. Every platform records a process
+start token alongside the PID, so a live PID whose start token differs from the record is a recycled PID, not the
+original holder. A live PID whose token still matches, a token that cannot be read, and a marker from another host all
+read as held.
 
 **Strict soft locks** (:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`) use immutable owner claims instead of
 replacing one shared marker. Each contender writes a complete private record, publishes a unique intent through a hard
@@ -211,6 +213,17 @@ when ``fcntl`` is unavailable.
 - The filesystem lacks a usable native lock, and operators have verified exclusive creation and cache behavior.
 - Cooperating processes can tolerate shared-marker recovery and its overlap risks.
 
+**Use StrictSoftFileLock** when:
+
+- You need mutual exclusion a shared marker cannot promise, without a native lock.
+- Operator recovery after a crash is acceptable: it never breaks a claim by age, and a crashed holder's claim is cleared
+  with :meth:`force_break <filelock.StrictSoftFileLock.force_break>`.
+
+**Use SoftFileLease** when:
+
+- Overlap is acceptable and you want a claim that *expires*, so a peer can make progress if a holder wedges.
+- You fence the protected resource, because a lease token names a claim but does not fence one.
+
 **Use ReadWriteLock** when:
 
 - Your workload is read-heavy with occasional writes.
@@ -238,8 +251,11 @@ Lock selection flowchart:
         questionAsync -->|No| rw["Use ReadWriteLock"]
         question1 -->|No| question2{"Need network<br/>filesystem support?"}
         question2 -->|Yes| questionSoftFs{"Verified exclusive create<br/>and cache behavior?"}
-        questionSoftFs -->|Yes| soft["Use SoftFileLock"]
         questionSoftFs -->|No| service
+        questionSoftFs -->|Yes| questionContract{"Which soft-lock<br/>contract?"}
+        questionContract -->|"Strict, never overlap"| strict["Use StrictSoftFileLock"]
+        questionContract -->|"Overlap OK, fence resource"| lease["Use SoftFileLease"]
+        questionContract -->|"Cooperative best-effort"| soft["Use SoftFileLock"]
         question2 -->|No| question3{"Need platform<br/>specific control?"}
         question3 -->|Yes| platform["Use UnixFileLock<br/>or WindowsFileLock"]
         question3 -->|No| default["Use FileLock<br/>(recommended)"]
@@ -248,11 +264,11 @@ Lock selection flowchart:
         classDef alternative fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#78350f
         classDef special fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f
         class default recommended
-        class soft,platform,srw alternative
+        class soft,strict,lease,platform,srw alternative
         class rw,arw special
 
-Lock types compared
-===================
+Exclusive locks compared
+========================
 
 .. list-table::
     :header-rows: 1
@@ -260,61 +276,77 @@ Lock types compared
     - - Feature
       - FileLock
       - SoftFileLock
-      - ReadWriteLock
-      - SoftReadWriteLock
-    - - Exclusive/shared
-      - Exclusive only
-      - Exclusive only
-      - Both (separate context managers)
-      - Both (separate context managers)
+      - StrictSoftFileLock
+      - SoftFileLease
+    - - Exclusion contract
+      - Enforced among lockers (advisory)
+      - Cooperative shared marker
+      - Cooperative, never overlaps
+      - Expiring, overlap permitted
     - - Platform enforcement
       - OS-level (Windows/Unix)
       - No (file-based)
-      - File-based (SQLite)
-      - No (file-based, ``O_CREAT|O_EXCL|O_NOFOLLOW``)
+      - No (owner claims)
+      - No (marker + heartbeat)
+    - - Stale recovery
+      - N/A (OS-enforced)
+      - Reclaims a provably-gone owner
+      - Operator ``force_break`` only (fail-closed)
+      - Expiry + heartbeat; ``on_compromise``
+    - - Owner inspection
+      - No
+      - ``pid``, ``is_lock_held_by_us``
+      - ``claims``, ``force_break``
+      - ``owner``, ``token``, ``compromise``
     - - Network filesystem
       - Not reliable
-      - Works (if you accept the limitations)
-      - Not reliable
-      - Works, including cross-host on multi-node clusters
-    - - Stale lock detection
-      - N/A (OS-enforced)
-      - Yes (same-host, all platforms)
-      - N/A
-      - Yes, TTL-based heartbeat (cross-host)
-    - - PID inspection
-      - No
-      - Yes (``pid``, ``is_lock_held_by_us``)
-      - No
-      - No (content is not a public API)
-    - - Lifetime expiration
-      - No (ignored with a warning)
-      - Yes
-      - No
-      - Yes (``heartbeat_interval`` / ``stale_threshold``)
+      - If verified
+      - If verified (atomic hard links)
+      - If verified
     - - Cancel acquisition
       - Yes (``cancel_check``)
       - Yes (``cancel_check``)
-      - No
-      - No
-    - - Force release
-      - Yes (``force=True``)
-      - Yes (``force=True``)
-      - Yes (``force=True``)
-      - Yes (``force=True``)
+      - Yes (``cancel_check``)
+      - Yes (``cancel_check``)
     - - Async support
       - AsyncFileLock
       - AsyncSoftFileLock
-      - AsyncReadWriteLock
-      - AsyncSoftReadWriteLock
-    - - Singleton default
-      - No
-      - No
-      - Yes
-      - Yes
+      - AsyncStrictSoftFileLock
+      - AsyncSoftFileLease
     - - Overhead
       - Low
       - High
+      - High (claim directory)
+      - High (heartbeat thread)
+
+Read/write locks compared
+=========================
+
+.. list-table::
+    :header-rows: 1
+
+    - - Feature
+      - ReadWriteLock
+      - SoftReadWriteLock
+    - - Readers / writers
+      - Multiple readers, one writer
+      - Multiple readers, one writer
+    - - Backing
+      - Local SQLite
+      - Marker tree (``O_CREAT|O_EXCL|O_NOFOLLOW``) + heartbeat
+    - - Network filesystem
+      - Not reliable (local only)
+      - Works, including cross-host on multi-node clusters
+    - - Stale recovery
+      - SQLite transactions
+      - TTL heartbeat (``heartbeat_interval`` / ``stale_threshold``)
+    - - Async support
+      - AsyncReadWriteLock
+      - AsyncSoftReadWriteLock
+    - - Singleton default
+      - Yes
+      - Yes
+    - - Overhead
       - Medium (SQLite)
       - Medium (daemon heartbeat thread + dirfd scans)
 
@@ -463,9 +495,9 @@ Task cancellation
 =================
 
 The async wrappers (:class:`AsyncFileLock <filelock.AsyncFileLock>` and the async soft, strict, lease, and read-write
-variants) run each blocking step on a worker thread. Cancelling the awaiting task while an acquisition is in flight rolls
-the attempt back atomically, so a cancelled ``acquire`` never leaves a half-held lock. A task holding a lock that is
-cancelled still owns releasing it; cancellation does not release the lock for you.
+variants) run each blocking step on a worker thread. Canceling the awaiting task while an acquisition is in flight rolls
+the attempt back atomically, so a canceled ``acquire`` never leaves a half-held lock. A task holding a lock that is
+canceled still owns releasing it; cancellation does not release the lock for you.
 
 Strict claims, leases, and fencing
 ==================================
