@@ -307,7 +307,9 @@ def test_windows_process_probe_closes_handles(lock_path: Path) -> None:
         handle_count = _current_process_handle_count()
         for _attempt in range(50):
             _assert_times_out(lock_path, timeout=0)
-        assert _current_process_handle_count() == handle_count
+        # A per-probe handle leak would add one handle per iteration, so ~50 over the loop. Assert no growth beyond a
+        # small margin rather than exact equality, which another thread opening or closing a handle would break.
+        assert _current_process_handle_count() <= handle_count + 5
     finally:
         lock.release()
 
