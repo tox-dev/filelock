@@ -153,7 +153,7 @@ dependency_groups = [ "release" ]
 commands = [ [ "towncrier", "build", "--yes", "--version", "{posargs}" ] ]
 
 [env."3.14"]
-# Re-declare COVERAGE_FILE: overriding set_env here drops the value inherited from env_run_base, and without it
+# Set COVERAGE_FILE again: overriding set_env here drops the value inherited from env_run_base, and without it
 # coverage writes .coverage in the repo root instead of {work_dir}/.coverage.3.14, so the CI rename cannot find it.
 set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage.{env_name}" }
 set_env.FILELOCK_OLD_CLIENT_PATH = "{env_tmp_dir}{/}filelock-3.20.0"
