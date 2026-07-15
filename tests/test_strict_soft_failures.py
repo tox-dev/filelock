@@ -522,6 +522,7 @@ def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path,
             Path(path, competitor_name).write_text(
                 f"filelock-strict-v1\n{competitor_token}\n{os.getpid()}\n{socket.gethostname().encode().hex()}\n",
                 encoding="ascii",
+                newline="",
             )
         return real_scandir(path)
 
@@ -718,6 +719,7 @@ def test_strict_soft_accepts_maximum_pid(tmp_path: Path) -> None:
     (claims / f"held-v1-{token}.claim").write_text(
         f"filelock-strict-v1\n{token}\n4294967295\n686f7374\n",
         encoding="ascii",
+        newline="",
     )
 
     assert StrictSoftFileLock(lock_path).claims[0].pid == 2**32 - 1
@@ -742,6 +744,7 @@ def test_strict_soft_rejects_noncanonical_owner_record(tmp_path: Path, pid: str,
     (claims / f"held-v1-{token}.claim").write_text(
         f"filelock-strict-v1\n{token}\n{pid}\n{hostname_hex}\n",
         encoding="ascii",
+        newline="",
     )
 
     with pytest.raises(SoftFileLockProtocolError, match="malformed claim record"):
