@@ -627,6 +627,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     #: protocol state in the marker and reject it.
     _on_acquired_supported: bool = True
 
+    #: Whether a shared instance serializes its physical acquire and release behind one gate. A backend that publishes
+    #: several files per owner needs it; a single-file backend is atomic and leaves it off to skip the gate entirely.
+    _serialize_transitions: bool = False
+
     def __init_subclass__(cls, **kwargs: _SubclassValue) -> None:
         """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
@@ -1081,8 +1085,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     ) -> Generator[None]:
         # One thread at a time drives the physical transition of a shared instance. A protocol that publishes several
         # files per owner leaves a half-built claim visible otherwise, and a second thread would read it as a holder.
-        # A thread-local context gives each thread its own state, so it needs no gate.
-        if self._is_thread_local:
+        # Only such a backend opts in; a single-file backend and a thread-local context each need no gate.
+        if not self._serialize_transitions or self._is_thread_local:
             yield
             return
         while not self._transition_lock.acquire(blocking=False):
@@ -1106,7 +1110,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         """
         # A shared instance releases under the same gate its acquisition ran through, so a thread entering the lock
         # never observes a partially torn-down owner.
-        with self._transition_lock if not self._is_thread_local else contextlib.nullcontext():
+        serialize = self._serialize_transitions and not self._is_thread_local
+        with self._transition_lock if serialize else contextlib.nullcontext():
             if self._creator_pid != os.getpid() or not self.is_locked:
                 return
             if not force and self._context.lock_counter > 1:

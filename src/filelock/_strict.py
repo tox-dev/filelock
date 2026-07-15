@@ -70,6 +70,8 @@ class StrictSoftFileLock(BaseFileLock):
 
     _preserve_lock_file_supported: bool = True
     _on_acquired_supported: bool = False
+    #: The claim doorway publishes an intent and a held record per owner, so a shared instance must serialize them.
+    _serialize_transitions: bool = True
 
     def _acquire(self) -> None:
         # Resolve once per acquisition, not per poll: a waiter on a relative path must keep publishing into the
