@@ -35,6 +35,9 @@ _PRIVATE_RECORD_SUFFIX: Final[str] = ".tmp"
 _PRIVATE_RECORD_RANDOM_HEX_LENGTH: Final[int] = 32
 _PRIVATE_RECORD_GRACE: Final[float] = 2.0
 _UNLINK_MAX_RETRIES: Final[int] = 10
+#: How long a scan waits out a claim held in Windows' delete-pending state before treating it as unreadable.
+_CLAIM_READ_GRACE: Final[float] = 0.5
+_CLAIM_READ_RETRY: Final[float] = 0.002
 #: Windows opens descriptors in text mode by default, which rewrites newlines and truncates a record at a control byte.
 #: The claim and sentinel records are exact binary, so every record descriptor must be binary; POSIX ignores the flag.
 _O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
@@ -287,15 +290,41 @@ def _read_claims(lock_file: str, directory: Path) -> tuple[StrictSoftFileClaim, 
     for name in names:
         if (name_parts := _parse_claim_name(name)) is None:
             raise SoftFileLockProtocolError(lock_file, name, "unknown claim name or protocol version")
-        try:
-            record = _read_record(directory / name, _CLAIM_RECORD_LIMIT)
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            reason = f"cannot read claim: {error.strerror or str(error) or type(error).__name__}"
-            raise SoftFileLockProtocolError(lock_file, name, reason) from error
-        claims.append(_parse_claim(lock_file, name, name_parts, record))
+        if (record := _read_claim_record(lock_file, directory, name)) is not None:
+            claims.append(_parse_claim(lock_file, name, name_parts, record))
     return tuple(claims)
+
+
+def _read_claim_record(lock_file: str, directory: Path, name: str) -> bytes | None:
+    # Windows holds a claim mid-unlink in a delete-pending state that fails an open with EACCES until the unlink
+    # completes, so a contended scan hits a claim that neither exists nor is readable yet. Retry briefly: a transient
+    # claim resolves to a clean removal, while a genuinely unreadable one (a locked-down record) still fails closed.
+    deadline = time.monotonic() + _CLAIM_READ_GRACE
+    delaying = False
+    while True:
+        if delaying:
+            time.sleep(_CLAIM_READ_RETRY)
+        record, pending = _attempt_claim_read(lock_file, directory, name)
+        if pending is None:
+            return record
+        if time.monotonic() >= deadline:
+            reason = f"cannot read claim: {pending.strerror or str(pending) or type(pending).__name__}"
+            raise SoftFileLockProtocolError(lock_file, name, reason) from pending
+        delaying = True
+
+
+def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[bytes | None, PermissionError | None]:
+    # Return the record, or (None, None) when the claim has already gone, or (None, error) for a delete-pending open
+    # the caller may retry. Any other OSError is a real fault and fails closed here rather than looping.
+    try:
+        return _read_record(directory / name, _CLAIM_RECORD_LIMIT), None
+    except FileNotFoundError:
+        return None, None
+    except PermissionError as error:
+        return None, error
+    except OSError as error:
+        reason = f"cannot read claim: {error.strerror or str(error) or type(error).__name__}"
+        raise SoftFileLockProtocolError(lock_file, name, reason) from error
 
 
 def _public_claim_names(directory: Path, entries: Iterator[os.DirEntry[str]]) -> list[str]:
