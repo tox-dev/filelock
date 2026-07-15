@@ -213,7 +213,7 @@ jobs:
           sudo systemctl restart smbd
           sudo mkdir -p /mnt/smb
           sudo mount -t cifs //127.0.0.1/filelock /mnt/smb \
-            -o "guest,uid=$(id -u),gid=$(id -g),file_mode=0777,dir_mode=0777,vers=3.1.1,nobrl=0"
+            -o "guest,uid=$(id -u),gid=$(id -g),file_mode=0777,dir_mode=0777,vers=3.0"
           mount | grep /mnt/smb
       - name: "🔒 Verify lock mutual exclusion on SMB"
         run: |
