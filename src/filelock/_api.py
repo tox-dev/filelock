@@ -990,7 +990,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         """Force-release so a dropped reference never leaks a held lock."""
         if vars(self).get("_creator_pid") != os.getpid():
             return  # pragma: no cover - exercised in fork children
-        self.release(force=True)
+        # A finalizer must not raise. A release error during garbage collection would otherwise surface as an
+        # unraisable-exception warning, attributed to whichever code triggered collection. The dropped lock still gets
+        # best-effort cleanup; an explicit release() reports the same error to a caller who can act on it.
+        with contextlib.suppress(Exception):
+            self.release(force=True)
 
     def acquire(
         self,

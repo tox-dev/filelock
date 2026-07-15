@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import socket
 import sys
@@ -454,6 +455,17 @@ def test_normal_release_removes_own_marker(lock_path: Path) -> None:
     with SoftFileLock(lock_path):
         assert lock_path.exists()
     assert not lock_path.exists()
+
+
+def test_del_suppresses_a_release_error(lock_path: Path, mocker: MockerFixture) -> None:
+    # A dropped, still-held lock is finalized by __del__. A release error there must not escape as an unraisable
+    # exception during garbage collection, which pytest would fail on and attribute to an unrelated test. Finalizing
+    # under a raising release and forcing collection here leaves the run clean only if __del__ swallows the error.
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    mocker.patch.object(SoftFileLock, "release", side_effect=OSError("release failed"))
+    del lock
+    gc.collect()
 
 
 @_UNIX_ONLY
