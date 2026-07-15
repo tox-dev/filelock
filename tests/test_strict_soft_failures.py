@@ -8,7 +8,7 @@ import sys
 import time
 from errno import EACCES, EEXIST, EINVAL, EIO, ENODEV, EXDEV
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import pytest
 
@@ -731,6 +731,13 @@ def test_strict_soft_structurally_invalid_record_fails_closed(tmp_path: Path, co
         StrictSoftFileLock(lock_path).acquire()
 
 
+_O_NONBLOCK: Final[int] = getattr(os, "O_NONBLOCK", 0)
+_REQUIRES_O_NONBLOCK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not _O_NONBLOCK, reason="O_NONBLOCK is a Unix-only open flag; the retry never engages without it"
+)
+
+
+@_REQUIRES_O_NONBLOCK
 def test_strict_soft_claim_read_retries_without_nonblock(tmp_path: Path, mocker: MockerFixture) -> None:
     # A filesystem that rejects O_NONBLOCK on a regular-file open (SMB returns EINVAL) must still read a claim: the
     # reader drops the flag and retries, since such a filesystem cannot host the FIFO the flag guards against.
@@ -739,7 +746,7 @@ def test_strict_soft_claim_read_retries_without_nonblock(tmp_path: Path, mocker:
         real_open = cast("Callable[..., int]", os.open)
 
         def rejects_nonblock(path: str, flags: int, *args: object, **kwargs: object) -> int:
-            if flags & os.O_NONBLOCK and str(path).endswith(".claim"):
+            if flags & _O_NONBLOCK and str(path).endswith(".claim"):
                 raise OSError(EINVAL, "Invalid argument")
             return real_open(path, flags, *args, **kwargs)
 
@@ -747,6 +754,7 @@ def test_strict_soft_claim_read_retries_without_nonblock(tmp_path: Path, mocker:
         assert len(held.claims) == 1
 
 
+@_REQUIRES_O_NONBLOCK
 def test_strict_soft_claim_read_reraises_other_open_errors(tmp_path: Path, mocker: MockerFixture) -> None:
     # Only EINVAL triggers the retry; another open error on the claim still fails closed.
     lock_path = tmp_path / "resource.lock"
@@ -754,7 +762,7 @@ def test_strict_soft_claim_read_reraises_other_open_errors(tmp_path: Path, mocke
         real_open = cast("Callable[..., int]", os.open)
 
         def fails_hard(path: str, flags: int, *args: object, **kwargs: object) -> int:
-            if flags & os.O_NONBLOCK and str(path).endswith(".claim"):
+            if flags & _O_NONBLOCK and str(path).endswith(".claim"):
                 raise OSError(ENODEV, "no such device")
             return real_open(path, flags, *args, **kwargs)
 
