@@ -190,11 +190,18 @@ jobs:
           for m in nfs4a nfs4b nfs3a nfs3b; do sudo chmod 1777 "/mnt/$m"; done
           mount | grep /mnt/nfs
       - name: "🔒 Verify NFSv4 mutual exclusion across two client caches"
+        env:
+          # Native flock does not synchronise across independent NFS clients (the flock(2) man page and filelock's docs
+          # both say so, and the printed FileLock result shows it); SoftFileLock over atomic O_EXCL create is the
+          # network-safe primitive and is what the gate enforces. The other two print their real behaviour ungated.
+          FILELOCK_VERIFY_LOCKS: SoftFileLock
         run: |
           uv venv
           uv pip install .
           timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs4a /mnt/nfs4b
       - name: "🔒 Verify NFSv3 mutual exclusion across two client caches"
+        env:
+          FILELOCK_VERIFY_LOCKS: SoftFileLock
         run: timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs3a /mnt/nfs3b
 
   smb:
