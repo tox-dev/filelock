@@ -145,13 +145,16 @@ def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None
 def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None:
     seen: list[LeaseCompromise] = []
     holder = _lease(marker, on_compromise=seen.append)
+    peer = _lease(marker)
 
-    with holder:
-        marker.unlink()
-        _lease(marker).acquire()  # a peer publishes a fresh marker at the same path
-        time.sleep(_HEARTBEAT * 5)
-
-    assert [c.reason for c in seen] == ["owner-changed"]
+    try:
+        with holder:
+            marker.unlink()
+            peer.acquire()  # a peer publishes a fresh marker at the same path
+            time.sleep(_HEARTBEAT * 5)
+        assert [c.reason for c in seen] == ["owner-changed"]
+    finally:
+        peer.release()  # stop the peer's heartbeat here, so its release log never lands in a later test's caplog
 
 
 def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: MockerFixture) -> None:
