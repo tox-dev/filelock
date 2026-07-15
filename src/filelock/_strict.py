@@ -35,6 +35,9 @@ _PRIVATE_RECORD_SUFFIX: Final[str] = ".tmp"
 _PRIVATE_RECORD_RANDOM_HEX_LENGTH: Final[int] = 32
 _PRIVATE_RECORD_GRACE: Final[float] = 2.0
 _UNLINK_MAX_RETRIES: Final[int] = 10
+#: Windows opens descriptors in text mode by default, which rewrites newlines and truncates a record at a control byte.
+#: The claim and sentinel records are exact binary, so every record descriptor must be binary; POSIX ignores the flag.
+_O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
 _LEGACY_SENTINEL: Final[bytes] = STRICT_SOFT_SENTINEL_RECORD.encode()
 _WINDOWS_HARD_LINK_UNSUPPORTED: Final[frozenset[int]] = frozenset({1, 17, 50})
 
@@ -398,7 +401,7 @@ def _publish_record_in_directory(
     mode: int,
     record: bytes,
 ) -> None:
-    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | _O_BINARY
     if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
         flags |= o_nofollow
     private_fd = _open_relative(directory_ref, names[0], flags, mode)
@@ -710,7 +713,7 @@ def _open_record(path: Path, limit: int) -> tuple[int, bytes]:
     if not stat.S_ISREG(path_stat.st_mode):
         msg = f"{path} is not a regular file"
         raise OSError(msg)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     fd = os.open(path, flags)
     try:
         record = _read_opened_record(fd, path, path_stat, limit)
