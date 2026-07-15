@@ -62,10 +62,16 @@ def _verify_across(mounts: list[Path]) -> int:
 
 def _hammer(name: str, lock_path: str, counter_path: str) -> None:
     lock = _build(name, lock_path)
+    counter = Path(counter_path)
     for _ in range(_INCREMENTS):
         with lock:
-            current = int(Path(counter_path).read_text(encoding="utf-8"))
-            Path(counter_path).write_text(str(current + 1), encoding="utf-8")
+            current = int(counter.read_text(encoding="utf-8"))
+            # Replace the counter atomically. A plain write truncates first, and a second client cache reading that
+            # empty window would fail even though the lock held; a temp file renamed into place never appears empty,
+            # so a lost update shows up as a short final count rather than a crash.
+            temporary = counter.with_name(f"{counter.name}.{os.getpid()}.tmp")
+            temporary.write_text(str(current + 1), encoding="utf-8")
+            temporary.replace(counter)
 
 
 def _build(name: str, lock_path: str) -> FileLock | SoftFileLock | StrictSoftFileLock:
