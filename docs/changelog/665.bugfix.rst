@@ -1,1 +1,0 @@
-``StrictSoftFileLock`` reads a claim on a filesystem that rejects ``O_NONBLOCK`` on a regular-file open, such as SMB, by retrying the open without it instead of failing with an ``Invalid argument`` error.

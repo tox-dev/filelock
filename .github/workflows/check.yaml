@@ -216,6 +216,10 @@ jobs:
             -o "guest,uid=$(id -u),gid=$(id -g),file_mode=0777,dir_mode=0777,vers=3.0"
           mount | grep /mnt/smb
       - name: "🔒 Verify lock mutual exclusion on SMB"
+        # The strict lock's claim protocol needs an atomic no-replace hard link that SMB does not reliably provide, so
+        # verify the native and soft locks, which SMB does support.
+        env:
+          FILELOCK_VERIFY_LOCKS: FileLock,SoftFileLock
         run: |
           uv venv
           uv pip install .

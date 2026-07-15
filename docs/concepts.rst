@@ -555,9 +555,11 @@ visibility to every participating process. The table records where that has been
        unverified, and POSIX advisory locking is unreliable across NFS implementations, so keep SQLite-backed
        :class:`ReadWriteLock <filelock.ReadWriteLock>` off NFS regardless.
    * - SMB / CIFS (loopback single server)
-     - Verified in CI
-     - A CI lane mounts a loopback Samba share and runs the same contention check. Multi-client access and other server
-       and mount options stay unverified; verify your own mount before relying on it.
+     - Native and soft only
+     - A CI lane mounts a loopback Samba share and confirms mutual exclusion for the native and soft locks.
+       :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` is not supported on SMB: its claim protocol needs an
+       atomic no-replace hard link that SMB does not reliably provide. Multi-client access and other server and mount
+       options stay unverified.
 
 Do not read a loopback "Verified in CI" as a promise for a production multi-client deployment. It means the project
 measured one client against one server; cache and locking options and a second client can change the result, so record

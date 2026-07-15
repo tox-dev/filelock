@@ -7,6 +7,7 @@ total. A lower total means two holders overlapped. Run with ``python tasks/verif
 
 from __future__ import annotations
 
+import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -17,11 +18,7 @@ from filelock import FileLock, SoftFileLock, StrictSoftFileLock
 
 _PROCESSES: Final[int] = 8
 _INCREMENTS: Final[int] = 200
-_LOCKS: Final[dict[str, str]] = {
-    "FileLock": "native",
-    "SoftFileLock": "soft",
-    "StrictSoftFileLock": "strict",
-}
+_ALL_LOCKS: Final[tuple[str, ...]] = ("FileLock", "SoftFileLock", "StrictSoftFileLock")
 
 
 def main() -> int:
@@ -33,10 +30,18 @@ def main() -> int:
         return _verify_in(Path(directory))
 
 
+def _selected_locks() -> tuple[str, ...]:
+    # FILELOCK_VERIFY_LOCKS narrows the set to a comma-separated subset, so a filesystem that supports only some lock
+    # types (SMB has no atomic no-replace hard link for the strict claim protocol) is checked for the ones it does.
+    if not (requested := os.environ.get("FILELOCK_VERIFY_LOCKS")):
+        return _ALL_LOCKS
+    return tuple(name for name in _ALL_LOCKS if name in requested.split(","))
+
+
 def _verify_in(directory: Path) -> int:
     print(f"verifying mutual exclusion in {directory} ({_PROCESSES} processes x {_INCREMENTS} increments)")
     failures = 0
-    for name in _LOCKS:
+    for name in _selected_locks():
         counter = directory / f"{name}.counter"
         counter.write_text("0", encoding="utf-8")
         lock_path = str(directory / f"{name}.lock")

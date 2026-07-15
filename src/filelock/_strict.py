@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from errno import EACCES, EEXIST, EINVAL, ENOENT, ENOSYS, ENOTSUP, EPERM, EXDEV
+from errno import EACCES, EEXIST, ENOENT, ENOSYS, ENOTSUP, EPERM, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -749,7 +749,8 @@ def _open_record(path: Path, limit: int) -> tuple[int, bytes]:
     if not stat.S_ISREG(path_stat.st_mode):
         msg = f"{path} is not a regular file"
         raise OSError(msg)
-    fd = _open_record_fd(path)
+    flags = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
     try:
         record = _read_opened_record(fd, path, path_stat, limit)
     except BaseException as read_error:  # preserve read and descriptor cleanup errors
@@ -759,21 +760,6 @@ def _open_record(path: Path, limit: int) -> tuple[int, bytes]:
             _raise_cleanup_errors("strict record read cleanup failed", read_error, close_error)
         raise
     return fd, record
-
-
-def _open_record_fd(path: Path) -> int:
-    # O_NONBLOCK guards only against a FIFO swapped in after the lstat stalling the open. A network filesystem such as
-    # SMB rejects O_NONBLOCK on a regular-file open with EINVAL, and it cannot host a FIFO in the first place, so drop
-    # it and retry there. The lstat above and the fstat in _read_opened_record still reject any non-regular node.
-    base = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0)
-    if not (nonblock := getattr(os, "O_NONBLOCK", 0)):  # Windows has no O_NONBLOCK, so nothing to drop or retry
-        return os.open(path, base)
-    try:
-        return os.open(path, base | nonblock)
-    except OSError as error:
-        if error.errno != EINVAL:
-            raise
-        return os.open(path, base)
 
 
 def _read_opened_record(fd: int, path: Path, path_stat: os.stat_result, limit: int) -> bytes:
