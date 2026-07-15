@@ -427,7 +427,7 @@ def test_strict_soft_release_error_keeps_remaining_claim(tmp_path: Path, mocker:
             raise PermissionError(EACCES, "claim is not writable")
         real_unlink(path, missing_ok=missing_ok)
 
-    mocker.patch.object(os, "supports_dir_fd", os.supports_dir_fd - {os.unlink})
+    mocker.patch("filelock._strict._UNLINK_SUPPORTS_DIR_FD", new=False)
     mocker.patch.object(Path, "unlink", autospec=True, side_effect=fail_once)
     with pytest.raises(PermissionError, match="claim is not writable"):
         lock.release()

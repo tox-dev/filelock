@@ -37,8 +37,12 @@ _UNLINK_MAX_RETRIES: Final[int] = 10
 _LEGACY_SENTINEL: Final[bytes] = STRICT_SOFT_SENTINEL_RECORD.encode()
 _WINDOWS_HARD_LINK_UNSUPPORTED: Final[frozenset[int]] = frozenset({1, 17, 50})
 
-#: Set once a runtime rejects os.link(follow_symlinks=False) with EINVAL, so later links skip the refused option.
-_LINK_FOLLOW_SYMLINKS_REFUSED: bool = False
+# Probe dir_fd capability once at import. A per-call ``os.unlink in os.supports_dir_fd`` check flips to False the moment
+# a test mocks os.unlink, silently diverting the code to a different branch than the one under test.
+_OPEN_SUPPORTS_DIR_FD: Final[bool] = os.open in os.supports_dir_fd
+_UNLINK_SUPPORTS_DIR_FD: Final[bool] = os.unlink in os.supports_dir_fd
+_STAT_SUPPORTS_DIR_FD: Final[bool] = os.stat in os.supports_dir_fd
+_LINK_SUPPORTS_DIR_FD: Final[bool] = os.link in os.supports_dir_fd
 
 
 class StrictSoftFileLock(BaseFileLock):
@@ -344,7 +348,7 @@ def _publish_record(
     directory, public_name = os.path.split(public_path)
     directory = directory or os.curdir
     private_name = _private_record_name(public_name)
-    directory_fd = _open_directory(directory) if os.open in os.supports_dir_fd else None
+    directory_fd = _open_directory(directory) if _OPEN_SUPPORTS_DIR_FD else None
     directory_ref = directory, directory_fd
     try:
         _publish_record_in_directory(directory_ref, (private_name, public_name), mode, record)
@@ -485,7 +489,7 @@ def _reclaim_private_record(directory_ref: tuple[str, int | None], private_name:
     try:
         private_stat = (
             os.stat(private_name, dir_fd=directory_fd, follow_symlinks=False)
-            if directory_fd is not None and os.stat in os.supports_dir_fd
+            if directory_fd is not None and _STAT_SUPPORTS_DIR_FD
             else Path(directory, private_name).lstat()
         )
     except FileNotFoundError:
@@ -506,7 +510,7 @@ def _reclaim_private_record(directory_ref: tuple[str, int | None], private_name:
 
 def _unlink_private_record_once(directory_ref: tuple[str, int | None], private_name: str) -> None:
     directory, directory_fd = directory_ref
-    if directory_fd is not None and os.unlink in os.supports_dir_fd:
+    if directory_fd is not None and _UNLINK_SUPPORTS_DIR_FD:
         os.unlink(private_name, dir_fd=directory_fd)
     else:
         Path(directory, private_name).unlink()
@@ -515,7 +519,7 @@ def _unlink_private_record_once(directory_ref: tuple[str, int | None], private_n
 def _relative_identity(directory_ref: tuple[str, int | None], name: str) -> tuple[int, int] | None:
     directory, directory_fd = directory_ref
     try:
-        if directory_fd is not None and os.stat in os.supports_dir_fd:
+        if directory_fd is not None and _STAT_SUPPORTS_DIR_FD:
             path_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         else:
             path_stat = Path(directory, name).lstat()
@@ -545,7 +549,7 @@ def _open_relative(directory_ref: tuple[str, int | None], name: str, flags: int,
 
 def _link_relative(directory_ref: tuple[str, int | None], source_name: str, destination_name: str) -> None:
     directory, directory_fd = directory_ref
-    if directory_fd is not None and os.link in os.supports_dir_fd:
+    if directory_fd is not None and _LINK_SUPPORTS_DIR_FD:
         _link_no_follow(source_name, destination_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
         return
     _link_no_follow(Path(directory, source_name), Path(directory, destination_name))
@@ -560,23 +564,18 @@ def _link_no_follow(
 ) -> None:
     # The source is a private record this process created with O_CREAT | O_EXCL, so follow_symlinks guards nothing an
     # attacker can reach. PyPy advertises the option through os.supports_follow_symlinks yet its linkat rejects it with
-    # EINVAL on some platforms, so drop the option once the runtime refuses it rather than trust the advertised set.
-    global _LINK_FOLLOW_SYMLINKS_REFUSED  # noqa: PLW0603
-    if not _LINK_FOLLOW_SYMLINKS_REFUSED:
-        try:
-            os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False)
-        except OSError as error:
-            if error.errno != EINVAL:
-                raise
-            _LINK_FOLLOW_SYMLINKS_REFUSED = True
-        else:
-            return
-    os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    # EINVAL on some platforms, so drop the option when the runtime refuses it rather than trust the advertised set.
+    try:
+        os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False)
+    except OSError as error:
+        if error.errno != EINVAL:
+            raise
+        os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
 
 def _unlink_relative(directory_ref: tuple[str, int | None], name: str) -> None:
     directory, directory_fd = directory_ref
-    if directory_fd is not None and os.unlink in os.supports_dir_fd:
+    if directory_fd is not None and _UNLINK_SUPPORTS_DIR_FD:
         os.unlink(name, dir_fd=directory_fd)
     elif sys.platform == "win32":
         _unlink_in_directory(Path(directory), name)
@@ -585,7 +584,7 @@ def _unlink_relative(directory_ref: tuple[str, int | None], name: str) -> None:
 
 
 def _link_no_replace(directory: Path, source_name: str, destination_name: str) -> BaseException | None:
-    if os.link in os.supports_dir_fd:
+    if _LINK_SUPPORTS_DIR_FD:
         directory_fd = _open_directory(str(directory))
         try:
             _link_no_follow(source_name, destination_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
@@ -633,7 +632,7 @@ def _raise_recorded_errors(message: str, errors: list[BaseException]) -> None:
 
 
 def _unlink_in_directory(directory: Path, name: str) -> BaseException | None:
-    if os.unlink in os.supports_dir_fd:
+    if _UNLINK_SUPPORTS_DIR_FD:
         directory_fd = _open_directory(str(directory))
         try:
             os.unlink(name, dir_fd=directory_fd)
