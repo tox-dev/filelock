@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 CompromiseReason = Literal["marker-missing", "owner-changed", "refresh-failed"]
 
+_RefreshOutcome = Literal["ok", "lost", "transient"]
+
 
 @dataclass(frozen=True)
 class LeaseCompromise:
@@ -162,6 +164,11 @@ class SoftFileLease(MarkerSoftFileLock):
 
     def _try_break_stale_lock(self) -> None:
         if (peer := self._read_peer()) is None:
+            # Not a readable protocol 2 lease record: a partial write, a foreign or legacy protocol 1 marker, or the
+            # strict sentinel. The base self-heal evicts a genuinely malformed marker once it ages past the grace
+            # window and leaves a legitimate legacy or strict holder in place, so a corrupt marker no longer wedges
+            # every lease contender until its own timeout.
+            super()._try_break_stale_lock()
             return
         owner, mtime, ino = peer
         # A malformed, legacy or strict record is never reclaimed by age: only a peer that published a lease agreed to
@@ -212,27 +219,39 @@ class SoftFileLease(MarkerSoftFileLock):
             heartbeat.join(timeout=self._heartbeat_interval)
 
     def _refresh_until_stopped(self, fd: int, identity: tuple[int, int], token: str) -> None:
-        # The loop ends at the first loss of the claim, so the holder hears about it once.
+        # The loop ends at the first loss of the claim, so the holder hears about it once. A transient filesystem
+        # error (ESTALE / EIO on the NFS-style filesystems a lease targets) is not a loss: retry rather than raise a
+        # false compromise. Report the claim unrefreshable only once failures have run long enough that a contender
+        # could take it before the next success would land, a margin before the marker actually ages out, the way
+        # restic declares a lock unrefreshable ahead of its stale time.
+        last_success = time.monotonic()
         while not self._heartbeat_stop.wait(self._heartbeat_interval):
-            if not self._refresh_claim(fd, identity, token):
+            outcome, error = self._refresh_claim(fd, identity, token)
+            if outcome == "lost":
+                return
+            if outcome == "ok":
+                last_success = time.monotonic()
+            elif time.monotonic() - last_success >= self._lease_duration - self._heartbeat_interval:
+                self._report_compromise("refresh-failed", error, token)
                 return
 
-    def _refresh_claim(self, fd: int, identity: tuple[int, int], token: str) -> bool:
+    def _refresh_claim(self, fd: int, identity: tuple[int, int], token: str) -> tuple[_RefreshOutcome, OSError | None]:
         try:
             st = os.lstat(self.lock_file)
-        except OSError as error:
+        except FileNotFoundError as error:
             self._report_compromise("marker-missing", error, token)
-            return False
+            return "lost", None
+        except OSError as error:
+            return "transient", error
         # A peer that took the expired claim replaced the marker, so the pathname now names its inode, not ours.
         if (st.st_dev, st.st_ino) != identity:
             self._report_compromise("owner-changed", None, token)
-            return False
+            return "lost", None
         try:
             touch(self.lock_file, fd=fd)
         except OSError as error:
-            self._report_compromise("refresh-failed", error, token)
-            return False
-        return True
+            return "transient", error
+        return "ok", None
 
     def _report_compromise(self, reason: CompromiseReason, error: OSError | None, token: str) -> None:
         # The token is the one this thread published, not self._token, which a release may already have cleared.

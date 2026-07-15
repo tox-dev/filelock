@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager, suppress
-from errno import EIO
+from errno import EIO, ENOENT
 from multiprocessing import Event, Process
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -601,18 +601,43 @@ def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: p
         lock.close()
 
 
-def test_heartbeat_stops_when_marker_evicted(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A failed O_NOFOLLOW open means the marker we held was unlinked or swapped for a symlink. A peer
-    # evicted us; this is not a transient hiccup, so the heartbeat must stop rather than keep retrying.
-    def gone(name: str, *, dir_fd: int | None = None) -> int | None:  # noqa: ARG001
-        return None
+@pytest.mark.parametrize(
+    "target", [pytest.param("_open_marker_fd", id="open"), pytest.param("_read_marker_fd", id="read")]
+)
+def test_heartbeat_survives_a_transient_marker_error(
+    lock_file: str, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    # A transient ESTALE/EIO opening or reading the marker is routine on the NFS-style filesystems this lock targets.
+    # Unlike the marker actually vanishing, it must not stop the heartbeat and drop the lease.
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError(EIO, "Input/output error")
 
     lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
     lock.acquire_write(timeout=2)
     try:
         hold = lock._hold
         assert hold is not None
-        monkeypatch.setattr(sync_mod, "_open_marker", gone)
+        monkeypatch.setattr(sync_mod, target, boom)
+        time.sleep(0.2)  # ~10 ticks, every one failing the open or read
+        assert hold.heartbeat_thread.is_alive()
+        assert not hold.heartbeat_stop.is_set()
+    finally:
+        lock.release(force=True)
+        lock.close()
+
+
+def test_heartbeat_stops_when_marker_evicted(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # An O_NOFOLLOW open failing with ENOENT means the marker we held is gone: a peer evicted us. Unlike a transient
+    # filesystem error, this is an unambiguous loss, so the heartbeat must stop rather than keep retrying.
+    def gone(name: str, *, dir_fd: int | None = None) -> int:  # noqa: ARG001
+        raise FileNotFoundError(ENOENT, "No such file or directory")
+
+    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
+    lock.acquire_write(timeout=2)
+    try:
+        hold = lock._hold
+        assert hold is not None
+        monkeypatch.setattr(sync_mod, "_open_marker_fd", gone)
         assert hold.heartbeat_stop.wait(timeout=2)
         hold.heartbeat_thread.join(timeout=2)
         assert not hold.heartbeat_thread.is_alive()
