@@ -6,9 +6,9 @@ import socket
 import stat
 import sys
 import time
-from errno import EACCES, EEXIST, EIO, EXDEV
+from errno import EACCES, EEXIST, EINVAL, EIO, ENODEV, EXDEV
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -28,7 +28,7 @@ _REQUIRES_DIR_FD_CLEANUP = pytest.mark.skipif(
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from pytest_mock import MockerFixture
 
@@ -729,6 +729,38 @@ def test_strict_soft_structurally_invalid_record_fails_closed(tmp_path: Path, co
 
     with pytest.raises(SoftFileLockProtocolError, match="malformed claim record"):
         StrictSoftFileLock(lock_path).acquire()
+
+
+def test_strict_soft_claim_read_retries_without_nonblock(tmp_path: Path, mocker: MockerFixture) -> None:
+    # A filesystem that rejects O_NONBLOCK on a regular-file open (SMB returns EINVAL) must still read a claim: the
+    # reader drops the flag and retries, since such a filesystem cannot host the FIFO the flag guards against.
+    lock_path = tmp_path / "resource.lock"
+    with StrictSoftFileLock(lock_path) as held:
+        real_open = cast("Callable[..., int]", os.open)
+
+        def rejects_nonblock(path: str, flags: int, *args: object, **kwargs: object) -> int:
+            if flags & os.O_NONBLOCK and str(path).endswith(".claim"):
+                raise OSError(EINVAL, "Invalid argument")
+            return real_open(path, flags, *args, **kwargs)
+
+        mocker.patch("filelock._strict.os.open", side_effect=rejects_nonblock)
+        assert len(held.claims) == 1
+
+
+def test_strict_soft_claim_read_reraises_other_open_errors(tmp_path: Path, mocker: MockerFixture) -> None:
+    # Only EINVAL triggers the retry; another open error on the claim still fails closed.
+    lock_path = tmp_path / "resource.lock"
+    with StrictSoftFileLock(lock_path):
+        real_open = cast("Callable[..., int]", os.open)
+
+        def fails_hard(path: str, flags: int, *args: object, **kwargs: object) -> int:
+            if flags & os.O_NONBLOCK and str(path).endswith(".claim"):
+                raise OSError(ENODEV, "no such device")
+            return real_open(path, flags, *args, **kwargs)
+
+        mocker.patch("filelock._strict.os.open", side_effect=fails_hard)
+        with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
+            _ = StrictSoftFileLock(lock_path).claims
 
 
 def test_strict_soft_accepts_maximum_pid(tmp_path: Path) -> None:
