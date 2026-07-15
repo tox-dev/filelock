@@ -389,9 +389,10 @@ the inherited instance fork-invalidated; ``release()`` on it becomes a no-op, an
 ``SoftReadWriteLock(path)`` before acquiring. This follows the invalidation approach used by PyMongo's connection
 pools.
 
-**Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
-permissions can exclude another UID. A process with the same effective UID can alter the markers, and incorrect clocks
-or cache behavior can trigger expiry while a holder remains active.
+**Trust boundary.** The class coordinates cooperating processes at one UID. Mode bits (``0o600`` / ``0o700``) keep other
+UIDs out; they do not make a same-UID co-tenant safe, since it owns the markers and can rewrite or delete them directly.
+Incorrect clocks or cache behavior can also trigger expiry while a holder remains active. See
+:ref:`concepts:The same-UID boundary` for the full contract.
 
 ***********************************
  Use async read / write locks
