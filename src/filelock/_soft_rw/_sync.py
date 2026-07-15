@@ -689,16 +689,21 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # Open once with O_NOFOLLOW and touch that exact descriptor. Refreshing through the verified fd
         # (instead of re-opening by name) closes the window where a peer unlinks our marker and drops a symlink
         # or a different file at the path between the read and the touch: utime then lands on the inode we
-        # verified, or nowhere. A failed open means the marker is gone or was swapped out (a peer evicted us),
-        # so stop the heartbeat now instead of waiting a tick.
-        fd = _open_marker(marker_name, dir_fd=dir_fd)
-        if fd is None:
+        # verified, or nowhere. Only an unambiguous loss stops the heartbeat: the marker gone, or a peer's token
+        # in its place. A transient filesystem error (ESTALE / EIO on the NFS-style filesystems this lock targets)
+        # keeps the heartbeat alive to retry next tick, the way the touch below already does, so one blip does not
+        # silently drop a held lock.
+        try:
+            fd = _open_marker_fd(marker_name, dir_fd=dir_fd)
+        except FileNotFoundError:
             return False
+        except OSError:
+            return True
         try:
             try:
-                data = os.read(fd, _MAX_MARKER_SIZE + 1)
-            except OSError:  # pragma: no cover - e.g. EAGAIN from a hostile FIFO that has a writer attached
-                return False
+                data = _read_marker_fd(fd)
+            except OSError:  # a transient read error or EAGAIN from a hostile FIFO; retry rather than drop the lock
+                return True
             info = _parse_marker_bytes(data)
             # Token mismatch means another process already evicted our marker and created its own; stop the
             # thread so it does not keep a stranger's file alive.
@@ -764,13 +769,21 @@ def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo |
     return _parse_marker_bytes(data), st.st_mtime
 
 
-def _open_marker(name: str, *, dir_fd: int | None = None) -> int | None:
+def _read_marker_fd(fd: int) -> bytes:
+    return os.read(fd, _MAX_MARKER_SIZE + 1)
+
+
+def _open_marker_fd(name: str, *, dir_fd: int | None = None) -> int:
     # The file is ours; these guard a hostile mid-flight swap. O_NOFOLLOW rejects a symlink; O_NONBLOCK keeps
     # a real FIFO from blocking the open forever, so it reads as a malformed marker instead of wedging a peer
     # that holds the state lock.
     flags = os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK
+    return os.open(name, flags, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.open(name, flags)
+
+
+def _open_marker(name: str, *, dir_fd: int | None = None) -> int | None:
     try:
-        return os.open(name, flags, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.open(name, flags)
+        return _open_marker_fd(name, dir_fd=dir_fd)
     except OSError:
         return None
 

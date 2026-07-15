@@ -737,19 +737,19 @@ def test_strict_soft_accepts_maximum_pid(tmp_path: Path) -> None:
     claims = Path(f"{lock_path}.filelock") / "claims"
     claims.mkdir(parents=True)
     (claims / f"held-v1-{token}.claim").write_text(
-        f"filelock-strict-v1\n{token}\n4294967295\n686f7374\n4242\n",
+        f"filelock-strict-v1\n{token}\n2147483647\n686f7374\n4242\n",
         encoding="ascii",
         newline="",
     )
 
-    assert StrictSoftFileLock(lock_path).claims[0].pid == 2**32 - 1
+    assert StrictSoftFileLock(lock_path).claims[0].pid == 2**31 - 1
 
 
 @pytest.mark.parametrize(
     ("pid", "hostname_hex"),
     [
         pytest.param("01", "686f7374", id="leading-zero-pid"),
-        pytest.param("4294967296", "686f7374", id="pid-overflow"),
+        pytest.param("2147483648", "686f7374", id="pid-above-signed-int"),
         pytest.param("1", "686F7374", id="uppercase-hostname-hex"),
         pytest.param("1", "20686f737420", id="spaced-hostname"),
         pytest.param("1", "686f737400", id="null-hostname"),

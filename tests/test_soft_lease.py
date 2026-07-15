@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import itertools
 import os
 import socket
 import sys
 import time
+from errno import EIO
 from typing import TYPE_CHECKING, Final, cast
 
 import pytest
@@ -106,6 +108,16 @@ def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) 
         holder.release()
 
 
+def test_lease_self_heals_a_malformed_marker(marker: Path) -> None:
+    # A partial write or a foreign file leaves a marker the lease parser cannot read. Rather than block every
+    # contender until timeout, the base self-heal evicts it once it ages past the malformed grace window.
+    marker.write_text("not a protocol 2 record\n", encoding="utf-8")
+    os.utime(marker, (0, 0))
+
+    with _lease(marker) as lease:
+        assert lease.is_lock_held_by_us
+
+
 def test_lease_reclaims_a_dead_same_host_holder(marker: Path) -> None:
     marker.write_text(
         f"filelock/2\npid=999999\nhost={socket.gethostname()}\nmode=lease\ntoken=abc\nduration={_DURATION!r}\n",
@@ -149,9 +161,32 @@ def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: Moc
     lease = _lease(marker, on_compromise=seen.append)
 
     with lease:
-        time.sleep(_HEARTBEAT * 5)
+        time.sleep(_DURATION + _HEARTBEAT)  # past the refresh margin, so a persistent failure is reported once
 
     assert [(c.reason, c.error) for c in seen] == [("refresh-failed", failure)]
+
+
+@pytest.mark.parametrize("target", [pytest.param("touch", id="touch"), pytest.param("os.lstat", id="lstat")])
+def test_lease_tolerates_a_transient_refresh_error(marker: Path, mocker: MockerFixture, target: str) -> None:
+    # A transient ESTALE/EIO on the refresh path that recovers before the lease could lapse must not raise a
+    # compromise: the marker was ours last tick, so retry rather than tell the holder to abandon its work.
+    import filelock._lease as lease_mod
+
+    ticks = itertools.count()
+    real = cast("Callable[..., object]", lease_mod.touch if target == "touch" else os.lstat)
+
+    def flaky(path: str, *args: object, **kwargs: object) -> object:
+        if path.endswith(marker.name) and next(ticks) < 2:
+            raise OSError(EIO, "Input/output error")
+        return real(path, *args, **kwargs)
+
+    mocker.patch(f"filelock._lease.{target}", side_effect=flaky)
+    seen: list[LeaseCompromise] = []
+    lease = _lease(marker, on_compromise=seen.append)
+    with lease:
+        time.sleep(_HEARTBEAT * 6)  # several ticks: the first two fail, the rest recover
+        assert seen == []
+        assert lease.compromise is None
 
 
 @_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER

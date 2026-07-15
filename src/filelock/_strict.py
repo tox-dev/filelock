@@ -366,7 +366,7 @@ def _parse_claim(
         not trailing,
         magic == _CLAIM_MAGIC,
         token == name_parts[1],
-        1 <= pid <= 2**32 - 1,
+        1 <= pid <= 2**31 - 1,
         str(pid) == pid_text,
         start is None or (start >= 0 and str(start) == start_text),
         hostname.encode().hex() == hostname_hex
