@@ -6,6 +6,7 @@ import secrets
 import socket
 import stat
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from errno import EACCES, EEXIST, EINVAL, ENOENT, ENOSYS, ENOTSUP, EPERM, EXDEV
@@ -43,6 +44,23 @@ _OPEN_SUPPORTS_DIR_FD: Final[bool] = os.open in os.supports_dir_fd
 _UNLINK_SUPPORTS_DIR_FD: Final[bool] = os.unlink in os.supports_dir_fd
 _STAT_SUPPORTS_DIR_FD: Final[bool] = os.stat in os.supports_dir_fd
 _LINK_SUPPORTS_DIR_FD: Final[bool] = os.link in os.supports_dir_fd
+
+
+def _probe_link_follow_symlinks() -> bool:
+    # os.supports_follow_symlinks lists os.link on PyPy, but its linkat then rejects follow_symlinks=False with EINVAL.
+    # Link a throwaway file for real so the answer reflects the runtime, not its advertisement. Any other failure is an
+    # environment problem the real link will surface, so treat the option as honored.
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "probe-source")
+            source.touch()
+            os.link(source, Path(directory, "probe-link"), follow_symlinks=False)
+    except OSError as error:
+        return error.errno != EINVAL
+    return True
+
+
+_LINK_HONORS_FOLLOW_SYMLINKS: Final[bool] = _probe_link_follow_symlinks()
 
 
 class StrictSoftFileLock(BaseFileLock):
@@ -563,13 +581,11 @@ def _link_no_follow(
     dst_dir_fd: int | None = None,
 ) -> None:
     # The source is a private record this process created with O_CREAT | O_EXCL, so follow_symlinks guards nothing an
-    # attacker can reach. PyPy advertises the option through os.supports_follow_symlinks yet its linkat rejects it with
-    # EINVAL on some platforms, so drop the option when the runtime refuses it rather than trust the advertised set.
-    try:
+    # attacker can reach. Pass the option only when the runtime honors it: PyPy advertises it through
+    # os.supports_follow_symlinks yet its linkat rejects it with EINVAL, so probe once rather than trust the set.
+    if _LINK_HONORS_FOLLOW_SYMLINKS:
         os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False)
-    except OSError as error:
-        if error.errno != EINVAL:
-            raise
+    else:
         os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
 
