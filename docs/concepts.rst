@@ -550,10 +550,14 @@ visibility to every participating process. The table records where that has been
      - Native and soft backends verified in CI.
    * - NFS (v4 and v3)
      - Verified in CI
-     - CI lanes export a loopback NFS share, mount it twice with ``nosharecache`` so the two mounts are independent
-       client caches over one server, and confirm mutual exclusion under eight-process contention across both caches,
-       for NFSv4 and NFSv3, covering the native, soft, and strict locks. POSIX advisory locking is unreliable across
-       NFS implementations, so keep SQLite-backed :class:`ReadWriteLock <filelock.ReadWriteLock>` off NFS.
+     - A CI lane exports a loopback NFS share, mounts it twice with ``nosharecache`` so the two mounts are independent
+       client caches over one server, then contends eight processes across both caches and records every hold interval.
+       No two holders overlap on either version, so mutual exclusion holds. The gate enforces
+       :class:`SoftFileLock <filelock.SoftFileLock>`, the portable network lock: any acquire it cannot complete under
+       contention fails closed without admitting a second holder. Native ``flock`` excludes but starves under this
+       contention, and :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` is clean on NFSv4 yet can meet a
+       transient ``ESTALE`` on NFSv3 claim churn, so prefer ``SoftFileLock`` on NFS. POSIX advisory locking is
+       unreliable across NFS, so keep SQLite-backed :class:`ReadWriteLock <filelock.ReadWriteLock>` off it.
    * - SMB / CIFS
      - Native and soft
      - A CI lane mounts a loopback Samba share twice and confirms mutual exclusion across both mounts for the native
