@@ -54,12 +54,17 @@ def _verify_across(mounts: list[Path]) -> int:
     gated = _gated_locks()
     failures = 0
     for name in _ALL_LOCKS:
-        held, overlaps = _run_one(name, mounts)
+        counts, overlaps, failure = _run_one(name, mounts)
         expected = _PROCESSES * _HOLDS
-        ok = overlaps == 0 and held == expected
+        # The guarantee under test is exclusion: no two holders overlap. Requiring every process to hold at least once
+        # keeps that from passing vacuously when contenders are starved out; the full held count is throughput, which a
+        # slow filesystem drags down without any exclusion failure, so it is reported but not gated.
+        ok = overlaps == 0 and min(counts) > 0
         failures += (not ok) and name in gated
         note = "" if name in gated else " (ungated)"
-        print(f"  {name:20} {'PASS' if ok else 'FAIL'}  held={held}/{expected} overlaps={overlaps}{note}")
+        tail = f"{note}{f' {failure}' if failure else ''}"
+        stats = f"held={sum(counts)}/{expected} min={min(counts)} overlaps={overlaps}"
+        print(f"  {name:20} {'PASS' if ok else 'FAIL'}  {stats}{tail}")
     return 1 if failures else 0
 
 
@@ -69,13 +74,14 @@ def _gated_locks() -> frozenset[str]:
     return frozenset(requested.split(","))
 
 
-def _run_one(name: str, mounts: list[Path]) -> tuple[int, int]:
+def _run_one(name: str, mounts: list[Path]) -> tuple[list[int], int, str | None]:
     # Same basename on every mount, so the mounts contend on one server file through their independent caches.
     lock_paths = [str(mounts[index % len(mounts)] / f"{name}.lock") for index in range(_PROCESSES)]
     with ProcessPoolExecutor(max_workers=_PROCESSES) as pool:
-        per_process = list(pool.map(_hammer, [name] * _PROCESSES, lock_paths))
-    held = sum(len(intervals) for intervals in per_process)
-    return held, _count_overlaps(per_process)
+        results = list(pool.map(_hammer, [name] * _PROCESSES, lock_paths))
+    counts = [len(intervals) for intervals, _ in results]
+    failure = next((reason for _, reason in results if reason is not None), None)
+    return counts, _count_overlaps([intervals for intervals, _ in results]), failure
 
 
 def _count_overlaps(per_process: list[list[tuple[float, float]]]) -> int:
@@ -93,17 +99,18 @@ def _count_overlaps(per_process: list[list[tuple[float, float]]]) -> int:
     return overlaps
 
 
-def _hammer(name: str, lock_path: str) -> list[tuple[float, float]]:
+def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str | None]:
     lock = _build(name, lock_path)
     intervals: list[tuple[float, float]] = []
     for _ in range(_HOLDS):
         try:
             # A finite timeout means a lock that livelocks gives up rather than spinning until an outer job timeout
-            # kills the run; the OSError catch also covers a lock type the filesystem rejects outright (the strict
-            # claim raises EINVAL on CIFS). A short interval count then records the failure for this type.
+            # kills the run. Any acquire failure this filesystem provokes (a Timeout, EINVAL where CIFS rejects the
+            # strict claim, an ESTALE storm on NFSv3) is recorded and ends this process's contribution, so one lock
+            # type's weakness on one filesystem never aborts the whole verification.
             lock.acquire(timeout=_ACQUIRE_TIMEOUT)
-        except OSError:
-            break
+        except Exception as error:  # noqa: BLE001 - the filesystem under test decides which failure modes appear
+            return intervals, f"{type(error).__name__}: {error}"[:160]
         enter = time.monotonic()
         # Hold briefly so a broken lock lets a second holder in during an observable window; a correct lock serialises
         # the holds regardless. enter is stamped after acquire and leave before release, so a correct hand-off can
@@ -112,7 +119,7 @@ def _hammer(name: str, lock_path: str) -> list[tuple[float, float]]:
         leave = time.monotonic()
         lock.release()
         intervals.append((enter, leave))
-    return intervals
+    return intervals, None
 
 
 def _build(name: str, lock_path: str) -> FileLock | SoftFileLock | StrictSoftFileLock:

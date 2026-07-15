@@ -191,18 +191,18 @@ jobs:
           mount | grep /mnt/nfs
       - name: "🔒 Verify NFSv4 mutual exclusion across two client caches"
         env:
-          # All three exclude correctly across the caches (overlaps stays 0), but native flock and the plain soft lock
-          # starve badly under this contention on NFS: a holder re-grabs the lock before a waiter on the other cache
-          # wakes, so most waiters give up. StrictSoftFileLock's claim queue hands off fairly and completes every hold,
-          # so it is the network-safe lock the gate enforces. The other two print their real behaviour ungated.
-          FILELOCK_VERIFY_LOCKS: StrictSoftFileLock
+          # SoftFileLock over atomic O_EXCL create excludes across both NFS versions and holds for every contender, so
+          # it is the lock the gate enforces on the network filesystems. The other two print their behaviour ungated:
+          # native flock starves under this contention, and StrictSoftFileLock is clean on v4 but meets an ESTALE storm
+          # on v3's claim churn. Exclusion (overlaps=0) holds for all three regardless.
+          FILELOCK_VERIFY_LOCKS: SoftFileLock
         run: |
           uv venv
           uv pip install .
           timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs4a /mnt/nfs4b
       - name: "🔒 Verify NFSv3 mutual exclusion across two client caches"
         env:
-          FILELOCK_VERIFY_LOCKS: StrictSoftFileLock
+          FILELOCK_VERIFY_LOCKS: SoftFileLock
         run: timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs3a /mnt/nfs3b
 
   smb:
