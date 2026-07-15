@@ -23,6 +23,7 @@ from filelock import (
     StrictSoftFileLock,
     Timeout,
 )
+from filelock._identity import process_start_token
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -42,6 +43,7 @@ def test_strict_soft_acquire_publishes_owner_claim(tmp_path: Path) -> None:
                 token=lock.claims[0].token,
                 pid=os.getpid(),
                 hostname=socket.gethostname(),
+                start=process_start_token(os.getpid()),
             ),
         )
     assert (lock_path.read_bytes(), lock.claims, lock.is_locked) == (_SENTINEL, (), False)
@@ -93,8 +95,8 @@ def test_legacy_client_never_reclaims_permanent_sentinel(tmp_path: Path, mocker:
     lock_path = tmp_path / "resource.lock"
     lock_path.write_bytes(_SENTINEL)
     os.utime(lock_path, (0, 0))
-    mocker.patch("filelock._soft.socket.gethostname", return_value="filelock-strict-v1\x00")
-    mocker.patch("filelock._soft.os.kill", side_effect=ProcessLookupError)
+    mocker.patch("filelock._identity.socket.gethostname", return_value="filelock-strict-v1\x00")
+    mocker.patch("filelock._identity.os.kill", side_effect=ProcessLookupError)
 
     with pytest.raises(Timeout):
         SoftFileLock(lock_path, timeout=0).acquire()
@@ -247,7 +249,7 @@ def test_strict_soft_orphan_claim_blocks_without_reclamation(tmp_path: Path, sta
     claims = Path(f"{lock_path}.filelock") / "claims"
     claims.mkdir(parents=True)
     (claims / claim_name).write_text(
-        f"filelock-strict-v1\n{token}\n{os.getpid()}\n{socket.gethostname().encode().hex()}\n",
+        f"filelock-strict-v1\n{token}\n{os.getpid()}\n{socket.gethostname().encode().hex()}\n4242\n",
         encoding="ascii",
         newline="",
     )
@@ -256,7 +258,9 @@ def test_strict_soft_orphan_claim_blocks_without_reclamation(tmp_path: Path, sta
     with pytest.raises(Timeout):
         lock.acquire()
     assert lock.claims == (
-        StrictSoftFileClaim(name=claim_name, state=state, token=token, pid=os.getpid(), hostname=socket.gethostname()),
+        StrictSoftFileClaim(
+            name=claim_name, state=state, token=token, pid=os.getpid(), hostname=socket.gethostname(), start=4242
+        ),
     )
 
 

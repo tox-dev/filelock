@@ -1,0 +1,2 @@
+``SoftFileLock`` and ``SoftFileLease`` record the holder's process start time on every platform and reclaim a stale marker only when the recorded owner is provably gone.
+A reused PID on Unix no longer breaks a live lock or wedges acquisition, matching the recycled-PID detection Windows already had.

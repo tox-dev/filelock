@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock, UnixFileLock
+from filelock._identity import process_start_token
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -94,7 +95,11 @@ def test_fallback_writes_pid_and_hostname(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
 
     with UnixFileLock(lock_path):
-        assert lock_path.read_text(encoding="utf-8") == f"{os.getpid()}\n{socket.gethostname()}\n"
+        lines = lock_path.read_text(encoding="utf-8").splitlines()
+    expected = [str(os.getpid()), socket.gethostname()]
+    if (token := process_start_token(os.getpid())) is not None:
+        expected.append(str(token))
+    assert lines == expected
 
 
 @_UNIX_ONLY

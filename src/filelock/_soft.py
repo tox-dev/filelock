@@ -1,41 +1,19 @@
 from __future__ import annotations
 
 import os
-import socket
 import stat
 import sys
 import time
 from contextlib import suppress
-from errno import EACCES, EEXIST, EPERM, ESRCH
+from errno import EACCES, EEXIST, EPERM
 from pathlib import Path
 from typing import Final
 
 from ._api import BaseFileLock, _raise_grouped_errors
+from ._identity import host_name, owner_is_stale, process_start_token
 from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file, write_all
 
-if sys.platform == "win32":  # pragma: win32 cover
-    import ctypes
-    from ctypes import wintypes
-
-    _KERNEL32: Final[ctypes.WinDLL] = ctypes.WinDLL("kernel32", use_last_error=True)
-    _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
-    _KERNEL32.CloseHandle.restype = wintypes.BOOL
-    _KERNEL32.GetProcessTimes.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-        ctypes.POINTER(wintypes.FILETIME),
-    ]
-    _KERNEL32.GetProcessTimes.restype = wintypes.BOOL
-    _KERNEL32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    _KERNEL32.OpenProcess.restype = wintypes.HANDLE
-
-_WIN_SYNCHRONIZE: Final[int] = 0x100000
-_WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
-_WIN_INHERIT_HANDLE: Final[bool] = False
-_WIN_PROCESS_QUERY_LIMITED_INFORMATION: Final[int] = 0x1000
 _MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
 _UNLINK_MAX_RETRIES: Final[int] = 10
@@ -114,76 +92,24 @@ class SoftFileLock(BaseFileLock):
             holder = _parse_lock_holder(content)
 
             if holder is None:
-                # Unparsable: wrong line count, a non-integer PID or creation time, empty, oversized or not UTF-8.
+                # Unparsable: wrong line count, a non-integer PID or start token, empty, oversized or not UTF-8.
                 # Self-heal only once the file is clearly not a half-written fresh lock (a peer between O_EXCL and
                 # _write_lock_info), so the brief create-then-write window is never mistaken for a stale lock.
                 if time.time() - mtime >= _MALFORMED_LOCK_AGE_THRESHOLD:
                     break_lock_file(self.lock_file, mtime, ino)
                 return
 
-            pid, hostname, creation_time = holder
-            if hostname != socket.gethostname():
-                return
-
-            if self._is_process_alive(pid):
-                if sys.platform != "win32" or creation_time is None:  # pragma: win32 no cover
-                    return  # same process, or no creation time to disambiguate a recycled PID, so don't evict
-                actual = self._get_process_creation_time(pid)  # pragma: win32 cover
-                if actual is None or actual == creation_time:  # pragma: win32 cover
-                    return  # same process or can't verify, so don't evict
-                # PID alive but creation time differs, so the PID was recycled and the lock is stale.
-
-            break_lock_file(self.lock_file, mtime, ino)
+            if owner_is_stale(*holder):
+                break_lock_file(self.lock_file, mtime, ino)
 
     @staticmethod
-    def _is_process_alive(pid: int) -> bool:
-        if sys.platform == "win32":  # pragma: win32 cover
-            handle = _KERNEL32.OpenProcess(_WIN_SYNCHRONIZE, _WIN_INHERIT_HANDLE, pid)
-            if handle:
-                _KERNEL32.CloseHandle(handle)
-                return True
-            return ctypes.get_last_error() != _WIN_ERROR_INVALID_PARAMETER
-        try:
-            os.kill(pid, 0)
-        except OSError as exc:
-            if exc.errno == ESRCH:
-                return False
-            if exc.errno == EPERM:
-                return True
-            raise
-        return True
-
-    @staticmethod
-    def _get_process_creation_time(pid: int) -> int | None:
-        """Return the process creation FILETIME as an integer on Windows, ``None`` otherwise."""
-        if sys.platform != "win32":  # pragma: win32 no cover
-            return None
-        handle = _KERNEL32.OpenProcess(_WIN_PROCESS_QUERY_LIMITED_INFORMATION, _WIN_INHERIT_HANDLE, pid)
-        if not handle:
-            return None
-        try:
-            creation = wintypes.FILETIME()
-            exit_time = wintypes.FILETIME()
-            kernel_time = wintypes.FILETIME()
-            user_time = wintypes.FILETIME()
-            if not _KERNEL32.GetProcessTimes(
-                handle,
-                ctypes.byref(creation),
-                ctypes.byref(exit_time),
-                ctypes.byref(kernel_time),
-                ctypes.byref(user_time),
-            ):
-                return None
-        finally:
-            _KERNEL32.CloseHandle(handle)
-        return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
-
-    def _write_lock_info(self, fd: int) -> None:
+    def _write_lock_info(fd: int) -> None:
         # No suppression: a write failure must reach the acquisition rollback so it never publishes a half-written
-        # marker as held state.
-        info = f"{os.getpid()}\n{socket.gethostname()}\n"
-        if sys.platform == "win32" and (ct := self._get_process_creation_time(os.getpid())) is not None:
-            info += f"{ct}\n"
+        # marker as held state. The optional third line is this process's start token, absent when the platform
+        # exposes no proven start time, in which case a reader falls back to PID-only liveness.
+        info = f"{os.getpid()}\n{host_name()}\n"
+        if (token := process_start_token(os.getpid())) is not None:
+            info += f"{token}\n"
         write_all(fd, info.encode())
 
     @property
@@ -212,7 +138,7 @@ class SoftFileLock(BaseFileLock):
             holder = _parse_lock_holder(_read_lock_file(self.lock_file)[0])
             if holder is not None:
                 pid, hostname, _ = holder
-                return pid == os.getpid() and hostname == socket.gethostname()
+                return pid == os.getpid() and hostname == host_name()
         return False
 
     def break_lock(self) -> None:
@@ -308,14 +234,15 @@ def _read_lock_file(path: str) -> tuple[str | None, float, int]:
 
 
 def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | None:
-    # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<creation_time>\n" third line on Windows.
-    # Anything else (wrong line count, a non-integer PID or creation time, empty or unreadable content) is
-    # unparsable; returning None lets the caller treat it as a malformed lock to self-heal rather than a holder.
+    # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<start_token>\n" third line naming the
+    # holder's process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now).
+    # Anything else (wrong line count, a non-integer PID or start token, empty or unreadable content) is unparsable;
+    # returning None lets the caller treat it as a malformed lock to self-heal rather than a holder.
     if not content or len(lines := content.strip().splitlines()) not in {2, 3}:
         return None
     try:
         pid = int(lines[0])
-        creation_time = int(lines[2]) if len(lines) == 3 else None  # noqa: PLR2004
+        start_token = int(lines[2]) if len(lines) == 3 else None  # noqa: PLR2004
     except ValueError:
         return None
     # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid
@@ -324,7 +251,7 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
     # (not OSError/ValueError) out of the self-heal path. _parse_marker_bytes already enforces this range.
     if not 1 <= pid <= 2**31 - 1:
         return None
-    return pid, lines[1], creation_time
+    return pid, lines[1], start_token
 
 
 __all__ = [

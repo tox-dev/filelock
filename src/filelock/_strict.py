@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import os
 import secrets
-import socket
 import stat
 import sys
 import tempfile
@@ -15,6 +14,7 @@ from typing import TYPE_CHECKING, Final, Literal, cast
 
 from ._api import BaseFileLock, _canonical, _raise_cleanup_errors
 from ._error import SoftFileLockProtocolError
+from ._identity import host_name, process_start_token
 from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from ._util import ensure_directory_exists, write_all
 
@@ -238,6 +238,9 @@ class StrictSoftFileClaim:
     token: str
     pid: int
     hostname: str
+    #: The owner's process start token, or ``None`` when the platform exposes no proven start time. A strict lock never
+    #: reclaims a claim on its own, so this identifies the owner for tooling rather than driving any automatic break.
+    start: int | None = None
 
 
 class _PrivateRecordReclaimedError(Exception):
@@ -353,8 +356,9 @@ def _parse_claim(
     record: bytes,
 ) -> StrictSoftFileClaim:
     try:
-        magic, token, pid_text, hostname_hex, trailing = record.decode("ascii").split("\n")
+        magic, token, pid_text, hostname_hex, start_text, trailing = record.decode("ascii").split("\n")
         pid = int(pid_text)
+        start = int(start_text) if start_text else None
         hostname = bytes.fromhex(hostname_hex).decode("utf-8")
     except (UnicodeDecodeError, ValueError) as error:
         raise SoftFileLockProtocolError(lock_file, name, "malformed claim record") from error
@@ -364,12 +368,13 @@ def _parse_claim(
         token == name_parts[1],
         1 <= pid <= 2**32 - 1,
         str(pid) == pid_text,
+        start is None or (start >= 0 and str(start) == start_text),
         hostname.encode().hex() == hostname_hex
         and hostname.isprintable()
         and not any(character.isspace() for character in hostname),
     )):
         raise SoftFileLockProtocolError(lock_file, name, "malformed claim record")
-    return StrictSoftFileClaim(name=name, state=name_parts[0], token=token, pid=pid, hostname=hostname)
+    return StrictSoftFileClaim(name=name, state=name_parts[0], token=token, pid=pid, hostname=hostname, start=start)
 
 
 def _parse_claim_name(name: str) -> tuple[StrictSoftFileClaimState, str] | None:
@@ -393,8 +398,10 @@ def _claim_token_key(name: str) -> str:
 
 
 def _claim_record(token: str) -> bytes:
-    hostname_hex = socket.gethostname().encode().hex()
-    return f"{_CLAIM_MAGIC}\n{token}\n{os.getpid()}\n{hostname_hex}\n".encode("ascii")
+    hostname_hex = host_name().encode().hex()
+    start = process_start_token(os.getpid())
+    start_text = "" if start is None else str(start)
+    return f"{_CLAIM_MAGIC}\n{token}\n{os.getpid()}\n{hostname_hex}\n{start_text}\n".encode("ascii")
 
 
 def _publish_record(
