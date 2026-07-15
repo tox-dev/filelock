@@ -19,6 +19,14 @@ else:  # pragma: no cover (<py311)
 
 from filelock import SoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock, Timeout
 
+# These cases inject a failure into a directory-fd cleanup step or the reaper race, both of which only run where the
+# protocol uses dir_fd descriptors. Windows has no dir_fd, so those branches never execute and the injected fault never
+# fires; the win32 cleanup path is covered instead by the passing stress, contention and release tests.
+_REQUIRES_DIR_FD_CLEANUP = pytest.mark.skipif(
+    os.open not in os.supports_dir_fd,
+    reason="injects a fault into the dir_fd cleanup path, which Windows does not execute",
+)
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -174,6 +182,7 @@ def test_strict_soft_force_break_held_during_doorway_backs_off(tmp_path: Path, m
     assert (lock.claims, lock.is_locked) == ((), False)
 
 
+@_REQUIRES_DIR_FD_CLEANUP
 def test_strict_soft_reaper_removes_private_before_publication(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -241,6 +250,7 @@ def test_strict_soft_reaper_removes_private_after_publication(tmp_path: Path, mo
         assert (lock.claims[0].state, private_path.exists()) == ("held", False)
 
 
+@_REQUIRES_DIR_FD_CLEANUP
 def test_strict_soft_reaper_replacement_only_aborts_publisher(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -325,6 +335,7 @@ def test_strict_soft_private_close_failure_leaves_public_claim(tmp_path: Path, m
     assert ([claim.state for claim in lock.claims], lock.is_locked) == (["intent"], False)
 
 
+@_REQUIRES_DIR_FD_CLEANUP
 def test_strict_soft_link_and_directory_close_failures_preserve_both(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -353,6 +364,7 @@ def test_strict_soft_link_and_directory_close_failures_preserve_both(tmp_path: P
     )
 
 
+@_REQUIRES_DIR_FD_CLEANUP
 def test_strict_soft_held_directory_close_failure_leaves_both_claims(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -411,6 +423,7 @@ def test_strict_soft_reaper_does_not_retry_sharing_error(tmp_path: Path, mocker:
     assert (unlink.call_count, elapsed < 0.1, private_path.exists()) == (1, True, True)
 
 
+@_REQUIRES_DIR_FD_CLEANUP
 def test_strict_soft_release_error_keeps_remaining_claim(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)
@@ -437,6 +450,7 @@ def test_strict_soft_release_error_keeps_remaining_claim(tmp_path: Path, mocker:
     assert (lock.is_locked, lock.claims) == (False, ())
 
 
+@_REQUIRES_DIR_FD_CLEANUP
 def test_strict_soft_release_commits_before_directory_close_error(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)
@@ -460,6 +474,7 @@ def test_strict_soft_release_commits_before_directory_close_error(tmp_path: Path
         assert contender.is_locked
 
 
+@_REQUIRES_DIR_FD_CLEANUP
 def test_strict_soft_release_preserves_unlink_and_directory_close_errors(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)
@@ -502,6 +517,7 @@ def test_strict_soft_release_preserves_unlink_and_directory_close_errors(tmp_pat
     lock.release()
 
 
+@_REQUIRES_DIR_FD_CLEANUP
 def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
