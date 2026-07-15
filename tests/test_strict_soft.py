@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
-from errno import ENOSYS, EXDEV
+from errno import EBADF, ENOSYS, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -193,7 +193,7 @@ def test_strict_soft_force_break_accepts_newer_version_claim(tmp_path: Path) -> 
     claims = Path(f"{lock_path}.filelock") / "claims"
     claims.mkdir(parents=True)
     claim_name = "held-v2-opaque.claim"
-    (claims / claim_name).write_text("filelock-strict-v2\n", encoding="ascii")
+    (claims / claim_name).write_text("filelock-strict-v2\n", encoding="ascii", newline="")
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(SoftFileLockProtocolError, match="unknown claim name or protocol version"):
@@ -249,6 +249,7 @@ def test_strict_soft_orphan_claim_blocks_without_reclamation(tmp_path: Path, sta
     (claims / claim_name).write_text(
         f"filelock-strict-v1\n{token}\n{os.getpid()}\n{socket.gethostname().encode().hex()}\n",
         encoding="ascii",
+        newline="",
     )
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
@@ -349,8 +350,10 @@ def test_strict_soft_sentinel_inspection_failure_closes_descriptor(tmp_path: Pat
     with pytest.raises(OSError, match="sentinel inspection failed"):
         lock.acquire()
     assert inspected_fd is not None
-    with pytest.raises(OSError, match="Bad file descriptor"):
+    # A closed descriptor reports EBADF on every platform, but the message differs (Windows says "handle is invalid").
+    with pytest.raises(OSError, match=r"Bad file descriptor|handle is invalid") as closed:
         real_fstat(inspected_fd)
+    assert closed.value.errno == EBADF
     assert (lock.is_locked, lock.lock_counter, lock.claims) == (False, 0, ())
 
 
