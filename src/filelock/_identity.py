@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import socket
 import sys
-from contextlib import suppress
 from errno import EPERM, ESRCH
 from pathlib import Path
 from typing import Final
@@ -103,21 +102,35 @@ else:  # pragma: win32 no cover
         # after the final ')'. starttime is field 22 overall, the twentieth of those trailing fields (index 19).
         _STARTTIME_INDEX: Final[int] = 19
 
+        def _read_boot_id() -> int:
+            # starttime is measured in clock ticks since boot, so on its own it repeats across a reboot. Folding the
+            # boot id into the high bits makes the Linux token reboot-safe like the absolute clocks macOS and Windows
+            # expose, while staying a single integer so a 3.29 reader still parses the third marker line. 0 when the
+            # kernel does not expose a boot id degrades to bare starttime, which stays safe (a reboot collision fails
+            # closed rather than reclaiming a live marker).
+            try:
+                boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii")
+                return int(boot_id.strip().replace("-", ""), 16)
+            except (OSError, ValueError):  # pragma: no cover  # the kernel always exposes boot_id as a UUID on Linux
+                return 0
+
+        _BOOT_ID: Final[int] = _read_boot_id()
+
         def process_start_token(pid: int) -> int | None:
-            """The ``starttime`` from ``/proc/<pid>/stat`` in clock ticks, or ``None`` when the process is gone."""
+            """The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id, or ``None`` when the process is gone."""
             try:
                 data = Path(f"/proc/{pid}/stat").read_bytes()
             except OSError:
                 return None
-            # starttime is measured in clock ticks since boot, so it changes when a PID is reused within a boot; a
-            # reused PID that happens to match survives as the recorded owner, which fails closed. psutil identifies a
-            # process by the same (pid, starttime) pair.
+            # psutil identifies a process by the same (pid, starttime) pair; the boot id extends that across reboots.
             fields = data[data.rfind(b")") + 1 :].split()
             if len(fields) <= _STARTTIME_INDEX:  # pragma: no cover  # a truncated /proc read, never seen in practice
                 return None
-            with suppress(ValueError):
-                return int(fields[_STARTTIME_INDEX])
-            return None  # pragma: no cover  # /proc always renders starttime as an integer
+            try:
+                starttime = int(fields[_STARTTIME_INDEX])
+            except ValueError:  # pragma: no cover  # /proc always renders starttime as an integer
+                return None
+            return (_BOOT_ID << 64) | starttime
 
     elif sys.platform == "darwin":  # pragma: darwin cover
         import ctypes
