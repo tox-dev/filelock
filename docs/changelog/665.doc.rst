@@ -1,1 +1,1 @@
-The filesystem support matrix records loopback NFS and SMB mutual exclusion as measured in CI, and states that one client against one server is not a multi-client guarantee.
+The filesystem support matrix records mutual exclusion measured across two independent client caches in CI: NFS (v4 and v3) for the native, soft, and strict locks, and SMB for the native and soft locks.

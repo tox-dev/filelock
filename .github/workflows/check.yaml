@@ -165,7 +165,7 @@ jobs:
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: false
-      - name: "🗄️ Export and mount a loopback NFS share"
+      - name: "🗄️ Export and mount loopback NFS shares"
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-kernel-server nfs-common
@@ -174,15 +174,22 @@ jobs:
           echo "/export/filelock 127.0.0.1(rw,sync,no_subtree_check,no_root_squash,insecure)" | sudo tee /etc/exports
           sudo exportfs -ra
           sudo systemctl restart nfs-server
-          sudo mkdir -p /mnt/nfs
-          sudo mount -t nfs -o vers=4.2 127.0.0.1:/export/filelock /mnt/nfs
-          sudo chmod 1777 /mnt/nfs
+          # Mount each version twice, the second with nosharecache, so the two mounts are independent client caches
+          # over one server: contending across them is a real multi-client check, not two views of one cache.
+          for m in nfs4a nfs4b nfs3a nfs3b; do sudo mkdir -p "/mnt/$m"; done
+          sudo mount -t nfs -o vers=4.2 127.0.0.1:/export/filelock /mnt/nfs4a
+          sudo mount -t nfs -o vers=4.2,nosharecache 127.0.0.1:/export/filelock /mnt/nfs4b
+          sudo mount -t nfs -o vers=3 127.0.0.1:/export/filelock /mnt/nfs3a
+          sudo mount -t nfs -o vers=3,nosharecache 127.0.0.1:/export/filelock /mnt/nfs3b
+          for m in nfs4a nfs4b nfs3a nfs3b; do sudo chmod 1777 "/mnt/$m"; done
           mount | grep /mnt/nfs
-      - name: "🔒 Verify lock mutual exclusion on NFS"
+      - name: "🔒 Verify NFSv4 mutual exclusion across two client caches"
         run: |
           uv venv
           uv pip install .
-          .venv/bin/python tasks/verify_filesystem.py /mnt/nfs
+          .venv/bin/python tasks/verify_filesystem.py /mnt/nfs4a /mnt/nfs4b
+      - name: "🔒 Verify NFSv3 mutual exclusion across two client caches"
+        run: .venv/bin/python tasks/verify_filesystem.py /mnt/nfs3a /mnt/nfs3b
 
   smb:
     name: "🗄️ SMB mutual exclusion"
@@ -211,11 +218,14 @@ jobs:
           CONF
           sudo sed -i '/\[global\]/a \   map to guest = Bad User\n   server min protocol = SMB2' /etc/samba/smb.conf
           sudo systemctl restart smbd
-          sudo mkdir -p /mnt/smb
-          sudo mount -t cifs //127.0.0.1/filelock /mnt/smb \
-            -o "guest,uid=$(id -u),gid=$(id -g),file_mode=0777,dir_mode=0777,vers=3.0"
+          # Two mounts are two independent CIFS client caches over one server, for a multi-client check.
+          sudo mkdir -p /mnt/smba /mnt/smbb
+          for m in smba smbb; do
+            sudo mount -t cifs //127.0.0.1/filelock "/mnt/$m" \
+              -o "guest,uid=$(id -u),gid=$(id -g),file_mode=0777,dir_mode=0777,vers=3.0"
+          done
           mount | grep /mnt/smb
-      - name: "🔒 Verify lock mutual exclusion on SMB"
+      - name: "🔒 Verify SMB mutual exclusion across two client caches"
         # The strict lock's claim protocol needs an atomic no-replace hard link that SMB does not reliably provide, so
         # verify the native and soft locks, which SMB does support.
         env:
@@ -223,7 +233,7 @@ jobs:
         run: |
           uv venv
           uv pip install .
-          .venv/bin/python tasks/verify_filesystem.py /mnt/smb
+          .venv/bin/python tasks/verify_filesystem.py /mnt/smba /mnt/smbb
 
   capability:
     name: "🧩 without ${{ matrix.block }}"

@@ -22,12 +22,15 @@ _ALL_LOCKS: Final[tuple[str, ...]] = ("FileLock", "SoftFileLock", "StrictSoftFil
 
 
 def main() -> int:
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-    if target is not None:
-        target.mkdir(parents=True, exist_ok=True)
-        return _verify_in(target)
+    # Each argument is a mount of the same filesystem. Two independent mounts (an NFS export mounted twice with
+    # nosharecache, say) are two client caches over one server, so contending across them is a genuine multi-client
+    # check, not two views of one cache. With no arguments a temporary directory checks the local single-mount case.
+    if mounts := [Path(argument) for argument in sys.argv[1:]]:
+        for mount in mounts:
+            mount.mkdir(parents=True, exist_ok=True)
+        return _verify_across(mounts)
     with TemporaryDirectory(prefix="filelock-verify-") as directory:
-        return _verify_in(Path(directory))
+        return _verify_across([Path(directory)])
 
 
 def _selected_locks() -> tuple[str, ...]:
@@ -38,16 +41,18 @@ def _selected_locks() -> tuple[str, ...]:
     return tuple(name for name in _ALL_LOCKS if name in requested.split(","))
 
 
-def _verify_in(directory: Path) -> int:
-    print(f"verifying mutual exclusion in {directory} ({_PROCESSES} processes x {_INCREMENTS} increments)")
+def _verify_across(mounts: list[Path]) -> int:
+    where = str(mounts[0]) if len(mounts) == 1 else f"{len(mounts)} mounts of {mounts[0]} .. {mounts[-1]}"
+    print(f"verifying mutual exclusion across {where} ({_PROCESSES} processes x {_INCREMENTS} increments)")
     failures = 0
     for name in _selected_locks():
-        counter = directory / f"{name}.counter"
-        counter.write_text("0", encoding="utf-8")
-        lock_path = str(directory / f"{name}.lock")
+        # Every process uses the same basename, so the mounts contend on one server file through independent caches.
+        (mounts[0] / f"{name}.counter").write_text("0", encoding="utf-8")
+        lock_paths = [str(mounts[index % len(mounts)] / f"{name}.lock") for index in range(_PROCESSES)]
+        counter_paths = [str(mounts[index % len(mounts)] / f"{name}.counter") for index in range(_PROCESSES)]
         with ProcessPoolExecutor(max_workers=_PROCESSES) as pool:
-            list(pool.map(_hammer, [name] * _PROCESSES, [lock_path] * _PROCESSES, [str(counter)] * _PROCESSES))
-        total = int(counter.read_text(encoding="utf-8"))
+            list(pool.map(_hammer, [name] * _PROCESSES, lock_paths, counter_paths))
+        total = int((mounts[0] / f"{name}.counter").read_text(encoding="utf-8"))
         expected = _PROCESSES * _INCREMENTS
         ok = total == expected
         failures += not ok

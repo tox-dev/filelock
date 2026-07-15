@@ -548,22 +548,20 @@ visibility to every participating process. The table records where that has been
    * - Local Windows (NTFS)
      - Supported
      - Native and soft backends verified in CI.
-   * - NFS (v4, loopback single server)
+   * - NFS (v4 and v3)
      - Verified in CI
-     - A CI lane exports a loopback NFSv4 share and confirms mutual exclusion under eight-process contention for the
-       native, soft, and strict locks. This covers one client against one server. Multi-client access and NFSv3 stay
-       unverified, and POSIX advisory locking is unreliable across NFS implementations, so keep SQLite-backed
-       :class:`ReadWriteLock <filelock.ReadWriteLock>` off NFS regardless.
-   * - SMB / CIFS (loopback single server)
-     - Native and soft only
-     - A CI lane mounts a loopback Samba share and confirms mutual exclusion for the native and soft locks.
-       :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` is not supported on SMB: its claim protocol needs an
-       atomic no-replace hard link that SMB does not reliably provide. Multi-client access and other server and mount
-       options stay unverified.
+     - CI lanes export a loopback NFS share, mount it twice with ``nosharecache`` so the two mounts are independent
+       client caches over one server, and confirm mutual exclusion under eight-process contention across both caches,
+       for NFSv4 and NFSv3, covering the native, soft, and strict locks. POSIX advisory locking is unreliable across
+       NFS implementations, so keep SQLite-backed :class:`ReadWriteLock <filelock.ReadWriteLock>` off NFS.
+   * - SMB / CIFS
+     - Native and soft
+     - A CI lane mounts a loopback Samba share twice and confirms mutual exclusion across both mounts for the native
+       and soft locks. :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` is not supported on SMB: its claim
+       protocol needs an atomic no-replace hard link that SMB does not provide.
 
-Do not read a loopback "Verified in CI" as a promise for a production multi-client deployment. It means the project
-measured one client against one server; cache and locking options and a second client can change the result, so record
-the mount and server settings you tested.
+The CI lanes measure the default mount and server settings named above. Run ``tasks/verify_filesystem.py`` against your
+own mount to confirm the lock under your options, since cache and locking settings change the result.
 
 Migrating from timed stale breaking
 ===================================
