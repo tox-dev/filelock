@@ -322,6 +322,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             canonical = _canonical(self.lock_file)
             self._context.lock_counter += 1
             self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
+            self._context.claim_root = canonical
             try:
                 await self._async_poll_until_acquired(
                     blocking=blocking,
@@ -333,6 +334,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             except BaseException:
                 self._reconcile_failed_acquire(canonical)
                 raise
+            finally:
+                self._context.claim_root = None
             self._commit_acquire(canonical)
             return AsyncAcquireReturnProxy(lock=self)
 
@@ -723,7 +726,7 @@ class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
 
 
 class AsyncStrictSoftFileLock(StrictSoftFileLock, BaseAsyncFileLock):
-    """Fail-closed existence lock: a marker this process did not publish always means contention."""
+    """Run strict owner-claim locking without blocking the event loop."""
 
 
 class AsyncSoftFileLease(SoftFileLease, BaseAsyncFileLock):

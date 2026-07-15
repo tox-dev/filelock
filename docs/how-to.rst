@@ -474,6 +474,90 @@ a reused PID can also keep a dead owner's marker in place.
 On Windows, the marker also stores process creation time to guard against PID recycling. Malformed records follow a
 different rule: a waiter may evict them after two seconds. That recovery path is not fail closed.
 
+********************************
+ Use fail-closed soft locks
+********************************
+
+Use :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` when an ambiguous claim must block access. It publishes
+complete owner-specific records through no-replace hard links and removes only its own claim. A process pause during
+publication cannot expose a partial public record, and release cannot unlink a successor's claim.
+
+.. versionadded:: 3.30.0
+
+.. code-block:: python
+
+    from filelock import StrictSoftFileLock
+
+    lock = StrictSoftFileLock("work.lock")
+
+    with lock:
+        update_shared_resource()
+
+The lock requires coherent directory reads and atomic hard links. Use it on a local filesystem whose contract provides
+both operations. If hard-link publication is unavailable, acquisition raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>`. NFS and SMB mounts have no strict guarantee
+without a contract test for the specific client, server, and mount options.
+
+Strict mode leaves ``work.lock`` as a permanent sentinel and stores claims in ``work.lock.filelock/claims``. Every
+strict participant must use ``StrictSoftFileLock`` or ``AsyncStrictSoftFileLock`` from filelock 3.30.0 or newer. During
+migration, a legacy ``SoftFileLock`` holder blocks the first strict acquisition until it releases. The first strict
+acquisition activates the path; filelock 3.20.0 and other legacy clients then time out before entry, including between
+strict holds. Age expiry, ``break_lock()``, or manual sentinel deletion voids this guarantee. See the `filelock 3.20.0
+release <https://github.com/tox-dev/filelock/releases/tag/3.20.0>`_ for the oldest migration client tested by filelock.
+
+A crash can leave an intent, a held claim, or both claims for one token. Strict mode treats each claim as live because
+PID and clock checks cannot prove that another host or a recycled process has stopped using the resource. Inspect the
+parsed claims before recovery:
+
+.. code-block:: python
+
+    from filelock import StrictSoftFileLock
+
+    lock = StrictSoftFileLock("work.lock")
+
+    for claim in lock.claims:
+        print(claim.name, claim.state, claim.token, claim.hostname, claim.pid)
+
+After an operator verifies that the named owner no longer uses the protected resource, remove every claim for its
+token:
+
+.. code-block:: python
+
+    crashed_token = "0123456789abcdef0123456789abcdef"
+    for claim in lock.claims:
+        if claim.token == crashed_token:
+            lock.force_break(claim.name)
+
+``force_break()`` can admit a contender while the removed claim's owner still runs. It validates a single basename and
+uses directory-relative deletion on platforms that support it. Unknown record versions, malformed records, symlinks,
+and unreadable claims raise :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>`; the exception's
+``claim_name`` identifies the entry that needs inspection.
+
+Each publication attempt uses a fresh random private-record name. A private record with another hard link is removed
+immediately; an unpublished record abandoned by a crash is removed after a two-second grace period. If a live publisher
+is paused past that grace period, it backs off and retries instead of entering without a public claim. A directory,
+symlink, or other non-regular node at a private-record name is protocol damage and fails closed without following or
+removing it.
+
+Async code uses the same on-disk protocol:
+
+.. code-block:: python
+
+    from filelock import AsyncStrictSoftFileLock
+
+    lock = AsyncStrictSoftFileLock("work.lock")
+
+    async with lock:
+        await update_shared_resource()
+
+``StrictSoftFileLock`` rejects ``on_acquired`` because its borrowed descriptor is the permanent protocol sentinel; a
+callback could corrupt that sentinel. ``lock.claims`` provides owner metadata without exposing a writable descriptor.
+
+The publication sequence follows the private-claim pattern in `flufl.lock
+<https://gitlab.com/warsaw/flufl.lock/-/blob/main/src/flufl/lock/_lockfile.py>`_ and the pre/post claim checks in
+`restic <https://github.com/restic/restic/blob/master/internal/repository/lock_file.go>`_.
+Issue :issue:`637` records the race analysis and verification requirements.
+
 *****************************************
  Inspect and manage PID locks
 *****************************************

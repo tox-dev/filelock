@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from filelock import SoftFileLease, StrictSoftFileLock, Timeout
+from filelock import SoftFileLease, Timeout
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -35,7 +35,7 @@ def test_unreadable_record_names_no_owner(tmp_path: Path, record: str) -> None:
     marker = tmp_path / "a.lock"
     marker.write_text(record, encoding="utf-8")
 
-    assert StrictSoftFileLock(str(marker)).owner is None
+    assert SoftFileLease(str(marker), lease_duration=1).owner is None
 
 
 def test_record_from_a_newer_filelock_still_names_its_owner(tmp_path: Path) -> None:
@@ -43,7 +43,7 @@ def test_record_from_a_newer_filelock_still_names_its_owner(tmp_path: Path) -> N
     marker = tmp_path / "a.lock"
     marker.write_text("filelock/2\npid=4242\nhost=somehost\nmode=strict\nstart-id=17\n", encoding="utf-8")
 
-    owner = StrictSoftFileLock(str(marker)).owner
+    owner = SoftFileLease(str(marker), lease_duration=1).owner
 
     assert owner is not None
     assert (owner.pid, owner.hostname, owner.mode) == (4242, "somehost", "strict")

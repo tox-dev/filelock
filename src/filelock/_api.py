@@ -5,6 +5,7 @@ import inspect
 import logging
 import math
 import os
+import secrets
 import sys
 import time
 import warnings
@@ -23,6 +24,9 @@ from ._util import break_lock_file
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
 _UNSET_FILE_MODE: Final[int] = -1
+
+#: Ceiling on the retry counter used as a power of two, so a long contended wait cannot overflow the backoff multiply.
+_MAX_BACKOFF_EXPONENT: Final[int] = 20
 
 #: How a context manager reconciles a body failure with a release failure on exit (see the property of this name).
 ContextErrorPolicy = Literal["chain", "group"]
@@ -627,6 +631,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     #: protocol state in the marker and reject it.
     _on_acquired_supported: bool = True
 
+    #: Whether a shared instance serializes its physical acquire and release behind one gate. A backend that publishes
+    #: several files per owner needs it; a single-file backend is atomic and leaves it off to skip the gate entirely.
+    _serialize_transitions: bool = False
+
+    #: Ceiling in seconds on the jittered backoff between contended acquisition retries. ``0`` keeps the fixed
+    #: poll cadence; a multi-file backend sets it so contending processes desynchronize instead of livelocking.
+    _poll_backoff_cap: float = 0.0
+
     def __init_subclass__(cls, **kwargs: _SubclassValue) -> None:
         """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
@@ -712,6 +724,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
         """
         self._creator_pid = os.getpid()
+        self._transition_lock = RLock()
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
@@ -1038,26 +1051,62 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
         poll_interval = poll_interval if poll_interval is not None else self._context.poll_interval
 
-        # Bump the counter up front; _undo_acquire rolls it back if acquisition fails.
-        self._context.lock_counter += 1
-
-        canonical = _canonical(self.lock_file)
-        self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
-
         start_time = time.perf_counter()
+        # Wait for admission before touching any state: a caller refused entry must leave the counter, the registry and
+        # the descriptor exactly as it found them.
+        with self._transition_admission(
+            blocking=blocking,
+            cancel_check=cancel_check,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            start_time=start_time,
+        ):
+            # Bump the counter up front; _undo_acquire rolls it back if acquisition fails.
+            self._context.lock_counter += 1
+
+            canonical = _canonical(self.lock_file)
+            self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
+
+            try:
+                self._poll_until_acquired(
+                    blocking=blocking,
+                    cancel_check=cancel_check,
+                    timeout=timeout,
+                    poll_interval=poll_interval,
+                    start_time=start_time,
+                )
+            except BaseException:
+                self._reconcile_failed_acquire(canonical)
+                raise
+            self._commit_acquire(canonical)
+            return AcquireReturnProxy(lock=self)
+
+    @contextlib.contextmanager
+    def _transition_admission(
+        self,
+        *,
+        blocking: bool,
+        cancel_check: Callable[[], bool] | None,
+        timeout: float,
+        poll_interval: float,
+        start_time: float,
+    ) -> Generator[None]:
+        # One thread at a time drives the physical transition of a shared instance. A protocol that publishes several
+        # files per owner leaves a half-built claim visible otherwise, and a second thread would read it as a holder.
+        # Only such a backend opts in; a single-file backend and a thread-local context each need no gate.
+        if not self._serialize_transitions or self._is_thread_local:
+            yield
+            return
+        while not self._transition_lock.acquire(blocking=False):
+            if not blocking or (cancel_check is not None and cancel_check()):
+                raise Timeout(self.lock_file)
+            if timeout >= 0 and time.perf_counter() - start_time >= timeout:
+                raise Timeout(self.lock_file)
+            time.sleep(poll_interval)
         try:
-            self._poll_until_acquired(
-                blocking=blocking,
-                cancel_check=cancel_check,
-                timeout=timeout,
-                poll_interval=poll_interval,
-                start_time=start_time,
-            )
-        except BaseException:
-            self._reconcile_failed_acquire(canonical)
-            raise
-        self._commit_acquire(canonical)
-        return AcquireReturnProxy(lock=self)
+            yield
+        finally:
+            self._transition_lock.release()
 
     def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
         """
@@ -1067,25 +1116,29 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
         """
-        if self._creator_pid != os.getpid() or not self.is_locked:
-            return
-        if not force and self._context.lock_counter > 1:
-            self._context.lock_counter -= 1
-            return
+        # A shared instance releases under the same gate its acquisition ran through, so a thread entering the lock
+        # never observes a partially torn-down owner.
+        serialize = self._serialize_transitions and not self._is_thread_local
+        with self._transition_lock if serialize else contextlib.nullcontext():
+            if self._creator_pid != os.getpid() or not self.is_locked:
+                return
+            if not force and self._context.lock_counter > 1:
+                self._context.lock_counter -= 1
+                return
 
-        lock_id, lock_filename = id(self), self.lock_file
-        _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
-        try:
-            self._release_with_fork_tracking()
-        except BaseException:
-            # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
-            # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
-            # A failure that left the lock held keeps the counter so a later release can retry the OS unlock.
-            if not self.is_locked:
-                self._commit_release()
-            raise
-        self._commit_release()
-        _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+            lock_id, lock_filename = id(self), self.lock_file
+            _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
+            try:
+                self._release_with_fork_tracking()
+            except BaseException:
+                # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
+                # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
+                # A failure that left the lock held keeps the counter so a later release can retry the OS unlock.
+                if not self.is_locked:
+                    self._commit_release()
+                raise
+            self._commit_release()
+            _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def _raise_if_inherited(self) -> None:
         if self._creator_pid != os.getpid():  # pragma: no cover - exercised only in fork children
@@ -1109,6 +1162,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         self._context.lock_file_fd_identity = None
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - exercised in fork children
+        # fork copies the lock in whatever state the parent's threads left it, so give the child an unheld one.
+        self._transition_lock = RLock()
+        self._context.owner_claim_paths = ()
+        self._context.claim_root = None
         self._context.lock_file_fd = None
         self._context.lock_file_fd_token = None
         self._context.lock_file_fd_identity = None
@@ -1152,6 +1209,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     ) -> None:
         lock_id = id(self)
         lock_filename = self.lock_file
+        attempt = 0
         while True:
             self._raise_if_inherited()
             if not self.is_locked:
@@ -1171,9 +1229,22 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
                 start_time=start_time,
             ):
                 raise Timeout(lock_filename)
+            attempt += 1
+            delay = self._poll_delay(poll_interval, attempt)
             msg = "Lock %s not acquired on %s, waiting %s seconds ..."
-            _LOGGER.debug(msg, lock_id, lock_filename, poll_interval)
-            time.sleep(poll_interval)
+            _LOGGER.debug(msg, lock_id, lock_filename, delay)
+            time.sleep(delay)
+
+    def _poll_delay(self, poll_interval: float, attempt: int) -> float:
+        # A single-file lock retries on a fixed cadence. A backend that publishes several files per acquisition sets a
+        # cap, and then contending processes back off across a jittered, exponentially widening window instead of
+        # colliding on every poll; poll_interval stays the floor so a lone waiter is still responsive.
+        if not self._poll_backoff_cap:
+            return poll_interval
+        # Cap the exponent before doubling: under heavy contention attempt reaches the thousands, and 2**attempt would
+        # overflow the float multiply long before the window itself stops growing past the cap.
+        window = min(self._poll_backoff_cap, poll_interval * 2 ** min(attempt, _MAX_BACKOFF_EXPONENT))
+        return max(poll_interval, secrets.randbelow(int(window * 1_000_000) + 1) / 1_000_000)
 
     def _reconcile_failed_acquire(self, canonical: str) -> None:
         # An acquire that raised while still holding the native lock (a hook that failed and whose rollback could not
@@ -1412,6 +1483,13 @@ class FileLockContext:
 
     #: Canonical registry key captured when the first physical acquisition commits.
     lock_file_key: str | None = None
+
+    #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
+    owner_claim_paths: tuple[str, ...] = ()
+
+    #: Canonical lock path resolved when an acquisition starts. A waiter polling a relative path must keep publishing
+    #: into the directory it started in, even when another thread changes the working directory mid-wait.
+    claim_root: str | None = None
 
 
 class ThreadLocalFileContext(FileLockContext, local):

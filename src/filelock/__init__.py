@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Final
 
 from ._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy, LockOptions
 from ._descriptor import lock_descriptor, unlock_descriptor
-from ._error import LeaseSettingsMismatch, SoftFileLockLifetimeWarning, Timeout
+from ._error import LeaseSettingsMismatch, SoftFileLockLifetimeWarning, SoftFileLockProtocolError, Timeout
 from ._lease import LeaseCompromise, SoftFileLease
 from ._marker import MarkerSoftFileLock, OwnerRecord
 
@@ -35,7 +35,7 @@ else:
 
 from ._soft import SoftFileLock
 from ._soft_rw import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
-from ._strict import StrictSoftFileLock
+from ._strict import StrictSoftFileClaim, StrictSoftFileClaimState, StrictSoftFileLock
 from ._unix import UnixFileLock, has_fcntl
 from ._windows import WindowsFileLock
 from .asyncio import (
@@ -101,7 +101,10 @@ __all__ = [
     "SoftFileLease",
     "SoftFileLock",
     "SoftFileLockLifetimeWarning",
+    "SoftFileLockProtocolError",
     "SoftReadWriteLock",
+    "StrictSoftFileClaim",
+    "StrictSoftFileClaimState",
     "StrictSoftFileLock",
     "Timeout",
     "UnixFileLock",
