@@ -536,7 +536,7 @@ def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path,
         scans += 1
         if scans == 3:
             Path(path, competitor_name).write_text(
-                f"filelock-strict-v1\n{competitor_token}\n{os.getpid()}\n{socket.gethostname().encode().hex()}\n",
+                f"filelock-strict-v1\n{competitor_token}\n{os.getpid()}\n{socket.gethostname().encode().hex()}\n4242\n",
                 encoding="ascii",
                 newline="",
             )
@@ -714,8 +714,11 @@ def test_strict_soft_claim_directory_read_error_fails_closed(tmp_path: Path, moc
 @pytest.mark.parametrize(
     "content",
     [
-        pytest.param(b"filelock-strict-v1\n" + b"0" * 32 + b"\n0\n00\n", id="zero-pid"),
-        pytest.param(b"filelock-strict-v1\n" + b"1" * 32 + b"\n1\n00\n", id="wrong-token"),
+        pytest.param(b"filelock-strict-v1\n" + b"0" * 32 + b"\n0\n00\n4242\n", id="zero-pid"),
+        pytest.param(b"filelock-strict-v1\n" + b"1" * 32 + b"\n1\n00\n4242\n", id="wrong-token"),
+        pytest.param(b"filelock-strict-v1\n" + b"0" * 32 + b"\n1\n686f7374\nnot-int\n", id="non-integer-start"),
+        pytest.param(b"filelock-strict-v1\n" + b"0" * 32 + b"\n1\n686f7374\n-5\n", id="negative-start"),
+        pytest.param(b"filelock-strict-v1\n" + b"0" * 32 + b"\n1\n686f7374\n007\n", id="noncanonical-start"),
     ],
 )
 def test_strict_soft_structurally_invalid_record_fails_closed(tmp_path: Path, content: bytes) -> None:
@@ -734,7 +737,7 @@ def test_strict_soft_accepts_maximum_pid(tmp_path: Path) -> None:
     claims = Path(f"{lock_path}.filelock") / "claims"
     claims.mkdir(parents=True)
     (claims / f"held-v1-{token}.claim").write_text(
-        f"filelock-strict-v1\n{token}\n4294967295\n686f7374\n",
+        f"filelock-strict-v1\n{token}\n4294967295\n686f7374\n4242\n",
         encoding="ascii",
         newline="",
     )
@@ -759,7 +762,7 @@ def test_strict_soft_rejects_noncanonical_owner_record(tmp_path: Path, pid: str,
     claims = Path(f"{lock_path}.filelock") / "claims"
     claims.mkdir(parents=True)
     (claims / f"held-v1-{token}.claim").write_text(
-        f"filelock-strict-v1\n{token}\n{pid}\n{hostname_hex}\n",
+        f"filelock-strict-v1\n{token}\n{pid}\n{hostname_hex}\n4242\n",
         encoding="ascii",
         newline="",
     )

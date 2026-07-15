@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import os
-import socket
 from contextlib import suppress
 from typing import Final, Literal, NamedTuple
 
+from ._identity import host_name, process_start_token
 from ._soft import SoftFileLock, _read_lock_file
 from ._util import write_all
 
-#: Protocol 1 is the legacy ``<pid>\n<hostname>\n[<creation_time>\n]`` marker that :class:`SoftFileLock` still writes.
+#: Protocol 1 is the legacy ``<pid>\n<hostname>\n[<start_token>\n]`` marker that :class:`SoftFileLock` still writes.
 #: Protocol 2 carries the owner mode and the lease claim. A protocol 1 reader treats a protocol 2 marker as malformed
 #: and evicts it after its grace period, so the two never guarantee mutual exclusion against each other.
 _PROTOCOL: Final[str] = "filelock/2"
@@ -26,6 +26,7 @@ class OwnerRecord(NamedTuple):
     mode: OwnerMode
     token: str | None = None
     lease_duration: float | None = None
+    start: int | None = None
 
 
 class MarkerSoftFileLock(SoftFileLock):
@@ -63,7 +64,7 @@ class MarkerSoftFileLock(SoftFileLock):
 
         """
         owner = self._read_owner()
-        return owner is not None and owner.pid == os.getpid() and owner.hostname == socket.gethostname()
+        return owner is not None and owner.pid == os.getpid() and owner.hostname == host_name()
 
     def force_break(self) -> None:
         """
@@ -83,7 +84,12 @@ class MarkerSoftFileLock(SoftFileLock):
         write_all(fd, encode_marker(self._published_record()))
 
     def _published_record(self) -> OwnerRecord:
-        return OwnerRecord(pid=os.getpid(), hostname=socket.gethostname(), mode=self._owner_mode)
+        return OwnerRecord(
+            pid=os.getpid(),
+            hostname=host_name(),
+            mode=self._owner_mode,
+            start=process_start_token(os.getpid()),
+        )
 
 
 def encode_marker(record: OwnerRecord) -> bytes:
@@ -93,6 +99,8 @@ def encode_marker(record: OwnerRecord) -> bytes:
         lines.append(f"token={record.token}")
     if record.lease_duration is not None:
         lines.append(f"duration={record.lease_duration!r}")
+    if record.start is not None:
+        lines.append(f"start={record.start}")
     return "".join(f"{line}\n" for line in lines).encode()
 
 
@@ -124,6 +132,7 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
     try:
         pid = int(fields["pid"])
         duration = float(fields["duration"]) if "duration" in fields else None
+        start = int(fields["start"]) if "start" in fields else None
     except ValueError:
         return None
     if not 1 <= pid <= _MAX_PID:
@@ -131,7 +140,7 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
     token = fields.get("token")
     if mode == "lease" and (token is None or duration is None or duration <= 0):
         return None
-    return OwnerRecord(pid=pid, hostname=hostname, mode=mode, token=token, lease_duration=duration)
+    return OwnerRecord(pid=pid, hostname=hostname, mode=mode, token=token, lease_duration=duration, start=start)
 
 
 __all__ = [

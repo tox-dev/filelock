@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import secrets
-import socket
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from threading import Event, Thread, current_thread
 from typing import TYPE_CHECKING, Literal
 
 from ._error import LeaseSettingsMismatch
+from ._identity import owner_is_stale
 from ._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord, parse_marker
 from ._soft import _read_lock_file
 from ._util import break_lock_file, touch
@@ -158,13 +158,7 @@ class SoftFileLease(MarkerSoftFileLock):
         super()._release()
 
     def _published_record(self) -> OwnerRecord:
-        return OwnerRecord(
-            pid=os.getpid(),
-            hostname=socket.gethostname(),
-            mode="lease",
-            token=self._token,
-            lease_duration=self._lease_duration,
-        )
+        return super()._published_record()._replace(token=self._token, lease_duration=self._lease_duration)
 
     def _try_break_stale_lock(self) -> None:
         if (peer := self._read_peer()) is None:
@@ -183,7 +177,9 @@ class SoftFileLease(MarkerSoftFileLock):
         # A break can fail for reasons a contender must ride out rather than raise on: a peer broke the marker first,
         # or Windows refuses to rename a file whose holder still has it open. Poll again instead.
         with suppress(OSError):
-            if owner.hostname == socket.gethostname() and not self._is_process_alive(owner.pid):
+            # A dead or recycled owner is reclaimed at once; a live owner past its lease duration is superseded on the
+            # schedule every contender agreed to.
+            if owner_is_stale(owner.pid, owner.hostname, owner.start):
                 break_lock_file(self.lock_file, mtime, ino)
                 return
             if time.time() - mtime >= self._lease_duration:

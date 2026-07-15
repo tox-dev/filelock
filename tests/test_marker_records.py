@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
 
 from filelock import SoftFileLease, Timeout
+from filelock._identity import process_start_token
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from pytest_mock import MockerFixture
 
 
 @pytest.mark.parametrize(
@@ -29,6 +33,7 @@ if TYPE_CHECKING:
         pytest.param(
             "filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=soon\n", id="lease-duration-not-a-number"
         ),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=strict\nstart=later\n", id="start-not-a-number"),
     ],
 )
 def test_unreadable_record_names_no_owner(tmp_path: Path, record: str) -> None:
@@ -36,6 +41,16 @@ def test_unreadable_record_names_no_owner(tmp_path: Path, record: str) -> None:
     marker.write_text(record, encoding="utf-8")
 
     assert SoftFileLease(str(marker), lease_duration=1).owner is None
+
+
+def test_record_start_token_reads_back(tmp_path: Path) -> None:
+    marker = tmp_path / "a.lock"
+    marker.write_text("filelock/2\npid=4242\nhost=somehost\nmode=strict\nstart=987654\n", encoding="utf-8")
+
+    owner = SoftFileLease(str(marker), lease_duration=1).owner
+
+    assert owner is not None
+    assert (owner.pid, owner.hostname, owner.mode, owner.start) == (4242, "somehost", "strict", 987654)
 
 
 def test_record_from_a_newer_filelock_still_names_its_owner(tmp_path: Path) -> None:
@@ -47,6 +62,23 @@ def test_record_from_a_newer_filelock_still_names_its_owner(tmp_path: Path) -> N
 
     assert owner is not None
     assert (owner.pid, owner.hostname, owner.mode) == (4242, "somehost", "strict")
+
+
+def test_held_lease_records_the_process_start_token(tmp_path: Path) -> None:
+    marker = tmp_path / "a.lock"
+    with SoftFileLease(str(marker), lease_duration=5) as lease:
+        assert lease.owner is not None
+        assert lease.owner.start == process_start_token(os.getpid())
+
+
+def test_marker_without_start_token_omits_it(tmp_path: Path, mocker: MockerFixture) -> None:
+    # A platform without a proven start time publishes no start field, and the record still reads back cleanly.
+    mocker.patch("filelock._marker.process_start_token", return_value=None)
+    marker = tmp_path / "a.lock"
+    with SoftFileLease(str(marker), lease_duration=5) as lease:
+        assert lease.owner is not None
+        assert lease.owner.start is None
+        assert "start=" not in marker.read_text(encoding="utf-8")
 
 
 def test_lease_treats_an_unreadable_record_as_contention(tmp_path: Path) -> None:

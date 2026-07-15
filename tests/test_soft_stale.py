@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import CloseErrorPolicy, SoftFileLock
+from filelock._identity import process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
@@ -40,18 +41,18 @@ def lock_path(tmp_path: Path) -> Path:
     return tmp_path / "test.lock"
 
 
-def _holder(pid: int, *, host: str = _HOST, creation_time: int | None = None) -> str:
-    return "\n".join([str(pid), host, *([] if creation_time is None else [str(creation_time)])]) + "\n"
+def _holder(pid: int, *, host: str = _HOST, start: int | None = None) -> str:
+    return "\n".join([str(pid), host, *([] if start is None else [str(start)])]) + "\n"
 
 
 def test_lock_writes_pid_and_hostname(lock_path: Path) -> None:
     with SoftFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").strip().splitlines()
-        if sys.platform == "win32":
-            assert lines[:2] == [str(os.getpid()), _HOST]
-            assert len(lines) == 3
-            int(lines[2])  # creation FILETIME must parse as int
-        else:
+        assert lines[:2] == [str(os.getpid()), _HOST]
+        # Every platform with a proven start time writes it as an integer third line; one without writes two lines.
+        if (token := process_start_token(os.getpid())) is not None:
+            assert lines == [str(os.getpid()), _HOST, str(token)]
+        else:  # pragma: no cover  # every CI platform exposes a start time
             assert lines == [str(os.getpid()), _HOST]
 
 
@@ -59,23 +60,51 @@ def test_lock_writes_pid_and_hostname(lock_path: Path) -> None:
     "content",
     [
         pytest.param(_holder(_DEAD_PID), id="two_line"),
-        pytest.param(_holder(_DEAD_PID, creation_time=123456789), id="three_line"),
+        pytest.param(_holder(_DEAD_PID, start=123456789), id="three_line"),
     ],
 )
 def test_stale_lock_broken_when_process_dead(lock_path: Path, mocker: MockerFixture, content: str) -> None:
     lock_path.write_text(content, encoding="utf-8")
-    mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=False)
+    mocker.patch("filelock._identity.process_alive", return_value=False)
     _assert_self_heals(lock_path)
 
 
 def test_stale_lock_not_broken_when_process_alive(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
-    mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=True)
+    mocker.patch("filelock._identity.process_alive", return_value=True)
     _assert_times_out(lock_path)
 
 
 def test_stale_lock_not_broken_different_hostname(lock_path: Path) -> None:
     lock_path.write_text(_holder(_DEAD_PID, host="other-host.example.com"), encoding="utf-8")
+    _assert_times_out(lock_path)
+
+
+_REQUIRES_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    process_start_token(os.getpid()) is None, reason="platform exposes no proven process start time"
+)
+
+
+@_REQUIRES_START_TOKEN
+def test_recycled_pid_marker_self_heals(lock_path: Path) -> None:
+    # A live PID (our own) whose recorded start token differs is a recycled PID: the process that wrote the marker is
+    # gone even though the number is now in use. No mock: the real start token is read and found not to match.
+    token = process_start_token(os.getpid())
+    assert token is not None
+    lock_path.write_text(_holder(os.getpid(), start=token + 1), encoding="utf-8")
+    _assert_self_heals(lock_path)
+
+
+@_REQUIRES_START_TOKEN
+def test_live_process_with_matching_start_token_retained(lock_path: Path) -> None:
+    # Our own PID and our own start token: the recorded owner is this live process, so the marker must stand.
+    lock_path.write_text(_holder(os.getpid(), start=process_start_token(os.getpid())), encoding="utf-8")
+    _assert_times_out(lock_path)
+
+
+def test_live_process_without_start_token_falls_back_to_pid(lock_path: Path) -> None:
+    # A two-line marker carries no start token, so liveness rests on the PID alone; a live PID is left held.
+    lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     _assert_times_out(lock_path)
 
 
@@ -86,7 +115,7 @@ def test_stale_lock_not_broken_different_hostname(lock_path: Path) -> None:
 )
 def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixture, errno: int) -> None:
     lock_path.write_text(_holder(99999), encoding="utf-8")
-    mocker.patch("filelock._soft.os.kill", side_effect=OSError(errno, "kill failed"))
+    mocker.patch("filelock._identity.os.kill", side_effect=OSError(errno, "kill failed"))
     _assert_times_out(lock_path)
 
 
@@ -97,13 +126,13 @@ def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixt
         pytest.param(b"", id="empty"),
         pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), id="oversized"),
         pytest.param(b"not-a-pid\nhostname\n", id="two_line_bad_pid"),
-        pytest.param(f"{_DEAD_PID}\nhostname\nnot-a-time\n".encode(), id="three_line_bad_creation_time"),
+        pytest.param(f"{_DEAD_PID}\nhostname\nnot-a-token\n".encode(), id="three_line_bad_start_token"),
     ],
 )
 def test_unparseable_lock_evicted_when_old(lock_path: Path, content: bytes) -> None:
     lock_path.write_bytes(content)
     os.utime(lock_path, (0, 0))
-    # An unreadable lock (bad line count, non-integer pid/creation time, empty, or oversized) must self-heal
+    # An unreadable lock (bad line count, non-integer pid/start token, empty, or oversized) must self-heal
     # instead of staying stuck; a matching line count alone does not make a file well-formed.
     _assert_self_heals(lock_path)
 
@@ -147,7 +176,7 @@ def test_out_of_range_pid_not_evicted_when_fresh(lock_path: Path) -> None:
 
 def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    mocker.patch.object(SoftFileLock, "_is_process_alive", return_value=False)
+    mocker.patch("filelock._identity.process_alive", return_value=False)
     mocker.patch.object(Path, "rename", side_effect=FileNotFoundError("already gone"))
     _assert_times_out(lock_path)
 
@@ -237,7 +266,7 @@ def test_windows_stale_lock_uses_captured_process_error(
         ctypes.windll.kernel32.SetLastError(ambient_error)
 
     # ctypes function pointers do not expose a Python signature for autospec.
-    mocker.patch("filelock._soft._KERNEL32.OpenProcess", side_effect=fail_open_process)
+    mocker.patch("filelock._identity._KERNEL32.OpenProcess", side_effect=fail_open_process)
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
     if acquires:
         _assert_self_heals(lock_path)
@@ -249,8 +278,8 @@ def test_windows_stale_lock_uses_captured_process_error(
 def test_windows_stale_lock_broken_when_pid_recycled(lock_path: Path) -> None:
     process_marker = lock_path.with_suffix(".process")
     with SoftFileLock(process_marker):
-        creation_time = int(process_marker.read_text(encoding="utf-8").splitlines()[2])
-    lock_path.write_text(_holder(os.getpid(), creation_time=creation_time + 1), encoding="utf-8")
+        start = int(process_marker.read_text(encoding="utf-8").splitlines()[2])
+    lock_path.write_text(_holder(os.getpid(), start=start + 1), encoding="utf-8")
     _assert_self_heals(lock_path)
 
 
@@ -265,7 +294,7 @@ def test_windows_live_process_marker_retained(lock_path: Path) -> None:
 
 
 @_WINDOWS_ONLY
-def test_windows_live_process_marker_without_creation_time_retained(lock_path: Path) -> None:
+def test_windows_live_process_marker_without_start_token_retained(lock_path: Path) -> None:
     lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     _assert_times_out(lock_path)
 
