@@ -8,10 +8,8 @@ on:
         default: auto
         type: choice
         options: [auto, major, minor, patch]
-
 permissions:
   contents: read
-
 jobs:
   prepare-release:
     name: 📝 build changelog and tag
