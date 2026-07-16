@@ -1,0 +1,2 @@
+``SoftFileLease`` reads a marker whose lease duration is ``nan`` or ``inf`` as malformed rather than as a valid lease,
+so such a marker ages out through the grace window instead of raising ``LeaseSettingsMismatch`` on every contender.
