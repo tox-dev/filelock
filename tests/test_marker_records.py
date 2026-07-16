@@ -33,6 +33,8 @@ if TYPE_CHECKING:
         pytest.param(
             "filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=soon\n", id="lease-duration-not-a-number"
         ),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=nan\n", id="lease-duration-nan"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=inf\n", id="lease-duration-inf"),
         pytest.param("filelock/2\npid=1\nhost=h\nmode=strict\nstart=later\n", id="start-not-a-number"),
     ],
 )

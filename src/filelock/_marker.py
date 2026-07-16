@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from contextlib import suppress
 from typing import Final, Literal, NamedTuple
@@ -138,7 +139,10 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
     if not 1 <= pid <= _MAX_PID:
         return None
     token = fields.get("token")
-    if mode == "lease" and (token is None or duration is None or duration <= 0):
+    # float() accepts "nan" and "inf", and neither is non-positive, so a duration <= 0 guard alone would read such a
+    # marker as a valid lease. A nan duration mismatches every configured duration and so wedges reclaim, where a
+    # malformed marker ages out through the grace window.
+    if mode == "lease" and (token is None or duration is None or not (math.isfinite(duration) and duration > 0)):
         return None
     return OwnerRecord(pid=pid, hostname=hostname, mode=mode, token=token, lease_duration=duration, start=start)
 
