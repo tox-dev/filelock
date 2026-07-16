@@ -5,6 +5,98 @@
 These guides solve specific problems. Each one assumes you're familiar with the basics from :doc:`tutorials`. For design
 rationale and trade-offs, see :doc:`concepts`.
 
+*************************************
+ Name and place the lock file
+*************************************
+
+Lock a sidecar, not the resource itself. Opening the target to lock it creates it, which destroys the distinction a
+cache guard depends on: whether the file exists yet. On Windows an open handle also blocks the rename or unlink you were
+about to perform. The convention is ``<resource>.lock`` beside the resource, or a parallel lock tree. ``huggingface_hub``
+keeps its cache under ``<cache>/models/...`` and its locks under ``<cache>/.locks/...``.
+
+Keep the name within the filesystem's limit. A single path component caps at 255 bytes on ext4 and on Windows, and a
+cache key pasted into a lock name blows past that:
+
+.. code-block:: python
+
+    import hashlib
+    import os
+
+    from filelock import FileLock
+
+
+    def name_limit(directory: str) -> int:
+        statvfs = getattr(os, "statvfs", None)  # Unix only; Windows caps a component at 255
+        return min(statvfs(directory).f_namemax, 255) if statvfs is not None else 255
+
+
+    def lock_for(cache_dir: str, key: str) -> FileLock:
+        name = f"{key}.lock"
+        if len(name.encode()) > name_limit(cache_dir):
+            name = f"{hashlib.sha256(key.encode()).hexdigest()}.lock"
+        return FileLock(os.path.join(cache_dir, name))
+
+``datasets`` hashes over-long lock names against ``os.statvfs(path).f_namemax`` for exactly this reason. A hash also
+sidesteps the separators, spaces, and non-portable characters a natural key tends to carry.
+
+Two more constraints worth designing around:
+
+- **All contenders must agree on the path.** A lock is a rendezvous on one pathname. Resolve symlinks and relative
+  paths the same way everywhere, or two processes will politely lock different files. Bind-mounted containers make this
+  easy to get wrong: the same file, two paths, no exclusion.
+- **The lock file's directory must already exist.** filelock creates the lock file, not its parents.
+
+*****************************************
+ Keep correctness independent of the lock
+*****************************************
+
+An advisory lock binds only the processes that ask for it. A different tool, an older version, an ``ENOLCK`` on a
+network mount, or an operator with ``rm`` proceeds regardless. For a cache, this argues for a design where the lock is
+an *optimization* and the filesystem supplies the correctness:
+
+.. code-block:: python
+
+    import os
+    import tempfile
+    from pathlib import Path
+
+    from filelock import FileLock, Timeout
+
+
+    def populate(target: Path, produce) -> None:
+        fd, tmp = tempfile.mkstemp(dir=target.parent)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(produce())
+            os.chmod(tmp, 0o644)  # mkstemp creates 0600; widen before publishing
+            os.replace(tmp, target)  # atomic: readers see the old file or the new one, never a partial one
+        except BaseException:
+            os.unlink(tmp)
+            raise
+
+
+    def get(target: Path, produce) -> bytes:
+        lock = FileLock(f"{target}.lock")
+        try:
+            with lock.acquire(timeout=30):
+                if not target.exists():
+                    populate(target, produce)
+        except Timeout:
+            if not target.exists():  # the lock only saved duplicate work; do the work anyway
+                populate(target, produce)
+        return target.read_bytes()
+
+``os.replace`` is atomic within a filesystem, so a reader always observes a complete file. The lock stops two processes
+from *both* producing; losing it costs duplicated work, not a corrupted cache. ``huggingface_hub`` says as much in its
+cache code, where a comment records that the lock is best-effort and that cache correctness does not depend on it.
+
+`pip <https://github.com/pypa/pip>`_ takes the same position by omission. It uses no file locking at all, relying on
+atomic replace and documenting the duplicated-download race it accepts.
+
+Reach for real exclusion (:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` or a native
+:class:`FileLock <filelock.FileLock>`) when losing the lock costs more than repeated work: a non-idempotent migration,
+an append to a shared file, a resource that cannot be produced twice.
+
 **********************
  Handle lock timeouts
 **********************
@@ -99,6 +191,114 @@ Change the poll interval anytime via the property:
 .. code-block:: python
 
     lock.poll_interval = 0.5
+
+************************************
+ Probe a lock before blocking on it
+************************************
+
+A lock that is free costs nothing to take. A lock that is held can stall a user in silence for minutes with no clue why.
+Probe first, and you can tell them:
+
+.. code-block:: python
+
+    import logging
+
+    from filelock import FileLock, Timeout
+
+    lock = FileLock("py_info/5/a1b2c3.json.lock")
+
+    try:
+        lock.acquire(timeout=0.0001)
+    except Timeout:
+        logging.info("lock held by another process, waiting for it to release %s", lock.lock_file)
+        lock.acquire()  # now block for as long as it takes
+
+    try:
+        ...  # critical section
+    finally:
+        lock.release()
+
+The first ``acquire`` returns immediately in the common uncontended case. Only when it raises do you log and settle in
+to wait, so the message appears exactly when it is useful and never otherwise.
+
+`virtualenv <https://github.com/pypa/virtualenv>`_, `pre-commit <https://github.com/pre-commit/pre-commit>`_, `uv
+<https://github.com/astral-sh/uv>`_, and `huggingface_hub <https://github.com/huggingface/huggingface_hub>`_ each
+arrived at this shape on their own, because a silent wait reads as a hang.
+
+Exactly one ``release()`` balances this, whichever branch ran: a failed ``acquire`` rolls the lock counter back, so the
+probe leaves nothing behind to unwind. Do not reach for ``release(force=True)`` here, because it would discard a
+reentrant hold your caller still depends on.
+
+*******************************
+ Report progress while waiting
+*******************************
+
+Probing tells the user *once* that you are waiting. For a wait that can run for minutes, keep telling them. Wrap the
+acquire in a loop with a short inner timeout and an overall deadline:
+
+.. code-block:: python
+
+    import logging
+    import time
+
+    from filelock import FileLock, Timeout
+
+    lock = FileLock("cache/.locks/models/bert-base/a1b2c3.lock")
+    deadline = time.monotonic() + 300
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Timeout(lock.lock_file)
+        try:
+            lock.acquire(timeout=min(10, remaining))
+        except Timeout:
+            logging.info("still waiting on %s, %.0fs left", lock.lock_file, remaining)
+        else:
+            break
+
+    try:
+        ...  # critical section
+    finally:
+        lock.release()
+
+The inner timeout controls how often you speak; the deadline controls when you give up. Keeping them separate means a
+chatty log never shortens the wait, and a long wait never goes quiet. ``huggingface_hub`` runs this pattern in its
+``WeakFileLock`` to keep a stalled model download from looking like a crashed one.
+
+.. mermaid::
+
+    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
+    sequenceDiagram
+        box rgb(227, 242, 253) This process
+            participant C as Caller
+        end
+        box rgb(255, 243, 224) Coordination
+            participant L as File Lock
+        end
+        box rgb(237, 231, 246) Peer
+            participant H as Holder
+        end
+        activate H
+        activate L
+        Note over H: holds the lock
+        loop until deadline
+            C->>L: acquire(timeout=10)
+            Note over L: 10s elapse, still held
+            L-->>C: raise Timeout
+            C->>C: log "still waiting"
+        end
+        H->>L: release()
+        deactivate L
+        deactivate H
+        C->>L: acquire(timeout=10)
+        L-->>C: acquired
+        activate C
+        activate L
+        Note over C: critical section
+        C->>L: release()
+        deactivate L
+        deactivate C
 
 *****************
  Use async locks
@@ -216,19 +416,22 @@ Acquiring through one reference counts toward the same lock depth:
     lock_b.release()  # Lock counter is 1
     lock_a.release()  # Lock is fully released
 
-Parameters are frozen when the singleton is first created. Requesting with different parameters raises ``ValueError``:
+Parameters are frozen when the singleton is first created. Requesting the same path with different parameters raises
+``ValueError``:
 
 .. code-block:: python
 
-    lock1 = FileLock("work.lock", is_singleton=True, timeout=10)
-    lock2 = FileLock("work.lock", is_singleton=True, timeout=5)  # ValueError!
+    lock1 = FileLock("other.lock", is_singleton=True, timeout=10)  # freezes timeout=10
+    lock2 = FileLock("other.lock", is_singleton=True, timeout=5)  # ValueError!
 
 *****************************************
  Use shared read / exclusive write locks
 *****************************************
 
 When you have many readers and occasional writers, use :class:`ReadWriteLock <filelock.ReadWriteLock>` to allow readers
-to proceed concurrently. The lock file must use a ``.db`` extension because ``ReadWriteLock`` is backed by SQLite:
+to proceed concurrently. ``ReadWriteLock`` is backed by SQLite and hands the path straight to :func:`sqlite3.connect`,
+so a ``.db`` extension is the convention rather than a requirement. The real constraint is a local filesystem the active
+SQLite VFS supports:
 
 .. code-block:: python
 
@@ -377,8 +580,39 @@ that hold locks for seconds-to-minutes. Tune them for your deployment:
     )
 
 Pick ``stale_threshold`` larger than any realistic process or filesystem pause. ``heartbeat_interval`` should be
-roughly ``stale_threshold / 3``. Lower ``poll_interval`` reduces acquisition latency at the cost of more filesystem
-metadata calls. Synchronize participating clocks and fence protected writes if an expired holder can resume.
+roughly ``stale_threshold / 3``; ``stale_threshold`` defaults to exactly that and must strictly exceed the interval.
+Lower ``poll_interval`` reduces acquisition latency at the cost of more filesystem metadata calls. Synchronize
+participating clocks and fence protected writes if an expired holder can resume.
+
+``timeout`` and ``blocking`` set instance-wide defaults that each acquisition inherits. Passing ``None`` per call means
+"use the instance default", which is not the same as ``-1``:
+
+.. code-block:: python
+
+    rw = SoftReadWriteLock("/shared/nfs/data.lock", timeout=30, blocking=True)
+
+    with rw.read_lock():  # inherits timeout=30
+        pass
+
+    with rw.read_lock(timeout=-1):  # blocks forever, overriding the instance default
+        pass
+
+    with rw.read_lock(blocking=False):  # one attempt; ignores timeout entirely
+        pass
+
+.. warning::
+
+   ``SoftReadWriteLock`` and ``ReadWriteLock`` are singletons by default. A second construction for the same path
+   raises ``ValueError`` if ``timeout`` or ``blocking`` differ, but ``heartbeat_interval``, ``stale_threshold``, and
+   ``poll_interval`` are **silently ignored** on a cache hit: you get the first instance, with the first call's tuning.
+   Configure a path in one place.
+
+:meth:`get_lock() <filelock.SoftReadWriteLock.get_lock>` is sugar for the same singleton lookup, spelling the intent
+out at the call site. ``ReadWriteLock`` has the same classmethod. It offers nothing the constructor does not:
+
+.. code-block:: python
+
+    assert SoftReadWriteLock.get_lock("/shared/nfs/data.lock") is SoftReadWriteLock("/shared/nfs/data.lock")
 
 Writer acquisition is two-phase and writer-preferring: phase one claims the writer marker (which blocks any
 new reader), phase two waits for existing readers to drain. This rules out writer starvation under read-heavy
@@ -414,14 +648,28 @@ to a thread pool via ``loop.run_in_executor``:
     async with rw.write_lock():
         await update_shared_data()
 
-You can pass a custom executor:
+You can pass a custom executor, and an explicit event loop:
 
 .. code-block:: python
 
     from concurrent.futures import ThreadPoolExecutor
 
     executor = ThreadPoolExecutor(max_workers=2)
-    rw = AsyncReadWriteLock("data.db", executor=executor)
+    rw = AsyncReadWriteLock("data.db", executor=executor, loop=loop)
+
+Who owns that executor decides whether you must clean up. Left at ``None``, ``AsyncReadWriteLock`` **creates and owns**
+a dedicated single-worker pool, because SQLite pins a connection to one thread; ``close()`` shuts it down. Pass your own
+and filelock uses it as-is and never shuts it down. Either way, ``loop=None`` binds to whatever loop is running at the
+time of the call rather than at construction:
+
+.. code-block:: python
+
+    rw = AsyncReadWriteLock("data.db")  # owns a private single-worker executor
+    try:
+        async with rw.read_lock():
+            data = await get_shared_data()
+    finally:
+        await rw.close()  # shuts down the executor it created
 
 Low-level ``acquire_read``/``acquire_write``/``release`` methods are also available:
 
@@ -448,6 +696,12 @@ For a shared filesystem whose marker and cache behavior has been verified, use
 
     async with rw.read_lock():
         data = await get_shared_data()
+
+It takes the same tuning as its synchronous peer plus the async pair, so the full signature is
+``AsyncSoftReadWriteLock(lock_file, timeout=-1, *, blocking=True, is_singleton=True, heartbeat_interval=30.0,
+stale_threshold=None, poll_interval=0.25, loop=None, executor=None)``. It has no SQLite thread affinity to respect, so
+``executor=None`` means the loop's default executor: it creates nothing and owns nothing, and its ``close()`` only
+delegates to the synchronous lock.
 
 **************************************
  Detect stale locks (soft locks only)
@@ -600,22 +854,107 @@ Forcibly break a lock regardless of who holds it:
     lock = SoftFileLock("work.lock")
     lock.break_lock()  # removes the lock file unconditionally
 
+***********************************
+ Inspect a protocol 2 owner record
+***********************************
+
+``SoftFileLock`` publishes a *protocol 1* marker: a PID and a hostname. :class:`SoftFileLease
+<filelock.SoftFileLease>` publishes a *protocol 2* marker, which also names the contract its holder acquired under. It
+reads that marker back through :class:`MarkerSoftFileLock <filelock.MarkerSoftFileLock>`, its base class, so ``owner``
+returns an :class:`OwnerRecord <filelock.OwnerRecord>`:
+
+.. code-block:: python
+
+    from filelock import SoftFileLease
+
+    lease = SoftFileLease("work.lock", lease_duration=30)
+
+    if (owner := lease.owner) is None:
+        print("no marker, or its record is malformed or protocol 1")
+    else:
+        print(owner.pid, owner.hostname)
+        print(owner.mode)            # "lease"
+        print(owner.token)           # claim identity
+        print(owner.lease_duration)  # 30.0
+        print(owner.start)           # process start token, or None where unavailable
+
+:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` does **not** publish this record and has no ``owner``: it
+derives from :class:`BaseFileLock <filelock.BaseFileLock>`, keeps a permanent sentinel at the lock path, and stores one
+record per owner under ``work.lock.filelock/claims``. Read those through
+:attr:`claims <filelock.StrictSoftFileLock.claims>` instead, as :ref:`how-to:Use fail-closed soft locks` shows.
+
+``owner`` reads the marker on disk each time, so it reports whoever currently holds the path, not necessarily this
+process. To ask specifically about this process, use ``is_lock_held_by_us``, which compares both the PID and the
+hostname:
+
+.. code-block:: python
+
+    if lease.is_lock_held_by_us:
+        print("this process wrote the marker")
+
+Use these records to build recovery tooling, and keep two limits in mind. ``None`` is ambiguous by design: a missing
+marker, a malformed one, and a protocol 1 one all read the same, because none of them names an owner this contract can
+trust. And a record is a *report*, not a lock: reading one proves nothing about the next instant. Never gate entry on
+what ``owner`` returned; acquire the lock.
+
+:meth:`force_break() <filelock.MarkerSoftFileLock.force_break>` removes the marker whoever holds it:
+
+.. code-block:: python
+
+    lease.force_break()  # voids mutual exclusion; the old holder keeps running
+
+Reserve it for an operator who has confirmed the named owner is gone. ``StrictSoftFileLock.force_break()`` is a
+different call: it removes one claim by name rather than a single marker.
+
+*********************************************
+ Type options passed through a lock subclass
+*********************************************
+
+Every keyword filelock's metaclass forwards to a lock is declared in :class:`LockOptions <filelock.LockOptions>`, a
+``TypedDict``. A subclass that adds its own options can use it to type the rest, instead of widening them to
+``**kwargs: Any``:
+
+.. code-block:: python
+
+    import sys
+
+    from filelock import FileLock, LockOptions
+
+    if sys.version_info >= (3, 11):
+        from typing import Unpack
+    else:
+        from typing_extensions import Unpack
+
+
+    class CountedFileLock(FileLock):
+        def __init__(self, lock_file: str, *, uses: int = 0, **kwargs: Unpack[LockOptions]) -> None:
+            self.uses = uses
+            super().__init__(lock_file, **kwargs)
+
+A type checker now rejects ``CountedFileLock("x.lock", timeuot=5)`` at the call site rather than letting the typo reach
+``__init__``. filelock uses ``LockOptions`` internally for the same reason, and virtualenv's ``util/lock.py`` wraps
+``FileLock`` in a counted subclass much like this one.
+
 *****************
  Control logging
 *****************
 
-All log messages use the ``DEBUG`` level under the ``filelock`` logger name. Control logging via Python's standard
-library:
+Every message goes to the ``filelock`` logger. All of them are ``DEBUG``, except one ``WARNING`` that
+:class:`ReadWriteLock <filelock.ReadWriteLock>` emits when a requested timeout exceeds what SQLite's ``busy_timeout``
+accepts. Control logging via Python's standard library:
 
 .. code-block:: python
 
     import logging
 
-    # Hide filelock debug messages
+    # Hide filelock debug messages; the ReadWriteLock timeout warning still gets through
     logging.getLogger("filelock").setLevel(logging.INFO)
 
     # Or show all messages
     logging.getLogger("filelock").setLevel(logging.DEBUG)
+
+    # Silence filelock entirely, warning included
+    logging.getLogger("filelock").setLevel(logging.ERROR)
 
     # Configure a handler to see them
     handler = logging.StreamHandler()
@@ -652,16 +991,34 @@ holder, the protected resource must be linearizable and fence on a monotonic gen
 
 Every contender for a path must agree on ``lease_duration``; one that disagrees raises
 :class:`LeaseSettingsMismatch <filelock.LeaseSettingsMismatch>` instead of applying its own expiry to a peer that never
-agreed to it. Native locks reject lease settings, because pathname age cannot revoke a kernel lock on an inode. Async
-callers use ``AsyncStrictSoftFileLock`` and ``AsyncSoftFileLease``.
+agreed to it. Native locks take no lease settings, because pathname age cannot revoke a kernel lock on an inode; they
+warn and ignore a ``lifetime`` rather than raising. Async callers use ``AsyncStrictSoftFileLock`` and
+``AsyncSoftFileLease``.
+
+Tune the refresh with ``heartbeat_interval``, which defaults to ``lease_duration / 3`` and must satisfy
+``0 < heartbeat_interval < lease_duration`` (anything else raises :class:`ValueError`):
+
+.. code-block:: python
+
+    lease = SoftFileLease("work.lock", lease_duration=60, heartbeat_interval=20)
+
+Unlike ``lease_duration``, this one is local: it never reaches the marker, so peers on a path may each choose their own
+without raising ``LeaseSettingsMismatch``. It buys margin rather than time. A refresh that fails transiently is retried,
+and the lease reports ``refresh-failed`` only once ``lease_duration - heartbeat_interval`` has passed without a
+success, which is deliberately *before* a peer may legally take the claim. The default leaves room for two missed
+refreshes; an interval close to ``lease_duration`` collapses that margin to nearly nothing, while a small one adds
+metadata traffic on the network filesystem these leases usually live on. ``release()`` also joins the heartbeat thread
+with a timeout of one interval, so a large value lengthens a worst-case release.
 
 Windows refuses to rename or delete a file another process holds open, so a peer takes an expired claim there only once
 the previous holder's process exits and its handle closes. A holder that keeps running but stops refreshing keeps its
 marker on Windows, while Unix lets a peer reclaim it after ``lease_duration``.
 
-**Do not mix contracts on one path.** Both classes publish a protocol 2 record.
-:class:`SoftFileLock <filelock.SoftFileLock>` reads that record as malformed and evicts it once past its grace period,
-so a legacy contender can delete a live strict marker or a live lease. Only these combinations hold:
+**Do not mix contracts on one path.** The two classes publish different records, and only one of them is safe to leave
+in front of a legacy contender. ``SoftFileLease`` writes a protocol 2 marker, which
+:class:`SoftFileLock <filelock.SoftFileLock>` reads as malformed and evicts once past its grace period, deleting a live
+lease. ``StrictSoftFileLock`` instead leaves a sentinel that a current ``SoftFileLock`` recognizes and preserves, so it
+blocks rather than breaking in. Only these combinations hold:
 
 .. list-table:: Mutual exclusion between contenders
     :header-rows: 1
@@ -672,8 +1029,11 @@ so a legacy contender can delete a live strict marker or a live lease. Only thes
       - Yes.
     - - ``SoftFileLease`` with ``SoftFileLease``, same ``lease_duration``
       - Until a claim expires; then the old holder overlaps its successor.
-    - - ``SoftFileLock`` with ``StrictSoftFileLock`` or ``SoftFileLease``
-      - No. The legacy contender evicts the protocol 2 marker.
+    - - ``SoftFileLock`` with ``StrictSoftFileLock``
+      - Yes, from filelock 3.30.0 on: the strict sentinel is recognized, so the legacy contender waits. A pre-3.30
+        ``SoftFileLock`` misreads the sentinel and can break in.
+    - - ``SoftFileLock`` with ``SoftFileLease``
+      - No. The legacy contender reads the protocol 2 marker as malformed and evicts it.
     - - ``StrictSoftFileLock`` with ``SoftFileLease``
       - The lease waits out a strict holder, but a strict contender never reclaims an expired lease.
 
@@ -701,6 +1061,9 @@ is required or ``StrictSoftFileLock`` when unknown and stale claims must fail cl
 ``AsyncSoftFileLease`` or ``AsyncStrictSoftFileLock``. ``lifetime=None`` disables age-based removal; same-host dead-PID
 and malformed-record recovery still apply.
 
+Only ``SoftFileLock`` honors the value. Every other lock either drops it with a ``UserWarning`` naming why that backend
+cannot age out a holder, or refuses the keyword outright:
+
 .. list-table:: ``lifetime`` behavior
     :header-rows: 1
 
@@ -714,13 +1077,23 @@ and malformed-record recovery still apply.
       - Removes a marker after the configured age.
       - A live holder may overlap its successor.
     - - Native lock, non-``None``
-      - Emits a warning and ignores the value.
+      - Warns and ignores: a kernel lock cannot be broken safely by file age.
       - Kernel lock ownership is unchanged.
+    - - ``StrictSoftFileLock``, non-``None``
+      - Warns and ignores: a strict claim is never broken by age, only by ``force_break()``.
+      - Unchanged; a crashed holder's claim still waits for an operator.
+    - - ``SoftFileLease``, non-``None``
+      - Warns and ignores: ``lease_duration`` already sets when the claim expires.
+      - Unchanged; expiry follows ``lease_duration``.
+    - - ``ReadWriteLock`` or ``SoftReadWriteLock``, any value
+      - Raises :class:`TypeError`; these constructors take no ``lifetime``.
+      - Not applicable.
 
 Native locks (:class:`UnixFileLock <filelock.UnixFileLock>` and
 :class:`WindowsFileLock <filelock.WindowsFileLock>`) ignore a non-``None`` value and emit a warning. The same is true
 when :class:`FileLock <filelock.FileLock>` selects one of those backends; on a build without ``fcntl``, ``FileLock`` may
-instead alias ``SoftFileLock``. A kernel lock lives on the inode, so pathname age cannot revoke it.
+instead alias ``SoftFileLock``. A kernel lock lives on the inode, so pathname age cannot revoke it. The async peers
+behave as their synchronous counterparts do.
 
 **************************
  Cancel lock acquisition
@@ -751,20 +1124,31 @@ become available.
 
 .. mermaid::
 
+    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
     sequenceDiagram
-        participant W as Worker Thread
-        participant L as File Lock
-        participant M as Main Thread
-        W->>L: acquire(cancel_check=shutdown.is_set)
+        box rgb(227, 242, 253) Worker
+            participant W as Worker Thread
+        end
+        box rgb(255, 243, 224) Coordination
+            participant L as File Lock
+        end
+        box rgb(237, 231, 246) Control
+            participant M as Main Thread
+        end
+        W->>+L: acquire(cancel_check=shutdown.is_set)
+        activate W
         loop Every poll_interval
             L->>L: Try lock (busy)
             L->>W: Check cancel_check()
             W-->>L: False (keep waiting)
         end
+        activate M
         M->>M: shutdown.set()
+        deactivate M
         L->>W: Check cancel_check()
         W-->>L: True (cancel!)
-        L->>W: Raise Timeout
+        L->>-W: Raise Timeout
+        deactivate W
         Note over W: Clean shutdown
 
 ***********************
@@ -895,6 +1279,21 @@ construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propaga
 
     lock = UnixFileLock("work.lock", fallback_to_soft=False)
 
+``ENOSYS`` then propagates as the original :class:`OSError` from :func:`fcntl.flock`, with
+:data:`errno.ENOSYS`; filelock does not wrap it.
+
+Two other options imply the same refusal, because a soft lock cannot honor either: ``preserve_lock_file=True`` (a soft
+lock releases by unlinking its marker) and ``on_acquired`` (a soft lock keeps protocol state in the marker and has no
+native descriptor to lend). Setting either makes ``UnixFileLock`` raise on ``ENOSYS`` even with the default
+``fallback_to_soft=True``, rather than silently downgrade and drop the guarantee you asked for:
+
+.. code-block:: python
+
+    # Each of these raises OSError(ENOSYS) on a filesystem without flock, instead of downgrading.
+    UnixFileLock("work.lock", fallback_to_soft=False)
+    UnixFileLock("work.lock", preserve_lock_file=True)
+    UnixFileLock("work.lock", on_acquired=write_holder)
+
 This option does not change ``FileLock`` on a build where the alias is already ``SoftFileLock`` because ``fcntl`` is
 unavailable. It has no effect on Windows or an explicitly constructed ``SoftFileLock``.
 
@@ -953,6 +1352,10 @@ A common use is stamping holder metadata into the lock file:
 filelock does not ``fsync`` the descriptor's writes. Native locks only; :class:`SoftFileLock
 <filelock.SoftFileLock>` rejects the hook because it keeps its own protocol state in the marker file.
 
+For the same reason, a hook makes :class:`UnixFileLock <filelock.UnixFileLock>` fail closed on a filesystem whose
+``flock`` returns ``ENOSYS``: the soft backend it would otherwise fall back to has no descriptor to pass, so downgrading
+would drop the callback without telling you. See :ref:`how-to:Fail closed instead of downgrading to soft`.
+
 *******************************************
  Lock a descriptor you already own
 *******************************************
@@ -981,6 +1384,12 @@ lock and a ``FileLock`` path lock on the same file contend with each other.
 Pass ``blocking=False`` for a single attempt that returns ``False`` on contention and ignores ``poll_interval``.
 Blocking calls require a finite, positive ``poll_interval``. There is no async wrapper. Run it in an executor, or drive
 ``blocking=False`` from your own polling loop. On Windows *fd* must be a synchronous descriptor.
+
+This is the tool for interoperating with a lock protocol you did not define. `conda
+<https://github.com/conda/conda>`_ locks a specific byte of its repodata state file rather than a sidecar path, because
+the byte offset is an agreed constant that ``mamba`` also implements: the lock is part of a cross-tool contract, so the
+pathname conventions of ``FileLock`` would put it on the wrong rendezvous. When the protocol names a descriptor and an
+offset, take the descriptor.
 
 Both functions raise ``OSError`` with :data:`errno.ENOSYS` when the Python build lacks the native locking primitive.
 The :class:`FileLock <filelock.FileLock>` and :class:`AsyncFileLock <filelock.AsyncFileLock>` aliases continue to select

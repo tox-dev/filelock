@@ -1,0 +1,1 @@
+Stop :class:`~filelock.StrictSoftFileLock` and :class:`~filelock.AsyncStrictSoftFileLock` calling themselves a native OS lock when they warn that they ignore ``lifetime``; they now say a strict claim is only ever cleared by ``force_break()``.

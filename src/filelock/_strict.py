@@ -76,6 +76,10 @@ class StrictSoftFileLock(BaseFileLock):
 
     _preserve_lock_file_supported: bool = True
     _on_acquired_supported: bool = False
+    #: Age cannot clear a strict claim: expiring one on a clock is the overlap the fail-closed contract exists to rule
+    #: out, so only force_break() removes it.
+    _lifetime_supported: bool = False
+    _lifetime_unsupported_reason: str = "a strict claim is never broken by age, only by force_break()"
     #: The claim doorway publishes an intent and a held record per owner, so a shared instance must serialize them.
     _serialize_transitions: bool = True
     #: Contending processes each publish and rescan several files, so back their retries off across a jittered window
