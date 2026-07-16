@@ -11,7 +11,7 @@ lock, because a read-modify-write reads a stale cached copy. Each process here o
 mutable state read across caches), so the check measures the lock and nothing else. CLOCK_MONOTONIC is system-wide on
 one host, so intervals from sibling processes are directly comparable.
 
-Every lock type is always run and printed, so the output records the real behaviour of each on the filesystem.
+Every lock type is always run and printed, so the output records the real behavior of each on the filesystem.
 FILELOCK_VERIFY_LOCKS narrows only which lock types failing turns the exit code non-zero: a filesystem where a type is
 known-unsupported (native ``flock`` across NFS clients, the strict claim over SMB) still reports its result without
 failing the gate.
@@ -114,7 +114,7 @@ def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str |
             # stopped (a starvation Timeout, EINVAL on CIFS, ESTALE or EACCES under NFSv3 churn) and end its run.
             return intervals, f"{type(error).__name__}: {error}".rstrip(": ")[:160]
         enter = time.monotonic()
-        # Hold briefly so a broken lock lets a second holder in during an observable window; a correct lock serialises
+        # Hold briefly so a broken lock lets a second holder in during an observable window; a correct lock serializes
         # the holds regardless. enter is stamped after acquire and leave before release, so a correct hand-off can
         # never look like an overlap even though release and the next acquire race.
         time.sleep(_HOLD_SECONDS)
