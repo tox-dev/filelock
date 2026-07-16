@@ -76,16 +76,15 @@ the lock and write inside it, two processes can both see it missing and both pro
 
 .. mermaid::
 
-    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
     sequenceDiagram
-        box rgb(227, 242, 253) virtualenv runs
+        box rgba(21, 101, 192, 0.16) virtualenv runs
             participant A as virtualenv A
             participant B as virtualenv B
         end
-        box rgb(255, 243, 224) Coordination
+        box rgba(230, 81, 0, 0.16) Coordination
             participant L as Lock
         end
-        box rgb(232, 245, 233) App data
+        box rgba(46, 125, 50, 0.16) App data
             participant C as Cache file
         end
         activate A

@@ -16,13 +16,12 @@ For example, imagine two processes writing to the same configuration file:
 
 .. mermaid::
 
-    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
     sequenceDiagram
-        box rgb(227, 242, 253) Processes
+        box rgba(21, 101, 192, 0.16) Processes
             participant A as Process A
             participant B as Process B
         end
-        box rgb(232, 245, 233) Shared state
+        box rgba(46, 125, 50, 0.16) Shared state
             participant File as Configuration File
         end
         activate A
@@ -46,16 +45,15 @@ File locks prevent this by ensuring only one process can access a resource at a 
 
 .. mermaid::
 
-    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
     sequenceDiagram
-        box rgb(227, 242, 253) Processes
+        box rgba(21, 101, 192, 0.16) Processes
             participant A as Process A
             participant B as Process B
         end
-        box rgb(255, 243, 224) Coordination
+        box rgba(230, 81, 0, 0.16) Coordination
             participant Lock as File Lock
         end
-        box rgb(232, 245, 233) Shared state
+        box rgba(46, 125, 50, 0.16) Shared state
             participant File as Configuration File
         end
         activate A
@@ -286,10 +284,11 @@ Lock selection flowchart:
         question3 -->|Yes| platform["Use UnixFileLock<br/>or WindowsFileLock"]
         question3 -->|No| default["Use FileLock<br/>(recommended)"]
 
-        classDef recommended fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
-        classDef alternative fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#bf360c
-        classDef special fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
-        classDef escape fill:#ede7f6,stroke:#4527a0,stroke-width:2px,color:#311b92
+        %% docs/_static/custom.css colors these classes, once per light and dark theme
+        classDef recommended stroke-width:2px
+        classDef alternative stroke-width:2px
+        classDef special stroke-width:2px
+        classDef escape stroke-width:2px
         class default recommended
         class soft,strict,lease,platform,srw alternative
         class rw,arw special
@@ -756,9 +755,10 @@ Async locks default to ``thread_local=False`` because the thread that calls ``ac
             T4["Thread B"] --- SC
         end
 
-        classDef thread fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
-        classDef counter fill:#fff3e0,stroke:#e65100,color:#bf360c
-        classDef store fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+        %% docs/_static/custom.css colors these classes, once per light and dark theme
+        classDef thread stroke-width:2px
+        classDef counter stroke-width:2px
+        classDef store stroke-width:2px
         class T1,T2,T3,T4 thread
         class SC counter
         class L1,L2 store

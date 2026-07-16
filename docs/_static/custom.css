@@ -61,9 +61,115 @@
     }
 }
 
-/* Mermaid diagrams carry light fills with dark ink in both themes, so the rendered SVG keeps its own background
-   rather than inheriting furo's dark surface. Center each diagram and let a wide flowchart scroll on its own. */
+/* Center each diagram and let a wide flowchart scroll on its own. */
 .mermaid {
     text-align: center;
     overflow-x: auto;
 }
+
+/* The diagrams carry no colors of their own: sphinxcontrib-mermaid renders them in the browser and re-renders them on
+   every theme toggle, so a palette written into the diagram source would be baked at whichever theme happened to load
+   first and then stay light on a dark page. The source names a role (`class default recommended`), mermaid copies that
+   name onto the node, and the two palettes below fill it in. Keep a tint's meaning consistent across diagrams: blue is
+   the caller's own code, orange is the lock coordinating it, green is the data under the lock, purple the way out.
+
+   Mermaid scopes its own rules under the generated SVG's id, which outranks anything selectable from here, so these
+   declarations need !important to land. */
+body {
+    --diagram-green-bg: #e8f5e9;
+    --diagram-green-line: #2e7d32;
+    --diagram-green-ink: #1b5e20;
+    --diagram-orange-bg: #fff3e0;
+    --diagram-orange-line: #e65100;
+    --diagram-orange-ink: #bf360c;
+    --diagram-blue-bg: #e3f2fd;
+    --diagram-blue-line: #1565c0;
+    --diagram-blue-ink: #0d47a1;
+    --diagram-purple-bg: #ede7f6;
+    --diagram-purple-line: #4527a0;
+    --diagram-purple-ink: #311b92;
+}
+
+/* Dark tints hold their hue at roughly a tenth of the light fill's lightness, and lift the ink to the same hue's pale
+   end: every pair clears 7:1, which the light palette's orange does not quite manage. Mirror furo's own two-selector
+   split so an explicit toggle and an untouched "auto" both land. */
+@media not print {
+    body[data-theme="dark"] {
+        --diagram-green-bg: #1b3a24;
+        --diagram-green-line: #66bb6a;
+        --diagram-green-ink: #c8e6c9;
+        --diagram-orange-bg: #3d2a14;
+        --diagram-orange-line: #ffa726;
+        --diagram-orange-ink: #ffe0b2;
+        --diagram-blue-bg: #12304d;
+        --diagram-blue-line: #42a5f5;
+        --diagram-blue-ink: #bbdefb;
+        --diagram-purple-bg: #272040;
+        --diagram-purple-line: #9575cd;
+        --diagram-purple-ink: #d1c4e9;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        body:not([data-theme="light"]) {
+            --diagram-green-bg: #1b3a24;
+            --diagram-green-line: #66bb6a;
+            --diagram-green-ink: #c8e6c9;
+            --diagram-orange-bg: #3d2a14;
+            --diagram-orange-line: #ffa726;
+            --diagram-orange-ink: #ffe0b2;
+            --diagram-blue-bg: #12304d;
+            --diagram-blue-line: #42a5f5;
+            --diagram-blue-ink: #bbdefb;
+            --diagram-purple-bg: #272040;
+            --diagram-purple-line: #9575cd;
+            --diagram-purple-ink: #d1c4e9;
+        }
+    }
+}
+
+.mermaid g.node.recommended > rect,
+.mermaid g.node.store > rect {
+    fill: var(--diagram-green-bg) !important;
+    stroke: var(--diagram-green-line) !important;
+}
+
+.mermaid g.node.recommended .nodeLabel,
+.mermaid g.node.store .nodeLabel {
+    color: var(--diagram-green-ink) !important;
+}
+
+.mermaid g.node.alternative > rect,
+.mermaid g.node.counter > rect {
+    fill: var(--diagram-orange-bg) !important;
+    stroke: var(--diagram-orange-line) !important;
+}
+
+.mermaid g.node.alternative .nodeLabel,
+.mermaid g.node.counter .nodeLabel {
+    color: var(--diagram-orange-ink) !important;
+}
+
+.mermaid g.node.special > rect,
+.mermaid g.node.thread > rect {
+    fill: var(--diagram-blue-bg) !important;
+    stroke: var(--diagram-blue-line) !important;
+}
+
+.mermaid g.node.special .nodeLabel,
+.mermaid g.node.thread .nodeLabel {
+    color: var(--diagram-blue-ink) !important;
+}
+
+.mermaid g.node.escape > rect {
+    fill: var(--diagram-purple-bg) !important;
+    stroke: var(--diagram-purple-line) !important;
+}
+
+.mermaid g.node.escape .nodeLabel {
+    color: var(--diagram-purple-ink) !important;
+}
+
+/* A sequence diagram's `box` renders as a bare `rect.rect` with no per-box hook, so the tints above cannot reach it and
+   the group colors stay in the diagram source. They are translucent for that reason: an alpha over the hue composites
+   against whichever background the theme paints, reading pale on white and deep on the dark page, and it shifts the
+   lightness too little to strand the title text mermaid draws on top in the theme's own ink. */

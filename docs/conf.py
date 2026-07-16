@@ -36,7 +36,11 @@ extensions = [
     "sphinxcontrib.towncrier.ext",  # render unreleased news fragments as a draft "Unreleased" section
     "sphinxext.opengraph",
 ]
+# raw output lets the browser render the diagrams, so they can follow furo's light/dark toggle. The extension picks the
+# theme below from the page background and re-renders on every toggle; neutral pairs grays with the semantic tints that
+# docs/_static/custom.css applies.
 mermaid_output_format = "raw"
+mermaid_light_theme = "neutral"
 
 # sphinxcontrib-towncrier: the .. towncrier-draft-entries:: directive in changelog.rst shows the unreleased fragments.
 towncrier_draft_autoversion_mode = "draft"

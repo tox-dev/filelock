@@ -268,15 +268,14 @@ chatty log never shortens the wait, and a long wait never goes quiet. ``huggingf
 
 .. mermaid::
 
-    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
     sequenceDiagram
-        box rgb(227, 242, 253) This process
+        box rgba(21, 101, 192, 0.16) This process
             participant C as Caller
         end
-        box rgb(255, 243, 224) Coordination
+        box rgba(230, 81, 0, 0.16) Coordination
             participant L as File Lock
         end
-        box rgb(237, 231, 246) Peer
+        box rgba(69, 39, 160, 0.16) Peer
             participant H as Holder
         end
         activate H
@@ -1128,15 +1127,14 @@ become available.
 
 .. mermaid::
 
-    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
     sequenceDiagram
-        box rgb(227, 242, 253) Worker
+        box rgba(21, 101, 192, 0.16) Worker
             participant W as Worker Thread
         end
-        box rgb(255, 243, 224) Coordination
+        box rgba(230, 81, 0, 0.16) Coordination
             participant L as File Lock
         end
-        box rgb(237, 231, 246) Control
+        box rgba(69, 39, 160, 0.16) Control
             participant M as Main Thread
         end
         W->>+L: acquire(cancel_check=shutdown.is_set)
