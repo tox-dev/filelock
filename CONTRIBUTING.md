@@ -4,9 +4,9 @@ This page lists the steps needed to set up a development environment and contrib
 
 1. Fork and clone this repo.
 
-2. [Install tox](https://tox.wiki/en/latest/installation.html#via-pipx).
+1. [Install tox](https://tox.wiki/en/latest/installation.html#via-pipx).
 
-3. Run tests:
+1. Run tests:
 
    ```shell
    tox run
@@ -18,7 +18,7 @@ This page lists the steps needed to set up a development environment and contrib
    tox run -f py311
    ```
 
-4. Running other tox commands (eg. linting):
+1. Running other tox commands (eg. linting):
 
    ```shell
    tox -e fix
