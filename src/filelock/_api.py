@@ -50,9 +50,10 @@ if TYPE_CHECKING:
     class _ForkDescriptorOwner(Protocol):
         def _descriptors_for_fork(self) -> tuple[tuple[int, tuple[int, int] | None], ...]: ...
 
+    # Matched against the class object itself rather than `type[...]` of it. A metaclass supplies this method to the
+    # class while leaving instances without it, so a `type[_ForkResettableClass]` bound rejects `ReadWriteLock`.
     class _ForkResettableClass(Protocol):
-        @classmethod
-        def _reset_class_after_fork(cls) -> None: ...
+        def _reset_class_after_fork(self) -> None: ...
 
     class _RegisterAtFork(Protocol):
         def __call__(
@@ -1523,7 +1524,7 @@ class _ForkState:
         self.admission_closed = False
         self.fork_owner_depths: dict[int, int] = {}
         self.pinned_objects: dict[int, list[tuple[_ForkResettable, ...]]] = {}
-        self.pinned_classes: dict[int, list[tuple[type[_ForkResettableClass], ...]]] = {}
+        self.pinned_classes: dict[int, list[tuple[_ForkResettableClass, ...]]] = {}
         self.provisional_descriptor_tokens: dict[int, list[tuple[int, ...]]] = {}
         self.pid = os.getpid()
 
@@ -1542,7 +1543,7 @@ class _ForkState:
 
 
 _FORK_OBJECTS: Final[WeakValueDictionary[int, _ForkResettable]] = WeakValueDictionary()
-_FORK_CLASSES: Final[WeakValueDictionary[int, type[_ForkResettableClass]]] = WeakValueDictionary()
+_FORK_CLASSES: Final[WeakValueDictionary[int, _ForkResettableClass]] = WeakValueDictionary()
 _OWNED_DESCRIPTORS: Final[dict[int, _OwnedDescriptor]] = {}
 _DESCRIPTOR_TOKENS: Final[count[int]] = count()
 _TRANSITION_TOKENS: Final[count[int]] = count()
@@ -1584,7 +1585,7 @@ def _register_fork_object(instance: _ForkResettable) -> None:
         _refresh_owner_pins()
 
 
-def _register_fork_class(cls: type[_ForkResettableClass]) -> None:
+def _register_fork_class(cls: _ForkResettableClass) -> None:
     if not _HAS_REGISTER_AT_FORK:
         return  # pragma: no cover - platform without register_at_fork
     with _fork_transition(), _FORK_STATE.registry_lock:
@@ -1747,7 +1748,7 @@ def _snapshot_descriptor_for_fork(fd: int, identity: tuple[int, int] | None) -> 
 def _detach_child_state(  # pragma: no cover - exercised in fork children
     descriptors: list[_OwnedDescriptor],
     pinned_objects: tuple[_ForkResettable, ...],
-    pinned_classes: tuple[type[_ForkResettableClass], ...],
+    pinned_classes: tuple[_ForkResettableClass, ...],
 ) -> None:
     for descriptor in descriptors:
         if descriptor.device is None:
