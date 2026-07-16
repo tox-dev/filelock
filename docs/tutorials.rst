@@ -3,23 +3,27 @@
 ###########
 
 This section guides you through the fundamentals of file locking, starting with the basics and building up to advanced
-patterns.
+patterns. Each lesson is built around a job real programs hand to a file lock: guarding a download cache, memoizing an
+expensive probe, coordinating readers and writers on a shared filesystem.
 
 *****************
  Your first lock
 *****************
 
-Let's create our first lock and use it to coordinate between processes.
+Start with the job that pulls most projects to a file lock in the first place: two copies of a program racing to
+populate the same cache entry.
 
-We import what we need and create a lock object:
+`huggingface_hub <https://github.com/huggingface/huggingface_hub>`_ downloads model weights into a shared cache
+directory. When two processes want the same file, one should fetch it while the other waits, rather than both streaming
+gigabytes over the same connection. It puts a lock beside the cache entry, keyed on the file's ETag:
 
 .. code-block:: python
 
     from filelock import FileLock
 
-    lock = FileLock("myapp.lock")
+    lock = FileLock("cache/.locks/models/bert-base/a1b2c3.lock")
 
-Now we have a lock object that represents a lock file on disk. We can use the lock with a context manager (the ``with``
+The lock object represents a lock file on disk. Nothing is locked yet. Use it with a context manager (the ``with``
 statement):
 
 .. code-block:: python
@@ -29,64 +33,107 @@ statement):
         print("I have the lock!")
     # Outside this block, the lock is released
 
-Run this code in several terminal windows at the same time. Only one process prints the message at a time; the others
-wait for their turn.
+Run this in several terminals at once. Only one process prints at a time; the others wait their turn.
+
+Two details of that path are deliberate, and both come from real deployments:
+
+- The lock lives beside the cache entry, not on it. Locking the target file itself would mean creating the very file
+  whose absence you are testing for.
+- The lock file name is derived from a hash. Cache keys can be long, and a filesystem caps a single name component
+  (255 bytes on ext4 and on Windows). `datasets <https://github.com/huggingface/datasets>`_ hashes lock names against
+  ``os.statvfs(path).f_namemax`` for exactly this reason. Hash long keys instead of pasting them into the name.
 
 ************************
  Protecting shared data
 ************************
 
-File locks are most useful when protecting data that multiple processes access:
+A lock is worth little on its own. It earns its keep when it wraps a *check, then act* sequence that would otherwise
+race.
+
+`virtualenv <https://github.com/pypa/virtualenv>`_ caches what it learns about each Python interpreter it probes, since
+launching an interpreter to interrogate it is slow. Two virtualenv runs starting together would both probe, and both
+write. The lock turns that into one probe:
 
 .. code-block:: python
 
+    import json
     from pathlib import Path
+
     from filelock import FileLock
 
-    data_file = Path("data.txt")
-    lock = FileLock("data.txt.lock")
+    cache_file = Path("py_info/5/a1b2c3.json")
+    lock = FileLock("py_info/5/a1b2c3.json.lock")
 
-    # Process A writes a greeting
     with lock:
-        if not data_file.exists():
-            data_file.write_text("Hello from Process A\n")
+        if cache_file.exists():
+            info = json.loads(cache_file.read_text())
+        else:
+            info = probe_interpreter()  # slow: launches the interpreter
+            cache_file.write_text(json.dumps(info))
 
-    # Process B appends another greeting
-    with lock:
-        with data_file.open("a") as f:
-            f.write("Hello from Process B\n")
+The check and the write live inside the same lock. That is the whole point: if you test ``cache_file.exists()`` outside
+the lock and write inside it, two processes can both see it missing and both probe.
 
-Before making changes, check what is already done. Process A checks whether the file exists before
-writing. Process B appends, so it skips the check. Both use the lock so that only one process modifies the file at a
-time.
+.. mermaid::
 
-Run this code from two different processes. The file will contain messages from both in a consistent order.
+    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
+    sequenceDiagram
+        box rgb(227, 242, 253) virtualenv runs
+            participant A as virtualenv A
+            participant B as virtualenv B
+        end
+        box rgb(255, 243, 224) Coordination
+            participant L as Lock
+        end
+        box rgb(232, 245, 233) App data
+            participant C as Cache file
+        end
+        activate A
+        A->>L: acquire()
+        activate L
+        B->>L: acquire() (waits...)
+        A->>+C: exists()?
+        C-->>-A: no
+        Note over A: probe interpreter (slow)
+        A->>C: write info
+        A->>L: release()
+        deactivate L
+        deactivate A
+        L->>B: acquired
+        activate B
+        activate L
+        B->>+C: exists()?
+        C-->>-B: yes
+        Note over B: reuse, no probe
+        B->>L: release()
+        deactivate L
+        deactivate B
 
 *****************
  Reentrant locks
 *****************
 
-Sometimes you need to acquire the same lock multiple times from the same process or thread. The lock allows this:
+Sometimes you need to acquire the same lock again from code already holding it. The lock allows this:
 
 .. code-block:: python
 
     from filelock import FileLock
 
-    lock = FileLock("reentrant.lock")
+    lock = FileLock("py_info/5/a1b2c3.json.lock")
 
 
-    def helper_function():
+    def read_cached_info():
         with lock:
-            print("Helper has the lock")
+            return load_info()
 
 
     with lock:
-        print("Main code has the lock")
-        helper_function()  # Can acquire the same lock again
-        print("Still have the lock")
+        refresh_cache()
+        info = read_cached_info()  # acquires the same lock again
 
-No deadlock occurs. The lock counts how many times you acquire it and releases only when the count reaches zero. You can
-inspect this counter and the lock state at any time:
+No deadlock occurs. The lock counts acquisitions and releases only when the count reaches zero. This is what lets a
+helper take the lock defensively without knowing whether its caller already holds it. You can inspect the counter and
+state at any time:
 
 .. code-block:: python
 
@@ -110,7 +157,8 @@ inspect this counter and the lock state at any time:
     print(lock.lock_counter)  # 0, fully released
     print(lock.is_locked)     # False
 
-You can call functions that acquire a lock even while you already hold it.
+virtualenv leans on this directly: its ``util/lock.py`` wraps ``FileLock`` in a counted subclass so nested acquisitions
+of the same app-data entry are cheap.
 
 *****************************
  Multiple ways to use a lock
@@ -178,6 +226,98 @@ from the releasing thread.
 
 See :ref:`how-to:Use locks with multiple threads` for practical examples of controlling this behavior.
 
+**********************
+ Your first async lock
+**********************
+
+An async program cannot afford a blocking ``acquire()``: while one coroutine waits on the filesystem, the event loop
+should keep serving everything else. Use the async variants with ``async with``:
+
+.. code-block:: python
+
+    from pathlib import Path
+
+    from filelock import AsyncFileLock
+
+    lock = AsyncFileLock("cache/.locks/models/bert-base/a1b2c3.lock")
+
+
+    async def fetch_once(url: str) -> bytes:
+        async with lock:
+            blob = Path("cache/models/bert-base/a1b2c3.bin")
+            if not blob.exists():
+                blob.write_bytes(await download(url))
+            return blob.read_bytes()
+
+The lock runs its blocking filesystem calls in a thread pool, so the event loop stays free while you wait.
+
+.. warning::
+
+   Plain ``with`` does not work on an async lock. ``acquire`` and ``release`` are coroutines; use ``async with``.
+
+Every lock type in this tutorial has an async peer: :class:`AsyncSoftFileLock <filelock.AsyncSoftFileLock>`,
+:class:`AsyncStrictSoftFileLock <filelock.AsyncStrictSoftFileLock>`,
+:class:`AsyncSoftFileLease <filelock.AsyncSoftFileLease>`, :class:`AsyncReadWriteLock <filelock.AsyncReadWriteLock>`,
+and :class:`AsyncSoftReadWriteLock <filelock.AsyncSoftReadWriteLock>`. They share the on-disk protocol of their
+synchronous counterparts, so a sync and an async process contend correctly with each other. See
+:ref:`how-to:Use async locks`.
+
+*******************************
+ Reading who holds a soft lock
+*******************************
+
+A native lock lives in the kernel, so there is nothing on disk to read: the file is a handle, not a record. A soft lock
+is the opposite. Its marker file *is* the protocol, and it names its owner.
+
+This is what lets an operator answer "what is holding this thing?" without attaching a debugger. PostgreSQL is the
+canonical example: it writes ``postmaster.pid`` into the data directory so a second server, and a human, can see who
+claims it.
+
+:class:`SoftFileLock <filelock.SoftFileLock>` publishes a PID and hostname:
+
+.. code-block:: python
+
+    from filelock import SoftFileLock
+
+    lock = SoftFileLock("server.lock")
+
+    with lock:
+        print(lock.pid)                 # e.g. 12345
+        print(lock.is_lock_held_by_us)  # True
+
+:class:`SoftFileLease <filelock.SoftFileLease>` publishes more. It derives from
+:class:`MarkerSoftFileLock <filelock.MarkerSoftFileLock>`, which writes a richer *protocol 2* record and hands it back
+as an :class:`OwnerRecord <filelock.OwnerRecord>`:
+
+.. code-block:: python
+
+    from filelock import SoftFileLease
+
+    lease = SoftFileLease("server.lock", lease_duration=30)
+
+    with lease:
+        if (owner := lease.owner) is not None:  # None if the marker is missing or unreadable
+            print(owner.pid, owner.hostname)
+            print(owner.mode)            # "lease"
+            print(owner.token)           # names this particular claim
+            print(owner.lease_duration)  # 30.0
+            print(owner.start)           # process start token, or None on platforms without one
+
+:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` keeps its owner metadata differently, one record per claim
+read through ``lock.claims``, so it has no ``owner`` property.
+
+That ``start`` field is what keeps a recycled PID from reading as a live owner. The operating system reuses PIDs, so
+"PID 12345 exists" does not mean "the process that wrote this marker exists". filelock folds in a per-platform start
+token (Linux ``/proc/<pid>/stat`` plus the boot id, macOS ``sysctl``, Windows ``GetProcessTimes``) so a contender can
+tell the difference.
+
+.. note::
+
+   PostgreSQL writes a start time into ``postmaster.pid`` but does not compare it; it defends against PID reuse
+   structurally instead. It is a precedent for the problem, not for this solution.
+
+See :ref:`how-to:Inspect a protocol 2 owner record` for using these records in recovery tooling.
+
 ***************************************
  Migrating from lockfile.PIDLockFile
 ***************************************
@@ -218,6 +358,13 @@ Key differences from ``PIDLockFile``:
  Reader/writer locks on shared filesystems
 *******************************************
 
+When many processes read a resource and few write it, an exclusive lock serializes work that never needed serializing.
+A reader/writer lock lets readers share and writers exclude.
+
+`restic <https://github.com/restic/restic>`_ is the reference case: many backup clients read a repository at once, while
+a prune must run alone. It matters that restic builds this *above* the filesystem, because no atomic reader/writer
+primitive survives the object stores and network mounts it targets. filelock draws the same line:
+
 Keep SQLite-backed :class:`ReadWriteLock <filelock.ReadWriteLock>` on a local filesystem supported by the active SQLite
 VFS. On a shared filesystem, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` only after verifying exclusive
 creation, rename, unlink, timestamps, and cache visibility across participating hosts. Heartbeat expiry permits another
@@ -225,17 +372,20 @@ holder to enter if an old process pauses and later resumes.
 
 .. code-block:: python
 
+    from pathlib import Path
+
     from filelock import SoftReadWriteLock
 
     rw = SoftReadWriteLock("/shared/nfs/work.lock")
+    data_file = Path("/shared/nfs/data.json")
 
     with rw.read_lock():
         # Cooperating readers can hold the lock together.
-        data = open("/shared/nfs/data.json").read()
+        data = data_file.read_text()
 
     with rw.write_lock():
         # New readers wait behind an observed writer marker.
-        open("/shared/nfs/data.json", "w").write(new_data)
+        data_file.write_text(new_data)
 
 While the lock is held, you will see a few sidecar files on disk next to ``work.lock``:
 
@@ -257,7 +407,10 @@ pauses, synchronize participating clocks, and fence protected writes if an expir
         stale_threshold=360,
     )
 
-See :doc:`concepts` for the full explanation of the heartbeat + TTL model.
+Those two numbers are a ratio, not a pair of independent knobs. restic's repository lock runs the same model with a
+5-minute refresh against a 30-minute stale timeout, and treats a lock it could not refresh within 22.5 minutes as lost:
+the margin absorbs clock drift and a slow filesystem. See :doc:`concepts` for the full explanation of the heartbeat +
+TTL model.
 
 *******************************
  Stronger soft-lock contracts
@@ -295,12 +448,18 @@ the protected resource, so fence any resource an expired holder could still writ
     with lease:
         do_resumable_work()
 
+restic and Terraform resolve this choice in opposite directions. Terraform holds its state lock until an operator runs
+``force-unlock``, preferring to hang over risking two concurrent applies, while a lease keeps the work moving and leaves
+you to fence the resource. Choose according to which failure your system can absorb.
+
 See :ref:`how-to:Choose a soft-lock contract` to pick between them.
 
 ************
  Next steps
 ************
 
+- Waiting on a lock a user can see? See :ref:`how-to:Report progress while waiting` and
+  :ref:`how-to:Probe a lock before blocking on it`.
 - Need strict exclusion or an expiring lease? See :ref:`how-to:Use fail-closed soft locks` and
   :ref:`how-to:Choose a soft-lock contract`.
 - Want to handle timeouts, cancellation, or force-release? See :doc:`how-to`.

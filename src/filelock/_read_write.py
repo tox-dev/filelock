@@ -251,7 +251,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     acquired them.
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
-    instance. The lock file must use a ``.db`` extension (SQLite database).
+    instance. The path is handed to :func:`sqlite3.connect` as given, so a ``.db`` extension is a convention rather
+    than a requirement; the filesystem must be one the active SQLite VFS supports.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely

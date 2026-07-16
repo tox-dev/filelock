@@ -16,16 +16,27 @@ For example, imagine two processes writing to the same configuration file:
 
 .. mermaid::
 
+    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
     sequenceDiagram
-        participant A as Process A
-        participant File as Configuration File
-        participant B as Process B
-        A->>File: Read (value: 1)
-        B->>File: Read (value: 1)
+        box rgb(227, 242, 253) Processes
+            participant A as Process A
+            participant B as Process B
+        end
+        box rgb(232, 245, 233) Shared state
+            participant File as Configuration File
+        end
+        activate A
+        activate B
+        A->>+File: Read
+        File-->>-A: 1
+        B->>+File: Read
+        File-->>-B: 1
         Note over A: Increment to 2
         Note over B: Increment to 2
         A->>File: Write 2
+        deactivate A
         B->>File: Write 2
+        deactivate B
         Note over File: Final value: 2 (should be 3!)
 
 This scenario is a **race condition**. Process B's write overwrites Process A's changes, and the final result is
@@ -35,24 +46,39 @@ File locks prevent this by ensuring only one process can access a resource at a 
 
 .. mermaid::
 
+    %%{init: {'theme':'base','themeVariables':{'actorBkg':'#e3f2fd','actorBorder':'#1565c0','actorTextColor':'#0d47a1','actorLineColor':'#90a4ae','activationBkgColor':'#fff3e0','activationBorderColor':'#e65100','noteBkgColor':'#e8f5e9','noteBorderColor':'#2e7d32','noteTextColor':'#1b5e20','signalColor':'#37474f','signalTextColor':'#37474f','labelBoxBkgColor':'#ede7f6','labelBoxBorderColor':'#4527a0','labelTextColor':'#311b92','loopTextColor':'#311b92'}}}%%
     sequenceDiagram
-        participant A as Process A
-        participant Lock as File Lock
-        participant File as Configuration File
-        participant B as Process B
+        box rgb(227, 242, 253) Processes
+            participant A as Process A
+            participant B as Process B
+        end
+        box rgb(255, 243, 224) Coordination
+            participant Lock as File Lock
+        end
+        box rgb(232, 245, 233) Shared state
+            participant File as Configuration File
+        end
+        activate A
         A->>Lock: Acquire lock
         activate Lock
         B->>Lock: Try to acquire (waits...)
-        A->>File: Read (value: 1)
+        A->>+File: Read
+        File-->>-A: 1
         Note over A: Increment to 2
         A->>File: Write 2
         A->>Lock: Release lock
         deactivate Lock
+        deactivate A
         Lock->>B: Lock acquired!
-        B->>File: Read (value: 2)
+        activate B
+        activate Lock
+        B->>+File: Read
+        File-->>-B: 2
         Note over B: Increment to 3
         B->>File: Write 3
         B->>Lock: Release lock
+        deactivate Lock
+        deactivate B
         Note over File: Final value: 3 ✓
 
 Now both processes complete successfully and their changes are preserved.
@@ -260,12 +286,14 @@ Lock selection flowchart:
         question3 -->|Yes| platform["Use UnixFileLock<br/>or WindowsFileLock"]
         question3 -->|No| default["Use FileLock<br/>(recommended)"]
 
-        classDef recommended fill:#dcfce7,stroke:#22c55e,stroke-width:2px,color:#14532d
-        classDef alternative fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#78350f
-        classDef special fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f
+        classDef recommended fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
+        classDef alternative fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#bf360c
+        classDef special fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+        classDef escape fill:#ede7f6,stroke:#4527a0,stroke-width:2px,color:#311b92
         class default recommended
         class soft,strict,lease,platform,srw alternative
         class rw,arw special
+        class service escape
 
 Exclusive locks compared
 ========================
@@ -420,7 +448,7 @@ On older platforms without ``O_NOFOLLOW``, prefer :class:`UnixFileLock <filelock
         with lock:
             # Process B might still write at the same time
             # if Process B doesn't use the lock
-            open("data.txt").write("A")
+            Path("data.txt").write_text("A")
 
     Locks require cooperation; all code accessing a resource must use the same lock.
 
@@ -727,6 +755,13 @@ Async locks default to ``thread_local=False`` because the thread that calls ``ac
             T3["Thread A"] --- SC["Shared<br/>counter: 3"] --- L2["Lock File"]
             T4["Thread B"] --- SC
         end
+
+        classDef thread fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+        classDef counter fill:#fff3e0,stroke:#e65100,color:#bf360c
+        classDef store fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+        class T1,T2,T3,T4 thread
+        class SC counter
+        class L1,L2 store
 
 ****************************
  When not to use file locks

@@ -171,8 +171,8 @@ class SoftFileLease(MarkerSoftFileLock):
             super()._try_break_stale_lock()
             return
         owner, mtime, ino = peer
-        # A malformed, legacy or strict record is never reclaimed by age: only a peer that published a lease agreed to
-        # be superseded by one. Raise the mismatch outside the read so the suppression cannot swallow it.
+        # Only a peer that published a lease agreed to be superseded by one, so a record stating any other contract is
+        # never reclaimed by age. Raise the mismatch outside the read so the suppression cannot swallow it.
         if owner.mode != "lease":
             return
         if owner.lease_duration != self._lease_duration:
