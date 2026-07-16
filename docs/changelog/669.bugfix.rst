@@ -1,3 +1,0 @@
-``StrictSoftFileLock`` and ``AsyncStrictSoftFileLock`` no longer abort acquisition when a peer's claim vanishes as an
-NFSv3 stale filehandle instead of a clean removal; the reader revalidates and skips it, so strict locks hold mutual
-exclusion across independent NFSv3 client caches.

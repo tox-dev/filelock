@@ -7,6 +7,16 @@
 .. towncrier release notes start
 
 ********************
+ 3.30.1 (2026-07-16)
+********************
+
+- ``StrictSoftFileLock`` and ``AsyncStrictSoftFileLock`` no longer abort acquisition when a peer's claim vanishes as an
+  NFSv3 stale filehandle instead of a clean removal; the reader revalidates and skips it, so strict locks hold mutual
+  exclusion across independent NFSv3 client caches. :pr:`669`
+- ``SoftFileLease`` reads a marker whose lease duration is ``nan`` or ``inf`` as malformed rather than as a valid lease,
+  so such a marker ages out through the grace window instead of raising ``LeaseSettingsMismatch`` on every contender. :pr:`670`
+
+********************
  3.30.0 (2026-07-16)
 ********************
 
