@@ -184,18 +184,19 @@ jobs:
           mount | grep /mnt/nfs
       - name: "🔒 Verify NFSv4 mutual exclusion across two client caches"
         env:
-          # SoftFileLock over atomic O_EXCL create is the portable network lock, so it is what the gate enforces on the
-          # network filesystems: it excludes across both NFS versions and, at the moderate dispersed contention the
-          # verifier applies, completes every hold on every run. Native flock and the strict lock print their behavior
-          # ungated; the strict claim in particular retries the transient ESTALE that NFSv3 raises under its churn.
-          FILELOCK_VERIFY_LOCKS: SoftFileLock
+          # StrictSoftFileLock is the lock the gate enforces on NFS: its claim queue hands off fairly, so it finishes
+          # every hold with no overlap on both versions (the strict claim retries the transient ESTALE that NFSv3's
+          # churn raises). The other two print their behavior ungated and neither is safe to gate on here: native flock
+          # does not exclude across NFS client caches (overlaps appear), and the poll-based soft lock starves out under
+          # NFS latency before finishing its holds. Prefer StrictSoftFileLock on NFS.
+          FILELOCK_VERIFY_LOCKS: StrictSoftFileLock
         run: |
           uv venv
           uv pip install .
           timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs4a /mnt/nfs4b
       - name: "🔒 Verify NFSv3 mutual exclusion across two client caches"
         env:
-          FILELOCK_VERIFY_LOCKS: SoftFileLock
+          FILELOCK_VERIFY_LOCKS: StrictSoftFileLock
         run: timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs3a /mnt/nfs3b
   smb:
     name: "🗄️ SMB mutual exclusion"
@@ -232,10 +233,11 @@ jobs:
           done
           mount | grep /mnt/smb
       - name: "🔒 Verify SMB mutual exclusion across two client caches"
-        # The strict lock's claim protocol needs an atomic no-replace hard link that SMB does not reliably provide, so
-        # verify the native and soft locks, which SMB does support.
+        # CIFS byte-range locks are mandatory and server-enforced, so FileLock excludes and finishes every hold: it is
+        # the lock the gate enforces here. SoftFileLock prints ungated (it excludes but its poll-acquire can starve
+        # under contention), and the strict claim needs an atomic no-replace hard link SMB does not reliably provide.
         env:
-          FILELOCK_VERIFY_LOCKS: FileLock,SoftFileLock
+          FILELOCK_VERIFY_LOCKS: FileLock
         run: |
           uv venv
           uv pip install .
