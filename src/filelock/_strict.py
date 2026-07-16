@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from errno import EACCES, EEXIST, ENOENT, ENOSYS, ENOTSUP, EPERM, EXDEV
+from errno import EACCES, EEXIST, ENOENT, ENOSYS, ENOTSUP, EPERM, ESTALE, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -299,9 +299,12 @@ def _read_claims(lock_file: str, directory: Path) -> tuple[StrictSoftFileClaim, 
 
 
 def _read_claim_record(lock_file: str, directory: Path, name: str) -> bytes | None:
-    # Windows holds a claim mid-unlink in a delete-pending state that fails an open with EACCES until the unlink
-    # completes, so a contended scan hits a claim that neither exists nor is readable yet. Retry briefly: a transient
-    # claim resolves to a clean removal, while a genuinely unreadable one (a locked-down record) still fails closed.
+    # A contended scan can list a claim that is not yet cleanly readable, in two ways that both resolve on a brief
+    # retry. Windows holds a claim mid-unlink in a delete-pending state that fails an open with EACCES until the unlink
+    # completes. On NFS, a peer that unlinks its own claim leaves this client's cached filehandle stale, so the next
+    # open returns ESTALE rather than a clean ENOENT until the lookup revalidates against the server. Retrying re-runs
+    # the path lookup, which turns the vanished claim into ENOENT (skip) or reads it if it still exists. A genuinely
+    # unreadable record (a locked-down file, an EIO fault) still fails closed.
     deadline = time.monotonic() + _CLAIM_READ_GRACE
     delaying = False
     while True:
@@ -311,14 +314,20 @@ def _read_claim_record(lock_file: str, directory: Path, name: str) -> bytes | No
         if pending is None:
             return record
         if time.monotonic() >= deadline:
+            if pending.errno == ESTALE:
+                # A stale handle that outlives revalidation is a claim the server no longer has (RFC 1813
+                # NFS3ERR_STALE): skip it like ENOENT. Skipping a peer's vanished claim can only overcount
+                # contention, never free a held lock.
+                return None
             reason = f"cannot read claim: {pending.strerror or str(pending) or type(pending).__name__}"
             raise SoftFileLockProtocolError(lock_file, name, reason) from pending
         delaying = True
 
 
-def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[bytes | None, PermissionError | None]:
-    # Return the record, or (None, None) when the claim has already gone, or (None, error) for a delete-pending open
-    # the caller may retry. Any other OSError is a real fault and fails closed here rather than looping.
+def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[bytes | None, OSError | None]:
+    # Return the record, or (None, None) when the claim has already gone, or (None, error) for an open the caller may
+    # retry: a Windows delete-pending EACCES that resolves to a clean removal, or an NFS ESTALE from a peer unlinking
+    # its own claim out from under this client's cached filehandle. Any other OSError is a real fault and fails closed.
     try:
         return _read_record(directory / name, _CLAIM_RECORD_LIMIT), None
     except FileNotFoundError:
@@ -326,6 +335,8 @@ def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[byt
     except PermissionError as error:
         return None, error
     except OSError as error:
+        if error.errno == ESTALE:
+            return None, error
         reason = f"cannot read claim: {error.strerror or str(error) or type(error).__name__}"
         raise SoftFileLockProtocolError(lock_file, name, reason) from error
 
