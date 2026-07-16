@@ -1,0 +1,1 @@
+Stop :class:`~filelock.SoftFileLease` deleting a live marker whose ``mode`` it does not implement. An unrecognized mode now names its owner instead of reading as malformed, so a record written by a newer filelock survives the grace window rather than being evicted after two seconds.

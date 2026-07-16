@@ -16,7 +16,9 @@ _PROTOCOL: Final[str] = "filelock/2"
 
 _MAX_PID: Final[int] = 2**31 - 1
 
-OwnerMode = Literal["strict", "lease"]
+#: ``unknown`` is never published: it names a mode some other filelock wrote that this version cannot interpret. Such a
+#: record still identifies a live owner, so it is parsed rather than read as malformed and aged out.
+OwnerMode = Literal["lease", "unknown"]
 
 
 class OwnerRecord(NamedTuple):
@@ -119,14 +121,13 @@ def parse_marker(content: str | None) -> OwnerRecord | None:
 
 
 def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
-    mode: OwnerMode
-    # An unknown key is a field a newer filelock published, so ignore it rather than read the record as malformed.
-    if (published := fields.get("mode")) == "strict":
-        mode = "strict"
-    elif published == "lease":
-        mode = "lease"
-    else:
+    # An unknown key is a field a newer filelock published, so ignore it rather than read the record as malformed. An
+    # unrecognized mode is the same story one level up: a contract this version does not implement. Reading it as
+    # malformed would age the marker out of a live owner's hands, so keep it and let the caller refuse to reclaim it.
+    # A record naming no mode at all states no contract and stays malformed.
+    if (published := fields.get("mode")) is None:
         return None
+    mode: OwnerMode = "lease" if published == "lease" else "unknown"
     hostname = fields.get("host")
     if not hostname or "pid" not in fields:
         return None

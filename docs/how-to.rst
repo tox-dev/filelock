@@ -873,7 +873,7 @@ returns an :class:`OwnerRecord <filelock.OwnerRecord>`:
         print("no marker, or its record is malformed or protocol 1")
     else:
         print(owner.pid, owner.hostname)
-        print(owner.mode)            # "lease"
+        print(owner.mode)            # "lease", or "unknown" for a contract this version cannot interpret
         print(owner.token)           # claim identity
         print(owner.lease_duration)  # 30.0
         print(owner.start)           # process start token, or None where unavailable
@@ -891,6 +891,10 @@ hostname:
 
     if lease.is_lock_held_by_us:
         print("this process wrote the marker")
+
+``owner.mode`` reads ``"unknown"`` when the marker names a contract this version does not implement, which is how a
+record written by a newer filelock reads to an older one. A lease never reclaims such a marker by age: only a peer that
+published a lease agreed to be superseded by one. Treat ``"unknown"`` as "held by something I should not touch".
 
 Use these records to build recovery tooling, and keep two limits in mind. ``None`` is ambiguous by design: a missing
 marker, a malformed one, and a protocol 1 one all read the same, because none of them names an owner this contract can
