@@ -7,6 +7,15 @@
 .. towncrier release notes start
 
 ********************
+ 3.30.2 (2026-07-16)
+********************
+
+- Stop :class:`~filelock.SoftFileLease` deleting a live marker whose ``mode`` it does not implement. An unrecognized mode now names its owner instead of reading as malformed, so a record written by a newer filelock survives the grace window rather than being evicted after two seconds. :pr:`672`
+- Stop :class:`~filelock.StrictSoftFileLock` and :class:`~filelock.AsyncStrictSoftFileLock` calling themselves a native OS lock when they warn that they ignore ``lifetime``; they now say a strict claim is only ever cleared by ``force_break()``. :pr:`672`
+- Cover every lock type in the tutorials and how-to guides, with examples drawn from projects that use filelock, and color the mermaid diagrams.
+  Correct the claims that ``StrictSoftFileLock`` exposes ``owner``, that :class:`~filelock.SoftFileLock` evicts a strict sentinel, that :class:`~filelock.ReadWriteLock` requires a ``.db`` extension, and that every log record is ``DEBUG``. :pr:`672`
+
+********************
  3.30.1 (2026-07-16)
 ********************
 

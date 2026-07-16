@@ -1,2 +1,0 @@
-Cover every lock type in the tutorials and how-to guides, with examples drawn from projects that use filelock, and color the mermaid diagrams.
-Correct the claims that ``StrictSoftFileLock`` exposes ``owner``, that :class:`~filelock.SoftFileLock` evicts a strict sentinel, that :class:`~filelock.ReadWriteLock` requires a ``.db`` extension, and that every log record is ``DEBUG``.
