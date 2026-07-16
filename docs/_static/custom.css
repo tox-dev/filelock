@@ -1,42 +1,63 @@
-/* Widen furo's content column by ~50% (46em -> 69em).
+/* Widen furo's body column, and keep both tables of contents on screen while doing it.
 
-   Furo fixes the readable width with the SASS variable $content-width (variables/_layout.scss), compiled into
-   `.content { width: 46em }`, and derives $full-width = $content-width + 2*$content-padding + 2*$sidebar-width = 82em,
-   which centers the layout via the .sidebar-drawer calc and drives the responsive breakpoints. None of these are CSS
-   custom properties, so the only override is to re-set the compiled rules here with the new widths:
-   content-width 69em, content-padded-width 75em, sidebar-width 15em, full-width 105em. */
+   Furo compiles its layout from SASS: `.content { width: 46em }`, 15em drawers either side, and breakpoints derived
+   from their sum ($full-width = 82em). A media query resolves `em` against the *initial* font size, which is always
+   16px, while the layout resolves the same unit against the root font size the reader's browser actually applies. The
+   two only agree at a 16px default. Widening the body by re-setting those fixed widths therefore pushes the layout
+   past the viewport for anyone reading at a larger font: the columns grow, the breakpoint does not move, and the
+   right-hand table of contents is clipped off the edge before anything folds it away.
+
+   So do not restate a width the breakpoints depend on. Pin the two drawers, cap the body, and let the body alone take
+   up the slack. The layout then fits at any font size, and the reader keeps both tables of contents. */
 
 .content {
-    width: 69em;
+    width: auto;
+    max-width: 69em;
+    min-width: 0;
+    flex: 1 1 auto;
 }
 
-/* keep the block centered: .sidebar-drawer eats the left margin around the new $full-width (105em) */
+/* A flex item refuses to shrink below its content's intrinsic width unless told otherwise, and the body's widest
+   token is a line of code. Without this the row holding the body and the right drawer stops shrinking at whatever the
+   longest code line measures, and pushes the drawer off the edge instead. Let the row shrink: a long line then scrolls
+   inside its own code block, which furo already handles, rather than scrolling the whole page sideways. */
+.main {
+    min-width: 0;
+}
+
+/* The drawers share a flex row with the body, so an unpinned drawer donates its width to a growing body: the table of
+   contents stays on screen but shrinks until its entries wrap into an unreadable ribbon. Hold both at 15em. */
+.toc-drawer {
+    flex: 0 0 15em;
+}
+
+/* min-width keeps the navigation at 15em once the gutter runs out, so the body absorbs the remainder rather than the
+   drawer collapsing. The calc centers the wider block on a roomy screen: half the padded body (69em + 2*3em) is 37.5em.
+   Furo does the same around its own narrower column. */
 .sidebar-drawer {
-    width: calc((100% - 105em) / 2 + 15em);
+    width: calc(50% - 37.5em);
+    min-width: 15em;
+    flex: 0 0 auto;
 }
 
-/* below the new full width, fold the table of contents into its icon and re-centre (furo did this at 82em) */
-@media (max-width: 105em) {
+/* Furo folds the right-hand table of contents into an icon below 82em, which on a normal desktop is width the reader
+   still has. Keep it down to the mobile breakpoint (63em), where furo turns the navigation into an overlay and the
+   drawers genuinely have nowhere to sit. Restoring the desktop rules means undoing furo's fold in full: static flow,
+   no fixed panel off the right edge, and the desktop type scale rather than the larger mobile one. */
+@media (min-width: 63.0625em) {
     .toc-content-icon {
-        display: flex;
+        display: none;
     }
     .toc-drawer {
-        position: fixed;
-        height: 100vh;
-        top: 0;
-        right: -15em;
-        border-left: 1px solid var(--color-background-muted);
+        position: static;
+        top: auto;
+        right: auto;
+        height: auto;
+        border-left: none;
     }
-    .sidebar-drawer {
-        width: calc((100% - 90em) / 2 + 15em);
-    }
-}
-
-/* center the page once the content column no longer fits beside the navigation (furo did this at 67em) */
-@media (max-width: 90em) {
-    .content {
-        margin-left: auto;
-        margin-right: auto;
+    .toc-tree {
+        border-left: 1px solid var(--color-background-border);
+        font-size: var(--toc-font-size);
     }
 }
 
