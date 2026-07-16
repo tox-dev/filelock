@@ -548,17 +548,27 @@ visibility to every participating process. The table records where that has been
    * - Local Windows (NTFS)
      - Supported
      - Native and soft backends verified in CI.
-   * - NFS (v3, v4)
-     - Unverified
-     - POSIX advisory locking is unreliable across NFS implementations, so keep SQLite-backed
-       :class:`ReadWriteLock <filelock.ReadWriteLock>` off NFS and verify a soft lock's exclusive creation, rename,
-       unlink, timestamps, and cache visibility on the exact mount before relying on it.
+   * - NFS (v4 and v3)
+     - Verified in CI
+     - A CI lane exports a loopback NFS share, mounts it twice with ``nosharecache`` so the two mounts are independent
+       client caches over one server, then contends several processes across both caches and records every hold
+       interval. The gate enforces :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`, which hands off fairly
+       through its claim queue and finishes every hold with no overlap on both NFSv4 and NFSv3 (retrying the transient
+       ``ESTALE`` that NFSv3 raises under claim churn). Use it on NFS. The other locks are unsafe or unreliable there
+       and the lane records why: native ``flock`` does **not** exclude across NFS client caches — the verifier catches
+       overlapping holders — and the poll-based :class:`SoftFileLock <filelock.SoftFileLock>` excludes but starves out
+       under NFS latency before finishing. POSIX advisory locking is unreliable across NFS, so also keep the
+       SQLite-backed :class:`ReadWriteLock <filelock.ReadWriteLock>` off it.
    * - SMB / CIFS
-     - Unverified
-     - Verify the same operations on the target mount and server before use.
+     - Verified in CI
+     - A CI lane mounts a loopback Samba share twice as independent client caches. CIFS byte-range locks are mandatory
+       and server-enforced, so the gate enforces the native :class:`FileLock <filelock.FileLock>`, which excludes and
+       finishes every hold. :class:`SoftFileLock <filelock.SoftFileLock>` excludes too but prints ungated, since its
+       poll-acquire can starve under contention. :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` is not
+       supported on SMB: its claim protocol needs an atomic no-replace hard link that SMB does not provide.
 
-Do not read "Unverified" as "broken." It means the project does not yet publish a measured guarantee for that
-filesystem. Record the mount and server settings you tested, because cache and locking options change the result.
+The CI lanes measure the default mount and server settings named above. Run ``tasks/verify_filesystem.py`` against your
+own mount to confirm the lock under your options, since cache and locking settings change the result.
 
 Migrating from timed stale breaking
 ===================================

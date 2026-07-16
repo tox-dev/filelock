@@ -158,7 +158,7 @@ jobs:
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: false
-      - name: "🗄️ Export and mount a loopback NFS share"
+      - name: "🗄️ Export and mount loopback NFS shares"
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-kernel-server nfs-common
@@ -167,15 +167,107 @@ jobs:
           echo "/export/filelock 127.0.0.1(rw,sync,no_subtree_check,no_root_squash,insecure)" | sudo tee /etc/exports
           sudo exportfs -ra
           sudo systemctl restart nfs-server
-          sudo mkdir -p /mnt/nfs
-          sudo mount -t nfs -o vers=4.2 127.0.0.1:/export/filelock /mnt/nfs
-          sudo chmod 1777 /mnt/nfs
+          # NFSv3 sends flock to the server through the NLM lock manager. rpcbind must be enabled; rpc-statd is a
+          # static unit that enable cannot touch, so start it explicitly or a v3 flock blocks in the kernel forever.
+          sudo systemctl enable --now rpcbind
+          sudo systemctl start rpc-statd
+          # Mount each version twice, the second with nosharecache, so the two mounts are independent client caches
+          # over one server: contending across them is a real multi-client check, not two views of one cache. The
+          # verifier records each process's own hold intervals and never reads shared data across the caches, so the
+          # measurement needs no cache-coherence tuning here — only the two independent caches nosharecache provides.
+          for m in nfs4a nfs4b nfs3a nfs3b; do sudo mkdir -p "/mnt/$m"; done
+          sudo mount -t nfs -o vers=4.2 127.0.0.1:/export/filelock /mnt/nfs4a
+          sudo mount -t nfs -o vers=4.2,nosharecache 127.0.0.1:/export/filelock /mnt/nfs4b
+          sudo mount -t nfs -o vers=3 127.0.0.1:/export/filelock /mnt/nfs3a
+          sudo mount -t nfs -o vers=3,nosharecache 127.0.0.1:/export/filelock /mnt/nfs3b
+          for m in nfs4a nfs4b nfs3a nfs3b; do sudo chmod 1777 "/mnt/$m"; done
           mount | grep /mnt/nfs
-      - name: "🔒 Verify lock mutual exclusion on NFS"
+      - name: "🔒 Verify NFSv4 mutual exclusion across two client caches"
+        env:
+          # StrictSoftFileLock is the lock the gate enforces on NFS: its claim queue hands off fairly, so it finishes
+          # every hold with no overlap on both versions (the strict claim retries the transient ESTALE that NFSv3's
+          # churn raises). The other two print their behavior ungated and neither is safe to gate on here: native flock
+          # does not exclude across NFS client caches (overlaps appear), and the poll-based soft lock starves out under
+          # NFS latency before finishing its holds. Prefer StrictSoftFileLock on NFS.
+          FILELOCK_VERIFY_LOCKS: StrictSoftFileLock
         run: |
           uv venv
           uv pip install .
-          .venv/bin/python tasks/verify_filesystem.py /mnt/nfs
+          timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs4a /mnt/nfs4b
+      - name: "🔒 Verify NFSv3 mutual exclusion across two client caches"
+        env:
+          FILELOCK_VERIFY_LOCKS: StrictSoftFileLock
+        run: timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs3a /mnt/nfs3b
+  smb:
+    name: "🗄️ SMB mutual exclusion"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: "🔄 Install the latest version of uv"
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: false
+      - name: "🗄️ Export and mount a loopback SMB share"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y samba cifs-utils
+          sudo mkdir -p /srv/filelock
+          sudo chmod 1777 /srv/filelock
+          sudo tee -a /etc/samba/smb.conf >/dev/null <<'CONF'
+          [filelock]
+             path = /srv/filelock
+             writable = yes
+             guest ok = yes
+             create mask = 0666
+             directory mask = 0777
+          CONF
+          sudo sed -i '/\[global\]/a \   map to guest = Bad User\n   server min protocol = SMB2' /etc/samba/smb.conf
+          sudo systemctl restart smbd
+          # Two mounts are two independent CIFS client caches over one server, for a multi-client check.
+          sudo mkdir -p /mnt/smba /mnt/smbb
+          for m in smba smbb; do
+            sudo mount -t cifs //127.0.0.1/filelock "/mnt/$m" \
+              -o "guest,uid=$(id -u),gid=$(id -g),file_mode=0777,dir_mode=0777,vers=3.0"
+          done
+          mount | grep /mnt/smb
+      - name: "🔒 Verify SMB mutual exclusion across two client caches"
+        # CIFS byte-range locks are mandatory and server-enforced, so FileLock excludes and finishes every hold: it is
+        # the lock the gate enforces here. SoftFileLock prints ungated (it excludes but its poll-acquire can starve
+        # under contention), and the strict claim needs an atomic no-replace hard link SMB does not reliably provide.
+        env:
+          FILELOCK_VERIFY_LOCKS: FileLock
+        run: |
+          uv venv
+          uv pip install .
+          timeout 240 .venv/bin/python tasks/verify_filesystem.py /mnt/smba /mnt/smbb
+  capability:
+    name: "🧩 without ${{ matrix.block }}"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        block:
+          - fcntl
+          - sqlite3
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: "🔄 Install the latest version of uv"
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: false
+      - name: "🧩 Verify the fallback without ${{ matrix.block }}"
+        env:
+          FILELOCK_BLOCK_MODULE: ${{ matrix.block }}
+        run: |
+          uv venv
+          uv pip install .
+          export PYTHONPATH="$PWD/tasks/capability"
+          .venv/bin/python tasks/capability/assert_fallback.py
+          .venv/bin/python tasks/verify_filesystem.py
   changelog:
     name: "📝 News fragment"
     runs-on: ubuntu-24.04
