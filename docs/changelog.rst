@@ -63,6 +63,7 @@
 - Refresh the documentation to the current code: a new trust-boundaries and ownership-scope section (same-UID boundary, advisory native locks, strict claims and lease fencing, a filesystem support matrix, migration off timed stale breaking), the lock-selection flowchart and comparison tables extended with ``StrictSoftFileLock`` and ``SoftFileLease``, and the cross-platform process start token replacing the Windows-only description throughout. :pr:`663`
 - The filesystem support matrix records mutual exclusion measured across two independent client caches in CI: NFS (v4 and v3) for the native, soft, and strict locks, and SMB for the native and soft locks. :pr:`665`
 - Build the changelog from towncrier news fragments, render pending fragments as an ``Unreleased`` docs section, and refuse to publish a tag the changelog does not document. :pr:`626`
+
 ********************
  3.29.7 (2026-07-07)
 ********************
