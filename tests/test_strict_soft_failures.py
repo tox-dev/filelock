@@ -6,7 +6,7 @@ import socket
 import stat
 import sys
 import time
-from errno import EACCES, EEXIST, EIO, EXDEV
+from errno import EACCES, EEXIST, EIO, ESTALE, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -832,6 +832,64 @@ def test_strict_soft_claim_replaced_while_opening_fails_closed(
 
     with pytest.raises(SoftFileLockProtocolError, match=message):
         StrictSoftFileLock(lock_path).acquire()
+
+
+def _write_held_claim(claims: Path) -> Path:
+    claims.mkdir(parents=True)
+    claim = claims / f"held-v1-{'0' * 32}.claim"
+    claim.write_bytes(b"filelock-strict-v1\n" + b"0" * 32 + b"\n1\n686f7374\n\n")
+    return claim
+
+
+def _open_raising_for(claim: Path, error: OSError, mocker: MockerFixture) -> None:
+    real_open = os.open
+
+    def failing_open(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if os.fsdecode(path) == str(claim):
+            raise error
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("filelock._strict.os.open", side_effect=failing_open)
+
+
+def test_strict_soft_stale_claim_read_is_skipped(tmp_path: Path, mocker: MockerFixture) -> None:
+    # An NFS peer that unlinks its own claim leaves this client's cached filehandle stale, so the open returns ESTALE
+    # rather than ENOENT. A stale handle that outlives revalidation is a vanished claim, not an unreadable one.
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    mocker.patch("filelock._strict._CLAIM_READ_GRACE", 0.02)
+    _open_raising_for(claim, OSError(ESTALE, "Stale file handle"), mocker)
+
+    assert StrictSoftFileLock(lock_path).claims == ()
+
+
+def test_strict_soft_stale_claim_read_revalidates_to_gone(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    real_open = os.open
+    stale_raised = False
+
+    def stale_then_vanish(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        nonlocal stale_raised
+        if not stale_raised and os.fsdecode(path) == str(claim):
+            stale_raised = True
+            claim.unlink()
+            raise OSError(ESTALE, "Stale file handle")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("filelock._strict.os.open", side_effect=stale_then_vanish)
+
+    assert StrictSoftFileLock(lock_path).claims == ()
+    assert stale_raised
+
+
+def test_strict_soft_io_error_claim_read_fails_closed(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    _open_raising_for(claim, OSError(EIO, "I/O error"), mocker)
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
+        _ = StrictSoftFileLock(lock_path).claims
 
 
 def test_strict_soft_directory_inspection_error_fails_closed(tmp_path: Path, mocker: MockerFixture) -> None:
