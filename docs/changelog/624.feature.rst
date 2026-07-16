@@ -1,1 +1,0 @@
-Add ``preserve_lock_file`` so native locks keep the lock pathname on release.

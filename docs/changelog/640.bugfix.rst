@@ -1,4 +1,0 @@
-Keep executor-backed lock operations alive until they finish when a caller cancels. Serialize acquisitions on the same
-async lock so cancellation rollback cannot release a later caller's hold. Roll back acquisitions that finish after
-cancellation and surface release failures. SQLite read-write locks keep their state until rollback ends the transaction;
-callers can retry cleanup with ``release(force=True)`` or another acquisition.

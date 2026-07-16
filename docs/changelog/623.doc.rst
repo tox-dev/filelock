@@ -1,1 +1,0 @@
-Correct the Unix lock-file cleanup and :func:`fcntl.flock` documentation.

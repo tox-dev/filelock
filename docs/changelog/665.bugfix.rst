@@ -1,1 +1,0 @@
-``BaseFileLock.__del__`` suppresses a release error rather than raising it during garbage collection, where it surfaced as an unraisable-exception warning attributed to unrelated code.

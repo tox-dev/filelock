@@ -1,1 +1,0 @@
-Add :func:`~filelock.lock_descriptor` and :func:`~filelock.unlock_descriptor` to lock a caller-owned file descriptor.

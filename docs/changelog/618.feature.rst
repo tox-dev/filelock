@@ -1,1 +1,0 @@
-Add ``context_error_policy`` to surface body and release failures as a :exc:`BaseExceptionGroup`.

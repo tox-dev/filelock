@@ -1,1 +1,0 @@
-Add ``fallback_to_soft`` to fail closed instead of downgrading to :class:`~filelock.SoftFileLock` on ``ENOSYS``.

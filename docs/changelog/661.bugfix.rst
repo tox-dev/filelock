@@ -1,2 +1,0 @@
-``SoftReadWriteLock`` and ``SoftFileLease`` ride out a transient filesystem error during a heartbeat instead of dropping the lock or reporting a false compromise, and report a lost claim only once refresh cannot recover before the lease would lapse.
-``SoftFileLease`` also reclaims a malformed or partial marker that used to block every contender, and a Linux marker distinguishes a PID reused across a reboot.

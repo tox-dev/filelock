@@ -1,2 +1,0 @@
-Relinquish a soft lock's descriptor before one close attempt so a later release cannot close a reused descriptor number,
-and honor ``close_error_policy`` while still attempting marker cleanup.

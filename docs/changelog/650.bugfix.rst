@@ -1,2 +1,0 @@
-Raise ``OSError(errno.ENOSYS)`` from descriptor locks when ``fcntl`` is unavailable, and reject invalid blocking poll
-intervals before attempting a lock.

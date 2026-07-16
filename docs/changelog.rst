@@ -7,6 +7,63 @@
 .. towncrier release notes start
 
 ********************
+ 3.30.0 (2026-07-16)
+********************
+
+- Add ``context_error_policy`` to surface body and release failures as a :exc:`BaseExceptionGroup`. :pr:`618`
+- Add ``close_error_policy`` to control an :func:`os.close` failure after the OS unlock. :pr:`619`
+- Add :func:`~filelock.lock_descriptor` and :func:`~filelock.unlock_descriptor` to lock a caller-owned file descriptor. :pr:`620`
+- Add ``fallback_to_soft`` to fail closed instead of downgrading to :class:`~filelock.SoftFileLock` on ``ENOSYS``. :pr:`622`
+- Add ``preserve_lock_file`` so native locks keep the lock pathname on release. :pr:`624`
+- Add an ``on_acquired`` hook that runs a callback on the locked descriptor once the lock is held. :pr:`625`
+- Add ``StrictSoftFileLock``, which treats every marker it did not publish as contention, and ``SoftFileLease``, whose
+  claim expires and whose holder learns through ``on_compromise`` when it is lost. ``SoftFileLock(lifetime=...)`` now warns
+  and names them. Both publish a record ``SoftFileLock`` evicts, so do not mix contracts on one path. :pr:`636`
+- Add ``StrictSoftFileLock`` and ``AsyncStrictSoftFileLock`` with owner-specific hard-linked claims. Strict mode fails
+  closed on claim damage, exposes each recovery token, and requires an exact claim name for a force break. :pr:`637`
+- Ignore ``lifetime`` on native locks with a warning; only :class:`~filelock.SoftFileLock` honors it. :pr:`593`
+- Stop mutating the Unix lock file before :func:`fcntl.flock` is held. :pr:`594`
+- Bind the Windows reparse-point check to the locked handle to close a symlink-swap race. :pr:`596`
+- Evict a non-regular soft lock file without reading it. :pr:`597`
+- Write a soft lock's holder record atomically so a short write cannot create overlapping holders. :pr:`614`
+- Make native lock release transactional so a failed unlock is retried, not dropped. :pr:`615`
+- Open the Windows lock file via ``NtCreateFile`` so a real access denial is raised, not reported as a timeout. :pr:`617`
+- Canonicalize singleton keys so equivalent path spellings share an instance, without following a final symlink. :pr:`621`
+- Preserve parent lock ownership across ``fork()``. A child closes an inherited descriptor only while its identity still
+  matches, so it neither unlocks nor unlinks the parent's lock. It clears inherited ownership state and singleton caches,
+  then requires a new lock instance before acquiring. Fork-time construction replaces inherited cache mutexes and omits
+  an instance whose construction crossed into the child from the cache. If ``fstat()`` cannot establish the identity,
+  child cleanup skips the descriptor number because an earlier fork callback may have reused it. Descriptor tracking
+  also covers third-party backends that fail after assigning a descriptor. :pr:`634`
+- Open a SQLite connection per outer acquisition and close it on final release, so a forked child can no longer close its
+  parent's handle. A child rejects inherited databases until ``exec()``, and a PyPy child rejects read-write locks once the
+  parent has used SQLite. :pr:`635`
+- Keep executor-backed lock operations alive until they finish when a caller cancels. Serialize acquisitions on the same
+  async lock so cancellation rollback cannot release a later caller's hold. Roll back acquisitions that finish after
+  cancellation and surface release failures. SQLite read-write locks keep their state until rollback ends the transaction;
+  callers can retry cleanup with ``release(force=True)`` or another acquisition. :pr:`640`
+- Reject negative and non-finite ``lifetime`` values during lock construction and assignment. :pr:`644`
+- Read the saved Windows process-probe error before deciding that a soft-lock holder has exited. :pr:`645`
+- Reject non-default lock options that a narrow subclass constructor cannot honor, and forward all options through
+  subclasses that accept arbitrary keyword arguments. :pr:`646`
+- Release now removes the path identity that acquisition recorded instead of resolving a symlinked parent again. When
+  acquisition raises, its rollback no longer deletes the holder's deadlock record. :pr:`647`
+- Remove the body error from implicit context on the release error before adding both errors to an exception group. :pr:`648`
+- Relinquish a soft lock's descriptor before one close attempt so a later release cannot close a reused descriptor number,
+  and honor ``close_error_policy`` while still attempting marker cleanup. :pr:`649`
+- Raise ``OSError(errno.ENOSYS)`` from descriptor locks when ``fcntl`` is unavailable, and reject invalid blocking poll
+  intervals before attempting a lock. :pr:`650`
+- ``SoftFileLock`` and ``SoftFileLease`` record the holder's process start time on every platform and reclaim a stale marker only when the recorded owner is provably gone.
+  A reused PID on Unix no longer breaks a live lock or wedges acquisition, matching the recycled-PID detection Windows already had. :pr:`660`
+- ``SoftReadWriteLock`` and ``SoftFileLease`` ride out a transient filesystem error during a heartbeat instead of dropping the lock or reporting a false compromise, and report a lost claim only once refresh cannot recover before the lease would lapse.
+  ``SoftFileLease`` also reclaims a malformed or partial marker that used to block every contender, and a Linux marker distinguishes a PID reused across a reboot. :pr:`661`
+- ``BaseFileLock.__del__`` suppresses a release error rather than raising it during garbage collection, where it surfaced as an unraisable-exception warning attributed to unrelated code. :pr:`665`
+- Correct the Unix lock-file cleanup and :func:`fcntl.flock` documentation. :pr:`623`
+- Drop automated bot entries from the changelog and link its code references to the API docs and the Python standard library. :pr:`638`
+- Refresh the documentation to the current code: a new trust-boundaries and ownership-scope section (same-UID boundary, advisory native locks, strict claims and lease fencing, a filesystem support matrix, migration off timed stale breaking), the lock-selection flowchart and comparison tables extended with ``StrictSoftFileLock`` and ``SoftFileLease``, and the cross-platform process start token replacing the Windows-only description throughout. :pr:`663`
+- The filesystem support matrix records mutual exclusion measured across two independent client caches in CI: NFS (v4 and v3) for the native, soft, and strict locks, and SMB for the native and soft locks. :pr:`665`
+- Build the changelog from towncrier news fragments, render pending fragments as an ``Unreleased`` docs section, and refuse to publish a tag the changelog does not document. :pr:`626`
+********************
  3.29.7 (2026-07-07)
 ********************
 

@@ -1,1 +1,0 @@
-Build the changelog from towncrier news fragments, render pending fragments as an ``Unreleased`` docs section, and refuse to publish a tag the changelog does not document.

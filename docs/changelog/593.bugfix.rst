@@ -1,1 +1,0 @@
-Ignore ``lifetime`` on native locks with a warning; only :class:`~filelock.SoftFileLock` honors it.

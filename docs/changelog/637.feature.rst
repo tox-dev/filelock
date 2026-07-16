@@ -1,2 +1,0 @@
-Add ``StrictSoftFileLock`` and ``AsyncStrictSoftFileLock`` with owner-specific hard-linked claims. Strict mode fails
-closed on claim damage, exposes each recovery token, and requires an exact claim name for a force break.
