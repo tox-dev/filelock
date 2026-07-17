@@ -7,6 +7,16 @@
 .. towncrier release notes start
 
 ********************
+ 3.30.3 (2026-07-17)
+********************
+
+- ``AsyncFileLock`` and ``AsyncSoftFileLock`` no longer raise a deadlock ``RuntimeError`` when a different asyncio task
+  waits for a lock they hold; the check now scopes holders to the owning task, so only a same-task reacquire is refused. :pr:`676`
+- Keep both tables of contents on screen at any browser font size. The widened body column sized itself in ``em`` against the reader's font size while the breakpoints that fold the layout resolve ``em`` against a fixed 16px, so a reader whose default font is larger than 16px had the right-hand table of contents clipped off the edge. The body column now flexes instead, and the right-hand table of contents hides only at the mobile breakpoint. :pr:`673`
+- Color the mermaid diagrams from whichever theme is active. They previously carried a light palette baked into each
+  diagram's source, which stayed light on a dark page. :pr:`674`
+
+********************
  3.30.2 (2026-07-16)
 ********************
 

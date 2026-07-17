@@ -1,2 +1,0 @@
-Color the mermaid diagrams from whichever theme is active. They previously carried a light palette baked into each
-diagram's source, which stayed light on a dark page.
