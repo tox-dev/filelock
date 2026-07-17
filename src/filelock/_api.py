@@ -10,7 +10,7 @@ import sys
 import time
 import warnings
 from abc import ABCMeta, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count, starmap
@@ -324,9 +324,7 @@ def _canonical(path: str | os.PathLike[str]) -> str:
 class _ThreadLocalRegistry(local):
     def __init__(self) -> None:
         super().__init__()
-        # Keyed by BaseFileLock._registry_key: a canonical path when thread-scoped, else a (scope, path) tuple
-        # for locks that scope holders to a finer execution unit such as an asyncio task.
-        self.held: dict[object, int] = {}
+        self.held: dict[Hashable, int] = {}
 
 
 _registry: Final[_ThreadLocalRegistry] = _ThreadLocalRegistry()
@@ -1189,21 +1187,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             descriptors.append((self._context.pending_lock_file_fd, self._context.pending_lock_file_fd_identity))
         return tuple(descriptors)
 
-    def _deadlock_scope(self) -> object:  # noqa: PLR6301  # overridable hook; base is intentionally stateless
-        """
-        Execution unit whose own hold would deadlock a new acquire.
-
-        ``None`` scopes holders to the thread, which the thread-local registry already separates. Async locks
-        override it with the running task, since one event loop thread runs many tasks and only a reacquire from
-        the *same* task can self-deadlock.
-        """
-        return None
-
-    def _registry_key(self, canonical: str) -> object:
-        """Registry key for this hold: the path alone when thread-scoped, else paired with the scope identity."""
-        scope = self._deadlock_scope()
-        return canonical if scope is None else (scope, canonical)
-
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         """
         Fail fast when a *different* live instance already holds this path in the current deadlock scope.
@@ -1219,6 +1202,20 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
                 f"Use is_singleton=True to enable reentrant locking across instances."
             )
             raise RuntimeError(msg)
+
+    def _registry_key(self, canonical: str) -> Hashable:
+        return canonical if (scope := self._deadlock_scope()) is None else (scope, canonical)
+
+    @staticmethod
+    def _deadlock_scope() -> Hashable | None:
+        """
+        Execution unit whose own hold would deadlock a new acquire.
+
+        ``None`` scopes holders to the thread, which the thread-local registry already separates. Async locks
+        override it with the running task, since one event loop thread runs many tasks and only a reacquire from
+        the *same* task can self-deadlock.
+        """
+        return None
 
     def _poll_until_acquired(
         self,
@@ -1506,7 +1503,7 @@ class FileLockContext:
     lock_counter: int = 0
 
     #: Canonical registry key captured when the first physical acquisition commits.
-    lock_file_key: object | None = None
+    lock_file_key: Hashable | None = None
 
     #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
     owner_claim_paths: tuple[str, ...] = ()
