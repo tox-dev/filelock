@@ -1,0 +1,2 @@
+``AsyncFileLock`` and ``AsyncSoftFileLock`` no longer raise a deadlock ``RuntimeError`` when a different asyncio task
+waits for a lock they hold; the check now scopes holders to the owning task, so only a same-task reacquire is refused.
