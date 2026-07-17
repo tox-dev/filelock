@@ -324,7 +324,9 @@ def _canonical(path: str | os.PathLike[str]) -> str:
 class _ThreadLocalRegistry(local):
     def __init__(self) -> None:
         super().__init__()
-        self.held: dict[str, int] = {}
+        # Keys are produced by BaseFileLock._registry_key: a canonical path for thread-scoped holders, or a
+        # (scope, path) tuple for classes that scope holders to a finer execution unit (e.g. an asyncio task).
+        self.held: dict[object, int] = {}
 
 
 _registry: Final[_ThreadLocalRegistry] = _ThreadLocalRegistry()
@@ -1187,15 +1189,30 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             descriptors.append((self._context.pending_lock_file_fd, self._context.pending_lock_file_fd_identity))
         return tuple(descriptors)
 
+    def _deadlock_scope(self) -> object:  # noqa: PLR6301  # overridable hook; base is intentionally stateless
+        """
+        Execution-flow scope in which a held entry can deadlock a new acquire.
+
+        ``None`` means the thread-local registry alone distinguishes flows: two entries on different threads can
+        never be mistaken for one another. Async locks override this to return the current task, because every task
+        of an event loop shares one thread while only an acquire from the *same* task can genuinely self-deadlock.
+        """
+        return None
+
+    def _registry_key(self, canonical: str) -> object:
+        """Registry key for this holder flow: the path alone when thread-scoped, else scoped by the flow identity."""
+        scope = self._deadlock_scope()
+        return canonical if scope is None else (scope, canonical)
+
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         """
-        Fail fast when a *different* live instance already holds this path on the current thread/task.
+        Fail fast when a *different* live instance already holds this path in the current deadlock scope.
 
         Only the first, indefinitely-blocking acquire can self-deadlock this way: waiting in the OS primitive would
-        block on a lock this thread already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
+        block on a lock this flow already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
         """
         would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
-        if would_block and _registry.held.get(canonical) not in {None, id(self)}:
+        if would_block and _registry.held.get(self._registry_key(canonical)) not in {None, id(self)}:
             self._context.lock_counter -= 1
             msg = (
                 f"Deadlock: lock '{self.lock_file}' is already held by a different {self._deadlock_holder_desc}. "
@@ -1369,15 +1386,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     def _commit_acquire(self, canonical: str) -> None:
         """Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock."""
         if self._context.lock_counter == 1:
-            self._context.lock_file_key = canonical
-            _registry.held[canonical] = id(self)
+            key = self._registry_key(canonical)
+            # The holder scope is resolved once at commit so a later release from another flow drops the right entry.
+            self._context.lock_file_key = key
+            _registry.held[key] = id(self)
 
     def _drop_registry_entry(self) -> None:
         """Forget the key owned by this hold without resolving a mutable path again."""
-        canonical = self._context.lock_file_key
+        key = self._context.lock_file_key
         self._context.lock_file_key = None
-        if canonical is not None:
-            _registry.held.pop(canonical, None)
+        if key is not None:
+            _registry.held.pop(key, None)
 
     def _commit_release(self) -> None:
         """Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry."""
@@ -1487,7 +1506,7 @@ class FileLockContext:
     lock_counter: int = 0
 
     #: Canonical registry key captured when the first physical acquisition commits.
-    lock_file_key: str | None = None
+    lock_file_key: object | None = None
 
     #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
     owner_claim_paths: tuple[str, ...] = ()
