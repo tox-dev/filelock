@@ -10,7 +10,7 @@ import sys
 import time
 import warnings
 from abc import ABCMeta, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count, starmap
@@ -324,7 +324,7 @@ def _canonical(path: str | os.PathLike[str]) -> str:
 class _ThreadLocalRegistry(local):
     def __init__(self) -> None:
         super().__init__()
-        self.held: dict[str, int] = {}
+        self.held: dict[Hashable, int] = {}
 
 
 _registry: Final[_ThreadLocalRegistry] = _ThreadLocalRegistry()
@@ -1189,19 +1189,33 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         """
-        Fail fast when a *different* live instance already holds this path on the current thread/task.
+        Fail fast when a *different* live instance already holds this path in the current deadlock scope.
 
         Only the first, indefinitely-blocking acquire can self-deadlock this way: waiting in the OS primitive would
-        block on a lock this thread already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
+        block on a lock this flow already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
         """
         would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
-        if would_block and _registry.held.get(canonical) not in {None, id(self)}:
+        if would_block and _registry.held.get(self._registry_key(canonical)) not in {None, id(self)}:
             self._context.lock_counter -= 1
             msg = (
                 f"Deadlock: lock '{self.lock_file}' is already held by a different {self._deadlock_holder_desc}. "
                 f"Use is_singleton=True to enable reentrant locking across instances."
             )
             raise RuntimeError(msg)
+
+    def _registry_key(self, canonical: str) -> Hashable:
+        return canonical if (scope := self._deadlock_scope()) is None else (scope, canonical)
+
+    @staticmethod
+    def _deadlock_scope() -> Hashable | None:
+        """
+        Execution unit whose own hold would deadlock a new acquire.
+
+        ``None`` scopes holders to the thread, which the thread-local registry already separates. Async locks
+        override it with the running task, since one event loop thread runs many tasks and only a reacquire from
+        the *same* task can self-deadlock.
+        """
+        return None
 
     def _poll_until_acquired(
         self,
@@ -1369,15 +1383,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
     def _commit_acquire(self, canonical: str) -> None:
         """Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock."""
         if self._context.lock_counter == 1:
-            self._context.lock_file_key = canonical
-            _registry.held[canonical] = id(self)
+            key = self._registry_key(canonical)
+            # The holder scope is resolved once at commit so a later release from another flow drops the right entry.
+            self._context.lock_file_key = key
+            _registry.held[key] = id(self)
 
     def _drop_registry_entry(self) -> None:
         """Forget the key owned by this hold without resolving a mutable path again."""
-        canonical = self._context.lock_file_key
+        key = self._context.lock_file_key
         self._context.lock_file_key = None
-        if canonical is not None:
-            _registry.held.pop(canonical, None)
+        if key is not None:
+            _registry.held.pop(key, None)
 
     def _commit_release(self) -> None:
         """Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry."""
@@ -1487,7 +1503,7 @@ class FileLockContext:
     lock_counter: int = 0
 
     #: Canonical registry key captured when the first physical acquisition commits.
-    lock_file_key: str | None = None
+    lock_file_key: Hashable | None = None
 
     #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
     owner_claim_paths: tuple[str, ...] = ()

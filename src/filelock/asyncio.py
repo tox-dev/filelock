@@ -49,7 +49,7 @@ from ._windows import WindowsFileLock
 
 if TYPE_CHECKING:
     import sys
-    from collections.abc import Awaitable, Callable, Coroutine
+    from collections.abc import Awaitable, Callable, Coroutine, Hashable
     from concurrent import futures
     from types import TracebackType
 
@@ -124,6 +124,14 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     _deadlock_holder_desc: str = "BaseAsyncFileLock instance in this task"
     _constructor_lifetime_warning_stacklevel: int = 4
+
+    @staticmethod
+    def _deadlock_scope() -> Hashable | None:
+        # One event loop thread runs every task, so a thread-scoped registry cannot tell a same-task reacquire
+        # (a real deadlock: the polling task never reaches its own release) from another task queuing behind the
+        # holder (no deadlock: each poll yields, so the holder runs on and releases). Only the first may fail
+        # fast, so scope holders to the task.
+        return asyncio.current_task()
 
     def __init__(  # noqa: PLR0913
         self,

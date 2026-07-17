@@ -473,6 +473,51 @@ async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type
     assert not isinstance(error, RuntimeError), "Should not raise RuntimeError in a different task"
 
 
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_cross_task_blocking_acquire_queues(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
+    # A blocking acquire from a different task must queue behind the holder, not raise. Polling yields the event
+    # loop on every iteration, so the holder keeps running and releases; only a same-task reentry can deadlock.
+    # The waiter starts on an event the holder sets once it holds: yielding with sleep(0) instead would let the
+    # waiter run its check before the holder registers, so an empty registry would pass even with the bug.
+    lock_path = tmp_path / "test.lock"
+    events: list[str] = []
+    holding = asyncio.Event()
+
+    async def holder() -> None:
+        async with lock_type(lock_path):
+            events.append("holder:acquired")
+            holding.set()
+            await asyncio.sleep(0.05)  # the waiter polls while the lock is held
+            events.append("holder:released")
+
+    async def waiter() -> None:
+        await holding.wait()
+        async with lock_type(lock_path):
+            events.append("waiter:acquired")
+
+    await asyncio.gather(holder(), waiter())  # propagates a false-positive Deadlock
+
+    assert events == ["holder:acquired", "holder:released", "waiter:acquired"]
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_release_from_different_task_clears_registry(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
+    # The holder scope is pinned at commit time, so releasing from a different task still drops the registry entry.
+    lock_path = tmp_path / "test.lock"
+    lock = lock_type(lock_path)
+    await lock.acquire()
+
+    async def release() -> None:
+        await lock.release()
+
+    await asyncio.create_task(release())
+
+    async with lock_type(lock_path):  # would raise Deadlock if the scoped entry had leaked
+        pass
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="unix-only symlink test")
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
