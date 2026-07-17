@@ -126,14 +126,13 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     _constructor_lifetime_warning_stacklevel: int = 4
 
     def _deadlock_scope(self) -> object:  # noqa: PLR6301  # overridable hook; identity comes from the loop
-        # All tasks of an event loop share one thread, so the thread-local registry alone cannot distinguish a
-        # same-task reentrant acquire (a real deadlock: the polling task can never reach its own release) from a
-        # different task legitimately queuing behind the holder (no deadlock: each poll yields the event loop, so
-        # the holder keeps running and releases). Only the former may fail fast, so scope holders to the task.
+        # One event loop thread runs every task, so a thread-scoped registry cannot tell a same-task reacquire
+        # (a real deadlock: the polling task never reaches its own release) from another task queuing behind the
+        # holder (no deadlock: each poll yields, so the holder runs on and releases). Only the first may fail
+        # fast, so scope holders to the task.
         try:
             return asyncio.current_task()
-        except RuntimeError:
-            # No running event loop; fall back to thread granularity, matching the sync behavior.
+        except RuntimeError:  # no running loop, so fall back to thread granularity like the sync path
             return None
 
     def __init__(  # noqa: PLR0913

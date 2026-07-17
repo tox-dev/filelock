@@ -478,25 +478,27 @@ async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type
 async def test_cross_task_blocking_acquire_queues(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
     # A blocking acquire from a different task must queue behind the holder, not raise. Polling yields the event
     # loop on every iteration, so the holder keeps running and releases; only a same-task reentry can deadlock.
+    # The waiter starts on an event the holder sets once it holds: yielding with sleep(0) instead would let the
+    # waiter run its check before the holder registers, so an empty registry would pass even with the bug.
     lock_path = tmp_path / "test.lock"
     events: list[str] = []
+    holding = asyncio.Event()
 
     async def holder() -> None:
         async with lock_type(lock_path):
             events.append("holder:acquired")
-            await asyncio.sleep(0.05)  # the waiter starts polling while the lock is held
+            holding.set()
+            await asyncio.sleep(0.05)  # the waiter polls while the lock is held
             events.append("holder:released")
 
     async def waiter() -> None:
-        await asyncio.sleep(0)  # let the holder grab the lock first
+        await holding.wait()
         async with lock_type(lock_path):
             events.append("waiter:acquired")
 
-    async with asyncio.TaskGroup() as tg:  # raises if any acquire false-positives as a deadlock
-        tg.create_task(holder())
-        tg.create_task(waiter())
+    await asyncio.gather(holder(), waiter())  # propagates a false-positive Deadlock
 
-    assert events.index("holder:acquired") < events.index("holder:released") < events.index("waiter:acquired")
+    assert events == ["holder:acquired", "holder:released", "waiter:acquired"]
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])

@@ -324,8 +324,8 @@ def _canonical(path: str | os.PathLike[str]) -> str:
 class _ThreadLocalRegistry(local):
     def __init__(self) -> None:
         super().__init__()
-        # Keys are produced by BaseFileLock._registry_key: a canonical path for thread-scoped holders, or a
-        # (scope, path) tuple for classes that scope holders to a finer execution unit (e.g. an asyncio task).
+        # Keyed by BaseFileLock._registry_key: a canonical path when thread-scoped, else a (scope, path) tuple
+        # for locks that scope holders to a finer execution unit such as an asyncio task.
         self.held: dict[object, int] = {}
 
 
@@ -1191,16 +1191,16 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
 
     def _deadlock_scope(self) -> object:  # noqa: PLR6301  # overridable hook; base is intentionally stateless
         """
-        Execution-flow scope in which a held entry can deadlock a new acquire.
+        Execution unit whose own hold would deadlock a new acquire.
 
-        ``None`` means the thread-local registry alone distinguishes flows: two entries on different threads can
-        never be mistaken for one another. Async locks override this to return the current task, because every task
-        of an event loop shares one thread while only an acquire from the *same* task can genuinely self-deadlock.
+        ``None`` scopes holders to the thread, which the thread-local registry already separates. Async locks
+        override it with the running task, since one event loop thread runs many tasks and only a reacquire from
+        the *same* task can self-deadlock.
         """
         return None
 
     def _registry_key(self, canonical: str) -> object:
-        """Registry key for this holder flow: the path alone when thread-scoped, else scoped by the flow identity."""
+        """Registry key for this hold: the path alone when thread-scoped, else paired with the scope identity."""
         scope = self._deadlock_scope()
         return canonical if scope is None else (scope, canonical)
 
