@@ -41,7 +41,7 @@ class AsyncSoftReadWriteLock:
 
     """
 
-    def __init__(  # ruff:ignore[too-many-arguments]
+    def __init__(  # ruff:ignore[too-many-arguments]  # public constructor: one parameter per documented lock option
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,

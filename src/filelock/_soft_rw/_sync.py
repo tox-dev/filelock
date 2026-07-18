@@ -55,7 +55,7 @@ class _SoftRWMeta(type):
     _instances: WeakValueDictionary[Path, SoftReadWriteLock]
     _instances_lock: threading.RLock
 
-    def __call__(  # ruff:ignore[too-many-arguments]
+    def __call__(  # ruff:ignore[too-many-arguments]  # forwards the public constructor's documented parameters
         cls,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -161,7 +161,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     _instances: WeakValueDictionary[Path, SoftReadWriteLock] = WeakValueDictionary()
     _instances_lock = threading.RLock()
 
-    def __init__(  # ruff:ignore[too-many-arguments]
+    def __init__(  # ruff:ignore[too-many-arguments]  # public constructor: one parameter per documented lock option
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,

@@ -69,7 +69,7 @@ _AT = TypeVar("_AT", bound="BaseAsyncFileLock")
 
 
 class AsyncFileLockMeta(FileLockMeta):
-    def __call__(  # ruff:ignore[too-many-arguments]
+    def __call__(  # ruff:ignore[too-many-arguments]  # forwards the public constructor's documented parameters
         cls: type[_AT],  # ruff:ignore[invalid-first-argument-name-for-method]
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -133,7 +133,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         # fast, so scope holders to the task.
         return asyncio.current_task()
 
-    def __init__(  # ruff:ignore[too-many-arguments]
+    def __init__(  # ruff:ignore[too-many-arguments]  # public constructor: one parameter per documented lock option
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -369,8 +369,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                 return
             if self._check_give_up(
-                lock_id,
-                lock_filename,
                 blocking=blocking,
                 cancel_check=cancel_check,
                 timeout=timeout,

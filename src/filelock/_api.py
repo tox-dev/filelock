@@ -340,7 +340,7 @@ class FileLockMeta(ABCMeta):
     _instances_lock: RLock
     _instances_under_construction: set[str]
 
-    def __call__(  # ruff:ignore[too-many-arguments]
+    def __call__(  # ruff:ignore[too-many-arguments]  # forwards the public constructor's documented parameters
         cls: type[_T],
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -359,14 +359,7 @@ class FileLockMeta(ABCMeta):
         **kwargs: _ExtraValue,
     ) -> _T:
         _ensure_current_process()
-        lifetime = _resolve_lifetime(
-            lifetime,
-            supported=cls._lifetime_supported,
-            replacements=cls._lifetime_replacements,
-            reason=cls._lifetime_unsupported_reason,
-            cls_name=cls.__name__,
-            stacklevel=cls._constructor_lifetime_warning_stacklevel,
-        )
+        lifetime = _resolve_lifetime(lifetime, cls, stacklevel=cls._constructor_lifetime_warning_stacklevel)
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
         # __del__ then trips over the missing context.
         context_error_policy = _resolve_context_error_policy(context_error_policy)
@@ -505,15 +498,7 @@ class _InitParameterModel:
     default_params: dict[str, inspect.Parameter]
 
 
-def _resolve_lifetime(  # ruff:ignore[too-many-arguments]
-    lifetime: float | None,
-    *,
-    supported: bool,
-    replacements: tuple[str, str] | None,
-    reason: str,
-    cls_name: str,
-    stacklevel: int,
-) -> float | None:
+def _resolve_lifetime(lifetime: float | None, cls: type[BaseFileLock], *, stacklevel: int) -> float | None:
     """
     Validate ``lifetime`` and drop a value the backend cannot honor.
 
@@ -530,16 +515,17 @@ def _resolve_lifetime(  # ruff:ignore[too-many-arguments]
         if lifetime < 0 or (isinstance(lifetime, float) and not math.isfinite(lifetime)):
             msg = f"lifetime must be finite and non-negative, not {lifetime!r}"
             raise ValueError(msg)
-    if lifetime is not None and not supported:
+    if lifetime is not None and not cls._lifetime_supported:
         warnings.warn(
-            f"lifetime is ignored for {cls_name}: {reason}; only SoftFileLock supports lifetime-based expiry",
+            f"lifetime is ignored for {cls.__name__}: {cls._lifetime_unsupported_reason}; "
+            f"only SoftFileLock supports lifetime-based expiry",
             stacklevel=stacklevel,
         )
         return None
-    if lifetime is not None and replacements is not None:
-        strict_lock, lease = replacements
+    if lifetime is not None and cls._lifetime_replacements is not None:
+        strict_lock, lease = cls._lifetime_replacements
         warnings.warn(
-            f"{cls_name}(lifetime=...) uses age-based expiry and can overlap a live holder; "
+            f"{cls.__name__}(lifetime=...) uses age-based expiry and can overlap a live holder; "
             f"use {lease} for expiry or {strict_lock} for fail-closed locking",
             SoftFileLockLifetimeWarning,
             stacklevel=stacklevel,
@@ -656,7 +642,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         cls._instances_lock = RLock()
         cls._instances_under_construction = set()
 
-    def __init__(  # ruff:ignore[too-many-arguments]
+    def __init__(  # ruff:ignore[too-many-arguments]  # public constructor: one parameter per documented lock option
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -918,14 +904,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         :raises TypeError: if *value* is not ``None`` and not a real number
 
         """
-        self._context.lifetime = _resolve_lifetime(
-            value,
-            supported=self._lifetime_supported,
-            replacements=self._lifetime_replacements,
-            reason=self._lifetime_unsupported_reason,
-            cls_name=type(self).__name__,
-            stacklevel=3,
-        )
+        self._context.lifetime = _resolve_lifetime(value, type(self), stacklevel=3)
 
     @property
     def mode(self) -> int:
@@ -1242,8 +1221,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                 return
             if self._check_give_up(
-                lock_id,
-                lock_filename,
                 blocking=blocking,
                 cancel_check=cancel_check,
                 timeout=timeout,
@@ -1416,16 +1393,15 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 return
             break_lock_file(self.lock_file, st.st_mtime, st.st_ino)
 
-    @staticmethod
-    def _check_give_up(  # ruff:ignore[too-many-arguments]
-        lock_id: int,
-        lock_filename: str,
+    def _check_give_up(
+        self,
         *,
         blocking: bool,
         cancel_check: Callable[[], bool] | None,
         timeout: float,
         start_time: float,
     ) -> bool:
+        lock_id, lock_filename = id(self), self.lock_file
         if blocking is False:
             _LOGGER.debug("Failed to immediately acquire lock %s on %s", lock_id, lock_filename)
             return True
