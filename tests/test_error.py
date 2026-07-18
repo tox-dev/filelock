@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pickle  # ruff:ignore[suspicious-pickle-import]
+import pickle  # ruff:ignore[suspicious-pickle-import]  # round-trips Timeout to assert it pickles
 from typing import TYPE_CHECKING
 
 import pytest
@@ -25,7 +25,7 @@ def test_timeout_attribute(timeout: Timeout, extract: Callable[[Timeout], object
 
 
 def test_timeout_pickle(timeout: Timeout) -> None:
-    reloaded = pickle.loads(pickle.dumps(timeout))  # ruff:ignore[suspicious-pickle-usage]
+    reloaded = pickle.loads(pickle.dumps(timeout))  # ruff:ignore[suspicious-pickle-usage]  # input is the Timeout built in this test
     assert (type(reloaded), str(reloaded), repr(reloaded), reloaded.lock_file) == (
         type(timeout),
         str(timeout),

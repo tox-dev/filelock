@@ -167,7 +167,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         timeout: float = -1,
         *,
         blocking: bool = True,
-        is_singleton: bool = True,  # ruff:ignore[unused-method-argument]
+        is_singleton: bool = True,  # ruff:ignore[unused-method-argument]  # consumed by _SoftRWMeta.__call__
         heartbeat_interval: float = 30.0,
         stale_threshold: float | None = None,
         poll_interval: float = 0.25,
@@ -214,7 +214,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     @classmethod
     def _reset_class_after_fork(cls) -> None:  # pragma: no cover - exercised in fork children
-        global _ALL_INSTANCES_LOCK  # ruff:ignore[global-statement]
+        global _ALL_INSTANCES_LOCK  # ruff:ignore[global-statement]  # rebinds the module lock to a fresh one in the fork child
         _ALL_INSTANCES_LOCK = threading.Lock()
         cls._instances = WeakValueDictionary()
         cls._instances_lock = threading.RLock()
@@ -483,7 +483,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     def _validate_reentrant(self, mode: _Mode) -> AcquireReturnProxy:
         hold = self._hold
-        assert hold is not None  # ruff:ignore[assert]
+        assert hold is not None  # ruff:ignore[assert]  # callers dispatch here only inside the self._hold is not None branch
         if hold.mode != mode:
             opposite = "write" if mode == "read" else "read"
             direction = "downgrade" if mode == "read" else "upgrade"
@@ -827,7 +827,7 @@ def _unlink(name: str, *, dir_fd: int | None = None) -> None:
             Path(name).unlink()
 
 
-def _break_stale_marker(  # ruff:ignore[too-many-return-statements]
+def _break_stale_marker(  # ruff:ignore[too-many-return-statements]  # each return is a distinct abort/commit point in the break protocol
     name: str,
     *,
     stale_threshold: float,

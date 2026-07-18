@@ -453,7 +453,7 @@ def test_context_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         with lock as lock_1:
             assert lock is lock_1
             assert lock.is_locked
-            raise ValueError  # ruff:ignore[raise-within-try]
+            raise ValueError  # ruff:ignore[raise-within-try]  # raises inside the block to assert release on exception
     except ValueError:
         assert not lock.is_locked
 
@@ -467,7 +467,7 @@ def test_acquire_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         with lock.acquire() as lock_1:
             assert lock is lock_1
             assert lock.is_locked
-            raise ValueError  # ruff:ignore[raise-within-try]
+            raise ValueError  # ruff:ignore[raise-within-try]  # raises inside the block to assert release on exception
     except ValueError:
         assert not lock.is_locked
 
@@ -787,7 +787,7 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             mode: int = 0o644,
             thread_local: bool = True,
             my_param: int = 0,
-            **kwargs: dict[str, Any],  # ruff:ignore[unused-method-argument]
+            **kwargs: dict[str, Any],  # ruff:ignore[unused-method-argument]  # matches the base constructor signature; extras are dropped
         ) -> None:
             super().__init__(lock_file, timeout, mode, thread_local, is_singleton=True)
             self.blocking = True
@@ -804,7 +804,7 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             mode: int = 0o644,
             thread_local: bool = True,
             my_param: int = 0,
-            **kwargs: dict[str, Any],  # ruff:ignore[unused-method-argument]
+            **kwargs: dict[str, Any],  # ruff:ignore[unused-method-argument]  # matches the base constructor signature; extras are dropped
         ) -> None:
             super().__init__(lock_file, timeout, mode, thread_local, blocking=True, is_singleton=True)
             self.my_param = my_param
@@ -924,7 +924,7 @@ def test_singleton_locks_when_inheriting_init_is_called_once(tmp_path: Path) -> 
     init_calls = 0
 
     class MyFileLock(FileLock):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:  # ruff:ignore[any-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # ruff:ignore[any-type]  # forwards arbitrary constructor arguments to super().__init__
             super().__init__(*args, **kwargs)
             nonlocal init_calls
             init_calls += 1

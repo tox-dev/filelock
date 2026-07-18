@@ -17,6 +17,7 @@ from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writab
 _MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
 _UNLINK_MAX_RETRIES: Final[int] = 10
+_MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
 
 
 class SoftFileLock(BaseFileLock):
@@ -148,7 +149,7 @@ class SoftFileLock(BaseFileLock):
 
     def _release(self) -> None:
         fd = self._context.lock_file_fd
-        assert fd is not None  # ruff:ignore[assert]
+        assert fd is not None  # ruff:ignore[assert]  # _release runs only while held, so the descriptor is set
         # Capture the held file's identity before closing so cleanup can refuse to unlink a successor's marker. A
         # supported lifetime lease lets a peer break our expired marker and create its own at this path before we
         # release; unlinking by path alone would then delete the successor's lock.
@@ -242,7 +243,7 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
         return None
     try:
         pid = int(lines[0])
-        start_token = int(lines[2]) if len(lines) == 3 else None  # ruff:ignore[magic-value-comparison]
+        start_token = int(lines[2]) if len(lines) == _MARKER_WITH_START_TOKEN_LINE_COUNT else None
     except ValueError:
         return None
     # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid

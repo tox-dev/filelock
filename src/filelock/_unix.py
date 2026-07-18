@@ -161,6 +161,8 @@ else:  # pragma: win32 no cover
                     os.fchmod(fd, self._context.mode)
 
         def _fallback_to_soft_lock(self) -> None:
+            # Import lazily: this runs only on the rare flock fallback, and asyncio imports _unix, so a
+            # module-level import of it here would cycle.
             from ._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]
 
             warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)

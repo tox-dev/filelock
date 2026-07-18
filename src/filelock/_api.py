@@ -345,7 +345,7 @@ class FileLockMeta(ABCMeta):
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = _UNSET_FILE_MODE,
-        thread_local: bool = True,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+        thread_local: bool = True,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         *,
         blocking: bool = True,
         is_singleton: bool = False,
@@ -365,7 +365,7 @@ class FileLockMeta(ABCMeta):
         context_error_policy = _resolve_context_error_policy(context_error_policy)
         close_error_policy = _resolve_close_error_policy(close_error_policy)
         preserve_lock_file = _resolve_preserve_lock_file(
-            preserve_lock_file, supported=cls._preserve_lock_file_supported, cls_name=cls.__name__
+            preserve=preserve_lock_file, supported=cls._preserve_lock_file_supported, cls_name=cls.__name__
         )
         on_acquired = _resolve_on_acquired(on_acquired, supported=cls._on_acquired_supported, cls_name=cls.__name__)
         params: dict[str, _LockInitValue | _ExtraValue] = {
@@ -415,7 +415,7 @@ class FileLockMeta(ABCMeta):
         params_to_check = {
             "thread_local": (thread_local, instance.is_thread_local()),
             "timeout": (timeout, instance.timeout),
-            "mode": (mode, instance._context.mode),  # ruff:ignore[private-member-access]
+            "mode": (mode, instance._context.mode),  # ruff:ignore[private-member-access]  # compares against the managed instance's own context
             "blocking": (blocking, instance.blocking),
             "poll_interval": (poll_interval, instance.poll_interval),
             "lifetime": (lifetime, instance.lifetime),
@@ -553,7 +553,7 @@ def _resolve_close_error_policy(policy: str) -> CloseErrorPolicy:
     return cast("CloseErrorPolicy", policy)
 
 
-def _resolve_preserve_lock_file(preserve: bool, *, supported: bool, cls_name: str) -> bool:  # ruff:ignore[boolean-type-hint-positional-argument]
+def _resolve_preserve_lock_file(*, preserve: bool, supported: bool, cls_name: str) -> bool:
     # An existence lock unlinks its marker to release, so preserving the pathname would defeat unlocking. Reject the
     # request rather than silently ignore it, since a caller asking for a stable identity must know it cannot be kept.
     if preserve and not supported:
@@ -647,7 +647,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = _UNSET_FILE_MODE,
-        thread_local: bool = True,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+        thread_local: bool = True,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         *,
         blocking: bool = True,
         is_singleton: bool = False,
@@ -1094,7 +1094,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         finally:
             self._transition_lock.release()
 
-    def release(self, force: bool = False) -> None:  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+    def release(self, force: bool = False) -> None:  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         """
         Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
         itself may be deleted automatically, the behavior is platform-specific.
@@ -1442,7 +1442,7 @@ class AcquireReturnProxy:
         traceback: TracebackType | None,
     ) -> None:
         if isinstance(self.lock, BaseFileLock):
-            self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]
+            self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # forwards __exit__ to the owned lock's context release
         else:  # a reader/writer lock does not carry a context_error_policy
             self.lock.release()
 
@@ -1635,7 +1635,7 @@ def _pin_fork_objects() -> None:
     provisional_descriptor_tokens = tuple(
         starmap(
             _snapshot_descriptor_for_fork,
-            (descriptor for owner in owners.values() for descriptor in owner._descriptors_for_fork()),  # ruff:ignore[private-member-access]
+            (descriptor for owner in owners.values() for descriptor in owner._descriptors_for_fork()),  # ruff:ignore[private-member-access]  # snapshots each owner's own fork descriptors
         )
     )
     with _FORK_STATE.registry_lock:
@@ -1756,7 +1756,7 @@ def _detach_child_state(  # pragma: no cover - exercised in fork children
         with contextlib.suppress(OSError):
             os.close(descriptor.fd)
     for instance in pinned_objects:
-        instance._reset_after_fork_in_child()  # ruff:ignore[private-member-access]
+        instance._reset_after_fork_in_child()  # ruff:ignore[private-member-access]  # resets each pinned instance in the fork child
     for cls in pinned_classes:
         cls._reset_class_after_fork()
     _registry.held.clear()

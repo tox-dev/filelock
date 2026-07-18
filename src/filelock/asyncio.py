@@ -70,11 +70,11 @@ _AT = TypeVar("_AT", bound="BaseAsyncFileLock")
 
 class AsyncFileLockMeta(FileLockMeta):
     def __call__(  # ruff:ignore[too-many-arguments]  # forwards the public constructor's documented parameters
-        cls: type[_AT],  # ruff:ignore[invalid-first-argument-name-for-method]
+        cls: type[_AT],  # ruff:ignore[invalid-first-argument-name-for-method]  # metaclass __call__ receives the class being constructed
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = _UNSET_FILE_MODE,
-        thread_local: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+        thread_local: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         *,
         blocking: bool = True,
         is_singleton: bool = False,
@@ -138,7 +138,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = _UNSET_FILE_MODE,
-        thread_local: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+        thread_local: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         *,
         blocking: bool = True,
         is_singleton: bool = False,
@@ -457,7 +457,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         first_error.__context__ = cancellation
         _raise_chained_errors(first_error, second_error)
 
-    async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+    async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         """
         Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
         itself may be deleted automatically, the behavior is platform-specific.
@@ -710,19 +710,19 @@ class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
 class AsyncAcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseAsyncFileLock) -> None:  # ruff:ignore[undocumented-public-init]
+    def __init__(self, lock: BaseAsyncFileLock) -> None:  # ruff:ignore[undocumented-public-init]  # trivial release-on-exit proxy
         self.lock = lock
 
-    async def __aenter__(self) -> BaseAsyncFileLock:  # ruff:ignore[undocumented-magic-method]
+    async def __aenter__(self) -> BaseAsyncFileLock:  # ruff:ignore[undocumented-magic-method]  # returns the wrapped lock
         return self.lock
 
-    async def __aexit__(  # ruff:ignore[undocumented-magic-method]
+    async def __aexit__(  # ruff:ignore[undocumented-magic-method]  # releases the wrapped lock on exit
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        await self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]
+        await self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # releases the wrapped lock's context
 
 
 class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
