@@ -486,7 +486,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             try:
                 await _drain_future(release_future)
             except BaseException as release_error:  # ruff:ignore[blind-except]  # cancellation and backend failure must both surface
-                self._commit_release_if_released()  # pragma: win32 no cover
+                self._commit_release_if_released()
                 self._raise_cancelled_errors(_ASYNC_RELEASE_CANCELLATION_ERRORS, cancellation, release_error)
             self._commit_release()
             raise
@@ -547,8 +547,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         try:
             self._register_context_descriptor()
         except BaseException as error:  # ruff:ignore[blind-except]  # preserve registration and acquisition failures
-            registration_error = error  # pragma: win32 no cover
-            try:  # pragma: win32 no cover
+            registration_error = error
+            try:
                 # Rollback may fail too; retain the fd so a child can close it without another identity probe.
                 self._register_unverified_context_descriptor()
             except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
@@ -558,26 +558,26 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and acquisition failures
             if registration_error is None and tracking_error is None:
                 self._raise_acquire_rollback_errors(acquisition_error, rollback_error)
-            _raise_cleanup_errors(  # pragma: win32 no cover
+            _raise_cleanup_errors(
                 "lock acquisition cleanup failed",
                 acquisition_error,
                 registration_error,
                 tracking_error,
                 rollback_error,
             )
-        if registration_error is not None:  # pragma: win32 no cover
+        if registration_error is not None:
             _raise_cleanup_errors(
                 "lock acquisition cleanup failed", acquisition_error, registration_error, tracking_error
             )
 
     async def _rollback_failed_registration_async(self, registration_error: BaseException) -> None:
         tracking_error: BaseException | None = None
-        try:  # pragma: win32 no cover
+        try:
             # Rollback may fail too; retain the fd so a child can close it without another identity probe.
             self._register_unverified_context_descriptor()
         except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
             tracking_error = error
-        try:  # pragma: win32 no cover
+        try:
             await _drain_future(self._start_tracked_release())
         except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and registration failures
             _raise_cleanup_errors(
@@ -660,7 +660,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             if self._context_error_policy == "chain":
                 _append_exception_context(release_error, body_error)
                 raise
-            if (  # pragma: win32 no cover
+            if (
                 errors := _grouped_errors(
                     release_error,
                     _ASYNC_RELEASE_CANCELLATION_ERRORS,
@@ -668,7 +668,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 )
             ) is not None:
                 match errors:
-                    case (asyncio.CancelledError() as cancellation, backend_error):  # pragma: win32 no cover
+                    case (asyncio.CancelledError() as cancellation, backend_error):
                         _raise_grouped_errors(_ASYNC_CONTEXT_RELEASE_ERRORS, body_error, cancellation, backend_error)
             _raise_body_and_release(body_error, release_error)
 

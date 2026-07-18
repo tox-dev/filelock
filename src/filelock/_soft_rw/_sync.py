@@ -544,8 +544,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             return False
         try:
             _atomic_create_marker(self._paths.write, token)
-        except FileExistsError:  # pragma: win32 no cover
-            return False  # pragma: win32 no cover
+        except FileExistsError:
+            return False
         return True
 
     def _touch_writer_marker_if_ours(self, token: str) -> bool:

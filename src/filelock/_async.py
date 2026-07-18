@@ -37,10 +37,10 @@ class _AsyncTransitionGate:
         with self._tail_lock:
             predecessor = self._tail
             self._tail = ticket
-        if predecessor is not None:  # pragma: win32 no cover
-            try:  # pragma: win32 no cover
+        if predecessor is not None:
+            try:
                 await _wait_until_done(asyncio.wrap_future(predecessor))
-            except asyncio.CancelledError:  # pragma: win32 no cover
+            except asyncio.CancelledError:
                 predecessor.add_done_callback(lambda _predecessor: self._leave(ticket))
                 raise
         try:

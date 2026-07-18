@@ -177,7 +177,7 @@ def _contains_exception(error: BaseException, target: BaseException | None) -> b
     seen: set[int] = set()
     while pending:
         child = pending.pop()
-        if child is target:  # pragma: win32 no cover
+        if child is target:
             return True
         if id(child) in seen:
             continue
@@ -1443,7 +1443,7 @@ class AcquireReturnProxy:
     ) -> None:
         if isinstance(self.lock, BaseFileLock):
             self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # forwards __exit__ to the owned lock's context release
-        else:  # a reader/writer lock does not carry a context_error_policy  # pragma: win32 no cover
+        else:  # a reader/writer lock does not carry a context_error_policy
             self.lock.release()
 
 

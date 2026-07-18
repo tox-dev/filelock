@@ -166,7 +166,7 @@ class SoftFileLock(BaseFileLock):
             try:
                 self._unlink_held_marker(identity)
             except BaseException as cleanup_error:  # ruff:ignore[blind-except]  # preserve control-flow cleanup failures
-                _raise_grouped_errors(  # pragma: win32 no cover
+                _raise_grouped_errors(
                     "lock descriptor close and marker cleanup both failed",
                     close_error,
                     cleanup_error,

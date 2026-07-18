@@ -133,8 +133,8 @@ class StrictSoftFileLock(BaseFileLock):
         try:
             publication_cleanup_error = _publish_record(intent_path, _claim_record(token), self._open_mode())
         except _PrivateRecordReclaimedError:
-            self._discard_doorway(sentinel_fd, sentinel_identity)  # pragma: win32 no cover
-            return  # pragma: win32 no cover
+            self._discard_doorway(sentinel_fd, sentinel_identity)
+            return
         except (NotImplementedError, OSError) as error:
             _raise_if_hard_links_unsupported(self.lock_file, error)
             if isinstance(error, OSError) and error.errno == EEXIST:
@@ -162,7 +162,7 @@ class StrictSoftFileLock(BaseFileLock):
             _raise_if_hard_links_unsupported(self.lock_file, error)
             raise
         self._context.owner_claim_paths = (held_path, intent_path)
-        if link_cleanup_error is not None:  # pragma: win32 no cover
+        if link_cleanup_error is not None:
             self._context.owner_claim_paths = ()
             raise link_cleanup_error
 
@@ -198,7 +198,7 @@ class StrictSoftFileLock(BaseFileLock):
         # descriptor or, when a held claim cannot be removed, commits it as owned so a later release retries and
         # raises the cleanup errors. A base rollback would release that owned descriptor again and report each
         # failure a second time, so leave the reconciled state alone.
-        if self.is_locked:  # pragma: win32 no cover
+        if self.is_locked:
             return
         super()._rollback_failed_acquire(acquisition_error)
 
@@ -213,20 +213,20 @@ class StrictSoftFileLock(BaseFileLock):
         self._context.claim_root = None
         remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
         self._context.owner_claim_paths = tuple(remaining)
-        if remaining:  # pragma: win32 no cover
+        if remaining:
             _raise_recorded_errors("strict claim release failed", errors)
         self._mark_descriptor_released()
         try:
             self._close_released_fd(fd, default_suppresses=False)
         except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
             errors.append(close_error)
-        if errors:  # pragma: win32 no cover
+        if errors:
             _raise_recorded_errors("strict release cleanup failed", errors)
 
     def _discard_doorway(self, fd: int, identity: tuple[int, int]) -> None:
         remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
         self._context.owner_claim_paths = tuple(remaining)
-        if remaining:  # pragma: win32 no cover
+        if remaining:
             self._mark_descriptor_owned(fd, identity)
             _raise_recorded_errors("strict doorway claim cleanup failed", errors)
         self._mark_descriptor_released()
@@ -335,7 +335,7 @@ def _read_claim_record(lock_file: str, directory: Path, name: str) -> bytes | No
                 # contention, never free a held lock.
                 return None
             reason = f"cannot read claim: {pending.strerror or str(pending) or type(pending).__name__}"
-            raise SoftFileLockProtocolError(lock_file, name, reason) from pending  # pragma: win32 no cover
+            raise SoftFileLockProtocolError(lock_file, name, reason) from pending
         delaying = True
 
 
@@ -514,10 +514,10 @@ def _close_and_unlink_private_record(
             _unlink_relative(directory_ref, private_name)
         else:
             _unlink_relative_if_identity(directory_ref, private_name, private_identity)
-    except FileNotFoundError:  # pragma: win32 no cover
+    except FileNotFoundError:
         pass
     except BaseException as error:  # ruff:ignore[blind-except]  # returned for grouping with close failures
-        unlink_error = error  # pragma: win32 no cover
+        unlink_error = error
     return close_error, unlink_error
 
 
@@ -529,14 +529,14 @@ def _link_private_record(
     try:
         _link_relative(directory_ref, *names)
     except FileNotFoundError as error:
-        if _relative_identity(directory_ref, names[0]) is not None:  # pragma: win32 no cover
+        if _relative_identity(directory_ref, names[0]) is not None:
             raise
-        msg = "private publication record was reclaimed"  # pragma: win32 no cover
-        raise _PrivateRecordReclaimedError(msg) from error  # pragma: win32 no cover
+        msg = "private publication record was reclaimed"
+        raise _PrivateRecordReclaimedError(msg) from error
     if _relative_identity(directory_ref, names[1]) == private_identity:
         return
-    msg_0 = "private publication record was replaced"  # pragma: win32 no cover
-    raise _PrivateRecordReclaimedError(msg_0)  # pragma: win32 no cover
+    msg_0 = "private publication record was replaced"
+    raise _PrivateRecordReclaimedError(msg_0)
 
 
 def _raise_record_finalization_errors(
@@ -714,12 +714,12 @@ def _unlink_owner_path_result(path: str) -> tuple[bool, BaseException | None]:
     except FileNotFoundError:
         return True, None
     except BaseException as error:  # ruff:ignore[blind-except]  # keep ownership when unlink did not commit
-        return False, error  # pragma: win32 no cover
+        return False, error
     return True, cleanup_error
 
 
-def _raise_recorded_errors(message: str, errors: list[BaseException]) -> None:  # pragma: win32 no cover
-    if len(errors) > 1:  # pragma: win32 no cover
+def _raise_recorded_errors(message: str, errors: list[BaseException]) -> None:
+    if len(errors) > 1:
         _raise_cleanup_errors(message, errors[0], *errors[1:])
     raise errors[0]
 
@@ -795,7 +795,7 @@ def _open_record(path: Path, limit: int) -> tuple[int, bytes]:
 
 def _read_opened_record(fd: int, path: Path, path_stat: os.stat_result, limit: int) -> bytes:
     opened_stat = os.fstat(fd)
-    if not stat.S_ISREG(opened_stat.st_mode):  # pragma: win32 no cover
+    if not stat.S_ISREG(opened_stat.st_mode):
         msg = f"{path} is not a regular file"
         raise OSError(msg)
     if _file_identity(opened_stat) != _file_identity(path_stat):
