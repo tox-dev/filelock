@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from typing import TYPE_CHECKING, Literal
 
@@ -11,7 +12,14 @@ import sqlite3
 from pathlib import Path
 
 from filelock import Timeout
-from filelock._read_write import _MAX_SQLITE_TIMEOUT_MS, ReadWriteLock, timeout_for_sqlite
+from filelock._read_write import (
+    _FORKED_DATABASES,
+    _MAX_SQLITE_TIMEOUT_MS,
+    ReadWriteLock,
+    _ForkedDatabaseRegistry,
+    _track_sqlite_use,
+    timeout_for_sqlite,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -521,3 +529,93 @@ def test_acquire_converts_connect_lock_error_to_timeout(lock_file: str, mocker: 
 
     with pytest.raises(Timeout):
         lock.acquire_read(timeout=0.1)
+
+
+def test_get_lock_returns_the_singleton(lock_file: str) -> None:
+    lock = ReadWriteLock.get_lock(lock_file)
+    assert isinstance(lock, ReadWriteLock)
+    assert lock is ReadWriteLock(lock_file)
+
+
+def test_note_sqlite_use_records_use_on_pypy(mocker: MockerFixture) -> None:
+    mocker.patch("filelock._read_write._IS_PYPY", True)
+    registry = _ForkedDatabaseRegistry()
+    registry.note_sqlite_use()
+    assert registry._sqlite_used is True
+
+
+@pytest.mark.parametrize("identity", [None, (1, 2)], ids=["no-identity", "with-identity"])
+def test_poison_after_fork_records_path_and_identity(identity: tuple[int, int] | None) -> None:
+    registry = _ForkedDatabaseRegistry()
+    path = Path("poisoned.db")
+    registry.poison_after_fork(path, identity)
+    assert path in registry._paths
+    assert (identity in registry._identities) is (identity is not None)
+
+
+def test_track_sqlite_use_forwards_connect_event(mocker: MockerFixture) -> None:
+    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use")
+    _track_sqlite_use("sqlite3.connect", ())
+    note.assert_called_once_with()
+
+
+def test_track_sqlite_use_ignores_other_events(mocker: MockerFixture) -> None:
+    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use")
+    _track_sqlite_use("open", ())
+    note.assert_not_called()
+
+
+def test_meta_resets_class_state_after_pid_change(lock_file: str) -> None:
+    class _Sub(ReadWriteLock):
+        pass
+
+    _Sub._instances_pid = -1
+    lock = _Sub(lock_file)
+    try:
+        assert isinstance(lock, _Sub)
+        assert _Sub._instances_pid == os.getpid()
+    finally:
+        lock.close()
+
+
+def test_meta_raises_when_pid_changes_during_singleton_construction(lock_file: str, mocker: MockerFixture) -> None:
+    class _Sub(ReadWriteLock):
+        pass
+
+    pid_box = [os.getpid()]
+    mocker.patch("filelock._read_write._GETPID", side_effect=lambda: pid_box[0])
+    original_init = _Sub.__init__
+
+    def _init_then_fork(
+        self: _Sub,
+        lock_file: str | os.PathLike[str],
+        timeout: float = -1,
+        *,
+        blocking: bool = True,
+        is_singleton: bool = True,
+    ) -> None:
+        original_init(self, lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
+        pid_box[0] += 1
+
+    mocker.patch.object(_Sub, "__init__", _init_then_fork)
+
+    with pytest.raises(RuntimeError, match="construction cannot continue after fork"):
+        _Sub(lock_file)
+
+
+def test_finish_connection_chains_rollback_then_close_error(lock_file: str, mocker: MockerFixture) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    con = mocker.MagicMock()
+    type(con).in_transaction = mocker.PropertyMock(side_effect=[True, False])
+    con.rollback.side_effect = sqlite3.OperationalError("rollback boom")
+    con.close.side_effect = sqlite3.OperationalError("close boom")
+    lock._con = con
+    lock._connection_transaction_released = False
+
+    with pytest.raises(sqlite3.OperationalError, match="close boom") as excinfo:
+        lock._finish_connection()
+
+    assert isinstance(excinfo.value.__context__, sqlite3.OperationalError)
+    assert "rollback boom" in str(excinfo.value.__context__)
+    con.rollback.assert_called_once_with()
+    con.close.assert_called_once_with()

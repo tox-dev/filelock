@@ -5,7 +5,8 @@ import os
 import socket
 import sys
 import time
-from errno import EIO
+from errno import EIO, ENOENT
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast
 
 import pytest
@@ -164,7 +165,11 @@ def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: Moc
     lease = _lease(marker, on_compromise=seen.append)
 
     with lease:
-        time.sleep(_DURATION + _HEARTBEAT)  # past the refresh margin, so a persistent failure is reported once
+        # Poll rather than sleep a fixed window: a starved heartbeat thread (e.g. under free-threaded builds) can miss
+        # a single refresh margin. A persistent failure is deduplicated, so it is still reported exactly once.
+        deadline = time.monotonic() + _DURATION * 20
+        while not seen and time.monotonic() < deadline:
+            time.sleep(_HEARTBEAT)
 
     assert [(c.reason, c.error) for c in seen] == [("refresh-failed", failure)]
 
@@ -316,6 +321,76 @@ def test_lease_drops_lifetime_with_a_warning(marker: Path) -> None:
         lease = SoftFileLease(str(marker), lease_duration=_DURATION, lifetime=5)
 
     assert lease.lifetime is None
+
+
+def test_lease_supersedes_a_live_holder_once_its_claim_ages_out(marker: Path, mocker: MockerFixture) -> None:
+    # A live holder whose refresh stalled keeps its marker, yet a contender takes it once the marker ages past
+    # lease_duration. Windows cannot delete a live holder's open marker, so drive the age branch with a non-stale
+    # owner and an aged marker rather than a real second process.
+    mocker.patch("filelock._lease.owner_is_stale", return_value=False)
+    marker.write_text(
+        f"filelock/2\npid={os.getpid()}\nhost={socket.gethostname()}\nmode=lease\ntoken=stalled\nduration={_DURATION!r}\n",
+        encoding="utf-8",
+    )
+    aged = time.time() - (_DURATION + 5)
+    os.utime(marker, (aged, aged))
+
+    with _lease(marker) as contender:
+        assert contender.is_lock_held_by_us
+        assert contender.token not in {None, "stalled"}
+
+
+def test_lease_reports_marker_missing_when_a_refresh_cannot_stat_it(marker: Path, mocker: MockerFixture) -> None:
+    # A vanished marker surfaces as FileNotFoundError from the refresh stat. Windows keeps an open marker undeletable,
+    # so inject the missing stat at the agnostic os.lstat call rather than unlinking a held file.
+    seen: list[LeaseCompromise] = []
+    lease = _lease(marker, on_compromise=seen.append)
+    lease.acquire()
+    token = lease.token
+    real_lstat = cast("Callable[..., os.stat_result]", os.lstat)
+    missing = False
+
+    def lstat(path: object, *args: object, **kwargs: object) -> object:
+        if missing and str(path).endswith(marker.name):
+            raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
+        return real_lstat(path, *args, **kwargs)
+
+    mocker.patch("filelock._lease.os.lstat", side_effect=lstat)
+    try:
+        missing = True
+        time.sleep(_HEARTBEAT * 4)
+    finally:
+        missing = False
+        lease.release()
+
+    assert [(c.reason, c.token, c.lock_file) for c in seen] == [("marker-missing", token, str(marker))]
+
+
+def test_lease_reports_owner_changed_when_the_marker_identity_shifts(marker: Path, mocker: MockerFixture) -> None:
+    # A peer that took the expired claim replaces the marker, so the refresh stat names a different inode. Drive that
+    # agnostically by returning a stat whose identity differs from the one the holder verified at acquire.
+    seen: list[LeaseCompromise] = []
+    lease = _lease(marker, on_compromise=seen.append)
+    lease.acquire()
+    token = lease.token
+    real_lstat = cast("Callable[..., os.stat_result]", os.lstat)
+    shifted = False
+
+    def lstat(path: object, *args: object, **kwargs: object) -> object:
+        st = real_lstat(path, *args, **kwargs)
+        if shifted and str(path).endswith(marker.name):
+            return SimpleNamespace(st_dev=st.st_dev, st_ino=st.st_ino + 1)
+        return st
+
+    mocker.patch("filelock._lease.os.lstat", side_effect=lstat)
+    try:
+        shifted = True
+        time.sleep(_HEARTBEAT * 4)
+    finally:
+        shifted = False
+        lease.release()
+
+    assert [(c.reason, c.token) for c in seen] == [("owner-changed", token)]
 
 
 def test_native_lock_rejects_a_lease_duration(marker: Path) -> None:

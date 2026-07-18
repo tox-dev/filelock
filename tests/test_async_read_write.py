@@ -22,7 +22,7 @@ def _clear_singleton_cache() -> Generator[None]:
     ReadWriteLock._instances.clear()
     yield
     for ref in list(ReadWriteLock._instances.valuerefs()):
-        if (lock := ref()) is not None:
+        if (lock := ref()) is not None:  # pragma: no cover  # cache is normally emptied before teardown
             lock.close()
     ReadWriteLock._instances.clear()
 

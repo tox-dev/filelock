@@ -141,7 +141,7 @@ class StrictSoftFileLock(BaseFileLock):
                 self._discard_doorway(sentinel_fd, sentinel_identity)
                 return
             raise
-        if publication_cleanup_error is not None:
+        if publication_cleanup_error is not None:  # pragma: win32 no cover
             raise publication_cleanup_error
         self._context.owner_claim_paths = (intent_path,)
 
@@ -162,7 +162,7 @@ class StrictSoftFileLock(BaseFileLock):
             _raise_if_hard_links_unsupported(self.lock_file, error)
             raise
         self._context.owner_claim_paths = (held_path, intent_path)
-        if link_cleanup_error is not None:
+        if link_cleanup_error is not None:  # pragma: win32 no cover
             self._context.owner_claim_paths = ()
             raise link_cleanup_error
 
@@ -190,7 +190,9 @@ class StrictSoftFileLock(BaseFileLock):
         """Remove one named claim, allowing overlap if its owner still holds the protected resource."""
         _validate_force_break_name(claim_name)
         _require_exact_name(self._claim_directory, claim_name)
-        if (cleanup_error := _unlink_in_directory(self._claim_directory, claim_name)) is not None:
+        if (
+            cleanup_error := _unlink_in_directory(self._claim_directory, claim_name)
+        ) is not None:  # pragma: win32 no cover
             raise cleanup_error
 
     def _rollback_failed_acquire(self, acquisition_error: BaseException) -> None:
@@ -280,7 +282,7 @@ def _open_or_create_sentinel(lock_file: str, path: Path, mode: int) -> int | Non
         if not isinstance(error, OSError) or error.errno != EEXIST:
             raise
     else:
-        if publication_cleanup_error is not None:
+        if publication_cleanup_error is not None:  # pragma: win32 no cover
             raise publication_cleanup_error
     try:
         return _open_sentinel(path)
@@ -446,7 +448,7 @@ def _publish_record(
         try:
             if directory_fd is not None:  # pragma: win32 no cover
                 os.close(directory_fd)
-        except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve publication and directory cleanup errors
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # pragma: win32 no cover  # preserve publication and directory cleanup errors
             _raise_cleanup_errors("strict publication directory cleanup failed", publication_error, close_error)
         raise
     if directory_fd is not None:  # pragma: win32 no cover
@@ -600,7 +602,9 @@ def _reclaim_private_record(directory_ref: tuple[str, int | None], private_name:
 
 def _unlink_private_record_once(directory_ref: tuple[str, int | None], private_name: str) -> None:
     directory, directory_fd = directory_ref
-    if directory_fd is not None and _UNLINK_SUPPORTS_DIR_FD:
+    if (
+        directory_fd is not None and _UNLINK_SUPPORTS_DIR_FD
+    ):  # pragma: no cover  # callers always pass directory_fd=None
         os.unlink(private_name, dir_fd=directory_fd)
     else:
         Path(directory, private_name).unlink()
@@ -661,9 +665,11 @@ def _link_no_follow(
     # attacker can reach. Pass the option only when the runtime honors it: PyPy advertises it through
     # os.supports_follow_symlinks yet its linkat rejects it with EINVAL, so probe once rather than trust the set.
     if _LINK_HONORS_FOLLOW_SYMLINKS:
-        os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False)
+        os.link(
+            source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False
+        )  # pragma: win32 no cover
     else:
-        os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)  # pragma: win32 cover
 
 
 def _unlink_relative(directory_ref: tuple[str, int | None], name: str) -> None:
@@ -673,7 +679,7 @@ def _unlink_relative(directory_ref: tuple[str, int | None], name: str) -> None:
     elif sys.platform == "win32":  # pragma: win32 cover
         _unlink_in_directory(Path(directory), name)
     else:
-        Path(directory, name).unlink()
+        Path(directory, name).unlink()  # pragma: win32 no cover
 
 
 def _link_no_replace(directory: Path, source_name: str, destination_name: str) -> BaseException | None:
@@ -751,7 +757,7 @@ def _unlink_in_directory(directory: Path, name: str) -> BaseException | None:
             raise error
         time.sleep(retry_delay)
         retry_delay *= 2
-    return None  # pragma: win32 no cover  # the final retry returns or raises
+    return None  # pragma: no cover  # the final retry returns or raises
 
 
 def _unlink_error(path: Path) -> OSError | None:  # pragma: win32 cover

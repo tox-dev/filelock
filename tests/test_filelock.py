@@ -34,6 +34,7 @@ from filelock import (
     lock_descriptor,
     unlock_descriptor,
 )
+from filelock._api import _raise_grouped_errors
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup
@@ -2429,6 +2430,57 @@ def test_on_acquired_rollback_group_detaches_release_context(
     ) == ((callback_error, release_error), None, None, callback_cause, release_cause, True, True)
 
 
+def test_grouped_errors_keep_a_context_that_is_a_distinct_group() -> None:
+    # _same_exception_tree rejects two same-typed groups whose message or arity differ, so a member's group-valued
+    # __context__ that is genuinely distinct survives the detach rather than being treated as a duplicate to strip.
+    context = ExceptionGroup("context group", [ValueError("a")])
+    member = ExceptionGroup("member group", [KeyError("b"), KeyError("c")])
+    member.__context__ = context
+
+    with pytest.raises(BaseExceptionGroup) as info:
+        _raise_grouped_errors("grouped", member, RuntimeError("other"))
+
+    assert member.__context__ is context
+    assert member in info.value.exceptions
+
+
+def test_grouped_errors_detach_a_context_already_nested_in_a_sibling() -> None:
+    # _contains_exception walks a sibling group's tree; finding the exact context object there drops that member's
+    # __context__ so the raised group never carries the same leaf twice.
+    shared = ValueError("shared leaf")
+    sibling = ExceptionGroup("sibling", [shared])
+    member = RuntimeError("boom")
+    member.__context__ = shared
+
+    with pytest.raises(BaseExceptionGroup) as info:
+        _raise_grouped_errors("grouped", sibling, member)
+
+    assert member.__context__ is None
+    assert set(info.value.exceptions) == {sibling, member}
+
+
+def test_rollback_failed_acquire_groups_registration_and_release_failures(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    # An acquire that raised while still holding the lock re-registers the descriptor and releases; when both that
+    # re-registration and the release then fail, every failure survives as a sibling of the group raised.
+    lock = SoftFileLock(str(tmp_path / "a"))
+    lock.acquire()
+    registration_error = OSError("registration failed")
+    release_error = OSError("release failed")
+    mocker.patch.object(lock, "_register_context_descriptor", side_effect=registration_error)
+    mocker.patch.object(lock, "_release_with_fork_tracking", side_effect=release_error)
+    acquisition_error = RuntimeError("acquire failed")
+
+    try:
+        with pytest.raises(BaseExceptionGroup) as info:
+            lock._rollback_failed_acquire(acquisition_error)
+        assert set(info.value.exceptions) == {acquisition_error, registration_error, release_error}
+    finally:
+        mocker.stopall()
+        lock.release(force=True)
+
+
 @_UNIX_FLOCK_ONLY
 def test_on_acquired_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
@@ -2489,3 +2541,29 @@ def test_strict_lock_reports_unsupported_without_os_link(tmp_path: Path, mocker:
     with pytest.raises(SoftFileLockProtocolError, match="hard-link publication"):
         lock.acquire()
     assert (lock.claims, lock.is_locked) == ((), False)
+
+
+def test_soft_release_groups_close_and_cleanup_failures(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(str(tmp_path / "grouped.lock"))
+    lock.acquire()
+    mocker.patch.object(lock, "_close_released_fd", side_effect=OSError("close boom"))
+    mocker.patch.object(lock, "_unlink_held_marker", side_effect=OSError("cleanup boom"))
+
+    with pytest.raises(BaseExceptionGroup, match="both failed") as excinfo:
+        lock._release()
+
+    messages = {str(exc) for exc in excinfo.value.exceptions}
+    assert any("close boom" in message for message in messages)
+    assert any("cleanup boom" in message for message in messages)
+
+
+def test_soft_windows_unlink_stops_on_non_permission_error(tmp_path: Path, mocker: MockerFixture) -> None:
+    path = tmp_path / "windows.lock"
+    path.write_bytes(b"x")
+    lock = SoftFileLock(str(path))
+    st = os.lstat(path)
+    mocker.patch.object(Path, "unlink", side_effect=OSError(ENOSYS, "boom"))
+
+    lock._windows_unlink_if_ours((st.st_dev, st.st_ino))
+
+    assert path.exists()

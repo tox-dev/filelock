@@ -104,7 +104,7 @@ async def test_async_strict_soft_waiter_keeps_acquisition_directory(
             StrictSoftFileLock(second / "resource.lock").claims,
         ) == (("held", "intent"), ())
     finally:
-        if not task.done():
+        if not task.done():  # pragma: no cover  # the contender wins before teardown, so cancellation cleanup is rare
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task

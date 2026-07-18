@@ -770,7 +770,7 @@ _register_fork_object(_CONNECTION_ESCROW)
 _register_fork_object(_FORKED_DATABASES)
 _register_fork_class(ReadWriteLock)
 if _IS_PYPY:
-    sys.addaudithook(_track_sqlite_use)
+    sys.addaudithook(_track_sqlite_use)  # pragma: no cover - installed only under the PyPy audit-hook fallback
 if hasattr(os, "register_at_fork"):  # pragma: win32 no cover
     os.register_at_fork(after_in_child=_abort_forked_sqlite_transition)
 

@@ -1127,3 +1127,34 @@ def test_write_marker_zero_write_rolls_back(lock_file: str, mocker: MockerFixtur
     with pytest.raises(OSError, match="0 bytes"):
         lock.acquire_write(timeout=1)
     assert not Path(f"{lock_file}.write").exists()
+
+
+def test_touch_writer_marker_returns_false_when_marker_missing(lock_file: str) -> None:
+    lock = SoftReadWriteLock(lock_file, is_singleton=False)
+    assert lock._touch_writer_marker_if_ours("0" * 32) is False
+
+
+def test_claim_writer_marker_returns_false_on_create_race(lock_file: str, mocker: MockerFixture) -> None:
+    lock = SoftReadWriteLock(lock_file, is_singleton=False)
+    mocker.patch.object(sync_mod, "_atomic_create_marker", side_effect=FileExistsError)
+    with lock._locks.state:
+        assert lock._claim_writer_marker("0" * 32) is False
+
+
+def test_atomic_create_marker_rolls_back_on_write_failure(tmp_path: Path, mocker: MockerFixture) -> None:
+    marker = str(tmp_path / "marker")
+    mocker.patch.object(sync_mod, "write_all", side_effect=OSError("write boom"))
+    with pytest.raises(OSError, match="write boom"):
+        sync_mod._atomic_create_marker(marker, "0" * 32)
+    assert not Path(marker).exists()
+
+
+def test_same_file_true_for_matching_identity(tmp_path: Path) -> None:
+    target = tmp_path / "present"
+    target.write_bytes(b"x")
+    st = os.lstat(target)
+    assert sync_mod._same_file(str(target), (st.st_dev, st.st_ino), dir_fd=None) is True
+
+
+def test_same_file_false_when_stat_fails(tmp_path: Path) -> None:
+    assert sync_mod._same_file(str(tmp_path / "absent"), (1, 2), dir_fd=None) is False

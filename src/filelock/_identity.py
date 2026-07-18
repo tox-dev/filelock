@@ -83,7 +83,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             _KERNEL32.CloseHandle(handle)
         return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
 
-else:
+else:  # pragma: win32 no cover
 
     def process_alive(pid: int) -> bool:
         """Whether a process with this PID exists, treating an access denial (``EPERM``) as proof it does."""
