@@ -279,6 +279,7 @@ def test_lease_rejects_a_peer_configured_with_another_duration(marker: Path) -> 
         _lease(marker, lease_duration=_DURATION * 3).acquire()
 
 
+@pytest.mark.requires_hard_links
 def test_lease_does_not_expire_a_strict_holder(marker: Path) -> None:
     # A strict holder never agreed to be superseded by age, so a lease contender waits it out instead.
     with StrictSoftFileLock(str(marker)):

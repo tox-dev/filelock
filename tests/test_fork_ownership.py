@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import os
-import subprocess  # noqa: S404  # fresh interpreter must register the callback before importing filelock
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # fresh interpreter must register the callback before importing filelock
 import sys
 import threading
 from errno import EBADF

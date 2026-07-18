@@ -1,0 +1,17 @@
+# Run the test suite inside a real Termux (Android) userland: `docker compose run --rm termux`.
+# The "🤖 Termux (Android)" CI job runs this exact command, so the platform is trivial to reproduce locally. The base
+# image (apt packages + tox) is cached; only the copy, the patched-filelock install and the test run happen per call.
+#
+# The source is copied out of the read-only mount before tox runs, rather than running tox in place: in Termux, tox
+# registers its package environment twice and dies with "duplicate configuration definition for .pkg" whenever its
+# work_dir sits on a different filesystem than the project (https://github.com/tox-dev/tox/issues/3987). Copying keeps
+# the project and its default .tox on one layer, and leaves the mounted tree untouched.
+services:
+  termux:
+    build:
+      context: tasks/termux
+    platform: linux/arm64
+    volumes:
+      - .:/repo:ro
+    # $$HOME escapes compose's own interpolation so the container's shell expands it (compose would substitute the host's).
+    command: ["bash", "-lc", "cp -a /repo \"$$HOME/work\" && cd \"$$HOME/work\" && pip install -q . && exec tox run -e py"]

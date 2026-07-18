@@ -15,6 +15,9 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
+pytestmark = pytest.mark.requires_hard_links
+
+
 def test_strict_soft_lower_intent_delayed_until_higher_selects(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)

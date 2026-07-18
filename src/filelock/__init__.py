@@ -56,7 +56,7 @@ __version__: Final[str] = version
 if sys.platform == "win32":  # pragma: win32 cover
     _FileLock: type[BaseFileLock] = WindowsFileLock
     _AsyncFileLock: type[BaseAsyncFileLock] = AsyncWindowsFileLock
-else:  # pragma: win32 no cover # noqa: PLR5501
+else:  # pragma: win32 no cover # ruff:ignore[collapsible-else-if]  # the else carries the win32 no-cover pragma
     if has_fcntl:
         _FileLock: type[BaseFileLock] = UnixFileLock
         _AsyncFileLock: type[BaseAsyncFileLock] = AsyncUnixFileLock

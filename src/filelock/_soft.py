@@ -17,6 +17,7 @@ from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writab
 _MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
 _UNLINK_MAX_RETRIES: Final[int] = 10
+_MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
 
 
 class SoftFileLock(BaseFileLock):
@@ -148,7 +149,7 @@ class SoftFileLock(BaseFileLock):
 
     def _release(self) -> None:
         fd = self._context.lock_file_fd
-        assert fd is not None  # noqa: S101
+        assert fd is not None  # ruff:ignore[assert]  # _release runs only while held, so the descriptor is set
         # Capture the held file's identity before closing so cleanup can refuse to unlink a successor's marker. A
         # supported lifetime lease lets a peer break our expired marker and create its own at this path before we
         # release; unlinking by path alone would then delete the successor's lock.
@@ -164,7 +165,7 @@ class SoftFileLock(BaseFileLock):
         except BaseException as close_error:
             try:
                 self._unlink_held_marker(identity)
-            except BaseException as cleanup_error:  # noqa: BLE001  # preserve control-flow cleanup failures
+            except BaseException as cleanup_error:  # ruff:ignore[blind-except]  # preserve control-flow cleanup failures
                 _raise_grouped_errors(
                     "lock descriptor close and marker cleanup both failed",
                     close_error,
@@ -192,7 +193,7 @@ class SoftFileLock(BaseFileLock):
                 if _file_identity(os.lstat(self.lock_file)) != identity:
                     return
                 Path(self.lock_file).unlink()
-            except OSError as exc:  # noqa: PERF203
+            except OSError as exc:  # ruff:ignore[try-except-in-loop]  # each attempt's errno drives the retry choice
                 if exc.errno not in {EACCES, EPERM}:
                     return
                 if attempt < _UNLINK_MAX_RETRIES - 1:
@@ -242,7 +243,7 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
         return None
     try:
         pid = int(lines[0])
-        start_token = int(lines[2]) if len(lines) == 3 else None  # noqa: PLR2004
+        start_token = int(lines[2]) if len(lines) == _MARKER_WITH_START_TOKEN_LINE_COUNT else None
     except ValueError:
         return None
     # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid

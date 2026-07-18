@@ -19,13 +19,16 @@ if TYPE_CHECKING:
 _STRICT_SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
 
 
+pytestmark = pytest.mark.requires_hard_links
+
+
 def test_strict_soft_relative_release_uses_acquisition_directory(
     working_directories: tuple[Path, Path],
 ) -> None:
     first, second = working_directories
     lock = StrictSoftFileLock("resource.lock")
     lock.acquire()
-    assert tuple(claim.state for claim in StrictSoftFileLock(first / "resource.lock").claims) == ("held",)
+    assert tuple(claim.state for claim in StrictSoftFileLock(first / "resource.lock").claims) == ("held", "intent")
 
     os.chdir(second)
     lock.release()
@@ -43,7 +46,7 @@ async def test_async_strict_soft_relative_release_uses_acquisition_directory(
     first, second = working_directories
     lock = AsyncStrictSoftFileLock("resource.lock", run_in_executor=False)
     await lock.acquire()
-    assert tuple(claim.state for claim in StrictSoftFileLock(first / "resource.lock").claims) == ("held",)
+    assert tuple(claim.state for claim in StrictSoftFileLock(first / "resource.lock").claims) == ("held", "intent")
 
     os.chdir(second)
     await lock.release()
@@ -73,7 +76,7 @@ def test_strict_soft_waiter_keeps_acquisition_directory(
             assert (
                 tuple(claim.state for claim in StrictSoftFileLock(first / "resource.lock").claims),
                 StrictSoftFileLock(second / "resource.lock").claims,
-            ) == (("held",), ())
+            ) == (("held", "intent"), ())
             release.set()
             future.result(timeout=2)
     finally:
@@ -99,7 +102,7 @@ async def test_async_strict_soft_waiter_keeps_acquisition_directory(
         assert (
             tuple(claim.state for claim in StrictSoftFileLock(first / "resource.lock").claims),
             StrictSoftFileLock(second / "resource.lock").claims,
-        ) == (("held",), ())
+        ) == (("held", "intent"), ())
     finally:
         if not task.done():
             task.cancel()
@@ -129,7 +132,7 @@ def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> Non
         assert (
             StrictSoftFileLock(original / "resource.lock").claims,
             tuple(claim.state for claim in replacement_holder.claims),
-        ) == ((), ("held",))
+        ) == ((), ("held", "intent"))
     finally:
         original_holder.release(force=True)
         replacement_holder.release(force=True)

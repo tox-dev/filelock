@@ -126,7 +126,7 @@ def _future_result(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
         return cast("_T", outcome.value)
     context = error.__context__
     try:
-        raise error  # noqa: TRY301  # the handler restores context changed across the async boundary
+        raise error  # ruff:ignore[raise-within-try]  # the handler restores context changed across the async boundary
     except BaseException:
         error.__context__ = context
         raise
@@ -135,14 +135,14 @@ def _future_result(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
 def _capture_call(func: Callable[[], _T]) -> _BackendOutcome[_T]:
     try:
         return _BackendOutcome(value=func())
-    except BaseException as error:  # noqa: BLE001  # backend control-flow exceptions are operation results
+    except BaseException as error:  # ruff:ignore[blind-except]  # backend control-flow exceptions are operation results
         return _BackendOutcome(error=error)
 
 
 async def _capture_awaitable(awaitable: Awaitable[_T]) -> _BackendOutcome[_T]:
     try:
         return _BackendOutcome(value=await awaitable)
-    except BaseException as error:  # noqa: BLE001  # backend cancellation must remain distinct from caller cancellation
+    except BaseException as error:  # ruff:ignore[blind-except]  # backend cancellation must remain distinct from caller cancellation
         return _BackendOutcome(error=error)
 
 

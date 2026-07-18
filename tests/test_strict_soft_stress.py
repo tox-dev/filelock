@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess  # noqa: S404  # isolated interpreters exercise cross-process exclusion
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolated interpreters exercise cross-process exclusion
 import sys
 import time
 from typing import TYPE_CHECKING, Final
@@ -14,30 +14,42 @@ if TYPE_CHECKING:
 
 _PROCESS_COUNT: Final[int] = 8
 _ACQUISITIONS_PER_PROCESS: Final[int] = 500
+# Catch overlap two independent ways. An occupancy marker fails immediately the instant a second holder enters the
+# critical section, and a counter read-modify-write fails afterwards when two holders read the same value and one
+# increment vanishes. Both beat an O_EXCL create/unlink pair, which tripped over Windows' delete-pending lag where the
+# previous holder's unlink had not finished before the next holder's create ran. The check lives in the worker's exit
+# status, not in its stderr: interpreters are free to print to stderr (PyPy warns when it cannot size the CPU cache),
+# so demanding empty stderr flakes without proving anything about exclusion.
 _WORKER: Final[str] = """
-import os
 import sys
 import time
 from pathlib import Path
 
 from filelock import StrictSoftFileLock
 
-lock_path, start_path, critical_path = map(Path, sys.argv[1:4])
+lock_path, start_path, counter_path, occupied_path = map(Path, sys.argv[1:5])
 while not start_path.exists():
     time.sleep(0.001)
-for _ in range(int(sys.argv[4])):
+for _ in range(int(sys.argv[5])):
     with StrictSoftFileLock(lock_path, timeout=30, poll_interval=0.0005):
-        fd = os.open(critical_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
-        critical_path.unlink()
+        if occupied_path.exists():
+            raise SystemExit("two holders entered the critical section at once")
+        occupied_path.write_text("held")
+        count = int(counter_path.read_text()) if counter_path.exists() else 0
+        counter_path.write_text(str(count + 1))
+        occupied_path.unlink()
 """
+
+
+pytestmark = pytest.mark.requires_hard_links
 
 
 @pytest.mark.timeout(90)
 def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     start_path = tmp_path / "start"
-    critical_path = tmp_path / "critical"
+    counter_path = tmp_path / "counter"
+    occupied_path = tmp_path / "occupied"
     processes = [
         subprocess.Popen(
             [
@@ -46,7 +58,8 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
                 _WORKER,
                 str(lock_path),
                 str(start_path),
-                str(critical_path),
+                str(counter_path),
+                str(occupied_path),
                 str(_ACQUISITIONS_PER_PROCESS),
             ],
             stdout=subprocess.PIPE,
@@ -66,11 +79,11 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
         _kill_processes(processes)
         pytest.fail("strict soft-lock stress workers exceeded 75 seconds")
 
-    assert ([process.returncode for process in processes], outputs, critical_path.exists()) == (
+    recorded = int(counter_path.read_text()) if counter_path.exists() else 0
+    assert ([process.returncode for process in processes], recorded) == (
         [0] * _PROCESS_COUNT,
-        [("", "")] * _PROCESS_COUNT,
-        False,
-    )
+        _PROCESS_COUNT * _ACQUISITIONS_PER_PROCESS,
+    ), outputs
 
 
 def _kill_processes(processes: list[subprocess.Popen[str]]) -> None:  # pragma: no cover - test failure cleanup

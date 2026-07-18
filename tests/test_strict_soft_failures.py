@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import pickle  # noqa: S403  # round-trip uses bytes produced in this test
+import pickle  # ruff:ignore[suspicious-pickle-import]  # round-trip uses bytes produced in this test
 import socket
 import stat
 import sys
@@ -35,10 +35,13 @@ if TYPE_CHECKING:
 _PathValue = str | bytes | os.PathLike[str] | os.PathLike[bytes]
 
 
+pytestmark = pytest.mark.requires_hard_links
+
+
 def test_strict_soft_protocol_error_pickles() -> None:
     error = SoftFileLockProtocolError("resource.lock", "held-v2-claim", "unknown version")
 
-    restored = pickle.loads(pickle.dumps(error))  # noqa: S301  # input comes from the preceding local value
+    restored = pickle.loads(pickle.dumps(error))  # ruff:ignore[suspicious-pickle-usage]  # input comes from the preceding local value
 
     assert (type(restored), restored.lock_file, restored.claim_name, restored.reason, str(restored)) == (
         SoftFileLockProtocolError,
@@ -457,11 +460,14 @@ def test_strict_soft_release_commits_before_directory_close_error(tmp_path: Path
     lock.acquire()
     real_close = os.close
     real_fstat = os.fstat
+    directory_close_failed = False
 
     def fail_directory_close(fd: int) -> None:
+        nonlocal directory_close_failed
         is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
         real_close(fd)
-        if is_directory:
+        if is_directory and not directory_close_failed:
+            directory_close_failed = True
             raise OSError(EIO, "directory close failed")
 
     close_mock = mocker.patch("filelock._strict.os.close", side_effect=fail_directory_close)
@@ -482,6 +488,7 @@ def test_strict_soft_release_preserves_unlink_and_directory_close_errors(tmp_pat
     real_close = os.close
     real_fstat = os.fstat
     real_unlink = os.unlink
+    directory_close_failed = False
 
     def fail_claim_unlink(path: _PathValue, *, dir_fd: int | None = None) -> None:
         if Path(os.fsdecode(path)).name.startswith("held-"):
@@ -489,9 +496,11 @@ def test_strict_soft_release_preserves_unlink_and_directory_close_errors(tmp_pat
         real_unlink(path, dir_fd=dir_fd)
 
     def fail_directory_close(fd: int) -> None:
+        nonlocal directory_close_failed
         is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
         real_close(fd)
-        if is_directory:
+        if is_directory and not directory_close_failed:
+            directory_close_failed = True
             raise OSError(EIO, "directory close failed")
 
     unlink_mock = mocker.patch("filelock._strict.os.unlink", side_effect=fail_claim_unlink)
@@ -575,9 +584,9 @@ def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path,
         lock.is_locked,
     ) == (
         [
-            "[Errno 5] intent directory close failed",
             "[Errno 13] held unlink failed",
             "[Errno 5] held directory close failed",
+            "[Errno 5] intent directory close failed",
         ],
         [competitor_name, f"held-v1-{owner_token}.claim"],
         True,

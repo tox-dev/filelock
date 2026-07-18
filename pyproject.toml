@@ -178,6 +178,9 @@ environment.python-version = "3.14"
 ini_options.testpaths = [
   "tests",
 ]
+ini_options.markers = [
+  "requires_hard_links: exercises StrictSoftFileLock, which needs os.link; skipped where it is missing (Termux/Android)",
+]
 ini_options.filterwarnings = [
   "error",
   # multiprocessing's leaked Finalize objects clean up descriptors from their own finalizer; that is a CPython
@@ -217,7 +220,7 @@ paths.source = [
   "**/src",
   "**\\src",
 ]
-report.fail_under = 76
+report.fail_under = 79
 html.show_contexts = true
 html.skip_covered = false
 

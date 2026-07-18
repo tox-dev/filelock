@@ -466,7 +466,7 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:
         assert held.wait(timeout=5)
         pid = holder.pid
         assert pid is not None
-        os.kill(pid, getattr(signal, "SIGKILL"))  # noqa: B009 - signal.SIGKILL is POSIX-only
+        os.kill(pid, getattr(signal, "SIGKILL"))  # ruff:ignore[get-attr-with-constant] - signal.SIGKILL is POSIX-only
         holder.join(timeout=5)
         time.sleep(0.8)
         lock = _make_lock(lock_file)
@@ -490,7 +490,7 @@ def test_dead_reader_evicted_by_writer(lock_file: str) -> None:
         assert held.wait(timeout=5)
         pid = holder.pid
         assert pid is not None
-        os.kill(pid, getattr(signal, "SIGKILL"))  # noqa: B009 - signal.SIGKILL is POSIX-only
+        os.kill(pid, getattr(signal, "SIGKILL"))  # ruff:ignore[get-attr-with-constant] - signal.SIGKILL is POSIX-only
         holder.join(timeout=5)
         time.sleep(0.8)
         lock = _make_lock(lock_file)
@@ -561,7 +561,7 @@ def test_writer_phase2_does_not_complete_on_a_peers_marker(lock_file: str, monke
     real_sleep = time.sleep
     swapped = threading.Event()
 
-    def hook(seconds: float) -> None:  # noqa: ARG001
+    def hook(seconds: float) -> None:  # ruff:ignore[unused-function-argument]  # replaces time.sleep; the duration is irrelevant to the swap
         if not swapped.is_set():
             swapped.set()
             Path(write_marker).write_bytes(peer_marker)
@@ -584,7 +584,7 @@ def test_writer_phase2_does_not_complete_on_a_peers_marker(lock_file: str, monke
 def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
     # On the NFS-style filesystems this lock targets, a transient ESTALE/EIO on the heartbeat touch is
     # routine; it must not kill the heartbeat and drop the lease while we still believe we hold it.
-    def boom(name: str, *, fd: int | None = None) -> None:  # noqa: ARG001
+    def boom(name: str, *, fd: int | None = None) -> None:  # ruff:ignore[unused-function-argument]  # matches the patched touch signature and always raises
         raise OSError(EIO, "Input/output error")
 
     lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
@@ -629,7 +629,7 @@ def test_heartbeat_survives_a_transient_marker_error(
 def test_heartbeat_stops_when_marker_evicted(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
     # An O_NOFOLLOW open failing with ENOENT means the marker we held is gone: a peer evicted us. Unlike a transient
     # filesystem error, this is an unambiguous loss, so the heartbeat must stop rather than keep retrying.
-    def gone(name: str, *, dir_fd: int | None = None) -> int:  # noqa: ARG001
+    def gone(name: str, *, dir_fd: int | None = None) -> int:  # ruff:ignore[unused-function-argument]  # matches the patched _open_marker_fd signature and always raises
         raise FileNotFoundError(ENOENT, "No such file or directory")
 
     lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)

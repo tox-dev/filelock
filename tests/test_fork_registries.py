@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gc
 import os
-import subprocess  # noqa: S404  # interpreter exit exercises the atexit registry
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter exit exercises the atexit registry
 import sys
 import weakref
 from dataclasses import dataclass

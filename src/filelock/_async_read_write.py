@@ -54,7 +54,7 @@ class AsyncReadWriteLock:
 
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff:ignore[too-many-arguments]  # public constructor: one parameter per documented lock option
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -233,7 +233,7 @@ class AsyncReadWriteLock:
         except asyncio.CancelledError as cancellation:
             try:
                 await _drain_future(close_future)
-            except BaseException as error:  # noqa: BLE001  # reported with the cancellation below
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 self._raise_cancelled_error(cancellation, error)
             self._closed = True
             self._shutdown_owned_executor()
@@ -251,11 +251,11 @@ class AsyncReadWriteLock:
                 await _drain_future(acquire_future)
             except asyncio.CancelledError as acquire_error:
                 self._raise_cancelled_error(cancellation, acquire_error)
-            except BaseException as error:  # noqa: BLE001  # reported with the cancellation below
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 self._raise_cancelled_error(cancellation, error)
             try:
                 await _drain_future(self._submit(self._lock.release))
-            except BaseException as error:  # noqa: BLE001  # reported with the cancellation below
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 self._raise_cancelled_error(cancellation, error)
             raise
         _future_result(acquire_future)
@@ -267,7 +267,7 @@ class AsyncReadWriteLock:
         except asyncio.CancelledError as cancellation:
             try:
                 await _drain_future(future)
-            except BaseException as error:  # noqa: BLE001  # reported with the cancellation below
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 self._raise_cancelled_error(cancellation, error)
             raise
         return _future_result(future)

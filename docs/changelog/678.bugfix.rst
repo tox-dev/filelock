@@ -1,0 +1,3 @@
+``StrictSoftFileLock`` no longer lets two processes hold the lock at once under heavy contention. A holder now keeps
+its intent claim for the whole hold, so a contender whose directory scan races the holder's freshly linked claim can no
+longer miss it and win alongside it. A held lock now exposes both an ``intent`` and a ``held`` claim.

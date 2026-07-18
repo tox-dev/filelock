@@ -64,7 +64,7 @@ class _ConnectionEscrow:
             return None
         with self._lock:
             if self._functions is None:
-                import ctypes  # noqa: PLC0415  # keep optional ctypes and its audited dlsym out of ordinary imports
+                import ctypes  # ruff:ignore[import-outside-top-level]  # keep optional ctypes and its audited dlsym out of ordinary imports
 
                 function_type = ctypes.PYFUNCTYPE(None, ctypes.py_object)
                 increment_address = ctypes.cast(ctypes.pythonapi.Py_IncRef, ctypes.c_void_p).value
@@ -300,7 +300,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         timeout: float = -1,
         *,
         blocking: bool = True,
-        is_singleton: bool = True,  # noqa: ARG002  # consumed by _ReadWriteLockMeta.__call__
+        is_singleton: bool = True,  # ruff:ignore[unused-method-argument]  # consumed by _ReadWriteLockMeta.__call__
     ) -> None:
         self.lock_file = os.fspath(lock_file)
         self._canonical_path = pathlib.Path(lock_file).resolve()

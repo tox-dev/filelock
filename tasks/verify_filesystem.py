@@ -128,7 +128,7 @@ def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str |
         intervals.append((enter, leave))
         # A randomized gap outside the lock breaks the lock-step herd, so a poll-based lock hands off fairly and no
         # contender is starved out of finishing its holds.
-        time.sleep(random.uniform(0, _GAP_MAX_SECONDS))  # noqa: S311 - test dispersion, not cryptographic
+        time.sleep(random.uniform(0, _GAP_MAX_SECONDS))  # ruff:ignore[suspicious-non-cryptographic-random-usage] - test dispersion, not cryptographic
     return intervals, None
 
 
@@ -148,7 +148,7 @@ def _resiliently(action: Callable[[], object]) -> str | None:
 def _attempt(action: Callable[[], object]) -> BaseException | None:
     try:
         action()
-    except Exception as error:  # noqa: BLE001 - the caller classifies transient versus terminal; a harness must not die
+    except Exception as error:  # ruff:ignore[blind-except] - the caller classifies transient versus terminal; a harness must not die
         return error
     return None
 

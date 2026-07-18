@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import socket
-import subprocess  # noqa: S404  # a clean interpreter isolates the blocked fcntl import
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interpreter isolates the blocked fcntl import
 import sys
 from errno import EIO, ENOSYS
 from textwrap import dedent

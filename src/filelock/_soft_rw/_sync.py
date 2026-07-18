@@ -55,7 +55,7 @@ class _SoftRWMeta(type):
     _instances: WeakValueDictionary[Path, SoftReadWriteLock]
     _instances_lock: threading.RLock
 
-    def __call__(  # noqa: PLR0913
+    def __call__(  # ruff:ignore[too-many-arguments]  # forwards the public constructor's documented parameters
         cls,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
@@ -161,13 +161,13 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     _instances: WeakValueDictionary[Path, SoftReadWriteLock] = WeakValueDictionary()
     _instances_lock = threading.RLock()
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff:ignore[too-many-arguments]  # public constructor: one parameter per documented lock option
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         *,
         blocking: bool = True,
-        is_singleton: bool = True,  # noqa: ARG002
+        is_singleton: bool = True,  # ruff:ignore[unused-method-argument]  # consumed by _SoftRWMeta.__call__
         heartbeat_interval: float = 30.0,
         stale_threshold: float | None = None,
         poll_interval: float = 0.25,
@@ -214,7 +214,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     @classmethod
     def _reset_class_after_fork(cls) -> None:  # pragma: no cover - exercised in fork children
-        global _ALL_INSTANCES_LOCK  # noqa: PLW0603
+        global _ALL_INSTANCES_LOCK  # ruff:ignore[global-statement]  # rebinds the module lock to a fresh one in the fork child
         _ALL_INSTANCES_LOCK = threading.Lock()
         cls._instances = WeakValueDictionary()
         cls._instances_lock = threading.RLock()
@@ -483,7 +483,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     def _validate_reentrant(self, mode: _Mode) -> AcquireReturnProxy:
         hold = self._hold
-        assert hold is not None  # noqa: S101
+        assert hold is not None  # ruff:ignore[assert]  # callers dispatch here only inside the self._hold is not None branch
         if hold.mode != mode:
             opposite = "write" if mode == "read" else "read"
             direction = "downgrade" if mode == "read" else "upgrade"
@@ -633,7 +633,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 except BaseException as registration_error:
                     try:
                         os.close(fd)
-                    except BaseException as close_error:  # noqa: BLE001  # both errors surface via the group below
+                    except BaseException as close_error:  # ruff:ignore[blind-except]  # both errors surface via the group below
                         _raise_grouped_errors(
                             "reader directory registration and descriptor close both failed",
                             registration_error,
@@ -827,7 +827,7 @@ def _unlink(name: str, *, dir_fd: int | None = None) -> None:
             Path(name).unlink()
 
 
-def _break_stale_marker(  # noqa: PLR0911
+def _break_stale_marker(  # ruff:ignore[too-many-return-statements]  # each return is a distinct abort/commit point in the break protocol
     name: str,
     *,
     stale_threshold: float,

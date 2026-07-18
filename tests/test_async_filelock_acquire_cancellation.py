@@ -75,7 +75,7 @@ async def test_backend_cancellation_rollback_failure_follows_policy(tmp_path: Pa
                 try:
                     raise prior_rollback_error
                 except ExceptionGroup:
-                    raise rollback_error  # noqa: B904  # exercise implicit backend context preservation
+                    raise rollback_error  # ruff:ignore[raise-without-from-inside-except]  # exercise implicit backend context preservation
             self._context.lock_file_fd = None
 
     lock = CancellingFileLock(tmp_path / "a", run_in_executor=False, context_error_policy=policy)

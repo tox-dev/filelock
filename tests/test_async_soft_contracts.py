@@ -21,6 +21,7 @@ def marker(tmp_path: Path) -> Path:
     return tmp_path / "a.lock"
 
 
+@pytest.mark.requires_hard_links
 @pytest.mark.asyncio
 async def test_async_strict_treats_a_foreign_marker_as_contention(marker: Path) -> None:
     await asyncio.to_thread(marker.write_text, "filelock/2\npid=999999\nhost=nowhere\nmode=strict\n", encoding="utf-8")
@@ -31,6 +32,7 @@ async def test_async_strict_treats_a_foreign_marker_as_contention(marker: Path) 
     assert await asyncio.to_thread(marker.exists)
 
 
+@pytest.mark.requires_hard_links
 @pytest.mark.asyncio
 async def test_async_strict_publishes_a_held_claim(marker: Path) -> None:
     lock = AsyncStrictSoftFileLock(str(marker))
@@ -38,7 +40,7 @@ async def test_async_strict_publishes_a_held_claim(marker: Path) -> None:
     async with lock:
         held = lock.claims
 
-    assert tuple(claim.state for claim in held) == ("held",)
+    assert tuple(claim.state for claim in held) == ("held", "intent")
     assert held[0].pid == os.getpid()
 
 
