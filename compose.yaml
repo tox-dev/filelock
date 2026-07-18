@@ -1,0 +1,9 @@
+# Run the test suite inside a real Termux (Android) userland: `docker compose run --rm termux`.
+# Used unchanged by the "🤖 Termux (Android)" CI job so the platform is trivial to reproduce locally.
+services:
+  termux:
+    image: termux/termux-docker:aarch64
+    platform: linux/arm64
+    volumes:
+      - .:/repo:ro
+    command: ["bash", "-l", "/repo/tasks/termux/run.sh"]

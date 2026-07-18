@@ -192,7 +192,7 @@ class SoftFileLock(BaseFileLock):
                 if _file_identity(os.lstat(self.lock_file)) != identity:
                     return
                 Path(self.lock_file).unlink()
-            except OSError as exc:  # ruff:ignore[try-except-in-loop]
+            except OSError as exc:  # ruff:ignore[try-except-in-loop]  # each attempt's errno drives the retry choice
                 if exc.errno not in {EACCES, EPERM}:
                     return
                 if attempt < _UNLINK_MAX_RETRIES - 1:

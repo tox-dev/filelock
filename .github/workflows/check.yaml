@@ -274,20 +274,10 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - name: "🧪 Run the suite in a real Termux bionic userland (no os.link, sys.platform == android)"
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" termux/termux-docker:aarch64 bash -lc '
-          set -e
-          apt-get update -qq
-          apt-get install -yq python python-pip
-          python -c "import os, sys; assert not hasattr(os, \"link\"); assert sys.platform == \"android\"; print(\"Termux\", sys.version.split()[0], sys.platform)"
-          pip install -q pytest pytest-mock pytest-asyncio pytest-timeout pytest-cov covdefaults coverage virtualenv elementpath jinja2 markdown-it-py pytest-run-parallel
-          mkdir -p "$HOME/work"
-          cp -r /repo/src /repo/tests /repo/pyproject.toml "$HOME/work/"
-          cd "$HOME/work"
-          PYTHONPATH="$HOME/work/src" python -m pytest tests -p no:cacheprovider -o addopts= --timeout=180 -p no:cov
-          '
+      - name: "🧪 Run the suite in a real Termux userland via tox"
+        run: docker compose run --rm termux
   changelog:
     name: "📝 News fragment"
     runs-on: ubuntu-24.04
