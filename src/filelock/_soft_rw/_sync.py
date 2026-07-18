@@ -82,7 +82,7 @@ class _SoftRWMeta(type):
         with cls._instances_lock:
             instance = cls._instances.get(normalized)
             if instance is None:
-                if normalized in _SINGLETONS_UNDER_CONSTRUCTION:
+                if normalized in _SINGLETONS_UNDER_CONSTRUCTION:  # pragma: win32 no cover
                     msg = f"Singleton lock construction is already active for {lock_file!s}"
                     raise RuntimeError(msg)
                 construction_pid = os.getpid()
@@ -99,7 +99,7 @@ class _SoftRWMeta(type):
                     )
                 finally:
                     _SINGLETONS_UNDER_CONSTRUCTION.discard(normalized)
-                if os.getpid() != construction_pid:
+                if os.getpid() != construction_pid:  # pragma: win32 no cover
                     msg = "Lock construction cannot continue after fork; construct a new lock in the child"
                     raise RuntimeError(msg)
                 cls._instances[normalized] = instance
@@ -346,13 +346,13 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             if self._closed:
                 return
             self._closed = True
-            if self._readers_dir_fd is not None:
-                with _fork_transition():
-                    if self._readers_dir_fd_token is not None:
+            if self._readers_dir_fd is not None:  # pragma: win32 no cover
+                with _fork_transition():  # pragma: win32 no cover
+                    if self._readers_dir_fd_token is not None:  # pragma: win32 no cover
                         _unregister_owned_descriptor(self._readers_dir_fd_token)
                     self._readers_dir_fd_token = None
                     fd, self._readers_dir_fd = self._readers_dir_fd, None
-                    with suppress(OSError):
+                    with suppress(OSError):  # pragma: win32 no cover
                         os.close(fd)
 
     def release(self, *, force: bool = False) -> None:
@@ -544,8 +544,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             return False
         try:
             _atomic_create_marker(self._paths.write, token)
-        except FileExistsError:
-            return False
+        except FileExistsError:  # pragma: win32 no cover
+            return False  # pragma: win32 no cover
         return True
 
     def _touch_writer_marker_if_ours(self, token: str) -> bool:
@@ -586,7 +586,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
                 if _file_exists(self._paths.write):
                     return False
-                if dir_fd is not None:
+                if dir_fd is not None:  # pragma: win32 no cover
                     _atomic_create_marker(reader_name, token, dir_fd=dir_fd)
                 else:  # pragma: win32 cover
                     _atomic_create_marker(full_reader_path, token)
@@ -625,13 +625,13 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
             msg = f"{self._paths.readers} exists but is not a directory or is a symlink; refusing to use it"
             raise RuntimeError(msg)
-        if self._readers_dir_fd is None and _SUPPORTS_DIR_FD:
-            with _fork_transition():
+        if self._readers_dir_fd is None and _SUPPORTS_DIR_FD:  # pragma: win32 no cover
+            with _fork_transition():  # pragma: win32 no cover
                 fd = os.open(self._paths.readers, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW)
-                try:
+                try:  # pragma: win32 no cover
                     token = _register_owned_descriptor(fd)
-                except BaseException as registration_error:
-                    try:
+                except BaseException as registration_error:  # pragma: win32 no cover
+                    try:  # pragma: win32 no cover
                         os.close(fd)
                     except BaseException as close_error:  # ruff:ignore[blind-except]  # both errors surface via the group below
                         _raise_grouped_errors(
@@ -655,10 +655,10 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         ``dirfd_relative`` is ``True`` when *name* should be passed to ``dir_fd=``-aware syscalls; ``False``
         when *name* is a full path because dirfd-relative I/O is unavailable on this platform.
         """
-        if self._readers_dir_fd is not None:
-            with os.scandir(self._readers_dir_fd) as it:
-                for entry in it:
-                    if not _is_housekeeping_name(entry.name):
+        if self._readers_dir_fd is not None:  # pragma: win32 no cover
+            with os.scandir(self._readers_dir_fd) as it:  # pragma: win32 no cover
+                for entry in it:  # pragma: win32 no cover
+                    if not _is_housekeeping_name(entry.name):  # pragma: win32 no cover
                         yield entry.name, True
             return
         readers_path = Path(self._paths.readers)  # pragma: win32 cover
@@ -759,7 +759,7 @@ def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo |
         # malformed marker (its mtime still drives stale eviction) without being read. Reading is where
         # platforms diverge: an empty non-blocking read yields 0 bytes on Linux/macOS but EAGAIN on FreeBSD,
         # and the EAGAIN used to abort the stale-break and wedge the acquire until timeout (#587).
-        if not stat.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(st.st_mode):  # pragma: win32 no cover
             return None, st.st_mtime
         data = os.read(fd, _MAX_MARKER_SIZE + 1)
     except OSError:  # pragma: no cover - marker vanished or turned unreadable between open and read
@@ -820,7 +820,7 @@ def _parse_marker_bytes(data: bytes) -> _MarkerInfo | None:
 
 def _unlink(name: str, *, dir_fd: int | None = None) -> None:
     with suppress(FileNotFoundError):
-        if _SUPPORTS_DIR_FD and dir_fd is not None:
+        if _SUPPORTS_DIR_FD and dir_fd is not None:  # pragma: win32 no cover
             # Path.unlink has no dir_fd support, so we stay on os.unlink for the dirfd path.
             os.unlink(name, dir_fd=dir_fd)
         else:
@@ -849,7 +849,7 @@ def _break_stale_marker(  # ruff:ignore[too-many-return-statements]  # each retu
 
     break_name = f"{name}{_BREAK_SUFFIX}.{os.getpid()}.{secrets.token_hex(16)}"
     try:
-        if _SUPPORTS_DIR_FD and dir_fd is not None:
+        if _SUPPORTS_DIR_FD and dir_fd is not None:  # pragma: win32 no cover
             os.rename(name, break_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         else:
             Path(name).rename(break_name)
@@ -875,7 +875,7 @@ def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -
     # O_NOFOLLOW blocks the symlink-overwrite attack where an attacker pre-creates the marker path as a
     # symlink pointing at a victim file. Mode 0o600 keeps the token unreadable to other users.
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | _O_NOFOLLOW
-    if _SUPPORTS_DIR_FD and dir_fd is not None:
+    if _SUPPORTS_DIR_FD and dir_fd is not None:  # pragma: win32 no cover
         fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
     else:
         fd = os.open(name, flags, 0o600)

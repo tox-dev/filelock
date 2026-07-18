@@ -45,14 +45,14 @@ def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
     not Path("/dev/fd").is_dir() and not Path("/proc/self/fd").is_dir(),
     reason="no descriptor view",
 )
-def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) -> None:
+def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) -> None:  # pragma: win32 no cover
     result = _run_fork_script(_dropped_instances_script(), [str(tmp_path)], timeout=10)
 
     assert result == (0, "", "")
 
 
 @pytest.mark.skipif(not hasattr(os, "register_at_fork"), reason="requires fork transitions")
-def test_async_read_write_lock_allows_finalizer_reentry(tmp_path: Path) -> None:
+def test_async_read_write_lock_allows_finalizer_reentry(tmp_path: Path) -> None:  # pragma: win32 no cover
     result = _run_fork_script(
         _reentrant_finalizer_script(),
         [str(tmp_path / "async.db"), str(tmp_path / "finalizer.db")],
@@ -181,7 +181,7 @@ def test_read_write_lock_serializes_other_thread_operation_during_acquisition(
         ),
     ],
 )
-def test_read_write_lock_survives_normal_fork_child_exit(
+def test_read_write_lock_survives_normal_fork_child_exit(  # pragma: win32 no cover
     tmp_path: Path,
     mode: Literal["read", "write"],
     fork_name: Literal["fork", "fork1"],
@@ -202,7 +202,7 @@ def test_read_write_lock_survives_normal_fork_child_exit(
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
-def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None:
+def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None:  # pragma: win32 no cover
     result = _run_fork_script(_fork_during_sqlite_script(), [str(tmp_path / "fork-gate.db")], timeout=15)
 
     assert result == (0, "", "")
@@ -221,7 +221,7 @@ def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None
         pytest.param("connection-return", id="connection-return"),
     ],
 )
-def test_read_write_lock_fork_at_sqlite_boundary_exits_child(
+def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: win32 no cover
     tmp_path: Path, boundary: Literal["executescript", "rollback", "close", "connection-return"]
 ) -> None:
     result = _run_fork_script(
@@ -234,7 +234,7 @@ def test_read_write_lock_fork_at_sqlite_boundary_exits_child(
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
-def test_read_write_lock_idle_fork_handles_fresh_child_lock(tmp_path: Path) -> None:
+def test_read_write_lock_idle_fork_handles_fresh_child_lock(tmp_path: Path) -> None:  # pragma: win32 no cover
     result = _run_fork_script(_idle_fork_script(), [str(tmp_path / "idle-fork.db")], timeout=10)
 
     assert result == (0, "", "")
@@ -268,7 +268,7 @@ def test_fork_script_terminates_timed_out_process_group() -> None:
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
-def test_read_write_lock_subclass_cache_resets_after_fork(tmp_path: Path) -> None:
+def test_read_write_lock_subclass_cache_resets_after_fork(tmp_path: Path) -> None:  # pragma: win32 no cover
     result = _run_fork_script(_subclass_fork_script(), [str(tmp_path / "subclass-fork.db")], timeout=10)
 
     assert result == (0, "", "")
@@ -276,7 +276,7 @@ def test_read_write_lock_subclass_cache_resets_after_fork(tmp_path: Path) -> Non
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
 @pytest.mark.parametrize("held", [pytest.param(False, id="idle"), pytest.param(True, id="held")])
-def test_async_read_write_lock_fork_behavior(tmp_path: Path, held: bool) -> None:
+def test_async_read_write_lock_fork_behavior(tmp_path: Path, held: bool) -> None:  # pragma: win32 no cover
     result = _run_fork_script(
         _async_fork_script(),
         [str(tmp_path / "async-fork.db"), "held" if held else "idle"],
@@ -298,18 +298,18 @@ def _run_fork_script(script: str, arguments: list[str], *, timeout: float) -> tu
         process_output, process_error = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
         with contextlib.suppress(ProcessLookupError):
-            if sys.platform == "win32":
+            if sys.platform == "win32":  # pragma: win32 cover
                 process.kill()
-            else:
+            else:  # pragma: win32 no cover
                 os.killpg(process.pid, signal.SIGKILL)
         process_output, process_error = process.communicate()
         msg = f"fork script exceeded {timeout} seconds: stdout={process_output!r}, stderr={process_error!r}"
         raise AssertionError(msg) from error
-    assert process.returncode is not None
-    return process.returncode, process_output, process_error
+    assert process.returncode is not None  # pragma: win32 no cover
+    return process.returncode, process_output, process_error  # pragma: win32 no cover
 
 
-def _dropped_instances_script() -> str:
+def _dropped_instances_script() -> str:  # pragma: win32 no cover
     return textwrap.dedent(
         """
         from __future__ import annotations
@@ -337,7 +337,7 @@ def _dropped_instances_script() -> str:
     )
 
 
-def _reentrant_finalizer_script() -> str:
+def _reentrant_finalizer_script() -> str:  # pragma: win32 no cover
     return textwrap.dedent(
         """
         from __future__ import annotations
@@ -640,7 +640,7 @@ def _fork_script() -> str:
     )
 
 
-def _fork_during_sqlite_script() -> str:
+def _fork_during_sqlite_script() -> str:  # pragma: win32 no cover
     return textwrap.dedent(
         r"""
         from __future__ import annotations

@@ -456,12 +456,12 @@ def test_writer_phase2_timeout_releases_marker(lock_file: str) -> None:
 
 @_REQUIRES_POSIX_SIGNALS
 @pytest.mark.timeout(20)
-def test_dead_writer_evicted_by_reader(lock_file: str) -> None:
+def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: win32 no cover
     import signal
 
     held = Event()
     holder = Process(target=_sigkill_worker, args=(lock_file, "write", held, 0.1, 0.5))
-    with _cleanup([holder]):
+    with _cleanup([holder]):  # pragma: win32 no cover
         holder.start()
         assert held.wait(timeout=5)
         pid = holder.pid
@@ -470,8 +470,8 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:
         holder.join(timeout=5)
         time.sleep(0.8)
         lock = _make_lock(lock_file)
-        try:
-            with lock.read_lock(timeout=5):
+        try:  # pragma: win32 no cover
+            with lock.read_lock(timeout=5):  # pragma: win32 no cover
                 pass
         finally:
             lock.close()
@@ -480,12 +480,12 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:
 
 @_REQUIRES_POSIX_SIGNALS
 @pytest.mark.timeout(20)
-def test_dead_reader_evicted_by_writer(lock_file: str) -> None:
+def test_dead_reader_evicted_by_writer(lock_file: str) -> None:  # pragma: win32 no cover
     import signal
 
     held = Event()
     holder = Process(target=_sigkill_worker, args=(lock_file, "read", held, 0.1, 0.5))
-    with _cleanup([holder]):
+    with _cleanup([holder]):  # pragma: win32 no cover
         holder.start()
         assert held.wait(timeout=5)
         pid = holder.pid
@@ -494,8 +494,8 @@ def test_dead_reader_evicted_by_writer(lock_file: str) -> None:
         holder.join(timeout=5)
         time.sleep(0.8)
         lock = _make_lock(lock_file)
-        try:
-            with lock.write_lock(timeout=5):
+        try:  # pragma: win32 no cover
+            with lock.write_lock(timeout=5):  # pragma: win32 no cover
                 pass
         finally:
             lock.close()
@@ -698,51 +698,51 @@ def test_stale_malformed_marker_is_evicted(lock_file: str, content: bytes) -> No
 
 
 def test_fifo_write_marker_does_not_block(lock_file: str) -> None:
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("os.mkfifo is unix-only")  # also narrows sys.platform so ty resolves os.mkfifo below
-    marker = f"{lock_file}.write"
-    os.mkfifo(marker)
-    past = time.time() - 1000
-    os.utime(marker, (past, past))
+    marker = f"{lock_file}.write"  # pragma: win32 no cover
+    os.mkfifo(marker)  # pragma: win32 no cover
+    past = time.time() - 1000  # pragma: win32 no cover
+    os.utime(marker, (past, past))  # pragma: win32 no cover
     # Without O_NONBLOCK this open blocks forever; the lock instead reads the FIFO as a stale marker and evicts it.
-    lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2):
+    lock = _make_lock(lock_file)  # pragma: win32 no cover
+    try:  # pragma: win32 no cover
+        with lock.write_lock(timeout=2):  # pragma: win32 no cover
             pass
     finally:
-        lock.close()
+        lock.close()  # pragma: win32 no cover
 
 
 def test_fifo_write_marker_with_writer_is_evicted(lock_file: str) -> None:
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("os.mkfifo is unix-only")  # also narrows sys.platform so ty resolves os.mkfifo below
-    marker = f"{lock_file}.write"
-    os.mkfifo(marker)
-    past = time.time() - 1000
-    os.utime(marker, (past, past))
+    marker = f"{lock_file}.write"  # pragma: win32 no cover
+    os.mkfifo(marker)  # pragma: win32 no cover
+    past = time.time() - 1000  # pragma: win32 no cover
+    os.utime(marker, (past, past))  # pragma: win32 no cover
     # A writer attached to the FIFO makes the non-blocking read raise EAGAIN on all platforms, matching a
     # writerless FIFO on FreeBSD (#587). The lock must evict the stale marker by mtime without reading it, so
     # the acquire completes instead of timing out.
-    reader_fd = os.open(marker, os.O_RDONLY | os.O_NONBLOCK)
-    writer_fd = os.open(marker, os.O_WRONLY)
-    lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2):
+    reader_fd = os.open(marker, os.O_RDONLY | os.O_NONBLOCK)  # pragma: win32 no cover
+    writer_fd = os.open(marker, os.O_WRONLY)  # pragma: win32 no cover
+    lock = _make_lock(lock_file)  # pragma: win32 no cover
+    try:  # pragma: win32 no cover
+        with lock.write_lock(timeout=2):  # pragma: win32 no cover
             pass
     finally:
-        lock.close()
-        os.close(writer_fd)
-        os.close(reader_fd)
+        lock.close()  # pragma: win32 no cover
+        os.close(writer_fd)  # pragma: win32 no cover
+        os.close(reader_fd)  # pragma: win32 no cover
 
 
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW required")
-def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> None:
+def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> None:  # pragma: win32 no cover
     victim = tmp_path / "victim"
     victim.write_text("do-not-touch")
     Path(f"{lock_file}.write").symlink_to(victim)
     lock = _make_lock(lock_file)
-    try:
-        with pytest.raises((OSError, Timeout)):
+    try:  # pragma: win32 no cover
+        with pytest.raises((OSError, Timeout)):  # pragma: win32 no cover
             lock.acquire_write(timeout=0.5)
     finally:
         lock.close()
@@ -752,7 +752,7 @@ def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> No
 @pytest.mark.skipif(
     os.utime not in os.supports_follow_symlinks, reason="os.utime cannot refuse symlinks on this platform"
 )
-def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:
+def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:  # pragma: win32 no cover
     # The phase-2 writer-drain touch refreshes the .write marker by path (no held fd); if a peer swaps a
     # symlink in, the touch must land on the link itself, not the file it points at.
     victim = tmp_path / "victim"
@@ -769,7 +769,7 @@ def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not util_mod._SUPPORTS_UTIME_FD, reason="os.utime cannot target an fd on this platform")
-def test_refresh_touches_verified_fd_not_swapped_path(
+def test_refresh_touches_verified_fd_not_swapped_path(  # pragma: win32 no cover
     lock_file: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A peer can swap our marker for a symlink in the window after the heartbeat's O_NOFOLLOW open but before
@@ -781,13 +781,13 @@ def test_refresh_touches_verified_fd_not_swapped_path(
 
     lock = _make_lock(lock_file, heartbeat_interval=30, stale_threshold=90)
     lock.acquire_write(timeout=2)
-    try:
+    try:  # pragma: win32 no cover
         marker = Path(f"{lock_file}.write")
         real_open = sync_mod._open_marker
 
-        def swap_after_open(name: str, *, dir_fd: int | None = None) -> int | None:
+        def swap_after_open(name: str, *, dir_fd: int | None = None) -> int | None:  # pragma: win32 no cover
             fd = real_open(name, dir_fd=dir_fd)
-            if fd is not None and Path(name) == marker:
+            if fd is not None and Path(name) == marker:  # pragma: win32 no cover
                 marker.unlink()
                 marker.symlink_to(victim)
             return fd
@@ -825,20 +825,20 @@ def test_readers_path_as_regular_file_is_refused(lock_file: str) -> None:
 
 
 @_REQUIRES_POSIX_PERMISSIONS
-def test_write_marker_is_created_with_0600(lock_file: str) -> None:
+def test_write_marker_is_created_with_0600(lock_file: str) -> None:  # pragma: win32 no cover
     lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2):
+    try:  # pragma: win32 no cover
+        with lock.write_lock(timeout=2):  # pragma: win32 no cover
             assert stat.S_IMODE(Path(f"{lock_file}.write").lstat().st_mode) == 0o600
     finally:
         lock.close()
 
 
 @_REQUIRES_POSIX_PERMISSIONS
-def test_readers_directory_is_created_with_0700(lock_file: str) -> None:
+def test_readers_directory_is_created_with_0700(lock_file: str) -> None:  # pragma: win32 no cover
     lock = _make_lock(lock_file)
-    try:
-        with lock.read_lock(timeout=2):
+    try:  # pragma: win32 no cover
+        with lock.read_lock(timeout=2):  # pragma: win32 no cover
             assert stat.S_IMODE(Path(f"{lock_file}.readers").lstat().st_mode) == 0o700
     finally:
         lock.close()
@@ -860,10 +860,10 @@ def test_writer_ignores_housekeeping_files_in_readers_dir(lock_file: str) -> Non
 
 
 @_REQUIRES_POSIX_PERMISSIONS
-def test_reader_file_is_created_with_0600(lock_file: str) -> None:
+def test_reader_file_is_created_with_0600(lock_file: str) -> None:  # pragma: win32 no cover
     lock = _make_lock(lock_file)
-    try:
-        with lock.read_lock(timeout=2):
+    try:  # pragma: win32 no cover
+        with lock.read_lock(timeout=2):  # pragma: win32 no cover
             entries = list(Path(f"{lock_file}.readers").iterdir())
             assert len(entries) == 1
             assert stat.S_IMODE(entries[0].lstat().st_mode) == 0o600
@@ -873,7 +873,7 @@ def test_reader_file_is_created_with_0600(lock_file: str) -> None:
 
 @_REQUIRES_FORK
 @pytest.mark.timeout(15)
-def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:
+def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:  # pragma: win32 no cover
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(target=_reuse_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
@@ -885,7 +885,7 @@ def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:
 
 @_REQUIRES_FORK
 @pytest.mark.timeout(15)
-def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:
+def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:  # pragma: win32 no cover
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(target=_release_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
@@ -897,7 +897,7 @@ def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:
 
 @_REQUIRES_FORK
 @pytest.mark.timeout(15)
-def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:
+def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:  # pragma: win32 no cover
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(
@@ -916,11 +916,11 @@ def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:
 # process and Python 3.15 warns that it may deadlock. That is the scenario under test, and it is already safe:
 # register_at_fork resets inherited state in the child (any child use raises "invalidated by fork()"). Expected.
 @pytest.mark.filterwarnings("ignore:.*multi-threaded, use of fork.*:DeprecationWarning")
-def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:
+def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = str(tmp_path / "foo.lock")
     lock = SoftReadWriteLock(path, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
     lock.acquire_write(timeout=5)
-    try:
+    try:  # pragma: win32 no cover
         child = _fork_process(target=time.sleep, args=(0.05,))
         child.start()
         child.join(timeout=5)
@@ -932,8 +932,8 @@ def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:
             poll_interval=0.02,
             is_singleton=False,
         )
-        try:
-            with pytest.raises(Timeout):
+        try:  # pragma: win32 no cover
+            with pytest.raises(Timeout):  # pragma: win32 no cover
                 peer.acquire_write(timeout=0.3)
         finally:
             peer.close()
@@ -1030,22 +1030,22 @@ def _write_stale_marker(path: str, content: bytes) -> None:
     os.utime(path, (past, past))
 
 
-def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:
+def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:  # pragma: win32 no cover
     lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
     lock.acquire_write(timeout=5)
     ok = _fork_event()
 
-    def child_entry() -> None:
-        try:
+    def child_entry() -> None:  # pragma: win32 no cover
+        try:  # pragma: win32 no cover
             lock.acquire_read(timeout=1)
-        except RuntimeError as exc:
-            if "invalidated by fork" in str(exc):
+        except RuntimeError as exc:  # pragma: win32 no cover
+            if "invalidated by fork" in str(exc):  # pragma: win32 no cover
                 ok.set()
 
     child = _fork_process(target=child_entry)
     child.start()
     child.join(timeout=5)
-    if ok.is_set():
+    if ok.is_set():  # pragma: win32 no cover
         result.set()
     else:
         failure.set()
@@ -1053,13 +1053,13 @@ def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType)
     lock.close()
 
 
-def _release_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:
+def _release_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:  # pragma: win32 no cover
     lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
     lock.acquire_read(timeout=5)
     ok = _fork_event()
 
-    def child_entry() -> None:
-        try:
+    def child_entry() -> None:  # pragma: win32 no cover
+        try:  # pragma: win32 no cover
             lock.release()
         except RuntimeError:
             return
@@ -1068,7 +1068,7 @@ def _release_inherited_lock(lock_file: str, result: EventType, failure: EventTyp
     child = _fork_process(target=child_entry)
     child.start()
     child.join(timeout=5)
-    if ok.is_set():
+    if ok.is_set():  # pragma: win32 no cover
         result.set()
     else:
         failure.set()
@@ -1081,7 +1081,7 @@ def _reacquire_fresh_lock_in_child(lock_file: str, child_path: str, result: Even
     parent_lock.acquire_write(timeout=5)
     ok = _fork_event()
 
-    def child_entry() -> None:
+    def child_entry() -> None:  # pragma: win32 no cover
         child_lock = SoftReadWriteLock(
             child_path,
             is_singleton=False,
@@ -1089,8 +1089,8 @@ def _reacquire_fresh_lock_in_child(lock_file: str, child_path: str, result: Even
             stale_threshold=1.0,
             poll_interval=0.02,
         )
-        try:
-            with child_lock.read_lock(timeout=2):
+        try:  # pragma: win32 no cover
+            with child_lock.read_lock(timeout=2):  # pragma: win32 no cover
                 ok.set()
         finally:
             child_lock.close()
@@ -1098,7 +1098,7 @@ def _reacquire_fresh_lock_in_child(lock_file: str, child_path: str, result: Even
     child = _fork_process(target=child_entry)
     child.start()
     child.join(timeout=5)
-    if ok.is_set():
+    if ok.is_set():  # pragma: win32 no cover
         result.set()
     else:
         failure.set()
@@ -1107,14 +1107,14 @@ def _reacquire_fresh_lock_in_child(lock_file: str, child_path: str, result: Even
 
 
 def _fork_process(target: Callable[..., object], args: tuple[object, ...] = ()) -> mp.process.BaseProcess:
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: win32 no cover
         msg = "fork context is POSIX only"
         raise RuntimeError(msg)
     return mp.get_context("fork").Process(target=target, args=args)
 
 
-def _fork_event() -> EventType:
-    if sys.platform == "win32":
+def _fork_event() -> EventType:  # pragma: win32 no cover
+    if sys.platform == "win32":  # pragma: win32 no cover
         msg = "fork context is POSIX only"
         raise RuntimeError(msg)
     return mp.get_context("fork").Event()

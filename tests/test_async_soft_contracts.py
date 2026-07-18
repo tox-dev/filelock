@@ -59,13 +59,13 @@ async def test_async_lease_heartbeat_keeps_a_live_claim(marker: Path) -> None:
     reason="Windows keeps an open marker undeletable, so no peer can take it from a live holder",
 )
 @pytest.mark.asyncio
-async def test_async_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None:
+async def test_async_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None:  # pragma: win32 no cover
     seen: list[LeaseCompromise] = []
     lease = AsyncSoftFileLease(
         str(marker), lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT, on_compromise=seen.append
     )
 
-    async with lease:
+    async with lease:  # pragma: win32 no cover
         await asyncio.to_thread(marker.unlink)
         await asyncio.sleep(_HEARTBEAT * 5)
 

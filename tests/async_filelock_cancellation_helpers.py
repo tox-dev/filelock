@@ -25,7 +25,7 @@ def assert_cancellation_message(error: asyncio.CancelledError, message: str) -> 
     assert error.args == ((message,) if sys.version_info >= (3, 11) else ())
 
 
-def get_fcntl() -> FcntlModule:
+def get_fcntl() -> FcntlModule:  # pragma: win32 no cover
     return cast("FcntlModule", importlib.import_module("fcntl"))
 
 
@@ -56,8 +56,8 @@ def _probe_file_lock(lock_file: str, acquired: Synchronized[bool]) -> None:
     try:
         with FileLock(lock_file, timeout=0):
             acquired.value = True
-    except Timeout:
-        pass
+    except Timeout:  # pragma: win32 no cover
+        pass  # pragma: win32 no cover
 
 
 def _hold_file_lock(lock_file: str, holder_started: threading.Event, finish_holder: threading.Event) -> None:

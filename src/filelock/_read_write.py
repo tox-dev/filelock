@@ -62,8 +62,8 @@ class _ConnectionEscrow:
     ) -> tuple[Callable[[sqlite3.Connection], None], Callable[[sqlite3.Connection], None]] | None:
         if not _NEEDS_CONNECTION_ESCROW:
             return None
-        with self._lock:
-            if self._functions is None:
+        with self._lock:  # pragma: win32 no cover
+            if self._functions is None:  # pragma: win32 no cover
                 import ctypes  # ruff:ignore[import-outside-top-level]  # keep optional ctypes and its audited dlsym out of ordinary imports
 
                 function_type = ctypes.PYFUNCTYPE(None, ctypes.py_object)
@@ -100,7 +100,7 @@ class _ForkedDatabaseRegistry:
             poisoned = (
                 all_paths_poisoned or path in self._paths or (identity is not None and identity in self._identities)
             )
-        if poisoned:
+        if poisoned:  # pragma: win32 no cover
             msg = (
                 "ReadWriteLock is unavailable in a PyPy fork child; exec or exit before using it"
                 if all_paths_poisoned
@@ -110,7 +110,7 @@ class _ForkedDatabaseRegistry:
 
     def poison_after_fork(self, path: pathlib.Path, identity: _DatabaseIdentity | None) -> None:
         self._paths.add(path)
-        if identity is not None:
+        if identity is not None:  # pragma: win32 no cover
             self._identities.add(identity)
 
     def note_sqlite_use(self) -> None:
@@ -151,19 +151,19 @@ class _ForkSafeConnection(sqlite3.Connection):
 
     def close(self) -> None:
         with _sqlite_transition():
-            if _GETPID() != self._creator_pid:
+            if _GETPID() != self._creator_pid:  # pragma: win32 no cover
                 return
             with _fork_transition():
                 sqlite3.Connection.close(self)
-                if (decrement := self._decrement_escrow) is not None:
+                if (decrement := self._decrement_escrow) is not None:  # pragma: win32 no cover
                     self._decrement_escrow = None
                     decrement(self)
 
-    def acquire_escrow(
+    def acquire_escrow(  # pragma: win32 no cover
         self,
         functions: tuple[Callable[[sqlite3.Connection], None], Callable[[sqlite3.Connection], None]] | None,
     ) -> None:
-        if functions is not None:
+        if functions is not None:  # pragma: win32 no cover
             increment, decrement = functions
             increment(self)
             self._decrement_escrow = decrement
@@ -417,7 +417,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         """
         with _fork_transition():
             _ensure_current_process()
-            if self._inherited:
+            if self._inherited:  # pragma: win32 no cover
                 return
             self._raise_if_acquiring("release")
             self._release(force=force, close=False)
@@ -431,7 +431,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         """
         with _fork_transition():
             _ensure_current_process()
-            if self._inherited:
+            if self._inherited:  # pragma: win32 no cover
                 return
             self._raise_if_acquiring("close")
             self._release(force=True, close=True)
@@ -466,7 +466,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     def __del__(self) -> None:
         if _GETPID() == getattr(self, "_creator_pid", None) and (connection := getattr(self, "_con", None)) is not None:
-            with suppress(sqlite3.Error, RuntimeError):
+            with suppress(sqlite3.Error, RuntimeError):  # pragma: win32 no cover
                 connection.close()
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - exercised in fork children
@@ -487,7 +487,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     def _raise_if_unusable(self) -> None:
         _ensure_current_process()
-        if self._inherited:
+        if self._inherited:  # pragma: win32 no cover
             msg = f"ReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
             raise RuntimeError(msg)
         if self._closed:
@@ -636,7 +636,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 factory=_ForkSafeConnection,
                 timeout=sqlite_timeout,
             )
-            if functions is not None:
+            if functions is not None:  # pragma: win32 no cover
                 connection.acquire_escrow(functions)
             if _GETPID() != creator_pid:  # pragma: no cover - exercised only in a forked constructor callback
                 _FORKED_DATABASES.poison_after_fork(
@@ -771,7 +771,7 @@ _register_fork_object(_FORKED_DATABASES)
 _register_fork_class(ReadWriteLock)
 if _IS_PYPY:
     sys.addaudithook(_track_sqlite_use)
-if hasattr(os, "register_at_fork"):
+if hasattr(os, "register_at_fork"):  # pragma: win32 no cover
     os.register_at_fork(after_in_child=_abort_forked_sqlite_transition)
 
 __all__ = [

@@ -87,8 +87,8 @@ def make_ro(path: Path) -> Iterator[None]:
 
 
 @pytest.fixture
-def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:
-    with make_ro(tmp_path):
+def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:  # pragma: win32 no cover
+    with make_ro(tmp_path):  # pragma: win32 no cover
         yield tmp_path
 
 
@@ -98,9 +98,9 @@ def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:
     sys.platform != "win32" and os.geteuid() == 0,
     reason="Cannot make a read only file (that the current user: root can't read)",
 )
-def test_ro_folder(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:
+def test_ro_folder(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:  # pragma: win32 no cover
     lock = lock_type(str(tmp_path_ro / "a"))
-    with pytest.raises(PermissionError, match="Permission denied"):
+    with pytest.raises(PermissionError, match="Permission denied"):  # pragma: win32 no cover
         lock.acquire()
 
 
@@ -282,7 +282,7 @@ class ExThread(threading.Thread):
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
-    if sys.platform == "win32" and lock_type.__name__ == "SoftFileLock":
+    if sys.platform == "win32" and lock_type.__name__ == "SoftFileLock":  # pragma: win32 cover
         pytest.skip(
             "SoftFileLock uses file-existence locking — on Windows, unlink can silently fail under heavy "
             "thread contention (EACCES from antivirus/indexer), orphaning the lock file with no recovery path"
@@ -661,10 +661,10 @@ def test_wrong_platform(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="flock not run on windows")
 @pytest.mark.filterwarnings("default::UserWarning")
-def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     mocker.patch("fcntl.flock", side_effect=OSError(ENOSYS, "mock error"))
     lock = FileLock(tmp_path / "a.lock")
-    with lock:
+    with lock:  # pragma: win32 no cover
         assert lock.is_locked
         assert isinstance(lock, SoftFileLock)
 
@@ -972,30 +972,30 @@ def test_lock_file_removed_after_release(tmp_path: Path, lock_type: type[BaseFil
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
-def test_concurrent_acquire_release_keeps_lock_file(tmp_path: Path) -> None:
+def test_concurrent_acquire_release_keeps_lock_file(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path = tmp_path / "test.lock"
     errors: list[Exception] = []
 
-    def worker() -> None:
-        try:
-            for _ in range(20):
+    def worker() -> None:  # pragma: win32 no cover
+        try:  # pragma: win32 no cover
+            for _ in range(20):  # pragma: win32 no cover
                 lock = FileLock(str(lock_path), is_singleton=False)
-                with lock:
+                with lock:  # pragma: win32 no cover
                     pass
         except Exception as exc:
             errors.append(exc)
 
     threads = [threading.Thread(target=worker) for _ in range(4)]
-    for thread in threads:
+    for thread in threads:  # pragma: win32 no cover
         thread.start()
-    for thread in threads:
+    for thread in threads:  # pragma: win32 no cover
         thread.join(timeout=30)
     assert not errors, errors
     assert lock_path.exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
-def test_lock_acquired_after_release_keeps_path(tmp_path: Path) -> None:
+def test_lock_acquired_after_release_keeps_path(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path = tmp_path / "test.lock"
     first = FileLock(str(lock_path), is_singleton=False)
     second = FileLock(str(lock_path), is_singleton=False)
@@ -1014,42 +1014,42 @@ def test_lock_acquired_after_release_keeps_path(tmp_path: Path) -> None:
 def test_waiter_fd_cannot_split_lock_after_release(tmp_path: Path) -> None:
     if sys.platform == "win32":  # pragma: win32 cover  # Unix flock semantics; also narrows fcntl for the type checker
         return
-    import fcntl
+    import fcntl  # pragma: win32 no cover
 
-    lock_path = tmp_path / "test.lock"
-    first = FileLock(str(lock_path), is_singleton=False)
-    replacement = FileLock(str(lock_path), is_singleton=False)
+    lock_path = tmp_path / "test.lock"  # pragma: win32 no cover
+    first = FileLock(str(lock_path), is_singleton=False)  # pragma: win32 no cover
+    replacement = FileLock(str(lock_path), is_singleton=False)  # pragma: win32 no cover
 
-    first.acquire()
-    waiter_fd = os.open(lock_path, os.O_RDWR)
+    first.acquire()  # pragma: win32 no cover
+    waiter_fd = os.open(lock_path, os.O_RDWR)  # pragma: win32 no cover
 
-    try:
+    try:  # pragma: win32 no cover
         first.release()
         assert lock_path.exists()
 
         replacement.acquire()
-        try:
-            with pytest.raises(BlockingIOError) as exc_info:
+        try:  # pragma: win32 no cover
+            with pytest.raises(BlockingIOError) as exc_info:  # pragma: win32 no cover
                 fcntl.flock(waiter_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             assert exc_info.value.errno in {EAGAIN, EWOULDBLOCK}
         finally:
             replacement.release()
     finally:
-        os.close(waiter_fd)
+        os.close(waiter_fd)  # pragma: win32 no cover
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
-def test_stale_inode_retry_on_unlinked_lock(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_stale_inode_retry_on_unlinked_lock(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     lock_path = tmp_path / "test.lock"
     lock = FileLock(str(lock_path), is_singleton=False)
 
     real_fstat = os.fstat
     call_count = 0
 
-    def fstat_unlinked_once(fd: int) -> os.stat_result:
+    def fstat_unlinked_once(fd: int) -> os.stat_result:  # pragma: win32 no cover
         nonlocal call_count
         call_count += 1
-        if call_count == 1:
+        if call_count == 1:  # pragma: win32 no cover
             Path(lock_path).unlink()
             return real_fstat(fd)
         return real_fstat(fd)
@@ -1061,7 +1061,7 @@ def test_stale_inode_retry_on_unlinked_lock(tmp_path: Path, mocker: MockerFixtur
     lock.release()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")  # pragma: win32 no cover
 def test_permission_error_fallback_without_o_creat(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
@@ -1073,7 +1073,7 @@ def test_permission_error_fallback_without_o_creat(tmp_path: Path, mocker: Mocke
     def open_no_creat(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         nonlocal call_count
         call_count += 1
-        if call_count == 1 and flags & os.O_CREAT:
+        if call_count == 1 and flags & os.O_CREAT:  # pragma: win32 no cover
             raise PermissionError(13, "Permission denied", path)
         return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
 
@@ -1084,7 +1084,7 @@ def test_permission_error_fallback_without_o_creat(tmp_path: Path, mocker: Mocke
     lock.release()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")  # pragma: win32 no cover
 def test_permission_error_propagates_when_file_missing(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock = FileLock(str(lock_path), is_singleton=False)
@@ -1092,16 +1092,16 @@ def test_permission_error_propagates_when_file_missing(tmp_path: Path, mocker: M
     real_open = os.open
 
     def open_always_permission_error(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
-        if "test.lock" in path:
+        if "test.lock" in path:  # pragma: win32 no cover
             raise PermissionError(13, "Permission denied", path)
         return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
 
     mocker.patch("os.open", side_effect=open_always_permission_error)
-    with pytest.raises(PermissionError, match="Permission denied"):
+    with pytest.raises(PermissionError, match="Permission denied"):  # pragma: win32 no cover
         lock.acquire(timeout=0)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock semantics")  # pragma: win32 no cover
 def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
@@ -1113,9 +1113,9 @@ def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: M
     def open_permission_then_unlink(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         nonlocal call_count
         call_count += 1
-        if call_count == 1 and flags & os.O_CREAT and "test.lock" in path:
+        if call_count == 1 and flags & os.O_CREAT and "test.lock" in path:  # pragma: win32 no cover
             raise PermissionError(13, "Permission denied", path)
-        if call_count == 2 and not (flags & os.O_CREAT) and "test.lock" in path:
+        if call_count == 2 and not (flags & os.O_CREAT) and "test.lock" in path:  # pragma: win32 no cover
             lock_path.unlink(missing_ok=True)
             raise FileNotFoundError(2, "No such file or directory", path)
         return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
@@ -1209,7 +1209,7 @@ def test_cancel_check_log_message(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="unix-only test")
-def test_filenotfound_on_fuse_nfs_retries(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_filenotfound_on_fuse_nfs_retries(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     """Retry recovers from the FUSE/NFS os.open(O_CREAT) race that raises FileNotFoundError."""
     lock_path = tmp_path / "test.lock"
     lock = FileLock(str(lock_path), is_singleton=False)
@@ -1330,7 +1330,7 @@ def test_different_threads_no_false_positive(tmp_path: Path, lock_type: type[Bas
 
 @pytest.mark.skipif(sys.platform == "win32", reason="unix-only symlink test")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
+def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:  # pragma: win32 no cover
     # A symlinked parent directory resolves to the same canonical key (the final component is kept literal, so a final
     # symlink stays distinct — see test_final_symlink_stays_a_distinct_key).
     real_dir = tmp_path / "real"
@@ -1338,14 +1338,14 @@ def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLoc
     (tmp_path / "link").symlink_to(real_dir)
 
     lock1 = lock_type(str(real_dir / "test.lock"))
-    with lock1:
+    with lock1:  # pragma: win32 no cover
         lock2 = lock_type(str(tmp_path / "link" / "test.lock"))
-        with pytest.raises(RuntimeError, match="Deadlock"):
+        with pytest.raises(RuntimeError, match="Deadlock"):  # pragma: win32 no cover
             lock2.acquire()
 
 
 @_UNIX_FLOCK_ONLY
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # pragma: win32 no cover
     ("depth", "force"),
     [
         pytest.param(1, False, id="direct"),
@@ -1356,29 +1356,29 @@ def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLoc
 def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, depth: int, force: bool) -> None:
     lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
     lock = FileLock(lock_path)
-    for _depth in range(depth):
+    for _depth in range(depth):  # pragma: win32 no cover
         lock.acquire()
     _retarget_parent(lock_path, replacement_path)
 
-    if force:
+    if force:  # pragma: win32 no cover
         lock.release(force=True)
-    else:
-        for _depth in range(depth):
+    else:  # pragma: win32 no cover
+        for _depth in range(depth):  # pragma: win32 no cover
             lock.release()
 
-    with FileLock(original_path) as successor:
+    with FileLock(original_path) as successor:  # pragma: win32 no cover
         assert successor.is_locked
 
 
 @_UNIX_FLOCK_ONLY
-def test_release_keeps_retargeted_parent_holder_registered(tmp_path: Path) -> None:
+def test_release_keeps_retargeted_parent_holder_registered(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path, _original_path, replacement_path = _symlinked_lock_paths(tmp_path)
     original = FileLock(lock_path)
     original.acquire()
     _retarget_parent(lock_path, replacement_path)
-    with FileLock(replacement_path):
+    with FileLock(replacement_path):  # pragma: win32 no cover
         original.release()
-        with pytest.raises(RuntimeError, match="Deadlock"):
+        with pytest.raises(RuntimeError, match="Deadlock"):  # pragma: win32 no cover
             FileLock(replacement_path).acquire(cancel_check=lambda: True)
 
 
@@ -1408,7 +1408,7 @@ def test_force_release_cleans_registry(tmp_path: Path, lock_type: type[BaseFileL
         assert lock2.is_locked
 
 
-def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:  # pragma: win32 no cover
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
     original.mkdir()
@@ -1418,7 +1418,7 @@ def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:
     return link / "test.lock", original / "test.lock", replacement / "test.lock"
 
 
-def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:
+def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:  # pragma: win32 no cover
     link = lock_path.parent
     link.unlink()
     link.symlink_to(replacement_path.parent, target_is_directory=True)
@@ -1432,74 +1432,74 @@ def _acquire_for_mode(lock: BaseFileLock, mode: Literal["finite", "nonblocking"]
 
 
 @pytest.fixture
-def held_lock_path(tmp_path: Path) -> Iterator[Path]:
+def held_lock_path(tmp_path: Path) -> Iterator[Path]:  # pragma: win32 no cover
     path = tmp_path / "resource.lock"
-    with FileLock(path, timeout=0):
+    with FileLock(path, timeout=0):  # pragma: win32 no cover
         yield path
 
 
 @_UNIX_FLOCK_ONLY
-def test_winner_truncates_stale_content(tmp_path: Path) -> None:
+def test_winner_truncates_stale_content(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path = tmp_path / "resource.lock"
     lock_path.write_text("stale from a previous holder", encoding="utf-8")
 
-    with FileLock(lock_path, timeout=0):
+    with FileLock(lock_path, timeout=0):  # pragma: win32 no cover
         assert lock_path.stat().st_size == 0
 
 
 @_UNIX_FLOCK_ONLY
-def test_contender_preserves_holder_contents(held_lock_path: Path) -> None:
+def test_contender_preserves_holder_contents(held_lock_path: Path) -> None:  # pragma: win32 no cover
     held_lock_path.write_text("holder metadata", encoding="utf-8")
 
-    with pytest.raises(Timeout):
+    with pytest.raises(Timeout):  # pragma: win32 no cover
         FileLock(held_lock_path, timeout=0).acquire()
 
     assert held_lock_path.read_text(encoding="utf-8") == "holder metadata"
 
 
 @_UNIX_FLOCK_ONLY
-def test_contender_preserves_holder_mode(held_lock_path: Path) -> None:
+def test_contender_preserves_holder_mode(held_lock_path: Path) -> None:  # pragma: win32 no cover
     held_lock_path.chmod(0o600)
 
-    with pytest.raises(Timeout):
+    with pytest.raises(Timeout):  # pragma: win32 no cover
         FileLock(held_lock_path, timeout=0, mode=0o644).acquire()
 
     assert S_IMODE(held_lock_path.stat().st_mode) == 0o600
 
 
 @_UNIX_FLOCK_ONLY
-def test_contender_does_not_fchmod(held_lock_path: Path, mocker: MockerFixture) -> None:
+def test_contender_does_not_fchmod(held_lock_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     fchmod_spy = mocker.spy(os, "fchmod")
 
-    with pytest.raises(Timeout):
+    with pytest.raises(Timeout):  # pragma: win32 no cover
         FileLock(held_lock_path, timeout=0, mode=0o644).acquire()
 
     fchmod_spy.assert_not_called()
 
 
 @_UNIX_FLOCK_ONLY
-def test_post_lock_truncate_failure_closes_fd(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_post_lock_truncate_failure_closes_fd(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     mocker.patch("os.ftruncate", side_effect=OSError(ENOSPC, "No space left on device"))
     open_spy = mocker.spy(os, "open")
     close_spy = mocker.spy(os, "close")
 
-    with pytest.raises(OSError, match="No space left on device"):
+    with pytest.raises(OSError, match="No space left on device"):  # pragma: win32 no cover
         FileLock(tmp_path / "resource.lock", timeout=0).acquire()
 
     assert any(call.args and call.args[0] == open_spy.spy_return for call in close_spy.call_args_list)
 
 
 @_WINDOWS_ONLY
-def test_windows_reparse_point_lock_file_rejected(tmp_path: Path) -> None:
+def test_windows_reparse_point_lock_file_rejected(tmp_path: Path) -> None:  # pragma: win32 cover
     target = tmp_path / "target.txt"
     target.write_text("sensitive", encoding="utf-8")
     link = tmp_path / "resource.lock"
-    try:
+    try:  # pragma: win32 cover
         link.symlink_to(target)
     except OSError:
         pytest.skip("cannot create symlinks (needs Developer Mode or administrator)")
 
-    with pytest.raises(OSError, match="reparse point"):
+    with pytest.raises(OSError, match="reparse point"):  # pragma: win32 cover
         FileLock(link).acquire()
 
     assert target.read_text(encoding="utf-8") == "sensitive"
@@ -1526,12 +1526,12 @@ def test_forced_release_drops_all_holds(tmp_path: Path) -> None:
     assert lock.lock_counter == 0
 
 
-@_UNIX_FLOCK_ONLY
+@_UNIX_FLOCK_ONLY  # pragma: win32 no cover
 def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
     mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None])
-    with pytest.raises(OSError, match="unlock failed"):
+    with pytest.raises(OSError, match="unlock failed"):  # pragma: win32 no cover
         lock.release()
     assert lock.is_locked
     assert lock.lock_counter == 1
@@ -1539,24 +1539,24 @@ def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: 
     assert not lock.is_locked
 
 
-@_UNIX_FLOCK_ONLY
+@_UNIX_FLOCK_ONLY  # pragma: win32 no cover
 def test_unix_context_exit_propagates_unlock_failure(tmp_path: Path, mocker: MockerFixture) -> None:
     # One LOCK_EX for acquire, then one LOCK_UN per release; fail only the first unlock so __exit__ propagates it.
     mocker.patch("filelock._unix.fcntl.flock", side_effect=[None, OSError(EIO, "unlock failed"), None])
     lock = FileLock(str(tmp_path / "a"))
-    with pytest.raises(OSError, match="unlock failed"), lock:
+    with pytest.raises(OSError, match="unlock failed"), lock:  # pragma: win32 no cover
         assert lock.is_locked
     assert lock.is_locked
     lock.release()
     assert not lock.is_locked
 
 
-@_WINDOWS_ONLY
+@_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
     mocker.patch("filelock._windows._unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None])
-    with pytest.raises(OSError, match="unlock failed"):
+    with pytest.raises(OSError, match="unlock failed"):  # pragma: win32 cover
         lock.release()
     assert lock.is_locked
     assert lock.lock_counter == 1
@@ -1564,41 +1564,41 @@ def test_windows_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocke
     assert not lock.is_locked
 
 
-@_WINDOWS_ONLY
+@_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_close_failure_still_commits_release(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
     # The OS unlock succeeds, so the lock is released; the later close failure propagates but must not leave the
     # counter or registry believing the lock is still held.
     mocker.patch("filelock._windows.os.close", side_effect=OSError(EIO, "close failed"))
-    with pytest.raises(OSError, match="close failed"):
+    with pytest.raises(OSError, match="close failed"):  # pragma: win32 cover
         lock.release()
     assert not lock.is_locked
     assert lock.lock_counter == 0
 
 
-@_WINDOWS_ONLY
+@_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_delete_pending_is_treated_as_contention(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._windows._nt_open", return_value=(0, 0xC0000056))  # STATUS_DELETE_PENDING
-    with pytest.raises(Timeout):
+    with pytest.raises(Timeout):  # pragma: win32 cover
         FileLock(str(tmp_path / "a"), timeout=0.2).acquire()
 
 
-@_WINDOWS_ONLY
+@_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_permanent_denial_raises_without_timeout(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._windows._nt_open", return_value=(0, 0xC0000022))  # STATUS_ACCESS_DENIED
-    with pytest.raises(PermissionError):
+    with pytest.raises(PermissionError):  # pragma: win32 cover
         FileLock(str(tmp_path / "a"), timeout=5).acquire()
 
 
 def test_windows_delete_in_progress_is_contention_not_denial(tmp_path: Path) -> None:
-    if sys.platform != "win32":
+    if sys.platform != "win32":  # pragma: win32 no cover
         pytest.skip("windows-only")
-    import ctypes
+    import ctypes  # pragma: win32 cover
 
-    target = str(tmp_path / "dp.lock")
-    kernel32 = ctypes.windll.kernel32
-    delete_access, generic_read, share_all, create_always, delete_on_close = (
+    target = str(tmp_path / "dp.lock")  # pragma: win32 cover
+    kernel32 = ctypes.windll.kernel32  # pragma: win32 cover
+    delete_access, generic_read, share_all, create_always, delete_on_close = (  # pragma: win32 cover
         0x10000,
         0x80000000,
         0x1 | 0x2 | 0x4,
@@ -1608,15 +1608,15 @@ def test_windows_delete_in_progress_is_contention_not_denial(tmp_path: Path) -> 
     # Open with delete-on-close so the name is marked for deletion but the live handle keeps it around: a fresh open
     # sees the deletion in progress (delete-pending or a sharing violation), which acquire must retry rather than
     # mistake for a permanent PermissionError.
-    handle = kernel32.CreateFileW(
+    handle = kernel32.CreateFileW(  # pragma: win32 cover
         target, delete_access | generic_read, share_all, None, create_always, delete_on_close, None
     )
-    assert handle not in {0, ctypes.c_void_p(-1).value}
-    try:
-        with pytest.raises(Timeout):
+    assert handle not in {0, ctypes.c_void_p(-1).value}  # pragma: win32 cover
+    try:  # pragma: win32 cover
+        with pytest.raises(Timeout):  # pragma: win32 cover
             FileLock(target, timeout=0.3).acquire()
     finally:
-        kernel32.CloseHandle(handle)
+        kernel32.CloseHandle(handle)  # pragma: win32 cover
 
 
 @pytest.mark.parametrize(
@@ -1845,7 +1845,7 @@ def _fail_close_of(mocker: MockerFixture, lock: BaseFileLock, error: OSError) ->
     return attempts
 
 
-@_UNIX_FLOCK_ONLY
+@_UNIX_FLOCK_ONLY  # pragma: win32 no cover
 def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))  # default policy
     lock.acquire()
@@ -1855,11 +1855,11 @@ def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFi
 
 
 @_WINDOWS_ONLY
-def test_close_error_default_raises_on_windows(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_close_error_default_raises_on_windows(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 cover
     lock = FileLock(str(tmp_path / "a"))  # default policy
     lock.acquire()
     _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
-    with pytest.raises(OSError, match="close failed"):
+    with pytest.raises(OSError, match="close failed"):  # pragma: win32 cover
         lock.release()
     assert not lock.is_locked
 
@@ -1887,7 +1887,7 @@ def test_close_error_raise_is_exact_and_committed(tmp_path: Path, mocker: Mocker
 
 
 @_UNIX_FLOCK_ONLY
-def test_close_not_reached_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_close_not_reached_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     lock = FileLock(str(tmp_path / "a"), close_error_policy="raise")
     lock.acquire()
     fd = lock._context.lock_file_fd
@@ -1895,7 +1895,7 @@ def test_close_not_reached_when_unlock_fails(tmp_path: Path, mocker: MockerFixtu
     real_close = os.close
     closed: list[int] = []
     mocker.patch("filelock._api.os.close", side_effect=lambda target: closed.append(target) or real_close(target))
-    with pytest.raises(OSError, match="unlock failed"):
+    with pytest.raises(OSError, match="unlock failed"):  # pragma: win32 no cover
         lock.release()
     assert lock.is_locked  # the kernel unlock failed, so the lock is still held
     assert fd not in closed  # close is not reached while the lock is still held
@@ -1943,26 +1943,26 @@ def test_singleton_shares_across_equivalent_spellings(tmp_path: Path) -> None:
 
 
 @_UNIX_FLOCK_ONLY
-def test_singleton_shares_through_symlinked_parent(tmp_path: Path) -> None:
+def test_singleton_shares_through_symlinked_parent(tmp_path: Path) -> None:  # pragma: win32 no cover
     real = tmp_path / "real"
     real.mkdir()
     (tmp_path / "link").symlink_to(real)
     via_real = FileLock(str(real / "a"), is_singleton=True)
     via_link = FileLock(str(tmp_path / "link" / "a"), is_singleton=True)
-    try:
+    try:  # pragma: win32 no cover
         assert via_real is via_link  # a symlinked parent directory resolves to the same key
     finally:
         via_real.release(force=True)
 
 
 @_UNIX_FLOCK_ONLY
-def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
+def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:  # pragma: win32 no cover
     target = tmp_path / "target"
     target.write_text("")
     (tmp_path / "link").symlink_to(target)
     on_link = FileLock(str(tmp_path / "link"), is_singleton=True)
     on_target = FileLock(str(target), is_singleton=True)
-    try:
+    try:  # pragma: win32 no cover
         assert on_link is not on_target  # the final component is not resolved, so the symlink is its own key
     finally:
         on_link.release(force=True)
@@ -1970,11 +1970,11 @@ def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
 
 
 @_UNIX_FLOCK_ONLY
-def test_final_symlink_backend_refuses_to_lock(tmp_path: Path) -> None:
+def test_final_symlink_backend_refuses_to_lock(tmp_path: Path) -> None:  # pragma: win32 no cover
     (tmp_path / "target").write_text("")
     (tmp_path / "link").symlink_to(tmp_path / "target")
     # Keeping the final symlink a distinct key is safe because the backend still refuses to lock through it.
-    with pytest.raises(OSError, match=r"Too many levels of symbolic links|symbolic link"):
+    with pytest.raises(OSError, match=r"Too many levels of symbolic links|symbolic link"):  # pragma: win32 no cover
         FileLock(str(tmp_path / "link")).acquire()
 
 
@@ -1989,11 +1989,11 @@ def test_separate_lock_classes_keep_separate_registries(tmp_path: Path) -> None:
         soft.release(force=True)
 
 
-@_UNIX_FLOCK_ONLY
+@_UNIX_FLOCK_ONLY  # pragma: win32 no cover
 def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = FileLock(str(tmp_path / "a"), fallback_to_soft=False)
-    with pytest.raises(OSError, match="no flock") as info:
+    with pytest.raises(OSError, match="no flock") as info:  # pragma: win32 no cover
         lock.acquire()
     assert info.value.errno == ENOSYS  # the original error, not a soft-lock timeout
     assert not lock.is_locked
@@ -2001,13 +2001,13 @@ def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerF
     assert lock.lock_counter == 0  # the failed acquire left no holder count
 
 
-@_UNIX_FLOCK_ONLY
+@_UNIX_FLOCK_ONLY  # pragma: win32 no cover
 def test_fallback_to_soft_default_switches_to_soft(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = FileLock(str(tmp_path / "a"))  # default fallback_to_soft=True
-    with pytest.warns(UserWarning, match="falling back to SoftFileLock"):
+    with pytest.warns(UserWarning, match="falling back to SoftFileLock"):  # pragma: win32 no cover
         lock.acquire()
-    try:
+    try:  # pragma: win32 no cover
         assert lock.is_locked
         assert isinstance(lock, SoftFileLock)  # switched to existence-lock semantics
     finally:
@@ -2015,21 +2015,21 @@ def test_fallback_to_soft_default_switches_to_soft(tmp_path: Path, mocker: Mocke
 
 
 @_UNIX_FLOCK_ONLY
-def test_fallback_disabled_recursive_reraises(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_fallback_disabled_recursive_reraises(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = FileLock(str(tmp_path / "a"), fallback_to_soft=False)
-    for _ in range(2):  # a repeat acquire keeps failing the same way, never a soft downgrade
-        with pytest.raises(OSError, match="no flock"):
+    for _ in range(2):  # a repeat acquire keeps failing the same way, never a soft downgrade  # pragma: win32 no cover
+        with pytest.raises(OSError, match="no flock"):  # pragma: win32 no cover
             lock.acquire()
         assert not lock.is_locked
 
 
 @_UNIX_FLOCK_ONLY
-def test_singleton_rejects_different_fallback_to_soft(tmp_path: Path) -> None:
+def test_singleton_rejects_different_fallback_to_soft(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = str(tmp_path / "a")
     first = FileLock(path, is_singleton=True, fallback_to_soft=True)
-    try:
-        with pytest.raises(ValueError, match="fallback_to_soft"):
+    try:  # pragma: win32 no cover
+        with pytest.raises(ValueError, match="fallback_to_soft"):  # pragma: win32 no cover
             FileLock(path, is_singleton=True, fallback_to_soft=False)
     finally:
         first.release(force=True)
@@ -2115,10 +2115,10 @@ def test_filelock_and_descriptor_contend(tmp_path: Path, direction: str) -> None
 
 
 @_UNIX_FLOCK_ONLY
-def test_lock_descriptor_touches_no_paths(tmp_path: Path) -> None:
+def test_lock_descriptor_touches_no_paths(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = tmp_path / "a"
     fd = os.open(str(path), os.O_RDWR | os.O_CREAT)
-    try:
+    try:  # pragma: win32 no cover
         os.write(fd, b"payload")
         before = os.fstat(fd)
         assert lock_descriptor(fd, blocking=False) is True
@@ -2138,13 +2138,13 @@ def test_lock_descriptor_touches_no_paths(tmp_path: Path) -> None:
         os.close(fd)
 
 
-@_UNIX_FLOCK_ONLY
+@_UNIX_FLOCK_ONLY  # pragma: win32 no cover
 def test_unlock_descriptor_failure_allows_retry(tmp_path: Path, mocker: MockerFixture) -> None:
     fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
-    try:
+    try:  # pragma: win32 no cover
         assert lock_descriptor(fd, blocking=False) is True
         mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None])
-        with pytest.raises(OSError, match="unlock failed"):
+        with pytest.raises(OSError, match="unlock failed"):  # pragma: win32 no cover
             unlock_descriptor(fd)
         unlock_descriptor(fd)  # the same descriptor can retry
     finally:
@@ -2220,7 +2220,7 @@ def test_singleton_rejects_different_preserve_lock_file(tmp_path: Path) -> None:
 
 
 @_UNIX_FLOCK_ONLY
-def test_preserve_lock_file_unix_keeps_pathname(tmp_path: Path) -> None:
+def test_preserve_lock_file_unix_keeps_pathname(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = tmp_path / "a"
     lock = FileLock(str(path), preserve_lock_file=True)
     lock.acquire()
@@ -2229,18 +2229,18 @@ def test_preserve_lock_file_unix_keeps_pathname(tmp_path: Path) -> None:
     assert type(lock).__name__ == "UnixFileLock"
 
 
-@_UNIX_FLOCK_ONLY
+@_UNIX_FLOCK_ONLY  # pragma: win32 no cover
 def test_preserve_lock_file_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = FileLock(str(tmp_path / "a"), preserve_lock_file=True)  # fallback_to_soft still defaults to True
-    with pytest.raises(OSError, match="no flock"):
+    with pytest.raises(OSError, match="no flock"):  # pragma: win32 no cover
         lock.acquire()
     assert not lock.is_locked
     assert type(lock).__name__ == "UnixFileLock"  # preserve overrides the soft fallback that would unlink to release
 
 
 @_WINDOWS_ONLY
-def test_preserve_lock_file_windows_default_removes_file(tmp_path: Path) -> None:
+def test_preserve_lock_file_windows_default_removes_file(tmp_path: Path) -> None:  # pragma: win32 cover
     path = tmp_path / "a"
     lock = FileLock(str(path))
     lock.acquire()
@@ -2249,7 +2249,7 @@ def test_preserve_lock_file_windows_default_removes_file(tmp_path: Path) -> None
 
 
 @_WINDOWS_ONLY
-def test_preserve_lock_file_windows_keeps_file(tmp_path: Path) -> None:
+def test_preserve_lock_file_windows_keeps_file(tmp_path: Path) -> None:  # pragma: win32 cover
     path = tmp_path / "a"
     lock = FileLock(str(path), preserve_lock_file=True)
     lock.acquire()
@@ -2258,14 +2258,14 @@ def test_preserve_lock_file_windows_keeps_file(tmp_path: Path) -> None:
 
 
 @_WINDOWS_ONLY
-def test_preserve_lock_file_windows_reacquires_same_identity(tmp_path: Path) -> None:
+def test_preserve_lock_file_windows_reacquires_same_identity(tmp_path: Path) -> None:  # pragma: win32 cover
     path = tmp_path / "a"
     lock = FileLock(str(path), preserve_lock_file=True)
     lock.acquire()
     lock.release()
     kept = path.stat()
     lock.acquire()
-    try:
+    try:  # pragma: win32 cover
         current = path.stat()
         assert (current.st_dev, current.st_ino) == (kept.st_dev, kept.st_ino)  # same file across acquisitions
     finally:
@@ -2273,7 +2273,7 @@ def test_preserve_lock_file_windows_reacquires_same_identity(tmp_path: Path) -> 
 
 
 @_WINDOWS_ONLY
-def test_preserve_lock_file_windows_kept_after_forced_release(tmp_path: Path) -> None:
+def test_preserve_lock_file_windows_kept_after_forced_release(tmp_path: Path) -> None:  # pragma: win32 cover
     path = tmp_path / "a"
     lock = FileLock(str(path), preserve_lock_file=True)
     lock.acquire()
@@ -2343,36 +2343,36 @@ def test_on_acquired_not_called_for_contender(tmp_path: Path) -> None:
 
 
 @_UNIX_FLOCK_ONLY
-def test_on_acquired_runs_after_truncation_and_mode(tmp_path: Path) -> None:
+def test_on_acquired_runs_after_truncation_and_mode(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = tmp_path / "a"
     path.write_bytes(b"stale content")
     seen: dict[str, int] = {}
 
-    def hook(fd: int) -> None:
+    def hook(fd: int) -> None:  # pragma: win32 no cover
         stat_result = os.fstat(fd)
         seen["size"] = stat_result.st_size
         seen["mode"] = S_IMODE(stat_result.st_mode)
 
     lock = FileLock(str(path), mode=0o600, on_acquired=hook)
     lock.acquire()
-    try:
+    try:  # pragma: win32 no cover
         assert seen == {"size": 0, "mode": 0o600}  # backend truncation and mode setup finished before the hook
     finally:
         lock.release()
 
 
 @_UNIX_FLOCK_ONLY
-def test_on_acquired_writes_survive_contention(tmp_path: Path) -> None:
+def test_on_acquired_writes_survive_contention(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = str(tmp_path / "a")
 
-    def write_metadata(fd: int) -> None:
+    def write_metadata(fd: int) -> None:  # pragma: win32 no cover
         os.write(fd, b"holder-metadata")
 
     writer = FileLock(path, on_acquired=write_metadata)
     writer.acquire()
-    try:
+    try:  # pragma: win32 no cover
         contender = FileLock(path)
-        with pytest.raises(Timeout):
+        with pytest.raises(Timeout):  # pragma: win32 no cover
             contender.acquire(timeout=0.1)  # a losing contender must not truncate the holder's file
         assert Path(path).read_bytes() == b"holder-metadata"
     finally:
@@ -2392,11 +2392,11 @@ def test_on_acquired_failure_releases_lock(tmp_path: Path) -> None:
 
 
 @_UNIX_FLOCK_ONLY
-def test_on_acquired_and_release_failure_group(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_on_acquired_and_release_failure_group(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     path = str(tmp_path / "a")
     lock = FileLock(path, on_acquired=_failing_on_acquired)
     mocker.patch("filelock._unix._unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None])
-    with pytest.raises(BaseExceptionGroup) as info:
+    with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
         lock.acquire()
     assert {type(error) for error in info.value.exceptions} == {RuntimeError, OSError}
     assert lock.is_locked  # the OS unlock failed, so the lock stays held for a retry
@@ -2430,11 +2430,11 @@ def test_on_acquired_rollback_group_detaches_release_context(
 
 
 @_UNIX_FLOCK_ONLY
-def test_on_acquired_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_on_acquired_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     calls: list[int] = []
     lock = FileLock(str(tmp_path / "a"), on_acquired=calls.append)
-    with pytest.raises(OSError, match="no flock"):
+    with pytest.raises(OSError, match="no flock"):  # pragma: win32 no cover
         lock.acquire()
     assert not lock.is_locked
     assert type(lock).__name__ == "UnixFileLock"  # a soft lock cannot run the hook, so no fallback

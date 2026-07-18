@@ -111,7 +111,7 @@ def test_live_process_without_start_token_falls_back_to_pid(lock_path: Path) -> 
 
 
 @_UNIX_ONLY
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # pragma: win32 no cover
     "errno",
     [pytest.param(EPERM, id="eperm"), pytest.param(ENODEV, id="unexpected_device")],
 )
@@ -184,7 +184,7 @@ def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
 
 
 @_UNIX_ONLY
-def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) -> None:
+def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) -> None:  # pragma: win32 no cover
     target = tmp_path / "target"
     target.write_text(_holder(99999), encoding="utf-8")
     lock_path.symlink_to(target)
@@ -195,45 +195,45 @@ def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) ->
 
 
 def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("os.mkfifo is unix-only")
     # An attacker-placed FIFO must not stall the open; O_NONBLOCK makes the read bail instead of hang.
-    os.mkfifo(lock_path)
-    assert SoftFileLock(lock_path).pid is None
+    os.mkfifo(lock_path)  # pragma: win32 no cover
+    assert SoftFileLock(lock_path).pid is None  # pragma: win32 no cover
 
 
 def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None:
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("os.mkfifo is unix-only")
     # A same-UID peer can plant a FIFO with a writer attached so a non-blocking read would raise EAGAIN. The lstat
     # guard classifies it as a malformed lock before any open, so an aged FIFO self-heals like any other node.
-    os.mkfifo(lock_path)
-    reader = os.open(lock_path, os.O_RDONLY | os.O_NONBLOCK)
+    os.mkfifo(lock_path)  # pragma: win32 no cover
+    reader = os.open(lock_path, os.O_RDONLY | os.O_NONBLOCK)  # pragma: win32 no cover
     writer = os.open(lock_path, os.O_WRONLY | os.O_NONBLOCK)  # attached but never written, so reads get EAGAIN
-    try:
+    try:  # pragma: win32 no cover
         os.utime(lock_path, (0, 0))
         _assert_self_heals(lock_path)
     finally:
-        os.close(reader)
-        os.close(writer)
+        os.close(reader)  # pragma: win32 no cover
+        os.close(writer)  # pragma: win32 no cover
 
 
 def test_socket_lock_file_self_heals(lock_path: Path) -> None:
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("AF_UNIX sockets are unix-only")
-    sock = socket.socket(socket.AF_UNIX)
-    try:
+    sock = socket.socket(socket.AF_UNIX)  # pragma: win32 no cover
+    try:  # pragma: win32 no cover
         sock.bind(str(lock_path))
-    except OSError:
-        sock.close()
-        pytest.skip("AF_UNIX path too long for this temp dir")
+    except OSError:  # pragma: darwin cover
+        sock.close()  # pragma: darwin cover
+        pytest.skip("AF_UNIX path too long for this temp dir")  # pragma: darwin cover
     # A Unix-domain socket cannot be os.open()ed as a file. Before the lstat guard the failed open was swallowed by
     # stale detection so acquisition wedged; an aged socket now self-heals like any other non-regular node.
-    try:
+    try:  # pragma: linux cover
         os.utime(lock_path, (0, 0))
         _assert_self_heals(lock_path)
     finally:
-        sock.close()
+        sock.close()  # pragma: linux cover
 
 
 def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
@@ -251,7 +251,7 @@ def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixtur
         pytest.param(_WIN_ERROR_ACCESS_DENIED, _WIN_ERROR_INVALID_PARAMETER, False, id="access-denied"),
     ],
 )
-def test_windows_stale_lock_uses_captured_process_error(
+def test_windows_stale_lock_uses_captured_process_error(  # pragma: win32 cover
     lock_path: Path,
     mocker: MockerFixture,
     captured_error: int,
@@ -259,55 +259,55 @@ def test_windows_stale_lock_uses_captured_process_error(
     *,
     acquires: bool,
 ) -> None:
-    if sys.platform != "win32":
+    if sys.platform != "win32":  # pragma: win32 cover
         pytest.skip("windows-only")
     import ctypes
 
-    def fail_open_process(_access: int, _inherit_handle: bool, _pid: int) -> None:
+    def fail_open_process(_access: int, _inherit_handle: bool, _pid: int) -> None:  # pragma: win32 cover
         ctypes.set_last_error(captured_error)
         ctypes.windll.kernel32.SetLastError(ambient_error)
 
     # ctypes function pointers do not expose a Python signature for autospec.
     mocker.patch("filelock._identity._KERNEL32.OpenProcess", side_effect=fail_open_process)
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    if acquires:
+    if acquires:  # pragma: win32 cover
         _assert_self_heals(lock_path)
-    else:
+    else:  # pragma: win32 cover
         _assert_times_out(lock_path)
 
 
 @_WINDOWS_ONLY
-def test_windows_stale_lock_broken_when_pid_recycled(lock_path: Path) -> None:
+def test_windows_stale_lock_broken_when_pid_recycled(lock_path: Path) -> None:  # pragma: win32 cover
     process_marker = lock_path.with_suffix(".process")
-    with SoftFileLock(process_marker):
+    with SoftFileLock(process_marker):  # pragma: win32 cover
         start = int(process_marker.read_text(encoding="utf-8").splitlines()[2])
     lock_path.write_text(_holder(os.getpid(), start=start + 1), encoding="utf-8")
     _assert_self_heals(lock_path)
 
 
 @_WINDOWS_ONLY
-def test_windows_live_process_marker_retained(lock_path: Path) -> None:
+def test_windows_live_process_marker_retained(lock_path: Path) -> None:  # pragma: win32 cover
     lock = SoftFileLock(lock_path)
     lock.acquire()
-    try:
+    try:  # pragma: win32 cover
         _assert_times_out(lock_path)
     finally:
         lock.release()
 
 
 @_WINDOWS_ONLY
-def test_windows_live_process_marker_without_start_token_retained(lock_path: Path) -> None:
+def test_windows_live_process_marker_without_start_token_retained(lock_path: Path) -> None:  # pragma: win32 cover
     lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     _assert_times_out(lock_path)
 
 
 @_WINDOWS_ONLY
-def test_windows_process_probe_closes_handles(lock_path: Path) -> None:
+def test_windows_process_probe_closes_handles(lock_path: Path) -> None:  # pragma: win32 cover
     lock = SoftFileLock(lock_path)
     lock.acquire()
-    try:
+    try:  # pragma: win32 cover
         handle_count = _current_process_handle_count()
-        for _attempt in range(50):
+        for _attempt in range(50):  # pragma: win32 cover
             _assert_times_out(lock_path, timeout=0)
         # A per-probe handle leak would add one handle per iteration, so ~50 over the loop. Assert no growth beyond a
         # small margin rather than exact equality, which another thread opening or closing a handle would break.
@@ -387,8 +387,8 @@ def _assert_times_out(lock_path: Path, *, timeout: float = 0.1) -> None:
         SoftFileLock(lock_path, timeout=timeout).acquire()
 
 
-def _current_process_handle_count() -> int:
-    if sys.platform != "win32":
+def _current_process_handle_count() -> int:  # pragma: win32 cover
+    if sys.platform != "win32":  # pragma: win32 cover
         pytest.skip("windows-only")
     import ctypes
     from ctypes import wintypes
@@ -470,7 +470,7 @@ def test_del_suppresses_a_release_error(lock_path: Path, mocker: MockerFixture) 
 
 
 @_UNIX_ONLY
-def test_stale_release_spares_a_successor(lock_path: Path) -> None:
+def test_stale_release_spares_a_successor(lock_path: Path) -> None:  # pragma: win32 no cover
     holder = SoftFileLock(lock_path)
     holder.acquire()
     # A peer breaks the stale marker and installs its own at the same path; unlink first so it gets a fresh inode.
@@ -482,7 +482,7 @@ def test_stale_release_spares_a_successor(lock_path: Path) -> None:
 
 
 @_WINDOWS_ONLY
-def test_windows_release_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:
+def test_windows_release_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 cover
     lock = SoftFileLock(lock_path)
     lock.acquire()
     _hold_reports_foreign_identity(mocker)
@@ -581,7 +581,7 @@ def test_second_release_does_not_close_reused_descriptor(
 
 
 @_UNIX_ONLY
-def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixture) -> None:
+def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     holder = SoftFileLock(lock_path)
     holder.acquire()
     lock_path.unlink()
@@ -591,7 +591,7 @@ def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixt
     assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
 
 
-@_UNIX_ONLY
+@_UNIX_ONLY  # pragma: win32 no cover
 def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: MockerFixture) -> None:
     lock = SoftFileLock(lock_path)
     lock.acquire()

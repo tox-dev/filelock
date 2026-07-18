@@ -113,7 +113,7 @@ async def test_async_strict_soft_waiter_keeps_acquisition_directory(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks requires elevated Windows privileges")
-def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> None:
+def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> None:  # pragma: win32 no cover
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
     original.mkdir()
@@ -124,7 +124,7 @@ def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> Non
     replacement_holder = StrictSoftFileLock(replacement / "resource.lock")
     original_holder.acquire()
     replacement_holder.acquire()
-    try:
+    try:  # pragma: win32 no cover
         link.unlink()
         link.symlink_to(replacement, target_is_directory=True)
         original_holder.release()
@@ -146,7 +146,7 @@ def test_strict_soft_final_symlink_fails_closed_without_touching_target(tmp_path
     lock_path.symlink_to(target)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
-    with pytest.raises(Timeout):
+    with pytest.raises(Timeout):  # pragma: win32 no cover
         lock.acquire()
 
     assert (target.read_bytes(), lock_path.is_symlink(), lock.claims) == (_STRICT_SENTINEL, True, ())

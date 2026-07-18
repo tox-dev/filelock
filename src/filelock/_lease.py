@@ -189,7 +189,7 @@ class SoftFileLease(MarkerSoftFileLock):
             if owner_is_stale(owner.pid, owner.hostname, owner.start):
                 break_lock_file(self.lock_file, mtime, ino)
                 return
-            if time.time() - mtime >= self._lease_duration:
+            if time.time() - mtime >= self._lease_duration:  # pragma: win32 no cover
                 break_lock_file(self.lock_file, mtime, ino)
 
     def _read_peer(self) -> tuple[OwnerRecord, float, int] | None:
@@ -227,7 +227,7 @@ class SoftFileLease(MarkerSoftFileLock):
         last_success = time.monotonic()
         while not self._heartbeat_stop.wait(self._heartbeat_interval):
             outcome, error = self._refresh_claim(fd, identity, token)
-            if outcome == "lost":
+            if outcome == "lost":  # pragma: win32 no cover
                 return
             if outcome == "ok":
                 last_success = time.monotonic()
@@ -239,12 +239,12 @@ class SoftFileLease(MarkerSoftFileLock):
         try:
             st = os.lstat(self.lock_file)
         except FileNotFoundError as error:
-            self._report_compromise("marker-missing", error, token)
-            return "lost", None
+            self._report_compromise("marker-missing", error, token)  # pragma: win32 no cover
+            return "lost", None  # pragma: win32 no cover
         except OSError as error:
             return "transient", error
         # A peer that took the expired claim replaced the marker, so the pathname now names its inode, not ours.
-        if (st.st_dev, st.st_ino) != identity:
+        if (st.st_dev, st.st_ino) != identity:  # pragma: win32 no cover
             self._report_compromise("owner-changed", None, token)
             return "lost", None
         try:

@@ -22,7 +22,7 @@ _FORK_WARNING: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings(
 
 @_REQUIRES_FORK
 @_FORK_WARNING
-def test_callbacks_registered_before_filelock_can_use_locks(tmp_path: Path) -> None:
+def test_callbacks_registered_before_filelock_can_use_locks(tmp_path: Path) -> None:  # pragma: win32 no cover
     script = """
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ if (
     "audit_mode",
     [pytest.param("installed", id="audit-installed"), pytest.param("rejected", id="audit-rejected")],
 )
-def test_concurrent_fork_after_first_snapshot_does_not_deadlock(
+def test_concurrent_fork_after_first_snapshot_does_not_deadlock(  # pragma: win32 no cover
     tmp_path: Path, audit_mode: Literal["installed", "rejected"]
 ) -> None:
     script = """
@@ -170,16 +170,16 @@ if second_status != 0 or owner.is_alive() or statuses.get(timeout=1) != 0:
         pytest.param("_posixsubprocess.fork_exec", id="fork-exec"),
     ],
 )
-def test_audit_rejects_process_creation_inside_descriptor_transition(
+def test_audit_rejects_process_creation_inside_descriptor_transition(  # pragma: win32 no cover
     tmp_path: Path,
     event: Literal["os.fork", "os.forkpty", "_posixsubprocess.fork_exec"],
 ) -> None:
-    class AuditedLock(BaseFileLock):
-        def _acquire(self) -> None:
+    class AuditedLock(BaseFileLock):  # pragma: win32 no cover
+        def _acquire(self) -> None:  # pragma: win32 no cover
             self._context.lock_file_fd = None
-            if event == "_posixsubprocess.fork_exec":
+            if event == "_posixsubprocess.fork_exec":  # pragma: win32 no cover
                 sys.audit(event, (), (), None)
-            else:
+            else:  # pragma: win32 no cover
                 sys.audit(event)
 
         _release = _acquire
@@ -201,7 +201,7 @@ def test_audit_rejects_process_creation_inside_descriptor_transition(
         ),
     ],
 )
-def test_fork_without_audit_guard_snapshots_current_transition(
+def test_fork_without_audit_guard_snapshots_current_transition(  # pragma: win32 no cover
     tmp_path: Path, fork_mode: Literal["rejected-audit", "fork1"]
 ) -> None:
     script = """
@@ -273,7 +273,7 @@ raise SystemExit(lock.child_status)
         ),
     ],
 )
-def test_native_descriptor_is_visible_during_flock_audit(
+def test_native_descriptor_is_visible_during_flock_audit(  # pragma: win32 no cover
     tmp_path: Path, fork_mode: Literal["rejected-audit", "fork1"]
 ) -> None:
     script = """
@@ -327,7 +327,7 @@ raise SystemExit(child_status)
 
 @_REQUIRES_FORK
 @_FORK_WARNING
-def test_child_unwinds_pre_fork_transition_before_new_acquire(tmp_path: Path) -> None:
+def test_child_unwinds_pre_fork_transition_before_new_acquire(tmp_path: Path) -> None:  # pragma: win32 no cover
     script = """
 from __future__ import annotations
 
@@ -408,7 +408,7 @@ raise SystemExit(os.waitstatus_to_exitcode(status))
 
 
 @_REQUIRES_FORK
-@_FORK_WARNING
+@_FORK_WARNING  # pragma: win32 no cover
 def test_overlapping_coroutine_transitions_close_every_pending_descriptor(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
@@ -482,7 +482,7 @@ asyncio.run(main())
 
 
 @_REQUIRES_FORK
-@_FORK_WARNING
+@_FORK_WARNING  # pragma: win32 no cover
 def test_pending_descriptor_with_unknown_identity_is_preserved_in_child(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
@@ -547,7 +547,7 @@ raise SystemExit(lock.child_status)
 
 
 @_REQUIRES_FORK
-@_FORK_WARNING
+@_FORK_WARNING  # pragma: win32 no cover
 def test_child_replaces_parameter_model_mutex_held_during_construction(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
@@ -634,7 +634,7 @@ if os.waitstatus_to_exitcode(status) != 0 or worker.is_alive() or os.getpid() !=
 
 
 @_REQUIRES_FORK
-@_FORK_WARNING
+@_FORK_WARNING  # pragma: win32 no cover
 def test_registration_transition_completes_after_fork_closes_admission(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
@@ -722,7 +722,7 @@ lock.release()
 @_REQUIRES_FORK
 @_FORK_WARNING
 @pytest.mark.skipif(not has_fcntl, reason="fcntl.flock required")
-def test_cancelled_async_acquire_unregisters_reused_descriptor(tmp_path: Path) -> None:
+def test_cancelled_async_acquire_unregisters_reused_descriptor(tmp_path: Path) -> None:  # pragma: win32 no cover
     script = """
 from __future__ import annotations
 
@@ -809,7 +809,7 @@ raise SystemExit(asyncio.run(main()))
 
 @_REQUIRES_FORK
 @_FORK_WARNING
-def test_parent_callback_rejects_reentrant_singleton_construction(tmp_path: Path) -> None:
+def test_parent_callback_rejects_reentrant_singleton_construction(tmp_path: Path) -> None:  # pragma: win32 no cover
     script = """
 from __future__ import annotations
 
@@ -913,7 +913,7 @@ if (
 
 
 @_REQUIRES_FORK
-@_FORK_WARNING
+@_FORK_WARNING  # pragma: win32 no cover
 def test_singleton_construction_crossing_fork_does_not_poison_child_cache(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
@@ -970,7 +970,7 @@ if (
 
 
 @_REQUIRES_FORK
-@_FORK_WARNING
+@_FORK_WARNING  # pragma: win32 no cover
 def test_soft_read_write_construction_crossing_fork_does_not_poison_child_cache(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
@@ -1069,21 +1069,21 @@ def test_fork_exec_from_another_thread_remains_available(tmp_path: Path) -> None
 
 @_REQUIRES_FORK
 @_FORK_WARNING
-def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) -> None:
+def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) -> None:  # pragma: win32 no cover
     entered, release = threading.Event(), threading.Event()
     parent_pid = os.getpid()
 
-    class BlockingLock(BaseFileLock):
-        def __init__(self, lock_file: str, *, is_singleton: bool = False) -> None:
-            if os.getpid() == parent_pid:
+    class BlockingLock(BaseFileLock):  # pragma: win32 no cover
+        def __init__(self, lock_file: str, *, is_singleton: bool = False) -> None:  # pragma: win32 no cover
+            if os.getpid() == parent_pid:  # pragma: win32 no cover
                 entered.set()
                 release.wait(timeout=5)
             super().__init__(lock_file, thread_local=False, is_singleton=is_singleton)
 
-        def _acquire(self) -> None:
+        def _acquire(self) -> None:  # pragma: win32 no cover
             self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
 
-        def _release(self) -> None:
+        def _release(self) -> None:  # pragma: win32 no cover
             os.close(self._context.lock_file_fd if self._context.lock_file_fd is not None else -1)
             self._context.lock_file_fd = None
 
@@ -1091,7 +1091,7 @@ def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) 
     worker.start()
     assert entered.wait(timeout=5)
 
-    if (child_pid := fork_process()) == 0:
+    if (child_pid := fork_process()) == 0:  # pragma: win32 no cover
         child_lock = BlockingLock(str(tmp_path / "mutex.lock"), is_singleton=True)
         child_lock.acquire(timeout=0)
         child_lock.release()

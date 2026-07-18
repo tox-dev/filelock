@@ -54,7 +54,7 @@ class SoftFileLock(BaseFileLock):
         # O_CREAT | O_EXCL makes the create fail with EEXIST when the file already exists, so a successful open
         # means this process now holds the lock.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
-        if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
+        if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:  # pragma: win32 no cover
             flags |= o_nofollow
         try:
             fd = os.open(self.lock_file, flags, self._open_mode())
@@ -166,7 +166,7 @@ class SoftFileLock(BaseFileLock):
             try:
                 self._unlink_held_marker(identity)
             except BaseException as cleanup_error:  # ruff:ignore[blind-except]  # preserve control-flow cleanup failures
-                _raise_grouped_errors(
+                _raise_grouped_errors(  # pragma: win32 no cover
                     "lock descriptor close and marker cleanup both failed",
                     close_error,
                     cleanup_error,
@@ -177,29 +177,29 @@ class SoftFileLock(BaseFileLock):
     def _unlink_held_marker(self, identity: tuple[int, int] | None) -> None:
         if identity is None:
             return
-        if sys.platform == "win32":
+        if sys.platform == "win32":  # pragma: win32 cover
             self._windows_unlink_if_ours(identity)
-        else:
-            with suppress(OSError):
-                if _file_identity(os.lstat(self.lock_file)) == identity:
+        else:  # pragma: win32 no cover
+            with suppress(OSError):  # pragma: win32 no cover
+                if _file_identity(os.lstat(self.lock_file)) == identity:  # pragma: win32 no cover
                     Path(self.lock_file).unlink()
 
-    def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:
+    def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:  # pragma: win32 cover
         retry_delay = 0.001
-        for attempt in range(_UNLINK_MAX_RETRIES):
+        for attempt in range(_UNLINK_MAX_RETRIES):  # pragma: win32 cover
             # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck
             # identity each attempt: a failed unlink leaves a window for a successor to replace the marker at this path.
-            try:
-                if _file_identity(os.lstat(self.lock_file)) != identity:
+            try:  # pragma: win32 cover
+                if _file_identity(os.lstat(self.lock_file)) != identity:  # pragma: win32 cover
                     return
                 Path(self.lock_file).unlink()
             except OSError as exc:  # ruff:ignore[try-except-in-loop]  # each attempt's errno drives the retry choice
-                if exc.errno not in {EACCES, EPERM}:
+                if exc.errno not in {EACCES, EPERM}:  # pragma: win32 cover
                     return
-                if attempt < _UNLINK_MAX_RETRIES - 1:
+                if attempt < _UNLINK_MAX_RETRIES - 1:  # pragma: win32 cover
                     time.sleep(retry_delay)
                     retry_delay *= 2
-            else:
+            else:  # pragma: win32 cover
                 return
 
 
@@ -215,7 +215,7 @@ def _read_lock_file(path: str) -> tuple[str | None, float, int]:
     # a symlink, stall on a FIFO, or fail on a socket and leave acquisition wedged. The mtime and inode still flow back
     # for the identity-checked stale break. lstat, not stat, so a hostile symlink is never followed onto its target.
     st = os.lstat(path)
-    if not stat.S_ISREG(st.st_mode):
+    if not stat.S_ISREG(st.st_mode):  # pragma: win32 no cover
         return None, st.st_mtime, st.st_ino
     # Re-check on the opened handle: O_NOFOLLOW refuses a symlink swapped in after the lstat, O_NONBLOCK stops a FIFO
     # swapped in from stalling the open, and the fstat catches any other non-regular replacement race before we read.

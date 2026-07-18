@@ -23,7 +23,7 @@ _UNIX_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform == "wi
 
 
 @_UNIX_ONLY
-def test_import_without_fcntl_uses_soft_aliases_and_descriptor_errors() -> None:
+def test_import_without_fcntl_uses_soft_aliases_and_descriptor_errors() -> None:  # pragma: win32 no cover
     script: Final[str] = dedent(
         """
         import json
@@ -69,7 +69,7 @@ def test_import_without_fcntl_uses_soft_aliases_and_descriptor_errors() -> None:
 
 @_UNIX_ONLY
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_emits_warning(tmp_path: Path) -> None:
+def test_fallback_emits_warning(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock = UnixFileLock(tmp_path / "test.lock")
 
     with pytest.warns(UserWarning, match="flock not supported on this filesystem, falling back to SoftFileLock"):
@@ -80,10 +80,10 @@ def test_fallback_emits_warning(tmp_path: Path) -> None:
 @_UNIX_ONLY
 @pytest.mark.filterwarnings("default::UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_swaps_to_soft(tmp_path: Path) -> None:
+def test_fallback_swaps_to_soft(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock = UnixFileLock(tmp_path / "test.lock")
 
-    with lock:
+    with lock:  # pragma: win32 no cover
         assert lock.is_locked
         assert isinstance(lock, SoftFileLock)
 
@@ -91,13 +91,13 @@ def test_fallback_swaps_to_soft(tmp_path: Path) -> None:
 @_UNIX_ONLY
 @pytest.mark.filterwarnings("default::UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_writes_pid_and_hostname(tmp_path: Path) -> None:
+def test_fallback_writes_pid_and_hostname(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path = tmp_path / "test.lock"
 
-    with UnixFileLock(lock_path):
+    with UnixFileLock(lock_path):  # pragma: win32 no cover
         lines = lock_path.read_text(encoding="utf-8").splitlines()
     expected = [str(os.getpid()), socket.gethostname()]
-    if (token := process_start_token(os.getpid())) is not None:
+    if (token := process_start_token(os.getpid())) is not None:  # pragma: win32 no cover
         expected.append(str(token))
     assert lines == expected
 
@@ -105,7 +105,7 @@ def test_fallback_writes_pid_and_hostname(tmp_path: Path) -> None:
 @_UNIX_ONLY
 @pytest.mark.filterwarnings("default::UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_release_unlinks_file(tmp_path: Path) -> None:
+def test_fallback_release_unlinks_file(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path = tmp_path / "test.lock"
     lock = UnixFileLock(lock_path)
 
@@ -116,7 +116,7 @@ def test_fallback_release_unlinks_file(tmp_path: Path) -> None:
 
 
 @_UNIX_ONLY
-@pytest.mark.filterwarnings("default::UserWarning")
+@pytest.mark.filterwarnings("default::UserWarning")  # pragma: win32 no cover
 def test_fallback_subsequent_acquire_skips_flock(tmp_path: Path, unsupported_flock: MagicMock) -> None:
     lock = UnixFileLock(tmp_path / "test.lock")
 
@@ -132,27 +132,27 @@ def test_fallback_subsequent_acquire_skips_flock(tmp_path: Path, unsupported_flo
 @_UNIX_ONLY
 @pytest.mark.filterwarnings("default::UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_reentrant_locking(tmp_path: Path) -> None:
+def test_fallback_reentrant_locking(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock = UnixFileLock(tmp_path / "test.lock")
 
-    with lock:
-        with lock:
+    with lock:  # pragma: win32 no cover
+        with lock:  # pragma: win32 no cover
             assert lock.is_locked
         assert lock.is_locked
     assert not lock.is_locked
 
 
 @_UNIX_ONLY
-def test_release_suppresses_eio_on_close(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_release_suppresses_eio_on_close(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     lock = UnixFileLock(tmp_path / "test.lock")
     lock.acquire()
 
     real_close = os.close  # capture before the patch so the fd still closes for real
     fd_to_fail = lock._context.lock_file_fd  # _release() nulls this before closing, so read it now
 
-    def _close_eio(fd: int) -> None:
+    def _close_eio(fd: int) -> None:  # pragma: win32 no cover
         real_close(fd)
-        if fd == fd_to_fail:
+        if fd == fd_to_fail:  # pragma: win32 no cover
             raise OSError(EIO, "Input/output error")
 
     mocker.patch("filelock._unix.os.close", side_effect=_close_eio)
@@ -160,7 +160,7 @@ def test_release_suppresses_eio_on_close(tmp_path: Path, mocker: MockerFixture) 
     assert not lock.is_locked
 
 
-@_UNIX_ONLY
+@_UNIX_ONLY  # pragma: win32 no cover
 def test_acquire_flock_error_clears_pending_descriptor(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = UnixFileLock(tmp_path / "test.lock")
     mocker.patch(
@@ -168,7 +168,7 @@ def test_acquire_flock_error_clears_pending_descriptor(tmp_path: Path, mocker: M
         side_effect=[OSError(EIO, "Input/output error"), None, None],
     )
 
-    with pytest.raises(OSError, match="Input/output error"):
+    with pytest.raises(OSError, match="Input/output error"):  # pragma: win32 no cover
         lock.acquire(timeout=0)
     assert not lock.is_locked
 
@@ -179,5 +179,5 @@ def test_acquire_flock_error_clears_pending_descriptor(tmp_path: Path, mocker: M
 
 
 @pytest.fixture
-def unsupported_flock(mocker: MockerFixture) -> MagicMock:
+def unsupported_flock(mocker: MockerFixture) -> MagicMock:  # pragma: win32 no cover
     return mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "Function not implemented"))

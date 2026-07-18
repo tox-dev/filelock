@@ -33,7 +33,7 @@ _UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 
 
 @_UNIX_FLOCK_ONLY
-@pytest.mark.asyncio
+@pytest.mark.asyncio  # pragma: win32 no cover
 async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(str(tmp_path / "a"))
     await lock.acquire()
@@ -41,7 +41,7 @@ async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: Mo
     finish_release = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def block_unlock(_fd: int, _operation: int) -> None:
+    def block_unlock(_fd: int, _operation: int) -> None:  # pragma: win32 no cover
         loop.call_soon_threadsafe(release_started.set)
         assert finish_release.wait(timeout=5)
 
@@ -50,14 +50,14 @@ async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: Mo
     await release_started.wait()
     task.cancel("cancel release")
     finish_release.set()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError):  # pragma: win32 no cover
         await task
     assert (lock.is_locked, lock.lock_counter) == (False, 0)
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
 @_UNIX_FLOCK_ONLY
-@pytest.mark.asyncio
+@pytest.mark.asyncio  # pragma: win32 no cover
 async def test_acquire_proceeds_after_queued_release_is_canceled(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(tmp_path / "a")
     await lock.acquire()
@@ -68,9 +68,9 @@ async def test_acquire_proceeds_after_queued_release_is_canceled(tmp_path: Path,
     real_flock = fcntl.flock
     blocked = False
 
-    def block_first_unlock(fd: int, operation: int) -> None:
+    def block_first_unlock(fd: int, operation: int) -> None:  # pragma: win32 no cover
         nonlocal blocked
-        if operation & fcntl.LOCK_UN and not blocked:
+        if operation & fcntl.LOCK_UN and not blocked:  # pragma: win32 no cover
             blocked = True
             loop.call_soon_threadsafe(release_started.set)
             assert finish_release.wait(timeout=5)
@@ -82,8 +82,8 @@ async def test_acquire_proceeds_after_queued_release_is_canceled(tmp_path: Path,
     second_release = asyncio.create_task(lock.release())
     await asyncio.sleep(0)
     second_release.cancel("abandon queued release")
-    try:
-        with pytest.raises(asyncio.CancelledError) as info:
+    try:  # pragma: win32 no cover
+        with pytest.raises(asyncio.CancelledError) as info:  # pragma: win32 no cover
             await second_release
         assert_cancellation_message(info.value, "abandon queued release")
         acquire = asyncio.create_task(lock.acquire())
@@ -99,12 +99,12 @@ async def test_acquire_proceeds_after_queued_release_is_canceled(tmp_path: Path,
 
 @_UNIX_FLOCK_ONLY
 @pytest.mark.asyncio
-async def test_release_waits_for_provisional_acquire(tmp_path: Path) -> None:
+async def test_release_waits_for_provisional_acquire(tmp_path: Path) -> None:  # pragma: win32 no cover
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def block_hook(_fd: int) -> None:
+    def block_hook(_fd: int) -> None:  # pragma: win32 no cover
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
 
@@ -113,7 +113,7 @@ async def test_release_waits_for_provisional_acquire(tmp_path: Path) -> None:
     await hook_started.wait()
     release_started = asyncio.Event()
 
-    async def release() -> None:
+    async def release() -> None:  # pragma: win32 no cover
         release_started.set()
         await lock.release()
 
@@ -157,7 +157,7 @@ async def test_release_returns_while_acquire_waits_for_external_holder(tmp_path:
 @_UNIX_FLOCK_ONLY
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
-async def test_release_cancellation_surfaces_backend_error(
+async def test_release_cancellation_surfaces_backend_error(  # pragma: win32 no cover
     tmp_path: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture, policy: ContextErrorPolicy
 ) -> None:
     lock = AsyncFileLock(tmp_path / "a", context_error_policy=policy)
@@ -168,10 +168,10 @@ async def test_release_cancellation_surfaces_backend_error(
     release_error = OSError(EIO, "release failed")
     release_count = 0
 
-    def fail_first_unlock(_fd: int, _operation: int) -> None:
+    def fail_first_unlock(_fd: int, _operation: int) -> None:  # pragma: win32 no cover
         nonlocal release_count
         release_count += 1
-        if release_count == 1:
+        if release_count == 1:  # pragma: win32 no cover
             loop.call_soon_threadsafe(release_started.set)
             assert finish_release.wait(timeout=5)
             raise release_error
@@ -182,13 +182,13 @@ async def test_release_cancellation_surfaces_backend_error(
     task.cancel("cancel release")
     finish_release.set()
 
-    if policy == "chain":
-        with pytest.raises(OSError, match="release failed") as info:
+    if policy == "chain":  # pragma: win32 no cover
+        with pytest.raises(OSError, match="release failed") as info:  # pragma: win32 no cover
             await task
         cancellation = info.value.__context__
         assert info.value is release_error
-    else:
-        with pytest.raises(BaseExceptionGroup) as info:
+    else:  # pragma: win32 no cover
+        with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
             await task
         cancellation, grouped_release_error = info.value.exceptions
         assert grouped_release_error is release_error

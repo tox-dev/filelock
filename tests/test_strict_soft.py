@@ -278,14 +278,14 @@ def test_strict_soft_rejects_non_directory_coordination_path(tmp_path: Path) -> 
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix permission bits control claim readability")
-def test_strict_soft_unreadable_claim_fails_closed(tmp_path: Path) -> None:
+def test_strict_soft_unreadable_claim_fails_closed(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)
     lock.acquire()
     claim = Path(f"{lock_path}.filelock") / "claims" / lock.claims[0].name
     claim.chmod(0)
-    try:
-        with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
+    try:  # pragma: win32 no cover
+        with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):  # pragma: win32 no cover
             _ = StrictSoftFileLock(lock_path).claims
     finally:
         claim.chmod(0o600)
@@ -403,10 +403,10 @@ async def test_async_strict_soft_matches_claim_protocol(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="exercises Windows pathname sharing")
-def test_strict_soft_windows_release_allows_reacquire(tmp_path: Path) -> None:
+def test_strict_soft_windows_release_allows_reacquire(tmp_path: Path) -> None:  # pragma: win32 cover
     lock_path = tmp_path / "resource.lock"
 
-    with StrictSoftFileLock(lock_path) as first:
+    with StrictSoftFileLock(lock_path) as first:  # pragma: win32 cover
         assert first.claims[0].state == "held"
-    with StrictSoftFileLock(lock_path, timeout=0) as second:
+    with StrictSoftFileLock(lock_path, timeout=0) as second:  # pragma: win32 cover
         assert second.claims[0].state == "held"

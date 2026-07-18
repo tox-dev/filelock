@@ -55,7 +55,7 @@ _FORK_WARNING: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings(
         pytest.param(SoftFileLock, "collect", id="soft-collect"),
     ],
 )
-def test_child_cleanup_preserves_parent_lock(
+def test_child_cleanup_preserves_parent_lock(  # pragma: win32 no cover
     tmp_path: Path,
     lock_type: type[BaseFileLock],
     action: Literal["release", "context", "collect"],
@@ -85,7 +85,7 @@ def test_child_cleanup_preserves_parent_lock(
         pytest.param(AsyncSoftFileLock, SoftFileLock, id="soft"),
     ],
 )
-def test_async_child_release_preserves_parent_lock(
+def test_async_child_release_preserves_parent_lock(  # pragma: win32 no cover
     tmp_path: Path,
     async_lock_type: type[BaseAsyncFileLock],
     sync_lock_type: type[BaseFileLock],
@@ -110,7 +110,7 @@ def test_async_child_release_preserves_parent_lock(
 
 @_REQUIRES_FORK
 @_FORK_WARNING
-def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None:
+def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = str(tmp_path / "parent.lock")
     older = SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5)
     newer = SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5)
@@ -129,7 +129,7 @@ def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None
 
     assert os.waitstatus_to_exitcode(status) == 0
     contender = SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5)
-    with pytest.raises(Timeout):
+    with pytest.raises(Timeout):  # pragma: win32 no cover
         contender.acquire_write(timeout=0)
     contender.close()
     older.release()
@@ -138,14 +138,14 @@ def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None
 
 @_REQUIRES_FORK
 @_FORK_WARNING
-def test_child_closes_descriptor_held_by_vanished_thread(tmp_path: Path) -> None:
+def test_child_closes_descriptor_held_by_vanished_thread(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = str(tmp_path / "parent.lock")
     descriptor: Queue[int] = Queue()
     acquired, release = threading.Event(), threading.Event()
 
-    def hold_lock() -> None:
+    def hold_lock() -> None:  # pragma: win32 no cover
         lock = FileLock(path, thread_local=True, is_singleton=False, on_acquired=descriptor.put)
-        with lock:
+        with lock:  # pragma: win32 no cover
             acquired.set()
             release.wait()
 
@@ -166,7 +166,7 @@ def test_child_closes_descriptor_held_by_vanished_thread(tmp_path: Path) -> None
 
 
 @_REQUIRES_FORK
-@_FORK_WARNING
+@_FORK_WARNING  # pragma: win32 no cover
 def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFixture) -> None:
     path = str(tmp_path / "parent.lock")
     lock = FileLock(path, thread_local=False, is_singleton=False)
@@ -174,8 +174,8 @@ def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFi
     descriptors: list[int] = []
     real_fstat = os.fstat
 
-    def delayed_fstat(fd: int) -> os.stat_result:
-        if threading.current_thread() is worker and not entered.is_set():
+    def delayed_fstat(fd: int) -> os.stat_result:  # pragma: win32 no cover
+        if threading.current_thread() is worker and not entered.is_set():  # pragma: win32 no cover
             descriptors.append(fd)
             entered.set()
             proceed.wait()
@@ -183,7 +183,7 @@ def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFi
 
     mocker.patch("os.fstat", side_effect=delayed_fstat)
 
-    def acquire_lock() -> None:
+    def acquire_lock() -> None:  # pragma: win32 no cover
         lock.acquire()
         acquired.set()
 
@@ -210,15 +210,15 @@ def test_unrelated_acquisitions_reach_filesystem_boundary_concurrently(tmp_path:
     boundary = threading.Barrier(3, timeout=5)
     real_fstat = os.fstat
 
-    def wait_at_boundary(fd: int) -> os.stat_result:
-        if threading.current_thread().name.startswith("concurrent-acquire-"):
+    def wait_at_boundary(fd: int) -> os.stat_result:  # pragma: win32 no cover
+        if threading.current_thread().name.startswith("concurrent-acquire-"):  # pragma: win32 no cover
             boundary.wait()
         return real_fstat(fd)
 
     mocker.patch("os.fstat", side_effect=wait_at_boundary)
 
-    def acquire_lock(path: str) -> None:
-        with FileLock(path, is_singleton=False):
+    def acquire_lock(path: str) -> None:  # pragma: win32 no cover
+        with FileLock(path, is_singleton=False):  # pragma: win32 no cover
             pass
 
     workers = [
@@ -229,19 +229,19 @@ def test_unrelated_acquisitions_reach_filesystem_boundary_concurrently(tmp_path:
         )
         for index in range(2)
     ]
-    for worker in workers:
+    for worker in workers:  # pragma: win32 no cover
         worker.start()
-    try:
+    try:  # pragma: win32 no cover
         boundary.wait()
     finally:
-        for worker in workers:
+        for worker in workers:  # pragma: win32 no cover
             worker.join(timeout=5)
 
     assert [worker.is_alive() for worker in workers] == [False, False]
 
 
 @_REQUIRES_FORK
-@_FORK_WARNING
+@_FORK_WARNING  # pragma: win32 no cover
 @pytest.mark.parametrize("lock_type", [pytest.param(FileLock, id="native"), pytest.param(SoftFileLock, id="soft")])
 def test_child_singleton_registry_drops_parent_instance(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     path = str(tmp_path / "parent.lock")
@@ -258,7 +258,7 @@ def test_child_singleton_registry_drops_parent_instance(tmp_path: Path, lock_typ
 
 
 @_REQUIRES_FORK
-@_FORK_WARNING
+@_FORK_WARNING  # pragma: win32 no cover
 @pytest.mark.parametrize("lock_type", [pytest.param(FileLock, id="native"), pytest.param(SoftFileLock, id="soft")])
 def test_inherited_idle_lock_rejects_acquire(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     lock = lock_type(str(tmp_path / "parent.lock"), is_singleton=False)
@@ -278,7 +278,7 @@ def test_inherited_idle_lock_rejects_acquire(tmp_path: Path, lock_type: type[Bas
 
 @_REQUIRES_FORK
 @_FORK_WARNING
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # pragma: win32 no cover
     "lock_type", [pytest.param(AsyncFileLock, id="native"), pytest.param(AsyncSoftFileLock, id="soft")]
 )
 def test_inherited_idle_async_lock_rejects_acquire(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
@@ -299,7 +299,7 @@ def test_inherited_idle_async_lock_rejects_acquire(tmp_path: Path, lock_type: ty
 
 @_REQUIRES_FORK
 @_FORK_WARNING
-def test_fork_from_on_acquired_invalidates_child_acquire(tmp_path: Path) -> None:
+def test_fork_from_on_acquired_invalidates_child_acquire(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = str(tmp_path / "parent.lock")
     fork_result = -1
     lock: FileLock
@@ -311,7 +311,7 @@ def test_fork_from_on_acquired_invalidates_child_acquire(tmp_path: Path) -> None
             exit_child(0 if "inherited across fork" in str(exception) else 1)
         exit_child(1)
 
-    def fork_from_hook(_fd: int) -> None:
+    def fork_from_hook(_fd: int) -> None:  # pragma: win32 no cover
         nonlocal fork_result
         fork_result = fork_process(inherited_child)
 
@@ -333,7 +333,7 @@ def test_reader_directory_registration_failure_closes_descriptor(tmp_path: Path,
     real_fstat = os.fstat
     directory_fds: list[int] = []
 
-    def fail_directory_fstat(fd: int) -> os.stat_result:
+    def fail_directory_fstat(fd: int) -> os.stat_result:  # pragma: win32 no cover
         stat_result = real_fstat(fd)
         assert S_ISDIR(stat_result.st_mode)
         directory_fds.append(fd)
@@ -341,10 +341,10 @@ def test_reader_directory_registration_failure_closes_descriptor(tmp_path: Path,
         raise OSError(msg)
 
     mocker.patch("os.fstat", side_effect=fail_directory_fstat)
-    with pytest.raises(OSError, match="directory identity unavailable"):
+    with pytest.raises(OSError, match="directory identity unavailable"):  # pragma: win32 no cover
         lock.acquire_read()
 
-    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
+    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):  # pragma: win32 no cover
         real_fstat(directory_fds[0])
     lock.close()
 
@@ -360,21 +360,21 @@ def test_reader_directory_registration_and_close_errors_are_grouped(tmp_path: Pa
     real_close, real_fstat = os.close, os.fstat
     directory_fds: list[int] = []
 
-    def fail_directory_fstat(fd: int) -> os.stat_result:
+    def fail_directory_fstat(fd: int) -> os.stat_result:  # pragma: win32 no cover
         stat_result = real_fstat(fd)
         assert S_ISDIR(stat_result.st_mode)
         directory_fds.append(fd)
         msg = "directory identity unavailable"
         raise OSError(msg)
 
-    def fail_directory_close(fd: int) -> None:
+    def fail_directory_close(fd: int) -> None:  # pragma: win32 no cover
         assert fd == directory_fds[0]
         msg = "directory close failed"
         raise OSError(msg)
 
     mocker.patch("os.fstat", side_effect=fail_directory_fstat)
     mocker.patch("os.close", side_effect=fail_directory_close)
-    with pytest.raises(BaseExceptionGroup) as info:
+    with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
         lock.acquire_read()
     real_close(directory_fds[0])
     lock.close()
@@ -387,7 +387,7 @@ def test_reader_directory_registration_and_close_errors_are_grouped(tmp_path: Pa
 
 @_REQUIRES_FORK
 @_FORK_WARNING
-def test_child_callback_registered_before_filelock_can_acquire(tmp_path: Path) -> None:
+def test_child_callback_registered_before_filelock_can_acquire(tmp_path: Path) -> None:  # pragma: win32 no cover
     script = """
 import os
 import sys
@@ -444,7 +444,7 @@ parent.release()
         pytest.param("soft-rw", id="soft-read-write"),
     ],
 )
-def test_child_interpreter_exit_preserves_parent_lock(
+def test_child_interpreter_exit_preserves_parent_lock(  # pragma: win32 no cover
     tmp_path: Path, kind: Literal["native", "soft", "soft-rw"]
 ) -> None:
     script = """
@@ -532,7 +532,7 @@ def _run_child_cleanup(
     exit_child(0)
 
 
-def _probe_lock(lock_type: type[BaseFileLock], path: str) -> bool:
+def _probe_lock(lock_type: type[BaseFileLock], path: str) -> bool:  # pragma: win32 no cover
     read_fd, write_fd = os.pipe()
 
     def probe_child() -> NoReturn:

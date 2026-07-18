@@ -98,7 +98,7 @@ def test_break_lock_file_break_path_not_targetable_by_a_peer(tmp_path: Path, moc
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink-to-dir raises IsADirectoryError only on Unix")
-def test_raise_on_not_writable_file_does_not_follow_symlink_to_dir(tmp_path: Path) -> None:
+def test_raise_on_not_writable_file_does_not_follow_symlink_to_dir(tmp_path: Path) -> None:  # pragma: win32 no cover
     target = tmp_path / "targetdir"
     target.mkdir()
     link = tmp_path / "my.lock"
@@ -109,7 +109,7 @@ def test_raise_on_not_writable_file_does_not_follow_symlink_to_dir(tmp_path: Pat
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink + 0o444 semantics differ on Windows")
-@_SKIP_AS_ROOT
+@_SKIP_AS_ROOT  # pragma: win32 no cover
 def test_raise_on_not_writable_file_does_not_follow_symlink_to_readonly(tmp_path: Path) -> None:
     target = tmp_path / "readonly"
     target.write_text("x", encoding="utf-8")
@@ -121,21 +121,21 @@ def test_raise_on_not_writable_file_does_not_follow_symlink_to_readonly(tmp_path
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="real dir raises PermissionError on Windows")
-def test_raise_on_not_writable_file_still_rejects_real_directory(tmp_path: Path) -> None:
+def test_raise_on_not_writable_file_still_rejects_real_directory(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = tmp_path / "a_dir"
     path.mkdir()
-    with pytest.raises(IsADirectoryError):
+    with pytest.raises(IsADirectoryError):  # pragma: win32 no cover
         raise_on_not_writable_file(str(path))
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only files in the same way")
 @_SKIP_AS_ROOT
-def test_raise_on_not_writable_file_still_rejects_readonly_file(tmp_path: Path) -> None:
+def test_raise_on_not_writable_file_still_rejects_readonly_file(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = tmp_path / "ro.lock"
     path.write_text("x", encoding="utf-8")
     path.chmod(0o444)
-    try:
-        with pytest.raises(PermissionError):
+    try:  # pragma: win32 no cover
+        with pytest.raises(PermissionError):  # pragma: win32 no cover
             raise_on_not_writable_file(str(path))
     finally:
         path.chmod(0o644)
@@ -158,9 +158,9 @@ def test_raise_on_not_writable_file_rejects_readonly_file_any_mtime(tmp_path: Pa
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a real directory raises PermissionError on Windows")
-def test_raise_on_not_writable_file_rejects_directory_with_mtime_zero(tmp_path: Path) -> None:
+def test_raise_on_not_writable_file_rejects_directory_with_mtime_zero(tmp_path: Path) -> None:  # pragma: win32 no cover
     path = tmp_path / "a_dir"
     path.mkdir()
     os.utime(path, (0, 0))
-    with pytest.raises(IsADirectoryError):
+    with pytest.raises(IsADirectoryError):  # pragma: win32 no cover
         raise_on_not_writable_file(str(path))

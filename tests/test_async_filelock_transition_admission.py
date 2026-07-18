@@ -80,12 +80,12 @@ async def test_queued_acquire_honors_own_admission_policy(
 
 @_UNIX_FLOCK_ONLY
 @pytest.mark.asyncio
-async def test_queued_acquire_proceeds_after_prior_waiter_cancels(tmp_path: Path) -> None:
+async def test_queued_acquire_proceeds_after_prior_waiter_cancels(tmp_path: Path) -> None:  # pragma: win32 no cover
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def block_hook(_fd: int) -> None:
+    def block_hook(_fd: int) -> None:  # pragma: win32 no cover
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
 
@@ -97,8 +97,8 @@ async def test_queued_acquire_proceeds_after_prior_waiter_cancels(tmp_path: Path
     third_task, third_started = _start_signaled_acquire(lock)
     await third_started.wait()
     second_task.cancel("abandon queued acquire")
-    try:
-        with pytest.raises(asyncio.CancelledError) as info:
+    try:  # pragma: win32 no cover
+        with pytest.raises(asyncio.CancelledError) as info:  # pragma: win32 no cover
             await second_task
         assert_cancellation_message(info.value, "abandon queued acquire")
     finally:
@@ -113,10 +113,10 @@ async def test_queued_acquire_proceeds_after_prior_waiter_cancels(tmp_path: Path
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-def _start_signaled_acquire(lock: AsyncFileLock) -> tuple[asyncio.Task[None], asyncio.Event]:
+def _start_signaled_acquire(lock: AsyncFileLock) -> tuple[asyncio.Task[None], asyncio.Event]:  # pragma: win32 no cover
     started = asyncio.Event()
 
-    async def acquire() -> None:
+    async def acquire() -> None:  # pragma: win32 no cover
         started.set()
         await lock.acquire()
 

@@ -30,7 +30,7 @@ _T = TypeVar("_T")
 
 
 class _CancellationObservedTask(asyncio.Task[_T]):
-    def __init__(
+    def __init__(  # pragma: win32 no cover
         self,
         coroutine: Coroutine[None, None, _T],
         cancellation_seen: threading.Event,
@@ -40,19 +40,19 @@ class _CancellationObservedTask(asyncio.Task[_T]):
         self._cancellation_seen = cancellation_seen
         super().__init__(coroutine, loop=loop)
 
-    def cancel(self, msg: object | None = None) -> bool:
+    def cancel(self, msg: object | None = None) -> bool:  # pragma: win32 no cover
         # Task.cancel accepts arbitrary payloads; object is the narrowest accurate type for its public contract.
         self._cancellation_seen.set()
         return super().cancel(msg)
 
 
 @_UNIX_FLOCK_ONLY
-def test_runner_shutdown_waits_for_executor_acquire_rollback(tmp_path: Path) -> None:
+def test_runner_shutdown_waits_for_executor_acquire_rollback(tmp_path: Path) -> None:  # pragma: win32 no cover
     hook_started = threading.Event()
     finish_hook = threading.Event()
     cancellation_seen = threading.Event()
 
-    def block_hook(_fd: int) -> None:
+    def block_hook(_fd: int) -> None:  # pragma: win32 no cover
         hook_started.set()
         assert finish_hook.wait(timeout=5)
 
@@ -63,7 +63,7 @@ def test_runner_shutdown_waits_for_executor_acquire_rollback(tmp_path: Path) -> 
         args=(lock, hook_started, cancellation_seen, tasks),
     )
     runner.start()
-    try:
+    try:  # pragma: win32 no cover
         tasks.get(timeout=5)
         assert hook_started.wait(timeout=5)
         assert cancellation_seen.wait(timeout=5), "asyncio runner did not cancel the pending lock task"
@@ -77,7 +77,7 @@ def test_runner_shutdown_waits_for_executor_acquire_rollback(tmp_path: Path) -> 
 
 @_UNIX_FLOCK_ONLY
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
-def test_runner_shutdown_preserves_body_cancellation_and_release_errors(
+def test_runner_shutdown_preserves_body_cancellation_and_release_errors(  # pragma: win32 no cover
     tmp_path: Path, mocker: MockerFixture, policy: ContextErrorPolicy
 ) -> None:
     body_error = ValueError("body failed")
@@ -90,9 +90,9 @@ def test_runner_shutdown_preserves_body_cancellation_and_release_errors(
     fcntl = get_fcntl()
     real_flock = fcntl.flock
 
-    def fail_first_unlock(fd: int, operation: int) -> None:
+    def fail_first_unlock(fd: int, operation: int) -> None:  # pragma: win32 no cover
         nonlocal failed
-        if operation & fcntl.LOCK_UN and not failed:
+        if operation & fcntl.LOCK_UN and not failed:  # pragma: win32 no cover
             failed = True
             release_started.set()
             assert finish_release.wait(timeout=5)
@@ -106,7 +106,7 @@ def test_runner_shutdown_preserves_body_cancellation_and_release_errors(
         body_error,
         release_started,
     )
-    try:
+    try:  # pragma: win32 no cover
         assert release_started.wait(timeout=5)
         assert cancellation_seen.wait(timeout=5), "asyncio runner did not cancel the pending lock task"
     finally:
@@ -115,12 +115,12 @@ def test_runner_shutdown_preserves_body_cancellation_and_release_errors(
 
     assert (runner.is_alive(), task.done()) == (False, True)
     error = task.exception()
-    if policy == "chain":
+    if policy == "chain":  # pragma: win32 no cover
         assert error is release_error
         cancellation = release_error.__context__
         assert isinstance(cancellation, asyncio.CancelledError)
         assert (cancellation.__context__, prior_error.__context__) == (prior_error, body_error)
-    else:
+    else:  # pragma: win32 no cover
         assert isinstance(error, BaseExceptionGroup)
         cancellation = error.exceptions[1]
         assert isinstance(cancellation, asyncio.CancelledError)
@@ -136,13 +136,13 @@ def test_runner_shutdown_preserves_body_cancellation_and_release_errors(
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-def _run_unawaited_acquire(
+def _run_unawaited_acquire(  # pragma: win32 no cover
     lock: AsyncFileLock,
     hook_started: threading.Event,
     cancellation_seen: threading.Event,
     tasks: Queue[asyncio.Task[AsyncAcquireReturnProxy]],
 ) -> None:
-    async def start_acquire() -> None:
+    async def start_acquire() -> None:  # pragma: win32 no cover
         tasks.put(
             _CancellationObservedTask(
                 lock.acquire(),
@@ -155,7 +155,7 @@ def _run_unawaited_acquire(
     asyncio.run(start_acquire())
 
 
-def _start_unawaited_context_failure(
+def _start_unawaited_context_failure(  # pragma: win32 no cover
     lock: AsyncFileLock,
     body_error: BaseException,
     release_started: threading.Event,
@@ -171,18 +171,18 @@ def _start_unawaited_context_failure(
     return runner, task, cancellation_seen
 
 
-def _run_unawaited_context_failure(
+def _run_unawaited_context_failure(  # pragma: win32 no cover
     lock: AsyncFileLock,
     body_error: BaseException,
     release_started: threading.Event,
     cancellation_seen: threading.Event,
     tasks: Queue[asyncio.Task[None]],
 ) -> None:
-    async def fail_in_context() -> None:
-        async with lock:
+    async def fail_in_context() -> None:  # pragma: win32 no cover
+        async with lock:  # pragma: win32 no cover
             raise body_error
 
-    async def start_context() -> None:
+    async def start_context() -> None:  # pragma: win32 no cover
         tasks.put(
             _CancellationObservedTask(
                 fail_in_context(),

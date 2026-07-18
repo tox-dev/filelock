@@ -563,7 +563,7 @@ def recursive_lock(lock_file: str, mode: Literal["read", "write"], success_flag:
 
 def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acquired_event: EventType) -> None:
     lock = ReadWriteLock(lock_file)
-    with lock.read_lock() if mode == "read" else lock.write_lock():
+    with lock.read_lock() if mode == "read" else lock.write_lock():  # pragma: win32 no cover
         acquired_event.set()
-        while True:
+        while True:  # pragma: win32 no cover
             time.sleep(0.1)

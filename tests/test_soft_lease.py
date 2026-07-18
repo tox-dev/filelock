@@ -93,15 +93,15 @@ def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> N
 
 
 @_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
-def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) -> None:
+def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     # A wedged holder: its marker stays on disk, but no refresh ever lands on it again, so the claim ages out.
     mocker.patch("filelock._lease.touch")
     holder = _lease(marker)
     holder.acquire()
 
-    try:
+    try:  # pragma: win32 no cover
         peer = _lease(marker, timeout=_DURATION * 5)
-        with peer:
+        with peer:  # pragma: win32 no cover
             assert peer.is_lock_held_by_us
             assert peer.token != holder.token
     finally:
@@ -129,11 +129,11 @@ def test_lease_reclaims_a_dead_same_host_holder(marker: Path) -> None:
 
 
 @_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
-def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None:
+def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None:  # pragma: win32 no cover
     seen: list[LeaseCompromise] = []
     lease = _lease(marker, on_compromise=seen.append)
 
-    with lease:
+    with lease:  # pragma: win32 no cover
         token = lease.token
         marker.unlink()
         time.sleep(_HEARTBEAT * 5)
@@ -142,13 +142,13 @@ def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None
 
 
 @_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
-def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None:
+def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None:  # pragma: win32 no cover
     seen: list[LeaseCompromise] = []
     holder = _lease(marker, on_compromise=seen.append)
     peer = _lease(marker)
 
-    try:
-        with holder:
+    try:  # pragma: win32 no cover
+        with holder:  # pragma: win32 no cover
             marker.unlink()
             peer.acquire()  # a peer publishes a fresh marker at the same path
             time.sleep(_HEARTBEAT * 5)
@@ -193,11 +193,11 @@ def test_lease_tolerates_a_transient_refresh_error(marker: Path, mocker: MockerF
 
 
 @_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
-def test_lease_reports_one_compromise_per_claim(marker: Path) -> None:
+def test_lease_reports_one_compromise_per_claim(marker: Path) -> None:  # pragma: win32 no cover
     seen: list[LeaseCompromise] = []
     lease = _lease(marker, on_compromise=seen.append)
 
-    with lease:
+    with lease:  # pragma: win32 no cover
         marker.unlink()
         time.sleep(_HEARTBEAT * 6)  # several refreshes fail, but the holder is told once
 
@@ -205,10 +205,10 @@ def test_lease_reports_one_compromise_per_claim(marker: Path) -> None:
 
 
 @_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
-def test_lease_records_the_compromise_without_a_callback(marker: Path) -> None:
+def test_lease_records_the_compromise_without_a_callback(marker: Path) -> None:  # pragma: win32 no cover
     lease = _lease(marker)
 
-    with lease:
+    with lease:  # pragma: win32 no cover
         marker.unlink()
         time.sleep(_HEARTBEAT * 5)
         compromise = lease.compromise
@@ -226,12 +226,12 @@ def test_lease_holds_an_uncompromised_claim(marker: Path) -> None:
 
 
 @_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
-def test_lease_can_be_released_from_the_compromise_callback(marker: Path) -> None:
+def test_lease_can_be_released_from_the_compromise_callback(marker: Path) -> None:  # pragma: win32 no cover
     # The callback runs on the heartbeat thread, so releasing from it needs a context that thread can see, and it must
     # not deadlock joining itself.
     holder: list[SoftFileLease] = []
 
-    def release_the_claim(_: LeaseCompromise) -> None:
+    def release_the_claim(_: LeaseCompromise) -> None:  # pragma: win32 no cover
         holder[0].release()
 
     lease = SoftFileLease(
@@ -252,19 +252,19 @@ def test_lease_can_be_released_from_the_compromise_callback(marker: Path) -> Non
 
 
 @_REQUIRES_TAKING_A_LIVE_HOLDERS_MARKER
-def test_lease_release_from_the_callback_needs_a_shared_context(marker: Path) -> None:
+def test_lease_release_from_the_callback_needs_a_shared_context(marker: Path) -> None:  # pragma: win32 no cover
     # With the default thread-local context the heartbeat thread sees no claim of its own, so its release() does
     # nothing. Pin the trap the docstring warns about.
     holder: list[SoftFileLease] = []
 
-    def release_the_claim(_: LeaseCompromise) -> None:
+    def release_the_claim(_: LeaseCompromise) -> None:  # pragma: win32 no cover
         holder[0].release()
 
     lease = _lease(marker, on_compromise=release_the_claim)
     holder.append(lease)
     lease.acquire()
 
-    try:
+    try:  # pragma: win32 no cover
         marker.unlink()
         time.sleep(_HEARTBEAT * 5)
         assert lease.is_locked, "a thread-local release() from the heartbeat thread silently did nothing"

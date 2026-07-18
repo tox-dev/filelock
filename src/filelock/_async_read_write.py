@@ -211,7 +211,7 @@ class AsyncReadWriteLock:
 
         """
         _ensure_current_process()
-        if self._inherited:
+        if self._inherited:  # pragma: win32 no cover
             return
         await self._run(self._lock.release, force=force)
 
@@ -223,7 +223,7 @@ class AsyncReadWriteLock:
 
         """
         _ensure_current_process()
-        if self._inherited:
+        if self._inherited:  # pragma: win32 no cover
             return
         if self._closed:
             return
@@ -300,7 +300,7 @@ class AsyncReadWriteLock:
 
     def _raise_if_unusable(self) -> None:
         _ensure_current_process()
-        if self._inherited:
+        if self._inherited:  # pragma: win32 no cover
             msg = f"AsyncReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
             raise RuntimeError(msg)
         if self._closed:

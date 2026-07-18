@@ -53,12 +53,12 @@ def test_open_mode(lock_type: type[BaseFileLock], mode: int, expected: int, tmp_
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not apply umask to file permissions")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_default_mode_respects_umask(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+def test_default_mode_respects_umask(lock_type: type[BaseFileLock], tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path = tmp_path / "a.lock"
     lock = lock_type(str(lock_path))
 
     initial_umask = os.umask(0o022)
-    try:
+    try:  # pragma: win32 no cover
         lock.acquire()
         assert lock.is_locked
         assert filemode(lock_path.stat().st_mode) == "-rw-r--r--"
@@ -69,7 +69,7 @@ def test_default_mode_respects_umask(lock_type: type[BaseFileLock], tmp_path: Pa
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
-def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:
+def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:  # pragma: win32 no cover
     lock = FileLock(str(tmp_path / "a.lock"))
 
     fchmod_spy = mocker.patch("os.fchmod")
@@ -80,7 +80,7 @@ def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
-def test_explicit_mode_calls_fchmod(tmp_path: Path, mocker: MagicMock) -> None:
+def test_explicit_mode_calls_fchmod(tmp_path: Path, mocker: MagicMock) -> None:  # pragma: win32 no cover
     lock = FileLock(str(tmp_path / "a.lock"), mode=0o644)
 
     fchmod_spy = mocker.spy(os, "fchmod")
@@ -92,12 +92,12 @@ def test_explicit_mode_calls_fchmod(tmp_path: Path, mocker: MagicMock) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
-def test_explicit_mode_overrides_umask(tmp_path: Path) -> None:
+def test_explicit_mode_overrides_umask(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path = tmp_path / "a.lock"
     lock = FileLock(str(lock_path), mode=0o666)
 
     initial_umask = os.umask(0o022)
-    try:
+    try:  # pragma: win32 no cover
         lock.acquire()
         assert lock.is_locked
         assert filemode(lock_path.stat().st_mode) == "-rw-rw-rw-"
