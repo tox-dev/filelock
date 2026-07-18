@@ -15,15 +15,15 @@ if TYPE_CHECKING:
 
 # The crash points are hit through sys.addaudithook on os.link and os.remove events, which only CPython emits. PyPy
 # runs the audit hook but never fires those events, so the child would finish the acquisition instead of crashing.
-pytestmark = pytest.mark.skipif(
-    sys.implementation.name != "cpython",
-    reason="crash injection needs the os.link and os.remove audit events CPython emits",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        sys.implementation.name != "cpython",
+        reason="crash injection needs the os.link and os.remove audit events CPython emits",
+    ),
+    pytest.mark.requires_hard_links,
+]
 
 _CRASH_STATUS: Final[int] = 73
-
-
-pytestmark = pytest.mark.requires_hard_links
 
 
 def test_strict_soft_recovers_every_claim_for_crashed_token(tmp_path: Path) -> None:
