@@ -161,10 +161,10 @@ else:  # pragma: win32 no cover
                     os.fchmod(fd, self._context.mode)
 
         def _fallback_to_soft_lock(self) -> None:
-            from ._soft import SoftFileLock  # noqa: PLC0415
+            from ._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]
 
             warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
-            from .asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # noqa: PLC0415
+            from .asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # ruff:ignore[import-outside-top-level]
 
             self.__class__ = AsyncSoftFileLock if isinstance(self, BaseAsyncFileLock) else SoftFileLock
 

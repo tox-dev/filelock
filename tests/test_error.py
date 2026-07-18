@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pickle  # noqa: S403
+import pickle  # ruff:ignore[suspicious-pickle-import]
 from typing import TYPE_CHECKING
 
 import pytest
@@ -25,7 +25,7 @@ def test_timeout_attribute(timeout: Timeout, extract: Callable[[Timeout], object
 
 
 def test_timeout_pickle(timeout: Timeout) -> None:
-    reloaded = pickle.loads(pickle.dumps(timeout))  # noqa: S301
+    reloaded = pickle.loads(pickle.dumps(timeout))  # ruff:ignore[suspicious-pickle-usage]
     assert (type(reloaded), str(reloaded), repr(reloaded), reloaded.lock_file) == (
         type(timeout),
         str(timeout),

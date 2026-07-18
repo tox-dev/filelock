@@ -69,12 +69,12 @@ _AT = TypeVar("_AT", bound="BaseAsyncFileLock")
 
 
 class AsyncFileLockMeta(FileLockMeta):
-    def __call__(  # noqa: PLR0913
-        cls: type[_AT],  # noqa: N805
+    def __call__(  # ruff:ignore[too-many-arguments]
+        cls: type[_AT],  # ruff:ignore[invalid-first-argument-name-for-method]
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = _UNSET_FILE_MODE,
-        thread_local: bool = False,  # noqa: FBT001, FBT002
+        thread_local: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
         *,
         blocking: bool = True,
         is_singleton: bool = False,
@@ -133,12 +133,12 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         # fast, so scope holders to the task.
         return asyncio.current_task()
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff:ignore[too-many-arguments]
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = _UNSET_FILE_MODE,
-        thread_local: bool = False,  # noqa: FBT001, FBT002
+        thread_local: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
         *,
         blocking: bool = True,
         is_singleton: bool = False,
@@ -392,14 +392,14 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             acquire_error: BaseException | None = None
             try:
                 await _drain_future(acquire_future)
-            except BaseException as error:  # noqa: BLE001  # reported with the cancellation below
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 acquire_error = error
 
             rollback_error: BaseException | None = None
             if self.is_locked:
                 try:
                     await _drain_future(self._start_tracked_release())
-                except BaseException as error:  # noqa: BLE001  # reported with the cancellation below
+                except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                     rollback_error = error
 
             if acquire_error is not None:
@@ -427,7 +427,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         if self.is_locked:
             try:
                 await _drain_future(self._start_tracked_release())
-            except BaseException as rollback_error:  # noqa: BLE001  # both backend errors must surface
+            except BaseException as rollback_error:  # ruff:ignore[blind-except]  # both backend errors must surface
                 self._raise_acquire_rollback_errors(acquire_error, rollback_error)
         raise acquire_error
 
@@ -459,7 +459,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         first_error.__context__ = cancellation
         _raise_chained_errors(first_error, second_error)
 
-    async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # noqa: FBT001, FBT002
+    async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
         """
         Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
         itself may be deleted automatically, the behavior is platform-specific.
@@ -487,7 +487,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         except asyncio.CancelledError as cancellation:
             try:
                 await _drain_future(release_future)
-            except BaseException as release_error:  # noqa: BLE001  # cancellation and backend failure must both surface
+            except BaseException as release_error:  # ruff:ignore[blind-except]  # cancellation and backend failure must both surface
                 self._commit_release_if_released()
                 self._raise_cancelled_errors(_ASYNC_RELEASE_CANCELLATION_ERRORS, cancellation, release_error)
             self._commit_release()
@@ -548,16 +548,16 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         tracking_error: BaseException | None = None
         try:
             self._register_context_descriptor()
-        except BaseException as error:  # noqa: BLE001  # preserve registration and acquisition failures
+        except BaseException as error:  # ruff:ignore[blind-except]  # preserve registration and acquisition failures
             registration_error = error
             try:
                 # Rollback may fail too; retain the fd so a child can close it without another identity probe.
                 self._register_unverified_context_descriptor()
-            except BaseException as error:  # noqa: BLE001  # pragma: no cover - allocation/control-flow during fallback
+            except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
                 tracking_error = error
         try:
             await _drain_future(self._start_tracked_release())
-        except BaseException as rollback_error:  # noqa: BLE001  # preserve rollback and acquisition failures
+        except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and acquisition failures
             if registration_error is None and tracking_error is None:
                 self._raise_acquire_rollback_errors(acquisition_error, rollback_error)
             _raise_cleanup_errors(
@@ -577,11 +577,11 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         try:
             # Rollback may fail too; retain the fd so a child can close it without another identity probe.
             self._register_unverified_context_descriptor()
-        except BaseException as error:  # noqa: BLE001  # pragma: no cover - allocation/control-flow during fallback
+        except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
             tracking_error = error
         try:
             await _drain_future(self._start_tracked_release())
-        except BaseException as rollback_error:  # noqa: BLE001  # preserve rollback and registration failures
+        except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and registration failures
             _raise_cleanup_errors(
                 "descriptor registration cleanup failed", registration_error, tracking_error, rollback_error
             )
@@ -597,7 +597,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             callback_context = callback_error.__context__
             try:
                 await _drain_future(self._start_tracked_release())
-            except BaseException as release_error:  # noqa: BLE001  # both errors surface via the group below
+            except BaseException as release_error:  # ruff:ignore[blind-except]  # both errors surface via the group below
                 _raise_body_and_release(callback_error, release_error)
             callback_error.__context__ = callback_context
             raise
@@ -712,19 +712,19 @@ class AsyncThreadLocalFileContext(AsyncFileLockContext, local):
 class AsyncAcquireReturnProxy:
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseAsyncFileLock) -> None:  # noqa: D107
+    def __init__(self, lock: BaseAsyncFileLock) -> None:  # ruff:ignore[undocumented-public-init]
         self.lock = lock
 
-    async def __aenter__(self) -> BaseAsyncFileLock:  # noqa: D105
+    async def __aenter__(self) -> BaseAsyncFileLock:  # ruff:ignore[undocumented-magic-method]
         return self.lock
 
-    async def __aexit__(  # noqa: D105
+    async def __aexit__(  # ruff:ignore[undocumented-magic-method]
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        await self.lock._release_in_context(exc_value)  # noqa: SLF001
+        await self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]
 
 
 class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):

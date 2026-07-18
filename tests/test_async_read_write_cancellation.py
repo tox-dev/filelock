@@ -441,7 +441,7 @@ def _patch_async_acquire_and_rollback_failure(
             try:
                 raise prior_rollback_error
             except LookupError:
-                raise rollback_error  # noqa: B904  # exercise implicit backend context preservation
+                raise rollback_error  # ruff:ignore[raise-without-from-inside-except]  # exercise implicit backend context preservation
         real_connection.rollback()
 
     _patch_async_connection(mocker, executescript=executescript, rollback=rollback)

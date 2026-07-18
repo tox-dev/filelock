@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import os
 import signal
-import subprocess  # noqa: S404  # isolates process-global audit hooks and fork exits
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolates process-global audit hooks and fork exits
 import sys
 import textwrap
 from pathlib import Path

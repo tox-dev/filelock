@@ -97,7 +97,9 @@ else:  # pragma: win32 no cover
             raise
         return True
 
-    if sys.platform == "linux":  # pragma: linux cover
+    if sys.platform in {"linux", "android"}:  # pragma: linux cover
+        # Termux/Android reports sys.platform == "android" but runs the Linux kernel, so /proc/<pid>/stat and the boot
+        # id are the same reliable start-time source; treat it exactly like Linux rather than the tokenless fallback.
         # comm (field 2) is wrapped in parentheses and may itself contain spaces or a ')', so the fixed fields start
         # after the final ')'. starttime is field 22 overall, the twentieth of those trailing fields (index 19).
         _STARTTIME_INDEX: Final[int] = 19

@@ -228,7 +228,7 @@ async def test_attempting_to_acquire_branch(
 
 
 @pytest.mark.asyncio
-async def test_thread_local_run_in_executor(tmp_path: Path) -> None:  # noqa: RUF029
+async def test_thread_local_run_in_executor(tmp_path: Path) -> None:  # ruff:ignore[unused-async]
     with pytest.raises(ValueError, match="run_in_executor is not supported when thread_local is True"):
         AsyncSoftFileLock(str(tmp_path / "a"), thread_local=True, run_in_executor=True)
 

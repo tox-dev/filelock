@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-class Timeout(TimeoutError):  # noqa: N818
+class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]
     """Raised when the lock could not be acquired in *timeout* seconds."""
 
     def __init__(self, lock_file: str) -> None:
@@ -28,7 +28,7 @@ class SoftFileLockLifetimeWarning(DeprecationWarning):
     """The configured soft-lock lifetime permits overlapping live holders after expiry."""
 
 
-class LeaseSettingsMismatch(ValueError):  # noqa: N818
+class LeaseSettingsMismatch(ValueError):  # ruff:ignore[error-suffix-on-exception-name]
     """A lease contender disagrees with the published claim about how long the lease lasts."""
 
 

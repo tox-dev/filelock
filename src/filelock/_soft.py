@@ -148,7 +148,7 @@ class SoftFileLock(BaseFileLock):
 
     def _release(self) -> None:
         fd = self._context.lock_file_fd
-        assert fd is not None  # noqa: S101
+        assert fd is not None  # ruff:ignore[assert]
         # Capture the held file's identity before closing so cleanup can refuse to unlink a successor's marker. A
         # supported lifetime lease lets a peer break our expired marker and create its own at this path before we
         # release; unlinking by path alone would then delete the successor's lock.
@@ -164,7 +164,7 @@ class SoftFileLock(BaseFileLock):
         except BaseException as close_error:
             try:
                 self._unlink_held_marker(identity)
-            except BaseException as cleanup_error:  # noqa: BLE001  # preserve control-flow cleanup failures
+            except BaseException as cleanup_error:  # ruff:ignore[blind-except]  # preserve control-flow cleanup failures
                 _raise_grouped_errors(
                     "lock descriptor close and marker cleanup both failed",
                     close_error,
@@ -192,7 +192,7 @@ class SoftFileLock(BaseFileLock):
                 if _file_identity(os.lstat(self.lock_file)) != identity:
                     return
                 Path(self.lock_file).unlink()
-            except OSError as exc:  # noqa: PERF203
+            except OSError as exc:  # ruff:ignore[try-except-in-loop]
                 if exc.errno not in {EACCES, EPERM}:
                     return
                 if attempt < _UNLINK_MAX_RETRIES - 1:
@@ -242,7 +242,7 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
         return None
     try:
         pid = int(lines[0])
-        start_token = int(lines[2]) if len(lines) == 3 else None  # noqa: PLR2004
+        start_token = int(lines[2]) if len(lines) == 3 else None  # ruff:ignore[magic-value-comparison]
     except ValueError:
         return None
     # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid

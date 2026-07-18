@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import subprocess  # noqa: S404  # the process must crash between two filesystem operations
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # the process must crash between two filesystem operations
 import sys
 import textwrap
 from typing import TYPE_CHECKING, Final
@@ -21,6 +21,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 _CRASH_STATUS: Final[int] = 73
+
+
+pytestmark = pytest.mark.requires_hard_links
 
 
 def test_strict_soft_recovers_every_claim_for_crashed_token(tmp_path: Path) -> None:

@@ -100,9 +100,11 @@ def _exception_group_cls() -> type[BaseException]:
     # BaseExceptionGroup is a builtin on 3.11+; on 3.10 it needs the exceptiongroup backport. filelock keeps zero
     # runtime dependencies, so the backport is imported lazily rather than required, and only group mode needs it.
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-        return BaseExceptionGroup  # noqa: F821  # builtin on 3.11+
+        return BaseExceptionGroup  # ruff:ignore[undefined-name]  # builtin on 3.11+
     # Alias the import so BaseExceptionGroup above stays the builtin rather than an unbound local of this function.
-    from exceptiongroup import BaseExceptionGroup as _Backport  # noqa: PLC0415  # pragma: no cover (<py311)
+    from exceptiongroup import (  # ruff:ignore[import-outside-top-level]  # pragma: no cover (<py311)
+        BaseExceptionGroup as _Backport,
+    )
 
     return _Backport  # pragma: no cover (<py311)
 
@@ -243,7 +245,7 @@ def _raise_chained_errors(first_error: BaseException, second_error: BaseExceptio
     if second_error is None:
         first_context = first_error.__context__
         try:
-            raise first_error  # noqa: TRY301  # the handler restores caller-supplied context before propagation
+            raise first_error  # ruff:ignore[raise-within-try]  # the handler restores caller-supplied context before propagation
         except BaseException:
             first_error.__context__ = first_context
             raise
@@ -252,11 +254,11 @@ def _raise_chained_errors(first_error: BaseException, second_error: BaseExceptio
         _append_exception_context(first_error, second_context)
     first_context = first_error.__context__
     try:
-        raise first_error  # noqa: TRY301  # the second raise needs this error as implicit context
-    except BaseException:  # noqa: BLE001  # first_error may be a control-flow exception
+        raise first_error  # ruff:ignore[raise-within-try]  # the second raise needs this error as implicit context
+    except BaseException:  # ruff:ignore[blind-except]  # first_error may be a control-flow exception
         first_error.__context__ = first_context
         try:
-            raise second_error  # noqa: TRY301  # the handler makes the chain interpreter-independent
+            raise second_error  # ruff:ignore[raise-within-try]  # the handler makes the chain interpreter-independent
         except BaseException:
             second_error.__context__ = first_error
             first_error.__context__ = first_context
@@ -318,7 +320,7 @@ def _canonical(path: str | os.PathLike[str]) -> str:
     not followed either.
     """
     parent, name = os.path.split(os.fspath(path))
-    return os.path.join(_resolve_dir(parent or os.curdir), name)  # noqa: PTH118  # string join matches abspath/realpath
+    return os.path.join(_resolve_dir(parent or os.curdir), name)  # ruff:ignore[os-path-join]  # string join matches abspath/realpath
 
 
 class _ThreadLocalRegistry(local):
@@ -338,12 +340,12 @@ class FileLockMeta(ABCMeta):
     _instances_lock: RLock
     _instances_under_construction: set[str]
 
-    def __call__(  # noqa: PLR0913
+    def __call__(  # ruff:ignore[too-many-arguments]
         cls: type[_T],
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = _UNSET_FILE_MODE,
-        thread_local: bool = True,  # noqa: FBT001, FBT002
+        thread_local: bool = True,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
         *,
         blocking: bool = True,
         is_singleton: bool = False,
@@ -420,7 +422,7 @@ class FileLockMeta(ABCMeta):
         params_to_check = {
             "thread_local": (thread_local, instance.is_thread_local()),
             "timeout": (timeout, instance.timeout),
-            "mode": (mode, instance._context.mode),  # noqa: SLF001
+            "mode": (mode, instance._context.mode),  # ruff:ignore[private-member-access]
             "blocking": (blocking, instance.blocking),
             "poll_interval": (poll_interval, instance.poll_interval),
             "lifetime": (lifetime, instance.lifetime),
@@ -503,7 +505,7 @@ class _InitParameterModel:
     default_params: dict[str, inspect.Parameter]
 
 
-def _resolve_lifetime(  # noqa: PLR0913
+def _resolve_lifetime(  # ruff:ignore[too-many-arguments]
     lifetime: float | None,
     *,
     supported: bool,
@@ -565,7 +567,7 @@ def _resolve_close_error_policy(policy: str) -> CloseErrorPolicy:
     return cast("CloseErrorPolicy", policy)
 
 
-def _resolve_preserve_lock_file(preserve: bool, *, supported: bool, cls_name: str) -> bool:  # noqa: FBT001
+def _resolve_preserve_lock_file(preserve: bool, *, supported: bool, cls_name: str) -> bool:  # ruff:ignore[boolean-type-hint-positional-argument]
     # An existence lock unlinks its marker to release, so preserving the pathname would defeat unlocking. Reject the
     # request rather than silently ignore it, since a caller asking for a stable identity must know it cannot be kept.
     if preserve and not supported:
@@ -594,7 +596,7 @@ def _resolve_on_acquired(
     return on_acquired
 
 
-class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa: PLR0904  # public config properties
+class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff:ignore[too-many-public-methods]  # public config properties
     """
     Abstract base class for a file lock object.
 
@@ -654,12 +656,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         cls._instances_lock = RLock()
         cls._instances_under_construction = set()
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff:ignore[too-many-arguments]
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
         mode: int = _UNSET_FILE_MODE,
-        thread_local: bool = True,  # noqa: FBT001, FBT002
+        thread_local: bool = True,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
         *,
         blocking: bool = True,
         is_singleton: bool = False,
@@ -1113,7 +1115,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         finally:
             self._transition_lock.release()
 
-    def release(self, force: bool = False) -> None:  # noqa: FBT001, FBT002
+    def release(self, force: bool = False) -> None:  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
         """
         Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
         itself may be deleted automatically, the behavior is platform-specific.
@@ -1284,7 +1286,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             callback_context = callback_error.__context__
             try:
                 self._release_with_fork_tracking()
-            except BaseException as release_error:  # noqa: BLE001  # both errors surface via the group below
+            except BaseException as release_error:  # ruff:ignore[blind-except]  # both errors surface via the group below
                 _raise_body_and_release(callback_error, release_error)
             callback_error.__context__ = callback_context
             raise
@@ -1311,16 +1313,16 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         tracking_error: BaseException | None = None
         try:
             self._register_context_descriptor()
-        except BaseException as error:  # noqa: BLE001  # preserve registration and acquisition failures
+        except BaseException as error:  # ruff:ignore[blind-except]  # preserve registration and acquisition failures
             registration_error = error
             try:
                 # Rollback may fail too; retain the fd so a child can close it without another identity probe.
                 self._register_unverified_context_descriptor()
-            except BaseException as error:  # noqa: BLE001  # pragma: no cover - allocation/control-flow during fallback
+            except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
                 tracking_error = error
         try:
             self._release_with_fork_tracking()
-        except BaseException as rollback_error:  # noqa: BLE001  # preserve rollback and acquisition failures
+        except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and acquisition failures
             _raise_cleanup_errors(
                 "lock acquisition cleanup failed",
                 acquisition_error,
@@ -1338,11 +1340,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
         try:
             # Rollback may fail too; retain the fd so a child can close it without another identity probe.
             self._register_unverified_context_descriptor()
-        except BaseException as error:  # noqa: BLE001  # pragma: no cover - allocation/control-flow during fallback
+        except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
             tracking_error = error
         try:
             self._release_with_fork_tracking()
-        except BaseException as rollback_error:  # noqa: BLE001  # preserve rollback and registration failures
+        except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and registration failures
             _raise_cleanup_errors(
                 "descriptor registration cleanup failed", registration_error, tracking_error, rollback_error
             )
@@ -1415,7 +1417,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # noqa
             break_lock_file(self.lock_file, st.st_mtime, st.st_ino)
 
     @staticmethod
-    def _check_give_up(  # noqa: PLR0913
+    def _check_give_up(  # ruff:ignore[too-many-arguments]
         lock_id: int,
         lock_filename: str,
         *,
@@ -1464,7 +1466,7 @@ class AcquireReturnProxy:
         traceback: TracebackType | None,
     ) -> None:
         if isinstance(self.lock, BaseFileLock):
-            self.lock._release_in_context(exc_value)  # noqa: SLF001
+            self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]
         else:  # a reader/writer lock does not carry a context_error_policy
             self.lock.release()
 
@@ -1657,7 +1659,7 @@ def _pin_fork_objects() -> None:
     provisional_descriptor_tokens = tuple(
         starmap(
             _snapshot_descriptor_for_fork,
-            (descriptor for owner in owners.values() for descriptor in owner._descriptors_for_fork()),  # noqa: SLF001
+            (descriptor for owner in owners.values() for descriptor in owner._descriptors_for_fork()),  # ruff:ignore[private-member-access]
         )
     )
     with _FORK_STATE.registry_lock:
@@ -1778,7 +1780,7 @@ def _detach_child_state(  # pragma: no cover - exercised in fork children
         with contextlib.suppress(OSError):
             os.close(descriptor.fd)
     for instance in pinned_objects:
-        instance._reset_after_fork_in_child()  # noqa: SLF001
+        instance._reset_after_fork_in_child()  # ruff:ignore[private-member-access]
     for cls in pinned_classes:
         cls._reset_class_after_fork()
     _registry.held.clear()

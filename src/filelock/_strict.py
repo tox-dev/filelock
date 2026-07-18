@@ -44,12 +44,17 @@ _O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
 _LEGACY_SENTINEL: Final[bytes] = STRICT_SOFT_SENTINEL_RECORD.encode()
 _WINDOWS_HARD_LINK_UNSUPPORTED: Final[frozenset[int]] = frozenset({1, 17, 50})
 
+# Termux/Android CPython ships without os.link (bionic long had only linkat), so the strict backend's whole hard-link
+# mechanism is absent there. Probe once and gate every os.link reference on it, so importing filelock still works and
+# only an actual StrictSoftFileLock acquire reports the missing capability.
+_HAS_LINK: Final[bool] = hasattr(os, "link")
+
 # Probe dir_fd capability once at import. A per-call ``os.unlink in os.supports_dir_fd`` check flips to False the moment
 # a test mocks os.unlink, silently diverting the code to a different branch than the one under test.
 _OPEN_SUPPORTS_DIR_FD: Final[bool] = os.open in os.supports_dir_fd
 _UNLINK_SUPPORTS_DIR_FD: Final[bool] = os.unlink in os.supports_dir_fd
 _STAT_SUPPORTS_DIR_FD: Final[bool] = os.stat in os.supports_dir_fd
-_LINK_SUPPORTS_DIR_FD: Final[bool] = os.link in os.supports_dir_fd
+_LINK_SUPPORTS_DIR_FD: Final[bool] = _HAS_LINK and os.link in os.supports_dir_fd
 
 
 def _probe_link_follow_symlinks() -> bool:
@@ -58,6 +63,8 @@ def _probe_link_follow_symlinks() -> bool:
     # reflects the runtime rather than its advertisement, and treat any failure as "not honored": the option only
     # hardens a source this process created with O_EXCL, so skipping it is safe, and a real environment fault surfaces
     # when the actual link runs.
+    if not _HAS_LINK:
+        return False
     try:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory, "probe-source")
@@ -104,7 +111,7 @@ class StrictSoftFileLock(BaseFileLock):
         except BaseException as inspection_error:  # preserve inspection and descriptor cleanup errors
             try:
                 os.close(sentinel_fd)
-            except BaseException as close_error:  # noqa: BLE001  # preserve inspection and descriptor cleanup errors
+            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve inspection and descriptor cleanup errors
                 _raise_cleanup_errors("strict sentinel inspection cleanup failed", inspection_error, close_error)
             raise
         self._mark_descriptor_pending(sentinel_fd, sentinel_identity)
@@ -207,7 +214,7 @@ class StrictSoftFileLock(BaseFileLock):
         self._mark_descriptor_released()
         try:
             self._close_released_fd(fd, default_suppresses=False)
-        except BaseException as close_error:  # noqa: BLE001  # preserve claim and sentinel cleanup errors
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
             errors.append(close_error)
         if errors:
             _raise_recorded_errors("strict release cleanup failed", errors)
@@ -221,7 +228,7 @@ class StrictSoftFileLock(BaseFileLock):
         self._mark_descriptor_released()
         try:
             self._close_released_fd(fd, default_suppresses=False)
-        except BaseException as close_error:  # noqa: BLE001  # preserve claim and sentinel cleanup errors
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
             errors.append(close_error)
         if errors:
             _raise_recorded_errors("strict doorway cleanup failed", errors)
@@ -435,13 +442,13 @@ def _publish_record(
         try:
             if directory_fd is not None:
                 os.close(directory_fd)
-        except BaseException as close_error:  # noqa: BLE001  # preserve publication and directory cleanup errors
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve publication and directory cleanup errors
             _raise_cleanup_errors("strict publication directory cleanup failed", publication_error, close_error)
         raise
     if directory_fd is not None:
         try:
             os.close(directory_fd)
-        except BaseException as close_error:  # noqa: BLE001  # caller records the published path before raising
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # caller records the published path before raising
             return close_error
     return None
 
@@ -495,7 +502,7 @@ def _close_and_unlink_private_record(
     close_error: BaseException | None = None
     try:
         os.close(private_fd)
-    except BaseException as error:  # noqa: BLE001  # returned for grouping with unlink failures
+    except BaseException as error:  # ruff:ignore[blind-except]  # returned for grouping with unlink failures
         close_error = error
     unlink_error: BaseException | None = None
     try:
@@ -505,7 +512,7 @@ def _close_and_unlink_private_record(
             _unlink_relative_if_identity(directory_ref, private_name, private_identity)
     except FileNotFoundError:
         pass
-    except BaseException as error:  # noqa: BLE001  # returned for grouping with close failures
+    except BaseException as error:  # ruff:ignore[blind-except]  # returned for grouping with close failures
         unlink_error = error
     return close_error, unlink_error
 
@@ -641,6 +648,11 @@ def _link_no_follow(
     src_dir_fd: int | None = None,
     dst_dir_fd: int | None = None,
 ) -> None:
+    if not _HAS_LINK:
+        # No os.link at all (Termux/Android): report it as unsupported like a filesystem that refuses hard links, so
+        # the acquire path raises SoftFileLockProtocolError instead of a bare AttributeError.
+        msg = "os.link is unavailable on this platform"
+        raise NotImplementedError(msg)
     # The source is a private record this process created with O_CREAT | O_EXCL, so follow_symlinks guards nothing an
     # attacker can reach. Pass the option only when the runtime honors it: PyPy advertises it through
     # os.supports_follow_symlinks yet its linkat rejects it with EINVAL, so probe once rather than trust the set.
@@ -668,12 +680,12 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
         except BaseException as link_error:  # preserve link and directory cleanup errors
             try:
                 os.close(directory_fd)
-            except BaseException as close_error:  # noqa: BLE001  # preserve link and directory cleanup errors
+            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve link and directory cleanup errors
                 _raise_cleanup_errors("strict link directory cleanup failed", link_error, close_error)
             raise
         try:
             os.close(directory_fd)
-        except BaseException as close_error:  # noqa: BLE001  # caller records the held path before raising
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # caller records the held path before raising
             return close_error
         return None
     _link_no_follow(directory / source_name, directory / destination_name)  # pragma: win32 cover
@@ -697,7 +709,7 @@ def _unlink_owner_path_result(path: str) -> tuple[bool, BaseException | None]:
         cleanup_error = _unlink_owner_path(path)
     except FileNotFoundError:
         return True, None
-    except BaseException as error:  # noqa: BLE001  # keep ownership when unlink did not commit
+    except BaseException as error:  # ruff:ignore[blind-except]  # keep ownership when unlink did not commit
         return False, error
     return True, cleanup_error
 
@@ -716,12 +728,12 @@ def _unlink_in_directory(directory: Path, name: str) -> BaseException | None:
         except BaseException as unlink_error:  # preserve unlink and directory cleanup errors
             try:
                 os.close(directory_fd)
-            except BaseException as close_error:  # noqa: BLE001  # preserve unlink and directory cleanup errors
+            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve unlink and directory cleanup errors
                 _raise_cleanup_errors("strict unlink directory cleanup failed", unlink_error, close_error)
             raise
         try:
             os.close(directory_fd)
-        except BaseException as close_error:  # noqa: BLE001  # caller commits the removed path before raising
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # caller commits the removed path before raising
             return close_error
         return None
     if sys.platform != "win32":
@@ -771,7 +783,7 @@ def _open_record(path: Path, limit: int) -> tuple[int, bytes]:
     except BaseException as read_error:  # preserve read and descriptor cleanup errors
         try:
             os.close(fd)
-        except BaseException as close_error:  # noqa: BLE001  # preserve read and descriptor cleanup errors
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve read and descriptor cleanup errors
             _raise_cleanup_errors("strict record read cleanup failed", read_error, close_error)
         raise
     return fd, record

@@ -1,4 +1,4 @@
-# noqa: INP001
+# ruff:ignore[implicit-namespace-package]
 """Configuration for Sphinx."""
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 name, company = "filelock", "tox-dev"
 now = datetime.now(tz=timezone.utc)
 version, release = ".".join(__version__.split(".")[:2]), __version__
-copyright = f"2014-{now.date().year}, {company}"  # noqa: A001
+copyright = f"2014-{now.date().year}, {company}"  # ruff:ignore[builtin-variable-shadowing]
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosectionlabel",
@@ -94,12 +94,12 @@ def setup(app: Sphinx) -> None:
     """
 
     class PatchedPythonDomain(PythonDomain):
-        def resolve_xref(  # noqa: PLR0913, PLR0917
+        def resolve_xref(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]
             self,
             env: BuildEnvironment,
             fromdocname: str,
             builder: Builder,
-            type: str,  # noqa: A002
+            type: str,  # ruff:ignore[builtin-argument-shadowing]
             target: str,
             node: pending_xref,
             contnode: Element,

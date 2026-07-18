@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed-argument, no-shell run below
 import sys
 import threading
 import time
@@ -25,6 +26,8 @@ from filelock import (
     ContextErrorPolicy,
     FileLock,
     SoftFileLock,
+    SoftFileLockProtocolError,
+    StrictSoftFileLock,
     Timeout,
     UnixFileLock,
     WindowsFileLock,
@@ -450,7 +453,7 @@ def test_context_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         with lock as lock_1:
             assert lock is lock_1
             assert lock.is_locked
-            raise ValueError  # noqa: TRY301
+            raise ValueError  # ruff:ignore[raise-within-try]
     except ValueError:
         assert not lock.is_locked
 
@@ -464,7 +467,7 @@ def test_acquire_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         with lock.acquire() as lock_1:
             assert lock is lock_1
             assert lock.is_locked
-            raise ValueError  # noqa: TRY301
+            raise ValueError  # ruff:ignore[raise-within-try]
     except ValueError:
         assert not lock.is_locked
 
@@ -784,7 +787,7 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             mode: int = 0o644,
             thread_local: bool = True,
             my_param: int = 0,
-            **kwargs: dict[str, Any],  # noqa: ARG002
+            **kwargs: dict[str, Any],  # ruff:ignore[unused-method-argument]
         ) -> None:
             super().__init__(lock_file, timeout, mode, thread_local, is_singleton=True)
             self.blocking = True
@@ -801,7 +804,7 @@ def test_subclass_compatibility(tmp_path: Path) -> None:
             mode: int = 0o644,
             thread_local: bool = True,
             my_param: int = 0,
-            **kwargs: dict[str, Any],  # noqa: ARG002
+            **kwargs: dict[str, Any],  # ruff:ignore[unused-method-argument]
         ) -> None:
             super().__init__(lock_file, timeout, mode, thread_local, blocking=True, is_singleton=True)
             self.my_param = my_param
@@ -921,7 +924,7 @@ def test_singleton_locks_when_inheriting_init_is_called_once(tmp_path: Path) -> 
     init_calls = 0
 
     class MyFileLock(FileLock):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # ruff:ignore[any-type]
             super().__init__(*args, **kwargs)
             nonlocal init_calls
             init_calls += 1
@@ -1678,7 +1681,7 @@ def test_context_group_detaches_equivalent_shared_exception_dag(
         raise context_error
     except ExceptionGroup:
         with pytest.raises(ExceptionGroup) as info, lock:
-            raise body_error  # noqa: B904  # build the caller-controlled implicit context graph
+            raise body_error  # ruff:ignore[raise-without-from-inside-except]  # build the caller-controlled implicit context graph
 
     assert (info.value.exceptions, body_error.__context__, release_error.__context__) == (
         (body_error, release_error),
@@ -1703,7 +1706,7 @@ def test_context_group_preserves_distinct_shared_exception_dag(
         raise context_error
     except ExceptionGroup:
         with pytest.raises(ExceptionGroup) as info, lock:
-            raise body_error  # noqa: B904  # build the caller-controlled implicit context graph
+            raise body_error  # ruff:ignore[raise-without-from-inside-except]  # build the caller-controlled implicit context graph
 
     assert (info.value.exceptions, body_error.__context__, release_error.__context__) == (
         (body_error, release_error),
@@ -2460,3 +2463,29 @@ def test_singleton_rejects_different_on_acquired(tmp_path: Path) -> None:
             FileLock(path, is_singleton=True, on_acquired=_failing_on_acquired)
     finally:
         first.release(force=True)
+
+
+def test_import_succeeds_without_os_link() -> None:
+    # Termux/Android CPython has no os.link, and the strict backend touched it at import, so `from filelock import
+    # FileLock` crashed with AttributeError there (discussion #677). Importing in a fresh interpreter with os.link
+    # removed must still succeed.
+    script = (
+        "import os\n"
+        "if hasattr(os, 'link'):\n"
+        "    del os.link\n"
+        "from filelock import FileLock, StrictSoftFileLock\n"
+        "print('ok')\n"
+    )
+    run = [sys.executable, "-c", script]
+    result = subprocess.run(run, capture_output=True, text=True, check=False)
+    assert (result.returncode, result.stdout.strip()) == (0, "ok"), result.stderr
+
+
+def test_strict_lock_reports_unsupported_without_os_link(tmp_path: Path, mocker: MockerFixture) -> None:
+    # With os.link absent the strict backend cannot publish a hard-link claim, so acquire must raise the same
+    # unsupported-filesystem error a hard-link-refusing filesystem gets, not a bare AttributeError.
+    mocker.patch("filelock._strict._HAS_LINK", False)
+    lock = StrictSoftFileLock(str(tmp_path / "resource.lock"))
+    with pytest.raises(SoftFileLockProtocolError, match="hard-link publication"):
+        lock.acquire()
+    assert (lock.claims, lock.is_locked) == ((), False)

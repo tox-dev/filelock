@@ -11,6 +11,18 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    # StrictSoftFileLock publishes claims with hard links, so tests marked requires_hard_links cannot run where
+    # os.link is missing (Termux/Android CPython ships without it). The no-hard-link degradation itself is covered by
+    # the os.link tests in test_filelock.py, which carry no marker and run everywhere.
+    if hasattr(os, "link"):
+        return
+    skip = pytest.mark.skip(reason="StrictSoftFileLock requires os.link (hard links), absent on Termux/Android")
+    for item in items:
+        if item.get_closest_marker("requires_hard_links") is not None:
+            item.add_marker(skip)
+
+
 @pytest.fixture
 def close_failure(
     mocker: MockerFixture,

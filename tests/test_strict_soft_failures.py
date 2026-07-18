@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import pickle  # noqa: S403  # round-trip uses bytes produced in this test
+import pickle  # ruff:ignore[suspicious-pickle-import]  # round-trip uses bytes produced in this test
 import socket
 import stat
 import sys
@@ -35,10 +35,13 @@ if TYPE_CHECKING:
 _PathValue = str | bytes | os.PathLike[str] | os.PathLike[bytes]
 
 
+pytestmark = pytest.mark.requires_hard_links
+
+
 def test_strict_soft_protocol_error_pickles() -> None:
     error = SoftFileLockProtocolError("resource.lock", "held-v2-claim", "unknown version")
 
-    restored = pickle.loads(pickle.dumps(error))  # noqa: S301  # input comes from the preceding local value
+    restored = pickle.loads(pickle.dumps(error))  # ruff:ignore[suspicious-pickle-usage]  # input comes from the preceding local value
 
     assert (type(restored), restored.lock_file, restored.claim_name, restored.reason, str(restored)) == (
         SoftFileLockProtocolError,

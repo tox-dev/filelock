@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import subprocess  # noqa: S404  # isolated interpreters control at-fork registration order
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolated interpreters control at-fork registration order
 import sys
 import threading
 from typing import TYPE_CHECKING, Final, Literal

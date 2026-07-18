@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-import subprocess  # noqa: S404  # isolated interpreter controls child callback registration order
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolated interpreter controls child callback registration order
 import sys
 from errno import EBADF
 from typing import TYPE_CHECKING, Final, NoReturn, cast

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import subprocess  # noqa: S404  # each client needs an isolated filelock installation
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # each client needs an isolated filelock installation
 import sys
 from typing import TYPE_CHECKING, Final, TextIO, cast
 
@@ -40,6 +40,9 @@ else:
     lock.release()
     print("acquired")
 """
+
+
+pytestmark = pytest.mark.requires_hard_links
 
 
 @pytest.fixture(scope="module")

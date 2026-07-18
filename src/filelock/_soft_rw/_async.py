@@ -41,7 +41,7 @@ class AsyncSoftReadWriteLock:
 
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff:ignore[too-many-arguments]
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,

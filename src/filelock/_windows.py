@@ -53,14 +53,14 @@ if sys.platform == "win32":  # pragma: win32 cover
     _ntdll: Final[ctypes.WinDLL] = ctypes.WinDLL("ntdll")
     _kernel32: Final[ctypes.WinDLL] = ctypes.WinDLL("kernel32", use_last_error=True)
 
-    class _UNICODE_STRING(ctypes.Structure):  # noqa: N801  # mirrors the Win32 struct name
+    class _UNICODE_STRING(ctypes.Structure):  # ruff:ignore[invalid-class-name]  # mirrors the Win32 struct name
         _fields_ = (
             ("Length", wintypes.USHORT),  # byte length, not character count
             ("MaximumLength", wintypes.USHORT),
             ("Buffer", wintypes.LPWSTR),
         )
 
-    class _OBJECT_ATTRIBUTES(ctypes.Structure):  # noqa: N801  # mirrors the Win32 struct name
+    class _OBJECT_ATTRIBUTES(ctypes.Structure):  # ruff:ignore[invalid-class-name]  # mirrors the Win32 struct name
         _fields_ = (
             ("Length", wintypes.ULONG),
             ("RootDirectory", wintypes.HANDLE),
@@ -70,7 +70,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             ("SecurityQualityOfService", ctypes.c_void_p),
         )
 
-    class _IO_STATUS_BLOCK(ctypes.Structure):  # noqa: N801  # mirrors the Win32 struct name
+    class _IO_STATUS_BLOCK(ctypes.Structure):  # ruff:ignore[invalid-class-name]  # mirrors the Win32 struct name
         _fields_ = (
             ("Status", ctypes.c_void_p),  # a union of NTSTATUS and PVOID, so it is pointer-sized
             ("Information", ctypes.c_void_p),
@@ -85,7 +85,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             ("hEvent", wintypes.HANDLE),
         )
 
-    class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):  # noqa: N801  # mirrors the Win32 struct name
+    class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):  # ruff:ignore[invalid-class-name]  # mirrors the Win32 struct name
         _fields_ = (
             ("dwFileAttributes", wintypes.DWORD),
             ("ftCreationTime", wintypes.FILETIME),

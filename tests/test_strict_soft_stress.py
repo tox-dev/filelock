@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess  # noqa: S404  # isolated interpreters exercise cross-process exclusion
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolated interpreters exercise cross-process exclusion
 import sys
 import time
 from typing import TYPE_CHECKING, Final
@@ -31,6 +31,9 @@ for _ in range(int(sys.argv[4])):
         os.close(fd)
         critical_path.unlink()
 """
+
+
+pytestmark = pytest.mark.requires_hard_links
 
 
 @pytest.mark.timeout(90)
