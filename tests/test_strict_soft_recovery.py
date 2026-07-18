@@ -29,7 +29,7 @@ _CRASH_STATUS: Final[int] = 73
 def test_strict_soft_recovers_every_claim_for_crashed_token(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     result = subprocess.run(
-        [sys.executable, "-c", _crash_after_held_publication(), os.fspath(lock_path)],
+        [sys.executable, "-c", _crash_while_holding(), os.fspath(lock_path)],
         check=False,
         capture_output=True,
         text=True,
@@ -98,7 +98,9 @@ def test_strict_soft_reclaims_crash_after_private_publication(tmp_path: Path) ->
         assert lock.is_locked
 
 
-def _crash_after_held_publication() -> str:
+def _crash_while_holding() -> str:
+    # A strict holder keeps both its held and intent claims for the whole hold, so a hard crash mid-hold leaves the
+    # pair behind. os._exit skips every finalizer, reproducing a killed process that never releases.
     return textwrap.dedent(
         f"""
         from __future__ import annotations
@@ -108,12 +110,9 @@ def _crash_after_held_publication() -> str:
 
         from filelock import StrictSoftFileLock
 
-        def exit_before_intent_cleanup(event: str, args: tuple[str | int, ...]) -> None:
-            if event == "os.remove" and os.path.basename(os.fsdecode(args[0])).startswith("intent-"):
-                os._exit({_CRASH_STATUS})
-
-        sys.addaudithook(exit_before_intent_cleanup)
-        StrictSoftFileLock(sys.argv[1]).acquire()
+        lock = StrictSoftFileLock(sys.argv[1])
+        lock.acquire()
+        os._exit({_CRASH_STATUS})
         """
     )
 

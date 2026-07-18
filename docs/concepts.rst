@@ -143,8 +143,11 @@ read as held.
 
 **Strict soft locks** (:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`) use immutable owner claims instead of
 replacing one shared marker. Each contender writes a complete private record, publishes a unique intent through a hard
-link, and publishes a unique held claim only after it wins the intent order. The winner rescans before entering. Release
-removes its held claim by name, so it cannot detach or delete a successor at another pathname.
+link, and publishes a unique held claim only after it wins the intent order. The winner rescans before entering and
+keeps both its intent and its held claim for the whole hold: the intent has existed unchanged since the winner
+published it, so a contender's directory scan is guaranteed to observe it, whereas a scan racing the freshly linked held
+claim may miss it. That stable witness is what keeps two contenders from both reading themselves as the lowest claim.
+Release removes both claims by name, so it cannot detach or delete a successor at another pathname.
 
 .. versionadded:: 3.30.0
 

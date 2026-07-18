@@ -161,7 +161,7 @@ class StrictSoftFileLock(BaseFileLock):
         except (NotImplementedError, OSError) as error:
             _raise_if_hard_links_unsupported(self.lock_file, error)
             raise
-        self._context.owner_claim_paths = (intent_path, held_path)
+        self._context.owner_claim_paths = (held_path, intent_path)
         if link_cleanup_error is not None:
             self._context.owner_claim_paths = ()
             raise link_cleanup_error
@@ -173,8 +173,12 @@ class StrictSoftFileLock(BaseFileLock):
         ):
             self._discard_doorway(sentinel_fd, sentinel_identity)
             return
-        _unlink_owner_path(intent_path)
-        self._context.owner_claim_paths = (held_path,)
+        # Keep the intent claim for the whole hold rather than unlinking it now. The intent has existed, unchanged,
+        # since this owner published it, so a contender's os.scandir is guaranteed to return it (POSIX only leaves the
+        # visibility of entries created or removed *during* a scan unspecified). The freshly linked held claim carries
+        # no such guarantee: a scan that races its creation can miss it. Were the intent removed here, that scan could
+        # observe neither claim and let a larger-token contender win over this owner. The stable intent is the witness
+        # that keeps the phase-five min-token decision computed over the true set. Release unlinks both.
         self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
 
     @property

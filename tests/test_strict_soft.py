@@ -39,15 +39,16 @@ def test_strict_soft_acquire_publishes_owner_claim(tmp_path: Path) -> None:
     lock = StrictSoftFileLock(lock_path)
 
     with lock:
-        assert lock.claims == (
-            StrictSoftFileClaim(
-                name=lock.claims[0].name,
-                state="held",
-                token=lock.claims[0].token,
-                pid=os.getpid(),
-                hostname=socket.gethostname(),
-                start=process_start_token(os.getpid()),
-            ),
+        held, intent = lock.claims
+        owner = {
+            "token": held.token,
+            "pid": os.getpid(),
+            "hostname": socket.gethostname(),
+            "start": process_start_token(os.getpid()),
+        }
+        assert (held, intent) == (
+            StrictSoftFileClaim(name=held.name, state="held", **owner),
+            StrictSoftFileClaim(name=intent.name, state="intent", **owner),
         )
     assert (lock_path.read_bytes(), lock.claims, lock.is_locked) == (_SENTINEL, (), False)
 
@@ -57,8 +58,8 @@ def test_strict_soft_is_reentrant(tmp_path: Path) -> None:
 
     with lock:
         with lock:
-            assert (lock.is_locked, lock.lock_counter, len(lock.claims)) == (True, 2, 1)
-        assert (lock.is_locked, lock.lock_counter, len(lock.claims)) == (True, 1, 1)
+            assert (lock.is_locked, lock.lock_counter, len(lock.claims)) == (True, 2, 2)
+        assert (lock.is_locked, lock.lock_counter, len(lock.claims)) == (True, 1, 2)
     assert (lock.is_locked, lock.lock_counter, lock.claims) == (False, 0, ())
 
 
@@ -174,9 +175,10 @@ def test_strict_soft_force_break_names_guarantee_loss(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     holder = StrictSoftFileLock(lock_path)
     holder.acquire()
-    claim_name = holder.claims[0].name
 
-    StrictSoftFileLock(lock_path).force_break(claim_name)
+    breaker = StrictSoftFileLock(lock_path)
+    for claim in holder.claims:
+        breaker.force_break(claim.name)
     with StrictSoftFileLock(lock_path, timeout=0) as contender:
         assert (holder.is_locked, contender.is_locked) == (True, True)
     holder.release()
@@ -185,11 +187,11 @@ def test_strict_soft_force_break_names_guarantee_loss(tmp_path: Path) -> None:
 def test_strict_soft_force_break_requires_exact_case(tmp_path: Path) -> None:
     holder = StrictSoftFileLock(tmp_path / "resource.lock")
     holder.acquire()
-    claim_name = holder.claims[0].name
+    names = [claim.name for claim in holder.claims]
 
     with pytest.raises(FileNotFoundError):
-        StrictSoftFileLock(holder.lock_file).force_break(claim_name.upper())
-    assert [claim.name for claim in holder.claims] == [claim_name]
+        StrictSoftFileLock(holder.lock_file).force_break(names[0].upper())
+    assert [claim.name for claim in holder.claims] == names
     holder.release()
 
 

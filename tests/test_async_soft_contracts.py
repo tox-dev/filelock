@@ -40,7 +40,7 @@ async def test_async_strict_publishes_a_held_claim(marker: Path) -> None:
     async with lock:
         held = lock.claims
 
-    assert tuple(claim.state for claim in held) == ("held",)
+    assert tuple(claim.state for claim in held) == ("held", "intent")
     assert held[0].pid == os.getpid()
 
 
