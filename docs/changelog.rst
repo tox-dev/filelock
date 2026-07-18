@@ -7,6 +7,17 @@
 .. towncrier release notes start
 
 ********************
+ 3.31.0 (2026-07-18)
+********************
+
+- Support Termux/Android, whose CPython ships without ``os.link`` and reports ``sys.platform == "android"``. ``import
+  filelock`` and both ``FileLock`` and ``SoftFileLock`` now work there, ``StrictSoftFileLock`` reports its missing
+  hard-link support only when acquired, and process liveness reads ``/proc`` on Android instead of PID-only checks. :pr:`678`
+- ``StrictSoftFileLock`` no longer lets two processes hold the lock at once under heavy contention. A holder now keeps
+  its intent claim for the whole hold, so a contender whose directory scan races the holder's freshly linked claim can no
+  longer miss it and win alongside it. A held lock now exposes both an ``intent`` and a ``held`` claim. :pr:`678`
+
+********************
  3.30.3 (2026-07-17)
 ********************
 
