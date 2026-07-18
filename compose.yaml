@@ -14,4 +14,6 @@ services:
     volumes:
       - .:/repo:ro
     # $$HOME escapes compose's own interpolation so the container's shell expands it (compose would substitute the host's).
-    command: ["bash", "-lc", "cp -a /repo \"$$HOME/work\" && cd \"$$HOME/work\" && pip install -q . && exec tox run -e py"]
+    # The trailing `--` runs pytest with empty posargs, i.e. without coverage: Termux skips the os.link-backed strict
+    # tests, so it cannot meet the matrix fail_under and is a functional check only (same reason pypy runs bare).
+    command: ["bash", "-lc", "cp -a /repo \"$$HOME/work\" && cd \"$$HOME/work\" && pip install -q . && exec tox run -e py --"]
