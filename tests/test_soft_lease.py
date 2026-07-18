@@ -4,7 +4,9 @@ import itertools
 import os
 import socket
 import time
+from contextlib import suppress
 from errno import EIO, ENOENT
+from threading import Thread
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast
 
@@ -316,6 +318,27 @@ def test_lease_release_from_the_callback_does_not_join_itself(marker: Path, mock
 
     assert lease.compromise is not None
     assert not lease.is_locked
+
+
+def test_lease_keeps_its_claim_when_another_thread_fails_to_acquire(marker: Path) -> None:
+    # The context is thread-local, so a second thread contending on the same lease object must leave the holder's
+    # claim alone: a torn-down heartbeat stops refreshing the marker and a peer takes it while the holder still holds.
+    holder = _lease(marker)
+
+    def contend() -> None:
+        with suppress(Timeout):
+            holder.acquire()
+
+    with holder:
+        token = holder.token
+        contender = Thread(target=contend)
+        contender.start()
+        contender.join()
+
+        assert holder.token == token
+        time.sleep(_DURATION * 1.5)  # only a surviving heartbeat keeps the claim past this
+        with pytest.raises(Timeout):
+            _lease(marker).acquire()
 
 
 def test_lease_rejects_a_peer_configured_with_another_duration(marker: Path) -> None:
