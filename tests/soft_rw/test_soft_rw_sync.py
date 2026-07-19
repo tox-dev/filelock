@@ -1165,6 +1165,9 @@ def test_cleanup_terminates_a_still_running_process() -> None:
     proc.start()
     with _cleanup([proc]):
         assert proc.is_alive()
+    # _cleanup sends SIGTERM and joins briefly; on a loaded free-threaded runner the reap can land just after that
+    # window, so join again generously before asserting the worker is gone rather than racing its teardown.
+    proc.join(timeout=10)
     assert not proc.is_alive()
 
 

@@ -220,7 +220,7 @@ paths.source = [
   "**/src",
   "**\\src",
 ]
-report.fail_under = 95
+report.fail_under = 99
 html.show_contexts = true
 html.skip_covered = false
 
