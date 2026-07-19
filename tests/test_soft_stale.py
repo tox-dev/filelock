@@ -7,7 +7,7 @@ import socket
 import sys
 import threading
 from contextlib import contextmanager
-from errno import EINTR, ENODEV, ENOSPC, EPERM
+from errno import EACCES, EINTR, ENODEV, ENOSPC, EPERM
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -664,3 +664,19 @@ def _close_after_commit(mocker: MockerFixture) -> Iterator[tuple[OSError, list[i
         yield close_error, attempts
     finally:
         mocker.stop(close_mock)
+
+
+def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Path, mocker: MockerFixture) -> None:
+    # Windows can still hold a handle just after close, so the marker unlink retries on EACCES. Deny every attempt to
+    # prove the retry runs and then stops, and that the denial never escapes to the caller.
+    from filelock._soft import _file_identity
+
+    marker = tmp_path / "a"
+    marker.write_text("x", encoding="utf-8")
+    lock = SoftFileLock(marker)
+    mocker.patch("filelock._soft.time.sleep")
+    mocker.patch("filelock._soft.Path.unlink", side_effect=PermissionError(EACCES, "handle still open"))
+
+    lock._windows_unlink_if_ours(_file_identity(os.lstat(marker)))
+
+    assert marker.exists()

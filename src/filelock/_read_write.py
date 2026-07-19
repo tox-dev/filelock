@@ -61,7 +61,7 @@ class _ConnectionEscrow:
         self,
     ) -> tuple[Callable[[sqlite3.Connection], None], Callable[[sqlite3.Connection], None]] | None:
         if not _NEEDS_CONNECTION_ESCROW:
-            return None
+            return None  # pragma: >=3.12 cover
         with self._lock:  # pragma: <3.12 cover  # pragma: needs fork
             if self._functions is None:
                 import ctypes  # ruff:ignore[import-outside-top-level]  # keep optional ctypes and its audited dlsym out of ordinary imports
@@ -163,7 +163,8 @@ class _ForkSafeConnection(sqlite3.Connection):
         self,
         functions: tuple[Callable[[sqlite3.Connection], None], Callable[[sqlite3.Connection], None]] | None,
     ) -> None:
-        if functions is not None:
+        # The caller only reaches here holding the escrow functions; it skips the call entirely without them.
+        if functions is not None:  # pragma: no branch
             increment, decrement = functions
             increment(self)
             self._decrement_escrow = decrement

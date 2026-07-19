@@ -1343,7 +1343,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             )
 
     def _register_unverified_context_descriptor(self) -> None:
-        if self._context.lock_file_fd is not None and self._context.lock_file_fd_token is None:
+        # The rollback only reaches here still holding a descriptor it never managed to register.
+        if self._context.lock_file_fd is not None and self._context.lock_file_fd_token is None:  # pragma: no branch
             self._context.lock_file_fd_token = _register_unverified_owned_descriptor(self._context.lock_file_fd)
 
     def _unregister_released_descriptor(self) -> None:

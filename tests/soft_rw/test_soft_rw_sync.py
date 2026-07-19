@@ -1034,7 +1034,12 @@ def _cleanup(processes: list[Process]) -> Generator[None]:
         for proc in processes:
             if proc.is_alive():
                 proc.terminate()
-                proc.join(timeout=2)
+                proc.join(timeout=5)
+            # SIGTERM can be slow to land on a loaded runner, and a worker that outlives its test wedges the next one,
+            # so escalate rather than leave it running.
+            if proc.is_alive():  # pragma: no cover  # the terminate lands first whenever the runner is not saturated
+                proc.kill()
+                proc.join(timeout=5)
 
 
 def _sigkill_worker(  # pragma: forked child  # the test SIGKILLs it, so this child never writes its coverage data
@@ -1166,9 +1171,6 @@ def test_cleanup_terminates_a_still_running_process() -> None:
     proc.start()
     with _cleanup([proc]):
         assert proc.is_alive()
-    # _cleanup sends SIGTERM and joins briefly; on a loaded free-threaded runner the reap can land just after that
-    # window, so join again generously before asserting the worker is gone rather than racing its teardown.
-    proc.join(timeout=10)
     assert not proc.is_alive()
 
 

@@ -824,7 +824,9 @@ async def test_context_group_detaches_release_context(
     ) == ((body_error, release_error), None, None, body_cause, release_cause, True, True)
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11")
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11"
+)  # pragma: >=3.11 cover
 @pytest.mark.parametrize(
     "use_proxy",
     [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],

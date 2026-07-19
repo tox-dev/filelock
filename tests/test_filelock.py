@@ -1432,7 +1432,7 @@ def test_force_release_cleans_registry(tmp_path: Path, lock_type: type[BaseFileL
         assert lock2.is_locked
 
 
-def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:  # pragma: needs symlink
+def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:  # pragma: win32 no cover
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
     original.mkdir()
@@ -1442,7 +1442,7 @@ def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:  # pragma:
     return link / "test.lock", original / "test.lock", replacement / "test.lock"
 
 
-def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:  # pragma: needs symlink
+def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:  # pragma: win32 no cover
     link = lock_path.parent
     link.unlink()
     link.symlink_to(replacement_path.parent, target_is_directory=True)
@@ -1616,8 +1616,9 @@ def test_windows_permanent_denial_raises_without_timeout(tmp_path: Path, mocker:
 
 @_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_delete_in_progress_is_contention_not_denial(tmp_path: Path) -> None:
-    # sys.platform is what narrows ctypes.windll for the type checker; the marker is what skips the run.
-    if sys.platform == "win32":
+    # sys.platform is what narrows ctypes.windll for the type checker; the marker is what skips the run, so the
+    # guard only ever goes one way.
+    if sys.platform == "win32":  # pragma: no branch
         import ctypes
 
         target = str(tmp_path / "dp.lock")
@@ -1739,7 +1740,9 @@ def test_context_group_preserves_distinct_shared_exception_dag(
     )
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11")
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11"
+)  # pragma: >=3.11 cover
 @pytest.mark.parametrize(
     "use_proxy",
     [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],

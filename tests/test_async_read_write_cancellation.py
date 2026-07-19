@@ -357,7 +357,7 @@ def _cancel_queued_read_write_acquire(lock_file: str, cancel_caller: bool, cance
             await task
         except asyncio.CancelledError as error:
             context = error.__context__
-            if cancel_caller and sys.version_info >= (3, 11):
+            if cancel_caller and sys.version_info >= (3, 11):  # pragma: >=3.11 cover
                 canceled.value = isinstance(context, asyncio.CancelledError) and context.args == ("caller canceled",)
             else:
                 canceled.value = True

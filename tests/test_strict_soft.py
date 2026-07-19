@@ -383,7 +383,8 @@ def test_strict_soft_publication_and_close_failures_preserve_both_errors(tmp_pat
     def fail_first_close(fd: int) -> None:
         nonlocal close_failed
         real_close(fd)
-        if not close_failed:
+        # Only a dir_fd release closes a second descriptor, so elsewhere the first close is the only one.
+        if not close_failed:  # pragma: no branch
             close_failed = True
             msg = "private close failed"
             raise OSError(msg)
