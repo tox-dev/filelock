@@ -50,6 +50,8 @@ jobs:
         run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.py }}
         env:
           UV_PYTHON_PREFERENCE: only-managed
+      # PyPy runs unmeasured: coverage has no JIT path there, so the suite takes 12m rather than 2m and roughly 60 of
+      # its lock, heartbeat and poll deadlines lapse under the added latency, though they pass measured in isolation.
       - name: "✅ Run test suite"
         run: |
           if [[ "${{ matrix.py }}" == pypy* ]]; then
@@ -295,6 +297,7 @@ jobs:
       - name: "⚙️ Setup test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e 3.14
       - name: "🔎 Report the probed capability"
+        if: matrix.developer_mode == '1'
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
           uvx --python 3.14 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
@@ -303,6 +306,11 @@ jobs:
         run: tox run --skip-pkg-install -e 3.14 --
       # deny_symlink reports the token privilege, the Developer Mode value, and whether a symlink still succeeds in
       # this process and in a child, so the log says which mechanism actually governs rather than assuming either.
+      - name: "🔎 Report the probed capability"
+        if: matrix.developer_mode == '0'
+        run: |
+          $env:PYTHONPATH = "$PWD\tasks"
+          python tasks\deny_symlink.py python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
       - name: "✅ Run test suite with symlinks denied"
         if: matrix.developer_mode == '0'
         run: python tasks\deny_symlink.py tox run --skip-pkg-install -e 3.14 --
