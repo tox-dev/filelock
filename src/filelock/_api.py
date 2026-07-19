@@ -1091,7 +1091,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             time.sleep(poll_interval)
         try:  # pragma: needs hard-link
             yield
-        finally:
+        finally:  # pragma: needs hard-link
             self._transition_lock.release()
 
     def release(self, force: bool = False) -> None:  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility

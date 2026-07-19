@@ -1115,3 +1115,12 @@ async def test_on_acquired_rollback_group_detaches_release_context(
         callback_error.__traceback__ is not None,
         release_error.__traceback__ is not None,
     ) == ((callback_error, release_error), None, None, callback_cause, release_cause, True, True)
+
+
+def test_async_del_without_any_loop_returns(tmp_path: Path) -> None:
+    # GC can finalize a lock with no loop running and none remembered, where releasing is impossible.
+    lock = AsyncSoftFileLock(str(tmp_path / "a"))
+
+    lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+
+    assert not lock.is_locked
