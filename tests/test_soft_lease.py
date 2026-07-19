@@ -327,7 +327,7 @@ def test_lease_rejects_a_peer_configured_with_another_duration(marker: Path) -> 
 
 
 @pytest.mark.requires_hard_links
-def test_lease_does_not_expire_a_strict_holder(marker: Path) -> None:
+def test_lease_does_not_expire_a_strict_holder(marker: Path) -> None:  # pragma: needs hard-link
     # A strict holder never agreed to be superseded by age, so a lease contender waits it out instead.
     with StrictSoftFileLock(str(marker)):
         with pytest.raises(Timeout):

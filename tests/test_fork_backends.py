@@ -13,7 +13,7 @@ from fork_helpers import exit_child, fork_process
 from filelock import BaseAsyncFileLock, BaseFileLock
 
 if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup
+    from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
 else:  # pragma: <3.11 cover
     from exceptiongroup import BaseExceptionGroup
 
@@ -214,7 +214,7 @@ import os
 import sys
 
 if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup
+    from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
 else:
     from exceptiongroup import BaseExceptionGroup
 

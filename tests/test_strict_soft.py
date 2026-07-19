@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import time
 from errno import EBADF, ENOSYS, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -10,7 +11,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 if sys.version_info >= (3, 11):
-    from builtins import ExceptionGroup
+    from builtins import ExceptionGroup  # pragma: >=3.11 cover
 else:  # pragma: <3.11 cover
     from exceptiongroup import ExceptionGroup
 
@@ -26,6 +27,7 @@ from filelock import (
     Timeout,
 )
 from filelock._identity import process_start_token
+from filelock._strict import _PRIVATE_RECORD_MARKER
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -421,3 +423,16 @@ def test_strict_soft_release_allows_reacquire(tmp_path: Path) -> None:  # pragma
         assert first.claims[0].state == "held"
     with StrictSoftFileLock(lock_path, timeout=0) as second:
         assert second.claims[0].state == "held"
+
+
+def test_strict_soft_reclaims_an_aged_sentinel_private_record(tmp_path: Path) -> None:
+    # A crash between creating a private record and linking it leaves the record behind. The next acquire reclaims it
+    # once it ages past the grace window, which the dir_fd reaper cases only ever proved where dir_fd exists.
+    lock_path = tmp_path / "resource.lock"
+    stale = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
+    stale.write_bytes(b"")
+    aged = time.time() - 3600
+    os.utime(stale, (aged, aged))
+
+    with StrictSoftFileLock(lock_path):
+        assert not stale.exists()

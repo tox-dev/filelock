@@ -209,7 +209,9 @@ async def test_async_soft_lifetime_polling_does_not_repeat_warning(tmp_path: Pat
     async with holder:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            with pytest.raises(Timeout):
+            # The holder never releases inside this block, so the acquire always times out and the body never
+            # completes normally.
+            with pytest.raises(Timeout):  # pragma: no branch
                 await contender.acquire()
 
     assert caught == []

@@ -572,7 +572,7 @@ def _reclaim_sentinel_private_records(path: Path, now: float) -> None:
     directory_ref = os.fspath(path.parent), None
     with os.scandir(path.parent) as entries:
         for entry in entries:
-            if _private_public_name(entry.name) == path.name:  # pragma: win32 cover
+            if _private_public_name(entry.name) == path.name:
                 _reclaim_private_record(directory_ref, entry.name, now)
 
 

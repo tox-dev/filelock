@@ -14,7 +14,7 @@ from async_filelock_cancellation_helpers import assert_file_lock_state, get_fcnt
 from filelock import AsyncAcquireReturnProxy, AsyncFileLock, ContextErrorPolicy
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-    from builtins import BaseExceptionGroup
+    from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
 else:  # pragma: no cover (<py311)
     from exceptiongroup import BaseExceptionGroup
 

@@ -39,7 +39,7 @@ from filelock import (
 from filelock._api import _append_exception_context, _raise_grouped_errors, _registry
 
 if sys.version_info >= (3, 11):  # pragma: >=3.11 cover
-    from builtins import BaseExceptionGroup, ExceptionGroup
+    from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
 else:  # pragma: <3.11 cover
     from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 

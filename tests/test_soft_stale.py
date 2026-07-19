@@ -19,7 +19,7 @@ from filelock._identity import process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-    from builtins import ExceptionGroup
+    from builtins import ExceptionGroup  # pragma: >=3.11 cover
 else:  # pragma: no cover (<py311)
     from exceptiongroup import ExceptionGroup
 

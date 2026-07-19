@@ -58,7 +58,7 @@ def main() -> int:
     print(f"symlink after (this process): {_can_symlink()}")
 
     child = subprocess.run(
-        [sys.executable, "-c", f"import pathlib,tempfile;{_CAN_SYMLINK_SOURCE}print(can())"],
+        [sys.executable, "-c", _CHILD_PROBE],
         capture_output=True,
         text=True,
         check=False,
@@ -100,6 +100,23 @@ def _remove_privilege() -> str:
     assert sys.platform == "win32"
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Declare the signatures: GetCurrentProcess returns the pseudo-handle (HANDLE)-1, and ctypes' default c_int restype
+    # truncates it on 64-bit, so OpenProcessToken is handed a bad handle and fails with ERROR_INVALID_HANDLE.
+    kernel32.GetCurrentProcess.argtypes = ()
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi32.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.LookupPrivilegeValueW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.POINTER(_Luid))
+    advapi32.LookupPrivilegeValueW.restype = wintypes.BOOL
+    advapi32.AdjustTokenPrivileges.argtypes = (
+        wintypes.HANDLE,
+        wintypes.BOOL,
+        ctypes.POINTER(_TokenPrivileges),
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    )
+    advapi32.AdjustTokenPrivileges.restype = wintypes.BOOL
 
     token = wintypes.HANDLE()
     if not advapi32.OpenProcessToken(
@@ -120,16 +137,19 @@ def _remove_privilege() -> str:
     return "removed" if code == 0 else f"unexpected code {code}"
 
 
-_CAN_SYMLINK_SOURCE: Final[str] = (
-    "def can():\n"
-    "    with tempfile.TemporaryDirectory() as d:\n"
-    "        t = pathlib.Path(d, 'target'); t.touch()\n"
-    "        try:\n"
-    "            pathlib.Path(d, 'link').symlink_to(t)\n"
-    "        except OSError as e:\n"
-    "            return f'False ({e.winerror})'\n"
-    "        return 'True'\n"
-)
+_CHILD_PROBE: Final[str] = """
+import pathlib, tempfile
+
+with tempfile.TemporaryDirectory() as directory:
+    target = pathlib.Path(directory, "target")
+    target.touch()
+    try:
+        pathlib.Path(directory, "link").symlink_to(target)
+    except OSError as error:
+        print(f"False (WinError {error.winerror})")
+    else:
+        print("True")
+"""
 
 
 def _can_symlink() -> str:

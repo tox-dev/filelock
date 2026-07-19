@@ -27,7 +27,7 @@ from filelock import (
 )
 
 if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup
+    from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
 else:  # pragma: <3.11 cover
     from exceptiongroup import BaseExceptionGroup
 

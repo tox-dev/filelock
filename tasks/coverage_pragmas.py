@@ -49,6 +49,14 @@ class CapabilityPragmas(CoveragePlugin):
         # A guarded clause header only ever takes one arc, so record every capability pragma as a partial branch the
         # way covdefaults does for its platform pragmas, whether or not this runtime excludes it.
         self._extend(config, "report:partial_branches", [_CAPABILITY_PRAGMA, *_ALWAYS_EXCLUDED])
+        unrunnable = [
+            pattern
+            for name, patterns in sorted(_CAPABILITY_MODULES.items())
+            if not CAPABILITIES[name]
+            for pattern in patterns
+        ]
+        if unrunnable:
+            self._extend(config, "report:omit", unrunnable)
 
     @staticmethod
     def _extend(config: TConfigurable, option: str, patterns: list[str]) -> None:
@@ -142,6 +150,15 @@ CAPABILITIES: Final[dict[str, bool]] = {
     # The read-write lock is backed by sqlite3, which a stripped build can omit; CI runs a job without it.
     "sqlite3": find_spec("sqlite3") is not None,
     "link-follow-symlinks": _honors_link_follow_symlinks(),
+    # A released filelock to drive against this one. The tox env that installs it points this variable at the copy,
+    # so the compat suite is dead weight in every env that does not.
+    "old-client": bool(os.environ.get("FILELOCK_OLD_CLIENT_PATH")),
+}
+
+#: Modules a missing capability makes unrunnable in full. Marking every line in them would restate one module-level
+#: gate hundreds of times, so drop the file from the report instead.
+_CAPABILITY_MODULES: Final[dict[str, tuple[str, ...]]] = {
+    "hard-link": ("*/tests/test_strict_soft*.py", "*/tests\\test_strict_soft*.py"),
 }
 
 #: A forked child exits through os._exit without writing its coverage data, so lines that run only in the child stay
