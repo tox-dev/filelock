@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import signal
+import socket
 import stat
 import sys
 import threading
@@ -1207,3 +1208,17 @@ def test_same_file_true_for_matching_identity(tmp_path: Path) -> None:
 
 def test_same_file_false_when_stat_fails(tmp_path: Path) -> None:
     assert sync_mod._same_file(str(tmp_path / "absent"), (1, 2), dir_fd=None) is False
+
+
+def test_refresh_marker_stops_once_a_peer_owns_the_marker(lock_file: str) -> None:
+    # A peer that evicted our marker and wrote its own owns the file now; refreshing it would keep a stranger's
+    # marker alive, so the heartbeat has to stop instead.
+    lock = _make_lock(lock_file)
+    try:
+        lock.acquire_write(timeout=2)
+        foreign = f"{'0' * 32}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii")
+        Path(f"{lock_file}.write").write_bytes(foreign)
+
+        assert lock._refresh_marker() is False
+    finally:
+        lock.close()
