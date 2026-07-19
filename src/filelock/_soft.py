@@ -88,7 +88,7 @@ class SoftFileLock(BaseFileLock):
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
             content, mtime, ino = _read_lock_file(self.lock_file)
-            if content == STRICT_SOFT_SENTINEL_RECORD:
+            if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
                 return
             holder = _parse_lock_holder(content)
 

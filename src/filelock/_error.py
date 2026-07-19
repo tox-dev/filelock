@@ -12,7 +12,7 @@ class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # p
         # __init__ needs lock_file, so pickle must restore it as a constructor arg
         return self.__class__, (self._lock_file,)
 
-    def __str__(self) -> str:
+    def __str__(self) -> str:  # pragma: needs hard-link
         return f"The file lock '{self._lock_file}' could not be acquired."
 
     def __repr__(self) -> str:
@@ -41,7 +41,9 @@ class SoftFileLockProtocolError(OSError):
         self._reason = reason
         super().__init__(self.__str__())
 
-    def __reduce__(self) -> tuple[type[SoftFileLockProtocolError], tuple[str, str | None, str]]:
+    def __reduce__(
+        self,
+    ) -> tuple[type[SoftFileLockProtocolError], tuple[str, str | None, str]]:  # pragma: needs hard-link
         return self.__class__, (self._lock_file, self._claim_name, self._reason)
 
     def __str__(self) -> str:
@@ -49,17 +51,17 @@ class SoftFileLockProtocolError(OSError):
         return f"Invalid strict soft-lock state at {location}: {self._reason}"
 
     @property
-    def lock_file(self) -> str:
+    def lock_file(self) -> str:  # pragma: needs hard-link
         """The requested lock path."""
         return self._lock_file
 
     @property
-    def claim_name(self) -> str | None:
+    def claim_name(self) -> str | None:  # pragma: needs hard-link
         """The claim that caused the error, if scanning identified one."""
         return self._claim_name
 
     @property
-    def reason(self) -> str:
+    def reason(self) -> str:  # pragma: needs hard-link
         """The protocol validation failure."""
         return self._reason
 

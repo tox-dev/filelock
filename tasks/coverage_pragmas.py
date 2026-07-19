@@ -138,7 +138,12 @@ CAPABILITIES: Final[dict[str, bool]] = {
 
 #: Modules a missing capability makes unrunnable in full; marking every line would restate one module-level gate.
 _CAPABILITY_MODULES: Final[dict[str, tuple[str, ...]]] = {
-    "hard-link": ("*/tests/test_strict_soft*.py", "*/tests\\test_strict_soft*.py"),
+    "hard-link": (
+        "*/tests/test_strict_soft*.py",
+        "*/tests\\test_strict_soft*.py",
+        "*/filelock/_strict.py",
+        "*\\filelock\\_strict.py",
+    ),
 }
 
 #: A forked child exits through os._exit without writing coverage data, so no job in the matrix can see these.

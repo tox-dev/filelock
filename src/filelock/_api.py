@@ -1083,13 +1083,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         if not self._serialize_transitions or self._is_thread_local:
             yield
             return
-        while not self._transition_lock.acquire(blocking=False):
+        while not self._transition_lock.acquire(blocking=False):  # pragma: needs hard-link
             if not blocking or (cancel_check is not None and cancel_check()):
                 raise Timeout(self.lock_file)
             if timeout >= 0 and time.perf_counter() - start_time >= timeout:
                 raise Timeout(self.lock_file)
             time.sleep(poll_interval)
-        try:
+        try:  # pragma: needs hard-link
             yield
         finally:
             self._transition_lock.release()
@@ -1241,8 +1241,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             return poll_interval
         # Cap the exponent before doubling: under heavy contention attempt reaches the thousands, and 2**attempt would
         # overflow the float multiply long before the window itself stops growing past the cap.
-        window = min(self._poll_backoff_cap, poll_interval * 2 ** min(attempt, _MAX_BACKOFF_EXPONENT))
-        return max(poll_interval, secrets.randbelow(int(window * 1_000_000) + 1) / 1_000_000)
+        window = min(
+            self._poll_backoff_cap, poll_interval * 2 ** min(attempt, _MAX_BACKOFF_EXPONENT)
+        )  # pragma: needs hard-link
+        return max(poll_interval, secrets.randbelow(int(window * 1_000_000) + 1) / 1_000_000)  # pragma: needs hard-link
 
     def _reconcile_failed_acquire(self, canonical: str) -> None:
         # An acquire that raised while still holding the native lock (a hook that failed and whose rollback could not
