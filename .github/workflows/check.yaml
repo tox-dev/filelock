@@ -310,7 +310,7 @@ jobs:
         if: matrix.developer_mode == '0'
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
-          python tasks\deny_symlink.py python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
+          python tasks\deny_symlink.py uvx --python 3.14 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
       - name: "✅ Run test suite with symlinks denied"
         if: matrix.developer_mode == '0'
         run: python tasks\deny_symlink.py tox run --skip-pkg-install -e 3.14 --
