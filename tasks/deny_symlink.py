@@ -5,12 +5,10 @@ SeCreateSymbolicLinkPrivilege may always create them; separately, Developer Mode
 them through SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE. The CI job clears the Developer Mode registry value, and
 this script removes the privilege from its own token.
 
-AdjustTokenPrivileges cannot add a privilege back, and SE_PRIVILEGE_REMOVED is documented as irreversible with
-"privilege checks for removed privileges result in STATUS_PRIVILEGE_NOT_HELD", which is the guarantee this relies on.
-What the documentation does not state is whether a child process inherits the removal, or whether clearing Developer
-Mode takes effect without a reboot. Both decide whether the denied job is real, so this reports the state it observes
-rather than assuming: the token privileges it found, whether a symlink still succeeds after the removal, and the same
-check again from a child. Read those lines in the job log before trusting the job.
+SE_PRIVILEGE_REMOVED is documented as irreversible, with checks for a removed privilege returning
+STATUS_PRIVILEGE_NOT_HELD, which is the guarantee this relies on. The documentation does not say whether a child
+inherits the removal or whether clearing Developer Mode needs a reboot, so this reports what it observes rather
+than assuming. Read those lines in the job log before trusting the job.
 
 Usage: python deny_symlink.py <command> [args...]
 """
@@ -69,7 +67,7 @@ def main() -> int:
 
 
 def _developer_mode() -> str:
-    # main() refuses to run anywhere else; state it so ty can see the Windows-only members from any host.
+    # ty needs the platform narrowed to see the Windows-only members from any host.
     assert sys.platform == "win32"
     import winreg  # ruff:ignore[import-outside-top-level]  Windows-only, and this module already refuses to run elsewhere
 
@@ -96,7 +94,7 @@ def _privilege_state() -> str:
 
 
 def _remove_privilege() -> str:
-    # main() refuses to run anywhere else; state it so ty can see the Windows-only members from any host.
+    # ty needs the platform narrowed to see the Windows-only members from any host.
     assert sys.platform == "win32"
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -153,7 +151,7 @@ with tempfile.TemporaryDirectory() as directory:
 
 
 def _can_symlink() -> str:
-    # main() refuses to run anywhere else; state it so ty can see the Windows-only members from any host.
+    # ty needs the platform narrowed to see the Windows-only members from any host.
     assert sys.platform == "win32"
     with tempfile.TemporaryDirectory() as directory:
         target = Path(directory, "target")

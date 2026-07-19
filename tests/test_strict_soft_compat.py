@@ -56,8 +56,7 @@ pytestmark = [
 def old_client_env() -> dict[str, str]:  # pragma: needs old-client
     old_client_path = os.environ[_OLD_CLIENT_PATH_VARIABLE]
     env = os.environ.copy()
-    # Prepend rather than replace: the inherited PYTHONPATH carries the coverage plugin, and coverage restarts
-    # itself in this child.
+    # Prepend: the inherited PYTHONPATH carries the coverage plugin this child restarts under.
     env["PYTHONPATH"] = os.pathsep.join(part for part in (old_client_path, env.get("PYTHONPATH")) if part)
     installed = subprocess.run(
         [sys.executable, "-c", "import filelock; print(filelock.__version__)"],

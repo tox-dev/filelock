@@ -81,7 +81,6 @@ async def test_wait_for_predecessor_returns_immediately_when_already_done() -> N
     predecessor: ConcurrentFuture[None] = ConcurrentFuture()
     predecessor.set_result(None)
 
-    # An already-resolved predecessor means the wait loop never runs its body: the guard falls straight through.
     await _AsyncTransitionGate._wait_for_predecessor(
         predecessor, blocking=True, cancel_check=None, deadline=None, poll_interval=0.01
     )

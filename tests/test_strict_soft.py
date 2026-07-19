@@ -427,8 +427,8 @@ def test_strict_soft_release_allows_reacquire(tmp_path: Path) -> None:  # pragma
 
 
 def test_strict_soft_reclaims_an_aged_sentinel_private_record(tmp_path: Path) -> None:
-    # A crash between creating a private record and linking it leaves the record behind. The next acquire reclaims it
-    # once it ages past the grace window, which the dir_fd reaper cases only ever proved where dir_fd exists.
+    # A crash between creating a private record and linking it leaves it behind; the next acquire reclaims it once
+    # it ages out. The dir_fd reaper cases only proved this where dir_fd exists.
     lock_path = tmp_path / "resource.lock"
     stale = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
     stale.write_bytes(b"")

@@ -165,8 +165,7 @@ def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: Moc
     lease = _lease(marker, on_compromise=seen.append)
 
     with lease:
-        # Poll rather than sleep a fixed window: a starved heartbeat thread (e.g. under free-threaded builds) can miss
-        # a single refresh margin. A persistent failure is deduplicated, so it is still reported exactly once.
+        # A starved heartbeat can miss one refresh margin; the failure is deduplicated, so it still reports once.
         deadline = time.monotonic() + _DURATION * 20
         while not seen and time.monotonic() < deadline:
             time.sleep(_HEARTBEAT)

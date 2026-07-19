@@ -135,8 +135,7 @@ def test_get_lock_returns_singleton(lock_file: str) -> None:
 
 
 def test_leaked_acquired_singleton_is_closed_on_teardown(lock_file: str) -> None:
-    # A singleton left acquired stays reachable through its live heartbeat thread, so the autouse fixture's
-    # teardown finds it and closes it. The write marker proves the lock was really taken and must be cleaned up.
+    # A live heartbeat thread keeps the singleton reachable, so the autouse teardown finds and closes it.
     lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.5)
     lock.acquire_write(timeout=2)
     assert Path(f"{lock_file}.write").exists()
@@ -202,8 +201,7 @@ def test_write_lock_is_thread_pinned(lock_file: str) -> None:
 
 
 def test_blocking_acquire_without_timeout_waits_for_release(lock_file: str) -> None:
-    # The default infinite timeout gives the poll loop no deadline, so it sleeps a full poll interval each round
-    # until the writer releases rather than clamping the sleep to a remaining budget.
+    # Without a deadline the poll loop sleeps a full interval each round rather than clamping to a budget.
     holder = _make_lock(lock_file)
     holder.acquire_write(timeout=2)
     acquired = threading.Event()
@@ -1035,14 +1033,13 @@ def _cleanup(processes: list[Process]) -> Generator[None]:
             if proc.is_alive():
                 proc.terminate()
                 proc.join(timeout=5)
-            # SIGTERM can be slow to land on a loaded runner, and a worker that outlives its test wedges the next one,
-            # so escalate rather than leave it running.
+            # A worker that outlives its test wedges the next one, and SIGTERM can be slow on a loaded runner.
             if proc.is_alive():  # pragma: no cover  # the terminate lands first whenever the runner is not saturated
                 proc.kill()
                 proc.join(timeout=5)
 
 
-def _sigkill_worker(  # pragma: forked child  # the test SIGKILLs it, so this child never writes its coverage data
+def _sigkill_worker(  # pragma: forked child
     lock_file: str,
     mode: Literal["read", "write"],
     acquired_event: EventType,
@@ -1165,8 +1162,6 @@ def _fork_event() -> EventType:  # pragma: needs fork
 
 
 def test_cleanup_terminates_a_still_running_process() -> None:
-    # The cleanup helper must stop a worker that outlives its test, so a process still sleeping when the block
-    # exits is terminated and reaped rather than leaked.
     proc = Process(target=time.sleep, args=(30,))
     proc.start()
     with _cleanup([proc]):

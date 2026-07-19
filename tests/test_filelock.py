@@ -1021,8 +1021,7 @@ def test_lock_acquired_after_release_keeps_path(tmp_path: Path) -> None:
 
 @_NEEDS_FCNTL  # pragma: needs fcntl
 def test_waiter_fd_cannot_split_lock_after_release(tmp_path: Path) -> None:
-    # typeshed guards fcntl's members behind a non-Windows platform, so state the invariant the fcntl capability
-    # gate already enforces; without it ty cannot see flock when it checks on Windows.
+    # typeshed hides fcntl's members off POSIX, so state the invariant the capability gate already enforces.
     assert sys.platform != "win32"
     import fcntl
 
@@ -1344,8 +1343,7 @@ _NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"], reason="creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege"
 )
 
-# filelock resolves a lock's parent with abspath on Windows so junctions and reparse points are never followed, which
-# also keeps a symlinked parent a distinct key there. These cases assert the collapsing the realpath platforms do.
+# Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
 _NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"] or sys.platform == "win32",
     reason="a symlinked parent collapses into one key only where the parent is resolved with realpath",
@@ -1616,8 +1614,7 @@ def test_windows_permanent_denial_raises_without_timeout(tmp_path: Path, mocker:
 
 @_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_delete_in_progress_is_contention_not_denial(tmp_path: Path) -> None:
-    # sys.platform is what narrows ctypes.windll for the type checker; the marker is what skips the run, so the
-    # guard only ever goes one way.
+    # The marker skips the run; this only narrows ctypes.windll for ty, so it goes one way.
     if sys.platform == "win32":  # pragma: no branch
         import ctypes
 
@@ -2468,8 +2465,7 @@ def test_on_acquired_rollback_group_detaches_release_context(
 
 
 def test_grouped_errors_keep_a_context_that_is_a_distinct_group() -> None:
-    # _same_exception_tree rejects two same-typed groups whose message or arity differ, so a member's group-valued
-    # __context__ that is genuinely distinct survives the detach rather than being treated as a duplicate to strip.
+    # A genuinely distinct group-valued __context__ must survive the detach rather than read as a duplicate.
     context = ExceptionGroup("context group", [ValueError("a")])
     member = ExceptionGroup("member group", [KeyError("b"), KeyError("c")])
     member.__context__ = context
@@ -2482,8 +2478,7 @@ def test_grouped_errors_keep_a_context_that_is_a_distinct_group() -> None:
 
 
 def test_grouped_errors_detach_a_context_already_nested_in_a_sibling() -> None:
-    # _contains_exception walks a sibling group's tree; finding the exact context object there drops that member's
-    # __context__ so the raised group never carries the same leaf twice.
+    # A context already present in a sibling's tree is dropped so the group never carries the same leaf twice.
     shared = ValueError("shared leaf")
     sibling = ExceptionGroup("sibling", [shared])
     member = RuntimeError("boom")

@@ -11,9 +11,8 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-# Coverage restarts itself inside every subprocess it patches, and that child re-imports the coverage_pragmas plugin
-# named in run.plugins. pytest's own pythonpath setting only reaches this process, so export the directory holding the
-# plugin; otherwise a child dies importing it and the tests that assert on its stderr fail.
+# Coverage restarts in every patched subprocess and re-imports the plugin there; pytest's pythonpath reaches only
+# this process, so export it.
 os.environ["PYTHONPATH"] = os.pathsep.join(
     part for part in (str(Path(__file__).parent.parent / "tasks"), os.environ.get("PYTHONPATH")) if part
 )

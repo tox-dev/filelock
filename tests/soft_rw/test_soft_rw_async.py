@@ -125,8 +125,7 @@ async def test_async_release_force(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_async_release_and_close_skip_when_pid_differs(tmp_path: Path, mocker: MockerFixture) -> None:
-    # After a fork the running pid no longer matches the creator's, so release and close must leave the parent's
-    # still-held lock untouched. With the guard tripped, a later real release proves the write lock was never dropped.
+    # A pid that no longer matches the creator's must leave the parent's still-held lock untouched.
     lock = _make(tmp_path)
     await lock.acquire_write(timeout=2)
     try:
@@ -142,8 +141,7 @@ async def test_async_release_and_close_skip_when_pid_differs(tmp_path: Path, moc
 
 @pytest.mark.asyncio
 async def test_async_leaked_singleton_is_closed_on_teardown(tmp_path: Path) -> None:
-    # A singleton left acquired stays reachable through its live heartbeat thread, so the autouse fixture's teardown
-    # finds the inner lock and closes it. The write marker proves the lock was really taken and must be cleaned up.
+    # A live heartbeat thread keeps the singleton reachable, so the autouse teardown finds and closes it.
     path = tmp_path / "singleton.lock"
     lock = AsyncSoftReadWriteLock(str(path), heartbeat_interval=0.5, stale_threshold=1.5, poll_interval=0.02)
     await lock.acquire_write(timeout=2)

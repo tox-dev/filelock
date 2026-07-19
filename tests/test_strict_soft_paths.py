@@ -23,8 +23,7 @@ _NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"], reason="creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege"
 )
 
-# filelock resolves a lock's parent with abspath on Windows so junctions and reparse points are never followed, which
-# also keeps a symlinked parent a distinct key there. These cases assert the collapsing the realpath platforms do.
+# Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
 _NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"] or sys.platform == "win32",
     reason="a symlinked parent collapses into one key only where the parent is resolved with realpath",
