@@ -40,22 +40,28 @@ class LeaseCompromise:
     error: OSError | None = None
 
 
+@dataclass(frozen=True)
+class _Heartbeat:
+    """A running heartbeat and the event that stops it, which only ever exist together."""
+
+    thread: Thread
+    stop: Event
+
+
 @dataclass
 class _LeaseClaim:
     """The state of one claim: its token, its heartbeat, and how that claim was lost."""
 
     token: str | None = None
     compromise: LeaseCompromise | None = None
-    heartbeat: Thread | None = None
-    heartbeat_stop: Event | None = None
+    heartbeat: _Heartbeat | None = None
 
 
 class _LeaseClaimHolder:
-    """Holds the claim the owning context currently has, so the claim itself stays readable from any thread."""
+    """Holds the claim its owning context acquired."""
 
-    # A separate class so _ThreadLocalLeaseClaimHolder can make the holder thread-local, mirroring FileLockContext.
-    # Only the holder is thread-local: the claim stays an ordinary object, so the heartbeat thread records a
-    # compromise where the thread that acquired the lease reads it.
+    # Only the holder is thread-local, mirroring FileLockContext: the claim stays an ordinary object, so the heartbeat
+    # thread records a compromise where the thread that acquired the lease reads it.
 
     def __init__(self) -> None:
         self.claim = _LeaseClaim()
@@ -137,9 +143,8 @@ class SoftFileLease(MarkerSoftFileLock):
         self._lease_duration = lease_duration
         self._heartbeat_interval = heartbeat_interval
         self._on_compromise = on_compromise
-        # A claim belongs to whichever context acquired it, so it is thread-local exactly when that context is.
-        # Sharing one claim across a thread-local lock lets a second thread's acquisition attempt stop the heartbeat
-        # of the thread that actually holds the lease, leaving its marker unrefreshed until a peer reclaims it.
+        # Sharing one claim across a thread-local lock lets a second thread's failed acquisition stop the heartbeat of
+        # the thread holding the lease, leaving its marker unrefreshed until a peer reclaims it.
         self._claims: _LeaseClaimHolder = (
             _ThreadLocalLeaseClaimHolder if self.is_thread_local() else _LeaseClaimHolder
         )()
@@ -232,27 +237,27 @@ class SoftFileLease(MarkerSoftFileLock):
         return None
 
     def _start_heartbeat(self, claim: _LeaseClaim, fd: int, identity: tuple[int, int], token: str) -> None:
-        # The thread watches the event it was handed, not whatever claim.heartbeat_stop names later: a heartbeat that
+        # The thread watches the event it was handed rather than whatever the claim names later: a heartbeat that
         # outlives its join timeout would otherwise adopt the next acquisition's event and never stop.
-        claim.heartbeat_stop = stop = Event()
-        claim.heartbeat = Thread(
+        stop = Event()
+        thread = Thread(
             target=self._refresh_until_stopped,
             args=(claim, fd, identity, token, stop),
             name=f"filelock-lease-{os.getpid()}",
             daemon=True,
         )
-        claim.heartbeat.start()
+        claim.heartbeat = _Heartbeat(thread, stop)
+        thread.start()
 
     def _stop_heartbeat(self) -> None:
         claim = self._claim
         if (heartbeat := claim.heartbeat) is None:
             return
-        if claim.heartbeat_stop is not None:
-            claim.heartbeat_stop.set()
+        heartbeat.stop.set()
         claim.heartbeat = None
         # on_compromise runs on the heartbeat thread and may release the lease, which lands back here.
-        if heartbeat is not current_thread():
-            heartbeat.join(timeout=self._heartbeat_interval)
+        if heartbeat.thread is not current_thread():
+            heartbeat.thread.join(timeout=self._heartbeat_interval)
 
     def _refresh_until_stopped(
         self,
