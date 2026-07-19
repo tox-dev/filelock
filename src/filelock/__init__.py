@@ -28,7 +28,7 @@ else:
     try:
         from ._async_read_write import AsyncAcquireReadWriteReturnProxy, AsyncReadWriteLock
         from ._read_write import ReadWriteLock
-    except ImportError:  # pragma: no cover  # sqlite3-absent fallback; exercised by the "without sqlite3" CI job
+    except ImportError:  # pragma: lacks sqlite3
         AsyncAcquireReadWriteReturnProxy = None
         AsyncReadWriteLock = None
         ReadWriteLock = None

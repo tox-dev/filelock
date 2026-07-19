@@ -14,7 +14,7 @@ from filelock import BaseAsyncFileLock, BaseFileLock
 
 if sys.version_info >= (3, 11):
     from builtins import BaseExceptionGroup
-else:  # pragma: no cover (<py311)
+else:  # pragma: <3.11 cover
     from exceptiongroup import BaseExceptionGroup
 
 if TYPE_CHECKING:
@@ -23,7 +23,9 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork required")
+_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not (hasattr(os, "fork") and hasattr(os, "register_at_fork")), reason="os.fork and os.register_at_fork required"
+)
 
 
 class _DescriptorLock(BaseFileLock):
@@ -31,13 +33,13 @@ class _DescriptorLock(BaseFileLock):
     descriptor: int | None = None
     fail_release: bool = False
 
-    def _acquire(self) -> None:  # pragma: win32 no cover
+    def _acquire(self) -> None:  # pragma: needs fork
         self.descriptor = self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
-        if self.acquire_error is not None:  # pragma: win32 no cover
+        if self.acquire_error is not None:
             raise self.acquire_error
 
-    def _release(self) -> None:  # pragma: win32 no cover
-        if self.fail_release:  # pragma: win32 no cover
+    def _release(self) -> None:  # pragma: needs fork
+        if self.fail_release:
             msg = "unlock failed"
             raise RuntimeError(msg)
         os.close(cast("int", self._context.lock_file_fd))
@@ -55,11 +57,11 @@ class _CoroutineDescriptorLock(BaseAsyncFileLock):
         if self.acquire_error_before_descriptor is not None:
             raise self.acquire_error_before_descriptor
         self.descriptor = self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
-        if self.acquire_error is not None:  # pragma: win32 no cover
+        if self.acquire_error is not None:  # pragma: needs fork
             raise self.acquire_error
 
     async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
-        if self.release_error_before_close is not None:  # pragma: win32 no cover
+        if self.release_error_before_close is not None:  # pragma: needs fork
             raise self.release_error_before_close
         os.close(cast("int", self._context.lock_file_fd))
         self._context.lock_file_fd = None
@@ -67,8 +69,8 @@ class _CoroutineDescriptorLock(BaseAsyncFileLock):
             raise self.release_error
 
 
-@_REQUIRES_FORK
-def test_third_party_descriptor_is_closed_in_child(tmp_path: Path) -> None:  # pragma: win32 no cover
+@_REQUIRES_FORK  # pragma: needs fork
+def test_third_party_descriptor_is_closed_in_child(tmp_path: Path) -> None:
     descriptors: list[int] = []
     lock = _DescriptorLock(str(tmp_path / "third-party.lock"), is_singleton=False, on_acquired=descriptors.append)
     lock.acquire()
@@ -80,13 +82,13 @@ def test_third_party_descriptor_is_closed_in_child(tmp_path: Path) -> None:  # p
     assert os.waitstatus_to_exitcode(status) == 0
 
 
-@_REQUIRES_FORK
-def test_unlock_failure_keeps_descriptor_registered(tmp_path: Path) -> None:  # pragma: win32 no cover
+@_REQUIRES_FORK  # pragma: needs fork
+def test_unlock_failure_keeps_descriptor_registered(tmp_path: Path) -> None:
     descriptors: list[int] = []
     lock = _DescriptorLock(str(tmp_path / "retry.lock"), is_singleton=False, on_acquired=descriptors.append)
     lock.acquire()
     lock.fail_release = True
-    with pytest.raises(RuntimeError, match="unlock failed"):  # pragma: win32 no cover
+    with pytest.raises(RuntimeError, match="unlock failed"):
         lock.release()
 
     child_pid = _fork_descriptor_probe(descriptors[0], os.fstat)
@@ -97,12 +99,12 @@ def test_unlock_failure_keeps_descriptor_registered(tmp_path: Path) -> None:  # 
     assert os.waitstatus_to_exitcode(status) == 0
 
 
-@_REQUIRES_FORK  # pragma: win32 no cover
+@_REQUIRES_FORK  # pragma: needs fork
 def test_acquisition_failure_keeps_descriptor_registered_until_rollback(tmp_path: Path) -> None:
     lock = _DescriptorLock(str(tmp_path / "partial.lock"), is_singleton=False)
     lock.acquire_error = RuntimeError("acquire failed")
     lock.fail_release = True
-    with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    with pytest.raises(BaseExceptionGroup) as info:
         lock.acquire(timeout=0)
     child_pid = _fork_descriptor_probe(cast("int", lock.descriptor), os.fstat)
     _, status = os.waitpid(child_pid, 0)
@@ -138,8 +140,8 @@ def test_acquisition_failure_keeps_descriptor_registered_until_rollback(tmp_path
         ),
     ],
 )
-@_REQUIRES_FORK
-def test_acquisition_and_registration_errors_are_grouped(  # pragma: win32 no cover
+@_REQUIRES_FORK  # pragma: needs fork
+def test_acquisition_and_registration_errors_are_grouped(
     tmp_path: Path,
     mocker: MockerFixture,
     *,
@@ -151,13 +153,13 @@ def test_acquisition_and_registration_errors_are_grouped(  # pragma: win32 no co
     lock.fail_release = fail_release
     real_fstat = os.fstat
 
-    def fail_registration(fd: int) -> os.stat_result:  # pragma: win32 no cover
+    def fail_registration(fd: int) -> os.stat_result:
         assert fd == lock.descriptor
         msg = "registration failed"
         raise OSError(msg)
 
     fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration)
-    with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    with pytest.raises(BaseExceptionGroup) as info:
         lock.acquire(timeout=0)
     descriptor = cast("int", lock.descriptor)
     mocker.stop(fstat_mock)
@@ -168,24 +170,24 @@ def test_acquisition_and_registration_errors_are_grouped(  # pragma: win32 no co
     lock.fail_release = False
     lock.release(force=True)
 
-    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):  # pragma: win32 no cover
+    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
         real_fstat(descriptor)
     assert (_error_details(info.value), os.waitstatus_to_exitcode(status)) == (expected, 0)
 
 
-@_REQUIRES_FORK  # pragma: win32 no cover
+@_REQUIRES_FORK  # pragma: needs fork
 def test_registration_failure_tracks_descriptor_when_rollback_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _DescriptorLock(str(tmp_path / "group.lock"), is_singleton=False)
     lock.fail_release = True
     real_fstat = os.fstat
 
-    def fail_registration(fd: int) -> os.stat_result:  # pragma: win32 no cover
+    def fail_registration(fd: int) -> os.stat_result:
         assert fd == lock.descriptor
         msg = "registration failed"
         raise OSError(msg)
 
     fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration)
-    with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    with pytest.raises(BaseExceptionGroup) as info:
         lock.acquire(timeout=0)
     descriptor = cast("int", lock.descriptor)
     mocker.stop(fstat_mock)
@@ -195,7 +197,7 @@ def test_registration_failure_tracks_descriptor_when_rollback_fails(tmp_path: Pa
     lock.fail_release = False
     lock.release()
 
-    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):  # pragma: win32 no cover
+    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
         real_fstat(descriptor)
     assert (_error_details(info.value), os.waitstatus_to_exitcode(status)) == (
         [(OSError, "registration failed"), (RuntimeError, "unlock failed")],
@@ -203,8 +205,8 @@ def test_registration_failure_tracks_descriptor_when_rollback_fails(tmp_path: Pa
     )
 
 
-@_REQUIRES_FORK
-def test_unverified_descriptor_does_not_close_reused_child_fd(tmp_path: Path) -> None:  # pragma: win32 no cover
+@_REQUIRES_FORK  # pragma: needs fork
+def test_unverified_descriptor_does_not_close_reused_child_fd(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
 
@@ -287,48 +289,48 @@ raise SystemExit(os.waitstatus_to_exitcode(status))
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK  # pragma: win32 no cover
+@_REQUIRES_FORK  # pragma: needs fork
 def test_control_flow_registration_error_rolls_back_descriptor(tmp_path: Path, mocker: MockerFixture) -> None:
     descriptors: list[int] = []
 
-    class StopAcquire(BaseException):  # pragma: win32 no cover
+    class StopAcquire(BaseException):
         pass
 
-    class CapturingLock(_DescriptorLock):  # pragma: win32 no cover
-        def _acquire(self) -> None:  # pragma: win32 no cover
+    class CapturingLock(_DescriptorLock):
+        def _acquire(self) -> None:
             super()._acquire()
             descriptors.append(cast("int", self._context.lock_file_fd))
 
     real_fstat = os.fstat
 
-    def interrupt_registration(fd: int) -> os.stat_result:  # pragma: win32 no cover
+    def interrupt_registration(fd: int) -> os.stat_result:
         assert fd == descriptors[0]
         raise StopAcquire
 
     mocker.patch("os.fstat", side_effect=interrupt_registration)
-    with pytest.raises(StopAcquire):  # pragma: win32 no cover
+    with pytest.raises(StopAcquire):
         CapturingLock(str(tmp_path / "interrupt.lock"), is_singleton=False).acquire(timeout=0)
 
-    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):  # pragma: win32 no cover
+    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
         real_fstat(descriptors[0])
 
 
 @pytest.mark.asyncio
-@_REQUIRES_FORK  # pragma: win32 no cover
+@_REQUIRES_FORK  # pragma: needs fork
 async def test_coroutine_registration_error_rolls_back_descriptor(tmp_path: Path, mocker: MockerFixture) -> None:
     descriptors: list[int] = []
     real_fstat = os.fstat
 
-    def fail_registration(fd: int) -> os.stat_result:  # pragma: win32 no cover
+    def fail_registration(fd: int) -> os.stat_result:
         descriptors.append(fd)
         msg = "registration failed"
         raise OSError(msg)
 
     mocker.patch("os.fstat", side_effect=fail_registration)
-    with pytest.raises(OSError, match="registration failed"):  # pragma: win32 no cover
+    with pytest.raises(OSError, match="registration failed"):
         await _CoroutineDescriptorLock(str(tmp_path / "coroutine.lock"), is_singleton=False).acquire(timeout=0)
 
-    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):  # pragma: win32 no cover
+    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
         real_fstat(descriptors[0])
 
 
@@ -344,15 +346,15 @@ async def test_coroutine_acquisition_failure_before_descriptor_propagates(tmp_pa
     assert (info.value is acquisition_error, lock.is_locked) == (True, False)
 
 
-@_REQUIRES_FORK
-@pytest.mark.asyncio  # pragma: win32 no cover
+@_REQUIRES_FORK  # pragma: needs fork
+@pytest.mark.asyncio
 async def test_coroutine_acquisition_failure_keeps_descriptor_registered_until_rollback(tmp_path: Path) -> None:
     lock = _CoroutineDescriptorLock(
         str(tmp_path / "coroutine-partial.lock"), is_singleton=False, context_error_policy="group"
     )
     lock.acquire_error = RuntimeError("acquire failed")
     lock.release_error = RuntimeError("release failed")
-    with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    with pytest.raises(BaseExceptionGroup) as info:
         await lock.acquire(timeout=0)
     descriptor = cast("int", lock.descriptor)
 
@@ -387,9 +389,9 @@ async def test_coroutine_acquisition_failure_keeps_descriptor_registered_until_r
         ),
     ],
 )
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @pytest.mark.asyncio
-async def test_coroutine_acquisition_and_registration_errors_are_grouped(  # pragma: win32 no cover
+async def test_coroutine_acquisition_and_registration_errors_are_grouped(
     tmp_path: Path,
     mocker: MockerFixture,
     release_error: BaseException | None,
@@ -400,13 +402,13 @@ async def test_coroutine_acquisition_and_registration_errors_are_grouped(  # pra
     lock.release_error = release_error
     real_fstat = os.fstat
 
-    def fail_registration(fd: int) -> os.stat_result:  # pragma: win32 no cover
+    def fail_registration(fd: int) -> os.stat_result:
         assert fd == lock.descriptor
         msg = "registration failed"
         raise OSError(msg)
 
     fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration)
-    with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    with pytest.raises(BaseExceptionGroup) as info:
         await lock.acquire(timeout=0)
     descriptor = cast("int", lock.descriptor)
     mocker.stop(fstat_mock)
@@ -417,27 +419,27 @@ async def test_coroutine_acquisition_and_registration_errors_are_grouped(  # pra
     lock.release_error = None
     await lock.release(force=True)
 
-    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):  # pragma: win32 no cover
+    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
         real_fstat(descriptor)
     assert (_error_details(info.value), os.waitstatus_to_exitcode(status)) == (expected, 0)
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @pytest.mark.asyncio
-async def test_coroutine_registration_failure_tracks_descriptor_when_rollback_fails(  # pragma: win32 no cover
+async def test_coroutine_registration_failure_tracks_descriptor_when_rollback_fails(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
     lock = _CoroutineDescriptorLock(str(tmp_path / "coroutine-group.lock"), is_singleton=False)
     lock.release_error_before_close = RuntimeError("rollback failed")
     real_fstat = os.fstat
 
-    def fail_registration(fd: int) -> os.stat_result:  # pragma: win32 no cover
+    def fail_registration(fd: int) -> os.stat_result:
         assert fd == lock.descriptor
         msg = "registration failed"
         raise OSError(msg)
 
     fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration)
-    with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    with pytest.raises(BaseExceptionGroup) as info:
         await lock.acquire(timeout=0)
     descriptor = cast("int", lock.descriptor)
     mocker.stop(fstat_mock)
@@ -447,7 +449,7 @@ async def test_coroutine_registration_failure_tracks_descriptor_when_rollback_fa
     lock.release_error_before_close = None
     await lock.release()
 
-    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):  # pragma: win32 no cover
+    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
         real_fstat(descriptor)
     assert (_error_details(info.value), os.waitstatus_to_exitcode(status)) == (
         [(OSError, "registration failed"), (RuntimeError, "rollback failed")],
@@ -497,7 +499,7 @@ def _error_details(group: BaseExceptionGroup) -> list[tuple[type[BaseException],
     return [(type(error), str(error)) for error in group.exceptions]
 
 
-def _fork_descriptor_probe(  # pragma: win32 no cover
+def _fork_descriptor_probe(  # pragma: needs fork
     descriptor: int, stat_descriptor: Callable[[int], os.stat_result]
 ) -> int:
     def probe_child() -> NoReturn:

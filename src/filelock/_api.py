@@ -396,7 +396,7 @@ class FileLockMeta(ABCMeta):
         singleton_key = _canonical(lock_file)
         with cls._instances_lock:
             if (instance := cls._instances.get(singleton_key)) is None:
-                if singleton_key in cls._instances_under_construction:  # pragma: win32 no cover
+                if singleton_key in cls._instances_under_construction:  # pragma: needs fork
                     msg = f"Singleton lock construction is already active for {lock_file!s}"
                     raise RuntimeError(msg)
                 construction_registry = cls._instances_under_construction
@@ -406,7 +406,7 @@ class FileLockMeta(ABCMeta):
                     instance = cls._create_instance(lock_file, params)
                 finally:
                     construction_registry.discard(singleton_key)
-                if os.getpid() != construction_pid:  # pragma: win32 no cover
+                if os.getpid() != construction_pid:  # pragma: needs fork
                     msg = "Lock construction cannot continue after fork; construct a new lock in the child"
                     raise RuntimeError(msg)
                 cls._instances[singleton_key] = instance
@@ -637,7 +637,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         _register_fork_class(cls)
 
     @classmethod
-    def _reset_class_after_fork(cls) -> None:  # pragma: no cover - exercised in fork children
+    def _reset_class_after_fork(cls) -> None:  # pragma: forked child
         cls._instances = WeakValueDictionary()
         cls._instances_lock = RLock()
         cls._instances_under_construction = set()
@@ -971,7 +971,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def __del__(self) -> None:
         """Force-release so a dropped reference never leaks a held lock."""
         if vars(self).get("_creator_pid") != os.getpid():
-            return  # pragma: no cover - exercised in fork children
+            return  # pragma: forked child
         # A finalizer must not raise. A release error during garbage collection would otherwise surface as an
         # unraisable-exception warning, attributed to whichever code triggered collection. The dropped lock still gets
         # best-effort cleanup; an explicit release() reports the same error to a caller who can act on it.
@@ -1127,7 +1127,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
 
     def _raise_if_inherited(self) -> None:
-        if self._creator_pid != os.getpid():  # pragma: no cover - exercised only in fork children
+        if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"{type(self).__name__} on {self.lock_file} was inherited across fork; construct a new instance"
             raise RuntimeError(msg)
 
@@ -1147,7 +1147,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.lock_file_fd = None
         self._context.lock_file_fd_identity = None
 
-    def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - exercised in fork children
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         # fork copies the lock in whatever state the parent's threads left it, so give the child an unheld one.
         self._transition_lock = RLock()
         self._context.owner_claim_paths = ()
@@ -1160,11 +1160,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.lock_counter = 0
         self._context.lock_file_key = None
 
-    def _descriptors_for_fork(self) -> tuple[tuple[int, tuple[int, int] | None], ...]:  # pragma: win32 no cover
+    def _descriptors_for_fork(self) -> tuple[tuple[int, tuple[int, int] | None], ...]:  # pragma: needs fork
         descriptors: list[tuple[int, tuple[int, int] | None]] = []
         if self._context.lock_file_fd is not None and self._context.lock_file_fd_token is None:
             descriptors.append((self._context.lock_file_fd, self._context.lock_file_fd_identity))
-        if self._context.pending_lock_file_fd is not None:  # pragma: win32 no cover
+        if self._context.pending_lock_file_fd is not None:
             descriptors.append((self._context.pending_lock_file_fd, self._context.pending_lock_file_fd_identity))
         return tuple(descriptors)
 
@@ -1277,8 +1277,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 raise
             try:
                 self._register_context_descriptor()
-            except BaseException as registration_error:  # pragma: win32 no cover
-                self._rollback_failed_registration(registration_error)  # pragma: win32 no cover
+            except BaseException as registration_error:  # pragma: needs fork
+                self._rollback_failed_registration(registration_error)
                 raise
         if self.is_locked:
             self._invoke_on_acquired()
@@ -1286,40 +1286,40 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def _rollback_failed_acquire(self, acquisition_error: BaseException) -> None:
         if not self.is_locked:
             return
-        registration_error: BaseException | None = None  # pragma: win32 no cover
-        tracking_error: BaseException | None = None  # pragma: win32 no cover
-        try:  # pragma: win32 no cover
+        registration_error: BaseException | None = None
+        tracking_error: BaseException | None = None
+        try:
             self._register_context_descriptor()
         except BaseException as error:  # ruff:ignore[blind-except]  # preserve registration and acquisition failures
-            registration_error = error  # pragma: win32 no cover
-            try:  # pragma: win32 no cover
+            registration_error = error
+            try:
                 # Rollback may fail too; retain the fd so a child can close it without another identity probe.
                 self._register_unverified_context_descriptor()
             except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
                 tracking_error = error
-        try:  # pragma: win32 no cover
+        try:
             self._release_with_fork_tracking()
         except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and acquisition failures
-            _raise_cleanup_errors(  # pragma: win32 no cover
+            _raise_cleanup_errors(
                 "lock acquisition cleanup failed",
                 acquisition_error,
                 registration_error,
                 tracking_error,
                 rollback_error,
             )
-        if registration_error is not None:  # pragma: win32 no cover
+        if registration_error is not None:  # pragma: needs fork
             _raise_cleanup_errors(
                 "lock acquisition cleanup failed", acquisition_error, registration_error, tracking_error
             )
 
-    def _rollback_failed_registration(self, registration_error: BaseException) -> None:  # pragma: win32 no cover
+    def _rollback_failed_registration(self, registration_error: BaseException) -> None:  # pragma: needs fork
         tracking_error: BaseException | None = None
-        try:  # pragma: win32 no cover
+        try:
             # Rollback may fail too; retain the fd so a child can close it without another identity probe.
             self._register_unverified_context_descriptor()
         except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
             tracking_error = error
-        try:  # pragma: win32 no cover
+        try:
             self._release_with_fork_tracking()
         except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and registration failures
             _raise_cleanup_errors(
@@ -1342,13 +1342,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 self._context.lock_file_fd_identity,
             )
 
-    def _register_unverified_context_descriptor(self) -> None:  # pragma: win32 no cover
+    def _register_unverified_context_descriptor(self) -> None:
         if self._context.lock_file_fd is not None and self._context.lock_file_fd_token is None:
             self._context.lock_file_fd_token = _register_unverified_owned_descriptor(self._context.lock_file_fd)
 
     def _unregister_released_descriptor(self) -> None:
         if self._context.lock_file_fd is None:
-            if (token := self._context.lock_file_fd_token) is not None:  # pragma: win32 no cover
+            if (token := self._context.lock_file_fd_token) is not None:  # pragma: needs fork
                 _unregister_owned_descriptor(token)
             self._context.lock_file_fd_token = None
             self._context.lock_file_fd_identity = None
@@ -1522,7 +1522,7 @@ class _ForkState:
         self.provisional_descriptor_tokens: dict[int, list[tuple[int, ...]]] = {}
         self.pid = os.getpid()
 
-    def reset_synchronization(self) -> None:  # pragma: no cover - exercised in fork children
+    def reset_synchronization(self) -> None:  # pragma: forked child
         self.gate = Condition(RLock())
         self.registry_lock = RLock()
         self.parameter_models_lock = RLock()
@@ -1547,9 +1547,9 @@ _FORK_AUDIT_EVENTS: Final[frozenset[str]] = frozenset({"os.fork", "os.forkpty"})
 
 def _register_fork_hooks() -> None:
     if _REGISTER_AT_FORK is None:
-        return  # pragma: no cover - platform without register_at_fork
-    sys.addaudithook(_audit_fork_safety)  # pragma: win32 no cover
-    _REGISTER_AT_FORK(  # pragma: win32 no cover
+        return  # pragma: lacks fork
+    sys.addaudithook(_audit_fork_safety)  # pragma: needs fork
+    _REGISTER_AT_FORK(  # pragma: needs fork
         before=_pin_fork_objects,
         after_in_parent=_resume_parent_after_fork,
         after_in_child=_reset_child_after_fork,
@@ -1559,53 +1559,53 @@ def _register_fork_hooks() -> None:
 @contextmanager
 def _fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Generator[None]:
     if not _HAS_REGISTER_AT_FORK:
-        yield  # pragma: no cover - platform without register_at_fork
-        return  # pragma: no cover - platform without register_at_fork
-    _ensure_current_process()  # pragma: win32 no cover
-    creator_pid = os.getpid()  # pragma: win32 no cover
-    token = _enter_fork_transition(descriptor_owner)  # pragma: win32 no cover
-    try:  # pragma: win32 no cover
+        yield  # pragma: lacks fork
+        return  # pragma: lacks fork
+    _ensure_current_process()  # pragma: needs fork
+    creator_pid = os.getpid()  # pragma: needs fork
+    token = _enter_fork_transition(descriptor_owner)  # pragma: needs fork
+    try:  # pragma: needs fork
         yield
     finally:
-        if os.getpid() == creator_pid:  # pragma: win32 no cover
+        if os.getpid() == creator_pid:  # pragma: needs fork
             _leave_fork_transition(token)
 
 
 def _register_fork_object(instance: _ForkResettable) -> None:
     if not _HAS_REGISTER_AT_FORK:
-        return  # pragma: no cover - platform without register_at_fork
-    with _fork_transition(), _FORK_STATE.registry_lock:  # pragma: win32 no cover
+        return  # pragma: lacks fork
+    with _fork_transition(), _FORK_STATE.registry_lock:  # pragma: needs fork
         _FORK_OBJECTS[id(instance)] = instance
         _refresh_owner_pins()
 
 
 def _register_fork_class(cls: _ForkResettableClass) -> None:
     if not _HAS_REGISTER_AT_FORK:
-        return  # pragma: no cover - platform without register_at_fork
-    with _fork_transition(), _FORK_STATE.registry_lock:  # pragma: win32 no cover
+        return  # pragma: lacks fork
+    with _fork_transition(), _FORK_STATE.registry_lock:  # pragma: needs fork
         _FORK_CLASSES[id(cls)] = cls
         _refresh_owner_pins()
 
 
 def _register_owned_descriptor(fd: int, identity: tuple[int, int] | None = None) -> int | None:
     if not _HAS_REGISTER_AT_FORK:
-        return None  # pragma: no cover - platform without register_at_fork
-    with _fork_transition():  # pragma: win32 no cover
-        if identity is None:  # pragma: win32 no cover
+        return None  # pragma: lacks fork
+    with _fork_transition():  # pragma: needs fork
+        if identity is None:
             stat_result = os.fstat(fd)
             identity = stat_result.st_dev, stat_result.st_ino
         return _record_owned_descriptor(fd, identity)
 
 
-def _register_unverified_owned_descriptor(fd: int) -> int | None:  # pragma: win32 no cover
-    if not _HAS_REGISTER_AT_FORK:  # pragma: win32 no cover
-        return None  # pragma: no cover - platform without register_at_fork
-    with _fork_transition():  # pragma: win32 no cover
+def _register_unverified_owned_descriptor(fd: int) -> int | None:
+    if not _HAS_REGISTER_AT_FORK:
+        return None  # pragma: lacks fork
+    with _fork_transition():  # pragma: needs fork
         return _record_owned_descriptor(fd, None)
 
 
-def _record_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int:  # pragma: win32 no cover
-    with _FORK_STATE.registry_lock:  # pragma: win32 no cover
+def _record_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int:  # pragma: needs fork
+    with _FORK_STATE.registry_lock:
         token = next(_DESCRIPTOR_TOKENS)
         _OWNED_DESCRIPTORS[token] = _OwnedDescriptor(
             fd=fd,
@@ -1616,15 +1616,15 @@ def _record_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int: 
     return token
 
 
-def _unregister_owned_descriptor(token: int) -> None:  # pragma: win32 no cover
-    with _fork_transition(), _FORK_STATE.registry_lock:  # pragma: win32 no cover
+def _unregister_owned_descriptor(token: int) -> None:  # pragma: needs fork
+    with _fork_transition(), _FORK_STATE.registry_lock:
         _OWNED_DESCRIPTORS.pop(token, None)
 
 
-def _pin_fork_objects() -> None:  # pragma: win32 no cover
+def _pin_fork_objects() -> None:  # pragma: needs fork
     _ensure_current_process()
     thread_id = get_ident()
-    with _FORK_STATE.gate:  # pragma: win32 no cover
+    with _FORK_STATE.gate:
         _FORK_STATE.fork_owner_depths[thread_id] = _FORK_STATE.fork_owner_depths.get(thread_id, 0) + 1
         _FORK_STATE.admission_closed = True
         while _FORK_STATE.active_transitions > len(_FORK_STATE.transitions.get(thread_id, ())):
@@ -1638,25 +1638,25 @@ def _pin_fork_objects() -> None:  # pragma: win32 no cover
             (descriptor for owner in owners.values() for descriptor in owner._descriptors_for_fork()),  # ruff:ignore[private-member-access]  # snapshots each owner's own fork descriptors
         )
     )
-    with _FORK_STATE.registry_lock:  # pragma: win32 no cover
+    with _FORK_STATE.registry_lock:
         _FORK_STATE.provisional_descriptor_tokens.setdefault(thread_id, []).append(provisional_descriptor_tokens)
         _FORK_STATE.pinned_objects.setdefault(thread_id, []).append(tuple(_FORK_OBJECTS.values()))
         _FORK_STATE.pinned_classes.setdefault(thread_id, []).append(tuple(_FORK_CLASSES.values()))
 
 
-def _resume_parent_after_fork() -> None:  # pragma: win32 no cover
+def _resume_parent_after_fork() -> None:  # pragma: needs fork
     thread_id = get_ident()
-    with _FORK_STATE.registry_lock:  # pragma: win32 no cover
-        for token in _FORK_STATE.provisional_descriptor_tokens[thread_id].pop():  # pragma: win32 no cover
+    with _FORK_STATE.registry_lock:
+        for token in _FORK_STATE.provisional_descriptor_tokens[thread_id].pop():
             _OWNED_DESCRIPTORS.pop(token, None)
         _FORK_STATE.pinned_objects[thread_id].pop()
         _FORK_STATE.pinned_classes[thread_id].pop()
-        if not _FORK_STATE.provisional_descriptor_tokens[thread_id]:  # pragma: win32 no cover
+        if not _FORK_STATE.provisional_descriptor_tokens[thread_id]:  # pragma: needs fork
             del _FORK_STATE.provisional_descriptor_tokens[thread_id]
             del _FORK_STATE.pinned_objects[thread_id]
             del _FORK_STATE.pinned_classes[thread_id]
-    with _FORK_STATE.gate:  # pragma: win32 no cover
-        if _FORK_STATE.fork_owner_depths[thread_id] == 1:  # pragma: win32 no cover
+    with _FORK_STATE.gate:
+        if _FORK_STATE.fork_owner_depths[thread_id] == 1:
             del _FORK_STATE.fork_owner_depths[thread_id]
         else:  # pragma: no cover - earlier at-fork callbacks may deadlock first
             _FORK_STATE.fork_owner_depths[thread_id] -= 1
@@ -1668,7 +1668,7 @@ def _ensure_current_process() -> None:
     _reset_child_after_fork()
 
 
-def _reset_child_after_fork() -> None:  # pragma: no cover - exercised in fork children
+def _reset_child_after_fork() -> None:  # pragma: forked child
     if (pid := os.getpid()) == _FORK_STATE.pid:
         return
     thread_id = get_ident()
@@ -1684,10 +1684,10 @@ def _reset_child_after_fork() -> None:  # pragma: no cover - exercised in fork c
     _detach_child_state(descriptors, pinned_objects, pinned_classes)
 
 
-def _enter_fork_transition(descriptor_owner: _ForkDescriptorOwner | None) -> int:  # pragma: win32 no cover
+def _enter_fork_transition(descriptor_owner: _ForkDescriptorOwner | None) -> int:  # pragma: needs fork
     thread_id = get_ident()
-    with _FORK_STATE.gate:  # pragma: win32 no cover
-        while (  # pragma: win32 no cover
+    with _FORK_STATE.gate:
+        while (
             _FORK_STATE.admission_closed
             and thread_id not in _FORK_STATE.fork_owner_depths
             and thread_id not in _FORK_STATE.transitions
@@ -1700,25 +1700,25 @@ def _enter_fork_transition(descriptor_owner: _ForkDescriptorOwner | None) -> int
     return token
 
 
-def _leave_fork_transition(token: int) -> None:  # pragma: win32 no cover
+def _leave_fork_transition(token: int) -> None:  # pragma: needs fork
     _FORK_STATE.transition_context.depth -= 1
-    with _FORK_STATE.gate:  # pragma: win32 no cover
+    with _FORK_STATE.gate:
         thread_id = get_ident()
         del _FORK_STATE.transitions[thread_id][token]
-        if not _FORK_STATE.transitions[thread_id]:  # pragma: win32 no cover
+        if not _FORK_STATE.transitions[thread_id]:
             del _FORK_STATE.transitions[thread_id]
         _FORK_STATE.active_transitions -= 1
         _FORK_STATE.gate.notify_all()
 
 
-def _verify_unverified_descriptors() -> None:  # pragma: win32 no cover
-    with _FORK_STATE.registry_lock:  # pragma: win32 no cover
-        for token, descriptor in tuple(_OWNED_DESCRIPTORS.items()):  # pragma: win32 no cover
-            if descriptor.creator_pid != os.getpid() or descriptor.device is not None:  # pragma: win32 no cover
+def _verify_unverified_descriptors() -> None:  # pragma: needs fork
+    with _FORK_STATE.registry_lock:
+        for token, descriptor in tuple(_OWNED_DESCRIPTORS.items()):
+            if descriptor.creator_pid != os.getpid() or descriptor.device is not None:
                 continue
-            try:  # pragma: win32 no cover
+            try:
                 stat_result = os.fstat(descriptor.fd)
-            except OSError:  # pragma: win32 no cover
+            except OSError:
                 continue
             _OWNED_DESCRIPTORS[token] = _OwnedDescriptor(
                 fd=descriptor.fd,
@@ -1728,18 +1728,18 @@ def _verify_unverified_descriptors() -> None:  # pragma: win32 no cover
             )
 
 
-def _snapshot_descriptor_for_fork(fd: int, identity: tuple[int, int] | None) -> int:  # pragma: win32 no cover
-    if identity is None:  # pragma: win32 no cover
-        try:  # pragma: win32 no cover
+def _snapshot_descriptor_for_fork(fd: int, identity: tuple[int, int] | None) -> int:  # pragma: needs fork
+    if identity is None:  # pragma: needs fork
+        try:
             stat_result = os.fstat(fd)
-        except OSError:  # pragma: win32 no cover
+        except OSError:
             pass
-        else:  # pragma: win32 no cover
+        else:
             identity = stat_result.st_dev, stat_result.st_ino
     return _record_owned_descriptor(fd, identity)
 
 
-def _detach_child_state(  # pragma: no cover - exercised in fork children
+def _detach_child_state(  # pragma: forked child
     descriptors: list[_OwnedDescriptor],
     pinned_objects: tuple[_ForkResettable, ...],
     pinned_classes: tuple[_ForkResettableClass, ...],
@@ -1762,15 +1762,15 @@ def _detach_child_state(  # pragma: no cover - exercised in fork children
     _registry.held.clear()
 
 
-def _refresh_owner_pins() -> None:  # pragma: win32 no cover
-    with _FORK_STATE.gate:  # pragma: win32 no cover
+def _refresh_owner_pins() -> None:  # pragma: needs fork
+    with _FORK_STATE.gate:
         fork_owner_thread_ids = tuple(_FORK_STATE.fork_owner_depths)
     if get_ident() not in fork_owner_thread_ids:  # pragma: no cover - at-fork callbacks disable tracing
         return
     objects = tuple(_FORK_OBJECTS.values())
     classes = tuple(_FORK_CLASSES.values())
-    for thread_id in fork_owner_thread_ids:  # pragma: win32 no cover
-        if object_snapshots := _FORK_STATE.pinned_objects.get(thread_id):  # pragma: win32 no cover
+    for thread_id in fork_owner_thread_ids:
+        if object_snapshots := _FORK_STATE.pinned_objects.get(thread_id):  # pragma: needs fork
             object_snapshots[:] = [objects] * len(object_snapshots)
             _FORK_STATE.pinned_classes[thread_id][:] = [classes] * len(object_snapshots)
 

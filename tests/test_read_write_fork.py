@@ -45,14 +45,14 @@ def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
     not Path("/dev/fd").is_dir() and not Path("/proc/self/fd").is_dir(),
     reason="no descriptor view",
 )
-def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) -> None:  # pragma: win32 no cover
+def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) -> None:  # pragma: needs fd-directory
     result = _run_fork_script(_dropped_instances_script(), [str(tmp_path)], timeout=10)
 
     assert result == (0, "", "")
 
 
-@pytest.mark.skipif(not hasattr(os, "register_at_fork"), reason="requires fork transitions")
-def test_async_read_write_lock_allows_finalizer_reentry(tmp_path: Path) -> None:  # pragma: win32 no cover
+@pytest.mark.skipif(not hasattr(os, "register_at_fork"), reason="requires fork transitions")  # pragma: needs fork
+def test_async_read_write_lock_allows_finalizer_reentry(tmp_path: Path) -> None:
     result = _run_fork_script(
         _reentrant_finalizer_script(),
         [str(tmp_path / "async.db"), str(tmp_path / "finalizer.db")],
@@ -103,7 +103,7 @@ def test_read_write_lock_rejects_recursive_singleton_construction(tmp_path: Path
     sys.implementation.name != "cpython" or sys.version_info >= (3, 12),
     reason="connection escrow uses CPython reference functions before 3.12",
 )
-def test_read_write_lock_escrow_ignores_shared_ctypes_signatures(tmp_path: Path) -> None:
+def test_read_write_lock_escrow_ignores_shared_ctypes_signatures(tmp_path: Path) -> None:  # pragma: <3.12 cover
     result = subprocess.run(  # executes this test's fixed interpreter and source
         [sys.executable, "-c", _ctypes_signature_script(), str(tmp_path / "ctypes.db")],
         capture_output=True,
@@ -158,7 +158,7 @@ def test_read_write_lock_serializes_other_thread_operation_during_acquisition(
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
 @pytest.mark.parametrize(
     ("mode", "fork_name", "reject_audit_hook"),
     [
@@ -181,7 +181,7 @@ def test_read_write_lock_serializes_other_thread_operation_during_acquisition(
         ),
     ],
 )
-def test_read_write_lock_survives_normal_fork_child_exit(  # pragma: win32 no cover
+def test_read_write_lock_survives_normal_fork_child_exit(
     tmp_path: Path,
     mode: Literal["read", "write"],
     fork_name: Literal["fork", "fork1"],
@@ -201,8 +201,8 @@ def test_read_write_lock_survives_normal_fork_child_exit(  # pragma: win32 no co
     assert result == (0, "", "")
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
-def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None:  # pragma: win32 no cover
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
+def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None:
     result = _run_fork_script(_fork_during_sqlite_script(), [str(tmp_path / "fork-gate.db")], timeout=15)
 
     assert result == (0, "", "")
@@ -221,7 +221,7 @@ def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None
         pytest.param("connection-return", id="connection-return"),
     ],
 )
-def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: win32 no cover
+def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: needs fork
     tmp_path: Path, boundary: Literal["executescript", "rollback", "close", "connection-return"]
 ) -> None:
     result = _run_fork_script(
@@ -233,17 +233,15 @@ def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: win32 n
     assert result == (0, "", "")
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
-def test_read_write_lock_idle_fork_handles_fresh_child_lock(tmp_path: Path) -> None:  # pragma: win32 no cover
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
+def test_read_write_lock_idle_fork_handles_fresh_child_lock(tmp_path: Path) -> None:
     result = _run_fork_script(_idle_fork_script(), [str(tmp_path / "idle-fork.db")], timeout=10)
 
     assert result == (0, "", "")
 
 
 @pytest.mark.skipif(sys.implementation.name != "pypy" or not hasattr(os, "fork"), reason="requires fork on PyPy")
-def test_read_write_lock_pypy_child_allows_without_known_sqlite_use(
-    tmp_path: Path,
-) -> None:  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
+def test_read_write_lock_pypy_child_allows_without_known_sqlite_use(tmp_path: Path) -> None:  # pragma: pypy cover
     result = _run_fork_script(
         _pypy_fork_script(),
         [str(tmp_path / "child.db")],
@@ -254,9 +252,7 @@ def test_read_write_lock_pypy_child_allows_without_known_sqlite_use(
 
 
 @pytest.mark.skipif(sys.implementation.name != "pypy" or not hasattr(os, "fork"), reason="requires fork on PyPy")
-def test_read_write_lock_pypy_child_rejects_after_external_sqlite_use(
-    tmp_path: Path,
-) -> None:  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
+def test_read_write_lock_pypy_child_rejects_after_external_sqlite_use(tmp_path: Path) -> None:  # pragma: pypy cover
     result = _run_fork_script(
         _pypy_external_sqlite_script(),
         [str(tmp_path / "external.db"), str(tmp_path / "child.db")],
@@ -271,16 +267,16 @@ def test_fork_script_terminates_timed_out_process_group() -> None:
         _run_fork_script("import time; time.sleep(10)", [], timeout=0.01)
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
-def test_read_write_lock_subclass_cache_resets_after_fork(tmp_path: Path) -> None:  # pragma: win32 no cover
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
+def test_read_write_lock_subclass_cache_resets_after_fork(tmp_path: Path) -> None:
     result = _run_fork_script(_subclass_fork_script(), [str(tmp_path / "subclass-fork.db")], timeout=10)
 
     assert result == (0, "", "")
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
 @pytest.mark.parametrize("held", [pytest.param(False, id="idle"), pytest.param(True, id="held")])
-def test_async_read_write_lock_fork_behavior(tmp_path: Path, held: bool) -> None:  # pragma: win32 no cover
+def test_async_read_write_lock_fork_behavior(tmp_path: Path, held: bool) -> None:
     result = _run_fork_script(
         _async_fork_script(),
         [str(tmp_path / "async-fork.db"), "held" if held else "idle"],
@@ -309,11 +305,11 @@ def _run_fork_script(script: str, arguments: list[str], *, timeout: float) -> tu
         process_output, process_error = process.communicate()
         msg = f"fork script exceeded {timeout} seconds: stdout={process_output!r}, stderr={process_error!r}"
         raise AssertionError(msg) from error
-    assert process.returncode is not None  # pragma: win32 no cover
-    return process.returncode, process_output, process_error  # pragma: win32 no cover
+    assert process.returncode is not None  # pragma: needs fork
+    return process.returncode, process_output, process_error  # pragma: needs fork
 
 
-def _dropped_instances_script() -> str:  # pragma: win32 no cover
+def _dropped_instances_script() -> str:  # pragma: needs fd-directory
     return textwrap.dedent(
         """
         from __future__ import annotations
@@ -341,7 +337,7 @@ def _dropped_instances_script() -> str:  # pragma: win32 no cover
     )
 
 
-def _reentrant_finalizer_script() -> str:  # pragma: win32 no cover
+def _reentrant_finalizer_script() -> str:  # pragma: needs fork
     return textwrap.dedent(
         """
         from __future__ import annotations
@@ -459,7 +455,7 @@ def _recursive_acquisition_script() -> str:
     )
 
 
-def _ctypes_signature_script() -> str:
+def _ctypes_signature_script() -> str:  # pragma: <3.12 cover
     return textwrap.dedent(
         """
         from __future__ import annotations
@@ -644,7 +640,7 @@ def _fork_script() -> str:
     )
 
 
-def _fork_during_sqlite_script() -> str:  # pragma: win32 no cover
+def _fork_during_sqlite_script() -> str:  # pragma: needs fork
     return textwrap.dedent(
         r"""
         from __future__ import annotations
@@ -818,10 +814,9 @@ def _idle_fork_script() -> str:
     )
 
 
-def _pypy_fork_script() -> str:
-    return (
-        textwrap.dedent(  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
-            """
+def _pypy_fork_script() -> str:  # pragma: pypy cover
+    return textwrap.dedent(
+        """
         from __future__ import annotations
 
         import os
@@ -838,11 +833,10 @@ def _pypy_fork_script() -> str:
         _, status = os.waitpid(child_pid, 0)
         assert os.waitstatus_to_exitcode(status) == 0
         """
-        )
     )
 
 
-def _pypy_external_sqlite_script() -> str:
+def _pypy_external_sqlite_script() -> str:  # pragma: pypy cover
     return textwrap.dedent(
         """
         from __future__ import annotations

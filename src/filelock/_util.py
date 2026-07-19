@@ -115,7 +115,7 @@ def touch(name: str, *, fd: int | None = None) -> None:
     # path after our O_NOFOLLOW read cannot redirect the touch: utime then targets the inode behind the fd.
     # Where the platform cannot utime an fd, fall back to a path-based touch that still refuses to follow a
     # symlink where supported, matching the O_NOFOLLOW reads used elsewhere here.
-    if fd is not None and _SUPPORTS_UTIME_FD:  # pragma: win32 no cover
+    if fd is not None and _SUPPORTS_UTIME_FD:  # pragma: needs utime-fd
         os.utime(fd, None)
         return
     os.utime(name, None, follow_symlinks=not _SUPPORTS_UTIME_NOFOLLOW)

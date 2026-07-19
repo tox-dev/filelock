@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -9,6 +10,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from pytest_mock import MockerFixture
+
+# Coverage restarts itself inside every subprocess it patches, and that child re-imports the coverage_pragmas plugin
+# named in run.plugins. pytest's own pythonpath setting only reaches this process, so export the directory holding the
+# plugin; otherwise a child dies importing it and the tests that assert on its stderr fail.
+os.environ["PYTHONPATH"] = os.pathsep.join(
+    part for part in (str(Path(__file__).parent.parent / "tasks"), os.environ.get("PYTHONPATH")) if part
+)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

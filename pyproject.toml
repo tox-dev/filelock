@@ -172,11 +172,20 @@ max_supported_python = "3.14"
 
 [tool.ty]
 src.exclude = []
+# Mirrors pytest's pythonpath so the tests' `coverage_pragmas` import resolves here too.
+environment.extra-paths = [
+  "tasks",
+]
 environment.python-version = "3.14"
 
 [tool.pytest]
 ini_options.testpaths = [
   "tests",
+]
+# tasks holds coverage_pragmas, whose CAPABILITIES probes drive both the coverage exclusions and the skipif gates, so a
+# test can never be skipped while coverage still demands its lines.
+ini_options.pythonpath = [
+  "tasks",
 ]
 ini_options.markers = [
   "requires_hard_links: exercises StrictSoftFileLock, which needs os.link; skipped where it is missing (Termux/Android)",
@@ -199,6 +208,10 @@ run.concurrency = [
   "multiprocessing",
   "thread",
 ]
+# The pragma plugin configures the run; measuring it would report the tooling alongside the package under test.
+run.omit = [
+  "*/tasks/*",
+]
 run.parallel = true
 run.patch = [
   "_exit",
@@ -206,6 +219,7 @@ run.patch = [
 ]
 run.plugins = [
   "covdefaults",
+  "coverage_pragmas",
 ]
 run.sigterm = true
 paths.other = [

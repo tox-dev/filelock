@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -10,6 +9,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from coverage_pragmas import CAPABILITIES
 
 from filelock import AsyncStrictSoftFileLock, StrictSoftFileLock, Timeout
 
@@ -17,6 +17,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _STRICT_SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
+
+_NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"], reason="creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege"
+)
 
 
 pytestmark = pytest.mark.requires_hard_links
@@ -112,8 +116,8 @@ async def test_async_strict_soft_waiter_keeps_acquisition_directory(
         await contender.release(force=True)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks requires elevated Windows privileges")
-def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> None:  # pragma: win32 no cover
+@_NEEDS_SYMLINK  # pragma: needs symlink
+def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> None:
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
     original.mkdir()
@@ -124,7 +128,7 @@ def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> Non
     replacement_holder = StrictSoftFileLock(replacement / "resource.lock")
     original_holder.acquire()
     replacement_holder.acquire()
-    try:  # pragma: win32 no cover
+    try:
         link.unlink()
         link.symlink_to(replacement, target_is_directory=True)
         original_holder.release()
@@ -138,10 +142,8 @@ def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> Non
         replacement_holder.release(force=True)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks requires elevated Windows privileges")
-def test_strict_soft_final_symlink_fails_closed_without_touching_target(  # pragma: win32 no cover
-    tmp_path: Path,
-) -> None:
+@_NEEDS_SYMLINK  # pragma: needs symlink
+def test_strict_soft_final_symlink_fails_closed_without_touching_target(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.write_bytes(_STRICT_SENTINEL)
     lock_path = tmp_path / "resource.lock"

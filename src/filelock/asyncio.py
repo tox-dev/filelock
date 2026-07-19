@@ -398,10 +398,10 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 try:
                     await _drain_future(self._start_tracked_release())
                 except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                    rollback_error = error  # pragma: win32 no cover
+                    rollback_error = error
 
             if acquire_error is not None:
-                if rollback_error is not None:  # pragma: win32 no cover
+                if rollback_error is not None:  # pragma: needs fcntl
                     self._raise_cancelled_errors(
                         "lock acquisition cancellation, backend attempt, and rollback failed",
                         cancellation,
@@ -411,7 +411,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 self._raise_cancelled_errors(
                     "lock acquisition cancellation and backend attempt both failed", cancellation, acquire_error
                 )
-            if rollback_error is not None:  # pragma: win32 no cover
+            if rollback_error is not None:
                 self._raise_cancelled_errors(
                     "lock acquisition cancellation and rollback both failed", cancellation, rollback_error
                 )
@@ -534,7 +534,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             try:
                 self._register_context_descriptor()
             except BaseException as registration_error:  # cancellation must roll back the descriptor
-                await self._rollback_failed_registration_async(registration_error)  # pragma: win32 no cover
+                await self._rollback_failed_registration_async(registration_error)
                 raise
         if self.is_locked:
             await self._invoke_on_acquired_async()
@@ -677,7 +677,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     def __del__(self) -> None:
         """Release on deletion; safe to call during GC even when no event loop is running."""
         if vars(self).get("_creator_pid") != os.getpid():
-            return  # pragma: no cover - exercised in fork children
+            return  # pragma: forked child
         with contextlib.suppress(Exception):
             try:
                 loop = asyncio.get_running_loop()

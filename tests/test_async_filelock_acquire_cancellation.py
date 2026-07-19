@@ -6,6 +6,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from errno import EIO
+from importlib.util import find_spec
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -27,8 +28,8 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-_UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    sys.platform == "win32", reason="native flock semantics are Unix-only"
+_NEEDS_FCNTL: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    find_spec("fcntl") is None, reason="native flock semantics come from the fcntl module"
 )
 
 
@@ -154,14 +155,14 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(tmp_path: P
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.asyncio
-async def test_acquire_cancellation_does_not_release_later_claim(tmp_path: Path) -> None:  # pragma: win32 no cover
+async def test_acquire_cancellation_does_not_release_later_claim(tmp_path: Path) -> None:  # pragma: needs fcntl
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def block_hook(_fd: int) -> None:  # pragma: win32 no cover
+    def block_hook(_fd: int) -> None:
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
 
@@ -171,7 +172,7 @@ async def test_acquire_cancellation_does_not_release_later_claim(tmp_path: Path)
     second_acquire = asyncio.create_task(lock.acquire())
     first_acquire.cancel("cancel first acquire")
     finish_hook.set()
-    with pytest.raises(asyncio.CancelledError) as info:  # pragma: win32 no cover
+    with pytest.raises(asyncio.CancelledError) as info:
         await first_acquire
     assert_cancellation_message(info.value, "cancel first acquire")
     await second_acquire
@@ -182,14 +183,14 @@ async def test_acquire_cancellation_does_not_release_later_claim(tmp_path: Path)
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.asyncio
-async def test_cancelled_queued_acquire_does_not_claim_transition(tmp_path: Path) -> None:  # pragma: win32 no cover
+async def test_cancelled_queued_acquire_does_not_claim_transition(tmp_path: Path) -> None:  # pragma: needs fcntl
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def block_hook(_fd: int) -> None:  # pragma: win32 no cover
+    def block_hook(_fd: int) -> None:
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
 
@@ -199,7 +200,7 @@ async def test_cancelled_queued_acquire_does_not_claim_transition(tmp_path: Path
     queued_acquire = asyncio.create_task(lock.acquire())
     await asyncio.sleep(0)
     queued_acquire.cancel("cancel queued acquire")
-    with pytest.raises(asyncio.CancelledError) as info:  # pragma: win32 no cover
+    with pytest.raises(asyncio.CancelledError) as info:
         await queued_acquire
     assert_cancellation_message(info.value, "cancel queued acquire")
     assert lock.lock_counter == 1
@@ -213,8 +214,8 @@ async def test_cancelled_queued_acquire_does_not_claim_transition(tmp_path: Path
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_UNIX_FLOCK_ONLY
-@pytest.mark.asyncio  # pragma: win32 no cover
+@_NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
 async def test_acquire_repeated_cancellation_waits_for_rollback(tmp_path: Path, mocker: MockerFixture) -> None:
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
@@ -222,11 +223,11 @@ async def test_acquire_repeated_cancellation_waits_for_rollback(tmp_path: Path, 
     finish_rollback = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def block_hook(_fd: int) -> None:  # pragma: win32 no cover
+    def block_hook(_fd: int) -> None:
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
 
-    def block_rollback(_fd: int, _operation: int) -> None:  # pragma: win32 no cover
+    def block_rollback(_fd: int, _operation: int) -> None:
         loop.call_soon_threadsafe(rollback_started.set)
         assert finish_rollback.wait(timeout=5)
 
@@ -239,7 +240,7 @@ async def test_acquire_repeated_cancellation_waits_for_rollback(tmp_path: Path, 
     await rollback_started.wait()
     task.cancel("second cancellation")
     finish_rollback.set()
-    with pytest.raises(asyncio.CancelledError) as info:  # pragma: win32 no cover
+    with pytest.raises(asyncio.CancelledError) as info:
         await task
 
     assert_cancellation_message(info.value, "first cancellation")
@@ -247,10 +248,10 @@ async def test_acquire_repeated_cancellation_waits_for_rollback(tmp_path: Path, 
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
-async def test_acquire_cancellation_surfaces_attempt_error_after_rollback(  # pragma: win32 no cover
+async def test_acquire_cancellation_surfaces_attempt_error_after_rollback(  # pragma: needs fcntl
     tmp_path: Path, policy: ContextErrorPolicy
 ) -> None:
     hook_started = asyncio.Event()
@@ -260,7 +261,7 @@ async def test_acquire_cancellation_surfaces_attempt_error_after_rollback(  # pr
     prior_context = LookupError("prior callback failure")
     callback_error.__context__ = prior_context
 
-    def fail_hook(_fd: int) -> None:  # pragma: win32 no cover
+    def fail_hook(_fd: int) -> None:
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
         raise callback_error
@@ -270,13 +271,13 @@ async def test_acquire_cancellation_surfaces_attempt_error_after_rollback(  # pr
     await hook_started.wait()
     task.cancel("cancel acquire")
     finish_hook.set()
-    if policy == "chain":  # pragma: win32 no cover
-        with pytest.raises(ValueError, match="hook failed") as info:  # pragma: win32 no cover
+    if policy == "chain":
+        with pytest.raises(ValueError, match="hook failed") as info:
             await task
         cancellation = info.value.__context__
         assert info.value is callback_error
-    else:  # pragma: win32 no cover
-        with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    else:
+        with pytest.raises(BaseExceptionGroup) as info:
             await task
         cancellation, grouped_callback_error = info.value.exceptions
         assert grouped_callback_error is callback_error
@@ -292,13 +293,13 @@ async def test_acquire_cancellation_surfaces_attempt_error_after_rollback(  # pr
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.parametrize(
     ("context_message", "preserved"),
     [pytest.param("unrelated", True, id="distinct"), pytest.param("attempt", False, id="equivalent")],
 )
 @pytest.mark.asyncio
-async def test_acquire_cancellation_group_reconciles_attempt_context(  # pragma: win32 no cover
+async def test_acquire_cancellation_group_reconciles_attempt_context(  # pragma: needs fcntl
     tmp_path: Path, context_message: str, *, preserved: bool
 ) -> None:
     hook_started = asyncio.Event()
@@ -309,7 +310,7 @@ async def test_acquire_cancellation_group_reconciles_attempt_context(  # pragma:
     prior_context = ExceptionGroup(context_message, (nested_leaf,))
     callback_group.__context__ = prior_context
 
-    def fail_hook(_fd: int) -> None:  # pragma: win32 no cover
+    def fail_hook(_fd: int) -> None:
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
         raise callback_group
@@ -319,7 +320,7 @@ async def test_acquire_cancellation_group_reconciles_attempt_context(  # pragma:
     await hook_started.wait()
     task.cancel("cancel acquire")
     finish_hook.set()
-    with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    with pytest.raises(BaseExceptionGroup) as info:
         await task
 
     cancellation, grouped_callback_error = info.value.exceptions
@@ -343,10 +344,10 @@ async def test_acquire_cancellation_group_reconciles_attempt_context(  # pragma:
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
-async def test_acquire_cancellation_surfaces_rollback_error(  # pragma: win32 no cover
+async def test_acquire_cancellation_surfaces_rollback_error(  # pragma: needs fcntl
     tmp_path: Path,
     mocker: MockerFixture,
     caplog: pytest.LogCaptureFixture,
@@ -356,7 +357,7 @@ async def test_acquire_cancellation_surfaces_rollback_error(  # pragma: win32 no
     finish_hook = threading.Event()
     loop = asyncio.get_running_loop()
 
-    def block_hook(_fd: int) -> None:  # pragma: win32 no cover
+    def block_hook(_fd: int) -> None:
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
 
@@ -367,13 +368,13 @@ async def test_acquire_cancellation_surfaces_rollback_error(  # pragma: win32 no
     mocker.patch("filelock._unix.fcntl.flock", side_effect=[rollback_error, None])
     task.cancel("cancel acquire")
     finish_hook.set()
-    if policy == "chain":  # pragma: win32 no cover
-        with pytest.raises(OSError, match="rollback failed") as info:  # pragma: win32 no cover
+    if policy == "chain":
+        with pytest.raises(OSError, match="rollback failed") as info:
             await task
         cancellation = info.value.__context__
         assert info.value is rollback_error
-    else:  # pragma: win32 no cover
-        with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    else:
+        with pytest.raises(BaseExceptionGroup) as info:
             await task
         cancellation, grouped_rollback_error = info.value.exceptions
         assert grouped_rollback_error is rollback_error
@@ -391,10 +392,10 @@ async def test_acquire_cancellation_surfaces_rollback_error(  # pragma: win32 no
     await lock.release()
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
-async def test_acquire_cancellation_surfaces_attempt_and_rollback_errors(  # pragma: win32 no cover
+async def test_acquire_cancellation_surfaces_attempt_and_rollback_errors(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture, policy: ContextErrorPolicy
 ) -> None:
     hook_started = asyncio.Event()
@@ -402,7 +403,7 @@ async def test_acquire_cancellation_surfaces_attempt_and_rollback_errors(  # pra
     loop = asyncio.get_running_loop()
     callback_error = ValueError("hook failed")
 
-    def fail_hook(_fd: int) -> None:  # pragma: win32 no cover
+    def fail_hook(_fd: int) -> None:
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
         raise callback_error
@@ -418,14 +419,14 @@ async def test_acquire_cancellation_surfaces_attempt_and_rollback_errors(  # pra
     )
     task.cancel("cancel acquire")
     finish_hook.set()
-    if policy == "chain":  # pragma: win32 no cover
-        with pytest.raises(OSError, match="cancellation rollback failed") as info:  # pragma: win32 no cover
+    if policy == "chain":
+        with pytest.raises(OSError, match="cancellation rollback failed") as info:
             await task
         attempt_error = info.value.__context__
         cancellation = attempt_error.__context__ if attempt_error is not None else None
         assert info.value is second_rollback_error
-    else:  # pragma: win32 no cover
-        with pytest.raises(BaseExceptionGroup) as info:  # pragma: win32 no cover
+    else:
+        with pytest.raises(BaseExceptionGroup) as info:
             await task
         cancellation, attempt_error, grouped_rollback_error = info.value.exceptions
         assert grouped_rollback_error is second_rollback_error

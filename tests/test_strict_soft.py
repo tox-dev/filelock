@@ -11,8 +11,10 @@ import pytest
 
 if sys.version_info >= (3, 11):
     from builtins import ExceptionGroup
-else:  # pragma: no cover (<py311)
+else:  # pragma: <3.11 cover
     from exceptiongroup import ExceptionGroup
+
+from coverage_pragmas import CAPABILITIES
 
 from filelock import (
     AsyncStrictSoftFileLock,
@@ -29,6 +31,10 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 _SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
+
+_NEEDS_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["file-mode"], reason="an unreadable claim needs POSIX permission bits"
+)
 
 
 pytestmark = pytest.mark.requires_hard_links
@@ -277,22 +283,23 @@ def test_strict_soft_rejects_non_directory_coordination_path(tmp_path: Path) -> 
         StrictSoftFileLock(lock_path).acquire()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix permission bits control claim readability")
-def test_strict_soft_unreadable_claim_fails_closed(tmp_path: Path) -> None:  # pragma: win32 no cover
+@_NEEDS_FILE_MODE  # pragma: needs file-mode
+def test_strict_soft_unreadable_claim_fails_closed(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)
     lock.acquire()
     claim = Path(f"{lock_path}.filelock") / "claims" / lock.claims[0].name
     claim.chmod(0)
-    try:  # pragma: win32 no cover
-        with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):  # pragma: win32 no cover
+    try:
+        with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
             _ = StrictSoftFileLock(lock_path).claims
     finally:
         claim.chmod(0o600)
         lock.release()
 
 
-def test_strict_soft_symlink_claim_fails_closed(tmp_path: Path) -> None:
+@pytest.mark.skipif(not CAPABILITIES["symlink"], reason="stages a claim as a symlink")
+def test_strict_soft_symlink_claim_fails_closed(tmp_path: Path) -> None:  # pragma: needs symlink
     lock_path = tmp_path / "resource.lock"
     claims = Path(f"{lock_path}.filelock") / "claims"
     claims.mkdir(parents=True)
@@ -402,11 +409,15 @@ async def test_async_strict_soft_matches_claim_protocol(tmp_path: Path) -> None:
         assert contender.is_locked
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="exercises Windows pathname sharing")
-def test_strict_soft_windows_release_allows_reacquire(tmp_path: Path) -> None:  # pragma: win32 cover
+# The reacquire only needs proving where the holder's own open handle blocks the unlink; elsewhere release
+# removes the name outright and there is no sharing rule to exercise.
+@pytest.mark.skipif(
+    CAPABILITIES["unlink-open-file"], reason="exercises pathname sharing where an open file resists unlink"
+)
+def test_strict_soft_release_allows_reacquire(tmp_path: Path) -> None:  # pragma: lacks unlink-open-file
     lock_path = tmp_path / "resource.lock"
 
-    with StrictSoftFileLock(lock_path) as first:  # pragma: win32 cover
+    with StrictSoftFileLock(lock_path) as first:
         assert first.claims[0].state == "held"
-    with StrictSoftFileLock(lock_path, timeout=0) as second:  # pragma: win32 cover
+    with StrictSoftFileLock(lock_path, timeout=0) as second:
         assert second.claims[0].state == "held"
