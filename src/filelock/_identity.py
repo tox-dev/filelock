@@ -78,7 +78,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 ctypes.byref(kernel_time),
                 ctypes.byref(user_time),
             ):
-                return None
+                return None  # pragma: no cover  # win32 GetProcessTimes failure path; not reproducible on a live handle
         finally:
             _KERNEL32.CloseHandle(handle)
         return (creation.dwHighDateTime << 32) | creation.dwLowDateTime

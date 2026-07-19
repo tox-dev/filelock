@@ -127,7 +127,7 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_3:
-            pass
+            pass  # pragma: no cover  # __aenter__ raises Timeout, so the body never runs
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
@@ -138,7 +138,7 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_4:
-            pass
+            pass  # pragma: no cover  # __aenter__ raises Timeout, so the body never runs
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
@@ -150,7 +150,7 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_5:
-            pass
+            pass  # pragma: no cover  # __aenter__ raises Timeout, so the body never runs
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
@@ -195,6 +195,26 @@ async def test_coroutine_function(tmp_path: Path) -> None:
     await lock.release()
     assert acquired
     assert released
+
+
+@pytest.mark.asyncio
+async def test_coroutine_acquire_without_holding_polls_and_skips_on_acquired(tmp_path: Path) -> None:
+    attempts: list[str] = []
+
+    class NeverHoldsLock(BaseAsyncFileLock):
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+            attempts.append(self.lock_file)  # returns without setting the fd, so is_locked stays False
+
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+            self._context.lock_file_fd = None  # pragma: no cover  # never held, so release never runs
+
+    lock = NeverHoldsLock(str(tmp_path / "a"), timeout=0.1)
+    with pytest.raises(Timeout):
+        await lock.acquire()
+
+    # The coroutine backend returned without acquiring, so the tracker skipped on_acquired and the poll loop retried.
+    assert len(attempts) >= 2
+    assert not lock.is_locked
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -308,7 +328,7 @@ async def test_cancel_check_not_called_when_lock_available(lock_type: type[BaseA
 
     called = False
 
-    def should_not_be_called() -> bool:
+    def should_not_be_called() -> bool:  # pragma: no cover  # a free lock never consults cancel_check
         nonlocal called
         called = True
         return True
@@ -962,7 +982,7 @@ def _fail_close_of(mocker: MockerFixture, lock: BaseAsyncFileLock, error: OSErro
     def close(target: int) -> None:  # pragma: win32 no cover
         if target == fd:  # pragma: win32 no cover
             raise error
-        real_close(target)
+        real_close(target)  # pragma: no cover  # only an unrelated __del__ close during the mock window reaches here
 
     mocker.patch("filelock._api.os.close", side_effect=close)
 

@@ -34,7 +34,7 @@ from filelock import (
     lock_descriptor,
     unlock_descriptor,
 )
-from filelock._api import _raise_grouped_errors
+from filelock._api import _append_exception_context, _raise_grouped_errors, _registry
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup
@@ -310,7 +310,7 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path)
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     if sys.platform == "win32" and (hasattr(sys, "pypy_version_info") or lock_type.__name__ == "SoftFileLock"):
-        pytest.skip("SoftFileLock on Windows has race conditions under heavy threading")
+        pytest.skip("SoftFileLock on Windows has race conditions under heavy threading")  # pragma: win32 cover
 
     def t_1() -> None:
         for _ in range(1000):
@@ -384,7 +384,7 @@ def test_non_blocking(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert lock_1.is_locked
 
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."), lock_3:
-        pass
+        pass  # pragma: no cover  # __enter__ raises Timeout, so the body never runs
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
@@ -394,7 +394,7 @@ def test_non_blocking(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert lock_1.is_locked
 
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."), lock_4:
-        pass
+        pass  # pragma: no cover  # __enter__ raises Timeout, so the body never runs
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
@@ -405,7 +405,7 @@ def test_non_blocking(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert lock_1.is_locked
 
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."), lock_5:
-        pass
+        pass  # pragma: no cover  # __enter__ raises Timeout, so the body never runs
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
@@ -983,7 +983,7 @@ def test_concurrent_acquire_release_keeps_lock_file(tmp_path: Path) -> None:  # 
                 lock = FileLock(str(lock_path), is_singleton=False)
                 with lock:  # pragma: win32 no cover
                     pass
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover  # a healthy run never raises here
             errors.append(exc)
 
     threads = [threading.Thread(target=worker) for _ in range(4)]
@@ -1095,7 +1095,9 @@ def test_permission_error_propagates_when_file_missing(tmp_path: Path, mocker: M
     def open_always_permission_error(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         if "test.lock" in path:  # pragma: win32 no cover
             raise PermissionError(13, "Permission denied", path)
-        return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
+        return (  # pragma: no cover  # every os.open during this acquire targets the lock path
+            real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
+        )
 
     mocker.patch("os.open", side_effect=open_always_permission_error)
     with pytest.raises(PermissionError, match="Permission denied"):  # pragma: win32 no cover
@@ -1172,7 +1174,7 @@ def test_cancel_check_not_called_when_lock_available(lock_type: type[BaseFileLoc
 
     called = False
 
-    def should_not_be_called() -> bool:
+    def should_not_be_called() -> bool:  # pragma: no cover  # a free lock never consults cancel_check
         nonlocal called
         called = True
         return True
@@ -1497,7 +1499,7 @@ def test_windows_reparse_point_lock_file_rejected(tmp_path: Path) -> None:  # pr
     link = tmp_path / "resource.lock"
     try:  # pragma: win32 cover
         link.symlink_to(target)
-    except OSError:
+    except OSError:  # pragma: no cover  # the CI grants symlink rights, so this skip never runs
         pytest.skip("cannot create symlinks (needs Developer Mode or administrator)")
 
     with pytest.raises(OSError, match="reparse point"):  # pragma: win32 cover
@@ -1840,7 +1842,7 @@ def _fail_close_of(mocker: MockerFixture, lock: BaseFileLock, error: OSError) ->
         if target == fd:
             attempts.append(target)
             raise error
-        real_close(target)
+        real_close(target)  # pragma: no cover  # only an unrelated __del__ close during the mock window reaches here
 
     mocker.patch("filelock._api.os.close", side_effect=close)
     return attempts
@@ -2301,18 +2303,29 @@ def test_on_acquired_property_reflects_argument(tmp_path: Path) -> None:
     assert FileLock(str(tmp_path / "a"), on_acquired=_noop_on_acquired).on_acquired is _noop_on_acquired
 
 
+def test_on_acquired_noop_hook_allows_acquire(tmp_path: Path) -> None:
+    lock = FileLock(str(tmp_path / "a"), on_acquired=_noop_on_acquired)
+    lock.acquire()  # the no-op hook runs during acquisition
+    try:
+        assert lock.is_locked
+    finally:
+        lock.release()
+
+
 def test_on_acquired_runs_before_acquire_returns(tmp_path: Path) -> None:
     fd_while_held = -1
+    locked_during_hook = False
 
     def hook(fd: int) -> None:
-        nonlocal fd_while_held
-        if lock.is_locked:
-            fd_while_held = fd
+        nonlocal fd_while_held, locked_during_hook
+        locked_during_hook = lock.is_locked
+        fd_while_held = fd
 
     lock = FileLock(str(tmp_path / "a"), on_acquired=hook)
     lock.acquire()
     try:
-        assert fd_while_held >= 0  # the hook ran, saw the lock held, and got a real descriptor, all before acquire()
+        assert locked_during_hook  # the hook ran while the lock was held ...
+        assert fd_while_held >= 0  # ... and got a real descriptor, all before acquire() returned
     finally:
         lock.release()
 
@@ -2567,3 +2580,98 @@ def test_soft_windows_unlink_stops_on_non_permission_error(tmp_path: Path, mocke
     lock._windows_unlink_if_ours((st.st_dev, st.st_ino))
 
     assert path.exists()
+
+
+@pytest.mark.timeout(5)
+def test_append_exception_context_terminates_on_a_cycle() -> None:
+    first = RuntimeError("first")
+    second = RuntimeError("second")
+    first.__context__ = second
+    second.__context__ = first  # a cycle that never reaches the context below
+    context = ValueError("context")
+
+    _append_exception_context(first, context)
+
+    # The walk hit the already-seen tail and stopped instead of looping forever or threading context into the ring.
+    assert first.__context__ is second
+    assert second.__context__ is first
+
+
+def test_undo_acquire_keeps_registry_entry_while_still_held(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"), is_singleton=False)
+    lock.acquire()
+    key = lock._context.lock_file_key
+    assert _registry.held.get(key) == id(lock)
+
+    # A reentrant acquire that fails while the lock reports unheld routes through _undo_acquire with the counter
+    # still above zero, so the registry entry the outer hold owns must survive.
+    held_fd = lock._context.lock_file_fd
+    lock._context.lock_file_fd = None  # is_locked now reports False
+    mocker.patch.object(lock, "_poll_until_acquired", side_effect=Timeout(lock.lock_file))
+    with pytest.raises(Timeout):
+        lock.acquire(timeout=0)
+
+    assert lock._context.lock_counter == 1  # decremented from 2, the deeper hold remains
+    assert _registry.held.get(key) == id(lock)  # entry preserved because the counter did not reach zero
+
+    lock._context.lock_file_fd = held_fd
+    lock.release()
+
+
+def test_soft_marker_omits_start_line_without_a_start_token(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._soft.process_start_token", return_value=None)
+    lock = SoftFileLock(str(tmp_path / "a"))
+    with lock:
+        lines = Path(lock.lock_file).read_text(encoding="utf-8").splitlines()
+
+    assert len(lines) == 2  # pid and hostname only; the optional start-token line is omitted
+    assert lines[0] == str(os.getpid())
+
+
+def test_soft_is_lock_held_by_us_false_for_unparseable_marker(tmp_path: Path) -> None:
+    lock_path = tmp_path / "a"
+    lock_path.write_text("garbage-not-a-marker", encoding="utf-8")
+    lock = SoftFileLock(str(lock_path))
+
+    assert lock.is_lock_held_by_us is False  # an unreadable holder is nobody, so certainly not us
+
+
+@_UNIX_FLOCK_ONLY
+def test_unix_acquire_without_o_nofollow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # pragma: win32 no cover
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    lock = FileLock(str(tmp_path / "a"), is_singleton=False)
+    lock.acquire()
+    try:
+        assert lock.is_locked  # acquisition still works on a platform without O_NOFOLLOW
+    finally:
+        lock.release()
+
+
+@_UNIX_FLOCK_ONLY
+def test_unix_soft_fallback_keeps_a_replaced_file(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: win32 no cover
+    lock_path = tmp_path / "a"
+    lock = FileLock(str(lock_path), is_singleton=False)
+    target = lock.lock_file
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
+
+    real_lstat = os.lstat
+
+    def lstat_swapped_identity(path: str) -> os.stat_result:
+        st = real_lstat(path)
+        if str(path) != target:
+            return st
+        fields = list(st)
+        fields[1] += 1  # bump st_ino so the on-disk identity no longer matches the opened fd
+        return os.stat_result(fields)
+
+    mocker.patch("filelock._unix.os.lstat", side_effect=lstat_swapped_identity)
+
+    with pytest.raises(Timeout), pytest.warns(UserWarning, match="falling back to SoftFileLock"):
+        lock.acquire(timeout=0.2)
+
+    assert isinstance(lock, SoftFileLock)  # fell back after refusing to unlink the mismatched file
+    assert lock_path.exists()  # the replacement file was left in place

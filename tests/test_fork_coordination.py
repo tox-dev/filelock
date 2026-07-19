@@ -1092,10 +1092,12 @@ def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) 
     assert entered.wait(timeout=5)
 
     if (child_pid := fork_process()) == 0:  # pragma: win32 no cover
-        child_lock = BlockingLock(str(tmp_path / "mutex.lock"), is_singleton=True)
-        child_lock.acquire(timeout=0)
-        child_lock.release()
-        exit_child(0)
+        child_lock = BlockingLock(
+            str(tmp_path / "mutex.lock"), is_singleton=True
+        )  # pragma: no cover  # runs in the forked child, not measured
+        child_lock.acquire(timeout=0)  # pragma: no cover  # runs in the forked child, not measured
+        child_lock.release()  # pragma: no cover  # runs in the forked child, not measured
+        exit_child(0)  # pragma: no cover  # runs in the forked child, not measured
     _, status = os.waitpid(child_pid, 0)
     release.set()
     worker.join(timeout=5)

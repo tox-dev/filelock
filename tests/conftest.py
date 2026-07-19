@@ -43,8 +43,8 @@ def close_failure(
         # under test. An unrelated close inside a GC finalizer would escape as an unraisable exception.
         if fd == locked_fd:
             raise release_error
-        real_close(fd)
+        real_close(fd)  # pragma: no cover  # only an unrelated close (e.g. a GC finalizer) reaches here
 
     yield capture, release_error, release_cause
-    if locked_fd is not None:
+    if locked_fd is not None:  # pragma: no branch  # every consumer calls capture, so this is always set
         real_close(locked_fd)

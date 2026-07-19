@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future as ConcurrentFuture
 
 import pytest
 
@@ -49,7 +50,7 @@ async def test_hold_canceled_while_waiting_lets_the_predecessor_free_the_ticket(
 
     async def second() -> None:
         async with gate.hold():  # never reached: canceled while waiting on first
-            pass
+            pass  # pragma: no cover  # the hold body never runs: the waiter is canceled while parked in hold()
 
     first_task = asyncio.create_task(first())
     await first_holding.wait()
@@ -72,3 +73,17 @@ async def test_hold_canceled_while_waiting_lets_the_predecessor_free_the_ticket(
 
     await asyncio.wait_for(third(), timeout=1)
     assert entered.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_wait_for_predecessor_returns_immediately_when_already_done() -> None:
+    predecessor: ConcurrentFuture[None] = ConcurrentFuture()
+    predecessor.set_result(None)
+
+    # An already-resolved predecessor means the wait loop never runs its body: the guard falls straight through.
+    await _AsyncTransitionGate._wait_for_predecessor(
+        predecessor, blocking=True, cancel_check=None, deadline=None, poll_interval=0.01
+    )
+
+    assert predecessor.done()

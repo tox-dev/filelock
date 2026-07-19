@@ -86,7 +86,8 @@ def test_break_lock_file_break_path_not_targetable_by_a_peer(tmp_path: Path, moc
 
     def lstat_hook(path: str) -> os.stat_result:
         result = real_lstat(path)
-        if ".break." in path and not predictable.exists():  # once: the peer recreates a live lock at its own name
+        # break_lock_file lstats the break path exactly once, so this guard only ever runs its body (once).
+        if ".break." in path and not predictable.exists():  # pragma: no branch  # the peer recreates a live lock
             lock.write_text("live", encoding="utf-8")
             lock.rename(predictable)
         return result

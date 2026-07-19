@@ -668,7 +668,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 )
             ) is not None:
                 match errors:
-                    case (asyncio.CancelledError() as cancellation, backend_error):
+                    # The marker is only ever set on a (CancelledError, backend_error) pair, so this always matches;
+                    # the fallthrough to _raise_body_and_release below is unreachable for a marked group.
+                    case (asyncio.CancelledError() as cancellation, backend_error):  # pragma: no branch
                         _raise_grouped_errors(_ASYNC_CONTEXT_RELEASE_ERRORS, body_error, cancellation, backend_error)
             _raise_body_and_release(body_error, release_error)
 

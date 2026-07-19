@@ -8,6 +8,7 @@ import pytest
 
 from filelock import SoftFileLease, Timeout
 from filelock._identity import process_start_token
+from filelock._marker import OwnerRecord, encode_marker
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -43,6 +44,15 @@ def test_unreadable_record_names_no_owner(tmp_path: Path, record: str) -> None:
     marker.write_text(record, encoding="utf-8")
 
     assert SoftFileLease(str(marker), lease_duration=1).owner is None
+
+
+def test_encode_marker_omits_absent_lease_fields() -> None:
+    # A non-lease owner carries no token or duration, so those lines never appear in the rendered marker.
+    rendered = encode_marker(OwnerRecord(pid=7, hostname="h", mode="unknown"))
+
+    assert rendered == b"filelock/2\npid=7\nhost=h\nmode=unknown\n"
+    assert b"token=" not in rendered
+    assert b"duration=" not in rendered
 
 
 def test_record_start_token_reads_back(tmp_path: Path) -> None:

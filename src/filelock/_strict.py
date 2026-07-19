@@ -665,11 +665,9 @@ def _link_no_follow(
     # attacker can reach. Pass the option only when the runtime honors it: PyPy advertises it through
     # os.supports_follow_symlinks yet its linkat rejects it with EINVAL, so probe once rather than trust the set.
     if _LINK_HONORS_FOLLOW_SYMLINKS:
-        os.link(
-            source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False
-        )  # pragma: win32 no cover
-    else:
-        os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)  # pragma: win32 cover
+        os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False)
+    else:  # pragma: no cover  # only where os.link rejects follow_symlinks (PyPy), which runs without coverage
+        os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
 
 def _unlink_relative(directory_ref: tuple[str, int | None], name: str) -> None:

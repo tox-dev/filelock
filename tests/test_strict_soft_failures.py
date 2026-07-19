@@ -64,11 +64,12 @@ def test_strict_soft_intent_token_collision_does_not_claim_lock(tmp_path: Path, 
 
     def collide_intent(
         _source: _PathValue,
-        destination: _PathValue,
+        _destination: _PathValue,
         **_options: int | bool | None,
     ) -> None:
-        if Path(os.fsdecode(destination)).name.startswith("intent-"):
-            raise FileExistsError(EEXIST, "claim exists")
+        # The intent link is the only link this flow attempts before it fails closed, so colliding it unconditionally
+        # is equivalent to matching on the intent- prefix.
+        raise FileExistsError(EEXIST, "claim exists")
 
     mocker.patch("filelock._strict.os.link", side_effect=collide_intent)
     lock = StrictSoftFileLock(lock_path, timeout=0)
@@ -858,7 +859,8 @@ def _open_raising_for(claim: Path, error: OSError, mocker: MockerFixture) -> Non
     def failing_open(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         if os.fsdecode(path) == str(claim):
             raise error
-        return real_open(path, flags, mode, dir_fd=dir_fd)
+        # The flows using this helper open only the single target claim, so the passthrough never runs.
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: no cover
 
     mocker.patch("filelock._strict.os.open", side_effect=failing_open)
 
@@ -886,7 +888,8 @@ def test_strict_soft_stale_claim_read_revalidates_to_gone(tmp_path: Path, mocker
             stale_raised = True
             claim.unlink()
             raise OSError(ESTALE, "Stale file handle")
-        return real_open(path, flags, mode, dir_fd=dir_fd)
+        # The retry re-lstats the vanished claim and fails there before reopening, so this passthrough never runs.
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: no cover
 
     mocker.patch("filelock._strict.os.open", side_effect=stale_then_vanish)
 
@@ -967,7 +970,8 @@ def test_strict_soft_sentinel_inspection_and_close_failure_group(tmp_path: Path,
         if not close_failed:
             close_failed = True
             raise OSError(EIO, "sentinel close failed")
-        real_close(fd)
+        # Only the sentinel descriptor is closed in this flow, so the passthrough never runs.
+        real_close(fd)  # pragma: no cover
 
     mocker.patch("filelock._strict.os.fstat", side_effect=fail_sentinel_inspection)
     mocker.patch("filelock._strict.os.close", side_effect=fail_first_close)
@@ -1045,7 +1049,8 @@ def test_strict_soft_release_sentinel_close_failure(tmp_path: Path, mocker: Mock
     def fail_sentinel_close(fd: int) -> None:
         if fd == sentinel_fd:
             raise OSError(EIO, "sentinel close failed")
-        real_close(fd)
+        # Only posix release closes a second, non-sentinel descriptor (the dir_fd); win32 closes only the sentinel.
+        real_close(fd)  # pragma: win32 no cover
 
     mocker.patch("filelock._strict.os.close", side_effect=fail_sentinel_close)
 
@@ -1107,7 +1112,8 @@ def test_strict_soft_publication_record_reclaimed_aborts(tmp_path: Path, mocker:
     def source_gone(directory_ref: tuple[str, int | None], name: str) -> tuple[int, int] | None:
         if name.startswith("."):
             return None
-        return real_identity(directory_ref, name)
+        # Only the dot-prefixed private record is inspected in this flow, so this passthrough never runs.
+        return real_identity(directory_ref, name)  # pragma: no cover
 
     mocker.patch("filelock._strict._relative_identity", side_effect=source_gone)
     mocker.patch("filelock._strict._link_relative", side_effect=FileNotFoundError(ENOENT, "source vanished"))
@@ -1217,7 +1223,7 @@ def test_strict_soft_doorway_claim_unlink_failure_commits_owned(tmp_path: Path, 
         # the fault before the doorway ever discards and masking the commit-owned path this test targets.
         if name == intent_name:
             raise PermissionError(EACCES, "intent unlink denied")
-        return real_unlink_in_directory(directory, name)
+        return real_unlink_in_directory(directory, name)  # pragma: win32 cover
 
     mocker.patch("filelock._strict.secrets.token_hex", return_value=owner_token)
     scandir_mock = mocker.patch("filelock._strict.os.scandir", side_effect=add_competitor_once_intent_is_published)
@@ -1262,16 +1268,13 @@ def test_strict_soft_record_read_and_close_failure_group(tmp_path: Path, mocker:
     claims.mkdir(parents=True)
     (claims / f"held-v1-{'0' * 32}.claim").write_bytes(b"x" * 1025)
     real_close = os.close
-    close_failed = False
 
-    def fail_first_close(fd: int) -> None:
-        nonlocal close_failed
+    def fail_close(fd: int) -> None:
+        # Reading the single oversized claim closes exactly one descriptor, so failing every close still fails once.
         real_close(fd)
-        if not close_failed:
-            close_failed = True
-            raise OSError(EIO, "record close failed")
+        raise OSError(EIO, "record close failed")
 
-    mocker.patch("filelock._strict.os.close", side_effect=fail_first_close)
+    mocker.patch("filelock._strict.os.close", side_effect=fail_close)
 
     with pytest.raises(BaseExceptionGroup) as raised:
         _ = StrictSoftFileLock(lock_path).claims

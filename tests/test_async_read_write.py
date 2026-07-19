@@ -253,6 +253,15 @@ async def test_context_manager_uses_instance_defaults(lock_file: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_context_manager_overrides_defaults(lock_file: str) -> None:
+    lock = AsyncReadWriteLock(lock_file, timeout=10.0, blocking=False, is_singleton=False)
+    async with lock.read_lock(timeout=5.0, blocking=True):
+        assert_mode_held(lock_file, "read")
+    async with lock.write_lock(timeout=5.0, blocking=True):
+        assert_mode_held(lock_file, "write")
+
+
+@pytest.mark.asyncio
 async def test_sequential_mode_switch(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     async with lock.read_lock():

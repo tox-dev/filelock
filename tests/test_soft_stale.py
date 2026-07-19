@@ -209,7 +209,7 @@ def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None
     # guard classifies it as a malformed lock before any open, so an aged FIFO self-heals like any other node.
     os.mkfifo(lock_path)  # pragma: win32 no cover
     reader = os.open(lock_path, os.O_RDONLY | os.O_NONBLOCK)  # pragma: win32 no cover
-    writer = os.open(lock_path, os.O_WRONLY | os.O_NONBLOCK)  # attached but never written, so reads get EAGAIN
+    writer = os.open(lock_path, os.O_WRONLY | os.O_NONBLOCK)  # pragma: win32 no cover
     try:  # pragma: win32 no cover
         os.utime(lock_path, (0, 0))
         _assert_self_heals(lock_path)
@@ -260,7 +260,7 @@ def test_windows_stale_lock_uses_captured_process_error(  # pragma: win32 cover
     acquires: bool,
 ) -> None:
     if sys.platform != "win32":  # pragma: win32 cover
-        pytest.skip("windows-only")
+        pytest.skip("windows-only")  # pragma: no cover  # win32-only test; this guard never runs
     import ctypes
 
     def fail_open_process(_access: int, _inherit_handle: bool, _pid: int) -> None:  # pragma: win32 cover
@@ -389,7 +389,7 @@ def _assert_times_out(lock_path: Path, *, timeout: float = 0.1) -> None:
 
 def _current_process_handle_count() -> int:  # pragma: win32 cover
     if sys.platform != "win32":  # pragma: win32 cover
-        pytest.skip("windows-only")
+        pytest.skip("windows-only")  # pragma: no cover  # only ever called on win32, so this guard never runs
     import ctypes
     from ctypes import wintypes
 
@@ -613,6 +613,26 @@ def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: 
         None,
         False,
     )
+
+
+def test_close_after_commit_ignores_closes_from_other_threads(mocker: MockerFixture) -> None:
+    # The patch binds os.close process-wide, so a descriptor closed on another thread must pass through cleanly and
+    # stay out of the caller's recorded attempts rather than absorb the injected failure.
+    closed: list[int] = []
+
+    def close_a_pipe() -> None:
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        os.close(write_fd)  # a non-caller thread: passes through untouched rather than raising the injected error
+        closed.extend((read_fd, write_fd))
+
+    with _close_after_commit(mocker) as (_close_error, attempts):
+        worker = threading.Thread(target=close_a_pipe)
+        worker.start()
+        worker.join()
+
+    assert len(closed) == 2
+    assert attempts == []
 
 
 @contextmanager

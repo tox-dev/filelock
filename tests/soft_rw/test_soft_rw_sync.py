@@ -39,9 +39,8 @@ _REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os,
 def _clear_singletons() -> Generator[None]:
     SoftReadWriteLock._instances.clear()
     yield
-    for ref in list(SoftReadWriteLock._instances.valuerefs()):
-        if (lock := ref()) is not None:
-            lock.close()
+    for lock in filter(None, (ref() for ref in list(SoftReadWriteLock._instances.valuerefs()))):
+        lock.close()
     SoftReadWriteLock._instances.clear()
 
 
@@ -131,6 +130,14 @@ def test_get_lock_returns_singleton(lock_file: str) -> None:
         first.close()
 
 
+def test_leaked_acquired_singleton_is_closed_on_teardown(lock_file: str) -> None:
+    # A singleton left acquired stays reachable through its live heartbeat thread, so the autouse fixture's
+    # teardown finds it and closes it. The write marker proves the lock was really taken and must be cleaned up.
+    lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.5)
+    lock.acquire_write(timeout=2)
+    assert Path(f"{lock_file}.write").exists()
+
+
 def test_reentrant_read_holds_and_releases(lock_file: str) -> None:
     lock = _make_lock(lock_file)
     try:
@@ -188,6 +195,33 @@ def test_write_lock_is_thread_pinned(lock_file: str) -> None:
     lock.close()
     assert len(errors) == 1
     assert isinstance(errors[0], (RuntimeError, Timeout))
+
+
+def test_blocking_acquire_without_timeout_waits_for_release(lock_file: str) -> None:
+    # The default infinite timeout gives the poll loop no deadline, so it sleeps a full poll interval each round
+    # until the writer releases rather than clamping the sleep to a remaining budget.
+    holder = _make_lock(lock_file)
+    holder.acquire_write(timeout=2)
+    acquired = threading.Event()
+
+    def waiter() -> None:
+        contender = _make_lock(lock_file)
+        try:
+            contender.acquire_read(timeout=-1)
+            acquired.set()
+            contender.release()
+        finally:
+            contender.close()
+
+    thread = threading.Thread(target=waiter)
+    thread.start()
+    try:
+        assert not acquired.wait(timeout=0.2)
+        holder.release()
+        assert acquired.wait(timeout=5)
+    finally:
+        thread.join(timeout=5)
+        holder.close()
 
 
 def test_release_without_hold_raises(lock_file: str) -> None:
@@ -1002,7 +1036,7 @@ def _cleanup(processes: list[Process]) -> Generator[None]:
                 proc.join(timeout=2)
 
 
-def _sigkill_worker(
+def _sigkill_worker(  # pragma: no cover  # runs in a child the test SIGKILLs, so its coverage data is never written
     lock_file: str,
     mode: Literal["read", "write"],
     acquired_event: EventType,
@@ -1047,7 +1081,7 @@ def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType)
     child.join(timeout=5)
     if ok.is_set():  # pragma: win32 no cover
         result.set()
-    else:
+    else:  # pragma: no cover  # reached only if the child fails to report the inherited lock, i.e. a regression
         failure.set()
     lock.release()
     lock.close()
@@ -1061,7 +1095,7 @@ def _release_inherited_lock(lock_file: str, result: EventType, failure: EventTyp
     def child_entry() -> None:  # pragma: win32 no cover
         try:  # pragma: win32 no cover
             lock.release()
-        except RuntimeError:
+        except RuntimeError:  # pragma: no cover  # release on a fork-inherited lock is silent; guards a regression
             return
         ok.set()
 
@@ -1070,13 +1104,15 @@ def _release_inherited_lock(lock_file: str, result: EventType, failure: EventTyp
     child.join(timeout=5)
     if ok.is_set():  # pragma: win32 no cover
         result.set()
-    else:
+    else:  # pragma: no cover  # reached only if the child's silent release regresses into raising
         failure.set()
     lock.release()
     lock.close()
 
 
-def _reacquire_fresh_lock_in_child(lock_file: str, child_path: str, result: EventType, failure: EventType) -> None:
+def _reacquire_fresh_lock_in_child(  # pragma: win32 no cover
+    lock_file: str, child_path: str, result: EventType, failure: EventType
+) -> None:
     parent_lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
     parent_lock.acquire_write(timeout=5)
     ok = _fork_event()
@@ -1100,24 +1136,36 @@ def _reacquire_fresh_lock_in_child(lock_file: str, child_path: str, result: Even
     child.join(timeout=5)
     if ok.is_set():  # pragma: win32 no cover
         result.set()
-    else:
+    else:  # pragma: no cover  # reached only if the child cannot acquire a fresh lock after the fork, i.e. a regression
         failure.set()
     parent_lock.release()
     parent_lock.close()
 
 
-def _fork_process(target: Callable[..., object], args: tuple[object, ...] = ()) -> mp.process.BaseProcess:
-    if sys.platform == "win32":  # pragma: win32 no cover
+def _fork_process(  # pragma: win32 no cover
+    target: Callable[..., object], args: tuple[object, ...] = ()
+) -> mp.process.BaseProcess:
+    if sys.platform == "win32":  # pragma: win32 cover
         msg = "fork context is POSIX only"
         raise RuntimeError(msg)
     return mp.get_context("fork").Process(target=target, args=args)
 
 
 def _fork_event() -> EventType:  # pragma: win32 no cover
-    if sys.platform == "win32":  # pragma: win32 no cover
+    if sys.platform == "win32":  # pragma: win32 cover
         msg = "fork context is POSIX only"
         raise RuntimeError(msg)
     return mp.get_context("fork").Event()
+
+
+def test_cleanup_terminates_a_still_running_process() -> None:
+    # The cleanup helper must stop a worker that outlives its test, so a process still sleeping when the block
+    # exits is terminated and reaped rather than leaked.
+    proc = Process(target=time.sleep, args=(30,))
+    proc.start()
+    with _cleanup([proc]):
+        assert proc.is_alive()
+    assert not proc.is_alive()
 
 
 def test_write_marker_zero_write_rolls_back(lock_file: str, mocker: MockerFixture) -> None:

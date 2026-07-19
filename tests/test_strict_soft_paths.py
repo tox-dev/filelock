@@ -139,14 +139,16 @@ def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> Non
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks requires elevated Windows privileges")
-def test_strict_soft_final_symlink_fails_closed_without_touching_target(tmp_path: Path) -> None:
+def test_strict_soft_final_symlink_fails_closed_without_touching_target(  # pragma: win32 no cover
+    tmp_path: Path,
+) -> None:
     target = tmp_path / "target"
     target.write_bytes(_STRICT_SENTINEL)
     lock_path = tmp_path / "resource.lock"
     lock_path.symlink_to(target)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
-    with pytest.raises(Timeout):  # pragma: win32 no cover
+    with pytest.raises(Timeout):
         lock.acquire()
 
     assert (target.read_bytes(), lock_path.is_symlink(), lock.claims) == (_STRICT_SENTINEL, True, ())

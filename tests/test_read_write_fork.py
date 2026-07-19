@@ -241,7 +241,9 @@ def test_read_write_lock_idle_fork_handles_fresh_child_lock(tmp_path: Path) -> N
 
 
 @pytest.mark.skipif(sys.implementation.name != "pypy" or not hasattr(os, "fork"), reason="requires fork on PyPy")
-def test_read_write_lock_pypy_child_allows_without_known_sqlite_use(tmp_path: Path) -> None:
+def test_read_write_lock_pypy_child_allows_without_known_sqlite_use(
+    tmp_path: Path,
+) -> None:  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
     result = _run_fork_script(
         _pypy_fork_script(),
         [str(tmp_path / "child.db")],
@@ -252,7 +254,9 @@ def test_read_write_lock_pypy_child_allows_without_known_sqlite_use(tmp_path: Pa
 
 
 @pytest.mark.skipif(sys.implementation.name != "pypy" or not hasattr(os, "fork"), reason="requires fork on PyPy")
-def test_read_write_lock_pypy_child_rejects_after_external_sqlite_use(tmp_path: Path) -> None:
+def test_read_write_lock_pypy_child_rejects_after_external_sqlite_use(
+    tmp_path: Path,
+) -> None:  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
     result = _run_fork_script(
         _pypy_external_sqlite_script(),
         [str(tmp_path / "external.db"), str(tmp_path / "child.db")],
@@ -815,8 +819,9 @@ def _idle_fork_script() -> str:
 
 
 def _pypy_fork_script() -> str:
-    return textwrap.dedent(
-        """
+    return (
+        textwrap.dedent(  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
+            """
         from __future__ import annotations
 
         import os
@@ -833,6 +838,7 @@ def _pypy_fork_script() -> str:
         _, status = os.waitpid(child_pid, 0)
         assert os.waitstatus_to_exitcode(status) == 0
         """
+        )
     )
 
 

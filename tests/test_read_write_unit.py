@@ -32,7 +32,7 @@ def _clear_singleton_cache() -> Generator[None]:
     ReadWriteLock._instances.clear()
     yield
     for instance in list(ReadWriteLock._instances.valuerefs()):
-        if (lock := instance()) is not None:
+        if (lock := instance()) is not None:  # pragma: no cover  # cache is normally emptied before teardown
             lock.close()
     ReadWriteLock._instances.clear()
 
@@ -194,6 +194,15 @@ def test_release_force_resets_level(lock_file: str) -> None:
     assert lock._current_mode is None
 
 
+def test_release_force_closes_lingering_connection_at_zero_level(lock_file: str) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    lock.acquire_write()
+    lock._lock_level = 0
+    lock.release(force=True)
+    assert lock._con is None
+    assert lock._lock_level == 0
+
+
 @pytest.mark.parametrize(
     "mode",
     [
@@ -233,6 +242,12 @@ def test_write_lock_custom_blocking(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     with lock.write_lock(blocking=True):
         assert lock._current_mode == "write"
+
+
+def test_read_lock_context_manager_overrides_defaults(lock_file: str) -> None:
+    lock = ReadWriteLock(lock_file, timeout=10.0, blocking=False, is_singleton=False)
+    with lock.read_lock(timeout=5.0, blocking=True):
+        assert lock._current_mode == "read"
 
 
 def test_close_releases_lock_and_closes_connection(lock_file: str) -> None:
@@ -619,3 +634,17 @@ def test_finish_connection_chains_rollback_then_close_error(lock_file: str, mock
     assert "rollback boom" in str(excinfo.value.__context__)
     con.rollback.assert_called_once_with()
     con.close.assert_called_once_with()
+
+
+def test_finish_connection_skips_rollback_when_already_released(lock_file: str) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    lock.acquire_write()
+    con = lock._con
+    assert con is not None
+    lock._connection_transaction_released = True
+
+    lock._finish_connection()
+
+    assert lock._con is None
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        con.execute("SELECT 1")

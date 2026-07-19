@@ -277,6 +277,48 @@ def test_lease_release_from_the_callback_needs_a_shared_context(marker: Path) ->
         lease.release()
 
 
+def test_lease_records_a_compromise_without_a_callback_deterministically(marker: Path, mocker: MockerFixture) -> None:
+    # With no callback the heartbeat still records the loss on the lease so a holder can poll .compromise. A refresh
+    # that keeps failing drives the loss on every platform without depending on a peer taking the marker.
+    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"))
+    lease = _lease(marker)
+
+    with lease:
+        deadline = time.monotonic() + _DURATION * 20
+        while lease.compromise is None and time.monotonic() < deadline:
+            time.sleep(_HEARTBEAT)
+
+    assert lease.compromise is not None
+    assert lease.compromise.reason == "refresh-failed"
+
+
+def test_lease_release_from_the_callback_does_not_join_itself(marker: Path, mocker: MockerFixture) -> None:
+    # The callback runs on the heartbeat thread, so releasing there must skip joining that thread onto itself. A shared
+    # context lets the thread see the claim, and a failing refresh drives the loss deterministically on every platform.
+    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"))
+    holder: list[SoftFileLease] = []
+
+    def release_the_claim(_: LeaseCompromise) -> None:
+        holder[0].release()
+
+    lease = SoftFileLease(
+        str(marker),
+        thread_local=False,
+        lease_duration=_DURATION,
+        heartbeat_interval=_HEARTBEAT,
+        on_compromise=release_the_claim,
+    )
+    holder.append(lease)
+    lease.acquire()
+
+    deadline = time.monotonic() + _DURATION * 20
+    while lease.is_locked and time.monotonic() < deadline:
+        time.sleep(_HEARTBEAT)
+
+    assert lease.compromise is not None
+    assert not lease.is_locked
+
+
 def test_lease_rejects_a_peer_configured_with_another_duration(marker: Path) -> None:
     holder = _lease(marker)
 

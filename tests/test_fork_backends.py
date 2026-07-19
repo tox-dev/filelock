@@ -497,7 +497,9 @@ def _error_details(group: BaseExceptionGroup) -> list[tuple[type[BaseException],
     return [(type(error), str(error)) for error in group.exceptions]
 
 
-def _fork_descriptor_probe(descriptor: int, stat_descriptor: Callable[[int], os.stat_result]) -> int:
+def _fork_descriptor_probe(  # pragma: win32 no cover
+    descriptor: int, stat_descriptor: Callable[[int], os.stat_result]
+) -> int:
     def probe_child() -> NoReturn:
         with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
             stat_descriptor(descriptor)
