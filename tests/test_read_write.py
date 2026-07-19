@@ -17,7 +17,9 @@ from read_write_helpers import assert_read_write_lock_state
 from filelock import ReadWriteLock, Timeout
 
 if sys.implementation.name == "pypy":
-    set_start_method("spawn", force=True)
+    set_start_method(
+        "spawn", force=True
+    )  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -460,6 +462,19 @@ def lock_file(tmp_path: Path) -> str:
     return str(tmp_path / "test_lock.db")
 
 
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+def test_acquire_proxy_releases_the_read_write_lock_on_exit(lock_file: str, mode: Literal["read", "write"]) -> None:
+    # acquire_read/acquire_write hand back the shared AcquireReturnProxy; a read/write lock is not a BaseFileLock, so
+    # exiting the proxy must route through the lock's own release() rather than a context-error policy.
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
+
+    with acquire():
+        assert_read_write_lock_state(lock_file, "write", available=False)
+
+    assert_read_write_lock_state(lock_file, "write", available=True)
+
+
 def acquire_lock(
     lock_file: str,
     mode: Literal["read", "write"],
@@ -562,8 +577,8 @@ def recursive_lock(lock_file: str, mode: Literal["read", "write"], success_flag:
 
 
 def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acquired_event: EventType) -> None:
-    lock = ReadWriteLock(lock_file)
-    with lock.read_lock() if mode == "read" else lock.write_lock():
+    lock = ReadWriteLock(lock_file)  # pragma: win32 no cover
+    with lock.read_lock() if mode == "read" else lock.write_lock():  # pragma: win32 no cover
         acquired_event.set()
-        while True:
+        while True:  # pragma: win32 no cover
             time.sleep(0.1)

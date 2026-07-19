@@ -5,6 +5,7 @@ import logging
 import sys
 import threading
 from errno import EIO
+from importlib.util import find_spec
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -18,7 +19,7 @@ from async_filelock_cancellation_helpers import (
 from filelock import AsyncFileLock, BaseAsyncFileLock, ContextErrorPolicy
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-    from builtins import BaseExceptionGroup, ExceptionGroup
+    from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
 else:  # pragma: no cover (<py311)
     from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
@@ -27,13 +28,13 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-_UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    sys.platform == "win32", reason="native flock semantics are Unix-only"
+_NEEDS_FCNTL: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    find_spec("fcntl") is None, reason="native flock semantics come from the fcntl module"
 )
 
 
-@_UNIX_FLOCK_ONLY
-@pytest.mark.asyncio
+@_NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
 async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(str(tmp_path / "a"))
     await lock.acquire()
@@ -56,8 +57,8 @@ async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: Mo
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_UNIX_FLOCK_ONLY
-@pytest.mark.asyncio
+@_NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
 async def test_acquire_proceeds_after_queued_release_is_canceled(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(tmp_path / "a")
     await lock.acquire()
@@ -97,9 +98,9 @@ async def test_acquire_proceeds_after_queued_release_is_canceled(tmp_path: Path,
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.asyncio
-async def test_release_waits_for_provisional_acquire(tmp_path: Path) -> None:
+async def test_release_waits_for_provisional_acquire(tmp_path: Path) -> None:  # pragma: needs fcntl
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
     loop = asyncio.get_running_loop()
@@ -154,10 +155,10 @@ async def test_release_returns_while_acquire_waits_for_external_holder(tmp_path:
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
-async def test_release_cancellation_surfaces_backend_error(
+async def test_release_cancellation_surfaces_backend_error(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture, policy: ContextErrorPolicy
 ) -> None:
     lock = AsyncFileLock(tmp_path / "a", context_error_policy=policy)

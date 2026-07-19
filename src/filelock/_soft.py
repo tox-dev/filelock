@@ -54,7 +54,7 @@ class SoftFileLock(BaseFileLock):
         # O_CREAT | O_EXCL makes the create fail with EEXIST when the file already exists, so a successful open
         # means this process now holds the lock.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
-        if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
+        if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:  # pragma: needs o-nofollow
             flags |= o_nofollow
         try:
             fd = os.open(self.lock_file, flags, self._open_mode())
@@ -88,7 +88,7 @@ class SoftFileLock(BaseFileLock):
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
             content, mtime, ino = _read_lock_file(self.lock_file)
-            if content == STRICT_SOFT_SENTINEL_RECORD:
+            if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
                 return
             holder = _parse_lock_holder(content)
 
@@ -177,14 +177,14 @@ class SoftFileLock(BaseFileLock):
     def _unlink_held_marker(self, identity: tuple[int, int] | None) -> None:
         if identity is None:
             return
-        if sys.platform == "win32":
+        if sys.platform == "win32":  # pragma: win32 cover
             self._windows_unlink_if_ours(identity)
-        else:
+        else:  # pragma: win32 no cover
             with suppress(OSError):
                 if _file_identity(os.lstat(self.lock_file)) == identity:
                     Path(self.lock_file).unlink()
 
-    def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:
+    def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:  # pragma: win32 cover
         retry_delay = 0.001
         for attempt in range(_UNLINK_MAX_RETRIES):
             # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck
@@ -215,7 +215,7 @@ def _read_lock_file(path: str) -> tuple[str | None, float, int]:
     # a symlink, stall on a FIFO, or fail on a socket and leave acquisition wedged. The mtime and inode still flow back
     # for the identity-checked stale break. lstat, not stat, so a hostile symlink is never followed onto its target.
     st = os.lstat(path)
-    if not stat.S_ISREG(st.st_mode):
+    if not stat.S_ISREG(st.st_mode):  # pragma: needs fifo
         return None, st.st_mtime, st.st_ino
     # Re-check on the opened handle: O_NOFOLLOW refuses a symlink swapped in after the lstat, O_NONBLOCK stops a FIFO
     # swapped in from stalling the open, and the fstat catches any other non-regular replacement race before we read.

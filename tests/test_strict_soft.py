@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import time
 from errno import EBADF, ENOSYS, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -10,9 +11,11 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 if sys.version_info >= (3, 11):
-    from builtins import ExceptionGroup
-else:  # pragma: no cover (<py311)
+    from builtins import ExceptionGroup  # pragma: >=3.11 cover
+else:  # pragma: <3.11 cover
     from exceptiongroup import ExceptionGroup
+
+from coverage_pragmas import CAPABILITIES
 
 from filelock import (
     AsyncStrictSoftFileLock,
@@ -24,11 +27,16 @@ from filelock import (
     Timeout,
 )
 from filelock._identity import process_start_token
+from filelock._strict import _PRIVATE_RECORD_MARKER
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 _SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
+
+_NEEDS_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["file-mode"], reason="an unreadable claim needs POSIX permission bits"
+)
 
 
 pytestmark = pytest.mark.requires_hard_links
@@ -277,7 +285,7 @@ def test_strict_soft_rejects_non_directory_coordination_path(tmp_path: Path) -> 
         StrictSoftFileLock(lock_path).acquire()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix permission bits control claim readability")
+@_NEEDS_FILE_MODE  # pragma: needs file-mode
 def test_strict_soft_unreadable_claim_fails_closed(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)
@@ -292,7 +300,8 @@ def test_strict_soft_unreadable_claim_fails_closed(tmp_path: Path) -> None:
         lock.release()
 
 
-def test_strict_soft_symlink_claim_fails_closed(tmp_path: Path) -> None:
+@pytest.mark.skipif(not CAPABILITIES["symlink"], reason="stages a claim as a symlink")
+def test_strict_soft_symlink_claim_fails_closed(tmp_path: Path) -> None:  # pragma: needs symlink
     lock_path = tmp_path / "resource.lock"
     claims = Path(f"{lock_path}.filelock") / "claims"
     claims.mkdir(parents=True)
@@ -374,7 +383,8 @@ def test_strict_soft_publication_and_close_failures_preserve_both_errors(tmp_pat
     def fail_first_close(fd: int) -> None:
         nonlocal close_failed
         real_close(fd)
-        if not close_failed:
+        # Only a dir_fd release closes a second descriptor, so elsewhere the first close is the only one.
+        if not close_failed:  # pragma: no branch
             close_failed = True
             msg = "private close failed"
             raise OSError(msg)
@@ -402,11 +412,28 @@ async def test_async_strict_soft_matches_claim_protocol(tmp_path: Path) -> None:
         assert contender.is_locked
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="exercises Windows pathname sharing")
-def test_strict_soft_windows_release_allows_reacquire(tmp_path: Path) -> None:
+# The reacquire only needs proving where the holder's own open handle blocks the unlink; elsewhere release
+# removes the name outright and there is no sharing rule to exercise.
+@pytest.mark.skipif(
+    CAPABILITIES["unlink-open-file"], reason="exercises pathname sharing where an open file resists unlink"
+)
+def test_strict_soft_release_allows_reacquire(tmp_path: Path) -> None:  # pragma: lacks unlink-open-file
     lock_path = tmp_path / "resource.lock"
 
     with StrictSoftFileLock(lock_path) as first:
         assert first.claims[0].state == "held"
     with StrictSoftFileLock(lock_path, timeout=0) as second:
         assert second.claims[0].state == "held"
+
+
+def test_strict_soft_reclaims_an_aged_sentinel_private_record(tmp_path: Path) -> None:
+    # A crash between creating a private record and linking it leaves it behind; the next acquire reclaims it once
+    # it ages out. The dir_fd reaper cases only proved this where dir_fd exists.
+    lock_path = tmp_path / "resource.lock"
+    stale = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
+    stale.write_bytes(b"")
+    aged = time.time() - 3600
+    os.utime(stale, (aged, aged))
+
+    with StrictSoftFileLock(lock_path):
+        assert not stale.exists()

@@ -14,13 +14,15 @@ from filelock import BaseFileLock, Timeout, has_fcntl
 if TYPE_CHECKING:
     from pathlib import Path
 
-_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork required")
+_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not (hasattr(os, "fork") and hasattr(os, "register_at_fork")), reason="os.fork and os.register_at_fork required"
+)
 _FORK_WARNING: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings(
     "ignore:.*multi-threaded, use of fork.*:DeprecationWarning"
 )
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_callbacks_registered_before_filelock_can_use_locks(tmp_path: Path) -> None:
     script = """
@@ -84,7 +86,7 @@ if (
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize(
     "audit_mode",
@@ -161,7 +163,7 @@ if second_status != 0 or owner.is_alive() or statuses.get(timeout=1) != 0:
     assert result.returncode == 0, result.stderr
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @pytest.mark.parametrize(
     "event",
     [
@@ -188,7 +190,7 @@ def test_audit_rejects_process_creation_inside_descriptor_transition(
         AuditedLock(str(tmp_path / "audit.lock"), is_singleton=False).acquire(timeout=0)
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize(
     "fork_mode",
@@ -258,7 +260,7 @@ raise SystemExit(lock.child_status)
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.skipif(not has_fcntl, reason="fcntl.flock required")
 @pytest.mark.skipif(sys.implementation.name != "cpython", reason="CPython fcntl audit event required")
@@ -325,7 +327,7 @@ raise SystemExit(child_status)
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_child_unwinds_pre_fork_transition_before_new_acquire(tmp_path: Path) -> None:
     script = """
@@ -407,7 +409,7 @@ raise SystemExit(os.waitstatus_to_exitcode(status))
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_overlapping_coroutine_transitions_close_every_pending_descriptor(tmp_path: Path) -> None:
     script = """
@@ -481,7 +483,7 @@ asyncio.run(main())
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_pending_descriptor_with_unknown_identity_is_preserved_in_child(tmp_path: Path) -> None:
     script = """
@@ -546,7 +548,7 @@ raise SystemExit(lock.child_status)
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_child_replaces_parameter_model_mutex_held_during_construction(tmp_path: Path) -> None:
     script = """
@@ -633,7 +635,7 @@ if os.waitstatus_to_exitcode(status) != 0 or worker.is_alive() or os.getpid() !=
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_registration_transition_completes_after_fork_closes_admission(tmp_path: Path) -> None:
     script = """
@@ -719,7 +721,7 @@ lock.release()
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.skipif(not has_fcntl, reason="fcntl.flock required")
 def test_cancelled_async_acquire_unregisters_reused_descriptor(tmp_path: Path) -> None:
@@ -807,7 +809,7 @@ raise SystemExit(asyncio.run(main()))
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_parent_callback_rejects_reentrant_singleton_construction(tmp_path: Path) -> None:
     script = """
@@ -912,7 +914,7 @@ if (
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_singleton_construction_crossing_fork_does_not_poison_child_cache(tmp_path: Path) -> None:
     script = """
@@ -969,7 +971,7 @@ if (
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_soft_read_write_construction_crossing_fork_does_not_poison_child_cache(tmp_path: Path) -> None:
     script = """
@@ -1067,7 +1069,7 @@ def test_fork_exec_from_another_thread_remains_available(tmp_path: Path) -> None
     assert (result.returncode, finished.is_set(), worker.is_alive()) == (0, True, False)
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) -> None:
     entered, release = threading.Event(), threading.Event()
@@ -1091,7 +1093,7 @@ def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) 
     worker.start()
     assert entered.wait(timeout=5)
 
-    if (child_pid := fork_process()) == 0:
+    if (child_pid := fork_process()) == 0:  # pragma: forked child
         child_lock = BlockingLock(str(tmp_path / "mutex.lock"), is_singleton=True)
         child_lock.acquire(timeout=0)
         child_lock.release()

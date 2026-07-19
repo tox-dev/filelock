@@ -192,7 +192,7 @@ class AsyncSoftReadWriteLock:
             await self._run(self._lock.close)
 
     def _raise_if_inherited(self) -> None:
-        if self._creator_pid != os.getpid():  # pragma: no cover - exercised only in fork children
+        if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"AsyncSoftReadWriteLock on {self.lock_file} was inherited across fork; construct a new instance"
             raise RuntimeError(msg)
 

@@ -8,6 +8,7 @@ import pytest
 
 from filelock import SoftFileLease, Timeout
 from filelock._identity import process_start_token
+from filelock._marker import OwnerRecord, encode_marker
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -43,6 +44,15 @@ def test_unreadable_record_names_no_owner(tmp_path: Path, record: str) -> None:
     marker.write_text(record, encoding="utf-8")
 
     assert SoftFileLease(str(marker), lease_duration=1).owner is None
+
+
+def test_encode_marker_omits_absent_lease_fields() -> None:
+    # A non-lease owner carries no token or duration, so those lines never appear in the rendered marker.
+    rendered = encode_marker(OwnerRecord(pid=7, hostname="h", mode="unknown"))
+
+    assert rendered == b"filelock/2\npid=7\nhost=h\nmode=unknown\n"
+    assert b"token=" not in rendered
+    assert b"duration=" not in rendered
 
 
 def test_record_start_token_reads_back(tmp_path: Path) -> None:
@@ -131,3 +141,20 @@ def test_lease_ages_out_a_malformed_record(tmp_path: Path) -> None:
 
     with SoftFileLease(str(marker), lease_duration=5, timeout=1) as lease:
         assert lease.is_lock_held_by_us
+
+
+def test_marker_pid_and_owner_are_none_without_marker(tmp_path: Path) -> None:
+    lease = SoftFileLease(tmp_path / "a")
+    assert (lease.pid, lease.owner, lease.is_lock_held_by_us) == (None, None, False)
+
+
+def test_marker_force_break_removes_the_marker(tmp_path: Path) -> None:
+    # force_break clears a marker whose holder is gone, so the file is on disk but not held open — the one case where
+    # an unlink also succeeds on Windows, which refuses to remove a descriptor another handle still holds.
+    marker = tmp_path / "a"
+    marker.write_text("filelock/2\npid=1\nhost=h\nmode=lease\n", encoding="utf-8")
+    assert marker.exists()
+
+    SoftFileLease(marker).force_break()
+
+    assert not marker.exists()

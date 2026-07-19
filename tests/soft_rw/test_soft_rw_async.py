@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
@@ -14,14 +15,15 @@ if TYPE_CHECKING:
     from concurrent.futures import Executor
     from pathlib import Path
 
+    from pytest_mock import MockerFixture
+
 
 @pytest.fixture(autouse=True)
 def _clear_singletons() -> Generator[None]:
     SoftReadWriteLock._instances.clear()
     yield
-    for ref in list(SoftReadWriteLock._instances.valuerefs()):
-        if (lock := ref()) is not None:
-            lock.close()
+    for lock in filter(None, (ref() for ref in list(SoftReadWriteLock._instances.valuerefs()))):
+        lock.close()
     SoftReadWriteLock._instances.clear()
 
 
@@ -119,6 +121,31 @@ async def test_async_release_force(tmp_path: Path) -> None:
         await lock.release(force=True)
     finally:
         await lock.close()
+
+
+@pytest.mark.asyncio
+async def test_async_release_and_close_skip_when_pid_differs(tmp_path: Path, mocker: MockerFixture) -> None:
+    # A pid that no longer matches the creator's must leave the parent's still-held lock untouched.
+    lock = _make(tmp_path)
+    await lock.acquire_write(timeout=2)
+    try:
+        mocker.patch("filelock._soft_rw._async.os.getpid", return_value=os.getpid() + 1)
+        await lock.release(force=True)
+        await lock.close()
+        mocker.stopall()
+        await lock.release()
+    finally:
+        mocker.stopall()
+        await lock.close()
+
+
+@pytest.mark.asyncio
+async def test_async_leaked_singleton_is_closed_on_teardown(tmp_path: Path) -> None:
+    # A live heartbeat thread keeps the singleton reachable, so the autouse teardown finds and closes it.
+    path = tmp_path / "singleton.lock"
+    lock = AsyncSoftReadWriteLock(str(path), heartbeat_interval=0.5, stale_threshold=1.5, poll_interval=0.02)
+    await lock.acquire_write(timeout=2)
+    assert path.with_name("singleton.lock.write").exists()
 
 
 @pytest.mark.asyncio

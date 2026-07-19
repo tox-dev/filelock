@@ -401,7 +401,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                     rollback_error = error
 
             if acquire_error is not None:
-                if rollback_error is not None:
+                if rollback_error is not None:  # pragma: needs fcntl
                     self._raise_cancelled_errors(
                         "lock acquisition cancellation, backend attempt, and rollback failed",
                         cancellation,
@@ -668,14 +668,15 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 )
             ) is not None:
                 match errors:
-                    case (asyncio.CancelledError() as cancellation, backend_error):
+                    # The marker is only ever set on a (CancelledError, backend_error) pair, so this always matches.
+                    case (asyncio.CancelledError() as cancellation, backend_error):  # pragma: no branch
                         _raise_grouped_errors(_ASYNC_CONTEXT_RELEASE_ERRORS, body_error, cancellation, backend_error)
             _raise_body_and_release(body_error, release_error)
 
     def __del__(self) -> None:
         """Release on deletion; safe to call during GC even when no event loop is running."""
         if vars(self).get("_creator_pid") != os.getpid():
-            return  # pragma: no cover - exercised in fork children
+            return  # pragma: forked child
         with contextlib.suppress(Exception):
             try:
                 loop = asyncio.get_running_loop()

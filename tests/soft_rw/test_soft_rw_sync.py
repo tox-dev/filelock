@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import signal
+import socket
 import stat
 import sys
 import threading
@@ -13,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
+from coverage_pragmas import CAPABILITIES
 
 from filelock import Timeout
 from filelock import _util as util_mod
@@ -26,11 +29,13 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
+_OWNER_READ_WRITE: Final[int] = 0o600
+
 _REQUIRES_POSIX_SIGNALS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX signals required"
+    not hasattr(signal, "SIGKILL"), reason="POSIX signals required"
 )
-_REQUIRES_POSIX_PERMISSIONS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX file-mode bits not meaningful on Windows"
+_REQUIRES_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["file-mode"], reason="POSIX file-mode bits required"
 )
 _REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork required")
 
@@ -39,9 +44,8 @@ _REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os,
 def _clear_singletons() -> Generator[None]:
     SoftReadWriteLock._instances.clear()
     yield
-    for ref in list(SoftReadWriteLock._instances.valuerefs()):
-        if (lock := ref()) is not None:
-            lock.close()
+    for lock in filter(None, (ref() for ref in list(SoftReadWriteLock._instances.valuerefs()))):
+        lock.close()
     SoftReadWriteLock._instances.clear()
 
 
@@ -131,6 +135,13 @@ def test_get_lock_returns_singleton(lock_file: str) -> None:
         first.close()
 
 
+def test_leaked_acquired_singleton_is_closed_on_teardown(lock_file: str) -> None:
+    # A live heartbeat thread keeps the singleton reachable, so the autouse teardown finds and closes it.
+    lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.5)
+    lock.acquire_write(timeout=2)
+    assert Path(f"{lock_file}.write").exists()
+
+
 def test_reentrant_read_holds_and_releases(lock_file: str) -> None:
     lock = _make_lock(lock_file)
     try:
@@ -188,6 +199,32 @@ def test_write_lock_is_thread_pinned(lock_file: str) -> None:
     lock.close()
     assert len(errors) == 1
     assert isinstance(errors[0], (RuntimeError, Timeout))
+
+
+def test_blocking_acquire_without_timeout_waits_for_release(lock_file: str) -> None:
+    # Without a deadline the poll loop sleeps a full interval each round rather than clamping to a budget.
+    holder = _make_lock(lock_file)
+    holder.acquire_write(timeout=2)
+    acquired = threading.Event()
+
+    def waiter() -> None:
+        contender = _make_lock(lock_file)
+        try:
+            contender.acquire_read(timeout=-1)
+            acquired.set()
+            contender.release()
+        finally:
+            contender.close()
+
+    thread = threading.Thread(target=waiter)
+    thread.start()
+    try:
+        assert not acquired.wait(timeout=0.2)
+        holder.release()
+        assert acquired.wait(timeout=5)
+    finally:
+        thread.join(timeout=5)
+        holder.close()
 
 
 def test_release_without_hold_raises(lock_file: str) -> None:
@@ -456,9 +493,7 @@ def test_writer_phase2_timeout_releases_marker(lock_file: str) -> None:
 
 @_REQUIRES_POSIX_SIGNALS
 @pytest.mark.timeout(20)
-def test_dead_writer_evicted_by_reader(lock_file: str) -> None:
-    import signal
-
+def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs posix-signals
     held = Event()
     holder = Process(target=_sigkill_worker, args=(lock_file, "write", held, 0.1, 0.5))
     with _cleanup([holder]):
@@ -480,9 +515,7 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:
 
 @_REQUIRES_POSIX_SIGNALS
 @pytest.mark.timeout(20)
-def test_dead_reader_evicted_by_writer(lock_file: str) -> None:
-    import signal
-
+def test_dead_reader_evicted_by_writer(lock_file: str) -> None:  # pragma: needs posix-signals
     held = Event()
     holder = Process(target=_sigkill_worker, args=(lock_file, "read", held, 0.1, 0.5))
     with _cleanup([holder]):
@@ -697,8 +730,8 @@ def test_stale_malformed_marker_is_evicted(lock_file: str, content: bytes) -> No
         lock.close()
 
 
-def test_fifo_write_marker_does_not_block(lock_file: str) -> None:
-    if sys.platform == "win32":
+def test_fifo_write_marker_does_not_block(lock_file: str) -> None:  # pragma: needs fifo
+    if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("os.mkfifo is unix-only")  # also narrows sys.platform so ty resolves os.mkfifo below
     marker = f"{lock_file}.write"
     os.mkfifo(marker)
@@ -713,8 +746,8 @@ def test_fifo_write_marker_does_not_block(lock_file: str) -> None:
         lock.close()
 
 
-def test_fifo_write_marker_with_writer_is_evicted(lock_file: str) -> None:
-    if sys.platform == "win32":
+def test_fifo_write_marker_with_writer_is_evicted(lock_file: str) -> None:  # pragma: needs fifo
+    if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("os.mkfifo is unix-only")  # also narrows sys.platform so ty resolves os.mkfifo below
     marker = f"{lock_file}.write"
     os.mkfifo(marker)
@@ -736,7 +769,7 @@ def test_fifo_write_marker_with_writer_is_evicted(lock_file: str) -> None:
 
 
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW required")
-def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> None:
+def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> None:  # pragma: needs o-nofollow
     victim = tmp_path / "victim"
     victim.write_text("do-not-touch")
     Path(f"{lock_file}.write").symlink_to(victim)
@@ -752,7 +785,7 @@ def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> No
 @pytest.mark.skipif(
     os.utime not in os.supports_follow_symlinks, reason="os.utime cannot refuse symlinks on this platform"
 )
-def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:
+def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:  # pragma: needs utime-nofollow
     # The phase-2 writer-drain touch refreshes the .write marker by path (no held fd); if a peer swaps a
     # symlink in, the touch must land on the link itself, not the file it points at.
     victim = tmp_path / "victim"
@@ -769,7 +802,7 @@ def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not util_mod._SUPPORTS_UTIME_FD, reason="os.utime cannot target an fd on this platform")
-def test_refresh_touches_verified_fd_not_swapped_path(
+def test_refresh_touches_verified_fd_not_swapped_path(  # pragma: needs utime-fd
     lock_file: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A peer can swap our marker for a symlink in the window after the heartbeat's O_NOFOLLOW open but before
@@ -787,7 +820,7 @@ def test_refresh_touches_verified_fd_not_swapped_path(
 
         def swap_after_open(name: str, *, dir_fd: int | None = None) -> int | None:
             fd = real_open(name, dir_fd=dir_fd)
-            if fd is not None and Path(name) == marker:
+            if fd is not None and Path(name) == marker:  # pragma: no branch  # the refresh only opens the marker
                 marker.unlink()
                 marker.symlink_to(victim)
             return fd
@@ -801,7 +834,8 @@ def test_refresh_touches_verified_fd_not_swapped_path(
         lock.close()
 
 
-def test_symlinked_readers_directory_is_refused(lock_file: str, tmp_path: Path) -> None:
+@pytest.mark.skipif(not CAPABILITIES["symlink"], reason="staging the readers directory as a symlink")
+def test_symlinked_readers_directory_is_refused(lock_file: str, tmp_path: Path) -> None:  # pragma: needs symlink
     victim_dir = tmp_path / "victim_dir"
     victim_dir.mkdir()
     Path(f"{lock_file}.readers").symlink_to(victim_dir)
@@ -824,8 +858,8 @@ def test_readers_path_as_regular_file_is_refused(lock_file: str) -> None:
         lock.close()
 
 
-@_REQUIRES_POSIX_PERMISSIONS
-def test_write_marker_is_created_with_0600(lock_file: str) -> None:
+@_REQUIRES_FILE_MODE
+def test_write_marker_is_created_with_0600(lock_file: str) -> None:  # pragma: needs file-mode
     lock = _make_lock(lock_file)
     try:
         with lock.write_lock(timeout=2):
@@ -834,8 +868,8 @@ def test_write_marker_is_created_with_0600(lock_file: str) -> None:
         lock.close()
 
 
-@_REQUIRES_POSIX_PERMISSIONS
-def test_readers_directory_is_created_with_0700(lock_file: str) -> None:
+@_REQUIRES_FILE_MODE
+def test_readers_directory_is_created_with_0700(lock_file: str) -> None:  # pragma: needs file-mode
     lock = _make_lock(lock_file)
     try:
         with lock.read_lock(timeout=2):
@@ -859,8 +893,8 @@ def test_writer_ignores_housekeeping_files_in_readers_dir(lock_file: str) -> Non
         lock.close()
 
 
-@_REQUIRES_POSIX_PERMISSIONS
-def test_reader_file_is_created_with_0600(lock_file: str) -> None:
+@_REQUIRES_FILE_MODE
+def test_reader_file_is_created_with_0600(lock_file: str) -> None:  # pragma: needs file-mode
     lock = _make_lock(lock_file)
     try:
         with lock.read_lock(timeout=2):
@@ -873,7 +907,7 @@ def test_reader_file_is_created_with_0600(lock_file: str) -> None:
 
 @_REQUIRES_FORK
 @pytest.mark.timeout(15)
-def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:
+def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:  # pragma: needs fork
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(target=_reuse_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
@@ -885,7 +919,7 @@ def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:
 
 @_REQUIRES_FORK
 @pytest.mark.timeout(15)
-def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:
+def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:  # pragma: needs fork
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(target=_release_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
@@ -897,7 +931,7 @@ def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:
 
 @_REQUIRES_FORK
 @pytest.mark.timeout(15)
-def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:
+def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:  # pragma: needs fork
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(
@@ -916,7 +950,7 @@ def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:
 # process and Python 3.15 warns that it may deadlock. That is the scenario under test, and it is already safe:
 # register_at_fork resets inherited state in the child (any child use raises "invalidated by fork()"). Expected.
 @pytest.mark.filterwarnings("ignore:.*multi-threaded, use of fork.*:DeprecationWarning")
-def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:
+def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:  # pragma: needs fork
     path = str(tmp_path / "foo.lock")
     lock = SoftReadWriteLock(path, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
     lock.acquire_write(timeout=5)
@@ -999,10 +1033,14 @@ def _cleanup(processes: list[Process]) -> Generator[None]:
         for proc in processes:
             if proc.is_alive():
                 proc.terminate()
-                proc.join(timeout=2)
+                proc.join(timeout=5)
+            # A worker that outlives its test wedges the next one, and SIGTERM can be slow on a loaded runner.
+            if proc.is_alive():  # pragma: no cover  # the terminate lands first whenever the runner is not saturated
+                proc.kill()
+                proc.join(timeout=5)
 
 
-def _sigkill_worker(
+def _sigkill_worker(  # pragma: forked child
     lock_file: str,
     mode: Literal["read", "write"],
     acquired_event: EventType,
@@ -1030,7 +1068,7 @@ def _write_stale_marker(path: str, content: bytes) -> None:
     os.utime(path, (past, past))
 
 
-def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:
+def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:  # pragma: needs fork
     lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
     lock.acquire_write(timeout=5)
     ok = _fork_event()
@@ -1039,7 +1077,7 @@ def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType)
         try:
             lock.acquire_read(timeout=1)
         except RuntimeError as exc:
-            if "invalidated by fork" in str(exc):
+            if "invalidated by fork" in str(exc):  # pragma: no branch  # the inherited lock raises nothing else
                 ok.set()
 
     child = _fork_process(target=child_entry)
@@ -1047,13 +1085,13 @@ def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType)
     child.join(timeout=5)
     if ok.is_set():
         result.set()
-    else:
+    else:  # pragma: no cover  # reached only if the child fails to report the inherited lock, i.e. a regression
         failure.set()
     lock.release()
     lock.close()
 
 
-def _release_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:
+def _release_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:  # pragma: needs fork
     lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
     lock.acquire_read(timeout=5)
     ok = _fork_event()
@@ -1061,7 +1099,7 @@ def _release_inherited_lock(lock_file: str, result: EventType, failure: EventTyp
     def child_entry() -> None:
         try:
             lock.release()
-        except RuntimeError:
+        except RuntimeError:  # pragma: no cover  # release on a fork-inherited lock is silent; guards a regression
             return
         ok.set()
 
@@ -1070,13 +1108,15 @@ def _release_inherited_lock(lock_file: str, result: EventType, failure: EventTyp
     child.join(timeout=5)
     if ok.is_set():
         result.set()
-    else:
+    else:  # pragma: no cover  # reached only if the child's silent release regresses into raising
         failure.set()
     lock.release()
     lock.close()
 
 
-def _reacquire_fresh_lock_in_child(lock_file: str, child_path: str, result: EventType, failure: EventType) -> None:
+def _reacquire_fresh_lock_in_child(  # pragma: needs fork
+    lock_file: str, child_path: str, result: EventType, failure: EventType
+) -> None:
     parent_lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
     parent_lock.acquire_write(timeout=5)
     ok = _fork_event()
@@ -1100,24 +1140,34 @@ def _reacquire_fresh_lock_in_child(lock_file: str, child_path: str, result: Even
     child.join(timeout=5)
     if ok.is_set():
         result.set()
-    else:
+    else:  # pragma: no cover  # reached only if the child cannot acquire a fresh lock after the fork, i.e. a regression
         failure.set()
     parent_lock.release()
     parent_lock.close()
 
 
-def _fork_process(target: Callable[..., object], args: tuple[object, ...] = ()) -> mp.process.BaseProcess:
-    if sys.platform == "win32":
+def _fork_process(  # pragma: needs fork
+    target: Callable[..., object], args: tuple[object, ...] = ()
+) -> mp.process.BaseProcess:
+    if sys.platform == "win32":  # pragma: win32 cover
         msg = "fork context is POSIX only"
         raise RuntimeError(msg)
     return mp.get_context("fork").Process(target=target, args=args)
 
 
-def _fork_event() -> EventType:
-    if sys.platform == "win32":
+def _fork_event() -> EventType:  # pragma: needs fork
+    if sys.platform == "win32":  # pragma: win32 cover
         msg = "fork context is POSIX only"
         raise RuntimeError(msg)
     return mp.get_context("fork").Event()
+
+
+def test_cleanup_terminates_a_still_running_process() -> None:
+    proc = Process(target=time.sleep, args=(30,))
+    proc.start()
+    with _cleanup([proc]):
+        assert proc.is_alive()
+    assert not proc.is_alive()
 
 
 def test_write_marker_zero_write_rolls_back(lock_file: str, mocker: MockerFixture) -> None:
@@ -1127,3 +1177,48 @@ def test_write_marker_zero_write_rolls_back(lock_file: str, mocker: MockerFixtur
     with pytest.raises(OSError, match="0 bytes"):
         lock.acquire_write(timeout=1)
     assert not Path(f"{lock_file}.write").exists()
+
+
+def test_touch_writer_marker_returns_false_when_marker_missing(lock_file: str) -> None:
+    lock = SoftReadWriteLock(lock_file, is_singleton=False)
+    assert lock._touch_writer_marker_if_ours("0" * 32) is False
+
+
+def test_claim_writer_marker_returns_false_on_create_race(lock_file: str, mocker: MockerFixture) -> None:
+    lock = SoftReadWriteLock(lock_file, is_singleton=False)
+    mocker.patch.object(sync_mod, "_atomic_create_marker", side_effect=FileExistsError)
+    with lock._locks.state:
+        assert lock._claim_writer_marker("0" * 32) is False
+
+
+def test_atomic_create_marker_rolls_back_on_write_failure(tmp_path: Path, mocker: MockerFixture) -> None:
+    marker = str(tmp_path / "marker")
+    mocker.patch.object(sync_mod, "write_all", side_effect=OSError("write boom"))
+    with pytest.raises(OSError, match="write boom"):
+        sync_mod._atomic_create_marker(marker, "0" * 32)
+    assert not Path(marker).exists()
+
+
+def test_same_file_true_for_matching_identity(tmp_path: Path) -> None:
+    target = tmp_path / "present"
+    target.write_bytes(b"x")
+    st = os.lstat(target)
+    assert sync_mod._same_file(str(target), (st.st_dev, st.st_ino), dir_fd=None) is True
+
+
+def test_same_file_false_when_stat_fails(tmp_path: Path) -> None:
+    assert sync_mod._same_file(str(tmp_path / "absent"), (1, 2), dir_fd=None) is False
+
+
+def test_refresh_marker_stops_once_a_peer_owns_the_marker(lock_file: str) -> None:
+    # A peer that evicted our marker and wrote its own owns the file now; refreshing it would keep a stranger's
+    # marker alive, so the heartbeat has to stop instead.
+    lock = _make_lock(lock_file)
+    try:
+        lock.acquire_write(timeout=2)
+        foreign = f"{'0' * 32}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii")
+        Path(f"{lock_file}.write").write_bytes(foreign)
+
+        assert lock._refresh_marker() is False
+    finally:
+        lock.close()

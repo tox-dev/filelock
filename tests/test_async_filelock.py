@@ -10,10 +10,12 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import EINTR, EIO, ENOSYS
+from importlib.util import find_spec
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
+from coverage_pragmas import CAPABILITIES
 
 from filelock import (
     AsyncFileLock,
@@ -25,7 +27,7 @@ from filelock import (
 )
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-    from builtins import BaseExceptionGroup, ExceptionGroup
+    from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
 else:  # pragma: no cover (<py311)
     from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
@@ -34,7 +36,18 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-_UNIX_FLOCK_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="native flock semantics are Unix-only")
+_NEEDS_FCNTL: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    find_spec("fcntl") is None, reason="native flock semantics come from the fcntl module"
+)
+_NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"], reason="creating a symlink needs a privilege this runtime does not grant"
+)
+
+# Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
+_NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"] or sys.platform == "win32",
+    reason="a symlinked parent collapses into one key only where the parent is resolved with realpath",
+)
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -127,7 +140,7 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_3:
-            pass
+            pass  # pragma: no cover  # __aenter__ raises Timeout, so the body never runs
     assert not lock_3.is_locked
     assert lock_1.is_locked
 
@@ -138,7 +151,7 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_4:
-            pass
+            pass  # pragma: no cover  # __aenter__ raises Timeout, so the body never runs
     assert not lock_4.is_locked
     assert lock_1.is_locked
 
@@ -150,7 +163,7 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 
     with pytest.raises(Timeout, match=r"The file lock '.*' could not be acquired."):
         async with lock_5:
-            pass
+            pass  # pragma: no cover  # __aenter__ raises Timeout, so the body never runs
     assert not lock_5.is_locked
     assert lock_1.is_locked
 
@@ -195,6 +208,26 @@ async def test_coroutine_function(tmp_path: Path) -> None:
     await lock.release()
     assert acquired
     assert released
+
+
+@pytest.mark.asyncio
+async def test_coroutine_acquire_without_holding_polls_and_skips_on_acquired(tmp_path: Path) -> None:
+    attempts: list[str] = []
+
+    class NeverHoldsLock(BaseAsyncFileLock):
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+            attempts.append(self.lock_file)  # returns without setting the fd, so is_locked stays False
+
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+            self._context.lock_file_fd = None  # pragma: no cover  # never held, so release never runs
+
+    lock = NeverHoldsLock(str(tmp_path / "a"), timeout=0.1)
+    with pytest.raises(Timeout):
+        await lock.acquire()
+
+    # The coroutine backend returned without acquiring, so the tracker skipped on_acquired and the poll loop retried.
+    assert len(attempts) >= 2
+    assert not lock.is_locked
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -308,7 +341,7 @@ async def test_cancel_check_not_called_when_lock_available(lock_type: type[BaseA
 
     called = False
 
-    def should_not_be_called() -> bool:
+    def should_not_be_called() -> bool:  # pragma: no cover  # a free lock never consults cancel_check
         nonlocal called
         called = True
         return True
@@ -343,7 +376,7 @@ async def test_cancel_check_log_message(
 def test_sync_with_raises_not_implemented_error(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
     # __exit__ must exist so Python can call it after __enter__ raises; without it AttributeError hides the real error
     with pytest.raises(NotImplementedError, match=r"async with"), lock_type(str(tmp_path / "test.lock")):
-        pass  # pragma: no cover
+        pass  # pragma: no cover  # __enter__ raises NotImplementedError, so the body never runs
 
 
 @pytest.mark.parametrize(
@@ -518,9 +551,9 @@ async def test_release_from_different_task_clears_registry(tmp_path: Path, lock_
         pass
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="unix-only symlink test")
+@_NEEDS_PARENT_SYMLINK_COLLAPSE
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
-@pytest.mark.asyncio
+@pytest.mark.asyncio  # pragma: win32 no cover
 async def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
     # A symlinked parent directory resolves to the same canonical key; the final component stays literal.
     real_dir = tmp_path / "real"
@@ -534,7 +567,7 @@ async def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseA
             await lock2.acquire()
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.parametrize(
     ("depth", "force"),
     [
@@ -543,7 +576,7 @@ async def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseA
         pytest.param(2, True, id="forced"),
     ],
 )
-@pytest.mark.asyncio
+@pytest.mark.asyncio  # pragma: needs fcntl
 async def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, depth: int, force: bool) -> None:
     lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
     lock = AsyncFileLock(lock_path, run_in_executor=False)
@@ -561,9 +594,9 @@ async def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Pat
         assert successor.is_locked
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.asyncio
-async def test_release_keeps_retargeted_parent_holder_registered(tmp_path: Path) -> None:
+async def test_release_keeps_retargeted_parent_holder_registered(tmp_path: Path) -> None:  # pragma: needs fcntl
     lock_path, _original_path, replacement_path = _symlinked_lock_paths(tmp_path)
     original = AsyncFileLock(lock_path, run_in_executor=False)
     await original.acquire()
@@ -602,7 +635,7 @@ async def test_force_release_clears_registry(tmp_path: Path, lock_type: type[Bas
         assert lock2.is_locked
 
 
-def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:  # pragma: needs fcntl
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
     original.mkdir()
@@ -612,7 +645,7 @@ def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:
     return link / "test.lock", original / "test.lock", replacement / "test.lock"
 
 
-def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:
+def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:  # pragma: needs fcntl
     link = lock_path.parent
     link.unlink()
     link.symlink_to(replacement_path.parent, target_is_directory=True)
@@ -625,8 +658,8 @@ async def _acquire_for_mode(lock: BaseAsyncFileLock, mode: Literal["finite", "no
         await lock.acquire(blocking=False)
 
 
-@_UNIX_FLOCK_ONLY
-@pytest.mark.asyncio
+@_NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
 async def test_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(str(tmp_path / "a"))
     await lock.acquire()
@@ -790,7 +823,9 @@ async def test_context_group_detaches_release_context(
     ) == ((body_error, release_error), None, None, body_cause, release_cause, True, True)
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11")
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11"
+)  # pragma: >=3.11 cover
 @pytest.mark.parametrize(
     "use_proxy",
     [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
@@ -954,7 +989,7 @@ async def test_context_group_preserves_user_release_cancellation_group(tmp_path:
     await lock.release()
 
 
-def _fail_close_of(mocker: MockerFixture, lock: BaseAsyncFileLock, error: OSError) -> None:
+def _fail_close_of(mocker: MockerFixture, lock: BaseAsyncFileLock, error: OSError) -> None:  # pragma: needs fcntl
     # Fail os.close only for this lock's descriptor, so an unrelated lock's __del__ close during the test is untouched.
     fd = lock._context.lock_file_fd
     real_close = os.close
@@ -962,14 +997,14 @@ def _fail_close_of(mocker: MockerFixture, lock: BaseAsyncFileLock, error: OSErro
     def close(target: int) -> None:
         if target == fd:
             raise error
-        real_close(target)
+        real_close(target)  # pragma: no cover  # only an unrelated __del__ close during the mock window reaches here
 
     mocker.patch("filelock._api.os.close", side_effect=close)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.asyncio
-async def test_close_error_raise_propagates(tmp_path: Path, mocker: MockerFixture) -> None:
+async def test_close_error_raise_propagates(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: needs fcntl
     lock = AsyncFileLock(str(tmp_path / "a"), close_error_policy="raise")
     await lock.acquire()
     _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
@@ -978,8 +1013,8 @@ async def test_close_error_raise_propagates(tmp_path: Path, mocker: MockerFixtur
     assert not lock.is_locked
 
 
-@_UNIX_FLOCK_ONLY
-@pytest.mark.asyncio
+@_NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
 async def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(str(tmp_path / "a"))  # default policy
     await lock.acquire()
@@ -988,8 +1023,8 @@ async def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: Mo
     assert not lock.is_locked
 
 
-@_UNIX_FLOCK_ONLY
-@pytest.mark.asyncio
+@_NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
 async def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = AsyncFileLock(str(tmp_path / "a"), fallback_to_soft=False)
@@ -1004,9 +1039,9 @@ def test_preserve_lock_file_async_soft_rejects(tmp_path: Path) -> None:
         AsyncSoftFileLock(str(tmp_path / "a"), preserve_lock_file=True)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.asyncio
-async def test_preserve_lock_file_async_release_keeps_pathname(tmp_path: Path) -> None:
+async def test_preserve_lock_file_async_release_keeps_pathname(tmp_path: Path) -> None:  # pragma: needs fcntl
     path = tmp_path / "a"
     lock = AsyncFileLock(str(path), preserve_lock_file=True)
     await lock.acquire()
@@ -1015,7 +1050,7 @@ async def test_preserve_lock_file_async_release_keeps_pathname(tmp_path: Path) -
     assert type(lock).__name__ == "AsyncUnixFileLock"
 
 
-def _failing_on_acquired(_fd: int) -> None:
+def _failing_on_acquired(_fd: int) -> None:  # pragma: needs fcntl
     msg = "hook failed"
     raise RuntimeError(msg)
 
@@ -1025,16 +1060,16 @@ def test_on_acquired_async_soft_rejects(tmp_path: Path) -> None:
         AsyncSoftFileLock(str(tmp_path / "a"), on_acquired=lambda _fd: None)
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.asyncio
-async def test_on_acquired_runs_in_backend_executor(tmp_path: Path) -> None:
+async def test_on_acquired_runs_in_backend_executor(tmp_path: Path) -> None:  # pragma: needs fcntl
     hook_thread = -1
     fd_while_held = -1
 
     def hook(fd: int) -> None:
         nonlocal hook_thread, fd_while_held
         hook_thread = threading.get_ident()
-        if lock.is_locked:
+        if lock.is_locked:  # pragma: no branch  # on_acquired only ever runs while the lock is held
             fd_while_held = fd
 
     lock = AsyncFileLock(str(tmp_path / "a"), thread_local=False, on_acquired=hook)
@@ -1046,9 +1081,9 @@ async def test_on_acquired_runs_in_backend_executor(tmp_path: Path) -> None:
         await lock.release()
 
 
-@_UNIX_FLOCK_ONLY
+@_NEEDS_FCNTL
 @pytest.mark.asyncio
-async def test_on_acquired_async_failure_releases(tmp_path: Path) -> None:
+async def test_on_acquired_async_failure_releases(tmp_path: Path) -> None:  # pragma: needs fcntl
     lock = AsyncFileLock(str(tmp_path / "a"), thread_local=False, on_acquired=_failing_on_acquired)
     with pytest.raises(RuntimeError, match="hook failed"):
         await lock.acquire()
@@ -1080,3 +1115,14 @@ async def test_on_acquired_rollback_group_detaches_release_context(
         callback_error.__traceback__ is not None,
         release_error.__traceback__ is not None,
     ) == ((callback_error, release_error), None, None, callback_cause, release_cause, True, True)
+
+
+def test_async_del_without_any_loop_returns(tmp_path: Path, mocker: MockerFixture) -> None:
+    # GC can finalize a lock with no loop running and none remembered, where releasing is impossible. Raise the lookup
+    # rather than rely on no loop running here, which the surrounding tests decide.
+    lock = AsyncSoftFileLock(str(tmp_path / "a"))
+    mocker.patch("filelock.asyncio.asyncio.get_running_loop", side_effect=RuntimeError)
+
+    lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+
+    assert not lock.is_locked

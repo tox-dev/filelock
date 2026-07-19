@@ -6,6 +6,7 @@ import sys
 from typing import TYPE_CHECKING, Final, TextIO, cast
 
 import pytest
+from coverage_pragmas import CAPABILITIES
 
 from filelock import StrictSoftFileLock, Timeout
 
@@ -42,15 +43,21 @@ else:
 """
 
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark = [
+    pytest.mark.requires_hard_links,
+    pytest.mark.skipif(
+        not CAPABILITIES["old-client"],
+        reason=f"{_OLD_CLIENT_PATH_VARIABLE} must name an installed filelock {_OLDEST_LEGACY_VERSION}",
+    ),
+]
 
 
 @pytest.fixture(scope="module")
-def old_client_env() -> dict[str, str]:
-    if not (old_client_path := os.environ.get(_OLD_CLIENT_PATH_VARIABLE, "")):
-        pytest.skip(f"{_OLD_CLIENT_PATH_VARIABLE} must name an installed filelock {_OLDEST_LEGACY_VERSION}")
+def old_client_env() -> dict[str, str]:  # pragma: needs old-client
+    old_client_path = os.environ[_OLD_CLIENT_PATH_VARIABLE]
     env = os.environ.copy()
-    env["PYTHONPATH"] = old_client_path
+    # Prepend: the inherited PYTHONPATH carries the coverage plugin this child restarts under.
+    env["PYTHONPATH"] = os.pathsep.join(part for part in (old_client_path, env.get("PYTHONPATH")) if part)
     installed = subprocess.run(
         [sys.executable, "-c", "import filelock; print(filelock.__version__)"],
         check=True,
@@ -63,7 +70,9 @@ def old_client_env() -> dict[str, str]:
     return env
 
 
-def test_old_soft_holder_blocks_strict_client(tmp_path: Path, old_client_env: dict[str, str]) -> None:
+def test_old_soft_holder_blocks_strict_client(
+    tmp_path: Path, old_client_env: dict[str, str]
+) -> None:  # pragma: needs old-client
     lock_path = tmp_path / "resource.lock"
     with subprocess.Popen(
         [sys.executable, "-c", _OLD_HOLDER, os.fspath(lock_path)],
@@ -84,7 +93,9 @@ def test_old_soft_holder_blocks_strict_client(tmp_path: Path, old_client_env: di
         assert strict.is_locked
 
 
-def test_strict_activation_rejects_old_soft_client(tmp_path: Path, old_client_env: dict[str, str]) -> None:
+def test_strict_activation_rejects_old_soft_client(
+    tmp_path: Path, old_client_env: dict[str, str]
+) -> None:  # pragma: needs old-client
     lock_path = tmp_path / "resource.lock"
     with StrictSoftFileLock(lock_path):
         blocked = subprocess.run(

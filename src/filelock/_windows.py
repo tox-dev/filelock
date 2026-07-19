@@ -158,11 +158,13 @@ if sys.platform == "win32":  # pragma: win32 cover
         err = ctypes.get_last_error()
         if err == _ERROR_LOCK_VIOLATION:
             return False
-        raise ctypes.WinError(err)
+        # A non-contention LockFileEx failure is not reproducible in-process.
+        raise ctypes.WinError(err)  # pragma: no cover
 
     def _unlock_fd(fd: int) -> None:
         overlapped = _OVERLAPPED()  # the same offset 0 and one-byte length the lock used
-        if not _kernel32.UnlockFileEx(msvcrt.get_osfhandle(fd), 0, 1, 0, ctypes.byref(overlapped)):
+        # Unlocking the exact range we hold does not fail.
+        if not _kernel32.UnlockFileEx(msvcrt.get_osfhandle(fd), 0, 1, 0, ctypes.byref(overlapped)):  # pragma: no cover
             raise ctypes.WinError(ctypes.get_last_error())
 
     class WindowsFileLock(BaseFileLock):
@@ -187,7 +189,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 locked = _lock_fd_nonblocking(fd)
                 if locked:
                     self._mark_descriptor_owned(fd)
-            except BaseException:
+            except BaseException:  # pragma: no cover  # cleanup only if the lock attempt itself raises
                 os.close(fd)
                 raise
             if not locked:
@@ -246,7 +248,8 @@ if sys.platform == "win32":  # pragma: win32 cover
             raise OSError(None, ctypes.FormatError(winerror).strip(), path, winerror)
 
         info = _BY_HANDLE_FILE_INFORMATION()
-        if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
+        # Querying an open handle we just created does not fail.
+        if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):  # pragma: no cover
             err = ctypes.get_last_error()
             _kernel32.CloseHandle(handle)
             raise ctypes.WinError(err)
@@ -258,7 +261,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         try:
             # O_NOINHERIT mirrors os.open on Windows: the lock fd must not leak into child processes.
             return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_NOINHERIT)
-        except BaseException:  # open_osfhandle audits too; a hook raising anything must not leak the handle
+        except BaseException:  # pragma: no cover  # open_osfhandle audits too; a hook raising must not leak the handle
             _kernel32.CloseHandle(handle)
             raise
 

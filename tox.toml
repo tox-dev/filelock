@@ -9,6 +9,9 @@ wheel_build_env = ".pkg"
 dependency_groups = [ "test" ]
 pass_env = [ "PYTEST_*", "SSL_CERT_FILE" ]
 set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage.{env_name}" }
+# tasks holds the coverage_pragmas plugin, which coverage imports by name in this process and in the subprocesses it
+# patches, so it has to resolve from the environment rather than from pytest's sys.path.
+set_env.PYTHONPATH = "{tox_root}{/}tasks"
 commands = [
   [
     "pytest",
@@ -58,6 +61,8 @@ pass_env = [
   "DIFF_AGAINST",
 ]
 set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage" }
+# Exclusions are applied when the report is rendered, so the reporting env needs the plugin too.
+set_env.PYTHONPATH = "{tox_root}{/}tasks"
 commands = [
   [ "coverage", "combine" ],
   [ "coverage", "report", "--skip-covered", "--show-missing" ],
@@ -163,6 +168,7 @@ commands = [ [ "towncrier", "build", "--yes", "--version", "{posargs}" ] ]
 # coverage writes .coverage in the repo root instead of {work_dir}/.coverage.3.14, so the CI rename cannot find it.
 set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage.{env_name}" }
 set_env.FILELOCK_OLD_CLIENT_PATH = "{env_tmp_dir}{/}filelock-3.20.0"
+set_env.PYTHONPATH = "{tox_root}{/}tasks"
 commands_pre = [
   [
     "uv",

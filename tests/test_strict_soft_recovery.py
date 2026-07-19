@@ -47,10 +47,8 @@ def test_strict_soft_recovers_every_claim_for_crashed_token(tmp_path: Path) -> N
     with pytest.raises(Timeout):
         lock.acquire()
 
-    crashed_token = claims[0].token
     for claim in lock.claims:
-        if claim.token == crashed_token:
-            lock.force_break(claim.name)
+        lock.force_break(claim.name)
     with lock:
         assert lock.is_locked
 

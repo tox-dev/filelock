@@ -74,7 +74,7 @@ class AsyncReadWriteLock:
             self._loop = loop
             self._owns_executor = executor is None
             self._executor = executor or ThreadPoolExecutor(max_workers=1)
-            if os.getpid() != creator_pid:  # pragma: no cover - exercised only in a forked constructor callback
+            if os.getpid() != creator_pid:  # pragma: forked child
                 msg = "AsyncReadWriteLock construction cannot continue after fork"
                 raise RuntimeError(msg)
 
@@ -211,7 +211,7 @@ class AsyncReadWriteLock:
 
         """
         _ensure_current_process()
-        if self._inherited:
+        if self._inherited:  # pragma: needs fork
             return
         await self._run(self._lock.release, force=force)
 
@@ -223,7 +223,7 @@ class AsyncReadWriteLock:
 
         """
         _ensure_current_process()
-        if self._inherited:
+        if self._inherited:  # pragma: needs fork
             return
         if self._closed:
             return
@@ -300,14 +300,14 @@ class AsyncReadWriteLock:
 
     def _raise_if_unusable(self) -> None:
         _ensure_current_process()
-        if self._inherited:
+        if self._inherited:  # pragma: needs fork
             msg = f"AsyncReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
             raise RuntimeError(msg)
         if self._closed:
             msg = "Cannot operate on a closed database."
             raise sqlite3.ProgrammingError(msg)
 
-    def _reset_after_fork_in_child(self) -> None:  # pragma: no cover - exercised in fork children
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         self._fork_invalidated = True
 
     def __del__(self) -> None:

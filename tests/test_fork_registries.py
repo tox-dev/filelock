@@ -20,13 +20,13 @@ _REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os,
 
 
 @_REQUIRES_FORK
-def test_equal_unhashable_locks_reset_independently(tmp_path: Path) -> None:
-    @dataclass(eq=True, init=False)
-    class EqualLock(BaseFileLock):
-        def _acquire(self) -> None:
+def test_equal_unhashable_locks_reset_independently(tmp_path: Path) -> None:  # pragma: win32 no cover
+    @dataclass(eq=True, init=False)  # pragma: win32 no cover
+    class EqualLock(BaseFileLock):  # pragma: win32 no cover
+        def _acquire(self) -> None:  # pragma: win32 no cover
             self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
 
-        def _release(self) -> None:
+        def _release(self) -> None:  # pragma: win32 no cover
             os.close(self._context.lock_file_fd if self._context.lock_file_fd is not None else -1)
             self._context.lock_file_fd = None
 

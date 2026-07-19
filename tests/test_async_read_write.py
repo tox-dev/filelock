@@ -22,7 +22,7 @@ def _clear_singleton_cache() -> Generator[None]:
     ReadWriteLock._instances.clear()
     yield
     for ref in list(ReadWriteLock._instances.valuerefs()):
-        if (lock := ref()) is not None:
+        if (lock := ref()) is not None:  # pragma: no cover  # cache is normally emptied before teardown
             lock.close()
     ReadWriteLock._instances.clear()
 
@@ -249,6 +249,15 @@ async def test_context_manager_uses_instance_defaults(lock_file: str) -> None:
     async with lock.read_lock():
         assert_mode_held(lock_file, "read")
     async with lock.write_lock():
+        assert_mode_held(lock_file, "write")
+
+
+@pytest.mark.asyncio
+async def test_context_manager_overrides_defaults(lock_file: str) -> None:
+    lock = AsyncReadWriteLock(lock_file, timeout=10.0, blocking=False, is_singleton=False)
+    async with lock.read_lock(timeout=5.0, blocking=True):
+        assert_mode_held(lock_file, "read")
+    async with lock.write_lock(timeout=5.0, blocking=True):
         assert_mode_held(lock_file, "write")
 
 

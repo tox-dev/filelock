@@ -30,15 +30,15 @@ def test_process_alive_false_for_dead() -> None:
 
 
 @_POSIX_ONLY
-def test_process_alive_reads_permission_denied_as_alive(mocker: MockerFixture) -> None:
+def test_process_alive_reads_permission_denied_as_alive(mocker: MockerFixture) -> None:  # pragma: win32 no cover
     mocker.patch("filelock._identity.os.kill", side_effect=OSError(EPERM, "operation not permitted"))
     assert process_alive(_DEAD_PID) is True
 
 
 @_POSIX_ONLY
-def test_process_alive_reraises_unexpected_errno(mocker: MockerFixture) -> None:
+def test_process_alive_reraises_unexpected_errno(mocker: MockerFixture) -> None:  # pragma: win32 no cover
     mocker.patch("filelock._identity.os.kill", side_effect=OSError(ENODEV, "no such device"))
-    with pytest.raises(OSError, match="no such device"):
+    with pytest.raises(OSError, match="no such device"):  # pragma: win32 no cover
         process_alive(_DEAD_PID)
 
 
@@ -51,7 +51,7 @@ def test_process_start_token_none_for_dead() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS sysctl probe")
-def test_darwin_sysctl_probe_failure_reads_no_token(mocker: MockerFixture) -> None:
+def test_darwin_sysctl_probe_failure_reads_no_token(mocker: MockerFixture) -> None:  # pragma: darwin cover
     mocker.patch("filelock._identity._LIBC.sysctl", return_value=-1)
     assert process_start_token(os.getpid()) is None
 

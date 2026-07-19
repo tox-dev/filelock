@@ -182,5 +182,5 @@ def test_lock_mtime_updated_on_acquire(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     before = time.time()
     with SoftFileLock(lock_path, lifetime=60):
-        if lock_path.exists():
-            assert lock_path.stat().st_mtime >= before - 1
+        assert lock_path.exists()  # the soft marker exists while held
+        assert lock_path.stat().st_mtime >= before - 1

@@ -10,6 +10,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from coverage_pragmas import CAPABILITIES
 
 from filelock import AsyncStrictSoftFileLock, StrictSoftFileLock, Timeout
 
@@ -17,6 +18,16 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _STRICT_SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
+
+_NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"], reason="creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege"
+)
+
+# Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
+_NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"] or sys.platform == "win32",
+    reason="a symlinked parent collapses into one key only where the parent is resolved with realpath",
+)
 
 
 pytestmark = pytest.mark.requires_hard_links
@@ -104,7 +115,7 @@ async def test_async_strict_soft_waiter_keeps_acquisition_directory(
             StrictSoftFileLock(second / "resource.lock").claims,
         ) == (("held", "intent"), ())
     finally:
-        if not task.done():
+        if not task.done():  # pragma: no cover  # the contender wins before teardown, so cancellation cleanup is rare
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
@@ -112,7 +123,7 @@ async def test_async_strict_soft_waiter_keeps_acquisition_directory(
         await contender.release(force=True)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks requires elevated Windows privileges")
+@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> None:
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
@@ -138,7 +149,7 @@ def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> Non
         replacement_holder.release(force=True)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks requires elevated Windows privileges")
+@_NEEDS_SYMLINK  # pragma: needs symlink
 def test_strict_soft_final_symlink_fails_closed_without_touching_target(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.write_bytes(_STRICT_SENTINEL)

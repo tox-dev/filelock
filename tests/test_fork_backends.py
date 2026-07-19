@@ -13,8 +13,8 @@ from fork_helpers import exit_child, fork_process
 from filelock import BaseAsyncFileLock, BaseFileLock
 
 if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup
-else:  # pragma: no cover (<py311)
+    from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
+else:  # pragma: <3.11 cover
     from exceptiongroup import BaseExceptionGroup
 
 if TYPE_CHECKING:
@@ -23,7 +23,9 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork required")
+_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not (hasattr(os, "fork") and hasattr(os, "register_at_fork")), reason="os.fork and os.register_at_fork required"
+)
 
 
 class _DescriptorLock(BaseFileLock):
@@ -31,12 +33,12 @@ class _DescriptorLock(BaseFileLock):
     descriptor: int | None = None
     fail_release: bool = False
 
-    def _acquire(self) -> None:
+    def _acquire(self) -> None:  # pragma: needs fork
         self.descriptor = self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
         if self.acquire_error is not None:
             raise self.acquire_error
 
-    def _release(self) -> None:
+    def _release(self) -> None:  # pragma: needs fork
         if self.fail_release:
             msg = "unlock failed"
             raise RuntimeError(msg)
@@ -55,11 +57,11 @@ class _CoroutineDescriptorLock(BaseAsyncFileLock):
         if self.acquire_error_before_descriptor is not None:
             raise self.acquire_error_before_descriptor
         self.descriptor = self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
-        if self.acquire_error is not None:
+        if self.acquire_error is not None:  # pragma: needs fork
             raise self.acquire_error
 
     async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
-        if self.release_error_before_close is not None:
+        if self.release_error_before_close is not None:  # pragma: needs fork
             raise self.release_error_before_close
         os.close(cast("int", self._context.lock_file_fd))
         self._context.lock_file_fd = None
@@ -67,7 +69,7 @@ class _CoroutineDescriptorLock(BaseAsyncFileLock):
             raise self.release_error
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 def test_third_party_descriptor_is_closed_in_child(tmp_path: Path) -> None:
     descriptors: list[int] = []
     lock = _DescriptorLock(str(tmp_path / "third-party.lock"), is_singleton=False, on_acquired=descriptors.append)
@@ -80,7 +82,7 @@ def test_third_party_descriptor_is_closed_in_child(tmp_path: Path) -> None:
     assert os.waitstatus_to_exitcode(status) == 0
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 def test_unlock_failure_keeps_descriptor_registered(tmp_path: Path) -> None:
     descriptors: list[int] = []
     lock = _DescriptorLock(str(tmp_path / "retry.lock"), is_singleton=False, on_acquired=descriptors.append)
@@ -97,7 +99,7 @@ def test_unlock_failure_keeps_descriptor_registered(tmp_path: Path) -> None:
     assert os.waitstatus_to_exitcode(status) == 0
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 def test_acquisition_failure_keeps_descriptor_registered_until_rollback(tmp_path: Path) -> None:
     lock = _DescriptorLock(str(tmp_path / "partial.lock"), is_singleton=False)
     lock.acquire_error = RuntimeError("acquire failed")
@@ -138,7 +140,7 @@ def test_acquisition_failure_keeps_descriptor_registered_until_rollback(tmp_path
         ),
     ],
 )
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 def test_acquisition_and_registration_errors_are_grouped(
     tmp_path: Path,
     mocker: MockerFixture,
@@ -173,7 +175,7 @@ def test_acquisition_and_registration_errors_are_grouped(
     assert (_error_details(info.value), os.waitstatus_to_exitcode(status)) == (expected, 0)
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 def test_registration_failure_tracks_descriptor_when_rollback_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _DescriptorLock(str(tmp_path / "group.lock"), is_singleton=False)
     lock.fail_release = True
@@ -203,7 +205,7 @@ def test_registration_failure_tracks_descriptor_when_rollback_fails(tmp_path: Pa
     )
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 def test_unverified_descriptor_does_not_close_reused_child_fd(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
@@ -212,7 +214,7 @@ import os
 import sys
 
 if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup
+    from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
 else:
     from exceptiongroup import BaseExceptionGroup
 
@@ -287,7 +289,7 @@ raise SystemExit(os.waitstatus_to_exitcode(status))
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 def test_control_flow_registration_error_rolls_back_descriptor(tmp_path: Path, mocker: MockerFixture) -> None:
     descriptors: list[int] = []
 
@@ -314,7 +316,7 @@ def test_control_flow_registration_error_rolls_back_descriptor(tmp_path: Path, m
 
 
 @pytest.mark.asyncio
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 async def test_coroutine_registration_error_rolls_back_descriptor(tmp_path: Path, mocker: MockerFixture) -> None:
     descriptors: list[int] = []
     real_fstat = os.fstat
@@ -344,7 +346,7 @@ async def test_coroutine_acquisition_failure_before_descriptor_propagates(tmp_pa
     assert (info.value is acquisition_error, lock.is_locked) == (True, False)
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @pytest.mark.asyncio
 async def test_coroutine_acquisition_failure_keeps_descriptor_registered_until_rollback(tmp_path: Path) -> None:
     lock = _CoroutineDescriptorLock(
@@ -387,7 +389,7 @@ async def test_coroutine_acquisition_failure_keeps_descriptor_registered_until_r
         ),
     ],
 )
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @pytest.mark.asyncio
 async def test_coroutine_acquisition_and_registration_errors_are_grouped(
     tmp_path: Path,
@@ -422,7 +424,7 @@ async def test_coroutine_acquisition_and_registration_errors_are_grouped(
     assert (_error_details(info.value), os.waitstatus_to_exitcode(status)) == (expected, 0)
 
 
-@_REQUIRES_FORK
+@_REQUIRES_FORK  # pragma: needs fork
 @pytest.mark.asyncio
 async def test_coroutine_registration_failure_tracks_descriptor_when_rollback_fails(
     tmp_path: Path, mocker: MockerFixture
@@ -497,7 +499,9 @@ def _error_details(group: BaseExceptionGroup) -> list[tuple[type[BaseException],
     return [(type(error), str(error)) for error in group.exceptions]
 
 
-def _fork_descriptor_probe(descriptor: int, stat_descriptor: Callable[[int], os.stat_result]) -> int:
+def _fork_descriptor_probe(  # pragma: needs fork
+    descriptor: int, stat_descriptor: Callable[[int], os.stat_result]
+) -> int:
     def probe_child() -> NoReturn:
         with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
             stat_descriptor(descriptor)
