@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import os
 import threading
 from typing import TYPE_CHECKING, Literal
@@ -658,8 +657,7 @@ def test_dropping_a_lock_closes_its_connection(lock_file: str) -> None:
     connection = lock._con
     assert connection is not None
 
-    del lock
-    gc.collect()
+    lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
 
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("select 1")

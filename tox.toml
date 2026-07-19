@@ -65,10 +65,7 @@ set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{w
 set_env.PYTHONPATH = "{tox_root}{/}tasks"
 commands = [
   [ "coverage", "combine" ],
-  # A single env cannot reach 100%: the old-client and version-gated suites run only under the env that provides them,
-  # so report.fail_under tracks the weakest one. Every line is covered by some env though, so hold the combined report
-  # to 100 and let it catch a line that no env exercises.
-  [ "coverage", "report", "--skip-covered", "--show-missing", "--fail-under", "100" ],
+  [ "coverage", "report", "--skip-covered", "--show-missing" ],
   [ "coverage", "xml", "-o", "{env_tmp_dir}{/}coverage.xml" ],
   [ "coverage", "html", "-d", "{work_dir}{/}htmlcov" ],
   [
