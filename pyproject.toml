@@ -135,6 +135,7 @@ lint.ignore = [
 lint.per-file-ignores."tasks/**/*.py" = [
   "D",      # don't care about documentation in tasks scripts
   "INP001", # no implicit namespace
+  "S101",   # asserts state the platform a Windows-only script already refuses to run outside of, narrowing it for ty
   "S603",   # `subprocess` call: check for execution of untrusted input
   "T201",   # print allowed in scripts
 ]

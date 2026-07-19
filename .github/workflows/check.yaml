@@ -285,20 +285,27 @@ jobs:
           enable-cache: false
       - name: "🧪 Install tox"
         run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
-      # Creating a symlink on Windows needs Developer Mode or SeCreateSymbolicLinkPrivilege. Drive that setting from
-      # both sides so the capability-gated code is exercised with symlinks available and unavailable.
+      # Windows grants symlink creation two ways, so both have to be closed to deny it: Developer Mode lets an
+      # unprivileged process create them, and SeCreateSymbolicLinkPrivilege lets any holder create them regardless.
+      # Clearing only the registry value left the runner's privilege intact and both variants probed identical.
       - name: "🔗 Set Developer Mode to ${{ matrix.developer_mode }}"
         run: >
           reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d ${{ matrix.developer_mode }}
 
+      - name: "⚙️ Setup test suite"
+        run: tox run -vv --notest --skip-missing-interpreters false -e 3.14
       - name: "🔎 Report the probed capability"
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
           uvx --python 3.14 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
-      - name: "⚙️ Setup test suite"
-        run: tox run -vv --notest --skip-missing-interpreters false -e 3.14
-      - name: "✅ Run test suite"
+      - name: "✅ Run test suite with symlinks granted"
+        if: matrix.developer_mode == '1'
         run: tox run --skip-pkg-install -e 3.14 --
+      # deny_symlink reports the token privilege, the Developer Mode value, and whether a symlink still succeeds in
+      # this process and in a child, so the log says which mechanism actually governs rather than assuming either.
+      - name: "✅ Run test suite with symlinks denied"
+        if: matrix.developer_mode == '0'
+        run: python tasks\deny_symlink.py tox run --skip-pkg-install -e 3.14 --
   termux:
     name: "🤖 Termux (Android)"
     runs-on: ubuntu-24.04-arm
