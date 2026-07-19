@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import threading
 from typing import TYPE_CHECKING, Literal
@@ -648,3 +649,32 @@ def test_finish_connection_skips_rollback_when_already_released(lock_file: str) 
     assert lock._con is None
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         con.execute("SELECT 1")
+
+
+def test_dropping_a_lock_closes_its_connection(lock_file: str) -> None:
+    # Nothing else closes a lock dropped while still holding one, so the connection would outlive it.
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    lock.acquire_read()
+    connection = lock._con
+    assert connection is not None
+
+    del lock
+    gc.collect()
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("select 1")
+
+
+def test_connection_close_from_another_process_leaves_it_open(lock_file: str, mocker: MockerFixture) -> None:
+    # A child inherits the parent's connection, and closing it there would take the parent's down with it.
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    lock.acquire_read()
+    connection = lock._con
+    assert connection is not None
+    mocker.patch("filelock._read_write._GETPID", return_value=-1)
+
+    connection.close()
+
+    mocker.stopall()
+    assert connection.execute("select 1").fetchone() == (1,)
+    lock.release()
