@@ -1021,6 +1021,9 @@ def test_lock_acquired_after_release_keeps_path(tmp_path: Path) -> None:
 
 @_NEEDS_FCNTL  # pragma: needs fcntl
 def test_waiter_fd_cannot_split_lock_after_release(tmp_path: Path) -> None:
+    # typeshed guards fcntl's members behind a non-Windows platform, so state the invariant the fcntl capability
+    # gate already enforces; without it ty cannot see flock when it checks on Windows.
+    assert sys.platform != "win32"
     import fcntl
 
     lock_path = tmp_path / "test.lock"
@@ -1341,8 +1344,15 @@ _NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"], reason="creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege"
 )
 
+# filelock resolves a lock's parent with abspath on Windows so junctions and reparse points are never followed, which
+# also keeps a symlinked parent a distinct key there. These cases assert the collapsing the realpath platforms do.
+_NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"] or sys.platform == "win32",
+    reason="a symlinked parent collapses into one key only where the parent is resolved with realpath",
+)
 
-@_NEEDS_SYMLINK  # pragma: needs symlink
+
+@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     # A symlinked parent directory resolves to the same canonical key (the final component is kept literal, so a final
@@ -1358,7 +1368,7 @@ def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLoc
             lock2.acquire()
 
 
-@_NEEDS_SYMLINK  # pragma: needs symlink
+@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 @pytest.mark.parametrize(
     ("depth", "force"),
     [
@@ -1384,7 +1394,7 @@ def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, dep
         assert successor.is_locked
 
 
-@_NEEDS_SYMLINK  # pragma: needs symlink
+@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 def test_release_keeps_retargeted_parent_holder_registered(tmp_path: Path) -> None:
     lock_path, _original_path, replacement_path = _symlinked_lock_paths(tmp_path)
     original = FileLock(lock_path)
@@ -1956,7 +1966,7 @@ def test_singleton_shares_across_equivalent_spellings(tmp_path: Path) -> None:
         absolute.release(force=True)
 
 
-@_NEEDS_SYMLINK  # pragma: needs symlink
+@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 def test_singleton_shares_through_symlinked_parent(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -20,6 +21,13 @@ _STRICT_SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
 
 _NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"], reason="creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege"
+)
+
+# filelock resolves a lock's parent with abspath on Windows so junctions and reparse points are never followed, which
+# also keeps a symlinked parent a distinct key there. These cases assert the collapsing the realpath platforms do.
+_NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"] or sys.platform == "win32",
+    reason="a symlinked parent collapses into one key only where the parent is resolved with realpath",
 )
 
 
@@ -116,7 +124,7 @@ async def test_async_strict_soft_waiter_keeps_acquisition_directory(
         await contender.release(force=True)
 
 
-@_NEEDS_SYMLINK  # pragma: needs symlink
+@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> None:
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"

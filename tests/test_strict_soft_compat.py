@@ -50,7 +50,9 @@ def old_client_env() -> dict[str, str]:
     if not (old_client_path := os.environ.get(_OLD_CLIENT_PATH_VARIABLE, "")):
         pytest.skip(f"{_OLD_CLIENT_PATH_VARIABLE} must name an installed filelock {_OLDEST_LEGACY_VERSION}")
     env = os.environ.copy()
-    env["PYTHONPATH"] = old_client_path
+    # Prepend rather than replace: the inherited PYTHONPATH carries the coverage plugin, and coverage restarts
+    # itself in this child.
+    env["PYTHONPATH"] = os.pathsep.join(part for part in (old_client_path, env.get("PYTHONPATH")) if part)
     installed = subprocess.run(
         [sys.executable, "-c", "import filelock; print(filelock.__version__)"],
         check=True,

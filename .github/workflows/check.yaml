@@ -294,7 +294,7 @@ jobs:
       - name: "🔎 Report the probed capability"
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
-          uvx --python 3.14 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas._CAPABILITIES)"
+          uvx --python 3.14 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
       - name: "⚙️ Setup test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e 3.14
       - name: "✅ Run test suite"

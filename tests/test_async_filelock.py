@@ -43,6 +43,13 @@ _NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"], reason="creating a symlink needs a privilege this runtime does not grant"
 )
 
+# filelock resolves a lock's parent with abspath on Windows so junctions and reparse points are never followed, which
+# also keeps a symlinked parent a distinct key there. These cases assert the collapsing the realpath platforms do.
+_NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"] or sys.platform == "win32",
+    reason="a symlinked parent collapses into one key only where the parent is resolved with realpath",
+)
+
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("path_type", [str, PurePath, Path])
@@ -545,9 +552,9 @@ async def test_release_from_different_task_clears_registry(tmp_path: Path, lock_
         pass
 
 
-@_NEEDS_SYMLINK
+@_NEEDS_PARENT_SYMLINK_COLLAPSE
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
-@pytest.mark.asyncio  # pragma: needs symlink
+@pytest.mark.asyncio  # pragma: win32 no cover
 async def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
     # A symlinked parent directory resolves to the same canonical key; the final component stays literal.
     real_dir = tmp_path / "real"
