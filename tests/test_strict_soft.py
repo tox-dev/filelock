@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import socket
 import sys
@@ -27,7 +28,7 @@ from filelock import (
     Timeout,
 )
 from filelock._identity import process_start_token
-from filelock._strict import _PRIVATE_RECORD_MARKER
+from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_hard_link_unsupported_errnos
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -329,6 +330,25 @@ def test_strict_soft_hard_link_failure_names_filesystem_contract(
 
     with pytest.raises(SoftFileLockProtocolError, match="atomic no-replace hard-link"):
         StrictSoftFileLock(tmp_path / "resource.lock").acquire()
+
+
+@pytest.mark.parametrize(
+    ("defined", "expected"),
+    [
+        pytest.param({"ENOTSUP": 4242, "EOPNOTSUPP": 4343}, {ENOSYS, EXDEV, 4242}, id="enotsup"),
+        pytest.param({"EOPNOTSUPP": 4343}, {ENOSYS, EXDEV, 4343}, id="eopnotsupp"),
+        pytest.param({}, {ENOSYS, EXDEV}, id="neither"),
+    ],
+)
+def test_strict_soft_hard_link_unsupported_errnos(
+    monkeypatch: pytest.MonkeyPatch, defined: dict[str, int], expected: set[int]
+) -> None:
+    for name in ("ENOTSUP", "EOPNOTSUPP"):
+        monkeypatch.delattr(errno, name, raising=False)
+    for name, code in defined.items():
+        monkeypatch.setattr(errno, name, code, raising=False)
+
+    assert _probe_hard_link_unsupported_errnos() == expected
 
 
 def test_strict_soft_write_failure_leaves_no_public_claim(tmp_path: Path, mocker: MockerFixture) -> None:
