@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import pytest
 from async_filelock_cancellation_helpers import assert_cancellation_message
+from capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 from read_write_helpers import assert_read_write_lock_state
 
 from filelock import AsyncReadWriteLock, ReadWriteLock
@@ -68,6 +69,7 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(
     "cancel_caller",
     [pytest.param(False, id="executor"), pytest.param(True, id="caller-and-executor")],
 )
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 def test_executor_cancels_queued_acquire_without_compensation(lock_file: str, *, cancel_caller: bool) -> None:
     context = multiprocessing.get_context("spawn")
     canceled = context.Value("b", False)
@@ -82,6 +84,7 @@ def test_executor_cancels_queued_acquire_without_compensation(lock_file: str, *,
 
 
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_caller_cancellation_preserves_cancelled_executor_acquire(lock_file: str) -> None:
     executor_started = threading.Event()
     release_executor = threading.Event()
@@ -115,6 +118,7 @@ async def test_caller_cancellation_preserves_cancelled_executor_acquire(lock_fil
 
 
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_acquire_cancellation_surfaces_compensation_failure(lock_file: str, mocker: MockerFixture) -> None:
     executor_started = threading.Event()
     release_executor = threading.Event()
@@ -188,6 +192,7 @@ async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_acquire_cancellation_surfaces_acquire_and_rollback_errors(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
@@ -245,6 +250,7 @@ async def test_close_cancellation_shuts_down_owned_executor(lock_file: str, mock
 
 @pytest.mark.parametrize("operation", [pytest.param("release", id="release"), pytest.param("close", id="close")])
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_cancellation_surfaces_rollback_error(
     lock_file: str, mocker: MockerFixture, operation: Literal["release", "close"]
 ) -> None:
@@ -280,6 +286,7 @@ async def test_cancellation_surfaces_rollback_error(
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_context_cancellation_preserves_body_and_rollback_contexts(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:

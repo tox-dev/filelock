@@ -5,6 +5,7 @@ import threading
 from typing import TYPE_CHECKING, Literal
 
 import pytest
+from capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT
 
 pytest.importorskip("sqlite3")
 
@@ -618,6 +619,7 @@ def test_meta_raises_when_pid_changes_during_singleton_construction(lock_file: s
         _Sub(lock_file)
 
 
+@NEEDS_GENERATOR_EXCEPTION_CONTEXT
 def test_finish_connection_chains_rollback_then_close_error(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     con = mocker.MagicMock()

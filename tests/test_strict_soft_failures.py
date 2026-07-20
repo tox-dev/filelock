@@ -31,6 +31,13 @@ _NEEDS_DIR_FD: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     reason="injects a fault into the dir_fd cleanup path, which a runtime without dir_fd never executes",
 )
 
+# Narrower still: GraalPy takes os.open relative to a directory descriptor but not os.link, so the backend never opens
+# the directory these two faults are counted against.
+_NEEDS_LINK_DIR_FD: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["link-dir-fd"],
+    reason="counts the directory the dir_fd link path opens, which a runtime without link dir_fd never opens",
+)
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -375,6 +382,7 @@ def test_strict_soft_link_and_directory_close_failures_preserve_both(tmp_path: P
 
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
+@_NEEDS_LINK_DIR_FD  # pragma: needs link-dir-fd
 def test_strict_soft_held_directory_close_failure_leaves_both_claims(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -1315,6 +1323,7 @@ def test_strict_soft_acquires_without_dir_fd(tmp_path: Path, mocker: MockerFixtu
 
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
+@_NEEDS_LINK_DIR_FD  # pragma: needs link-dir-fd
 def test_strict_soft_held_link_and_directory_close_failure(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)

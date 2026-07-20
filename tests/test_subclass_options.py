@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
 from weakref import ref
 
 import pytest
+from capability_marks import NEEDS_CLASS_COLLECTION
 
 from filelock import BaseAsyncFileLock, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy
 
@@ -217,6 +218,7 @@ def test_forwarding_subclass_singleton_rejects_changed_option(
     assert first.on_acquired is hook
 
 
+@NEEDS_CLASS_COLLECTION
 def test_constructor_model_does_not_retain_dynamic_subclass(tmp_path: Path) -> None:
     lock_type = _dynamic_constructor()
     class_ref = ref(lock_type)

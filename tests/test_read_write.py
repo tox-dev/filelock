@@ -138,6 +138,7 @@ def test_write_non_starvation(lock_file: str) -> None:
     chain_forward = [Event() for _ in range(NUM_READERS)]
     chain_backward = [Event() for _ in range(NUM_READERS)]
     writer_ready = Event()
+    writer_contending = Event()
     writer_acquired = Event()
 
     release_count = Value("i", 0)
@@ -152,7 +153,10 @@ def test_write_non_starvation(lock_file: str) -> None:
         )
         readers.append(reader)
 
-    writer = Process(target=acquire_lock, args=(lock_file, "write", writer_acquired, None, 20, True, writer_ready))
+    writer = Process(
+        target=acquire_lock,
+        args=(lock_file, "write", writer_acquired, None, 20, True, writer_ready, writer_contending),
+    )
 
     with cleanup_processes([*readers, writer]):
         for reader in readers:
@@ -164,10 +168,15 @@ def test_write_non_starvation(lock_file: str) -> None:
 
         writer.start()
 
+        # Count only the releases the writer actually waited through; a slow interpreter start is not starvation.
+        assert writer_contending.wait(timeout=20), "Writer process did not reach the lock"
+        with release_count.get_lock():
+            releases_before_contending = release_count.value
+
         assert writer_acquired.wait(timeout=22), "Writer couldn't acquire lock - possible starvation"
 
         with release_count.get_lock():
-            read_releases = release_count.value
+            read_releases = release_count.value - releases_before_contending
 
         assert read_releases < 3, f"Writer acquired after {read_releases} readers released - this indicates starvation"
 
@@ -483,11 +492,14 @@ def acquire_lock(
     timeout: float = -1,
     blocking: bool = True,
     ready_event: EventType | None = None,
+    contending_event: EventType | None = None,
 ) -> None:
     if ready_event:
         ready_event.wait(timeout=10)
 
     lock = ReadWriteLock(lock_file, timeout=timeout, blocking=blocking)
+    if contending_event:
+        contending_event.set()  # interpreter start-up is over, so a caller can time the contention itself
     with lock.read_lock() if mode == "read" else lock.write_lock():
         acquired_event.set()
         if release_event:

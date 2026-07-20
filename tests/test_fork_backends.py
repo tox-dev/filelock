@@ -8,6 +8,7 @@ from errno import EBADF
 from typing import TYPE_CHECKING, Final, NoReturn, cast
 
 import pytest
+from capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT
 from fork_helpers import exit_child, fork_process
 
 from filelock import BaseAsyncFileLock, BaseFileLock
@@ -457,6 +458,7 @@ async def test_coroutine_registration_failure_tracks_descriptor_when_rollback_fa
     )
 
 
+@NEEDS_GENERATOR_EXCEPTION_CONTEXT
 @pytest.mark.asyncio
 async def test_coroutine_on_acquired_error_preserves_context(tmp_path: Path) -> None:
     callback_error = RuntimeError("hook failed")

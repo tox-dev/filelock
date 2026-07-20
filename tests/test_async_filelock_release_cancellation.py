@@ -15,6 +15,7 @@ from async_filelock_cancellation_helpers import (
     get_fcntl,
     start_file_lock_holder,
 )
+from capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from filelock import AsyncFileLock, BaseAsyncFileLock, ContextErrorPolicy
 
@@ -59,6 +60,7 @@ async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: Mo
 
 @_NEEDS_FCNTL
 @pytest.mark.asyncio  # pragma: needs fcntl
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_acquire_proceeds_after_queued_release_is_canceled(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(tmp_path / "a")
     await lock.acquire()
@@ -158,6 +160,7 @@ async def test_release_returns_while_acquire_waits_for_external_holder(tmp_path:
 @_NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_release_cancellation_surfaces_backend_error(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture, policy: ContextErrorPolicy
 ) -> None:

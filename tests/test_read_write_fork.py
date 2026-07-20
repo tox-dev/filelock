@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from capability_marks import NEEDS_AUDIT_EVENTS, NEEDS_COLLECTED_FINALIZATION
 
 from filelock import ReadWriteLock
 
 
+@NEEDS_AUDIT_EVENTS
 def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
     lock_path = tmp_path / "idle.db"
     connection_events = 0
@@ -45,6 +47,7 @@ def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
     not Path("/dev/fd").is_dir() and not Path("/proc/self/fd").is_dir(),
     reason="no descriptor view",
 )
+@NEEDS_COLLECTED_FINALIZATION
 def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) -> None:  # pragma: needs fd-directory
     result = _run_fork_script(_dropped_instances_script(), [str(tmp_path)], timeout=10)
 
@@ -52,6 +55,7 @@ def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) 
 
 
 @pytest.mark.skipif(not hasattr(os, "register_at_fork"), reason="requires fork transitions")  # pragma: needs fork
+@NEEDS_COLLECTED_FINALIZATION
 def test_async_read_write_lock_allows_finalizer_reentry(tmp_path: Path) -> None:
     result = _run_fork_script(
         _reentrant_finalizer_script(),
@@ -76,7 +80,7 @@ def test_read_write_lock_subclass_has_independent_singletons(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     "audit_event",
     [
-        pytest.param("sqlite3.connect", id="sqlite-connect"),
+        pytest.param("sqlite3.connect", marks=NEEDS_AUDIT_EVENTS, id="sqlite-connect"),
         pytest.param(
             "ctypes.dlsym",
             marks=pytest.mark.skipif(
@@ -123,6 +127,7 @@ def test_read_write_lock_escrow_ignores_shared_ctypes_signatures(tmp_path: Path)
         pytest.param("close", id="close"),
     ],
 )
+@NEEDS_AUDIT_EVENTS
 def test_read_write_lock_rejects_same_thread_operation_during_acquisition(
     tmp_path: Path, operation: Literal["acquire", "release", "close"]
 ) -> None:
@@ -144,6 +149,7 @@ def test_read_write_lock_rejects_same_thread_operation_during_acquisition(
         pytest.param("close", id="close"),
     ],
 )
+@NEEDS_AUDIT_EVENTS
 def test_read_write_lock_serializes_other_thread_operation_during_acquisition(
     tmp_path: Path, operation: Literal["release", "close"]
 ) -> None:

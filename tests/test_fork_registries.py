@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn
 
 import pytest
+from capability_marks import NEEDS_CLASS_COLLECTION
 from fork_helpers import exit_child, fork_process
 
 from filelock import BaseFileLock
@@ -76,6 +77,7 @@ for lock in locks:
     assert (result.returncode, [path.with_name(f"{path.name}.write").exists() for path in paths]) == (0, [False, False])
 
 
+@NEEDS_CLASS_COLLECTION
 def test_dynamic_lock_class_can_be_collected() -> None:
     class EphemeralLock(BaseFileLock):
         _acquire = _release = BaseFileLock._acquire

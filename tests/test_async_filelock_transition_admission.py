@@ -11,6 +11,7 @@ from async_filelock_cancellation_helpers import (
     assert_file_lock_state,
     start_file_lock_holder,
 )
+from capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from filelock import AsyncFileLock, Timeout
 
@@ -32,6 +33,7 @@ _UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     ],
 )
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_queued_acquire_honors_own_admission_policy(
     tmp_path: Path, admission: Literal["nonblocking", "deadline", "cancel-check"]
 ) -> None:
@@ -80,6 +82,7 @@ async def test_queued_acquire_honors_own_admission_policy(
 
 @_UNIX_FLOCK_ONLY
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_queued_acquire_proceeds_after_prior_waiter_cancels(tmp_path: Path) -> None:  # pragma: win32 no cover
     hook_started = asyncio.Event()
     finish_hook = threading.Event()

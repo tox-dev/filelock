@@ -6,6 +6,7 @@ from errno import EIO
 from typing import TYPE_CHECKING
 
 import pytest
+from capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from filelock import AsyncFileLock, BaseAsyncFileLock
 
@@ -50,6 +51,7 @@ async def test_release_serialized_skips_when_peer_already_released(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_release_cancellation_surfaces_backend_error(tmp_path: Path) -> None:
     backend_error = OSError(EIO, "backend release failed")
     release_started = asyncio.Event()
@@ -86,6 +88,7 @@ async def test_release_cancellation_surfaces_backend_error(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_acquire_cancellation_rollback_failure_surfaces_backend_error(tmp_path: Path) -> None:
     rollback_error = OSError(EIO, "rollback release failed")
     acquire_started = asyncio.Event()

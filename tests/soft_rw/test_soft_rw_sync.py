@@ -731,8 +731,8 @@ def test_stale_malformed_marker_is_evicted(lock_file: str, content: bytes) -> No
 
 
 def test_fifo_write_marker_does_not_block(lock_file: str) -> None:  # pragma: needs fifo
-    if sys.platform == "win32":  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unix-only")  # also narrows sys.platform so ty resolves os.mkfifo below
+    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
+        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
     marker = f"{lock_file}.write"
     os.mkfifo(marker)
     past = time.time() - 1000
@@ -747,8 +747,8 @@ def test_fifo_write_marker_does_not_block(lock_file: str) -> None:  # pragma: ne
 
 
 def test_fifo_write_marker_with_writer_is_evicted(lock_file: str) -> None:  # pragma: needs fifo
-    if sys.platform == "win32":  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unix-only")  # also narrows sys.platform so ty resolves os.mkfifo below
+    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
+        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
     marker = f"{lock_file}.write"
     os.mkfifo(marker)
     past = time.time() - 1000
@@ -797,7 +797,7 @@ def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None: 
 
     util_mod.touch(str(marker))
 
-    assert victim.stat().st_mtime == past
+    assert victim.stat().st_mtime == pytest.approx(past)  # a timestamp round-trip need not be bit-exact
     assert victim.read_text() == "do-not-touch"
 
 
@@ -827,7 +827,7 @@ def test_refresh_touches_verified_fd_not_swapped_path(  # pragma: needs utime-fd
 
         monkeypatch.setattr(sync_mod, "_open_marker", swap_after_open)
         assert lock._refresh_marker() is True
-        assert victim.stat().st_mtime == past
+        assert victim.stat().st_mtime == pytest.approx(past)  # a timestamp round-trip need not be bit-exact
         assert victim.read_text() == "do-not-touch"
     finally:
         lock.release(force=True)

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final, TypeVar
 
 import pytest
 from async_filelock_cancellation_helpers import assert_file_lock_state, get_fcntl
+from capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from filelock import AsyncAcquireReturnProxy, AsyncFileLock, ContextErrorPolicy
 
@@ -78,6 +79,7 @@ def test_runner_shutdown_waits_for_executor_acquire_rollback(tmp_path: Path) -> 
 
 @_NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 def test_runner_shutdown_preserves_body_cancellation_and_release_errors(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture, policy: ContextErrorPolicy
 ) -> None:

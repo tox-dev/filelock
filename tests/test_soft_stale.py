@@ -203,16 +203,16 @@ def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) ->
 
 
 def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
-    if sys.platform == "win32":  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unix-only")
+    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
+        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
     # An attacker-placed FIFO must not stall the open; O_NONBLOCK makes the read bail instead of hang.
     os.mkfifo(lock_path)  # pragma: win32 no cover
     assert SoftFileLock(lock_path).pid is None  # pragma: win32 no cover
 
 
 def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None:
-    if sys.platform == "win32":  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unix-only")
+    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
+        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
     # A same-UID peer can plant a FIFO with a writer attached so a non-blocking read would raise EAGAIN. The lstat
     # guard classifies it as a malformed lock before any open, so an aged FIFO self-heals like any other node.
     os.mkfifo(lock_path)  # pragma: win32 no cover

@@ -21,6 +21,7 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 import pytest
+from capability_marks import NEEDS_PROMPT_FINALIZATION
 from coverage_pragmas import CAPABILITIES
 
 from filelock import (
@@ -480,7 +481,7 @@ def test_acquire_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         assert not lock.is_locked
 
 
-@pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
+@NEEDS_PROMPT_FINALIZATION
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
@@ -900,7 +901,7 @@ def test_singleton_locks_must_be_initialized_with_the_same_args(lock_type: type[
     del lock, exc_info
 
 
-@pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
+@NEEDS_PROMPT_FINALIZATION
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_locks_are_deleted_when_no_external_references_exist(
     lock_type: type[BaseFileLock],
@@ -914,7 +915,6 @@ def test_singleton_locks_are_deleted_when_no_external_references_exist(
     assert lock_type._instances == {}
 
 
-@pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_instance_tracking_is_unique_per_subclass(lock_type: type[BaseFileLock]) -> None:
     class Lock1(lock_type):  # ty: ignore[unsupported-base]
@@ -1341,6 +1341,10 @@ def test_different_threads_no_false_positive(tmp_path: Path, lock_type: type[Bas
 
 _NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"], reason="creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege"
+)
+
+_NEEDS_O_NOFOLLOW: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["o-nofollow"], reason="refusing to open through a final symlink needs a honored O_NOFOLLOW"
 )
 
 # Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
@@ -1994,6 +1998,7 @@ def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
 
 
 @_NEEDS_FCNTL  # pragma: needs fcntl
+@_NEEDS_O_NOFOLLOW  # pragma: needs o-nofollow
 def test_final_symlink_backend_refuses_to_lock(tmp_path: Path) -> None:
     (tmp_path / "target").write_text("")
     (tmp_path / "link").symlink_to(tmp_path / "target")
