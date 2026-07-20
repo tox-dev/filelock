@@ -7,6 +7,13 @@
 .. towncrier release notes start
 
 ********************
+ 3.31.1 (2026-07-20)
+********************
+
+- A ``SoftFileLease`` acquired on one thread keeps its claim when another thread fails to acquire the same lease object,
+  so its heartbeat carries on refreshing the marker instead of being torn down and letting a peer take the live claim. :pr:`680`
+
+********************
  3.31.0 (2026-07-18)
 ********************
 
