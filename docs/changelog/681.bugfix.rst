@@ -1,0 +1,3 @@
+``filelock`` imports again on runtimes whose ``errno`` module does not define ``ENOTSUP``, such as GraalPy 24.1, where
+importing the package raised ``ImportError``. The code is probed instead, falling back to ``EOPNOTSUPP`` and then to
+``ENOSYS``/``EXDEV`` alone, so platforms that define ``ENOTSUP`` keep their behavior.
