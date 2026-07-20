@@ -12,6 +12,9 @@ set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{w
 # tasks holds the coverage_pragmas plugin, which coverage imports by name in this process and in the subprocesses it
 # patches, so it has to resolve from the environment rather than from pytest's sys.path.
 set_env.PYTHONPATH = "{tox_root}{/}tasks"
+# No --cov-context: coverage refuses its sys.monitoring core when contexts are configured, because that core does not
+# implement them, but pytest-cov switches contexts behind that guard. The unsupported pair silently drops lines the
+# suite ran, and it cost BaseAsyncFileLock.__del__'s no-loop path a flaky 99.98% on the 3.14 jobs.
 commands = [
   [
     "pytest",
@@ -27,8 +30,6 @@ commands = [
       "{tox_root}{/}tests",
       "--cov-config",
       "{tox_root}{/}pyproject.toml",
-      "--cov-context",
-      "test",
       "--cov-report",
       "term-missing:skip-covered",
       "--cov-report",

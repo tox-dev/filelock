@@ -236,7 +236,6 @@ paths.source = [
   "**\\src",
 ]
 report.fail_under = 100
-html.show_contexts = true
 html.skip_covered = false
 
 [tool.towncrier]

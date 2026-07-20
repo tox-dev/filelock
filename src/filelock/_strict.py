@@ -80,10 +80,11 @@ _LINK_HONORS_FOLLOW_SYMLINKS: Final[bool] = _probe_link_follow_symlinks()
 
 
 def _probe_hard_link_unsupported_errnos() -> frozenset[int]:
-    # GraalPy's errno omits ENOTSUP, so importing the name outright breaks every runtime that ships without it. Where
-    # both names exist outside Windows they are the same code, so EOPNOTSUPP stands in exactly; where neither exists a
-    # runtime that cannot name "operation not supported" cannot raise it either, and ENOSYS/EXDEV still classify the
-    # link failures it can raise.
+    # GraalPy's errno omits ENOTSUP, so importing the name outright breaks every runtime that ships without it. ENOTSUP
+    # wins wherever it exists, leaving every runtime that names it unchanged. EOPNOTSUPP only stands in for the ones
+    # that do not, and it approximates rather than matches: the two codes agree on Linux but differ on macOS/BSD and on
+    # Windows. Where neither exists a runtime that cannot name "operation not supported" cannot raise it either, and
+    # ENOSYS/EXDEV still classify the link failures it can raise.
     not_supported = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", None))
     return frozenset({ENOSYS, EXDEV} if not_supported is None else {ENOSYS, EXDEV, not_supported})
 

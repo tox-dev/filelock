@@ -1120,9 +1120,13 @@ async def test_on_acquired_rollback_group_detaches_release_context(
 def test_async_del_without_any_loop_returns(tmp_path: Path, mocker: MockerFixture) -> None:
     # GC can finalize a lock with no loop running and none remembered, where releasing is impossible. Raise the lookup
     # rather than rely on no loop running here, which the surrounding tests decide.
+    get_running_loop = mocker.patch("filelock.asyncio.asyncio.get_running_loop", side_effect=RuntimeError)
     lock = AsyncSoftFileLock(str(tmp_path / "a"))
-    mocker.patch("filelock.asyncio.asyncio.get_running_loop", side_effect=RuntimeError)
+    release = mocker.patch.object(lock, "release", autospec=True)
+    # Any lock another test dropped reaches the same patched lookup, so only calls from here on count.
+    get_running_loop.reset_mock()
 
     lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
 
-    assert not lock.is_locked
+    # An unlocked finalizer asserts nothing on its own; the lookup and the absent release pin the path it took.
+    assert (get_running_loop.called, release.called, lock.is_locked) == (True, False, False)
