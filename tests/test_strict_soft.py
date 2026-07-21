@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import socket
 import sys
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
+
+from tests.capability_marks import NEEDS_FILE_MODE
 
 if sys.version_info >= (3, 11):
     from builtins import ExceptionGroup  # pragma: >=3.11 cover
@@ -27,16 +30,12 @@ from filelock import (
     Timeout,
 )
 from filelock._identity import process_start_token
-from filelock._strict import _PRIVATE_RECORD_MARKER
+from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_hard_link_unsupported_errnos
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 _SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
-
-_NEEDS_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["file-mode"], reason="an unreadable claim needs POSIX permission bits"
-)
 
 
 pytestmark = pytest.mark.requires_hard_links
@@ -285,7 +284,7 @@ def test_strict_soft_rejects_non_directory_coordination_path(tmp_path: Path) -> 
         StrictSoftFileLock(lock_path).acquire()
 
 
-@_NEEDS_FILE_MODE  # pragma: needs file-mode
+@NEEDS_FILE_MODE  # pragma: needs file-mode
 def test_strict_soft_unreadable_claim_fails_closed(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)
@@ -329,6 +328,25 @@ def test_strict_soft_hard_link_failure_names_filesystem_contract(
 
     with pytest.raises(SoftFileLockProtocolError, match="atomic no-replace hard-link"):
         StrictSoftFileLock(tmp_path / "resource.lock").acquire()
+
+
+@pytest.mark.parametrize(
+    ("defined", "expected"),
+    [
+        pytest.param({"ENOTSUP": 4242, "EOPNOTSUPP": 4343}, {ENOSYS, EXDEV, 4242}, id="enotsup"),
+        pytest.param({"EOPNOTSUPP": 4343}, {ENOSYS, EXDEV, 4343}, id="eopnotsupp"),
+        pytest.param({}, {ENOSYS, EXDEV}, id="neither"),
+    ],
+)
+def test_strict_soft_hard_link_unsupported_errnos(
+    monkeypatch: pytest.MonkeyPatch, defined: dict[str, int], expected: set[int]
+) -> None:
+    for name in ("ENOTSUP", "EOPNOTSUPP"):
+        monkeypatch.delattr(errno, name, raising=False)
+    for name, code in defined.items():
+        monkeypatch.setattr(errno, name, code, raising=False)
+
+    assert _probe_hard_link_unsupported_errnos() == expected
 
 
 def test_strict_soft_write_failure_leaves_no_public_claim(tmp_path: Path, mocker: MockerFixture) -> None:

@@ -8,10 +8,9 @@ from contextlib import suppress
 from errno import EIO, ENOENT
 from threading import Thread
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
-from coverage_pragmas import CAPABILITIES
 
 from filelock import (
     FileLock,
@@ -21,6 +20,7 @@ from filelock import (
     StrictSoftFileLock,
     Timeout,
 )
+from tests.capability_marks import NEEDS_UNLINK_OPEN_FILE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,10 +34,6 @@ _HEARTBEAT: float = 0.1
 
 #: Taking a claim from a live holder means removing its marker while the holder still has it open. Where that is
 #: refused, a lease only reclaims once the holder exits and its handle closes.
-_NEEDS_UNLINK_OPEN_FILE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["unlink-open-file"],
-    reason="this runtime keeps an open marker undeletable, so no peer can take it from a live holder",
-)
 
 
 @pytest.fixture
@@ -95,7 +91,7 @@ def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> N
             _lease(marker).acquire()
 
 
-@_NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) -> None:
     # A wedged holder: its marker stays on disk, but no refresh ever lands on it again, so the claim ages out.
     mocker.patch("filelock._lease.touch")
@@ -131,7 +127,7 @@ def test_lease_reclaims_a_dead_same_host_holder(marker: Path) -> None:
         assert lease.is_lock_held_by_us
 
 
-@_NEEDS_UNLINK_OPEN_FILE
+@NEEDS_UNLINK_OPEN_FILE
 def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None:  # pragma: needs unlink-open-file
     seen: list[LeaseCompromise] = []
     lease = _lease(marker, on_compromise=seen.append)
@@ -144,7 +140,7 @@ def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None
     assert [(c.reason, c.token, c.lock_file) for c in seen] == [("marker-missing", token, str(marker))]
 
 
-@_NEEDS_UNLINK_OPEN_FILE
+@NEEDS_UNLINK_OPEN_FILE
 def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None:  # pragma: needs unlink-open-file
     seen: list[LeaseCompromise] = []
     holder = _lease(marker, on_compromise=seen.append)
@@ -198,7 +194,7 @@ def test_lease_tolerates_a_transient_refresh_error(marker: Path, mocker: MockerF
         assert lease.compromise is None
 
 
-@_NEEDS_UNLINK_OPEN_FILE
+@NEEDS_UNLINK_OPEN_FILE
 def test_lease_reports_one_compromise_per_claim(marker: Path) -> None:  # pragma: needs unlink-open-file
     seen: list[LeaseCompromise] = []
     lease = _lease(marker, on_compromise=seen.append)
@@ -210,7 +206,7 @@ def test_lease_reports_one_compromise_per_claim(marker: Path) -> None:  # pragma
     assert len(seen) == 1
 
 
-@_NEEDS_UNLINK_OPEN_FILE
+@NEEDS_UNLINK_OPEN_FILE
 def test_lease_records_the_compromise_without_a_callback(marker: Path) -> None:  # pragma: needs unlink-open-file
     lease = _lease(marker)
 
@@ -231,7 +227,7 @@ def test_lease_holds_an_uncompromised_claim(marker: Path) -> None:
         assert lease.compromise is None
 
 
-@_NEEDS_UNLINK_OPEN_FILE
+@NEEDS_UNLINK_OPEN_FILE
 def test_lease_can_be_released_from_the_compromise_callback(marker: Path) -> None:  # pragma: needs unlink-open-file
     # The callback runs on the heartbeat thread, so releasing from it needs a context that thread can see, and it must
     # not deadlock joining itself.
@@ -257,7 +253,7 @@ def test_lease_can_be_released_from_the_compromise_callback(marker: Path) -> Non
     assert not lease.is_locked
 
 
-@_NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 def test_lease_release_from_the_callback_needs_a_shared_context(marker: Path) -> None:
     # With the default thread-local context the heartbeat thread sees no claim of its own, so its release() does
     # nothing. Pin the trap the docstring warns about.

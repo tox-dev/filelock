@@ -6,6 +6,7 @@ from concurrent.futures import Future as ConcurrentFuture
 import pytest
 
 from filelock._async import _AsyncTransitionGate
+from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 
 @pytest.mark.asyncio
@@ -38,6 +39,7 @@ async def test_hold_waits_for_a_predecessor_before_entering() -> None:
 
 
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_hold_canceled_while_waiting_lets_the_predecessor_free_the_ticket() -> None:
     gate = _AsyncTransitionGate()
     first_holding = asyncio.Event()

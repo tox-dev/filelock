@@ -12,9 +12,19 @@ pytest.importorskip("sqlite3")
 
 import sqlite3
 
-from read_write_helpers import assert_read_write_lock_state
-
 from filelock import ReadWriteLock, Timeout
+from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
+from tests.read_write_helpers import assert_read_write_lock_state
+
+# Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
+# slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
+# has to outlast the waits it makes, so those are multiples of this rather than bare seconds.
+_PROCESS_DEADLINE: Final[int] = 30
+# Reaping a process that has already been signaled is not a startup wait, and it has to stay under the suite's own
+# per-test timeout so the guard still reports the hang it was put there for.
+_REAP_DEADLINE: Final[int] = 5
+
+pytestmark = SKIP_ON_UNRELIABLE_PROCESS_SYNC
 
 if sys.implementation.name == "pypy":
     set_start_method(
@@ -30,7 +40,7 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_read_locks_are_shared(lock_file: str) -> None:
     read1_acquired = Event()
     read2_acquired = Event()
@@ -43,16 +53,16 @@ def test_read_locks_are_shared(lock_file: str) -> None:
         time.sleep(0.5)  # let reader1 acquire before reader2 starts
         reader2.start()
 
-        assert read1_acquired.wait(timeout=10), f"First read lock not acquired on {lock_file}"
-        assert read2_acquired.wait(timeout=10), f"Second read lock not acquired on {lock_file}"
+        assert read1_acquired.wait(timeout=_PROCESS_DEADLINE), f"First read lock not acquired on {lock_file}"
+        assert read2_acquired.wait(timeout=_PROCESS_DEADLINE), f"Second read lock not acquired on {lock_file}"
 
-        reader1.join(timeout=10)
-        reader2.join(timeout=10)
+        reader1.join(timeout=_PROCESS_DEADLINE)
+        reader2.join(timeout=_PROCESS_DEADLINE)
         assert not reader1.is_alive(), "Reader 1 did not exit cleanly"
         assert not reader2.is_alive(), "Reader 2 did not exit cleanly"
 
 
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
     write1_acquired = Event()
     release_write1 = Event()
@@ -63,14 +73,14 @@ def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
 
     with cleanup_processes([holder]):
         holder.start()
-        assert write1_acquired.wait(timeout=2), "First write lock not acquired"
+        assert write1_acquired.wait(timeout=_PROCESS_DEADLINE), "First write lock not acquired"
 
         with cleanup_processes([contender]):
             contender.start()
             assert not write2_acquired.wait(timeout=1), "Second write lock should not be acquired"
 
             release_write1.set()
-            holder.join(timeout=2)
+            holder.join(timeout=_PROCESS_DEADLINE)
             assert not holder.is_alive(), "Holder did not exit cleanly"
 
         write2_acquired.clear()
@@ -78,8 +88,10 @@ def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
 
         with cleanup_processes([successor]):
             successor.start()
-            assert write2_acquired.wait(timeout=2), "Second write lock not acquired after first released"
-            successor.join(timeout=2)
+            assert write2_acquired.wait(timeout=_PROCESS_DEADLINE), (
+                "Second write lock not acquired after first released"
+            )
+            successor.join(timeout=_PROCESS_DEADLINE)
             assert not successor.is_alive(), "Successor did not exit cleanly"
 
 
@@ -90,7 +102,7 @@ def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
         pytest.param("read", "write", id="read-blocks-write"),
     ],
 )
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_lock_excludes_opposite_mode(
     lock_file: str,
     holder_mode: Literal["read", "write"],
@@ -109,7 +121,7 @@ def test_lock_excludes_opposite_mode(
 
     with cleanup_processes([holder, contender]):
         holder.start()
-        assert holder_acquired.wait(timeout=2), f"{holder_mode} lock not acquired"
+        assert holder_acquired.wait(timeout=_PROCESS_DEADLINE), f"{holder_mode} lock not acquired"
 
         contender.start()
         contender_started.set()
@@ -118,15 +130,17 @@ def test_lock_excludes_opposite_mode(
         assert not contender_acquired.is_set(), f"{contender_mode} lock should not be acquired while {holder_mode} held"
 
         release_holder.set()
-        holder.join(timeout=2)
+        holder.join(timeout=_PROCESS_DEADLINE)
 
-        assert contender_acquired.wait(timeout=2), f"{contender_mode} lock not acquired after {holder_mode} released"
+        assert contender_acquired.wait(timeout=_PROCESS_DEADLINE), (
+            f"{contender_mode} lock not acquired after {holder_mode} released"
+        )
 
-        contender.join(timeout=2)
+        contender.join(timeout=_PROCESS_DEADLINE)
         assert not contender.is_alive(), "Contender did not exit cleanly"
 
 
-@pytest.mark.timeout(40)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 8)
 def test_write_non_starvation(lock_file: str) -> None:
     """A writer that joins after the first reader must acquire before the reader chain drains.
 
@@ -138,6 +152,7 @@ def test_write_non_starvation(lock_file: str) -> None:
     chain_forward = [Event() for _ in range(NUM_READERS)]
     chain_backward = [Event() for _ in range(NUM_READERS)]
     writer_ready = Event()
+    writer_contending = Event()
     writer_acquired = Event()
 
     release_count = Value("i", 0)
@@ -152,7 +167,12 @@ def test_write_non_starvation(lock_file: str) -> None:
         )
         readers.append(reader)
 
-    writer = Process(target=acquire_lock, args=(lock_file, "write", writer_acquired, None, 20, True, writer_ready))
+    # The last reader holds until its own wait expires, since the test only releases the chain once the writer is in,
+    # so the writer has to outwait that hold rather than time out first.
+    writer = Process(
+        target=acquire_lock,
+        args=(lock_file, "write", writer_acquired, None, _PROCESS_DEADLINE * 2, True, writer_ready, writer_contending),
+    )
 
     with cleanup_processes([*readers, writer]):
         for reader in readers:
@@ -160,25 +180,30 @@ def test_write_non_starvation(lock_file: str) -> None:
 
         chain_forward[0].set()
 
-        assert writer_ready.wait(timeout=10), "First reader did not acquire lock"
+        assert writer_ready.wait(timeout=_PROCESS_DEADLINE), "First reader did not acquire lock"
 
         writer.start()
 
-        assert writer_acquired.wait(timeout=22), "Writer couldn't acquire lock - possible starvation"
+        # Count only the releases the writer actually waited through; a slow interpreter start is not starvation.
+        assert writer_contending.wait(timeout=_PROCESS_DEADLINE), "Writer process did not reach the lock"
+        with release_count.get_lock():
+            releases_before_contending = release_count.value
+
+        assert writer_acquired.wait(timeout=_PROCESS_DEADLINE * 2), "Writer couldn't acquire lock - possible starvation"
 
         with release_count.get_lock():
-            read_releases = release_count.value
+            read_releases = release_count.value - releases_before_contending
 
         assert read_releases < 3, f"Writer acquired after {read_releases} readers released - this indicates starvation"
 
-        writer.join(timeout=2)
+        writer.join(timeout=_PROCESS_DEADLINE)
         assert not writer.is_alive(), "Writer did not exit cleanly"
 
         for event in chain_backward:
             event.set()
 
         for idx, reader in enumerate(readers):
-            reader.join(timeout=10)
+            reader.join(timeout=_PROCESS_DEADLINE)
             assert not reader.is_alive(), f"Reader {idx} did not exit cleanly"
 
 
@@ -186,7 +211,7 @@ def test_write_non_starvation(lock_file: str) -> None:
     "hold_mode",
     [pytest.param("read", id="upgrade"), pytest.param("write", id="downgrade")],
 )
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_lock_mode_transition_prohibited(lock_file: str, hold_mode: Literal["read", "write"]) -> None:
     result = Value("i", -1)
 
@@ -194,13 +219,13 @@ def test_lock_mode_transition_prohibited(lock_file: str, hold_mode: Literal["rea
 
     with cleanup_processes([worker]):
         worker.start()
-        worker.join(timeout=5)
+        worker.join(timeout=_PROCESS_DEADLINE)
         assert not worker.is_alive(), "Process did not exit cleanly"
 
     assert result.value == 0, f"Illegal {hold_mode} transition was permitted"
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_timeout_behavior(lock_file: str) -> None:
     write_acquired = Event()
     release_write = Event()
@@ -211,22 +236,22 @@ def test_timeout_behavior(lock_file: str) -> None:
 
     with cleanup_processes([writer, reader]):
         writer.start()
-        assert write_acquired.wait(timeout=2), "Write lock not acquired"
+        assert write_acquired.wait(timeout=_PROCESS_DEADLINE), "Write lock not acquired"
 
         start_time = time.time()
         reader.start()
 
         assert not read_acquired.wait(timeout=1), "Read lock should not be acquired"
-        reader.join(timeout=5)
+        reader.join(timeout=_PROCESS_DEADLINE)
 
         elapsed = time.time() - start_time
         assert 0.4 <= elapsed <= 10.0, f"Timeout was not respected: {elapsed}s"
 
         release_write.set()
-        writer.join(timeout=2)
+        writer.join(timeout=_PROCESS_DEADLINE)
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_non_blocking_behavior(lock_file: str) -> None:
     write_acquired = Event()
     release_write = Event()
@@ -235,7 +260,7 @@ def test_non_blocking_behavior(lock_file: str) -> None:
 
     with cleanup_processes([writer]):
         writer.start()
-        assert write_acquired.wait(timeout=2), "Write lock not acquired"
+        assert write_acquired.wait(timeout=_PROCESS_DEADLINE), "Write lock not acquired"
 
         start_time = time.time()
 
@@ -247,21 +272,21 @@ def test_non_blocking_behavior(lock_file: str) -> None:
         assert elapsed < 0.1, f"Non-blocking took too long: {elapsed}s"
 
         release_write.set()
-        writer.join(timeout=2)
+        writer.join(timeout=_PROCESS_DEADLINE)
 
 
 @pytest.mark.parametrize(
     "mode",
     [pytest.param("read", id="read"), pytest.param("write", id="write")],
 )
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_recursive_lock_acquisition(lock_file: str, mode: Literal["read", "write"]) -> None:
     success = Value("i", 0)
     worker = Process(target=recursive_lock, args=(lock_file, mode, success))
 
     with cleanup_processes([worker]):
         worker.start()
-        worker.join(timeout=5)
+        worker.join(timeout=_PROCESS_DEADLINE)
 
     assert success.value == 1, "Recursive lock acquisition failed"
 
@@ -270,14 +295,14 @@ def test_recursive_lock_acquisition(lock_file: str, mode: Literal["read", "write
     "mode",
     [pytest.param("read", id="read"), pytest.param("write", id="write")],
 )
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 4)
 def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock_acquired = Event()
 
     crashing = Process(target=acquire_lock_and_crash, args=(lock_file, mode, lock_acquired))
     crashing.start()
 
-    assert lock_acquired.wait(timeout=2), "Lock not acquired by first process"
+    assert lock_acquired.wait(timeout=_PROCESS_DEADLINE), "Lock not acquired by first process"
 
     write_acquired = Event()
     successor = Process(target=acquire_lock, args=(lock_file, "write", write_acquired))
@@ -285,13 +310,13 @@ def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read
     with cleanup_processes([crashing, successor]):
         time.sleep(0.5)  # let the lock settle before killing the holder
         crashing.terminate()
-        crashing.join(timeout=2)
+        crashing.join(timeout=_REAP_DEADLINE)
 
         successor.start()
 
-        assert write_acquired.wait(timeout=5), "Lock not acquired after process termination"
+        assert write_acquired.wait(timeout=_PROCESS_DEADLINE), "Lock not acquired after process termination"
 
-        successor.join(timeout=2)
+        successor.join(timeout=_PROCESS_DEADLINE)
         assert not successor.is_alive(), "Successor did not exit cleanly"
 
 
@@ -483,17 +508,32 @@ def acquire_lock(
     timeout: float = -1,
     blocking: bool = True,
     ready_event: EventType | None = None,
+    contending_event: EventType | None = None,
 ) -> None:
     if ready_event:
-        ready_event.wait(timeout=10)
+        ready_event.wait(timeout=_PROCESS_DEADLINE)
 
     lock = ReadWriteLock(lock_file, timeout=timeout, blocking=blocking)
+    if contending_event:
+        contending_event.set()  # interpreter start-up is over, so a caller can time the contention itself
     with lock.read_lock() if mode == "read" else lock.write_lock():
         acquired_event.set()
         if release_event:
-            release_event.wait(timeout=10)
+            release_event.wait(timeout=_PROCESS_DEADLINE)
         else:
             time.sleep(0.5)  # hold briefly to simulate work
+
+
+def test_cleanup_reports_the_failure_that_escaped_before_a_start() -> None:
+    unstarted = Process(target=time.sleep, args=(0,))
+
+    def fail_before_start() -> None:
+        with cleanup_processes([unstarted]):
+            msg = "the real failure"
+            raise AssertionError(msg)
+
+    with pytest.raises(AssertionError, match="the real failure"):
+        fail_before_start()
 
 
 @contextmanager
@@ -502,8 +542,11 @@ def cleanup_processes(processes: list[Process]) -> Generator[None]:
         yield
     finally:
         for proc in processes:
-            proc.terminate()
-            proc.join(timeout=1)
+            # An assertion can escape before every process starts, and terminating an unstarted one raises over the
+            # failure that caused it, hiding the real error.
+            if proc.pid is not None:
+                proc.terminate()
+                proc.join(timeout=_REAP_DEADLINE)
             proc.close()
 
 
@@ -516,7 +559,7 @@ def chain_reader(
     next_reader_signal: EventType | None,
     writer_or_prev_signal: EventType,
 ) -> None:
-    start_signal.wait(timeout=10)
+    start_signal.wait(timeout=_PROCESS_DEADLINE)
 
     lock = ReadWriteLock(lock_file)
     with lock.read_lock():
@@ -531,7 +574,7 @@ def chain_reader(
 
         writer_or_prev_signal.set()
 
-        release_signal.wait(timeout=10)
+        release_signal.wait(timeout=_PROCESS_DEADLINE)
 
         with release_count.get_lock():
             release_count.value += 1

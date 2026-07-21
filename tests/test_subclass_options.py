@@ -9,6 +9,7 @@ from weakref import ref
 import pytest
 
 from filelock import BaseAsyncFileLock, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy
+from tests.capability_marks import NEEDS_CLASS_COLLECTION
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -217,6 +218,7 @@ def test_forwarding_subclass_singleton_rejects_changed_option(
     assert first.on_acquired is hook
 
 
+@NEEDS_CLASS_COLLECTION
 def test_constructor_model_does_not_retain_dynamic_subclass(tmp_path: Path) -> None:
     lock_type = _dynamic_constructor()
     class_ref = ref(lock_type)

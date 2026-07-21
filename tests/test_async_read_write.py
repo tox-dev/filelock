@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
+from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION
+
 pytest.importorskip("sqlite3")
 
 import sqlite3
@@ -201,6 +203,7 @@ async def test_close_keeps_provided_executor_open(lock_file: str) -> None:
     executor.shutdown(wait=False)
 
 
+@NEEDS_COLLECTED_FINALIZATION
 def test_del_shuts_down_owned_executor(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     executor = lock.executor

@@ -11,7 +11,6 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import EAGAIN, EINTR, EIO, ENOSPC, ENOSYS, EWOULDBLOCK
-from importlib.util import find_spec
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
@@ -37,6 +36,13 @@ from filelock import (
     unlock_descriptor,
 )
 from filelock._api import _append_exception_context, _raise_grouped_errors, _registry
+from tests.capability_marks import (
+    NEEDS_FCNTL,
+    NEEDS_FILE_MODE,
+    NEEDS_PARENT_SYMLINK_COLLAPSE,
+    NEEDS_PROMPT_FINALIZATION,
+    NEEDS_SYMLINK,
+)
 
 if sys.version_info >= (3, 11):  # pragma: >=3.11 cover
     from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
@@ -89,11 +95,6 @@ def make_ro(path: Path) -> Iterator[None]:
         path.chmod(path.stat().st_mode | write)
 
 
-_NEEDS_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["file-mode"], reason="a read-only folder needs POSIX permission bits"
-)
-
-
 @pytest.fixture
 def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:  # pragma: needs file-mode
     with make_ro(tmp_path):
@@ -101,7 +102,7 @@ def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:  # pragma: needs file-mode
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-@_NEEDS_FILE_MODE  # pragma: needs file-mode
+@NEEDS_FILE_MODE  # pragma: needs file-mode
 @pytest.mark.skipif(
     sys.platform != "win32" and os.geteuid() == 0,
     reason="Cannot make a read only file (that the current user: root can't read)",
@@ -132,9 +133,6 @@ def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
 
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
-_NEEDS_FCNTL: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    find_spec("fcntl") is None, reason="native flock semantics need the fcntl module"
-)
 _INVALID_DESCRIPTOR_POLL_INTERVALS: Final = (
     pytest.param(0.0, id="zero"),
     pytest.param(-0.01, id="negative"),
@@ -480,7 +478,7 @@ def test_acquire_release_on_exc(lock_type: type[BaseFileLock], tmp_path: Path) -
         assert not lock.is_locked
 
 
-@pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
+@NEEDS_PROMPT_FINALIZATION
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
@@ -667,7 +665,7 @@ def test_wrong_platform(tmp_path: Path) -> None:
         lock._release()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
 def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("fcntl.flock", side_effect=OSError(ENOSYS, "mock error"))
@@ -900,7 +898,7 @@ def test_singleton_locks_must_be_initialized_with_the_same_args(lock_type: type[
     del lock, exc_info
 
 
-@pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
+@NEEDS_PROMPT_FINALIZATION
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_locks_are_deleted_when_no_external_references_exist(
     lock_type: type[BaseFileLock],
@@ -914,7 +912,6 @@ def test_singleton_locks_are_deleted_when_no_external_references_exist(
     assert lock_type._instances == {}
 
 
-@pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="del() does not trigger GC in PyPy")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_instance_tracking_is_unique_per_subclass(lock_type: type[BaseFileLock]) -> None:
     class Lock1(lock_type):  # ty: ignore[unsupported-base]
@@ -979,7 +976,7 @@ def test_lock_file_removed_after_release(tmp_path: Path, lock_type: type[BaseFil
     assert not lock_path.exists()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_concurrent_acquire_release_keeps_lock_file(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     errors: list[Exception] = []
@@ -1002,7 +999,7 @@ def test_concurrent_acquire_release_keeps_lock_file(tmp_path: Path) -> None:
     assert lock_path.exists()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_lock_acquired_after_release_keeps_path(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     first = FileLock(str(lock_path), is_singleton=False)
@@ -1019,7 +1016,7 @@ def test_lock_acquired_after_release_keeps_path(tmp_path: Path) -> None:
     assert lock_path.exists()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_waiter_fd_cannot_split_lock_after_release(tmp_path: Path) -> None:
     # typeshed hides fcntl's members off POSIX, so state the invariant the capability gate already enforces.
     assert sys.platform != "win32"
@@ -1047,7 +1044,7 @@ def test_waiter_fd_cannot_split_lock_after_release(tmp_path: Path) -> None:
         os.close(waiter_fd)
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_stale_inode_retry_on_unlinked_lock(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock = FileLock(str(lock_path), is_singleton=False)
@@ -1070,7 +1067,7 @@ def test_stale_inode_retry_on_unlinked_lock(tmp_path: Path, mocker: MockerFixtur
     lock.release()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_permission_error_fallback_without_o_creat(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
@@ -1093,7 +1090,7 @@ def test_permission_error_fallback_without_o_creat(tmp_path: Path, mocker: Mocke
     lock.release()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_permission_error_propagates_when_file_missing(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock = FileLock(str(lock_path), is_singleton=False)
@@ -1112,7 +1109,7 @@ def test_permission_error_propagates_when_file_missing(tmp_path: Path, mocker: M
         lock.acquire(timeout=0)
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
@@ -1219,7 +1216,7 @@ def test_cancel_check_log_message(
     lock_1.release()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_filenotfound_on_fuse_nfs_retries(tmp_path: Path, mocker: MockerFixture) -> None:
     """Retry recovers from the FUSE/NFS os.open(O_CREAT) race that raises FileNotFoundError."""
     lock_path = tmp_path / "test.lock"
@@ -1339,18 +1336,12 @@ def test_different_threads_no_false_positive(tmp_path: Path, lock_type: type[Bas
     assert not isinstance(error, RuntimeError), "Should not raise RuntimeError in different thread"
 
 
-_NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["symlink"], reason="creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege"
-)
-
-# Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
-_NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["symlink"] or sys.platform == "win32",
-    reason="a symlinked parent collapses into one key only where the parent is resolved with realpath",
+_NEEDS_O_NOFOLLOW: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["o-nofollow"], reason="refusing to open through a final symlink needs a honored O_NOFOLLOW"
 )
 
 
-@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
+@NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     # A symlinked parent directory resolves to the same canonical key (the final component is kept literal, so a final
@@ -1366,7 +1357,7 @@ def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseFileLoc
             lock2.acquire()
 
 
-@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
+@NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 @pytest.mark.parametrize(
     ("depth", "force"),
     [
@@ -1392,7 +1383,7 @@ def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, dep
         assert successor.is_locked
 
 
-@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
+@NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 def test_release_keeps_retargeted_parent_holder_registered(tmp_path: Path) -> None:
     lock_path, _original_path, replacement_path = _symlinked_lock_paths(tmp_path)
     original = FileLock(lock_path)
@@ -1460,7 +1451,7 @@ def held_lock_path(tmp_path: Path) -> Iterator[Path]:  # pragma: needs fcntl
         yield path
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_winner_truncates_stale_content(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     lock_path.write_text("stale from a previous holder", encoding="utf-8")
@@ -1469,7 +1460,7 @@ def test_winner_truncates_stale_content(tmp_path: Path) -> None:
         assert lock_path.stat().st_size == 0
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_contender_preserves_holder_contents(held_lock_path: Path) -> None:
     held_lock_path.write_text("holder metadata", encoding="utf-8")
 
@@ -1479,7 +1470,7 @@ def test_contender_preserves_holder_contents(held_lock_path: Path) -> None:
     assert held_lock_path.read_text(encoding="utf-8") == "holder metadata"
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_contender_preserves_holder_mode(held_lock_path: Path) -> None:
     held_lock_path.chmod(0o600)
 
@@ -1489,7 +1480,7 @@ def test_contender_preserves_holder_mode(held_lock_path: Path) -> None:
     assert S_IMODE(held_lock_path.stat().st_mode) == 0o600
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_contender_does_not_fchmod(held_lock_path: Path, mocker: MockerFixture) -> None:
     fchmod_spy = mocker.spy(os, "fchmod")
 
@@ -1499,7 +1490,7 @@ def test_contender_does_not_fchmod(held_lock_path: Path, mocker: MockerFixture) 
     fchmod_spy.assert_not_called()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_post_lock_truncate_failure_closes_fd(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("os.ftruncate", side_effect=OSError(ENOSPC, "No space left on device"))
     open_spy = mocker.spy(os, "open")
@@ -1513,7 +1504,7 @@ def test_post_lock_truncate_failure_closes_fd(tmp_path: Path, mocker: MockerFixt
 
 # Only a Windows run that also holds the symlink privilege reaches this body, so both exclusions apply.
 @_WINDOWS_ONLY  # pragma: win32 cover  # pragma: needs symlink
-@_NEEDS_SYMLINK
+@NEEDS_SYMLINK
 def test_windows_reparse_point_lock_file_rejected(tmp_path: Path) -> None:
     target = tmp_path / "target.txt"
     target.write_text("sensitive", encoding="utf-8")
@@ -1547,7 +1538,7 @@ def test_forced_release_drops_all_holds(tmp_path: Path) -> None:
     assert lock.lock_counter == 0
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
@@ -1560,7 +1551,7 @@ def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: 
     assert not lock.is_locked
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_unix_context_exit_propagates_unlock_failure(tmp_path: Path, mocker: MockerFixture) -> None:
     # One LOCK_EX for acquire, then one LOCK_UN per release; fail only the first unlock so __exit__ propagates it.
     mocker.patch("filelock._unix.fcntl.flock", side_effect=[None, OSError(EIO, "unlock failed"), None])
@@ -1869,7 +1860,7 @@ def _fail_close_of(mocker: MockerFixture, lock: BaseFileLock, error: OSError) ->
     return attempts
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))  # default policy
     lock.acquire()
@@ -1910,7 +1901,7 @@ def test_close_error_raise_is_exact_and_committed(tmp_path: Path, mocker: Mocker
     assert lock.lock_counter == 0
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_close_not_reached_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"), close_error_policy="raise")
     lock.acquire()
@@ -1966,7 +1957,7 @@ def test_singleton_shares_across_equivalent_spellings(tmp_path: Path) -> None:
         absolute.release(force=True)
 
 
-@_NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
+@NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 def test_singleton_shares_through_symlinked_parent(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()
@@ -1979,7 +1970,7 @@ def test_singleton_shares_through_symlinked_parent(tmp_path: Path) -> None:
         via_real.release(force=True)
 
 
-@_NEEDS_SYMLINK  # pragma: needs symlink
+@NEEDS_SYMLINK  # pragma: needs symlink
 def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.write_text("")
@@ -1993,7 +1984,8 @@ def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
         on_target.release(force=True)
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
+@_NEEDS_O_NOFOLLOW  # pragma: needs o-nofollow
 def test_final_symlink_backend_refuses_to_lock(tmp_path: Path) -> None:
     (tmp_path / "target").write_text("")
     (tmp_path / "link").symlink_to(tmp_path / "target")
@@ -2013,7 +2005,7 @@ def test_separate_lock_classes_keep_separate_registries(tmp_path: Path) -> None:
         soft.release(force=True)
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = FileLock(str(tmp_path / "a"), fallback_to_soft=False)
@@ -2025,7 +2017,7 @@ def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerF
     assert lock.lock_counter == 0  # the failed acquire left no holder count
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_fallback_to_soft_default_switches_to_soft(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = FileLock(str(tmp_path / "a"))  # default fallback_to_soft=True
@@ -2038,7 +2030,7 @@ def test_fallback_to_soft_default_switches_to_soft(tmp_path: Path, mocker: Mocke
         lock.release()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_fallback_disabled_recursive_reraises(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = FileLock(str(tmp_path / "a"), fallback_to_soft=False)
@@ -2048,7 +2040,7 @@ def test_fallback_disabled_recursive_reraises(tmp_path: Path, mocker: MockerFixt
         assert not lock.is_locked
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_singleton_rejects_different_fallback_to_soft(tmp_path: Path) -> None:
     path = str(tmp_path / "a")
     first = FileLock(path, is_singleton=True, fallback_to_soft=True)
@@ -2138,7 +2130,7 @@ def test_filelock_and_descriptor_contend(tmp_path: Path, direction: str) -> None
         os.close(fd)
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_lock_descriptor_touches_no_paths(tmp_path: Path) -> None:
     path = tmp_path / "a"
     fd = os.open(str(path), os.O_RDWR | os.O_CREAT)
@@ -2162,7 +2154,7 @@ def test_lock_descriptor_touches_no_paths(tmp_path: Path) -> None:
         os.close(fd)
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_unlock_descriptor_failure_allows_retry(tmp_path: Path, mocker: MockerFixture) -> None:
     fd = os.open(str(tmp_path / "a"), os.O_RDWR | os.O_CREAT)
     try:
@@ -2243,7 +2235,7 @@ def test_singleton_rejects_different_preserve_lock_file(tmp_path: Path) -> None:
         first.release(force=True)
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_preserve_lock_file_unix_keeps_pathname(tmp_path: Path) -> None:
     path = tmp_path / "a"
     lock = FileLock(str(path), preserve_lock_file=True)
@@ -2253,7 +2245,7 @@ def test_preserve_lock_file_unix_keeps_pathname(tmp_path: Path) -> None:
     assert type(lock).__name__ == "UnixFileLock"
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_preserve_lock_file_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     lock = FileLock(str(tmp_path / "a"), preserve_lock_file=True)  # fallback_to_soft still defaults to True
@@ -2377,7 +2369,7 @@ def test_on_acquired_not_called_for_contender(tmp_path: Path) -> None:
         holder.release()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_on_acquired_runs_after_truncation_and_mode(tmp_path: Path) -> None:
     path = tmp_path / "a"
     path.write_bytes(b"stale content")
@@ -2396,7 +2388,7 @@ def test_on_acquired_runs_after_truncation_and_mode(tmp_path: Path) -> None:
         lock.release()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_on_acquired_writes_survive_contention(tmp_path: Path) -> None:
     path = str(tmp_path / "a")
 
@@ -2426,7 +2418,7 @@ def test_on_acquired_failure_releases_lock(tmp_path: Path) -> None:
     other.release()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_on_acquired_and_release_failure_group(tmp_path: Path, mocker: MockerFixture) -> None:
     path = str(tmp_path / "a")
     lock = FileLock(path, on_acquired=_failing_on_acquired)
@@ -2513,7 +2505,7 @@ def test_rollback_failed_acquire_groups_registration_and_release_failures(
         lock.release(force=True)
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_on_acquired_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
     calls: list[int] = []
@@ -2655,7 +2647,7 @@ def test_soft_is_lock_held_by_us_false_for_unparseable_marker(tmp_path: Path) ->
     assert lock.is_lock_held_by_us is False  # an unreadable holder is nobody, so certainly not us
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_unix_acquire_without_o_nofollow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
     lock = FileLock(str(tmp_path / "a"), is_singleton=False)
@@ -2666,7 +2658,7 @@ def test_unix_acquire_without_o_nofollow(tmp_path: Path, monkeypatch: pytest.Mon
         lock.release()
 
 
-@_NEEDS_FCNTL  # pragma: needs fcntl
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_unix_soft_fallback_keeps_a_replaced_file(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "a"
     lock = FileLock(str(lock_path), is_singleton=False)

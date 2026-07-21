@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import secrets
 import stat
@@ -8,7 +9,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from errno import EACCES, EEXIST, ENOENT, ENOSYS, ENOTSUP, EPERM, ESTALE, EXDEV
+from errno import EACCES, EEXIST, ENOENT, ENOSYS, EPERM, ESTALE, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -76,6 +77,19 @@ def _probe_link_follow_symlinks() -> bool:
 
 
 _LINK_HONORS_FOLLOW_SYMLINKS: Final[bool] = _probe_link_follow_symlinks()
+
+
+def _probe_hard_link_unsupported_errnos() -> frozenset[int]:
+    # GraalPy's errno omits ENOTSUP, so importing the name outright breaks every runtime that ships without it. ENOTSUP
+    # wins wherever it exists, leaving every runtime that names it unchanged. EOPNOTSUPP only stands in for the ones
+    # that do not, and it approximates rather than matches: the two codes agree on Linux but differ on macOS/BSD and on
+    # Windows. Where neither exists a runtime that cannot name "operation not supported" cannot raise it either, and
+    # ENOSYS/EXDEV still classify the link failures it can raise.
+    not_supported = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", None))
+    return frozenset({ENOSYS, EXDEV} if not_supported is None else {ENOSYS, EXDEV, not_supported})
+
+
+_HARD_LINK_UNSUPPORTED_ERRNOS: Final[frozenset[int]] = _probe_hard_link_unsupported_errnos()
 
 
 class StrictSoftFileLock(BaseFileLock):
@@ -841,7 +855,7 @@ def _require_exact_name(directory: Path, name: str) -> None:
 def _raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:
     unsupported = (
         isinstance(error, NotImplementedError)
-        or error.errno in {ENOSYS, ENOTSUP, EXDEV}
+        or error.errno in _HARD_LINK_UNSUPPORTED_ERRNOS
         or (getattr(error, "winerror", None) in _WINDOWS_HARD_LINK_UNSUPPORTED)
     )
     if unsupported:

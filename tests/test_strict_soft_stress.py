@@ -14,6 +14,11 @@ if TYPE_CHECKING:
 
 _PROCESS_COUNT: Final[int] = 8
 _ACQUISITIONS_PER_PROCESS: Final[int] = 500
+# A guard against a deadlock, not a throughput assertion: overlap fails immediately through the markers below, so this
+# budget only bounds a hang. The four thousand contended acquisitions cost CPython about three seconds and GraalPy about
+# twenty-eight on a ten-core machine, and the CI runners have far fewer, so it is sized for the slowest interpreter on
+# the smallest runner rather than for the fastest, which is what a seventy-five second guard encoded.
+_WORKER_DEADLINE: Final[int] = 300
 # Catch overlap two independent ways. An occupancy marker fails immediately the instant a second holder enters the
 # critical section, and a counter read-modify-write fails afterwards when two holders read the same value and one
 # increment vanishes. Both beat an O_EXCL create/unlink pair, which tripped over Windows' delete-pending lag where the
@@ -44,7 +49,7 @@ for _ in range(int(sys.argv[5])):
 pytestmark = pytest.mark.requires_hard_links
 
 
-@pytest.mark.timeout(90)
+@pytest.mark.timeout(_WORKER_DEADLINE + 60)
 def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     start_path = tmp_path / "start"
@@ -71,13 +76,13 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
         for _ in range(_PROCESS_COUNT)
     ]
     start_path.touch()
-    deadline = time.monotonic() + 75
+    deadline = time.monotonic() + _WORKER_DEADLINE
     outputs: list[tuple[str, str]] = []
     try:
         outputs.extend(process.communicate(timeout=max(0.1, deadline - time.monotonic())) for process in processes)
     except subprocess.TimeoutExpired:  # pragma: no cover - test failure cleanup
         _kill_processes(processes)
-        pytest.fail("strict soft-lock stress workers exceeded 75 seconds")
+        pytest.fail(f"strict soft-lock stress workers exceeded {_WORKER_DEADLINE} seconds")
 
     recorded = int(counter_path.read_text()) if counter_path.exists() else 0
     assert ([process.returncode for process in processes], recorded) == (

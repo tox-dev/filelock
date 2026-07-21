@@ -6,20 +6,17 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter ex
 import sys
 import weakref
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, NoReturn
-
-import pytest
-from fork_helpers import exit_child, fork_process
+from typing import TYPE_CHECKING, NoReturn
 
 from filelock import BaseFileLock
+from tests.capability_marks import NEEDS_CLASS_COLLECTION, NEEDS_FORK
+from tests.fork_helpers import exit_child, fork_process
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork required")
 
-
-@_REQUIRES_FORK
+@NEEDS_FORK
 def test_equal_unhashable_locks_reset_independently(tmp_path: Path) -> None:  # pragma: win32 no cover
     @dataclass(eq=True, init=False)  # pragma: win32 no cover
     class EqualLock(BaseFileLock):  # pragma: win32 no cover
@@ -76,6 +73,7 @@ for lock in locks:
     assert (result.returncode, [path.with_name(f"{path.name}.write").exists() for path in paths]) == (0, [False, False])
 
 
+@NEEDS_CLASS_COLLECTION
 def test_dynamic_lock_class_can_be_collected() -> None:
     class EphemeralLock(BaseFileLock):
         _acquire = _release = BaseFileLock._acquire

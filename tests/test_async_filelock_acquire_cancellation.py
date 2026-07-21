@@ -6,17 +6,17 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from errno import EIO
-from importlib.util import find_spec
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 import pytest
-from async_filelock_cancellation_helpers import assert_cancellation_message, assert_file_lock_state
 
 from filelock import (
     AsyncFileLock,
     BaseAsyncFileLock,
     ContextErrorPolicy,
 )
+from tests.async_filelock_cancellation_helpers import assert_cancellation_message, assert_file_lock_state
+from tests.capability_marks import NEEDS_FCNTL, XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
@@ -27,10 +27,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pytest_mock import MockerFixture
-
-_NEEDS_FCNTL: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    find_spec("fcntl") is None, reason="native flock semantics come from the fcntl module"
-)
 
 
 @pytest.mark.asyncio
@@ -56,6 +52,7 @@ async def test_backend_cancellation_after_acquire_rolls_back(tmp_path: Path) -> 
 
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_backend_cancellation_rollback_failure_follows_policy(tmp_path: Path, policy: ContextErrorPolicy) -> None:
     backend_cancellation = asyncio.CancelledError("backend canceled")
     rollback_error = OSError(EIO, "rollback failed")
@@ -155,7 +152,7 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(tmp_path: P
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_NEEDS_FCNTL
+@NEEDS_FCNTL
 @pytest.mark.asyncio
 async def test_acquire_cancellation_does_not_release_later_claim(tmp_path: Path) -> None:  # pragma: needs fcntl
     hook_started = asyncio.Event()
@@ -183,8 +180,9 @@ async def test_acquire_cancellation_does_not_release_later_claim(tmp_path: Path)
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_NEEDS_FCNTL
+@NEEDS_FCNTL
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_cancelled_queued_acquire_does_not_claim_transition(tmp_path: Path) -> None:  # pragma: needs fcntl
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
@@ -214,7 +212,7 @@ async def test_cancelled_queued_acquire_does_not_claim_transition(tmp_path: Path
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_NEEDS_FCNTL
+@NEEDS_FCNTL
 @pytest.mark.asyncio  # pragma: needs fcntl
 async def test_acquire_repeated_cancellation_waits_for_rollback(tmp_path: Path, mocker: MockerFixture) -> None:
     hook_started = asyncio.Event()
@@ -248,9 +246,10 @@ async def test_acquire_repeated_cancellation_waits_for_rollback(tmp_path: Path, 
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_NEEDS_FCNTL
+@NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_acquire_cancellation_surfaces_attempt_error_after_rollback(  # pragma: needs fcntl
     tmp_path: Path, policy: ContextErrorPolicy
 ) -> None:
@@ -293,12 +292,13 @@ async def test_acquire_cancellation_surfaces_attempt_error_after_rollback(  # pr
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_NEEDS_FCNTL
+@NEEDS_FCNTL
 @pytest.mark.parametrize(
     ("context_message", "preserved"),
     [pytest.param("unrelated", True, id="distinct"), pytest.param("attempt", False, id="equivalent")],
 )
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_acquire_cancellation_group_reconciles_attempt_context(  # pragma: needs fcntl
     tmp_path: Path, context_message: str, *, preserved: bool
 ) -> None:
@@ -344,9 +344,10 @@ async def test_acquire_cancellation_group_reconciles_attempt_context(  # pragma:
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_NEEDS_FCNTL
+@NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_acquire_cancellation_surfaces_rollback_error(  # pragma: needs fcntl
     tmp_path: Path,
     mocker: MockerFixture,
@@ -392,9 +393,10 @@ async def test_acquire_cancellation_surfaces_rollback_error(  # pragma: needs fc
     await lock.release()
 
 
-@_NEEDS_FCNTL
+@NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_acquire_cancellation_surfaces_attempt_and_rollback_errors(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture, policy: ContextErrorPolicy
 ) -> None:

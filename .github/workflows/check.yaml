@@ -27,12 +27,17 @@ jobs:
           - "3.11"
           - "3.10"
           - "pypy3.11"
+          - "graalpy3.11"
         os:
           - ubuntu-24.04
           - windows-2025
           - macos-15
         exclude:
           - {os: windows-2025, py: pypy3.11}
+          # GraalPy validates the capability probes the suite gates on, which is a per-OS answer, not a per-arch one.
+          # One Linux job settles it; the Windows and macOS builds only repeat it at triple the runtime.
+          - {os: windows-2025, py: graalpy3.11}
+          - {os: macos-15, py: graalpy3.11}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -52,9 +57,10 @@ jobs:
           UV_PYTHON_PREFERENCE: only-managed
       # PyPy runs unmeasured: coverage has no JIT path there, so the suite takes 12m rather than 2m and roughly 60 of
       # its lock, heartbeat and poll deadlines lapse under the added latency, though they pass measured in isolation.
+      # GraalPy runs unmeasured for the same reason, and neither is a coverage source: the 100% gate stays CPython's.
       - name: "✅ Run test suite"
         run: |
-          if [[ "${{ matrix.py }}" == pypy* ]]; then
+          if [[ "${{ matrix.py }}" == pypy* || "${{ matrix.py }}" == graalpy* ]]; then
             tox run --skip-pkg-install -e ${{ matrix.py }} --
           else
             tox run --skip-pkg-install -e ${{ matrix.py }}
@@ -65,13 +71,13 @@ jobs:
           UV_PYTHON_PREFERENCE: only-managed
           DIFF_AGAINST: HEAD
       - name: "📝 Rename coverage report file"
-        if: ${{ !startsWith(matrix.py, 'pypy')}}
+        if: ${{ !startsWith(matrix.py, 'pypy') && !startsWith(matrix.py, 'graalpy') }}
         run: |
           import os; import sys
           os.rename(f".tox/.coverage.${{ matrix.py }}", f".tox/.coverage.${{ matrix.py }}-{sys.platform}")
         shell: python
       - name: "📦 Upload coverage data"
-        if: ${{ !startsWith(matrix.py, 'pypy')}}
+        if: ${{ !startsWith(matrix.py, 'pypy') && !startsWith(matrix.py, 'graalpy') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           include-hidden-files: true
