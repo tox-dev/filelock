@@ -7,6 +7,15 @@
 .. towncrier release notes start
 
 ********************
+ 3.31.2 (2026-07-21)
+********************
+
+- ``filelock`` imports again on runtimes whose ``errno`` omits ``ENOTSUP``, such as GraalPy, where importing the package
+  raised ``ImportError``. It probes the code instead, preferring ``ENOTSUP``, falling back to ``EOPNOTSUPP`` where that
+  name is absent, and dropping to ``ENOSYS``/``EXDEV`` where neither exists. Platforms defining ``ENOTSUP`` keep their
+  behavior. :pr:`681`
+
+********************
  3.31.1 (2026-07-20)
 ********************
 
