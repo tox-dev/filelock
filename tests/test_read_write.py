@@ -185,7 +185,21 @@ def test_write_non_starvation(lock_file: str) -> None:
         writer.start()
 
         # Count only the releases the writer actually waited through; a slow interpreter start is not starvation.
+        # The contending event says the writer process booted, not that its write intent reached the database, and
+        # only the intent bars new readers. The probe observes that boundary: a non-blocking read acquire times out
+        # exactly once the intent is registered, so the count starts there.
         assert writer_contending.wait(timeout=_PROCESS_DEADLINE), "Writer process did not reach the lock"
+        prober = ReadWriteLock(lock_file, is_singleton=False)
+        probe_deadline = time.monotonic() + _PROCESS_DEADLINE
+        while True:
+            try:
+                prober.acquire_read(blocking=False)
+            except Timeout:
+                break
+            prober.release()
+            assert time.monotonic() < probe_deadline, "Writer never registered its write intent"
+            time.sleep(0.05)
+        prober.close()
         with release_count.get_lock():
             releases_before_contending = release_count.value
 
