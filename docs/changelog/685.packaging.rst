@@ -1,0 +1,2 @@
+The source distribution ships the capability probes the tests import, and reading one no longer needs ``coverage``
+installed, so the suite runs from an unpacked sdist instead of failing on a missing ``coverage_pragmas``.
