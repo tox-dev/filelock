@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
-from coverage_pragmas import CAPABILITIES
+from capabilities import CAPABILITIES
 
 from filelock import Timeout
 from filelock import _util as util_mod

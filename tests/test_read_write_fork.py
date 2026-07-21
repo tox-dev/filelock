@@ -9,7 +9,7 @@ import textwrap
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
-from coverage_pragmas import CAPABILITIES
+from capabilities import CAPABILITIES
 
 from filelock import ReadWriteLock
 from tests.capability_marks import (

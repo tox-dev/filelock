@@ -6,7 +6,7 @@ import sys
 from typing import TYPE_CHECKING, Final, TextIO, cast
 
 import pytest
-from coverage_pragmas import CAPABILITIES
+from capabilities import CAPABILITIES
 
 from filelock import StrictSoftFileLock, Timeout
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from coverage_pragmas import CAPABILITIES
+from capabilities import CAPABILITIES
 
 from filelock import CloseErrorPolicy, SoftFileLock
 from filelock._identity import process_start_token

@@ -20,7 +20,7 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 import pytest
-from coverage_pragmas import CAPABILITIES
+from capabilities import CAPABILITIES
 
 from filelock import (
     BaseFileLock,

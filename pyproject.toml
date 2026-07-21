@@ -108,6 +108,7 @@ version.source = "vcs"
 build.hooks.vcs.version-file = "src/filelock/version.py"
 build.targets.sdist.include = [
   "/src",
+  "/tasks",
   "/tests",
   "/tox.toml",
 ]
