@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from capability_marks import NEEDS_FILE_MODE
 
 if sys.version_info >= (3, 11):
     from builtins import ExceptionGroup  # pragma: >=3.11 cover
@@ -34,10 +35,6 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 _SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
-
-_NEEDS_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["file-mode"], reason="an unreadable claim needs POSIX permission bits"
-)
 
 
 pytestmark = pytest.mark.requires_hard_links
@@ -286,7 +283,7 @@ def test_strict_soft_rejects_non_directory_coordination_path(tmp_path: Path) -> 
         StrictSoftFileLock(lock_path).acquire()
 
 
-@_NEEDS_FILE_MODE  # pragma: needs file-mode
+@NEEDS_FILE_MODE  # pragma: needs file-mode
 def test_strict_soft_unreadable_claim_fails_closed(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)

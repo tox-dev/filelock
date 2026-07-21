@@ -12,6 +12,7 @@ from stat import S_ISDIR
 from typing import TYPE_CHECKING, Final, Literal, NoReturn
 
 import pytest
+from capability_marks import NEEDS_FORK
 from fork_helpers import exit_child, fork_process
 
 from filelock import (
@@ -36,15 +37,12 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not (hasattr(os, "fork") and hasattr(os, "register_at_fork")), reason="os.fork and os.register_at_fork required"
-)
 _FORK_WARNING: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings(
     "ignore:.*multi-threaded, use of fork.*:DeprecationWarning"
 )
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize(
     ("lock_type", "action"),
@@ -78,7 +76,7 @@ def test_child_cleanup_preserves_parent_lock(
     assert _probe_lock(lock_type, path)
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize(
     ("async_lock_type", "sync_lock_type"),
@@ -110,7 +108,7 @@ def test_async_child_release_preserves_parent_lock(
     assert _probe_lock(sync_lock_type, path)
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None:
     path = str(tmp_path / "parent.lock")
@@ -138,7 +136,7 @@ def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None
     older.close()
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_child_closes_descriptor_held_by_vanished_thread(tmp_path: Path) -> None:
     path = str(tmp_path / "parent.lock")
@@ -167,7 +165,7 @@ def test_child_closes_descriptor_held_by_vanished_thread(tmp_path: Path) -> None
     assert (os.waitstatus_to_exitcode(status), worker.is_alive()) == (0, False)
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFixture) -> None:
     path = str(tmp_path / "parent.lock")
@@ -207,7 +205,7 @@ def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFi
     lock.release()
 
 
-@pytest.mark.skipif(not hasattr(os, "register_at_fork"), reason="fork transition gate requires register_at_fork")
+@NEEDS_FORK
 def test_unrelated_acquisitions_reach_filesystem_boundary_concurrently(  # pragma: needs fork
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
@@ -245,7 +243,7 @@ def test_unrelated_acquisitions_reach_filesystem_boundary_concurrently(  # pragm
     assert [worker.is_alive() for worker in workers] == [False, False]
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize("lock_type", [pytest.param(FileLock, id="native"), pytest.param(SoftFileLock, id="soft")])
 def test_child_singleton_registry_drops_parent_instance(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
@@ -262,7 +260,7 @@ def test_child_singleton_registry_drops_parent_instance(tmp_path: Path, lock_typ
     assert os.waitstatus_to_exitcode(status) == 0
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize("lock_type", [pytest.param(FileLock, id="native"), pytest.param(SoftFileLock, id="soft")])
 def test_inherited_idle_lock_rejects_acquire(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
@@ -281,7 +279,7 @@ def test_inherited_idle_lock_rejects_acquire(tmp_path: Path, lock_type: type[Bas
     assert os.waitstatus_to_exitcode(status) == 0
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize(
     "lock_type", [pytest.param(AsyncFileLock, id="native"), pytest.param(AsyncSoftFileLock, id="soft")]
@@ -302,7 +300,7 @@ def test_inherited_idle_async_lock_rejects_acquire(tmp_path: Path, lock_type: ty
     assert os.waitstatus_to_exitcode(status) == 0
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_fork_from_on_acquired_invalidates_child_acquire(tmp_path: Path) -> None:
     path = str(tmp_path / "parent.lock")
@@ -327,7 +325,7 @@ def test_fork_from_on_acquired_invalidates_child_acquire(tmp_path: Path) -> None
     lock.release()
 
 
-@pytest.mark.skipif(not hasattr(os, "register_at_fork"), reason="descriptor registry requires register_at_fork")
+@NEEDS_FORK
 def test_reader_directory_registration_failure_closes_descriptor(  # pragma: needs fork
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
@@ -356,7 +354,7 @@ def test_reader_directory_registration_failure_closes_descriptor(  # pragma: nee
     lock.close()
 
 
-@pytest.mark.skipif(not hasattr(os, "register_at_fork"), reason="descriptor registry requires register_at_fork")
+@NEEDS_FORK
 def test_reader_directory_registration_and_close_errors_are_grouped(  # pragma: needs fork
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
@@ -394,7 +392,7 @@ def test_reader_directory_registration_and_close_errors_are_grouped(  # pragma: 
     ]
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_child_callback_registered_before_filelock_can_acquire(tmp_path: Path) -> None:
     script = """
@@ -443,7 +441,7 @@ parent.release()
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@_REQUIRES_FORK  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize(
     "kind",

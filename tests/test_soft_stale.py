@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gc
 import os
-import signal
 import socket
 import sys
 import threading
@@ -12,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from coverage_pragmas import CAPABILITIES
 
 from filelock import CloseErrorPolicy, SoftFileLock
@@ -29,15 +29,6 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-_NEEDS_POSIX_SIGNALS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not hasattr(signal, "SIGKILL"), reason="liveness is probed with os.kill only where POSIX signals exist"
-)
-_NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["symlink"], reason="creating a symlink needs a privilege this runtime does not grant"
-)
-_NEEDS_UNLINK_OPEN_FILE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["unlink-open-file"], reason="a successor cannot replace a marker this runtime keeps undeletable"
-)
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
 
 _HOST: Final[str] = socket.gethostname()
@@ -118,7 +109,7 @@ def test_live_process_without_start_token_falls_back_to_pid(lock_path: Path) -> 
     _assert_times_out(lock_path)
 
 
-@_NEEDS_POSIX_SIGNALS  # pragma: needs posix-signals
+@NEEDS_POSIX_SIGNALS  # pragma: needs posix-signals
 @pytest.mark.parametrize(
     "errno",
     [pytest.param(EPERM, id="eperm"), pytest.param(ENODEV, id="unexpected_device")],
@@ -191,7 +182,7 @@ def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
     _assert_times_out(lock_path)
 
 
-@_NEEDS_SYMLINK
+@NEEDS_SYMLINK
 def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) -> None:  # pragma: needs symlink
     target = tmp_path / "target"
     target.write_text(_holder(99999), encoding="utf-8")
@@ -477,7 +468,7 @@ def test_del_suppresses_a_release_error(lock_path: Path, mocker: MockerFixture) 
     gc.collect()
 
 
-@_NEEDS_UNLINK_OPEN_FILE
+@NEEDS_UNLINK_OPEN_FILE
 def test_stale_release_spares_a_successor(lock_path: Path) -> None:  # pragma: needs unlink-open-file
     holder = SoftFileLock(lock_path)
     holder.acquire()
@@ -588,7 +579,7 @@ def test_second_release_does_not_close_reused_descriptor(
         os.close(reused_fd)
 
 
-@_NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixture) -> None:
     holder = SoftFileLock(lock_path)
     holder.acquire()

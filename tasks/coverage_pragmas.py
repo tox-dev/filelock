@@ -25,7 +25,7 @@ from asyncio import CancelledError
 from contextlib import asynccontextmanager, contextmanager
 from importlib.util import find_spec
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from coverage import CoveragePlugin
 
@@ -34,16 +34,6 @@ if TYPE_CHECKING:
 
     from coverage.plugin_support import Plugins
     from coverage.types import TConfigurable
-
-
-class _Suspend:
-    """An awaitable that parks its coroutine once, so a probe can throw into a suspended frame without a loop."""
-
-    def __await__(self) -> Generator[None, Any, None]:
-        yield
-
-
-_AUDIT_PROBE_EVENT: Final[str] = "filelock.capability-probe"
 
 
 # coverage passes the config's plugin options; this plugin takes none.
@@ -171,6 +161,13 @@ def _preserves_context_thrown_into_a_generator() -> bool:
     return False  # pragma: no cover  # the raise above always propagates
 
 
+class _Suspend:
+    """An awaitable that parks its coroutine once, so a probe can throw into a suspended frame without a loop."""
+
+    def __await__(self) -> Generator[None, None, None]:
+        yield
+
+
 def _propagates_a_cancellation_thrown_into_a_coroutine() -> bool:
     # Driven by hand so the probe needs no event loop: GraalPy answers athrow with RuntimeError instead of the
     # CancelledError, so every cancellation crossing an async context manager surfaces as the wrong exception.
@@ -192,6 +189,9 @@ def _propagates_a_cancellation_thrown_into_a_coroutine() -> bool:
     except BaseException:  # ruff:ignore[blind-except]  # whatever else a runtime substitutes counts as the deviation
         return False
     return False  # pragma: no cover  # throwing into the suspended coroutine always raises
+
+
+_AUDIT_PROBE_EVENT: Final[str] = "filelock.capability-probe"
 
 
 def _delivers_audit_events() -> bool:
@@ -239,6 +239,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "dir-fd": os.open in os.supports_dir_fd,
     # Narrower than "dir-fd": GraalPy takes os.open relative to a directory descriptor but not os.link.
     "link-dir-fd": hasattr(os, "link") and os.link in os.supports_dir_fd,
+    "fork1": hasattr(os, "fork1"),
     "hard-link": hasattr(os, "link"),
     "symlink": _supports_symlink(),
     "fcntl": find_spec("fcntl") is not None,

@@ -1,49 +1,85 @@
 """Marks for runtime capabilities several test modules gate on.
 
-Capabilities used by a single module stay private to it, as ``_NEEDS_SYMLINK`` and friends do. These span modules, so
-they live here and read the same ``CAPABILITIES`` probes the coverage pragmas use.
+Capabilities used by a single module stay private to it, as ``_NEEDS_LINK_DIR_FD`` and friends do. These span modules,
+so they live here and read the same ``CAPABILITIES`` probes the coverage pragmas use. Gate on a probe rather than on an
+interpreter or platform name: a name answers who is running, and every one of these questions is about what the runtime
+can do.
 """
 
 from __future__ import annotations
 
+import sys
+from typing import TYPE_CHECKING
+
 import pytest
 from coverage_pragmas import CAPABILITIES
 
-#: A dropped reference releases what its __del__ releases. Only a refcounting collector does this.
-NEEDS_PROMPT_FINALIZATION = pytest.mark.skipif(
+if TYPE_CHECKING:
+    from typing import Final
+
+NEEDS_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["fork"], reason="installing fork handlers needs os.register_at_fork"
+)
+
+NEEDS_FORK1: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["fork1"], reason="forking a single thread needs the Solaris os.fork1"
+)
+
+NEEDS_FCNTL: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["fcntl"], reason="native flock semantics need the fcntl module"
+)
+
+NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"], reason="creating a symlink needs a privilege this runtime does not grant"
+)
+
+#: Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
+NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["symlink"] or sys.platform == "win32",
+    reason="a symlinked parent collapses into one key only where the parent is resolved with realpath",
+)
+
+NEEDS_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["file-mode"], reason="making a folder or a claim unreadable needs POSIX permission bits"
+)
+
+NEEDS_UNLINK_OPEN_FILE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["unlink-open-file"],
+    reason="this runtime keeps an open marker undeletable, so no peer can take it from a live holder",
+)
+
+NEEDS_POSIX_SIGNALS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["posix-signals"], reason="liveness is probed with os.kill only where POSIX signals exist"
+)
+
+NEEDS_PROMPT_FINALIZATION: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["prompt-finalization"],
     reason="a dropped reference does not run __del__ on a deferred collector",
 )
 
-#: gc.collect() runs pending __del__ methods. GraalPy hands them to the host collector and never gets them back.
-NEEDS_COLLECTED_FINALIZATION = pytest.mark.skipif(
+NEEDS_COLLECTED_FINALIZATION: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["collected-finalization"],
     reason="gc.collect() does not run __del__ on this runtime",
 )
 
-#: gc.collect() reclaims a dynamically built class once its last reference goes.
-NEEDS_CLASS_COLLECTION = pytest.mark.skipif(
+NEEDS_CLASS_COLLECTION: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["class-collection"],
     reason="gc.collect() does not reclaim classes on this runtime",
 )
 
-#: An exception thrown into a suspended generator or coroutine keeps its __context__.
-NEEDS_GENERATOR_EXCEPTION_CONTEXT = pytest.mark.skipif(
+NEEDS_GENERATOR_EXCEPTION_CONTEXT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["generator-exception-context"],
     reason="this runtime clears __context__ when an exception is thrown into a suspended frame",
 )
 
-#: sys.audit delivers to hooks installed with sys.addaudithook. GraalPy accepts the hook and never calls it.
-NEEDS_AUDIT_EVENTS = pytest.mark.skipif(
+NEEDS_AUDIT_EVENTS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["audit-events"],
     reason="this runtime never delivers audit events to an installed hook",
 )
 
-#: A cancellation crossing an async context manager surfaces as CancelledError rather than the interpreter's own
-#: bookkeeping error. GraalPy's contextlib raises ``RuntimeError: generator didn't stop after athrow()`` from
-#: ``_GeneratorContextManagerBase.__aexit__`` instead, so the lock's cancellation contract cannot be observed there.
-#: Not strict: the deviation depends on where the cancellation lands, so some of these tests still pass.
-XFAIL_WITHOUT_COROUTINE_CANCELLATION = pytest.mark.xfail(
+#: Raised from ``_GeneratorContextManagerBase.__aexit__``, so the lock's cancellation contract cannot be observed at
+#: all there. Not strict: the deviation depends on where the cancellation lands, so some of these tests still pass.
+XFAIL_WITHOUT_COROUTINE_CANCELLATION: Final[pytest.MarkDecorator] = pytest.mark.xfail(
     not CAPABILITIES["coroutine-cancellation"],
     reason="GraalPy's contextlib answers athrow() with RuntimeError instead of propagating the CancelledError",
     strict=False,
@@ -53,7 +89,15 @@ __all__ = [
     "NEEDS_AUDIT_EVENTS",
     "NEEDS_CLASS_COLLECTION",
     "NEEDS_COLLECTED_FINALIZATION",
+    "NEEDS_FCNTL",
+    "NEEDS_FILE_MODE",
+    "NEEDS_FORK",
+    "NEEDS_FORK1",
     "NEEDS_GENERATOR_EXCEPTION_CONTEXT",
+    "NEEDS_PARENT_SYMLINK_COLLAPSE",
+    "NEEDS_POSIX_SIGNALS",
     "NEEDS_PROMPT_FINALIZATION",
+    "NEEDS_SYMLINK",
+    "NEEDS_UNLINK_OPEN_FILE",
     "XFAIL_WITHOUT_COROUTINE_CANCELLATION",
 ]

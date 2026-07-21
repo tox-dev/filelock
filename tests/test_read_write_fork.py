@@ -6,13 +6,20 @@ import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolates process-global audit hooks and fork exits
 import sys
 import textwrap
-from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
-from capability_marks import NEEDS_AUDIT_EVENTS, NEEDS_COLLECTED_FINALIZATION
+from capability_marks import NEEDS_AUDIT_EVENTS, NEEDS_COLLECTED_FINALIZATION, NEEDS_FORK, NEEDS_FORK1
+from coverage_pragmas import CAPABILITIES
 
 from filelock import ReadWriteLock
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+_NEEDS_FD_DIRECTORY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["fd-directory"], reason="counting open descriptors needs a /dev/fd or /proc/self/fd view"
+)
 
 
 @NEEDS_AUDIT_EVENTS
@@ -43,10 +50,7 @@ def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
     assert connection_events == 3
 
 
-@pytest.mark.skipif(
-    not Path("/dev/fd").is_dir() and not Path("/proc/self/fd").is_dir(),
-    reason="no descriptor view",
-)
+@_NEEDS_FD_DIRECTORY
 @NEEDS_COLLECTED_FINALIZATION
 def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) -> None:  # pragma: needs fd-directory
     result = _run_fork_script(_dropped_instances_script(), [str(tmp_path)], timeout=10)
@@ -54,7 +58,7 @@ def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) 
     assert result == (0, "", "")
 
 
-@pytest.mark.skipif(not hasattr(os, "register_at_fork"), reason="requires fork transitions")  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @NEEDS_COLLECTED_FINALIZATION
 def test_async_read_write_lock_allows_finalizer_reentry(tmp_path: Path) -> None:
     result = _run_fork_script(
@@ -164,7 +168,7 @@ def test_read_write_lock_serializes_other_thread_operation_during_acquisition(
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @pytest.mark.parametrize(
     ("mode", "fork_name", "reject_audit_hook"),
     [
@@ -175,14 +179,14 @@ def test_read_write_lock_serializes_other_thread_operation_during_acquisition(
             "read",
             "fork1",
             False,
-            marks=pytest.mark.skipif(not hasattr(os, "fork1"), reason="requires os.fork1"),
+            marks=NEEDS_FORK1,
             id="read-fork1",
         ),
         pytest.param(
             "write",
             "fork1",
             False,
-            marks=pytest.mark.skipif(not hasattr(os, "fork1"), reason="requires os.fork1"),
+            marks=NEEDS_FORK1,
             id="write-fork1",
         ),
     ],
@@ -207,7 +211,7 @@ def test_read_write_lock_survives_normal_fork_child_exit(
     assert result == (0, "", "")
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None:
     result = _run_fork_script(_fork_during_sqlite_script(), [str(tmp_path / "fork-gate.db")], timeout=15)
 
@@ -239,7 +243,7 @@ def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: needs f
     assert result == (0, "", "")
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 def test_read_write_lock_idle_fork_handles_fresh_child_lock(tmp_path: Path) -> None:
     result = _run_fork_script(_idle_fork_script(), [str(tmp_path / "idle-fork.db")], timeout=10)
 
@@ -273,14 +277,14 @@ def test_fork_script_terminates_timed_out_process_group() -> None:
         _run_fork_script("import time; time.sleep(10)", [], timeout=0.01)
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 def test_read_write_lock_subclass_cache_resets_after_fork(tmp_path: Path) -> None:
     result = _run_fork_script(_subclass_fork_script(), [str(tmp_path / "subclass-fork.db")], timeout=10)
 
     assert result == (0, "", "")
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")  # pragma: needs fork
+@NEEDS_FORK  # pragma: needs fork
 @pytest.mark.parametrize("held", [pytest.param(False, id="idle"), pytest.param(True, id="held")])
 def test_async_read_write_lock_fork_behavior(tmp_path: Path, held: bool) -> None:
     result = _run_fork_script(

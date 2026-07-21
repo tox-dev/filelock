@@ -6,10 +6,9 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter ex
 import sys
 import weakref
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
-import pytest
-from capability_marks import NEEDS_CLASS_COLLECTION
+from capability_marks import NEEDS_CLASS_COLLECTION, NEEDS_FORK
 from fork_helpers import exit_child, fork_process
 
 from filelock import BaseFileLock
@@ -17,10 +16,8 @@ from filelock import BaseFileLock
 if TYPE_CHECKING:
     from pathlib import Path
 
-_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork required")
 
-
-@_REQUIRES_FORK
+@NEEDS_FORK
 def test_equal_unhashable_locks_reset_independently(tmp_path: Path) -> None:  # pragma: win32 no cover
     @dataclass(eq=True, init=False)  # pragma: win32 no cover
     class EqualLock(BaseFileLock):  # pragma: win32 no cover

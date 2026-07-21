@@ -4,13 +4,12 @@ import asyncio
 import sys
 import threading
 from errno import EIO
-from importlib.util import find_spec
 from queue import Queue
-from typing import TYPE_CHECKING, Final, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import pytest
 from async_filelock_cancellation_helpers import assert_file_lock_state, get_fcntl
-from capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
+from capability_marks import NEEDS_FCNTL, XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from filelock import AsyncAcquireReturnProxy, AsyncFileLock, ContextErrorPolicy
 
@@ -25,9 +24,6 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-_NEEDS_FCNTL: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    find_spec("fcntl") is None, reason="native flock semantics come from the fcntl module"
-)
 _T = TypeVar("_T")
 
 
@@ -48,7 +44,7 @@ class _CancellationObservedTask(asyncio.Task[_T]):  # pragma: needs fcntl
         return super().cancel(msg)
 
 
-@_NEEDS_FCNTL
+@NEEDS_FCNTL
 def test_runner_shutdown_waits_for_executor_acquire_rollback(tmp_path: Path) -> None:  # pragma: needs fcntl
     hook_started = threading.Event()
     finish_hook = threading.Event()
@@ -77,7 +73,7 @@ def test_runner_shutdown_waits_for_executor_acquire_rollback(tmp_path: Path) -> 
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@_NEEDS_FCNTL
+@NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 def test_runner_shutdown_preserves_body_cancellation_and_release_errors(  # pragma: needs fcntl

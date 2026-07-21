@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
+from capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS
 from coverage_pragmas import CAPABILITIES
 
 from filelock import Timeout
@@ -30,14 +31,6 @@ if TYPE_CHECKING:
 
 
 _OWNER_READ_WRITE: Final[int] = 0o600
-
-_REQUIRES_POSIX_SIGNALS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not hasattr(signal, "SIGKILL"), reason="POSIX signals required"
-)
-_REQUIRES_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["file-mode"], reason="POSIX file-mode bits required"
-)
-_REQUIRES_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork required")
 
 
 @pytest.fixture(autouse=True)
@@ -491,7 +484,7 @@ def test_writer_phase2_timeout_releases_marker(lock_file: str) -> None:
         reader.close()
 
 
-@_REQUIRES_POSIX_SIGNALS
+@NEEDS_POSIX_SIGNALS
 @pytest.mark.timeout(20)
 def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs posix-signals
     held = Event()
@@ -513,7 +506,7 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs
         assert not Path(f"{lock_file}.write").exists()
 
 
-@_REQUIRES_POSIX_SIGNALS
+@NEEDS_POSIX_SIGNALS
 @pytest.mark.timeout(20)
 def test_dead_reader_evicted_by_writer(lock_file: str) -> None:  # pragma: needs posix-signals
     held = Event()
@@ -858,7 +851,7 @@ def test_readers_path_as_regular_file_is_refused(lock_file: str) -> None:
         lock.close()
 
 
-@_REQUIRES_FILE_MODE
+@NEEDS_FILE_MODE
 def test_write_marker_is_created_with_0600(lock_file: str) -> None:  # pragma: needs file-mode
     lock = _make_lock(lock_file)
     try:
@@ -868,7 +861,7 @@ def test_write_marker_is_created_with_0600(lock_file: str) -> None:  # pragma: n
         lock.close()
 
 
-@_REQUIRES_FILE_MODE
+@NEEDS_FILE_MODE
 def test_readers_directory_is_created_with_0700(lock_file: str) -> None:  # pragma: needs file-mode
     lock = _make_lock(lock_file)
     try:
@@ -893,7 +886,7 @@ def test_writer_ignores_housekeeping_files_in_readers_dir(lock_file: str) -> Non
         lock.close()
 
 
-@_REQUIRES_FILE_MODE
+@NEEDS_FILE_MODE
 def test_reader_file_is_created_with_0600(lock_file: str) -> None:  # pragma: needs file-mode
     lock = _make_lock(lock_file)
     try:
@@ -905,7 +898,7 @@ def test_reader_file_is_created_with_0600(lock_file: str) -> None:  # pragma: ne
         lock.close()
 
 
-@_REQUIRES_FORK
+@NEEDS_FORK
 @pytest.mark.timeout(15)
 def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:  # pragma: needs fork
     ctx = mp.get_context("spawn")
@@ -917,7 +910,7 @@ def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:  # pr
     assert result.is_set()
 
 
-@_REQUIRES_FORK
+@NEEDS_FORK
 @pytest.mark.timeout(15)
 def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:  # pragma: needs fork
     ctx = mp.get_context("spawn")
@@ -929,7 +922,7 @@ def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:  # p
     assert result.is_set()
 
 
-@_REQUIRES_FORK
+@NEEDS_FORK
 @pytest.mark.timeout(15)
 def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:  # pragma: needs fork
     ctx = mp.get_context("spawn")
@@ -944,7 +937,7 @@ def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None: 
     assert result.is_set()
 
 
-@_REQUIRES_FORK
+@NEEDS_FORK
 @pytest.mark.timeout(15)
 # Holding the write lock keeps the heartbeat thread alive, so this fork is necessarily from a multi-threaded
 # process and Python 3.15 warns that it may deadlock. That is the scenario under test, and it is already safe:
