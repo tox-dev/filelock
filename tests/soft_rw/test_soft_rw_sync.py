@@ -1184,8 +1184,6 @@ def test_cleanup_closes_the_process() -> None:
     with cleanup_processes([proc]):
         assert proc.is_alive()
 
-    # Reading liveness back is how a closed process is observable; leaving it open defers its finalizer to whichever
-    # test the collector happens to land in.
     with pytest.raises(ValueError, match="process object is closed"):
         proc.is_alive()
 

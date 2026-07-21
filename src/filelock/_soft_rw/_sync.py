@@ -656,9 +656,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         ``dirfd_relative`` is ``True`` when *name* should be passed to ``dir_fd=``-aware syscalls; ``False``
         when *name* is a full path because dirfd-relative I/O is unavailable on this platform.
 
-        A consumer that stops early must close this generator (``contextlib.closing``); while it is suspended the
-        ``scandir`` handle below stays open, and leaving it to the collector surfaces as an unraisable exception
-        inside whatever runs next.
+        A consumer that stops early must close this generator: while suspended it holds the ``scandir`` handle open,
+        and leaving that to the collector surfaces as an unraisable exception inside whatever runs next.
         """
         if self._readers_dir_fd is not None:  # pragma: needs dir-fd
             with os.scandir(self._readers_dir_fd) as it:

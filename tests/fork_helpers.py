@@ -51,7 +51,8 @@ def _flush_coverage() -> None:
         return
     from coverage import Coverage
 
-    if (coverage := Coverage.current()) is not None:
+    # Reaching the other side needs coverage inactive, which is when nothing gets recorded anyway.
+    if (coverage := Coverage.current()) is not None:  # pragma: no branch
         coverage.save()
 
 
