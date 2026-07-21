@@ -198,8 +198,6 @@ ini_options.markers = [
 ]
 ini_options.filterwarnings = [
   "error",
-  "ignore:unclosed database in <sqlite3.Connection object at:ResourceWarning",
-  "ignore:unclosed file <_io.TextIOWrapper:ResourceWarning",
 ]
 ini_options.verbosity_assertions = 2
 ini_options.asyncio_default_fixture_loop_scope = "session"
