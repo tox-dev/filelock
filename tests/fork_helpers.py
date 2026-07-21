@@ -45,7 +45,7 @@ def exit_child(status: int) -> NoReturn:
         os._exit(status)
 
 
-def _flush_coverage() -> None:
+def _flush_coverage() -> None:  # pragma: win32 no cover - a spawned child inherits no coverage to flush
     # An unmeasured run has nothing to write, and importing coverage there would stop the suite from running at all.
     if not CAPABILITIES["coverage"]:  # pragma: lacks coverage
         return
