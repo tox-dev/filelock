@@ -15,8 +15,9 @@ import sqlite3
 from filelock import ReadWriteLock, Timeout
 from tests.read_write_helpers import assert_read_write_lock_state
 
-# Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that
-# starts slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out.
+# Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
+# slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
+# has to outlast the waits it makes, so those are multiples of this rather than bare seconds.
 _PROCESS_DEADLINE: Final[int] = 30
 
 if sys.implementation.name == "pypy":
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_read_locks_are_shared(lock_file: str) -> None:
     read1_acquired = Event()
     read2_acquired = Event()
@@ -55,7 +56,7 @@ def test_read_locks_are_shared(lock_file: str) -> None:
         assert not reader2.is_alive(), "Reader 2 did not exit cleanly"
 
 
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
     write1_acquired = Event()
     release_write1 = Event()
@@ -133,7 +134,7 @@ def test_lock_excludes_opposite_mode(
         assert not contender.is_alive(), "Contender did not exit cleanly"
 
 
-@pytest.mark.timeout(40)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 8)
 def test_write_non_starvation(lock_file: str) -> None:
     """A writer that joins after the first reader must acquire before the reader chain drains.
 
@@ -171,16 +172,16 @@ def test_write_non_starvation(lock_file: str) -> None:
 
         chain_forward[0].set()
 
-        assert writer_ready.wait(timeout=10), "First reader did not acquire lock"
+        assert writer_ready.wait(timeout=_PROCESS_DEADLINE), "First reader did not acquire lock"
 
         writer.start()
 
         # Count only the releases the writer actually waited through; a slow interpreter start is not starvation.
-        assert writer_contending.wait(timeout=20), "Writer process did not reach the lock"
+        assert writer_contending.wait(timeout=_PROCESS_DEADLINE), "Writer process did not reach the lock"
         with release_count.get_lock():
             releases_before_contending = release_count.value
 
-        assert writer_acquired.wait(timeout=22), "Writer couldn't acquire lock - possible starvation"
+        assert writer_acquired.wait(timeout=_PROCESS_DEADLINE), "Writer couldn't acquire lock - possible starvation"
 
         with release_count.get_lock():
             read_releases = release_count.value - releases_before_contending
@@ -202,7 +203,7 @@ def test_write_non_starvation(lock_file: str) -> None:
     "hold_mode",
     [pytest.param("read", id="upgrade"), pytest.param("write", id="downgrade")],
 )
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_lock_mode_transition_prohibited(lock_file: str, hold_mode: Literal["read", "write"]) -> None:
     result = Value("i", -1)
 
@@ -216,7 +217,7 @@ def test_lock_mode_transition_prohibited(lock_file: str, hold_mode: Literal["rea
     assert result.value == 0, f"Illegal {hold_mode} transition was permitted"
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_timeout_behavior(lock_file: str) -> None:
     write_acquired = Event()
     release_write = Event()
@@ -286,7 +287,7 @@ def test_recursive_lock_acquisition(lock_file: str, mode: Literal["read", "write
     "mode",
     [pytest.param("read", id="read"), pytest.param("write", id="write")],
 )
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 4)
 def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock_acquired = Event()
 
@@ -515,14 +516,29 @@ def acquire_lock(
             time.sleep(0.5)  # hold briefly to simulate work
 
 
+def test_cleanup_reports_the_failure_that_escaped_before_a_start() -> None:
+    unstarted = Process(target=time.sleep, args=(0,))
+
+    def fail_before_start() -> None:
+        with cleanup_processes([unstarted]):
+            msg = "the real failure"
+            raise AssertionError(msg)
+
+    with pytest.raises(AssertionError, match="the real failure"):
+        fail_before_start()
+
+
 @contextmanager
 def cleanup_processes(processes: list[Process]) -> Generator[None]:
     try:
         yield
     finally:
         for proc in processes:
-            proc.terminate()
-            proc.join(timeout=1)
+            # An assertion can escape before every process starts, and terminating an unstarted one raises over the
+            # failure that caused it, hiding the real error.
+            if proc.pid is not None:
+                proc.terminate()
+                proc.join(timeout=1)
             proc.close()
 
 
