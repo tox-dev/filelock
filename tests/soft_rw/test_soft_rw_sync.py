@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 
 _OWNER_READ_WRITE: Final[int] = 0o600
 
+# Bounds how long a spawned process or thread may take to reach the lock, not how fast it must be: an interpreter
+# that starts slowly under a loaded suite is not a locking failure. The short negative waits below are deliberate,
+# since those assert a contender stays blocked and have to stay brief.
+_PROCESS_DEADLINE: Final[int] = 30
+
 
 @pytest.fixture(autouse=True)
 def _clear_singletons() -> Generator[None]:
@@ -214,9 +219,9 @@ def test_blocking_acquire_without_timeout_waits_for_release(lock_file: str) -> N
     try:
         assert not acquired.wait(timeout=0.2)
         holder.release()
-        assert acquired.wait(timeout=5)
+        assert acquired.wait(timeout=_PROCESS_DEADLINE)
     finally:
-        thread.join(timeout=5)
+        thread.join(timeout=_PROCESS_DEADLINE)
         holder.close()
 
 
@@ -264,7 +269,7 @@ def test_acquire_on_closed_raises(lock_file: str) -> None:
         lock.acquire_write(timeout=1)
 
 
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_multiple_readers_can_hold_simultaneously(lock_file: str) -> None:
     r1, r2, release = Event(), Event(), Event()
     p1 = Process(target=_worker, args=(lock_file, "read", r1, release))
@@ -272,14 +277,14 @@ def test_multiple_readers_can_hold_simultaneously(lock_file: str) -> None:
     with _cleanup([p1, p2]):
         p1.start()
         p2.start()
-        assert r1.wait(timeout=5)
-        assert r2.wait(timeout=5)
+        assert r1.wait(timeout=_PROCESS_DEADLINE)
+        assert r2.wait(timeout=_PROCESS_DEADLINE)
         release.set()
-        p1.join(timeout=5)
-        p2.join(timeout=5)
+        p1.join(timeout=_PROCESS_DEADLINE)
+        p2.join(timeout=_PROCESS_DEADLINE)
 
 
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 4)
 def test_write_lock_excludes_writers(lock_file: str) -> None:
     held, release = Event(), Event()
     second = Event()
@@ -287,15 +292,15 @@ def test_write_lock_excludes_writers(lock_file: str) -> None:
     contender = Process(target=_worker, args=(lock_file, "write", second, None, 0.3, True))
     with _cleanup([holder, contender]):
         holder.start()
-        assert held.wait(timeout=5)
+        assert held.wait(timeout=_PROCESS_DEADLINE)
         contender.start()
         assert not second.wait(timeout=0.5)
         release.set()
-        holder.join(timeout=5)
-        contender.join(timeout=5)
+        holder.join(timeout=_PROCESS_DEADLINE)
+        contender.join(timeout=_PROCESS_DEADLINE)
 
 
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 4)
 def test_write_lock_excludes_readers(lock_file: str) -> None:
     held, release = Event(), Event()
     reader_acquired = Event()
@@ -303,15 +308,15 @@ def test_write_lock_excludes_readers(lock_file: str) -> None:
     reader = Process(target=_worker, args=(lock_file, "read", reader_acquired, None, 0.3, True))
     with _cleanup([writer, reader]):
         writer.start()
-        assert held.wait(timeout=5)
+        assert held.wait(timeout=_PROCESS_DEADLINE)
         reader.start()
         assert not reader_acquired.wait(timeout=0.5)
         release.set()
-        writer.join(timeout=5)
-        reader.join(timeout=5)
+        writer.join(timeout=_PROCESS_DEADLINE)
+        reader.join(timeout=_PROCESS_DEADLINE)
 
 
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_writer_drains_existing_readers(lock_file: str) -> None:
     r_held, r_release = Event(), Event()
     w_held = Event()
@@ -319,16 +324,16 @@ def test_writer_drains_existing_readers(lock_file: str) -> None:
     writer = Process(target=_worker, args=(lock_file, "write", w_held))
     with _cleanup([reader, writer]):
         reader.start()
-        assert r_held.wait(timeout=5)
+        assert r_held.wait(timeout=_PROCESS_DEADLINE)
         writer.start()
         assert not w_held.wait(timeout=0.5)
         r_release.set()
-        reader.join(timeout=5)
-        assert w_held.wait(timeout=5)
-        writer.join(timeout=5)
+        reader.join(timeout=_PROCESS_DEADLINE)
+        assert w_held.wait(timeout=_PROCESS_DEADLINE)
+        writer.join(timeout=_PROCESS_DEADLINE)
 
 
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 7)
 def test_writer_preference_blocks_new_readers(lock_file: str) -> None:
     r1_held, r1_release = Event(), Event()
     w_held, w_release = Event(), Event()
@@ -338,22 +343,22 @@ def test_writer_preference_blocks_new_readers(lock_file: str) -> None:
     reader2 = Process(target=_worker, args=(lock_file, "read", r2_held, None, 10, True))
     with _cleanup([reader1, writer, reader2]):
         reader1.start()
-        assert r1_held.wait(timeout=5)
+        assert r1_held.wait(timeout=_PROCESS_DEADLINE)
         writer.start()
         time.sleep(0.3)
         reader2.start()
         assert not r2_held.wait(timeout=0.5)
         r1_release.set()
-        assert w_held.wait(timeout=5)
+        assert w_held.wait(timeout=_PROCESS_DEADLINE)
         assert not r2_held.wait(timeout=0.3)
         w_release.set()
-        assert r2_held.wait(timeout=5)
-        reader1.join(timeout=5)
-        writer.join(timeout=5)
-        reader2.join(timeout=5)
+        assert r2_held.wait(timeout=_PROCESS_DEADLINE)
+        reader1.join(timeout=_PROCESS_DEADLINE)
+        writer.join(timeout=_PROCESS_DEADLINE)
+        reader2.join(timeout=_PROCESS_DEADLINE)
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 4)
 def test_transaction_lock_timeout_across_threads(lock_file: str) -> None:
     # Two threads share one lock instance. Thread A holds the transaction lock while spinning on a peer
     # writer; thread B times out on the transaction lock, exercising the in-process Timeout path rather
@@ -382,18 +387,18 @@ def test_transaction_lock_timeout_across_threads(lock_file: str) -> None:
                 thread_ready.set()
                 with suppress(Timeout):
                     lock.acquire_write(timeout=2)
-                release_thread.wait(timeout=5)
+                release_thread.wait(timeout=_PROCESS_DEADLINE)
 
             thread_a = threading.Thread(target=target_a)
             thread_a.start()
             try:
-                thread_ready.wait(timeout=2)
+                thread_ready.wait(timeout=_PROCESS_DEADLINE)
                 time.sleep(0.05)
                 with pytest.raises(Timeout):
                     lock.acquire_write(timeout=0.1)
             finally:
                 release_thread.set()
-                thread_a.join(timeout=5)
+                thread_a.join(timeout=_PROCESS_DEADLINE)
         finally:
             lock.close()
     finally:
@@ -401,7 +406,7 @@ def test_transaction_lock_timeout_across_threads(lock_file: str) -> None:
         peer.close()
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_two_readers_in_same_process_share_slot(lock_file: str) -> None:
     # Many threads take a read lock on one instance; one hits the inner reentrant branch (lock level
     # above 0 after waiting on the transaction lock).
@@ -416,7 +421,7 @@ def test_two_readers_in_same_process_share_slot(lock_file: str) -> None:
         barrier = threading.Barrier(8)
 
         def target() -> None:
-            barrier.wait(timeout=2)
+            barrier.wait(timeout=_PROCESS_DEADLINE)
             with lock.read_lock(timeout=5):
                 time.sleep(0.05)
 
@@ -424,18 +429,18 @@ def test_two_readers_in_same_process_share_slot(lock_file: str) -> None:
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join(timeout=5)
+            thread.join(timeout=_PROCESS_DEADLINE)
     finally:
         lock.close()
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_timeout_raises(lock_file: str) -> None:
     held, release = Event(), Event()
     holder = Process(target=_worker, args=(lock_file, "write", held, release))
     with _cleanup([holder]):
         holder.start()
-        assert held.wait(timeout=5)
+        assert held.wait(timeout=_PROCESS_DEADLINE)
         lock = _make_lock(lock_file)
         try:
             with pytest.raises(Timeout):
@@ -443,16 +448,16 @@ def test_timeout_raises(lock_file: str) -> None:
         finally:
             lock.close()
         release.set()
-        holder.join(timeout=5)
+        holder.join(timeout=_PROCESS_DEADLINE)
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_non_blocking_writer_contended_raises(lock_file: str) -> None:
     held, release = Event(), Event()
     holder = Process(target=_worker, args=(lock_file, "write", held, release))
     with _cleanup([holder]):
         holder.start()
-        assert held.wait(timeout=5)
+        assert held.wait(timeout=_PROCESS_DEADLINE)
         lock = _make_lock(lock_file)
         try:
             with pytest.raises(Timeout):
@@ -462,7 +467,7 @@ def test_non_blocking_writer_contended_raises(lock_file: str) -> None:
         finally:
             lock.close()
         release.set()
-        holder.join(timeout=5)
+        holder.join(timeout=_PROCESS_DEADLINE)
 
 
 @pytest.mark.timeout(10)
@@ -485,17 +490,17 @@ def test_writer_phase2_timeout_releases_marker(lock_file: str) -> None:
 
 
 @NEEDS_POSIX_SIGNALS
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs posix-signals
     held = Event()
     holder = Process(target=_sigkill_worker, args=(lock_file, "write", held, 0.1, 0.5))
     with _cleanup([holder]):
         holder.start()
-        assert held.wait(timeout=5)
+        assert held.wait(timeout=_PROCESS_DEADLINE)
         pid = holder.pid
         assert pid is not None
         os.kill(pid, getattr(signal, "SIGKILL"))  # ruff:ignore[get-attr-with-constant] - signal.SIGKILL is POSIX-only
-        holder.join(timeout=5)
+        holder.join(timeout=_PROCESS_DEADLINE)
         time.sleep(0.8)
         lock = _make_lock(lock_file)
         try:
@@ -507,17 +512,17 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs
 
 
 @NEEDS_POSIX_SIGNALS
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_dead_reader_evicted_by_writer(lock_file: str) -> None:  # pragma: needs posix-signals
     held = Event()
     holder = Process(target=_sigkill_worker, args=(lock_file, "read", held, 0.1, 0.5))
     with _cleanup([holder]):
         holder.start()
-        assert held.wait(timeout=5)
+        assert held.wait(timeout=_PROCESS_DEADLINE)
         pid = holder.pid
         assert pid is not None
         os.kill(pid, getattr(signal, "SIGKILL"))  # ruff:ignore[get-attr-with-constant] - signal.SIGKILL is POSIX-only
-        holder.join(timeout=5)
+        holder.join(timeout=_PROCESS_DEADLINE)
         time.sleep(0.8)
         lock = _make_lock(lock_file)
         try:
@@ -664,15 +669,15 @@ def test_heartbeat_stops_when_marker_evicted(lock_file: str, monkeypatch: pytest
         hold = lock._hold
         assert hold is not None
         monkeypatch.setattr(sync_mod, "_open_marker_fd", gone)
-        assert hold.heartbeat_stop.wait(timeout=2)
-        hold.heartbeat_thread.join(timeout=2)
+        assert hold.heartbeat_stop.wait(timeout=_PROCESS_DEADLINE)
+        hold.heartbeat_thread.join(timeout=_PROCESS_DEADLINE)
         assert not hold.heartbeat_thread.is_alive()
     finally:
         lock.release(force=True)
         lock.close()
 
 
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) -> None:
     # Generous timing here so the test stays stable on slow Windows runners where the holder's
     # multiprocessing.spawn startup, the heartbeat thread scheduling, and the parent's mtime resolution
@@ -685,7 +690,7 @@ def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) ->
     )
     with _cleanup([holder]):
         holder.start()
-        assert held.wait(timeout=5)
+        assert held.wait(timeout=_PROCESS_DEADLINE)
         time.sleep(stale * 2)
         lock = _make_lock(lock_file, heartbeat_interval=heartbeat, stale_threshold=stale)
         try:
@@ -694,7 +699,7 @@ def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) ->
         finally:
             lock.close()
         release.set()
-        holder.join(timeout=5)
+        holder.join(timeout=_PROCESS_DEADLINE)
 
 
 @pytest.mark.parametrize(
@@ -899,31 +904,31 @@ def test_reader_file_is_created_with_0600(lock_file: str) -> None:  # pragma: ne
 
 
 @NEEDS_FORK
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:  # pragma: needs fork
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(target=_reuse_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
     proc.start()
-    proc.join(timeout=10)
+    proc.join(timeout=_PROCESS_DEADLINE)
     assert not failure.is_set()
     assert result.is_set()
 
 
 @NEEDS_FORK
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:  # pragma: needs fork
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(target=_release_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
     proc.start()
-    proc.join(timeout=10)
+    proc.join(timeout=_PROCESS_DEADLINE)
     assert not failure.is_set()
     assert result.is_set()
 
 
 @NEEDS_FORK
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:  # pragma: needs fork
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
@@ -932,13 +937,13 @@ def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None: 
         args=(str(tmp_path / "parent.lock"), str(tmp_path / "child.lock"), result, failure),
     )
     proc.start()
-    proc.join(timeout=10)
+    proc.join(timeout=_PROCESS_DEADLINE)
     assert not failure.is_set()
     assert result.is_set()
 
 
 @NEEDS_FORK
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 # Holding the write lock keeps the heartbeat thread alive, so this fork is necessarily from a multi-threaded
 # process and Python 3.15 warns that it may deadlock. That is the scenario under test, and it is already safe:
 # register_at_fork resets inherited state in the child (any child use raises "invalidated by fork()"). Expected.
@@ -950,7 +955,7 @@ def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:  # pragma: nee
     try:
         child = _fork_process(target=time.sleep, args=(0.05,))
         child.start()
-        child.join(timeout=5)
+        child.join(timeout=_PROCESS_DEADLINE)
         assert Path(f"{path}.write").exists()
         peer = SoftReadWriteLock(
             path,
@@ -1011,7 +1016,7 @@ def _worker(
         with lock.read_lock() if mode == "read" else lock.write_lock():
             acquired_event.set()
             if release_event is not None:
-                release_event.wait(timeout=10)
+                release_event.wait(timeout=_PROCESS_DEADLINE)
             else:
                 time.sleep(0.2)
     finally:
@@ -1026,11 +1031,11 @@ def _cleanup(processes: list[Process]) -> Generator[None]:
         for proc in processes:
             if proc.is_alive():
                 proc.terminate()
-                proc.join(timeout=5)
+                proc.join(timeout=_PROCESS_DEADLINE)
             # A worker that outlives its test wedges the next one, and SIGTERM can be slow on a loaded runner.
             if proc.is_alive():  # pragma: no cover  # the terminate lands first whenever the runner is not saturated
                 proc.kill()
-                proc.join(timeout=5)
+                proc.join(timeout=_PROCESS_DEADLINE)
 
 
 def _sigkill_worker(  # pragma: forked child
@@ -1075,7 +1080,7 @@ def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType)
 
     child = _fork_process(target=child_entry)
     child.start()
-    child.join(timeout=5)
+    child.join(timeout=_PROCESS_DEADLINE)
     if ok.is_set():
         result.set()
     else:  # pragma: no cover  # reached only if the child fails to report the inherited lock, i.e. a regression
@@ -1098,7 +1103,7 @@ def _release_inherited_lock(lock_file: str, result: EventType, failure: EventTyp
 
     child = _fork_process(target=child_entry)
     child.start()
-    child.join(timeout=5)
+    child.join(timeout=_PROCESS_DEADLINE)
     if ok.is_set():
         result.set()
     else:  # pragma: no cover  # reached only if the child's silent release regresses into raising
@@ -1130,7 +1135,7 @@ def _reacquire_fresh_lock_in_child(  # pragma: needs fork
 
     child = _fork_process(target=child_entry)
     child.start()
-    child.join(timeout=5)
+    child.join(timeout=_PROCESS_DEADLINE)
     if ok.is_set():
         result.set()
     else:  # pragma: no cover  # reached only if the child cannot acquire a fresh lock after the fork, i.e. a regression
