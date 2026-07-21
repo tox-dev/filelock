@@ -198,10 +198,6 @@ ini_options.markers = [
 ]
 ini_options.filterwarnings = [
   "error",
-  # multiprocessing's leaked Finalize objects clean up descriptors from their own finalizer; that is a CPython
-  # behavior, not a filelock bug, and pytest-randomly can collect one during any test. A filelock finalizer issue
-  # would not carry "Finalize" in the message and still errors.
-  "ignore:Exception ignored in.*Finalize:pytest.PytestUnraisableExceptionWarning",
   "ignore:unclosed database in <sqlite3.Connection object at:ResourceWarning",
   "ignore:unclosed file <_io.TextIOWrapper:ResourceWarning",
 ]

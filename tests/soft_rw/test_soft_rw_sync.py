@@ -8,7 +8,7 @@ import stat
 import sys
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from errno import EIO, ENOENT
 from multiprocessing import Event, Process
 from pathlib import Path
@@ -22,6 +22,7 @@ from filelock import _util as util_mod
 from filelock._soft_rw import SoftReadWriteLock
 from filelock._soft_rw import _sync as sync_mod
 from tests.capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS, SKIP_ON_UNRELIABLE_PROCESS_SYNC
+from tests.process_helpers import cleanup_processes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -278,7 +279,7 @@ def test_multiple_readers_can_hold_simultaneously(lock_file: str) -> None:
     r1, r2, release = Event(), Event(), Event()
     p1 = Process(target=_worker, args=(lock_file, "read", r1, release))
     p2 = Process(target=_worker, args=(lock_file, "read", r2, release))
-    with _cleanup([p1, p2]):
+    with cleanup_processes([p1, p2]):
         p1.start()
         p2.start()
         assert r1.wait(timeout=_PROCESS_DEADLINE)
@@ -295,7 +296,7 @@ def test_write_lock_excludes_writers(lock_file: str) -> None:
     second = Event()
     holder = Process(target=_worker, args=(lock_file, "write", held, release))
     contender = Process(target=_worker, args=(lock_file, "write", second, None, 0.3, True))
-    with _cleanup([holder, contender]):
+    with cleanup_processes([holder, contender]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
         contender.start()
@@ -312,7 +313,7 @@ def test_write_lock_excludes_readers(lock_file: str) -> None:
     reader_acquired = Event()
     writer = Process(target=_worker, args=(lock_file, "write", held, release))
     reader = Process(target=_worker, args=(lock_file, "read", reader_acquired, None, 0.3, True))
-    with _cleanup([writer, reader]):
+    with cleanup_processes([writer, reader]):
         writer.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
         reader.start()
@@ -329,7 +330,7 @@ def test_writer_drains_existing_readers(lock_file: str) -> None:
     w_held = Event()
     reader = Process(target=_worker, args=(lock_file, "read", r_held, r_release))
     writer = Process(target=_worker, args=(lock_file, "write", w_held))
-    with _cleanup([reader, writer]):
+    with cleanup_processes([reader, writer]):
         reader.start()
         assert r_held.wait(timeout=_PROCESS_DEADLINE)
         writer.start()
@@ -349,7 +350,7 @@ def test_writer_preference_blocks_new_readers(lock_file: str) -> None:
     reader1 = Process(target=_worker, args=(lock_file, "read", r1_held, r1_release))
     writer = Process(target=_worker, args=(lock_file, "write", w_held, w_release))
     reader2 = Process(target=_worker, args=(lock_file, "read", r2_held, None, 10, True))
-    with _cleanup([reader1, writer, reader2]):
+    with cleanup_processes([reader1, writer, reader2]):
         reader1.start()
         assert r1_held.wait(timeout=_PROCESS_DEADLINE)
         writer.start()
@@ -447,7 +448,7 @@ def test_two_readers_in_same_process_share_slot(lock_file: str) -> None:
 def test_timeout_raises(lock_file: str) -> None:
     held, release = Event(), Event()
     holder = Process(target=_worker, args=(lock_file, "write", held, release))
-    with _cleanup([holder]):
+    with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
         lock = _make_lock(lock_file)
@@ -465,7 +466,7 @@ def test_timeout_raises(lock_file: str) -> None:
 def test_non_blocking_writer_contended_raises(lock_file: str) -> None:
     held, release = Event(), Event()
     holder = Process(target=_worker, args=(lock_file, "write", held, release))
-    with _cleanup([holder]):
+    with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
         lock = _make_lock(lock_file)
@@ -505,7 +506,7 @@ def test_writer_phase2_timeout_releases_marker(lock_file: str) -> None:
 def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs posix-signals
     held = Event()
     holder = Process(target=_sigkill_worker, args=(lock_file, "write", held, 0.1, 0.5))
-    with _cleanup([holder]):
+    with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
         pid = holder.pid
@@ -528,7 +529,7 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs
 def test_dead_reader_evicted_by_writer(lock_file: str) -> None:  # pragma: needs posix-signals
     held = Event()
     holder = Process(target=_sigkill_worker, args=(lock_file, "read", held, 0.1, 0.5))
-    with _cleanup([holder]):
+    with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
         pid = holder.pid
@@ -701,7 +702,7 @@ def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) ->
         target=_worker,
         args=(lock_file, "write", held, release, -1, True, heartbeat, stale, 0.05),
     )
-    with _cleanup([holder]):
+    with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
         time.sleep(stale * 2)
@@ -1040,21 +1041,6 @@ def _worker(
         lock.close()
 
 
-@contextmanager
-def _cleanup(processes: list[Process]) -> Generator[None]:
-    try:
-        yield
-    finally:
-        for proc in processes:
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(timeout=_REAP_DEADLINE)
-            # A worker that outlives its test wedges the next one, and SIGTERM can be slow on a loaded runner.
-            if proc.is_alive():  # pragma: no cover  # the terminate lands first whenever the runner is not saturated
-                proc.kill()
-                proc.join(timeout=_REAP_DEADLINE)
-
-
 def _sigkill_worker(  # pragma: forked child
     lock_file: str,
     mode: Literal["read", "write"],
@@ -1181,9 +1167,27 @@ def _fork_event() -> EventType:  # pragma: needs fork
 def test_cleanup_terminates_a_still_running_process() -> None:
     proc = Process(target=time.sleep, args=(30,))
     proc.start()
-    with _cleanup([proc]):
+    started = time.monotonic()
+
+    with cleanup_processes([proc]):
         assert proc.is_alive()
-    assert not proc.is_alive()
+
+    # A helper that only joined would sit here for the child's whole sleep instead of signaling it first.
+    assert time.monotonic() - started < 10
+
+
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
+def test_cleanup_closes_the_process() -> None:
+    proc = Process(target=time.sleep, args=(30,))
+    proc.start()
+
+    with cleanup_processes([proc]):
+        assert proc.is_alive()
+
+    # Reading liveness back is how a closed process is observable; leaving it open defers its finalizer to whichever
+    # test the collector happens to land in.
+    with pytest.raises(ValueError, match="process object is closed"):
+        proc.is_alive()
 
 
 def test_write_marker_zero_write_rolls_back(lock_file: str, mocker: MockerFixture) -> None:

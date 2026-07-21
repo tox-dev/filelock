@@ -17,11 +17,12 @@ def assert_read_write_lock_state(lock_file: str, mode: Literal["read", "write"],
     try:
         probe.join(timeout=5)
         assert not probe.is_alive(), "read-write lock probe did not exit"
+        assert (probe.exitcode, acquired.value) == (0, available)
     finally:
         if probe.is_alive():  # pragma: no cover - cleanup for a hung child after the assertion fails
             probe.terminate()
             probe.join(timeout=5)
-    assert (probe.exitcode, acquired.value) == (0, available)
+        probe.close()
 
 
 def _probe_read_write_lock(lock_file: str, mode: Literal["read", "write"], acquired: Synchronized[bool]) -> None:
