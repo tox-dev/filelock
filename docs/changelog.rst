@@ -7,6 +7,16 @@
 .. towncrier release notes start
 
 ********************
+ 3.32.0 (2026-07-21)
+********************
+
+- ``SoftReadWriteLock`` closes the directory handle it opens to scan for readers as soon as a scan stops early, rather
+  than holding it until the generator is collected. :pr:`685`
+- Declare support for Python 3.15 and run the test suite against it and its free-threaded build, both currently in beta. :pr:`683`
+- The source distribution ships the capability probes the tests import, and reading one no longer needs ``coverage``
+  installed, so the suite runs from an unpacked sdist instead of failing on a missing ``coverage_pragmas``. :pr:`685`
+
+********************
  3.31.2 (2026-07-21)
 ********************
 
