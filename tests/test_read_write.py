@@ -47,11 +47,11 @@ def test_read_locks_are_shared(lock_file: str) -> None:
         time.sleep(0.5)  # let reader1 acquire before reader2 starts
         reader2.start()
 
-        assert read1_acquired.wait(timeout=10), f"First read lock not acquired on {lock_file}"
-        assert read2_acquired.wait(timeout=10), f"Second read lock not acquired on {lock_file}"
+        assert read1_acquired.wait(timeout=_PROCESS_DEADLINE), f"First read lock not acquired on {lock_file}"
+        assert read2_acquired.wait(timeout=_PROCESS_DEADLINE), f"Second read lock not acquired on {lock_file}"
 
-        reader1.join(timeout=10)
-        reader2.join(timeout=10)
+        reader1.join(timeout=_PROCESS_DEADLINE)
+        reader2.join(timeout=_PROCESS_DEADLINE)
         assert not reader1.is_alive(), "Reader 1 did not exit cleanly"
         assert not reader2.is_alive(), "Reader 2 did not exit cleanly"
 
@@ -96,7 +96,7 @@ def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
         pytest.param("read", "write", id="read-blocks-write"),
     ],
 )
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_lock_excludes_opposite_mode(
     lock_file: str,
     holder_mode: Literal["read", "write"],
@@ -161,9 +161,11 @@ def test_write_non_starvation(lock_file: str) -> None:
         )
         readers.append(reader)
 
+    # The last reader holds until its own wait expires, since the test only releases the chain once the writer is in,
+    # so the writer has to outwait that hold rather than time out first.
     writer = Process(
         target=acquire_lock,
-        args=(lock_file, "write", writer_acquired, None, 20, True, writer_ready, writer_contending),
+        args=(lock_file, "write", writer_acquired, None, _PROCESS_DEADLINE * 2, True, writer_ready, writer_contending),
     )
 
     with cleanup_processes([*readers, writer]):
@@ -181,7 +183,7 @@ def test_write_non_starvation(lock_file: str) -> None:
         with release_count.get_lock():
             releases_before_contending = release_count.value
 
-        assert writer_acquired.wait(timeout=_PROCESS_DEADLINE), "Writer couldn't acquire lock - possible starvation"
+        assert writer_acquired.wait(timeout=_PROCESS_DEADLINE * 2), "Writer couldn't acquire lock - possible starvation"
 
         with release_count.get_lock():
             read_releases = release_count.value - releases_before_contending
@@ -195,7 +197,7 @@ def test_write_non_starvation(lock_file: str) -> None:
             event.set()
 
         for idx, reader in enumerate(readers):
-            reader.join(timeout=10)
+            reader.join(timeout=_PROCESS_DEADLINE)
             assert not reader.is_alive(), f"Reader {idx} did not exit cleanly"
 
 
@@ -243,7 +245,7 @@ def test_timeout_behavior(lock_file: str) -> None:
         writer.join(timeout=_PROCESS_DEADLINE)
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_non_blocking_behavior(lock_file: str) -> None:
     write_acquired = Event()
     release_write = Event()
@@ -271,7 +273,7 @@ def test_non_blocking_behavior(lock_file: str) -> None:
     "mode",
     [pytest.param("read", id="read"), pytest.param("write", id="write")],
 )
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_recursive_lock_acquisition(lock_file: str, mode: Literal["read", "write"]) -> None:
     success = Value("i", 0)
     worker = Process(target=recursive_lock, args=(lock_file, mode, success))
@@ -503,7 +505,7 @@ def acquire_lock(
     contending_event: EventType | None = None,
 ) -> None:
     if ready_event:
-        ready_event.wait(timeout=10)
+        ready_event.wait(timeout=_PROCESS_DEADLINE)
 
     lock = ReadWriteLock(lock_file, timeout=timeout, blocking=blocking)
     if contending_event:
@@ -511,7 +513,7 @@ def acquire_lock(
     with lock.read_lock() if mode == "read" else lock.write_lock():
         acquired_event.set()
         if release_event:
-            release_event.wait(timeout=10)
+            release_event.wait(timeout=_PROCESS_DEADLINE)
         else:
             time.sleep(0.5)  # hold briefly to simulate work
 
@@ -551,7 +553,7 @@ def chain_reader(
     next_reader_signal: EventType | None,
     writer_or_prev_signal: EventType,
 ) -> None:
-    start_signal.wait(timeout=10)
+    start_signal.wait(timeout=_PROCESS_DEADLINE)
 
     lock = ReadWriteLock(lock_file)
     with lock.read_lock():
@@ -566,7 +568,7 @@ def chain_reader(
 
         writer_or_prev_signal.set()
 
-        release_signal.wait(timeout=10)
+        release_signal.wait(timeout=_PROCESS_DEADLINE)
 
         with release_count.get_lock():
             release_count.value += 1
