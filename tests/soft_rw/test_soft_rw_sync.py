@@ -36,6 +36,9 @@ _OWNER_READ_WRITE: Final[int] = 0o600
 # that starts slowly under a loaded suite is not a locking failure. The short negative waits below are deliberate,
 # since those assert a contender stays blocked and have to stay brief.
 _PROCESS_DEADLINE: Final[int] = 30
+# Reaping a process that has already been signaled is not a startup wait, and it has to stay under the suite's own
+# per-test timeout so the guard still reports the hang it was put there for.
+_REAP_DEADLINE: Final[int] = 5
 
 
 @pytest.fixture(autouse=True)
@@ -1031,11 +1034,11 @@ def _cleanup(processes: list[Process]) -> Generator[None]:
         for proc in processes:
             if proc.is_alive():
                 proc.terminate()
-                proc.join(timeout=_PROCESS_DEADLINE)
+                proc.join(timeout=_REAP_DEADLINE)
             # A worker that outlives its test wedges the next one, and SIGTERM can be slow on a loaded runner.
             if proc.is_alive():  # pragma: no cover  # the terminate lands first whenever the runner is not saturated
                 proc.kill()
-                proc.join(timeout=_PROCESS_DEADLINE)
+                proc.join(timeout=_REAP_DEADLINE)
 
 
 def _sigkill_worker(  # pragma: forked child

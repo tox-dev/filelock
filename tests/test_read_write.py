@@ -19,6 +19,9 @@ from tests.read_write_helpers import assert_read_write_lock_state
 # slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
 # has to outlast the waits it makes, so those are multiples of this rather than bare seconds.
 _PROCESS_DEADLINE: Final[int] = 30
+# Reaping a process that has already been signaled is not a startup wait, and it has to stay under the suite's own
+# per-test timeout so the guard still reports the hang it was put there for.
+_REAP_DEADLINE: Final[int] = 5
 
 if sys.implementation.name == "pypy":
     set_start_method(
@@ -213,7 +216,7 @@ def test_lock_mode_transition_prohibited(lock_file: str, hold_mode: Literal["rea
 
     with cleanup_processes([worker]):
         worker.start()
-        worker.join(timeout=5)
+        worker.join(timeout=_PROCESS_DEADLINE)
         assert not worker.is_alive(), "Process did not exit cleanly"
 
     assert result.value == 0, f"Illegal {hold_mode} transition was permitted"
@@ -236,7 +239,7 @@ def test_timeout_behavior(lock_file: str) -> None:
         reader.start()
 
         assert not read_acquired.wait(timeout=1), "Read lock should not be acquired"
-        reader.join(timeout=5)
+        reader.join(timeout=_PROCESS_DEADLINE)
 
         elapsed = time.time() - start_time
         assert 0.4 <= elapsed <= 10.0, f"Timeout was not respected: {elapsed}s"
@@ -280,7 +283,7 @@ def test_recursive_lock_acquisition(lock_file: str, mode: Literal["read", "write
 
     with cleanup_processes([worker]):
         worker.start()
-        worker.join(timeout=5)
+        worker.join(timeout=_PROCESS_DEADLINE)
 
     assert success.value == 1, "Recursive lock acquisition failed"
 
@@ -304,11 +307,11 @@ def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read
     with cleanup_processes([crashing, successor]):
         time.sleep(0.5)  # let the lock settle before killing the holder
         crashing.terminate()
-        crashing.join(timeout=_PROCESS_DEADLINE)
+        crashing.join(timeout=_REAP_DEADLINE)
 
         successor.start()
 
-        assert write_acquired.wait(timeout=5), "Lock not acquired after process termination"
+        assert write_acquired.wait(timeout=_PROCESS_DEADLINE), "Lock not acquired after process termination"
 
         successor.join(timeout=_PROCESS_DEADLINE)
         assert not successor.is_alive(), "Successor did not exit cleanly"
@@ -540,7 +543,7 @@ def cleanup_processes(processes: list[Process]) -> Generator[None]:
             # failure that caused it, hiding the real error.
             if proc.pid is not None:
                 proc.terminate()
-                proc.join(timeout=1)
+                proc.join(timeout=_REAP_DEADLINE)
             proc.close()
 
 
