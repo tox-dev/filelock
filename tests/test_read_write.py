@@ -182,23 +182,23 @@ def test_write_non_starvation(lock_file: str) -> None:
 
         assert writer_ready.wait(timeout=_PROCESS_DEADLINE), "First reader did not acquire lock"
 
-        writer.start()
-
         # Count only the releases the writer actually waited through; a slow interpreter start is not starvation.
         # The contending event says the writer process booted, not that its write intent reached the database, and
         # only the intent bars new readers. The probe observes that boundary: a non-blocking read acquire times out
-        # exactly once the intent is registered, so the count starts there.
-        assert writer_contending.wait(timeout=_PROCESS_DEADLINE), "Writer process did not reach the lock"
+        # exactly once the intent is registered, so the count starts there. Probing before the writer exists pins
+        # the still-pending arc, which the loop alone cannot promise: on a fast host the first in-loop probe
+        # already times out.
         prober = ReadWriteLock(lock_file, is_singleton=False)
         probe_deadline = time.monotonic() + _PROCESS_DEADLINE
-        while True:
-            try:
-                prober.acquire_read(blocking=False)
-            except Timeout:
+        assert _write_intent_pending(prober, probe_deadline)
+
+        writer.start()
+
+        assert writer_contending.wait(timeout=_PROCESS_DEADLINE), "Writer process did not reach the lock"
+        # pragma-no-branch: the loop never exhausts in a passing run, since the helper's deadline fires first
+        for _ in range(_PROCESS_DEADLINE * 20):  # pragma: no branch
+            if not _write_intent_pending(prober, probe_deadline):  # pragma: no branch  # exits at the writer's speed
                 break
-            prober.release()
-            assert time.monotonic() < probe_deadline, "Writer never registered its write intent"
-            time.sleep(0.05)
         prober.close()
         with release_count.get_lock():
             releases_before_contending = release_count.value
@@ -562,6 +562,17 @@ def cleanup_processes(processes: list[Process]) -> Generator[None]:
                 proc.terminate()
                 proc.join(timeout=_REAP_DEADLINE)
             proc.close()
+
+
+def _write_intent_pending(prober: ReadWriteLock, deadline: float) -> bool:
+    try:
+        prober.acquire_read(blocking=False)
+    except Timeout:
+        return False
+    prober.release()
+    assert time.monotonic() < deadline, "Writer never registered its write intent"
+    time.sleep(0.05)
+    return True
 
 
 def chain_reader(
