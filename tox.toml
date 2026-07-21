@@ -182,3 +182,9 @@ commands_pre = [
     "filelock==3.20.0",
   ],
 ]
+
+# tox invents an env on the fly only for a py or pypy factor, so GraalPy has to be declared to be selectable at all. It
+# stays out of env_list because, like PyPy, it is a CI-only check that runs unmeasured and feeds no coverage data: the
+# 100% gate remains CPython's. Its job is to keep the capability probes the suite gates on honest on a second runtime.
+[env."graalpy3.11"]
+description = "run the tests with pytest under {env_name}, unmeasured"
