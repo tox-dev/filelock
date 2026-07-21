@@ -9,9 +9,9 @@ from functools import partial
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from capability_marks import NEEDS_PARENT_SYMLINK_COLLAPSE, NEEDS_SYMLINK
 
 from filelock import AsyncStrictSoftFileLock, StrictSoftFileLock, Timeout
+from tests.capability_marks import NEEDS_PARENT_SYMLINK_COLLAPSE, NEEDS_SYMLINK
 
 if TYPE_CHECKING:
     from pathlib import Path

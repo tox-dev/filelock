@@ -4,9 +4,9 @@ import asyncio
 from concurrent.futures import Future as ConcurrentFuture
 
 import pytest
-from capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from filelock._async import _AsyncTransitionGate
+from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 
 @pytest.mark.asyncio

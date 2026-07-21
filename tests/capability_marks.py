@@ -21,6 +21,10 @@ NEEDS_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["fork"], reason="installing fork handlers needs os.register_at_fork"
 )
 
+NEEDS_REGISTER_AT_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["register-at-fork"], reason="the fork transition gate is installed through os.register_at_fork"
+)
+
 NEEDS_FORK1: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["fork1"], reason="forking a single thread needs the Solaris os.fork1"
 )
@@ -97,6 +101,7 @@ __all__ = [
     "NEEDS_PARENT_SYMLINK_COLLAPSE",
     "NEEDS_POSIX_SIGNALS",
     "NEEDS_PROMPT_FINALIZATION",
+    "NEEDS_REGISTER_AT_FORK",
     "NEEDS_SYMLINK",
     "NEEDS_UNLINK_OPEN_FILE",
     "XFAIL_WITHOUT_COROUTINE_CANCELLATION",

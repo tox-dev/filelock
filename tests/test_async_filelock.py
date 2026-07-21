@@ -14,7 +14,6 @@ from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Literal
 
 import pytest
-from capability_marks import NEEDS_FCNTL, NEEDS_PARENT_SYMLINK_COLLAPSE
 
 from filelock import (
     AsyncFileLock,
@@ -24,6 +23,7 @@ from filelock import (
     ContextErrorPolicy,
     Timeout,
 )
+from tests.capability_marks import NEEDS_FCNTL, NEEDS_PARENT_SYMLINK_COLLAPSE
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover

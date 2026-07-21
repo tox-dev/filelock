@@ -8,10 +8,10 @@ from queue import Queue
 from typing import TYPE_CHECKING, TypeVar
 
 import pytest
-from async_filelock_cancellation_helpers import assert_file_lock_state, get_fcntl
-from capability_marks import NEEDS_FCNTL, XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from filelock import AsyncAcquireReturnProxy, AsyncFileLock, ContextErrorPolicy
+from tests.async_filelock_cancellation_helpers import assert_file_lock_state, get_fcntl
+from tests.capability_marks import NEEDS_FCNTL, XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup  # pragma: >=3.11 cover

@@ -7,10 +7,10 @@ import threading
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
-from capability_marks import NEEDS_FORK, NEEDS_FORK1
-from fork_helpers import exit_child, fork_process
 
 from filelock import BaseFileLock, Timeout, has_fcntl
+from tests.capability_marks import NEEDS_FORK, NEEDS_FORK1
+from tests.fork_helpers import exit_child, fork_process
 
 if TYPE_CHECKING:
     from pathlib import Path

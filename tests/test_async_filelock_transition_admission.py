@@ -6,14 +6,14 @@ import threading
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from async_filelock_cancellation_helpers import (
+
+from filelock import AsyncFileLock, Timeout
+from tests.async_filelock_cancellation_helpers import (
     assert_cancellation_message,
     assert_file_lock_state,
     start_file_lock_holder,
 )
-from capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
-
-from filelock import AsyncFileLock, Timeout
+from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
     from pathlib import Path

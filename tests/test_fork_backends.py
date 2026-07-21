@@ -8,10 +8,10 @@ from errno import EBADF
 from typing import TYPE_CHECKING, NoReturn, cast
 
 import pytest
-from capability_marks import NEEDS_FORK, NEEDS_GENERATOR_EXCEPTION_CONTEXT
-from fork_helpers import exit_child, fork_process
 
 from filelock import BaseAsyncFileLock, BaseFileLock
+from tests.capability_marks import NEEDS_FORK, NEEDS_GENERATOR_EXCEPTION_CONTEXT
+from tests.fork_helpers import exit_child, fork_process
 
 if sys.version_info >= (3, 11):
     from builtins import BaseExceptionGroup  # pragma: >=3.11 cover

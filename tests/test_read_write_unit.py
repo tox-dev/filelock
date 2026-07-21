@@ -5,7 +5,8 @@ import threading
 from typing import TYPE_CHECKING, Literal
 
 import pytest
-from capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT
+
+from tests.capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT
 
 pytest.importorskip("sqlite3")
 

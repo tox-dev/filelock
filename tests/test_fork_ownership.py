@@ -12,8 +12,6 @@ from stat import S_ISDIR
 from typing import TYPE_CHECKING, Final, Literal, NoReturn
 
 import pytest
-from capability_marks import NEEDS_FORK
-from fork_helpers import exit_child, fork_process
 
 from filelock import (
     AcquireReturnProxy,
@@ -26,6 +24,8 @@ from filelock import (
     SoftReadWriteLock,
     Timeout,
 )
+from tests.capability_marks import NEEDS_FORK, NEEDS_REGISTER_AT_FORK
+from tests.fork_helpers import exit_child, fork_process
 
 if sys.version_info >= (3, 11):
     from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
@@ -205,7 +205,7 @@ def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFi
     lock.release()
 
 
-@NEEDS_FORK
+@NEEDS_REGISTER_AT_FORK
 def test_unrelated_acquisitions_reach_filesystem_boundary_concurrently(  # pragma: needs fork
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
@@ -325,7 +325,7 @@ def test_fork_from_on_acquired_invalidates_child_acquire(tmp_path: Path) -> None
     lock.release()
 
 
-@NEEDS_FORK
+@NEEDS_REGISTER_AT_FORK
 def test_reader_directory_registration_failure_closes_descriptor(  # pragma: needs fork
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
@@ -354,7 +354,7 @@ def test_reader_directory_registration_failure_closes_descriptor(  # pragma: nee
     lock.close()
 
 
-@NEEDS_FORK
+@NEEDS_REGISTER_AT_FORK
 def test_reader_directory_registration_and_close_errors_are_grouped(  # pragma: needs fork
     tmp_path: Path, mocker: MockerFixture
 ) -> None:

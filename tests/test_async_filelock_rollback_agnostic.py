@@ -6,9 +6,9 @@ from errno import EIO
 from typing import TYPE_CHECKING
 
 import pytest
-from capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from filelock import AsyncFileLock, BaseAsyncFileLock
+from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover

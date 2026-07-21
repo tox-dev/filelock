@@ -15,13 +15,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
-from capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS
 from coverage_pragmas import CAPABILITIES
 
 from filelock import Timeout
 from filelock import _util as util_mod
 from filelock._soft_rw import SoftReadWriteLock
 from filelock._soft_rw import _sync as sync_mod
+from tests.capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator

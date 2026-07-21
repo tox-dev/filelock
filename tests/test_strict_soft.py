@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from capability_marks import NEEDS_FILE_MODE
+
+from tests.capability_marks import NEEDS_FILE_MODE
 
 if sys.version_info >= (3, 11):
     from builtins import ExceptionGroup  # pragma: >=3.11 cover

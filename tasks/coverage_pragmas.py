@@ -236,6 +236,8 @@ _OWNER_READ_WRITE: Final[int] = 0o600
 #: Capability -> whether this runtime provides it. Tests gate their skipif on this same mapping.
 CAPABILITIES: Final[dict[str, bool]] = {
     "fork": hasattr(os, "fork") and hasattr(os, "register_at_fork"),
+    # Narrower than "fork": GraalPy registers fork handlers but cannot fork.
+    "register-at-fork": hasattr(os, "register_at_fork"),
     "dir-fd": os.open in os.supports_dir_fd,
     # Narrower than "dir-fd": GraalPy takes os.open relative to a directory descriptor but not os.link.
     "link-dir-fd": hasattr(os, "link") and os.link in os.supports_dir_fd,

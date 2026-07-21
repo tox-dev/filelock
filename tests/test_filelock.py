@@ -20,13 +20,6 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 import pytest
-from capability_marks import (
-    NEEDS_FCNTL,
-    NEEDS_FILE_MODE,
-    NEEDS_PARENT_SYMLINK_COLLAPSE,
-    NEEDS_PROMPT_FINALIZATION,
-    NEEDS_SYMLINK,
-)
 from coverage_pragmas import CAPABILITIES
 
 from filelock import (
@@ -43,6 +36,13 @@ from filelock import (
     unlock_descriptor,
 )
 from filelock._api import _append_exception_context, _raise_grouped_errors, _registry
+from tests.capability_marks import (
+    NEEDS_FCNTL,
+    NEEDS_FILE_MODE,
+    NEEDS_PARENT_SYMLINK_COLLAPSE,
+    NEEDS_PROMPT_FINALIZATION,
+    NEEDS_SYMLINK,
+)
 
 if sys.version_info >= (3, 11):  # pragma: >=3.11 cover
     from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover

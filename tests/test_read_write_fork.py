@@ -9,10 +9,15 @@ import textwrap
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
-from capability_marks import NEEDS_AUDIT_EVENTS, NEEDS_COLLECTED_FINALIZATION, NEEDS_FORK, NEEDS_FORK1
 from coverage_pragmas import CAPABILITIES
 
 from filelock import ReadWriteLock
+from tests.capability_marks import (
+    NEEDS_AUDIT_EVENTS,
+    NEEDS_COLLECTED_FINALIZATION,
+    NEEDS_FORK,
+    NEEDS_FORK1,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path

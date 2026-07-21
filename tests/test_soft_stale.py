@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from coverage_pragmas import CAPABILITIES
 
 from filelock import CloseErrorPolicy, SoftFileLock
 from filelock._identity import process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE
+from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import ExceptionGroup  # pragma: >=3.11 cover

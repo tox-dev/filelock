@@ -175,6 +175,7 @@ max_supported_python = "3.14"
 src.exclude = []
 # Mirrors pytest's pythonpath so the tests' `coverage_pragmas` import resolves here too.
 environment.extra-paths = [
+  ".",
   "tasks",
 ]
 environment.python-version = "3.14"
@@ -183,9 +184,11 @@ environment.python-version = "3.14"
 ini_options.testpaths = [
   "tests",
 ]
-# tasks holds coverage_pragmas, whose CAPABILITIES probes drive both the coverage exclusions and the skipif gates, so a
-# test can never be skipped while coverage still demands its lines.
+# The project root lets the tests import each other as tests.*; tasks holds coverage_pragmas, whose CAPABILITIES probes
+# drive both the coverage exclusions and the skipif gates, so a test can never be skipped while coverage still demands
+# its lines. coverage imports that plugin by name in the subprocesses it patches, so it stays a top-level module.
 ini_options.pythonpath = [
+  ".",
   "tasks",
 ]
 ini_options.markers = [

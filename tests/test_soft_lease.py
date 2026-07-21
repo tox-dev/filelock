@@ -11,7 +11,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
-from capability_marks import NEEDS_UNLINK_OPEN_FILE
 
 from filelock import (
     FileLock,
@@ -21,6 +20,7 @@ from filelock import (
     StrictSoftFileLock,
     Timeout,
 )
+from tests.capability_marks import NEEDS_UNLINK_OPEN_FILE
 
 if TYPE_CHECKING:
     from collections.abc import Callable

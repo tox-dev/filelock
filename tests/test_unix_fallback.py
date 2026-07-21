@@ -9,10 +9,10 @@ from textwrap import dedent
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from capability_marks import NEEDS_FCNTL
 
 from filelock import SoftFileLock, UnixFileLock
 from filelock._identity import process_start_token
+from tests.capability_marks import NEEDS_FCNTL
 
 if TYPE_CHECKING:
     from pathlib import Path

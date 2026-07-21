@@ -5,7 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Literal
 
 import pytest
-from capability_marks import NEEDS_COLLECTED_FINALIZATION
+
+from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION
 
 pytest.importorskip("sqlite3")
 

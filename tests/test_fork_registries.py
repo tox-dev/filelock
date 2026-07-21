@@ -8,10 +8,9 @@ import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NoReturn
 
-from capability_marks import NEEDS_CLASS_COLLECTION, NEEDS_FORK
-from fork_helpers import exit_child, fork_process
-
 from filelock import BaseFileLock
+from tests.capability_marks import NEEDS_CLASS_COLLECTION, NEEDS_FORK
+from tests.fork_helpers import exit_child, fork_process
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
 from weakref import ref
 
 import pytest
-from capability_marks import NEEDS_CLASS_COLLECTION
 
 from filelock import BaseAsyncFileLock, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy
+from tests.capability_marks import NEEDS_CLASS_COLLECTION
 
 if TYPE_CHECKING:
     from collections.abc import Callable
