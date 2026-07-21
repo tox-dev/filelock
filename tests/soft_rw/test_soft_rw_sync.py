@@ -21,7 +21,7 @@ from filelock import Timeout
 from filelock import _util as util_mod
 from filelock._soft_rw import SoftReadWriteLock
 from filelock._soft_rw import _sync as sync_mod
-from tests.capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS
+from tests.capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS, SKIP_ON_UNRELIABLE_PROCESS_SYNC
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -272,6 +272,7 @@ def test_acquire_on_closed_raises(lock_file: str) -> None:
         lock.acquire_write(timeout=1)
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_multiple_readers_can_hold_simultaneously(lock_file: str) -> None:
     r1, r2, release = Event(), Event(), Event()
@@ -287,6 +288,7 @@ def test_multiple_readers_can_hold_simultaneously(lock_file: str) -> None:
         p2.join(timeout=_PROCESS_DEADLINE)
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 4)
 def test_write_lock_excludes_writers(lock_file: str) -> None:
     held, release = Event(), Event()
@@ -303,6 +305,7 @@ def test_write_lock_excludes_writers(lock_file: str) -> None:
         contender.join(timeout=_PROCESS_DEADLINE)
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 4)
 def test_write_lock_excludes_readers(lock_file: str) -> None:
     held, release = Event(), Event()
@@ -319,6 +322,7 @@ def test_write_lock_excludes_readers(lock_file: str) -> None:
         reader.join(timeout=_PROCESS_DEADLINE)
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_writer_drains_existing_readers(lock_file: str) -> None:
     r_held, r_release = Event(), Event()
@@ -336,6 +340,7 @@ def test_writer_drains_existing_readers(lock_file: str) -> None:
         writer.join(timeout=_PROCESS_DEADLINE)
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 7)
 def test_writer_preference_blocks_new_readers(lock_file: str) -> None:
     r1_held, r1_release = Event(), Event()
@@ -437,6 +442,7 @@ def test_two_readers_in_same_process_share_slot(lock_file: str) -> None:
         lock.close()
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_timeout_raises(lock_file: str) -> None:
     held, release = Event(), Event()
@@ -454,6 +460,7 @@ def test_timeout_raises(lock_file: str) -> None:
         holder.join(timeout=_PROCESS_DEADLINE)
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_non_blocking_writer_contended_raises(lock_file: str) -> None:
     held, release = Event(), Event()
@@ -492,6 +499,7 @@ def test_writer_phase2_timeout_releases_marker(lock_file: str) -> None:
         reader.close()
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @NEEDS_POSIX_SIGNALS
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs posix-signals
@@ -514,6 +522,7 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs
         assert not Path(f"{lock_file}.write").exists()
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @NEEDS_POSIX_SIGNALS
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_dead_reader_evicted_by_writer(lock_file: str) -> None:  # pragma: needs posix-signals
@@ -680,6 +689,7 @@ def test_heartbeat_stops_when_marker_evicted(lock_file: str, monkeypatch: pytest
         lock.close()
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) -> None:
     # Generous timing here so the test stays stable on slow Windows runners where the holder's
@@ -906,6 +916,7 @@ def test_reader_file_is_created_with_0600(lock_file: str) -> None:  # pragma: ne
         lock.close()
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @NEEDS_FORK
 @pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:  # pragma: needs fork
@@ -918,6 +929,7 @@ def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:  # pr
     assert result.is_set()
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @NEEDS_FORK
 @pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:  # pragma: needs fork
@@ -930,6 +942,7 @@ def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:  # p
     assert result.is_set()
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @NEEDS_FORK
 @pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:  # pragma: needs fork
@@ -950,6 +963,7 @@ def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None: 
 # Holding the write lock keeps the heartbeat thread alive, so this fork is necessarily from a multi-threaded
 # process and Python 3.15 warns that it may deadlock. That is the scenario under test, and it is already safe:
 # register_at_fork resets inherited state in the child (any child use raises "invalidated by fork()"). Expected.
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.filterwarnings("ignore:.*multi-threaded, use of fork.*:DeprecationWarning")
 def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:  # pragma: needs fork
     path = str(tmp_path / "foo.lock")
@@ -1163,6 +1177,7 @@ def _fork_event() -> EventType:  # pragma: needs fork
     return mp.get_context("fork").Event()
 
 
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
 def test_cleanup_terminates_a_still_running_process() -> None:
     proc = Process(target=time.sleep, args=(30,))
     proc.start()

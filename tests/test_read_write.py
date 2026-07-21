@@ -13,6 +13,7 @@ pytest.importorskip("sqlite3")
 import sqlite3
 
 from filelock import ReadWriteLock, Timeout
+from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.read_write_helpers import assert_read_write_lock_state
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
@@ -22,6 +23,8 @@ _PROCESS_DEADLINE: Final[int] = 30
 # Reaping a process that has already been signaled is not a startup wait, and it has to stay under the suite's own
 # per-test timeout so the guard still reports the hang it was put there for.
 _REAP_DEADLINE: Final[int] = 5
+
+pytestmark = SKIP_ON_UNRELIABLE_PROCESS_SYNC
 
 if sys.implementation.name == "pypy":
     set_start_method(

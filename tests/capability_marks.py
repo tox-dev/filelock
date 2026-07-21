@@ -17,6 +17,16 @@ from coverage_pragmas import CAPABILITIES
 if TYPE_CHECKING:
     from typing import Final
 
+#: The one gate here that asks who is running rather than what it can do. GraalPy's multiprocessing semaphores raise
+#: ``OSError: [Errno 0] Success`` from ``_wait_semaphore.acquire(False)`` when ``Event.set()`` notifies a contended
+#: condition, which fails whichever test happens to be coordinating processes at the time. The defect is in the
+#: interpreter's own ``multiprocessing/synchronize.py``, it only appears on Linux under load, and an uncontended probe
+#: cannot see it, so there is nothing to measure and no fix to make from here.
+SKIP_ON_UNRELIABLE_PROCESS_SYNC: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.implementation.name == "graalpy",
+    reason="this runtime raises OSError from multiprocessing Event.set() under contention",
+)
+
 NEEDS_FORK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["fork"], reason="installing fork handlers needs os.register_at_fork"
 )
@@ -104,5 +114,6 @@ __all__ = [
     "NEEDS_REGISTER_AT_FORK",
     "NEEDS_SYMLINK",
     "NEEDS_UNLINK_OPEN_FILE",
+    "SKIP_ON_UNRELIABLE_PROCESS_SYNC",
     "XFAIL_WITHOUT_COROUTINE_CANCELLATION",
 ]
