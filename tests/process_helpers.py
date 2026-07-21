@@ -5,14 +5,14 @@ from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from collections.abc import Generator
-    from multiprocessing import Process
+    from multiprocessing.process import BaseProcess
 
 #: Stays under the suite's per-test timeout so a wedged worker still surfaces as the hang it is.
 _REAP_DEADLINE: Final[int] = 5
 
 
 @contextmanager
-def cleanup_processes(processes: list[Process]) -> Generator[None]:
+def cleanup_processes(processes: list[BaseProcess]) -> Generator[None]:
     """Reap every process on the way out, whatever the block did."""
     try:
         yield

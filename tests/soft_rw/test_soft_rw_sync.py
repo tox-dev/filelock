@@ -37,9 +37,6 @@ _OWNER_READ_WRITE: Final[int] = 0o600
 # that starts slowly under a loaded suite is not a locking failure. The short negative waits below are deliberate,
 # since those assert a contender stays blocked and have to stay brief.
 _PROCESS_DEADLINE: Final[int] = 30
-# Reaping a process that has already been signaled is not a startup wait, and it has to stay under the suite's own
-# per-test timeout so the guard still reports the hang it was put there for.
-_REAP_DEADLINE: Final[int] = 5
 
 
 @pytest.fixture(autouse=True)
@@ -924,10 +921,11 @@ def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:  # pr
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(target=_reuse_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
-    proc.start()
-    proc.join(timeout=_PROCESS_DEADLINE)
-    assert not failure.is_set()
-    assert result.is_set()
+    with cleanup_processes([proc]):
+        proc.start()
+        proc.join(timeout=_PROCESS_DEADLINE)
+        assert not failure.is_set()
+        assert result.is_set()
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
@@ -937,10 +935,11 @@ def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:  # p
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
     proc = ctx.Process(target=_release_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
-    proc.start()
-    proc.join(timeout=_PROCESS_DEADLINE)
-    assert not failure.is_set()
-    assert result.is_set()
+    with cleanup_processes([proc]):
+        proc.start()
+        proc.join(timeout=_PROCESS_DEADLINE)
+        assert not failure.is_set()
+        assert result.is_set()
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
@@ -953,10 +952,11 @@ def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None: 
         target=_reacquire_fresh_lock_in_child,
         args=(str(tmp_path / "parent.lock"), str(tmp_path / "child.lock"), result, failure),
     )
-    proc.start()
-    proc.join(timeout=_PROCESS_DEADLINE)
-    assert not failure.is_set()
-    assert result.is_set()
+    with cleanup_processes([proc]):
+        proc.start()
+        proc.join(timeout=_PROCESS_DEADLINE)
+        assert not failure.is_set()
+        assert result.is_set()
 
 
 @NEEDS_FORK
