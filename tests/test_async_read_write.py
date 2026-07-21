@@ -55,6 +55,7 @@ async def test_lock_context_manager(lock_file: str, mode: Literal["read", "write
         assert_mode_held(lock_file, mode)
     with pytest.raises(RuntimeError, match="not held"):
         await lock.release()
+    await lock.close()
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -69,6 +70,7 @@ async def test_reentrant(lock_file: str, mode: Literal["read", "write"]) -> None
     await lock.release()
     with pytest.raises(RuntimeError, match="not held"):
         await lock.release()
+    await lock.close()
 
 
 @pytest.mark.parametrize(
@@ -90,6 +92,7 @@ async def test_mode_change_prohibited(
     with pytest.raises(RuntimeError, match=match):
         await (lock.acquire_read() if requested == "read" else lock.acquire_write())
     await lock.release()
+    await lock.close()
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -101,6 +104,7 @@ async def test_non_blocking_conflict(lock_file: str, mode: Literal["read", "writ
         lock = AsyncReadWriteLock(lock_file, is_singleton=False)
         with pytest.raises(Timeout):
             await (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False)
+        await lock.close()
     finally:
         holder.release()
 
@@ -113,6 +117,7 @@ async def test_timeout_expires(lock_file: str) -> None:
         lock = AsyncReadWriteLock(lock_file, is_singleton=False)
         with pytest.raises(Timeout):
             await lock.acquire_read(timeout=0.2)
+        await lock.close()
     finally:
         holder.release()
 
@@ -122,6 +127,7 @@ async def test_release_unheld_raises(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     with pytest.raises(RuntimeError, match="not held"):
         await lock.release()
+    await lock.close()
 
 
 @pytest.mark.asyncio
@@ -132,12 +138,14 @@ async def test_release_force(lock_file: str) -> None:
     await lock.release(force=True)
     with pytest.raises(RuntimeError, match="not held"):
         await lock.release()
+    await lock.close()
 
 
 @pytest.mark.asyncio
 async def test_release_force_unheld_is_noop(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     await lock.release(force=True)
+    await lock.close()
 
 
 @pytest.mark.parametrize(
@@ -230,6 +238,7 @@ async def test_acquire_return_proxy_context_manager(lock_file: str) -> None:
         assert_mode_held(lock_file, "read")
     with pytest.raises(RuntimeError, match="not held"):
         await lock.release()
+    await lock.close()
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -244,6 +253,7 @@ async def test_nested_context_managers(lock_file: str, mode: Literal["read", "wr
         assert_mode_held(lock_file, mode)
     with pytest.raises(RuntimeError, match="not held"):
         await lock.release()
+    await lock.close()
 
 
 @pytest.mark.asyncio
@@ -253,6 +263,7 @@ async def test_context_manager_uses_instance_defaults(lock_file: str) -> None:
         assert_mode_held(lock_file, "read")
     async with lock.write_lock():
         assert_mode_held(lock_file, "write")
+    await lock.close()
 
 
 @pytest.mark.asyncio
@@ -262,6 +273,7 @@ async def test_context_manager_overrides_defaults(lock_file: str) -> None:
         assert_mode_held(lock_file, "read")
     async with lock.write_lock(timeout=5.0, blocking=True):
         assert_mode_held(lock_file, "write")
+    await lock.close()
 
 
 @pytest.mark.asyncio
@@ -273,6 +285,7 @@ async def test_sequential_mode_switch(lock_file: str) -> None:
         pass
     async with lock.read_lock():
         pass
+    await lock.close()
 
 
 def assert_mode_held(lock_file: str, mode: Literal["read", "write"]) -> None:

@@ -240,7 +240,10 @@ class AsyncReadWriteLock:
             raise
         _future_result(close_future)
         self._closed = True
-        self._shutdown_owned_executor()
+        # Wait for the worker to exit rather than letting it drain in the background: a caller that forks right
+        # after closing deserves a single-threaded process, and os.fork warns about any surviving thread.
+        if self._owns_executor:
+            await asyncio.to_thread(functools.partial(self._executor.shutdown, wait=True))
 
     async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
         acquire_future = self._submit(acquire)
