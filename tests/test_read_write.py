@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 import time
-from contextlib import contextmanager
 from multiprocessing import Event, Process, Value, set_start_method
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -14,6 +13,7 @@ import sqlite3
 
 from filelock import ReadWriteLock, Timeout
 from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
+from tests.process_helpers import cleanup_processes
 from tests.read_write_helpers import assert_read_write_lock_state
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
@@ -32,7 +32,6 @@ if sys.implementation.name == "pypy":
     )  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
     from multiprocessing.sharedctypes import Synchronized
     from multiprocessing.synchronize import Event as EventType
     from pathlib import Path
@@ -548,20 +547,6 @@ def test_cleanup_reports_the_failure_that_escaped_before_a_start() -> None:
 
     with pytest.raises(AssertionError, match="the real failure"):
         fail_before_start()
-
-
-@contextmanager
-def cleanup_processes(processes: list[Process]) -> Generator[None]:
-    try:
-        yield
-    finally:
-        for proc in processes:
-            # An assertion can escape before every process starts, and terminating an unstarted one raises over the
-            # failure that caused it, hiding the real error.
-            if proc.pid is not None:
-                proc.terminate()
-                proc.join(timeout=_REAP_DEADLINE)
-            proc.close()
 
 
 def _write_intent_pending(prober: ReadWriteLock, deadline: float) -> bool:

@@ -75,12 +75,14 @@ def test_executor_cancels_queued_acquire_without_compensation(lock_file: str, *,
     canceled = context.Value("b", False)
     process = context.Process(target=_cancel_queued_read_write_acquire, args=(lock_file, cancel_caller, canceled))
     process.start()
-    process.join(timeout=10)
-    if process.is_alive():  # pragma: no cover - cleanup for a hung child after the assertion fails
-        process.terminate()
-        process.join(timeout=5)
-
-    assert (process.exitcode, canceled.value) == (0, True)
+    try:
+        process.join(timeout=10)
+        assert (process.exitcode, canceled.value) == (0, True)
+    finally:
+        if process.is_alive():  # pragma: no cover - cleanup for a hung child after the assertion fails
+            process.terminate()
+            process.join(timeout=5)
+        process.close()
 
 
 @pytest.mark.asyncio

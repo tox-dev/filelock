@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager, suppress
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -644,8 +644,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 self._readers_dir_fd_token = token
 
     def _any_readers(self) -> bool:
-        for _ in self._iter_reader_entries():
-            return True
+        with closing(self._iter_reader_entries()) as entries:
+            for _ in entries:
+                return True
         return False
 
     def _iter_reader_entries(self) -> Generator[tuple[str, bool]]:
@@ -654,6 +655,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         ``dirfd_relative`` is ``True`` when *name* should be passed to ``dir_fd=``-aware syscalls; ``False``
         when *name* is a full path because dirfd-relative I/O is unavailable on this platform.
+
+        A consumer that stops early must close this generator: while suspended it holds the ``scandir`` handle open,
+        and leaving that to the collector surfaces as an unraisable exception inside whatever runs next.
         """
         if self._readers_dir_fd is not None:  # pragma: needs dir-fd
             with os.scandir(self._readers_dir_fd) as it:
@@ -670,8 +674,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     def _break_stale_readers(self, now: float) -> None:
         names: list[tuple[str, int | None]] = []
         try:
-            for name, dirfd_relative in self._iter_reader_entries():
-                names.append((name, self._readers_dir_fd if dirfd_relative else None))
+            with closing(self._iter_reader_entries()) as entries:
+                for name, dirfd_relative in entries:
+                    names.append((name, self._readers_dir_fd if dirfd_relative else None))
         except OSError:  # pragma: no cover - transient NFS scandir hiccup
             return
         for name, fd in names:

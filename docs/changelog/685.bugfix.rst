@@ -1,0 +1,2 @@
+``SoftReadWriteLock`` closes the directory handle it opens to scan for readers as soon as a scan stops early, rather
+than holding it until the generator is collected.

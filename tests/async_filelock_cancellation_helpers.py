@@ -37,11 +37,12 @@ def assert_file_lock_state(lock_file: str, *, available: bool) -> None:
     try:
         probe.join(timeout=5)
         assert not probe.is_alive(), "lock probe did not exit"
+        assert (probe.exitcode, acquired.value) == (0, available)
     finally:
         if probe.is_alive():  # pragma: no cover - cleanup for a hung child after the assertion fails
             probe.terminate()
             probe.join(timeout=5)
-    assert (probe.exitcode, acquired.value) == (0, available)
+        probe.close()
 
 
 def start_file_lock_holder(lock_file: str) -> tuple[threading.Thread, threading.Event, threading.Event]:

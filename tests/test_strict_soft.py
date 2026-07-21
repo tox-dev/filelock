@@ -18,7 +18,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: <3.11 cover
     from exceptiongroup import ExceptionGroup
 
-from coverage_pragmas import CAPABILITIES
+from capabilities import CAPABILITIES
 
 from filelock import (
     AsyncStrictSoftFileLock,

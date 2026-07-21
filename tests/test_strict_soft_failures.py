@@ -17,7 +17,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: <3.11 cover
     from exceptiongroup import BaseExceptionGroup
 
-from coverage_pragmas import CAPABILITIES
+from capabilities import CAPABILITIES
 
 import filelock._strict
 from filelock import SoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock, Timeout

@@ -12,7 +12,7 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
-from coverage_pragmas import CAPABILITIES
+from capabilities import CAPABILITIES
 
 if TYPE_CHECKING:
     from typing import Final
