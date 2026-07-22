@@ -14,17 +14,22 @@ from ._api import (
     _append_exception_context,
     _ensure_current_process,
     _fork_transition,
-    _raise_chained_errors,
     _register_fork_object,
 )
-from ._async import _BackendOutcome, _capture_call, _drain_future, _future_result, _wait_until_done
+from ._async import (
+    _BackendOutcome,
+    _capture_call,
+    _drain_future,
+    _future_result,
+    _raise_cancelled_error,
+    _wait_until_done,
+)
 from ._read_write import ReadWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
     from concurrent import futures
     from types import TracebackType
-    from typing import NoReturn
 
     from ._api import AcquireReturnProxy
 
@@ -234,7 +239,7 @@ class AsyncReadWriteLock:
             try:
                 await _drain_future(close_future)
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                self._raise_cancelled_error(cancellation, error)
+                _raise_cancelled_error(cancellation, error)
             self._closed = True
             self._shutdown_owned_executor()
             raise
@@ -253,13 +258,13 @@ class AsyncReadWriteLock:
             try:
                 await _drain_future(acquire_future)
             except asyncio.CancelledError as acquire_error:
-                self._raise_cancelled_error(cancellation, acquire_error)
+                _raise_cancelled_error(cancellation, acquire_error)
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                self._raise_cancelled_error(cancellation, error)
+                _raise_cancelled_error(cancellation, error)
             try:
                 await _drain_future(self._submit(self._lock.release))
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                self._raise_cancelled_error(cancellation, error)
+                _raise_cancelled_error(cancellation, error)
             raise
         _future_result(acquire_future)
 
@@ -271,7 +276,7 @@ class AsyncReadWriteLock:
             try:
                 await _drain_future(future)
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                self._raise_cancelled_error(cancellation, error)
+                _raise_cancelled_error(cancellation, error)
             raise
         return _future_result(future)
 
@@ -283,15 +288,6 @@ class AsyncReadWriteLock:
             _capture_call,
             functools.partial(func, *args, **kwargs),
         )
-
-    @staticmethod
-    def _raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseException) -> NoReturn:
-        if (context := error.__context__) is not None and context is not cancellation:
-            if (cancellation_context := cancellation.__context__) is not None:
-                _append_exception_context(context, cancellation_context)
-            cancellation.__context__ = context
-        error.__context__ = cancellation
-        _raise_chained_errors(error)
 
     def _shutdown_owned_executor(self) -> None:
         if self._owns_executor:

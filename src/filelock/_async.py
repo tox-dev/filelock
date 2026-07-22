@@ -8,7 +8,9 @@ import time
 from concurrent.futures import Future as ConcurrentFuture
 from dataclasses import dataclass
 from threading import Lock
-from typing import TYPE_CHECKING, Final, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Generic, NoReturn, TypeVar, cast
+
+from ._api import _append_exception_context, _raise_chained_errors
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -139,6 +141,18 @@ def _capture_call(func: Callable[[], _T]) -> _BackendOutcome[_T]:
         return _BackendOutcome(error=error)
 
 
+def _raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseException) -> NoReturn:
+    # Report a reconciliation failure that happened while unwinding a cancelled operation, keeping both chains: the
+    # error's own context is spliced onto the cancellation so neither the cause of the failure nor the cancellation
+    # that triggered the unwind is lost. Shared by every async wrapper so they all report a cancellation the same way.
+    if (context := error.__context__) is not None and context is not cancellation:
+        if (cancellation_context := cancellation.__context__) is not None:
+            _append_exception_context(context, cancellation_context)
+        cancellation.__context__ = context
+    error.__context__ = cancellation
+    _raise_chained_errors(error)
+
+
 async def _capture_awaitable(awaitable: Awaitable[_T]) -> _BackendOutcome[_T]:
     try:
         return _BackendOutcome(value=await awaitable)
@@ -154,5 +168,6 @@ __all__ = [
     "_capture_call",
     "_drain_future",
     "_future_result",
+    "_raise_cancelled_error",
     "_wait_until_done",
 ]
