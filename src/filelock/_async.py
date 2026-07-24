@@ -142,9 +142,9 @@ def _capture_call(func: Callable[[], _T]) -> _BackendOutcome[_T]:
 
 
 def _raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseException) -> NoReturn:
-    # Report a reconciliation failure that happened while unwinding a cancelled operation, keeping both chains: the
-    # error's own context is spliced onto the cancellation so neither the cause of the failure nor the cancellation
-    # that triggered the unwind is lost. Shared by every async wrapper so they all report a cancellation the same way.
+    # A reconciliation step failed while unwinding a cancellation, so keep both exception chains. Splice the error's
+    # existing context onto the cancellation, then make the cancellation the error's context, so both the failure and
+    # the cancellation that triggered it survive. Shared by the async wrappers so cancellations report the same way.
     if (context := error.__context__) is not None and context is not cancellation:
         if (cancellation_context := cancellation.__context__) is not None:
             _append_exception_context(context, cancellation_context)

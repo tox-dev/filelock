@@ -208,10 +208,10 @@ class AsyncSoftReadWriteLock:
             raise RuntimeError(msg)
 
     async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
-        # run_in_executor cannot recall work the pool already started, so cancelling the caller does not stop the sync
-        # acquire: it goes on to create its marker, set the hold and start the heartbeat, and that heartbeat then keeps
-        # the marker fresh forever, so no peer on any host can even evict it as stale. Wait the submitted call out and
-        # hand the claim straight back, the way AsyncReadWriteLock already does.
+        # run_in_executor cannot recall work the pool already started, so canceling the caller does not stop the sync
+        # acquire: it still creates its marker, sets the hold, and starts the heartbeat, which keeps the marker fresh
+        # forever so no peer on any host can evict it as stale. Wait the submitted call out and hand the claim back,
+        # the way AsyncReadWriteLock does.
         acquire_future = self._submit(acquire)
         try:
             await _wait_until_done(acquire_future)
@@ -228,8 +228,8 @@ class AsyncSoftReadWriteLock:
         _future_result(acquire_future)
 
     async def _run(self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs) -> _R:
-        # A cancelled release or close is already running on the pool thread; drain it so its outcome is observed
-        # rather than left to finish unwatched, then let the cancellation through.
+        # A canceled release or close is already running on the pool thread; drain it so its outcome is observed
+        # instead of finishing unwatched, then let the cancellation through.
         future = self._submit(func, *args, **kwargs)
         try:
             await _wait_until_done(future)

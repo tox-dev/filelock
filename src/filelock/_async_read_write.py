@@ -257,8 +257,6 @@ class AsyncReadWriteLock:
         except asyncio.CancelledError as cancellation:
             try:
                 await _drain_future(acquire_future)
-            except asyncio.CancelledError as acquire_error:
-                _raise_cancelled_error(cancellation, acquire_error)
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             try:

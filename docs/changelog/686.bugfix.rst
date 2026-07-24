@@ -1,2 +1,2 @@
-Cancelling an ``AsyncSoftReadWriteLock`` acquire now hands the claim back instead of leaving the executor's acquire to
-publish a marker nobody releases, whose heartbeat kept it fresh and every contender wedged.
+Canceling an ``AsyncSoftReadWriteLock`` acquire now releases the claim instead of leaking a marker whose heartbeat
+wedges every contender.
