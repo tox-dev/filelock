@@ -8,12 +8,23 @@ import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
+from filelock._async import (
+    _BackendOutcome,
+    _capture_call,
+    _drain_future,
+    _future_result,
+    _raise_cancelled_error,
+    _wait_until_done,
+)
+
 from ._sync import SoftReadWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
     from concurrent import futures
     from types import TracebackType
+
+    from filelock._api import AcquireReturnProxy
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -148,7 +159,7 @@ class AsyncSoftReadWriteLock:
 
         """
         self._raise_if_inherited()
-        await self._run(self._lock.acquire_read, timeout, blocking=blocking)
+        await self._run_acquire(functools.partial(self._lock.acquire_read, timeout, blocking=blocking))
         return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
 
     async def acquire_write(
@@ -171,7 +182,7 @@ class AsyncSoftReadWriteLock:
 
         """
         self._raise_if_inherited()
-        await self._run(self._lock.acquire_write, timeout, blocking=blocking)
+        await self._run_acquire(functools.partial(self._lock.acquire_write, timeout, blocking=blocking))
         return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
 
     async def release(self, *, force: bool = False) -> None:
@@ -196,9 +207,45 @@ class AsyncSoftReadWriteLock:
             msg = f"AsyncSoftReadWriteLock on {self.lock_file} was inherited across fork; construct a new instance"
             raise RuntimeError(msg)
 
+    async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
+        # run_in_executor cannot recall work the pool already started, so canceling the caller does not stop the sync
+        # acquire: it still creates its marker, sets the hold, and starts the heartbeat, which keeps the marker fresh
+        # forever so no peer on any host can evict it as stale. Wait the submitted call out and hand the claim back,
+        # the way AsyncReadWriteLock does.
+        acquire_future = self._submit(acquire)
+        try:
+            await _wait_until_done(acquire_future)
+        except asyncio.CancelledError as cancellation:
+            try:
+                await _drain_future(acquire_future)
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
+                _raise_cancelled_error(cancellation, error)
+            try:
+                await _drain_future(self._submit(self._lock.release))
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
+                _raise_cancelled_error(cancellation, error)
+            raise
+        _future_result(acquire_future)
+
     async def _run(self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        # A canceled release or close is already running on the pool thread; drain it so its outcome is observed
+        # instead of finishing unwatched, then let the cancellation through.
+        future = self._submit(func, *args, **kwargs)
+        try:
+            await _wait_until_done(future)
+        except asyncio.CancelledError as cancellation:
+            try:
+                await _drain_future(future)
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
+                _raise_cancelled_error(cancellation, error)
+            raise
+        return _future_result(future)
+
+    def _submit(
+        self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
+    ) -> asyncio.Future[_BackendOutcome[_R]]:
         loop = self._loop or asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor, functools.partial(func, *args, **kwargs))
+        return loop.run_in_executor(self._executor, _capture_call, functools.partial(func, *args, **kwargs))
 
 
 class AsyncAcquireSoftReadWriteReturnProxy:
