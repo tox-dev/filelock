@@ -1,0 +1,2 @@
+Canceling an ``AsyncSoftReadWriteLock`` acquire now releases the claim instead of leaking a marker whose heartbeat
+wedges every contender.
