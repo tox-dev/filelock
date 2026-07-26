@@ -7,6 +7,13 @@
 .. towncrier release notes start
 
 ********************
+ 3.32.1 (2026-07-26)
+********************
+
+- Canceling an ``AsyncSoftReadWriteLock`` acquire now releases the claim instead of leaking a marker whose heartbeat
+  wedges every contender. :pr:`686`
+
+********************
  3.32.0 (2026-07-21)
 ********************
 
