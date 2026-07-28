@@ -467,6 +467,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             stop_event=stop_event,
             name=f"filelock-heartbeat-{id(self):x}",
         )
+        # Publish the hold and start its heartbeat under one critical section. The marker is already on disk, so if
+        # the OS refuses a new thread (an rlimit reached) the hold must not be left standing over a marker nothing
+        # refreshes: a peer would evict it as stale and acquire while this instance still believes it holds, and a
+        # later release() would raise joining a thread that never started. On a start failure clear the hold and
+        # drop the marker we just claimed, so the acquire fails cleanly with the slot handed back.
+        start_error: BaseException | None = None
         with self._locks.internal:
             self._hold = _Hold(
                 level=1,
@@ -478,7 +484,18 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 heartbeat_thread=heartbeat,
                 heartbeat_stop=stop_event,
             )
-        heartbeat.start()
+            try:
+                heartbeat.start()
+            except BaseException as error:  # ruff:ignore[blind-except]  # unwind the just-claimed slot below and re-raise
+                self._hold = None
+                stop_event.set()
+                start_error = error
+        if start_error is not None:
+            if is_reader:
+                _unlink(marker_name, dir_fd=self._readers_dir_fd)
+            else:
+                self._unlink_writer_marker_if_ours(token)
+            raise start_error
         return AcquireReturnProxy(lock=self)
 
     def _validate_reentrant(self, mode: _Mode) -> AcquireReturnProxy:
