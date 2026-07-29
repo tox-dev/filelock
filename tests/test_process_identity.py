@@ -15,6 +15,10 @@ if TYPE_CHECKING:
 
 _DEAD_PID: Final[int] = 2**22 + 1
 _POSIX_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform == "win32", reason="posix kill semantics")
+#: NetBSD and other POSIX platforms without a proven start-time source expose no token, so an owner carries none there.
+_NEEDS_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    process_start_token(os.getpid()) is None, reason="this platform exposes no process start-time source"
+)
 
 
 def test_host_name_matches_socket() -> None:
@@ -42,6 +46,7 @@ def test_process_alive_reraises_unexpected_errno(mocker: MockerFixture) -> None:
         process_alive(_DEAD_PID)
 
 
+@_NEEDS_START_TOKEN
 def test_process_start_token_is_int_for_self() -> None:
     assert isinstance(process_start_token(os.getpid()), int)
 
@@ -72,6 +77,7 @@ def test_owner_is_stale_live_process_matching_token_held() -> None:
     assert owner_is_stale(os.getpid(), host_name(), process_start_token(os.getpid())) is False
 
 
+@_NEEDS_START_TOKEN
 def test_owner_is_stale_live_process_mismatched_token_reclaimed() -> None:
     token = process_start_token(os.getpid())
     assert token is not None

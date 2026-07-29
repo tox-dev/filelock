@@ -410,14 +410,16 @@ async def test_coroutine_acquisition_and_registration_errors_are_grouped(
     descriptor = cast("int", lock.descriptor)
     mocker.stop(fstat_mock)
 
+    # Probe the closed descriptor before the fork and waitpid below, whose own opens could reclaim its freed number.
+    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
+        real_fstat(descriptor)
+
     child_pid = _fork_descriptor_probe(descriptor, real_fstat)
     _, status = await asyncio.to_thread(os.waitpid, child_pid, 0)
     lock.acquire_error = None
     lock.release_error = None
     await lock.release(force=True)
 
-    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
-        real_fstat(descriptor)
     assert (_error_details(info.value), os.waitstatus_to_exitcode(status)) == (expected, 0)
 
 
