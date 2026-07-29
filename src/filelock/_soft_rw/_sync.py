@@ -467,6 +467,11 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             stop_event=stop_event,
             name=f"filelock-heartbeat-{id(self):x}",
         )
+        # Publish the hold and start its heartbeat under one internal-lock section, so a concurrent release() never
+        # observes a hold whose thread has not started and joins it. If the OS refuses the thread, clear the hold and
+        # unlink the marker we claimed: left in place, a peer evicts it as stale and acquires while this instance still
+        # believes it holds the lock.
+        start_error: BaseException | None = None
         with self._locks.internal:
             self._hold = _Hold(
                 level=1,
@@ -478,7 +483,17 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 heartbeat_thread=heartbeat,
                 heartbeat_stop=stop_event,
             )
-        heartbeat.start()
+            try:
+                heartbeat.start()
+            except BaseException as error:  # ruff:ignore[blind-except]  # clear the slot below and re-raise
+                self._hold = None
+                start_error = error
+        if start_error is not None:
+            if is_reader:
+                _unlink(marker_name, dir_fd=self._readers_dir_fd)
+            else:
+                self._unlink_writer_marker_if_ours(token)
+            raise start_error
         return AcquireReturnProxy(lock=self)
 
     def _validate_reentrant(self, mode: _Mode) -> AcquireReturnProxy:

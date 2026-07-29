@@ -691,6 +691,26 @@ def test_heartbeat_stops_when_marker_evicted(lock_file: str, monkeypatch: pytest
         lock.close()
 
 
+@pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
+def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
+    lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
+) -> None:
+    # A heartbeat thread the OS refuses (an rlimit reached) must not leave a hold behind: a peer would evict the
+    # unrefreshed marker and acquire while this instance still believed it held the lock, and release() would raise
+    # joining a thread that never started.
+    mocker.patch.object(sync_mod._HeartbeatThread, "start", side_effect=RuntimeError("can't start new thread"))
+    lock = _make_lock(lock_file)
+    acquire = lock.acquire_write if mode == "write" else lock.acquire_read
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        acquire(timeout=2)
+
+    assert lock._hold is None
+    assert not Path(lock._paths.write).exists()
+    assert not lock._any_readers()
+    lock.release(force=True)  # a handed-back slot leaves nothing to release, so this must not raise
+    lock.close()
+
+
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
 def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) -> None:

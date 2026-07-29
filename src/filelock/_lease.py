@@ -246,6 +246,9 @@ class SoftFileLease(MarkerSoftFileLock):
             name=f"filelock-lease-{os.getpid()}",
             daemon=True,
         )
+        # Record the heartbeat before starting the thread so a release racing this acquire on a shared,
+        # non-thread-local claim always sees it and sets the stop event; the thread then exits at its first wait
+        # instead of outliving the release. A start that raises leaves the unstarted thread for _stop_heartbeat.
         claim.heartbeat = _Heartbeat(thread, stop)
         thread.start()
 
@@ -255,8 +258,10 @@ class SoftFileLease(MarkerSoftFileLock):
             return
         heartbeat.stop.set()
         claim.heartbeat = None
-        # on_compromise runs on the heartbeat thread and may release the lease, which lands back here.
-        if heartbeat.thread is not current_thread():
+        # thread.ident is None until start() runs: a heartbeat recorded before its thread started (a start that
+        # raised, or a release racing acquire on a shared claim) has nothing to join, and the stop above makes it
+        # exit at once. on_compromise runs on the heartbeat thread and may release the lease, landing back here.
+        if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread():
             heartbeat.thread.join(timeout=self._heartbeat_interval)
 
     def _refresh_until_stopped(
