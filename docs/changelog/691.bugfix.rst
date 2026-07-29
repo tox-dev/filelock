@@ -1,3 +1,0 @@
-A ``SoftReadWriteLock`` or ``SoftFileLease`` acquire whose heartbeat thread fails to start now unlinks its marker and
-hands the claim back, instead of leaving an unrefreshed marker a peer takes while the caller believes it still holds
-the lock.

@@ -7,6 +7,14 @@
 .. towncrier release notes start
 
 ********************
+ 3.32.2 (2026-07-29)
+********************
+
+- A ``SoftReadWriteLock`` or ``SoftFileLease`` acquire whose heartbeat thread fails to start now unlinks its marker and
+  hands the claim back, instead of leaving an unrefreshed marker a peer takes while the caller believes it still holds
+  the lock. :pr:`691`
+
+********************
  3.32.1 (2026-07-26)
 ********************
 
