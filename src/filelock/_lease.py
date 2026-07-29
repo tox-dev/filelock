@@ -246,10 +246,9 @@ class SoftFileLease(MarkerSoftFileLock):
             name=f"filelock-lease-{os.getpid()}",
             daemon=True,
         )
-        # Record the heartbeat only once it is actually running. If the OS refuses a new thread, recording it first
-        # would leave a never-started thread on the claim, so the acquire rollback's _stop_heartbeat would raise
-        # joining it and the marker would never be unlinked; leaving it unset lets the rollback release the claim
-        # cleanly. The thread reads its arguments, not claim.heartbeat, so starting before the assignment is safe.
+        # Record the heartbeat only after the thread starts; recording first would leave a never-started thread on the
+        # claim, so the acquire rollback's _stop_heartbeat raises joining it and the marker is never unlinked. The
+        # thread reads its arguments, not claim.heartbeat, so starting before the record is safe.
         thread.start()
         claim.heartbeat = _Heartbeat(thread, stop)
 

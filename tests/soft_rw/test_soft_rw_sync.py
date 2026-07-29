@@ -689,16 +689,12 @@ def test_heartbeat_stops_when_marker_evicted(lock_file: str, monkeypatch: pytest
 
 @pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
 def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
-    lock_file: str, monkeypatch: pytest.MonkeyPatch, mode: Literal["read", "write"]
+    lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
-    # If the OS refuses a new thread (an rlimit reached) while acquiring, the hold must not be left standing over a
-    # marker no heartbeat refreshes: a peer would evict it as stale and acquire while we still believed we held it,
-    # and release() would then raise joining a thread that never started. The acquire must fail cleanly instead.
-    def boom(self: sync_mod._HeartbeatThread) -> None:  # ruff:ignore[unused-function-argument]  # matches Thread.start and always raises
-        msg = "can't start new thread"
-        raise RuntimeError(msg)
-
-    monkeypatch.setattr(sync_mod._HeartbeatThread, "start", boom)
+    # A heartbeat thread the OS refuses (an rlimit reached) must not leave a hold behind: a peer would evict the
+    # unrefreshed marker and acquire while this instance still believed it held the lock, and release() would raise
+    # joining a thread that never started.
+    mocker.patch.object(sync_mod._HeartbeatThread, "start", side_effect=RuntimeError("can't start new thread"))
     lock = _make_lock(lock_file)
     acquire = lock.acquire_write if mode == "write" else lock.acquire_read
     with pytest.raises(RuntimeError, match="can't start new thread"):

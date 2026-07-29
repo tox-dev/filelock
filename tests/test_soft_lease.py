@@ -338,16 +338,10 @@ def test_lease_keeps_its_claim_when_another_thread_fails_to_acquire(marker: Path
 
 
 def test_lease_hands_back_the_claim_when_the_heartbeat_cannot_start(marker: Path, mocker: MockerFixture) -> None:
-    # If the OS refuses a new thread while acquiring, the claim must not be left standing over a marker no heartbeat
-    # refreshes: a peer would evict it as stale and acquire while we still believed we held it, and the acquire
-    # rollback would raise joining a thread that never started. The acquire must fail cleanly and release the claim.
-    import filelock._lease as lease_mod
-
-    def failing_start(self: Thread) -> None:  # ruff:ignore[unused-function-argument]  # matches Thread.start and always raises
-        msg = "can't start new thread"
-        raise RuntimeError(msg)
-
-    mocker.patch.object(lease_mod.Thread, "start", failing_start)
+    # A heartbeat thread the OS refuses (an rlimit reached) must not leave the claim behind: a peer would evict the
+    # unrefreshed marker and acquire while this instance still believed it held the lease, and the acquire rollback
+    # would raise joining a thread that never started.
+    mocker.patch.object(Thread, "start", side_effect=RuntimeError("can't start new thread"))
     lease = _lease(marker)
     with pytest.raises(RuntimeError, match="can't start new thread"):
         lease.acquire()

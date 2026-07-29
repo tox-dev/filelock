@@ -467,11 +467,10 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             stop_event=stop_event,
             name=f"filelock-heartbeat-{id(self):x}",
         )
-        # Publish the hold and start its heartbeat under one critical section. The marker is already on disk, so if
-        # the OS refuses a new thread (an rlimit reached) the hold must not be left standing over a marker nothing
-        # refreshes: a peer would evict it as stale and acquire while this instance still believes it holds, and a
-        # later release() would raise joining a thread that never started. On a start failure clear the hold and
-        # drop the marker we just claimed, so the acquire fails cleanly with the slot handed back.
+        # Publish the hold and start its heartbeat under one internal-lock section, so a concurrent release() never
+        # observes a hold whose thread has not started and joins it. If the OS refuses the thread, clear the hold and
+        # unlink the marker we claimed: left in place, a peer evicts it as stale and acquires while this instance still
+        # believes it holds the lock.
         start_error: BaseException | None = None
         with self._locks.internal:
             self._hold = _Hold(
@@ -486,9 +485,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             )
             try:
                 heartbeat.start()
-            except BaseException as error:  # ruff:ignore[blind-except]  # unwind the just-claimed slot below and re-raise
+            except BaseException as error:  # ruff:ignore[blind-except]  # clear the slot below and re-raise
                 self._hold = None
-                stop_event.set()
                 start_error = error
         if start_error is not None:
             if is_reader:
