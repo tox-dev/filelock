@@ -602,17 +602,21 @@ def test_writer_phase2_does_not_complete_on_a_peers_marker(lock_file: str, monke
     real_sleep = time.sleep
     swapped = threading.Event()
 
+    # Only the writer's phase-2 poll loop calls the patched sleep (the reader's heartbeat waits on an Event), so the
+    # swap lands on the first poll and the second poll ends the wait. Driving the timeout from the hook instead of the
+    # wall clock keeps this deterministic: a loaded runner could otherwise blow the deadline during phase-2 setup and
+    # raise Timeout before the first sleep ever ran, leaving the swap uninjected.
     def hook(seconds: float) -> None:  # ruff:ignore[unused-function-argument]  # replaces time.sleep; the duration is irrelevant to the swap
-        if not swapped.is_set():
-            swapped.set()
-            Path(write_marker).write_bytes(peer_marker)
-            reader.release()
-        real_sleep(0.005)
+        if swapped.is_set():
+            raise Timeout(lock_file)
+        swapped.set()
+        Path(write_marker).write_bytes(peer_marker)
+        reader.release()
 
     monkeypatch.setattr(sync_mod.time, "sleep", hook)
     try:
         with pytest.raises(Timeout):
-            writer.acquire_write(timeout=0.6)
+            writer.acquire_write(timeout=30)
         assert swapped.is_set()
         # We never overwrote or refreshed the peer's live marker.
         assert Path(write_marker).read_bytes() == peer_marker
