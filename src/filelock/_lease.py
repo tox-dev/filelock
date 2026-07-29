@@ -246,11 +246,11 @@ class SoftFileLease(MarkerSoftFileLock):
             name=f"filelock-lease-{os.getpid()}",
             daemon=True,
         )
-        # Record the heartbeat only after the thread starts; recording first would leave a never-started thread on the
-        # claim, so the acquire rollback's _stop_heartbeat raises joining it and the marker is never unlinked. The
-        # thread reads its arguments, not claim.heartbeat, so starting before the record is safe.
-        thread.start()
+        # Record the heartbeat before starting the thread so a release racing this acquire on a shared,
+        # non-thread-local claim always sees it and sets the stop event; the thread then exits at its first wait
+        # instead of outliving the release. A start that raises leaves the unstarted thread for _stop_heartbeat.
         claim.heartbeat = _Heartbeat(thread, stop)
+        thread.start()
 
     def _stop_heartbeat(self) -> None:
         claim = self._claim
@@ -258,8 +258,10 @@ class SoftFileLease(MarkerSoftFileLock):
             return
         heartbeat.stop.set()
         claim.heartbeat = None
-        # on_compromise runs on the heartbeat thread and may release the lease, which lands back here.
-        if heartbeat.thread is not current_thread():
+        # thread.ident is None until start() runs: a heartbeat recorded before its thread started (a start that
+        # raised, or a release racing acquire on a shared claim) has nothing to join, and the stop above makes it
+        # exit at once. on_compromise runs on the heartbeat thread and may release the lease, landing back here.
+        if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread():
             heartbeat.thread.join(timeout=self._heartbeat_interval)
 
     def _refresh_until_stopped(

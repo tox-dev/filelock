@@ -351,6 +351,24 @@ def test_lease_hands_back_the_claim_when_the_heartbeat_cannot_start(marker: Path
     lease.release(force=True)  # nothing was left to release, so this must not raise
 
 
+def test_lease_release_stops_a_heartbeat_recorded_before_its_thread_starts(marker: Path, mocker: MockerFixture) -> None:
+    # A shared, non-thread-local claim lets a release() run while an acquire has recorded its heartbeat but not yet
+    # started the thread. Stubbing start() as a no-op freezes that window: release() must stop the heartbeat without
+    # raising on a join of the unstarted thread, and must still unlink the marker so a peer cannot take a claim we
+    # let go.
+    mocker.patch.object(Thread, "start")
+    lease = SoftFileLease(
+        str(marker), timeout=0.3, lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT, thread_local=False
+    )
+    lease.acquire()
+    assert lease.is_locked
+
+    lease.release()  # must not raise joining a thread that never started
+
+    assert not lease.is_locked
+    assert not marker.exists()
+
+
 def test_lease_rejects_a_peer_configured_with_another_duration(marker: Path) -> None:
     holder = _lease(marker)
 
