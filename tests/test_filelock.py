@@ -1119,14 +1119,19 @@ def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: M
     lock = FileLock(str(lock_path), is_singleton=False)
 
     real_open = os.open
-    call_count = 0
+    denied_create = False
+    unlinked_open = False
 
+    # Key the injections off each open's signature rather than a global call count: GraalPy opens unrelated paths
+    # mid-acquire, which would shift a counter and land the errors on the wrong opens. Deny the first create, then
+    # unlink under the first no-create open, so the sticky-bit fallback must retry once more to succeed.
     def open_permission_then_unlink(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1 and flags & os.O_CREAT and "test.lock" in path:
+        nonlocal denied_create, unlinked_open
+        if not denied_create and flags & os.O_CREAT and "test.lock" in path:
+            denied_create = True
             raise PermissionError(13, "Permission denied", path)
-        if call_count == 2 and not (flags & os.O_CREAT) and "test.lock" in path:
+        if not unlinked_open and not flags & os.O_CREAT and "test.lock" in path:
+            unlinked_open = True
             lock_path.unlink(missing_ok=True)
             raise FileNotFoundError(2, "No such file or directory", path)
         return real_open(path, flags, mode) if dir_fd is None else real_open(path, flags, mode, dir_fd=dir_fd)
@@ -1134,7 +1139,7 @@ def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: M
     mocker.patch("os.open", side_effect=open_permission_then_unlink)
     lock.acquire()
     assert lock.is_locked
-    assert call_count == 3
+    assert (denied_create, unlinked_open) == (True, True)
     lock.release()
 
 
