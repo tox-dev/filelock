@@ -783,6 +783,10 @@ async def main() -> int:
     if occupant != descriptor:
         os.close(occupant)
 
+    # The canceled acquire ran the flock backend in the default executor, leaving an idle worker thread behind. Join it
+    # before forking so the child is single-threaded: NetBSD deadlocks a child forked from a multi-threaded process.
+    await loop.shutdown_default_executor()
+
     child_pid = os.fork()
     if child_pid == 0:
         try:

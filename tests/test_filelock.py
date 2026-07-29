@@ -1992,8 +1992,9 @@ def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
 def test_final_symlink_backend_refuses_to_lock(tmp_path: Path) -> None:
     (tmp_path / "target").write_text("")
     (tmp_path / "link").symlink_to(tmp_path / "target")
-    # Keeping the final symlink a distinct key is safe because the backend still refuses to lock through it.
-    with pytest.raises(OSError, match=r"Too many levels of symbolic links|symbolic link"):
+    # Keeping the final symlink a distinct key is safe because the backend still refuses to lock through it. O_NOFOLLOW
+    # reports the refusal as ELOOP on Linux and macOS, and as EFTYPE ("inappropriate file type") on NetBSD.
+    with pytest.raises(OSError, match=r"Too many levels of symbolic links|symbolic link|Inappropriate file type"):
         FileLock(str(tmp_path / "link")).acquire()
 
 
@@ -2187,6 +2188,10 @@ def test_lock_descriptor_blocking_retries_until_free(tmp_path: Path, mocker: Moc
         os.close(fd)
 
 
+#: NetBSD has no CLOCK_THREAD_CPUTIME_ID, so time.thread_time is absent; process CPU time proves "not spinning" too.
+_CPU_TIME: Final[Callable[[], float]] = getattr(time, "thread_time", time.process_time)
+
+
 def test_lock_descriptor_blocking_wait_does_not_spin(tmp_path: Path) -> None:
     path = str(tmp_path / "a")
     holder = os.open(path, os.O_RDWR | os.O_CREAT)
@@ -2196,9 +2201,9 @@ def test_lock_descriptor_blocking_wait_does_not_spin(tmp_path: Path) -> None:
 
     def acquire() -> float:
         started.set()
-        before = time.thread_time()
+        before = _CPU_TIME()
         lock_descriptor(contender, poll_interval=0.01)
-        return time.thread_time() - before
+        return _CPU_TIME() - before
 
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
