@@ -20,6 +20,7 @@ else:  # pragma: <3.11 cover
 
 from capabilities import CAPABILITIES
 
+import filelock._strict
 from filelock import (
     AsyncStrictSoftFileLock,
     SoftFileLock,
@@ -396,19 +397,26 @@ def test_strict_soft_sentinel_inspection_failure_closes_descriptor(tmp_path: Pat
 def test_strict_soft_publication_and_close_failures_preserve_both_errors(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     real_close = os.close
-    close_failed = False
+    real_open_relative = filelock._strict._open_relative
+    private_fd: int | None = None
 
-    def fail_first_close(fd: int) -> None:
-        nonlocal close_failed
+    def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
+        nonlocal private_fd
+        private_fd = real_open_relative(directory_ref, name, flags, mode)
+        return private_fd
+
+    # filelock._strict.os is the os module, so this patches os.close process-wide. Key the fault to the descriptor
+    # under test rather than to call order, which a background thread's close would consume instead.
+    def fail_private_close(fd: int) -> None:
         real_close(fd)
-        # Only a dir_fd release closes a second descriptor, so elsewhere the first close is the only one.
-        if not close_failed:  # pragma: no branch
-            close_failed = True
+        # Only a dir_fd release closes a second descriptor, so elsewhere this one is the only one.
+        if fd == private_fd:  # pragma: no branch
             msg = "private close failed"
             raise OSError(msg)
 
     mocker.patch("filelock._util.os.write", side_effect=OSError("record write failed"))
-    mocker.patch("filelock._strict.os.close", side_effect=fail_first_close)
+    mocker.patch("filelock._strict._open_relative", side_effect=capture_private_record)
+    mocker.patch("filelock._strict.os.close", side_effect=fail_private_close)
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(ExceptionGroup) as raised:

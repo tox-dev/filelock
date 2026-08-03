@@ -335,15 +335,23 @@ def test_strict_soft_private_close_failure_leaves_public_claim(tmp_path: Path, m
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     real_close = os.close
-    close_failed = False
+    real_open_relative = filelock._strict._open_relative
+    private_fd: int | None = None
 
+    def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
+        nonlocal private_fd
+        private_fd = real_open_relative(directory_ref, name, flags, mode)
+        return private_fd
+
+    # filelock._strict.os is the os module, so this patches os.close process-wide. Key the fault to the descriptor
+    # under test rather than to call order: a background thread closing first would otherwise consume it, which is how
+    # a soft-rw heartbeat still winding down turned these injections red on GraalPy.
     def fail_private_close(fd: int) -> None:
-        nonlocal close_failed
         real_close(fd)
-        if not close_failed:
-            close_failed = True
+        if fd == private_fd:
             raise OSError(EIO, "private close failed")
 
+    mocker.patch("filelock._strict._open_relative", side_effect=capture_private_record)
     mocker.patch("filelock._strict.os.close", side_effect=fail_private_close)
     lock = StrictSoftFileLock(lock_path)
 
@@ -977,26 +985,30 @@ def test_strict_soft_sentinel_inspection_and_close_failure_group(tmp_path: Path,
     _initialize_protocol(lock_path)
     real_fstat = os.fstat
     real_close = os.close
-    fstats = 0
-    close_failed = False
+    real_open_sentinel = filelock._strict._open_sentinel
+    sentinel_fd: int | None = None
 
+    def capture_sentinel(path: Path) -> int | None:
+        nonlocal sentinel_fd
+        sentinel_fd = real_open_sentinel(path)
+        return sentinel_fd
+
+    # The record read inside _open_sentinel stats the same descriptor, but it runs before the capture above, so
+    # keying on the descriptor still leaves _acquire's own inspection as the first stat to fail.
     def fail_sentinel_inspection(fd: int) -> os.stat_result:
-        nonlocal fstats
-        fstats += 1
-        if fstats == 2:
+        if fd == sentinel_fd:
             raise OSError(EIO, "sentinel inspection failed")
         return real_fstat(fd)
 
-    def fail_first_close(fd: int) -> None:
-        nonlocal close_failed
-        if not close_failed:
-            close_failed = True
+    def fail_sentinel_close(fd: int) -> None:
+        if fd == sentinel_fd:
             raise OSError(EIO, "sentinel close failed")
         # Only the sentinel descriptor is closed in this flow, so the passthrough never runs.
         real_close(fd)  # pragma: no cover
 
+    mocker.patch("filelock._strict._open_sentinel", side_effect=capture_sentinel)
     mocker.patch("filelock._strict.os.fstat", side_effect=fail_sentinel_inspection)
-    mocker.patch("filelock._strict.os.close", side_effect=fail_first_close)
+    mocker.patch("filelock._strict.os.close", side_effect=fail_sentinel_close)
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(BaseExceptionGroup) as raised:
@@ -1172,16 +1184,21 @@ def test_strict_soft_record_finalization_close_and_unlink_failures_group(tmp_pat
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     real_close = os.close
-    close_failed = False
+    real_open_relative = filelock._strict._open_relative
+    private_fd: int | None = None
 
-    def fail_first_close(fd: int) -> None:
-        nonlocal close_failed
+    def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
+        nonlocal private_fd
+        private_fd = real_open_relative(directory_ref, name, flags, mode)
+        return private_fd
+
+    def fail_private_close(fd: int) -> None:
         real_close(fd)
-        if not close_failed:
-            close_failed = True
+        if fd == private_fd:
             raise OSError(EIO, "private close failed")
 
-    mocker.patch("filelock._strict.os.close", side_effect=fail_first_close)
+    mocker.patch("filelock._strict._open_relative", side_effect=capture_private_record)
+    mocker.patch("filelock._strict.os.close", side_effect=fail_private_close)
     mocker.patch("filelock._strict._unlink_relative", side_effect=PermissionError(EACCES, "unlink denied"))
     lock = StrictSoftFileLock(lock_path)
 
