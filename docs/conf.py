@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +24,7 @@ now = datetime.now(tz=timezone.utc)
 version, release = ".".join(__version__.split(".")[:2]), __version__
 copyright = f"2014-{now.date().year}, {company}"  # ruff:ignore[builtin-variable-shadowing]
 extensions = [
+    "sphinx_llm.txt",
     "sphinx.ext.autodoc",
     "sphinx.ext.autosectionlabel",
     "sphinx.ext.viewcode",
@@ -117,3 +119,6 @@ def setup(app: Sphinx) -> None:
             return super().resolve_xref(env, fromdocname, builder, type, target, node, contnode)
 
     app.add_domain(PatchedPythonDomain, override=True)
+
+
+markdown_http_base = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
