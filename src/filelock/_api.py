@@ -1779,14 +1779,20 @@ def _refresh_owner_pins() -> None:  # pragma: needs fork
 
 
 # Audit events carry unrelated interpreter-owned values; object is the sole accurate common element type.
+# The defaults capture the module globals: the hook outlives them at interpreter shutdown, where CPython wipes the
+# module dict to None before the final audit events fire.
 def _audit_fork_safety(  # pragma: no cover - CPython disables tracing while Python audit hooks run
-    event: str, _args: tuple[object, ...]
+    event: str,
+    _args: tuple[object, ...],
+    *,
+    _fork_events: frozenset[str] = _FORK_AUDIT_EVENTS,
+    _state: _ForkState = _FORK_STATE,
 ) -> None:
-    if event in _FORK_AUDIT_EVENTS:
-        if _FORK_STATE.transition_context.depth or _FORK_STATE.fork_owner_depths:
+    if event in _fork_events:
+        if _state.transition_context.depth or _state.fork_owner_depths:
             msg = f"{event} is unsafe while filelock is changing descriptor ownership"
             raise RuntimeError(msg)
-    elif event == "_posixsubprocess.fork_exec" and _FORK_STATE.transition_context.depth:
+    elif event == "_posixsubprocess.fork_exec" and _state.transition_context.depth:
         msg = "fork_exec is unsafe while filelock is changing descriptor ownership"
         raise RuntimeError(msg)
 

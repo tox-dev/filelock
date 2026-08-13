@@ -162,6 +162,32 @@ if second_status != 0 or owner.is_alive() or statuses.get(timeout=1) != 0:
 
 
 @NEEDS_FORK  # pragma: needs fork
+def test_audit_hook_survives_interpreter_shutdown() -> None:
+    script = """
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import filelock._api as api
+
+class LateAudit:
+    def __del__(self, object_id: Callable[[LateAudit], int] = id) -> None:
+        object_id(self)
+
+api.__dict__["_late_shutdown_audit"] = LateAudit()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert (result.returncode, result.stderr) == (0, "")
+
+
+@NEEDS_FORK  # pragma: needs fork
 @pytest.mark.parametrize(
     "event",
     [
