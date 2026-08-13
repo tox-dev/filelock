@@ -73,6 +73,8 @@ html_title, html_last_updated_fmt = name, now.isoformat()
 html_baseurl = "https://py-filelock.readthedocs.io/"
 pygments_style, pygments_dark_style = "sphinx", "monokai"
 autoclass_content, autodoc_member_order, autodoc_typehints = "both", "bysource", "none"
+# _typeshed exists only inside type checkers; sphinx-autodoc-typehints executes TYPE_CHECKING imports to resolve hints.
+autodoc_mock_imports = ["_typeshed"]
 autodoc_default_options = {"member-order": "bysource", "undoc-members": True, "show-inheritance": True}
 autosectionlabel_prefix_document = True
 
