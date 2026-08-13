@@ -784,6 +784,26 @@ def _close_after_commit(mocker: MockerFixture) -> Iterator[tuple[OSError, list[i
         mocker.stop(close_mock)
 
 
+def test_close_after_commit_ignores_closes_from_other_threads(mocker: MockerFixture) -> None:
+    # The patch binds os.close process-wide, so a descriptor closed on another thread must pass through cleanly and
+    # stay out of the caller's recorded attempts rather than absorb the injected failure.
+    closed: list[int] = []
+
+    def close_a_pipe() -> None:
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        os.close(write_fd)  # a non-caller thread: passes through untouched rather than raising the injected error
+        closed.extend((read_fd, write_fd))
+
+    with _close_after_commit(mocker) as (_close_error, attempts):
+        worker = threading.Thread(target=close_a_pipe)
+        worker.start()
+        worker.join()
+
+    assert len(closed) == 2
+    assert attempts == []
+
+
 @pytest.mark.parametrize(
     "use_proxy",
     [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
