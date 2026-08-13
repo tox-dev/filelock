@@ -7,6 +7,13 @@
 .. towncrier release notes start
 
 ********************
+ 3.32.3 (2026-08-13)
+********************
+
+- The fork-safety audit hook no longer prints ``Exception ignored in audit hook`` with a ``TypeError`` when an audit
+  event fires during interpreter shutdown, after CPython has already cleared the module globals. :pr:`701`
+
+********************
  3.32.2 (2026-07-29)
 ********************
 
