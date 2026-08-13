@@ -1782,11 +1782,11 @@ def _refresh_owner_pins() -> None:  # pragma: needs fork
 def _audit_fork_safety(  # pragma: no cover - CPython disables tracing while Python audit hooks run
     event: str, _args: tuple[object, ...]
 ) -> None:
-    if event in _FORK_AUDIT_EVENTS:
-        if _FORK_STATE.transition_context.depth or _FORK_STATE.fork_owner_depths:
+    if _FORK_AUDIT_EVENTS is not None and event in _FORK_AUDIT_EVENTS:
+        if _FORK_STATE is not None and (_FORK_STATE.transition_context.depth or _FORK_STATE.fork_owner_depths):
             msg = f"{event} is unsafe while filelock is changing descriptor ownership"
             raise RuntimeError(msg)
-    elif event == "_posixsubprocess.fork_exec" and _FORK_STATE.transition_context.depth:
+    elif event == "_posixsubprocess.fork_exec" and _FORK_STATE is not None and _FORK_STATE.transition_context.depth:
         msg = "fork_exec is unsafe while filelock is changing descriptor ownership"
         raise RuntimeError(msg)
 

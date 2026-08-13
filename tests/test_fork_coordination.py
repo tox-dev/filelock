@@ -188,6 +188,18 @@ def test_audit_rejects_process_creation_inside_descriptor_transition(
         AuditedLock(str(tmp_path / "audit.lock"), is_singleton=False).acquire(timeout=0)
 
 
+def test_audit_fork_safety_during_interpreter_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    from filelock import _api
+
+    monkeypatch.setattr(_api, "_FORK_AUDIT_EVENTS", None)
+    monkeypatch.setattr(_api, "_FORK_STATE", None)
+
+    # Calling the audit hook when globals are None should safely return without raising TypeError
+    _api._audit_fork_safety("os.fork", ())
+    _api._audit_fork_safety("_posixsubprocess.fork_exec", ())
+    _api._audit_fork_safety("unrelated_event", ())
+
+
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize(
