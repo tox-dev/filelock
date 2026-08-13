@@ -764,9 +764,16 @@ def _close_after_commit(mocker: MockerFixture) -> Iterator[tuple[OSError, list[i
     real_close = os.close
     close_error = OSError(EINTR, "close failed")
     attempts: list[int] = []
+    # close is an attribute of the shared os module, so this patch binds for every thread rather than just this one.
+    # Leave another thread's close alone: counting it would inflate attempts, and failing it would break whatever
+    # unrelated work happens to be closing a descriptor while this window is open. Every lock here runs with
+    # run_in_executor=False, so the closes under test stay on this thread.
+    caller = threading.get_ident()
 
     def close(fd: int) -> None:
         real_close(fd)
+        if threading.get_ident() != caller:
+            return
         attempts.append(fd)
         raise close_error
 
