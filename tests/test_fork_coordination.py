@@ -114,8 +114,12 @@ def block_before_fork() -> None:
 os.register_at_fork(before=block_before_fork)
 
 if sys.argv[2] == "rejected":
-    # Audit arguments mix interpreter-owned types; object is their only accurate common type.
-    def reject_add_hook(event: str, _args: tuple[object, ...]) -> None:
+    from typing import TYPE_CHECKING
+
+    if TYPE_CHECKING:
+        from _typeshed import Unused
+
+    def reject_add_hook(event: str, _args: Unused) -> None:
         if event == "sys.addaudithook":
             raise RuntimeError
 
@@ -238,8 +242,12 @@ import sys
 from errno import EBADF
 
 if sys.argv[1] == "rejected-audit":
-    # Audit arguments are heterogeneous interpreter-owned values, so object is their only accurate common type.
-    def reject_filelock_hook(event: str, _args: tuple[object, ...]) -> None:
+    from typing import TYPE_CHECKING
+
+    if TYPE_CHECKING:
+        from _typeshed import Unused
+
+    def reject_filelock_hook(event: str, _args: Unused) -> None:
         if event == "sys.addaudithook":
             raise RuntimeError
 
@@ -312,8 +320,8 @@ from errno import EBADF
 child_status = -1
 forked = False
 
-# Audit arguments are heterogeneous interpreter-owned values, so object is their only accurate common type.
-def audit_hook(event: str, args: tuple[object, ...]) -> None:
+# Typed for the fcntl.flock payload (fd, cmd); every other event returns before touching args.
+def audit_hook(event: str, args: tuple[int, int]) -> None:
     global child_status, forked
     if event == "sys.addaudithook" and sys.argv[1] == "rejected-audit":
         raise RuntimeError
@@ -361,8 +369,12 @@ import os
 import sys
 from errno import EBADF
 
-# Audit arguments are heterogeneous interpreter-owned values, so object is their only accurate common type.
-def reject_filelock_hook(event: str, _args: tuple[object, ...]) -> None:
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from _typeshed import Unused
+
+def reject_filelock_hook(event: str, _args: Unused) -> None:
     if event == "sys.addaudithook":
         raise RuntimeError
 
@@ -444,8 +456,12 @@ import os
 import sys
 from errno import EBADF
 
-# Audit arguments are heterogeneous interpreter-owned values, so object is their only accurate common type.
-def reject_filelock_hook(event: str, _args: tuple[object, ...]) -> None:
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from _typeshed import Unused
+
+def reject_filelock_hook(event: str, _args: Unused) -> None:
     if event == "sys.addaudithook":
         raise RuntimeError
 
@@ -516,8 +532,12 @@ from __future__ import annotations
 import os
 import sys
 
-# Audit arguments are heterogeneous interpreter-owned values, so object is their only accurate common type.
-def reject_filelock_hook(event: str, _args: tuple[object, ...]) -> None:
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from _typeshed import Unused
+
+def reject_filelock_hook(event: str, _args: Unused) -> None:
     if event == "sys.addaudithook":
         raise RuntimeError
 
@@ -588,8 +608,12 @@ from queue import Queue
 
 warnings.filterwarnings("ignore", message=".*multi-threaded, use of fork.*", category=DeprecationWarning)
 
-# Audit arguments are heterogeneous interpreter-owned values, so object is their only accurate common type.
-def reject_filelock_hook(event: str, _args: tuple[object, ...]) -> None:
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from _typeshed import Unused
+
+def reject_filelock_hook(event: str, _args: Unused) -> None:
     if event == "sys.addaudithook":
         raise RuntimeError
 

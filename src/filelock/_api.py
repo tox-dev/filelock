@@ -41,6 +41,8 @@ if TYPE_CHECKING:
     from types import TracebackType
     from typing import Protocol
 
+    from _typeshed import Unused
+
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
 
@@ -1778,12 +1780,11 @@ def _refresh_owner_pins() -> None:  # pragma: needs fork
             _FORK_STATE.pinned_classes[thread_id][:] = [classes] * len(object_snapshots)
 
 
-# Audit events carry unrelated interpreter-owned values; object is the sole accurate common element type.
 # The defaults capture the module globals: the hook outlives them at interpreter shutdown, where CPython wipes the
 # module dict to None before the final audit events fire.
 def _audit_fork_safety(  # pragma: no cover - CPython disables tracing while Python audit hooks run
     event: str,
-    _args: tuple[object, ...],
+    _args: Unused,
     *,
     _fork_events: frozenset[str] = _FORK_AUDIT_EVENTS,
     _state: _ForkState = _FORK_STATE,

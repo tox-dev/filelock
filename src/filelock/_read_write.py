@@ -24,6 +24,8 @@ from ._error import Timeout
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
+    from _typeshed import Unused
+
     if sys.version_info >= (3, 11):
         from typing import Self
     else:
@@ -744,7 +746,7 @@ def _abort_forked_sqlite_transition() -> None:  # pragma: forked child
         os._exit(_UNSAFE_FORK_EXIT_STATUS)  # inherited SQLite handles cannot be used or closed safely
 
 
-def _track_sqlite_use(event: str, _args: tuple[object, ...]) -> None:  # audit payloads are heterogeneous
+def _track_sqlite_use(event: str, _args: Unused) -> None:
     if event == "sqlite3.connect":
         _FORKED_DATABASES.note_sqlite_use()
 
