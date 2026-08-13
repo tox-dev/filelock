@@ -22,6 +22,8 @@ from tests.capability_marks import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from _typeshed import StrOrBytesPath
+
 _NEEDS_FD_DIRECTORY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["fd-directory"], reason="counting open descriptors needs a /dev/fd or /proc/self/fd view"
 )
@@ -32,8 +34,9 @@ def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
     lock_path = tmp_path / "idle.db"
     connection_events = 0
 
+    # Typed for the sqlite3.connect payload the hook reads; every other event returns before touching args.
     def audit_hook(  # pragma: no cover - interpreter audit hooks run with tracing disabled
-        event: str, args: tuple[object, ...]
+        event: str, args: tuple[StrOrBytesPath, ...]
     ) -> None:
         nonlocal connection_events
         if event != "sqlite3.connect":
@@ -410,8 +413,12 @@ def _recursive_construction_script() -> str:
         lock_path, audit_event = sys.argv[1:]
         armed = True
 
-        def audit_hook(event: str, _args: tuple[object, ...]) -> None:
-            # CPython supplies heterogeneous values for process-wide audit events.
+        from typing import TYPE_CHECKING
+
+        if TYPE_CHECKING:
+            from _typeshed import Unused
+
+        def audit_hook(event: str, _args: Unused) -> None:
             if armed and event == audit_event:
                 ReadWriteLock(lock_path)
 
@@ -443,8 +450,12 @@ def _recursive_acquisition_script() -> str:
         lock = ReadWriteLock(lock_path)
         armed = True
 
-        def audit_hook(event: str, _args: tuple[object, ...]) -> None:
-            # CPython supplies heterogeneous values for process-wide audit events.
+        from typing import TYPE_CHECKING
+
+        if TYPE_CHECKING:
+            from _typeshed import Unused
+
+        def audit_hook(event: str, _args: Unused) -> None:
             if armed and event == "sqlite3.connect":
                 if operation == "acquire":
                     lock.acquire_read()
@@ -511,8 +522,12 @@ def _concurrent_operation_script() -> str:
         operation_errors: queue.SimpleQueue[BaseException] = queue.SimpleQueue()
         armed = True
 
-        def audit_hook(event: str, _args: tuple[object, ...]) -> None:
-            # CPython supplies heterogeneous values for process-wide audit events.
+        from typing import TYPE_CHECKING
+
+        if TYPE_CHECKING:
+            from _typeshed import Unused
+
+        def audit_hook(event: str, _args: Unused) -> None:
             if armed and event == "sqlite3.connect":
                 acquisition_inside_connect.set()
                 assert continue_acquisition.wait(5)
@@ -568,11 +583,14 @@ def _fork_script() -> str:
         import os
         import sqlite3
         import sys
+        from typing import TYPE_CHECKING
+
+        if TYPE_CHECKING:
+            from _typeshed import Unused
 
         lock_path, mode, fork_name, audit_hook_mode = sys.argv[1:]
         if audit_hook_mode == "reject":
-            def reject_filelock_audit_hook(event: str, _args: tuple[object, ...]) -> None:
-                # CPython supplies heterogeneous values for process-wide audit events.
+            def reject_filelock_audit_hook(event: str, _args: Unused) -> None:
                 if event == "sys.addaudithook":
                     raise RuntimeError("audit hook registration rejected")
 
@@ -606,8 +624,7 @@ def _fork_script() -> str:
                 gc.collect()
                 sqlite_connects = 0
 
-                def count_sqlite_connects(event: str, _args: tuple[object, ...]) -> None:
-                    # CPython supplies heterogeneous values for process-wide audit events.
+                def count_sqlite_connects(event: str, _args: Unused) -> None:
                     global sqlite_connects
                     if event == "sqlite3.connect":
                         sqlite_connects += 1
@@ -667,6 +684,10 @@ def _fork_during_sqlite_script() -> str:  # pragma: needs fork
         import threading
         import time
         import warnings
+        from typing import TYPE_CHECKING
+
+        if TYPE_CHECKING:
+            from _typeshed import StrOrBytesPath
 
         from filelock import ReadWriteLock
 
@@ -681,8 +702,8 @@ def _fork_during_sqlite_script() -> str:  # pragma: needs fork
         acquisition_errors: queue.SimpleQueue[BaseException] = queue.SimpleQueue()
         armed = True
 
-        def audit_hook(event: str, args: tuple[object, ...]) -> None:
-            # CPython supplies heterogeneous values for process-wide audit events.
+        # Typed for the sqlite3.connect payload the hook reads; every other event returns before touching args.
+        def audit_hook(event: str, args: tuple[StrOrBytesPath, ...]) -> None:
             if not armed or event != "sqlite3.connect":
                 return
             database = args[0]
@@ -740,14 +761,16 @@ def _fork_at_sqlite_boundary_script() -> str:
         import sqlite3
         import sys
         from types import FrameType
-        from typing import Protocol
+        from typing import TYPE_CHECKING, Protocol
+
+        if TYPE_CHECKING:
+            from _typeshed import Unused
 
         class ProfiledCall(Protocol):
             @property
             def __name__(self) -> str: ...
 
-        def reject_filelock_audit_hook(event: str, _args: tuple[object, ...]) -> None:
-            # CPython audit events have heterogeneous interpreter-owned payloads.
+        def reject_filelock_audit_hook(event: str, _args: Unused) -> None:
             if event == "sys.addaudithook":
                 raise RuntimeError("audit hook registration rejected")
 

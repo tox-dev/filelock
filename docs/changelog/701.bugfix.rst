@@ -1,0 +1,2 @@
+The fork-safety audit hook no longer prints ``Exception ignored in audit hook`` with a ``TypeError`` when an audit
+event fires during interpreter shutdown, after CPython has already cleared the module globals.
