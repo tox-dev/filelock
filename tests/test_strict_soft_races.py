@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Literal
 import pytest
 
 from filelock import StrictSoftFileLock, Timeout
+from filelock._strict import _CLAIM_MAGIC
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -144,9 +145,12 @@ def test_strict_soft_private_partial_record_is_not_a_claim(tmp_path: Path, mocke
     real_write = os.write
     paused = False
 
+    # The patch binds os.write process-wide, so key the pause to the claim record itself: a finalizer the collector
+    # runs on the "partial" thread may write to the resource tracker's pipe meanwhile, and truncating that command
+    # breaks the tracker rather than this test.
     def paused_write(fd: int, data: bytes | bytearray | memoryview) -> int:
         nonlocal paused
-        if threading.current_thread().name != "partial" or paused:
+        if threading.current_thread().name != "partial" or paused or not bytes(data).startswith(_CLAIM_MAGIC.encode()):
             return real_write(fd, data)
         paused = True
         written = real_write(fd, data[:1])

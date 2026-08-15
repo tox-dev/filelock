@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import gc
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from capabilities import CAPABILITIES
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -27,6 +29,28 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         for item in items:
             if item.get_closest_marker("requires_hard_links") is not None:
                 item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _tracemalloc_lookup_without_support() -> Iterator[None]:
+    # pytest's thread and unraisable exception hooks ask tracemalloc where the offending object was allocated. Where
+    # that lookup raises (GraalPy), the hook reports "Failed to process thread exception" in place of the thread's real
+    # error, so hand it the answer tracemalloc gives while it is not tracing.
+    with pytest.MonkeyPatch.context() as patch:
+        if not CAPABILITIES["tracemalloc-object-traceback"]:  # pragma: lacks tracemalloc-object-traceback
+            patch.setattr("tracemalloc.get_object_traceback", lambda _source: None)
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _collect_garbage() -> Iterator[None]:
+    # Multiprocessing objects register finalizers that close pipes, unlink semaphores and write to the resource
+    # tracker; when cyclic garbage from one test is collected during a later one, those run against whatever that
+    # later test has patched onto os.close or os.write. Collect after every test so finalizers fire in the test that
+    # created the objects, before any such patch is in place. This runs after mocker's undo, since autouse fixtures
+    # set up first and tear down last.
+    yield
+    gc.collect()
 
 
 @pytest.fixture

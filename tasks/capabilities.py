@@ -18,6 +18,7 @@ import tempfile
 import weakref
 from asyncio import CancelledError
 from contextlib import asynccontextmanager, contextmanager
+from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -180,6 +181,21 @@ def _refuses_to_open_a_symlink() -> bool:
         return False
 
 
+def _reports_object_tracebacks() -> bool:
+    # pytest's thread and unraisable exception hooks ask tracemalloc where the offending object was allocated. GraalPy
+    # raises NotImplementedError from that lookup; CPython answers None while not tracing, and PyPy, which ships no
+    # tracemalloc, is never asked.
+    try:
+        get_object_traceback = import_module("tracemalloc").get_object_traceback
+    except ImportError:
+        return True
+    try:
+        get_object_traceback(object())
+    except NotImplementedError:
+        return False
+    return True
+
+
 def _enforces_file_mode() -> bool:
     # Without POSIX permission bits a chmod does not read back.
     with tempfile.TemporaryDirectory() as directory:
@@ -223,6 +239,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     # A source consumer may run the suite unmeasured, and a forked child then has nothing to flush.
     "coverage": find_spec("coverage") is not None,
     "link-follow-symlinks": _honors_link_follow_symlinks(),
+    "tracemalloc-object-traceback": _reports_object_tracebacks(),
     # Only the tox env that installs a released filelock sets this.
     "old-client": bool(os.environ.get("FILELOCK_OLD_CLIENT_PATH")),
 }
