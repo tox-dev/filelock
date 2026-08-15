@@ -15,10 +15,10 @@ import signal
 import socket
 import sys
 import tempfile
-import tracemalloc
 import weakref
 from asyncio import CancelledError
 from contextlib import asynccontextmanager, contextmanager
+from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -182,10 +182,15 @@ def _refuses_to_open_a_symlink() -> bool:
 
 
 def _reports_object_tracebacks() -> bool:
-    # GraalPy raises NotImplementedError from the lookup pytest's thread and unraisable exception hooks make; CPython
-    # answers None while tracemalloc is not tracing.
+    # pytest's thread and unraisable exception hooks ask tracemalloc where the offending object was allocated. GraalPy
+    # raises NotImplementedError from that lookup; CPython answers None while not tracing, and PyPy, which ships no
+    # tracemalloc, is never asked.
     try:
-        tracemalloc.get_object_traceback(object())
+        get_object_traceback = import_module("tracemalloc").get_object_traceback
+    except ImportError:
+        return True
+    try:
+        get_object_traceback(object())
     except NotImplementedError:
         return False
     return True

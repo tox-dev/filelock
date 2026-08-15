@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gc
 import os
-import tracemalloc
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -39,7 +38,7 @@ def _tracemalloc_lookup_without_support() -> Iterator[None]:
     # error, so hand it the answer tracemalloc gives while it is not tracing.
     with pytest.MonkeyPatch.context() as patch:
         if not CAPABILITIES["tracemalloc-object-traceback"]:  # pragma: lacks tracemalloc-object-traceback
-            patch.setattr(tracemalloc, "get_object_traceback", lambda _source: None)
+            patch.setattr("tracemalloc.get_object_traceback", lambda _source: None)
         yield
 
 
