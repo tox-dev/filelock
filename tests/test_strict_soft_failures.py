@@ -1292,6 +1292,28 @@ def test_strict_soft_permission_denied_claim_read_fails_closed(tmp_path: Path, m
         _ = StrictSoftFileLock(lock_path).claims
 
 
+def test_strict_soft_claim_read_retries_after_a_slow_denied_attempt(tmp_path: Path, mocker: MockerFixture) -> None:
+    # The grace window opens at the first pending result, so a first attempt that itself outlasts the window still
+    # gets a retry rather than failing closed on a transient denial.
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    mocker.patch("filelock._strict._CLAIM_READ_GRACE", 0.02)
+    real_open = os.open
+    denied = False
+
+    def deny_slowly_once(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        nonlocal denied
+        if not denied and os.fsdecode(path) == str(claim):
+            denied = True
+            time.sleep(0.05)
+            raise PermissionError(EACCES, "sharing violation")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("filelock._strict.os.open", side_effect=deny_slowly_once)
+
+    assert ([found.name for found in StrictSoftFileLock(lock_path).claims], denied) == ([claim.name], True)
+
+
 def test_strict_soft_ignores_malformed_private_record_name(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     claims = Path(f"{lock_path}.filelock") / "claims"

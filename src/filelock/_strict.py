@@ -335,16 +335,16 @@ def _read_claim_record(lock_file: str, directory: Path, name: str) -> bytes | No
     # completes. On NFS, a peer that unlinks its own claim leaves this client's cached filehandle stale, so the next
     # open returns ESTALE rather than a clean ENOENT until the lookup revalidates against the server. Retrying re-runs
     # the path lookup, which turns the vanished claim into ENOENT (skip) or reads it if it still exists. A genuinely
-    # unreadable record (a locked-down file, an EIO fault) still fails closed.
-    deadline = time.monotonic() + _CLAIM_READ_GRACE
-    delaying = False
+    # unreadable record (a locked-down file, an EIO fault) still fails closed. The grace starts at the first pending
+    # result rather than before the first attempt, so a slow first read cannot use up the window and leave no retry.
+    deadline: float | None = None
     while True:
-        if delaying:
-            time.sleep(_CLAIM_READ_RETRY)
         record, pending = _attempt_claim_read(lock_file, directory, name)
         if pending is None:
             return record
-        if time.monotonic() >= deadline:
+        if deadline is None:
+            deadline = time.monotonic() + _CLAIM_READ_GRACE
+        elif time.monotonic() >= deadline:
             if pending.errno == ESTALE:
                 # A stale handle that outlives revalidation is a claim the server no longer has (RFC 1813
                 # NFS3ERR_STALE): skip it like ENOENT. Skipping a peer's vanished claim can only overcount
@@ -352,7 +352,7 @@ def _read_claim_record(lock_file: str, directory: Path, name: str) -> bytes | No
                 return None
             reason = f"cannot read claim: {pending.strerror or str(pending) or type(pending).__name__}"
             raise SoftFileLockProtocolError(lock_file, name, reason) from pending
-        delaying = True
+        time.sleep(_CLAIM_READ_RETRY)
 
 
 def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[bytes | None, OSError | None]:

@@ -1,0 +1,2 @@
+``StrictSoftFileLock`` always retries a claim read whose first attempt reports the claim as pending, so a first read
+that itself outlasts the retry grace no longer fails closed on a claim it could have read.
