@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Final, cast
@@ -49,6 +50,10 @@ if sys.platform == "win32":  # pragma: win32 cover
     _STATUS_ACCESS_DENIED: Final[int] = 0xC0000022
     _STATUS_SHARING_VIOLATION: Final[int] = 0xC0000043
     _STATUS_DELETE_PENDING: Final[int] = 0xC0000056
+    #: How long an open waits out a STATUS_ACCESS_DENIED before treating it as a real denial: NTFS answers it for a
+    #: moment while a peer's unlink tears the name down, so a bounded wait keeps a real denial failing fast (#604).
+    _ACCESS_DENIED_GRACE: Final[float] = 0.5
+    _ACCESS_DENIED_RETRY: Final[float] = 0.002
 
     _ntdll: Final[ctypes.WinDLL] = ctypes.WinDLL("ntdll")
     _kernel32: Final[ctypes.WinDLL] = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -235,12 +240,19 @@ if sys.platform == "win32":  # pragma: win32 cover
             name the caller should treat as contention and retry.
 
         :raises OSError: if the path resolves to a reparse point, or the open fails for any other reason, raised with
-            the Win32 error the status maps to.
+            the Win32 error the status maps to. An access denial is raised only once it outlasts a short grace, since
+            a peer unlinking the file as it releases can make the open answer ``STATUS_ACCESS_DENIED`` for a moment.
 
         """
         # Emit the audit event os.open would, so consumers watching "open" still see the path-level open and can veto.
         sys.audit("open", path, None, os.O_RDWR | os.O_CREAT)
-        handle, status = _nt_open(path, read_only=not mode & _OWNER_WRITE)
+        read_only = not mode & _OWNER_WRITE
+        handle, status = _nt_open(path, read_only=read_only)
+        if status == _STATUS_ACCESS_DENIED:
+            deadline = time.monotonic() + _ACCESS_DENIED_GRACE
+            while status == _STATUS_ACCESS_DENIED and time.monotonic() < deadline:
+                time.sleep(_ACCESS_DENIED_RETRY)
+                handle, status = _nt_open(path, read_only=read_only)
         if status != _STATUS_SUCCESS:
             if status in {_STATUS_SHARING_VIOLATION, _STATUS_DELETE_PENDING}:
                 return None

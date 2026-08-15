@@ -1606,9 +1606,37 @@ def test_windows_delete_pending_is_treated_as_contention(tmp_path: Path, mocker:
 
 @_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_permanent_denial_raises_without_timeout(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._windows._nt_open", return_value=(0, 0xC0000022))  # STATUS_ACCESS_DENIED
+    mocker.patch("filelock._windows._ACCESS_DENIED_GRACE", 0.02)
+    nt_open = mocker.patch("filelock._windows._nt_open", return_value=(0, 0xC0000022))  # STATUS_ACCESS_DENIED
+    started = time.monotonic()
     with pytest.raises(PermissionError):
         FileLock(str(tmp_path / "a"), timeout=5).acquire()
+    # The denial outlasted its grace, so it surfaced after a bounded wait rather than the caller's timeout.
+    assert 0.02 <= time.monotonic() - started < 5
+    assert nt_open.call_count > 1
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_transient_denial_is_retried_within_grace(tmp_path: Path, mocker: MockerFixture) -> None:
+    # A peer unlinking the lock file as it releases can make NtCreateFile answer STATUS_ACCESS_DENIED for a moment,
+    # which the open must wait out instead of raising a PermissionError. timeout=0 leaves the acquire loop one attempt,
+    # so the retry has to come from the open itself. The marker skips the run; the guard only narrows the import for
+    # ty, so it goes one way.
+    if sys.platform == "win32":  # pragma: no branch
+        from filelock._windows import _nt_open as real_nt_open
+
+        statuses = [0xC0000022]
+
+        def deny_once(path: str, *, read_only: bool) -> tuple[int, int]:
+            if statuses:
+                return 0, statuses.pop()
+            return real_nt_open(path, read_only=read_only)
+
+        nt_open = mocker.patch("filelock._windows._nt_open", side_effect=deny_once)
+        lock = FileLock(str(tmp_path / "a"), timeout=0)
+        lock.acquire()
+        assert (lock.is_locked, nt_open.call_count) == (True, 2)
+        lock.release()
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
