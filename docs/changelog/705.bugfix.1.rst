@@ -1,0 +1,3 @@
+``WindowsFileLock`` waits out a transient ``STATUS_ACCESS_DENIED`` from ``NtCreateFile`` for up to half a second
+before raising ``PermissionError``, since a peer unlinking the lock file as it releases can answer that for a moment; a
+real denial still fails fast.
