@@ -686,7 +686,7 @@ async def test_soft_close_error_policy_cleans_marker(
     lock_path = tmp_path / "a"
     lock = AsyncSoftFileLock(lock_path, close_error_policy=policy, run_in_executor=False)
     await lock.acquire()
-    with _close_after_commit(mocker) as (close_error, attempts):
+    with _close_after_commit(mocker, lock) as (close_error, attempts):
         if surfaces:
             with pytest.raises(OSError, match="close failed") as info:
                 await lock.release()
@@ -712,7 +712,7 @@ async def test_soft_close_error_suppression_releases_once(
     lock = AsyncSoftFileLock(lock_path, close_error_policy="suppress", run_in_executor=False)
     for _acquisition in range(depth):
         await lock.acquire()
-    with _close_after_commit(mocker) as (_, attempts):
+    with _close_after_commit(mocker, lock) as (_, attempts):
         if force:
             await lock.release(force=True)
         else:
@@ -734,7 +734,10 @@ async def test_soft_context_surfaces_close_error_after_cleanup(
 ) -> None:
     lock_path = tmp_path / "a"
     lock = AsyncSoftFileLock(lock_path, run_in_executor=False)
-    with _close_after_commit(mocker) as (close_error, attempts), pytest.raises(OSError, match="close failed") as info:
+    with (
+        _close_after_commit(mocker, lock) as (close_error, attempts),
+        pytest.raises(OSError, match="close failed") as info,
+    ):
         async with await lock.acquire() if use_proxy else lock:
             pass
     assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, False)
@@ -747,7 +750,10 @@ async def test_soft_second_release_does_not_close_reused_descriptor(
 ) -> None:
     lock = AsyncSoftFileLock(tmp_path / "a", run_in_executor=False)
     await lock.acquire()
-    with _close_after_commit(mocker) as (close_error, attempts), pytest.raises(OSError, match="close failed") as info:
+    with (
+        _close_after_commit(mocker, lock) as (close_error, attempts),
+        pytest.raises(OSError, match="close failed") as info,
+    ):
         await lock.release()
     assert info.value is close_error
     reused_fd = os.open(tmp_path / "reused", os.O_CREAT | os.O_WRONLY)
@@ -760,23 +766,29 @@ async def test_soft_second_release_does_not_close_reused_descriptor(
 
 
 @contextmanager
-def _close_after_commit(mocker: MockerFixture) -> Iterator[tuple[OSError, list[int]]]:
+def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Iterator[tuple[OSError, list[int]]]:
     real_close = os.close
     close_error = OSError(EINTR, "close failed")
     attempts: list[int] = []
-    # close is an attribute of the shared os module, so this patch binds for every thread rather than just this one.
-    # Leave another thread's close alone: counting it would inflate attempts, and failing it would break whatever
-    # unrelated work happens to be closing a descriptor while this window is open. Every lock here runs with
-    # run_in_executor=False, so the closes under test stay on this thread.
-    caller = threading.get_ident()
+    # close is an attribute of the shared os module, so this patch binds for every close in the process while the
+    # window is open, including one a GC-run finalizer (a multiprocessing pipe from an earlier test, say) makes on this
+    # very thread. Fail only the descriptor this lock lets go of: it clears its bookkeeping right before the one close
+    # attempt, so record the descriptor as it does.
+    released: list[int | None] = []
+    real_mark_released = lock._mark_descriptor_released
+
+    def mark_released() -> None:
+        released.append(lock._context.lock_file_fd)
+        real_mark_released()
 
     def close(fd: int) -> None:
         real_close(fd)
-        if threading.get_ident() != caller:
+        if fd not in released:
             return
         attempts.append(fd)
         raise close_error
 
+    mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_released)
     close_mock = mocker.patch("filelock._soft.os.close", side_effect=close)
     try:
         yield close_error, attempts
@@ -784,24 +796,30 @@ def _close_after_commit(mocker: MockerFixture) -> Iterator[tuple[OSError, list[i
         mocker.stop(close_mock)
 
 
-def test_close_after_commit_ignores_closes_from_other_threads(mocker: MockerFixture) -> None:
-    # The patch binds os.close process-wide, so a descriptor closed on another thread must pass through cleanly and
-    # stay out of the caller's recorded attempts rather than absorb the injected failure.
+@pytest.mark.asyncio
+async def test_close_after_commit_ignores_other_descriptors(tmp_path: Path, mocker: MockerFixture) -> None:
+    # The patch binds os.close process-wide, so a descriptor that is not the lock's, whether closed on another thread
+    # or by a finalizer the collector happens to run on this one, must pass through cleanly and stay out of the
+    # recorded attempts.
+    lock = AsyncSoftFileLock(tmp_path / "a", run_in_executor=False)
+    await lock.acquire()
     closed: list[int] = []
 
     def close_a_pipe() -> None:
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
-        os.close(write_fd)  # a non-caller thread: passes through untouched rather than raising the injected error
+        os.close(write_fd)
         closed.extend((read_fd, write_fd))
 
-    with _close_after_commit(mocker) as (_close_error, attempts):
+    with _close_after_commit(mocker, lock) as (_close_error, attempts):
+        close_a_pipe()
         worker = threading.Thread(target=close_a_pipe)
         worker.start()
         worker.join()
+        with pytest.raises(OSError, match="close failed"):
+            await lock.release()
 
-    assert len(closed) == 2
-    assert attempts == []
+    assert (len(closed), len(attempts), attempts[0] in closed) == (4, 1, False)
 
 
 @pytest.mark.parametrize(

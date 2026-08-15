@@ -351,7 +351,12 @@ def test_writer_preference_blocks_new_readers(lock_file: str) -> None:
         reader1.start()
         assert r1_held.wait(timeout=_PROCESS_DEADLINE)
         writer.start()
-        time.sleep(0.3)
+        # Start reader2 only once the writer's marker is on disk: a fixed sleep undershoots on a Windows runner still
+        # spawning the writer's interpreter, and reader2 then slips in ahead of the writer's intent.
+        deadline = time.monotonic() + _PROCESS_DEADLINE
+        while not Path(f"{lock_file}.write").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
         reader2.start()
         assert not r2_held.wait(timeout=0.5)
         r1_release.set()
@@ -369,11 +374,13 @@ def test_transaction_lock_timeout_across_threads(lock_file: str) -> None:
     # Two threads share one lock instance. Thread A holds the transaction lock while spinning on a peer
     # writer; thread B times out on the transaction lock, exercising the in-process Timeout path rather
     # than cross-process contention.
+    # Staleness is not under test: a peer heartbeat that stalls past a short threshold on a loaded runner would let
+    # thread A evict the peer and take the lock, turning thread B's Timeout into a same-instance ownership error.
     peer = SoftReadWriteLock(
         lock_file,
         is_singleton=False,
         heartbeat_interval=0.1,
-        stale_threshold=0.5,
+        stale_threshold=_PROCESS_DEADLINE,
         poll_interval=0.02,
     )
     peer.acquire_write(timeout=2)
@@ -382,7 +389,7 @@ def test_transaction_lock_timeout_across_threads(lock_file: str) -> None:
             lock_file,
             is_singleton=False,
             heartbeat_interval=0.1,
-            stale_threshold=0.5,
+            stale_threshold=_PROCESS_DEADLINE,
             poll_interval=0.02,
         )
         try:

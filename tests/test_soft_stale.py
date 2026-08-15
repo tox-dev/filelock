@@ -507,7 +507,7 @@ def test_close_error_policy_cleans_marker(
 ) -> None:
     lock = SoftFileLock(lock_path, close_error_policy=policy)
     lock.acquire()
-    with _close_after_commit(mocker) as (close_error, attempts):
+    with _close_after_commit(mocker, lock) as (close_error, attempts):
         if surfaces:
             with pytest.raises(OSError, match="close failed") as info:
                 lock.release()
@@ -531,7 +531,7 @@ def test_close_error_suppression_releases_once(
     lock = SoftFileLock(lock_path, close_error_policy="suppress")
     for _acquisition in range(depth):
         lock.acquire()
-    with _close_after_commit(mocker) as (_, attempts):
+    with _close_after_commit(mocker, lock) as (_, attempts):
         if force:
             lock.release(force=True)
         else:
@@ -552,7 +552,7 @@ def test_context_surfaces_close_error_after_cleanup(
 ) -> None:
     lock = SoftFileLock(lock_path)
     with (
-        _close_after_commit(mocker) as (close_error, attempts),
+        _close_after_commit(mocker, lock) as (close_error, attempts),
         pytest.raises(OSError, match="close failed") as info,
         lock.acquire() if use_proxy else lock,
     ):
@@ -567,7 +567,10 @@ def test_second_release_does_not_close_reused_descriptor(
 ) -> None:
     lock = SoftFileLock(lock_path)
     lock.acquire()
-    with _close_after_commit(mocker) as (close_error, attempts), pytest.raises(OSError, match="close failed") as info:
+    with (
+        _close_after_commit(mocker, lock) as (close_error, attempts),
+        pytest.raises(OSError, match="close failed") as info,
+    ):
         lock.release()
     assert info.value is close_error
     reused_fd = os.open(tmp_path / "reused", os.O_CREAT | os.O_WRONLY)
@@ -585,7 +588,7 @@ def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixt
     holder.acquire()
     lock_path.unlink()
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    with _close_after_commit(mocker) as (_, _attempts), pytest.raises(OSError, match="close failed"):
+    with _close_after_commit(mocker, holder) as (_, _attempts), pytest.raises(OSError, match="close failed"):
         holder.release()
     assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
 
@@ -595,7 +598,7 @@ def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: 
     lock.acquire()
     cleanup_error = RuntimeError("cleanup failed")
     unlink_mock = mocker.patch("filelock._soft.Path.unlink", side_effect=cleanup_error)
-    with _close_after_commit(mocker) as (close_error, _attempts), pytest.raises(ExceptionGroup) as info:
+    with _close_after_commit(mocker, lock) as (close_error, _attempts), pytest.raises(ExceptionGroup) as info:
         lock.release()
     mocker.stop(unlink_mock)
     assert (
@@ -613,43 +616,55 @@ def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: 
     )
 
 
-def test_close_after_commit_ignores_closes_from_other_threads(mocker: MockerFixture) -> None:
-    # The patch binds os.close process-wide, so a descriptor closed on another thread must pass through cleanly and
-    # stay out of the caller's recorded attempts rather than absorb the injected failure.
+def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: MockerFixture) -> None:
+    # The patch binds os.close process-wide, so a descriptor that is not the lock's, whether closed on another thread
+    # or by a finalizer the collector happens to run on this one, must pass through cleanly and stay out of the
+    # recorded attempts.
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
     closed: list[int] = []
 
     def close_a_pipe() -> None:
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
-        os.close(write_fd)  # a non-caller thread: passes through untouched rather than raising the injected error
+        os.close(write_fd)
         closed.extend((read_fd, write_fd))
 
-    with _close_after_commit(mocker) as (_close_error, attempts):
+    with _close_after_commit(mocker, lock) as (_close_error, attempts):
+        close_a_pipe()
         worker = threading.Thread(target=close_a_pipe)
         worker.start()
         worker.join()
+        with pytest.raises(OSError, match="close failed"):
+            lock.release()
 
-    assert len(closed) == 2
-    assert attempts == []
+    assert (len(closed), len(attempts), attempts[0] in closed) == (4, 1, False)
 
 
 @contextmanager
-def _close_after_commit(mocker: MockerFixture) -> Iterator[tuple[OSError, list[int]]]:
+def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Iterator[tuple[OSError, list[int]]]:
     real_close = os.close
     close_error = OSError(EINTR, "close failed")
     attempts: list[int] = []
-    # close is an attribute of the shared os module, so this patch binds for every thread rather than just this one.
-    # Leave another thread's close alone: counting it would inflate attempts, and failing it would break whatever
-    # unrelated work happens to be closing a descriptor while this window is open.
-    caller = threading.get_ident()
+    # close is an attribute of the shared os module, so this patch binds for every close in the process while the
+    # window is open, including one a GC-run finalizer (a multiprocessing pipe from an earlier test, say) makes on this
+    # very thread. Fail only the descriptor this lock lets go of: it clears its bookkeeping right before the one close
+    # attempt, so record the descriptor as it does.
+    released: list[int | None] = []
+    real_mark_released = lock._mark_descriptor_released
+
+    def mark_released() -> None:
+        released.append(lock._context.lock_file_fd)
+        real_mark_released()
 
     def close(fd: int) -> None:
         real_close(fd)
-        if threading.get_ident() != caller:
+        if fd not in released:
             return
         attempts.append(fd)
         raise close_error
 
+    mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_released)
     close_mock = mocker.patch("filelock._soft.os.close", side_effect=close)
     try:
         yield close_error, attempts
