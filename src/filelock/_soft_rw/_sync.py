@@ -891,6 +891,19 @@ def _break_stale_marker(  # ruff:ignore[too-many-return-statements]  # each retu
     return True
 
 
+def _marker_hostname() -> str:
+    # _parse_marker_bytes accepts a hostname of 1..253 printable non-space ASCII bytes (the RFC 1123 grammar) and reads
+    # anything else as a malformed marker a peer may evict. socket.gethostname() is not bound to that grammar: a kernel
+    # hostname may carry a space or a non-ASCII byte, or run past 253 bytes. Writing it verbatim makes the holder
+    # publish a marker its own heartbeat cannot parse, so _refresh_marker stops the heartbeat on the first tick and a
+    # peer evicts the still-held marker as stale (the space case), or _atomic_create_marker aborts with
+    # UnicodeEncodeError before the marker exists (the non-ASCII case). The field is stored for diagnostics only;
+    # nothing here reads it back. Fold every out-of-grammar byte to '?' so the writer stays inside the reader's grammar
+    # and a lock is never lost to its own hostname.
+    hostname = "".join(char if "\x21" <= char <= "\x7e" else "?" for char in socket.gethostname())
+    return hostname[:253] or "?"
+
+
 def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -> None:
     # O_NOFOLLOW blocks the symlink-overwrite attack where an attacker pre-creates the marker path as a
     # symlink pointing at a victim file. Mode 0o600 keeps the token unreadable to other users.
@@ -905,7 +918,7 @@ def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -
     try:
         st = os.fstat(fd)
         identity = st.st_dev, st.st_ino
-        write_all(fd, f"{token}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii"))
+        write_all(fd, f"{token}\n{os.getpid()}\n{_marker_hostname()}\n".encode("ascii"))
     except BaseException:
         os.close(fd)
         if identity is not None and _same_file(name, identity, dir_fd=dir_fd):
