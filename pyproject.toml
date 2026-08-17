@@ -209,22 +209,22 @@ ini_options.asyncio_default_fixture_loop_scope = "session"
 ini_options.timeout = 20
 
 [tool.coverage]
-run.concurrency = [
-  "multiprocessing",
-  "thread",
-]
 # The pragma plugin configures the run; measuring it would report the tooling alongside the package under test.
 run.omit = [
   "*/tasks/*",
 ]
-run.parallel = true
-run.patch = [
-  "_exit",
-  "subprocess",
+run.concurrency = [
+  "multiprocessing",
+  "thread",
 ]
+run.parallel = true
 run.plugins = [
   "covdefaults",
   "coverage_pragmas",
+]
+run.patch = [
+  "_exit",
+  "subprocess",
 ]
 run.sigterm = true
 paths.other = [
