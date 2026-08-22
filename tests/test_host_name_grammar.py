@@ -33,6 +33,7 @@ def test_soft_file_lock_recognizes_its_own_marker(tmp_path: Path) -> None:
         assert lock.is_lock_held_by_us is True
 
 
+@pytest.mark.requires_hard_links
 @pytest.mark.usefixtures("out_of_grammar_host")
 def test_strict_soft_file_lock_reads_back_its_own_claim(tmp_path: Path) -> None:
     with StrictSoftFileLock(tmp_path / "resource.lock", timeout=2) as lock:
