@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import socket
 import sys
 from errno import ENODEV, EPERM
 from typing import TYPE_CHECKING, Final
@@ -21,8 +20,23 @@ _NEEDS_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 )
 
 
-def test_host_name_matches_socket() -> None:
-    assert host_name() == socket.gethostname()
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param("build-01.example.com", "build-01.example.com", id="plain"),
+        pytest.param("build 01", "build?2001", id="space"),
+        pytest.param("build\n01", "build?0a01", id="newline"),
+        pytest.param("wörks", "w?c3?b6rks", id="non-ascii"),
+        pytest.param("who?", "who?3f", id="escape-character"),
+        pytest.param("b\udcffd", "b?ffd", id="undecodable-byte"),
+        pytest.param("x" * 300, "x" * 253, id="over-long"),
+        pytest.param("ä" * 200, "?c3?a4" * 42, id="over-long-escaped"),
+        pytest.param("", "?", id="empty"),
+    ],
+)
+def test_host_name_escapes_out_of_grammar_bytes(raw: str, expected: str, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._identity.socket.gethostname", return_value=raw)
+    assert host_name() == expected
 
 
 def test_process_alive_true_for_self() -> None:

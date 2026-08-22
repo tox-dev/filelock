@@ -7,7 +7,6 @@ import hmac
 import os
 import re
 import secrets
-import socket
 import stat
 import sys
 import threading
@@ -30,6 +29,7 @@ from filelock._api import (
     _unregister_owned_descriptor,
 )
 from filelock._error import Timeout
+from filelock._identity import host_name
 from filelock._soft import SoftFileLock
 from filelock._util import ensure_directory_exists, touch, write_all
 
@@ -905,7 +905,7 @@ def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -
     try:
         st = os.fstat(fd)
         identity = st.st_dev, st.st_ino
-        write_all(fd, f"{token}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii"))
+        write_all(fd, f"{token}\n{os.getpid()}\n{host_name()}\n".encode("ascii"))
     except BaseException:
         os.close(fd)
         if identity is not None and _same_file(name, identity, dir_fd=dir_fd):

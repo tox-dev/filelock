@@ -1,0 +1,3 @@
+Every lock class now escapes the hostname it publishes, so a host whose ``socket.gethostname()`` carries a space, a
+newline or a byte outside UTF-8 no longer writes a marker it reads back as malformed. Such a host used to lose a held
+``SoftReadWriteLock`` read slot to a peer and could not take a write slot or a ``StrictSoftFileLock`` at all.

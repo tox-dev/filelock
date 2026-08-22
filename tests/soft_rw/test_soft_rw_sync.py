@@ -770,6 +770,35 @@ def test_stale_malformed_marker_is_evicted(lock_file: str, content: bytes) -> No
         lock.close()
 
 
+@pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
+@pytest.mark.parametrize(
+    "raw",
+    [pytest.param("host with space", id="space"), pytest.param("wörks", id="non-ascii")],
+)
+@pytest.mark.timeout(10)
+def test_out_of_grammar_hostname_keeps_the_slot_held(
+    lock_file: str, mocker: MockerFixture, raw: str, mode: Literal["read", "write"]
+) -> None:
+    # A kernel hostname outside the marker grammar used to reach the marker verbatim, so a holder published a marker
+    # its own heartbeat read as malformed. A write slot then never claimed at all, and a read slot aged out under its
+    # live reader and fell to the next contender.
+    mocker.patch("filelock._identity.socket.gethostname", return_value=raw)
+    holder = _make_lock(lock_file)
+    acquire = holder.acquire_write if mode == "write" else holder.acquire_read
+    acquire(timeout=2)
+    try:
+        contender = _make_lock(lock_file)
+        try:
+            # longer than the stale threshold, so only a heartbeat that reads its own marker keeps the slot
+            with pytest.raises(Timeout):
+                contender.acquire_write(timeout=1)
+        finally:
+            contender.close()
+    finally:
+        holder.release()
+        holder.close()
+
+
 def test_fifo_write_marker_does_not_block(lock_file: str) -> None:  # pragma: needs fifo
     if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
         pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
