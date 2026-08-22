@@ -877,6 +877,10 @@ returns an :class:`OwnerRecord <filelock.OwnerRecord>`:
         print(owner.lease_duration)  # 30.0
         print(owner.start)           # process start token, or None where unavailable
 
+Every record holds ``socket.gethostname()`` with each byte outside printable non-space ASCII, and each ``?``,
+escaped as ``?<hex>``, since a marker line cannot carry a space, a newline, or a byte no codec encodes. A
+conventional hostname reaches the record unchanged, so an escape names a host whose kernel hostname is not one.
+
 :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` does **not** publish this record and has no ``owner``: it
 derives from :class:`BaseFileLock <filelock.BaseFileLock>`, keeps a permanent sentinel at the lock path, and stores one
 record per owner under ``work.lock.filelock/claims``. Read those through

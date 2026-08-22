@@ -1,4 +1,3 @@
-``SoftReadWriteLock`` and ``AsyncSoftReadWriteLock`` now normalise the hostname written into a marker so a host whose
-``socket.gethostname()`` carries a space or a non-ASCII byte no longer publishes a marker its own heartbeat parses as
-malformed. Previously such a marker stopped the heartbeat on its first refresh and let a peer evict a still-held lock,
-and a non-ASCII hostname failed the acquire outright with ``UnicodeEncodeError``.
+Every lock class now escapes the hostname it publishes, so a host whose ``socket.gethostname()`` carries a space, a
+newline or a byte outside UTF-8 no longer writes a marker it reads back as malformed. Such a host used to lose a held
+``SoftReadWriteLock`` read slot to a peer and could not take a write slot or a ``StrictSoftFileLock`` at all.

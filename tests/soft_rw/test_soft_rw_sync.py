@@ -770,37 +770,33 @@ def test_stale_malformed_marker_is_evicted(lock_file: str, content: bytes) -> No
         lock.close()
 
 
+@pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
 @pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("clean-host.example", "clean-host.example"),
-        ("host with space", "host?with?space"),
-        ("wörks", "w?rks"),
-        ("x" * 300, "x" * 253),
-        ("", "?"),
-    ],
+    "raw",
+    [pytest.param("host with space", id="space"), pytest.param("wörks", id="non-ascii")],
 )
-def test_marker_hostname_stays_within_reader_grammar(raw: str, expected: str, mocker: MockerFixture) -> None:
-    mocker.patch.object(sync_mod.socket, "gethostname", return_value=raw)
-    hostname = sync_mod._marker_hostname()
-    assert hostname == expected
-    # the normalized hostname must parse cleanly where the raw one would be read as a malformed marker
-    assert sync_mod._parse_marker_bytes(f"{'0' * 32}\n4711\n{hostname}\n".encode("ascii")) is not None
-
-
-@pytest.mark.parametrize("raw", ["host with space", "wörks"])
-def test_unusual_hostname_marker_is_self_refreshable(lock_file: str, raw: str, mocker: MockerFixture) -> None:
-    # A host whose socket.gethostname() falls outside the marker grammar (a space, a non-ASCII byte) must still
-    # publish a marker its own heartbeat can parse. Otherwise the space case stops the heartbeat and lets a peer
-    # evict a still-held lock, and the non-ASCII case aborts the acquire outright with UnicodeEncodeError.
-    mocker.patch.object(sync_mod.socket, "gethostname", return_value=raw)
-    lock = _make_lock(lock_file, heartbeat_interval=30, stale_threshold=90)
-    lock.acquire_write(timeout=2)
+@pytest.mark.timeout(10)
+def test_out_of_grammar_hostname_keeps_the_slot_held(
+    lock_file: str, mocker: MockerFixture, raw: str, mode: Literal["read", "write"]
+) -> None:
+    # A kernel hostname outside the marker grammar used to reach the marker verbatim, so a holder published a marker
+    # its own heartbeat read as malformed. A write slot then never claimed at all, and a read slot aged out under its
+    # live reader and fell to the next contender.
+    mocker.patch("filelock._identity.socket.gethostname", return_value=raw)
+    holder = _make_lock(lock_file)
+    acquire = holder.acquire_write if mode == "write" else holder.acquire_read
+    acquire(timeout=2)
     try:
-        assert lock._refresh_marker() is True
+        contender = _make_lock(lock_file)
+        try:
+            # longer than the stale threshold, so only a heartbeat that reads its own marker keeps the slot
+            with pytest.raises(Timeout):
+                contender.acquire_write(timeout=1)
+        finally:
+            contender.close()
     finally:
-        lock.release(force=True)
-        lock.close()
+        holder.release()
+        holder.close()
 
 
 def test_fifo_write_marker_does_not_block(lock_file: str) -> None:  # pragma: needs fifo
