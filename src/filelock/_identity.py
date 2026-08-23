@@ -7,10 +7,31 @@ from errno import EPERM, ESRCH
 from pathlib import Path
 from typing import Final
 
+#: Every marker format in this package caps the hostname at the RFC 1123 limit and reads a longer one as malformed.
+_HOST_NAME_LIMIT: Final[int] = 253
+#: The bytes those formats carry verbatim: printable non-space ASCII, less the ``?`` reserved for the escape.
+_HOST_NAME_VERBATIM: Final[frozenset[int]] = frozenset(range(0x21, 0x7F)) - {ord("?")}
+
 
 def host_name() -> str:
-    """The hostname recorded alongside an owner, so a marker written on another machine is never probed here."""
-    return socket.gethostname()
+    """
+    The hostname recorded alongside an owner, so a marker written on another machine is never probed here.
+
+    Marker formats here hold the field to printable non-space ASCII, while ``socket.gethostname()`` reports whatever
+    the kernel stores: a space, a newline that forges an extra marker line, or a byte no codec encodes, which Python
+    hands back as a surrogate. A holder that publishes one raw writes a marker it cannot read back, and loses the lock
+    to the first peer that ages it out as malformed. ``?`` is illegal in a hostname, so escaping it along with every
+    out-of-grammar byte as ``?<hex>`` leaves a real name untouched and still keeps two hosts apart, which
+    :func:`owner_is_stale` relies on to refuse to probe a foreign PID.
+    """
+    name = ""
+    for byte in socket.gethostname().encode("utf-8", "surrogateescape"):
+        piece = chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
+        if len(name) + len(piece) > _HOST_NAME_LIMIT:
+            break
+        name += piece
+    # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
+    return name or "?"
 
 
 def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
