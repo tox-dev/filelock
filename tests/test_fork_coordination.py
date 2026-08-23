@@ -780,13 +780,14 @@ import asyncio
 import os
 import sys
 import threading
+import time
 import warnings
 
 from filelock import AsyncFileLock
 
 warnings.filterwarnings("ignore", message=".*multi-threaded, use of fork.*", category=DeprecationWarning)
 
-async def main() -> int:
+async def main() -> tuple[int, tuple[int, int]]:
     callback_started = asyncio.Event()
     finish_callback = threading.Event()
     loop = asyncio.get_running_loop()
@@ -812,50 +813,55 @@ async def main() -> int:
     except asyncio.CancelledError:
         pass
     else:
-        return 1
+        raise SystemExit(1)
     if lock.is_locked or lock.lock_counter != 0:
-        return 2
+        raise SystemExit(2)
+    return descriptor, identity
 
-    path_stat = os.stat(sys.argv[1])
-    if (path_stat.st_dev, path_stat.st_ino) != identity:
-        return 3
+descriptor, identity = asyncio.run(main())
 
-    occupant = os.open(os.devnull, os.O_RDONLY)
-    if occupant != descriptor:
-        os.dup2(occupant, descriptor)
-    source = os.open(sys.argv[1], os.O_RDWR)
-    if source == descriptor:
-        return 4
-    if (source_stat := os.fstat(source)).st_dev != identity[0] or source_stat.st_ino != identity[1]:
-        return 5
-    os.dup2(source, descriptor)
-    os.close(source)
-    if occupant != descriptor:
-        os.close(occupant)
+path_stat = os.stat(sys.argv[1])
+if (path_stat.st_dev, path_stat.st_ino) != identity:
+    raise SystemExit(3)
 
-    # The canceled acquire ran the flock backend in the default executor, leaving an idle worker thread behind. Join it
-    # before forking so the child is single-threaded: NetBSD deadlocks a child forked from a multi-threaded process.
-    await loop.shutdown_default_executor()
+occupant = os.open(os.devnull, os.O_RDONLY)
+if occupant != descriptor:
+    os.dup2(occupant, descriptor)
+source = os.open(sys.argv[1], os.O_RDWR)
+if source == descriptor:
+    raise SystemExit(4)
+if (source_stat := os.fstat(source)).st_dev != identity[0] or source_stat.st_ino != identity[1]:
+    raise SystemExit(5)
+os.dup2(source, descriptor)
+os.close(source)
+if occupant != descriptor:
+    os.close(occupant)
 
-    child_pid = os.fork()
-    if child_pid == 0:
-        try:
-            replacement_stat = os.fstat(descriptor)
-        except OSError:
-            os._exit(1)
-        os._exit(0 if (replacement_stat.st_dev, replacement_stat.st_ino) == identity else 2)
-    _, status = os.waitpid(child_pid, 0)
-    os.close(descriptor)
-    return os.waitstatus_to_exitcode(status)
+# The canceled acquire ran the flock backend in the default executor. asyncio.run() joins that worker on the way out,
+# but Thread.join() returns while the OS thread is still unwinding, and NetBSD deadlocks a child forked from a process
+# that still carries one (#707). So fork from module scope with the loop closed, leave the worker time to go, and
+# report a thread that is still counted rather than wedging the fork on it.
+time.sleep(0.5)
+if threading.active_count() != 1:
+    raise SystemExit(6)
 
-raise SystemExit(asyncio.run(main()))
+child_pid = os.fork()
+if child_pid == 0:
+    try:
+        replacement_stat = os.fstat(descriptor)
+    except OSError:
+        os._exit(1)
+    os._exit(0 if (replacement_stat.st_dev, replacement_stat.st_ino) == identity else 2)
+_, status = os.waitpid(child_pid, 0)
+os.close(descriptor)
+raise SystemExit(os.waitstatus_to_exitcode(status))
 """
     result = subprocess.run(
         [sys.executable, "-c", script, str(tmp_path / "canceled.lock")],
         check=False,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=30,
     )
 
     assert (result.returncode, result.stderr) == (0, "")
