@@ -7,6 +7,19 @@
 .. towncrier release notes start
 
 ********************
+ 3.32.4 (2026-08-23)
+********************
+
+- ``StrictSoftFileLock`` always retries a claim read whose first attempt reports the claim as pending, so a first read
+  that itself outlasts the retry grace no longer fails closed on a claim it could have read. :pr:`705`
+- ``WindowsFileLock`` waits out a transient ``STATUS_ACCESS_DENIED`` from ``NtCreateFile`` for up to half a second
+  before raising ``PermissionError``, since a peer unlinking the lock file as it releases can answer that for a moment; a
+  real denial still fails fast. :pr:`705`
+- Every lock class now escapes the hostname it publishes, so a host whose ``socket.gethostname()`` carries a space, a
+  newline or a byte outside UTF-8 no longer writes a marker it reads back as malformed. Such a host used to lose a held
+  ``SoftReadWriteLock`` read slot to a peer and could not take a write slot or a ``StrictSoftFileLock`` at all. :pr:`709`
+
+********************
  3.32.3 (2026-08-13)
 ********************
 
