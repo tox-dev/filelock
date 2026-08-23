@@ -777,7 +777,9 @@ def test_cancelled_async_acquire_unregisters_reused_descriptor(tmp_path: Path) -
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import os
+import signal
 import sys
 import threading
 import time
@@ -786,6 +788,21 @@ import warnings
 from filelock import AsyncFileLock
 
 warnings.filterwarnings("ignore", message=".*multi-threaded, use of fork.*", category=DeprecationWarning)
+
+child_pid = 0
+
+def report_stall(_signum: int, _frame: object) -> None:
+    # Every wait below is bounded, so reaching this means something wedged: the NetBSD fork deadlock (#707, #689)
+    # arrived as a bare SIGKILL naming nothing. Print every stack, then kill the child, which holds the captured
+    # pipes: subprocess.run() waits for those to close even after it has killed this process.
+    faulthandler.dump_traceback(all_threads=True)
+    if child_pid:
+        os.kill(child_pid, signal.SIGKILL)
+    os._exit(7)
+
+faulthandler.enable()
+signal.signal(signal.SIGALRM, report_stall)
+signal.alarm(15)
 
 async def main() -> tuple[int, tuple[int, int]]:
     callback_started = asyncio.Event()
@@ -853,6 +870,7 @@ if child_pid == 0:
         os._exit(1)
     os._exit(0 if (replacement_stat.st_dev, replacement_stat.st_ino) == identity else 2)
 _, status = os.waitpid(child_pid, 0)
+signal.alarm(0)
 os.close(descriptor)
 raise SystemExit(os.waitstatus_to_exitcode(status))
 """
