@@ -1,1 +1,1 @@
-Clarify in the thread-local section that ``mode`` is read-only and fixed at construction, unlike ``poll_interval``, ``timeout``, ``blocking`` and ``lifetime``; assigning ``mode`` raises ``AttributeError``.
+Document that ``mode`` has no setter: unlike ``poll_interval``, ``timeout``, ``blocking`` and ``lifetime``, it is fixed at construction and ``lock.mode = ...`` raises ``AttributeError``.

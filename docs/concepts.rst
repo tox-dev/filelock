@@ -730,13 +730,13 @@ each thread gets its own context via ``threading.local``. This means:
 - Two threads holding the same ``FileLock`` object each maintain
   independent lock counters.
 - Thread A releasing the lock doesn't affect Thread B's counter.
-- Setting a writable configuration property (``poll_interval``, ``timeout``,
-  ``blocking``, or ``lifetime``; ``mode`` is read-only and fixed at
-  construction) - for example ``lock.poll_interval = 0.5`` - affects only the
-  thread that performed the write. Other threads continue to see the value
-  supplied to the lock's constructor; ``threading.local`` re-applies the
-  original constructor arguments the first time each new thread accesses the
-  context.
+- Setting a configuration property (for example ``lock.poll_interval = 0.5``)
+  affects only the thread that performed the write. Other threads continue
+  to see the value supplied to the lock's constructor; ``threading.local``
+  re-applies the original constructor arguments the first time each new
+  thread accesses the context.
+- ``mode`` is the one exception: it has no setter, so construction is the only
+  place it is ever set and ``lock.mode = ...`` raises ``AttributeError``.
 
 When ``thread_local=False``, all threads share the same context, including
 configuration values. This is useful for objects passed between threads or
