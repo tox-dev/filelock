@@ -787,6 +787,25 @@ def test_non_thread_local_setter_visibility(lock_type: type[BaseFileLock], tmp_p
     assert observed == [pytest.approx(0.5)]
 
 
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_mode_is_read_only(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    """``mode`` is fixed at construction; the other config properties are writable.
+
+    The thread-local documentation lists ``mode`` among the per-thread context
+    fields but, unlike ``poll_interval``, ``timeout``, ``blocking`` and
+    ``lifetime``, it has no setter. This pins that contract so the docstring and
+    the code cannot drift.
+    """
+    lock = lock_type(tmp_path / "x.lock", mode=0o644)
+
+    with pytest.raises(AttributeError):
+        lock.mode = 0o600  # ty: ignore[invalid-assignment]  # intentionally assigning a read-only property
+
+    # the properties the docstring lists as writable each expose a setter.
+    for prop in ("poll_interval", "timeout", "blocking", "lifetime"):
+        assert getattr(type(lock), prop).fset is not None, prop
+
+
 def test_subclass_compatibility(tmp_path: Path) -> None:
     class MyFileLock(FileLock):
         def __init__(
