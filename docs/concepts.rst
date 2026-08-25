@@ -735,6 +735,8 @@ each thread gets its own context via ``threading.local``. This means:
   to see the value supplied to the lock's constructor; ``threading.local``
   re-applies the original constructor arguments the first time each new
   thread accesses the context.
+- ``mode`` is the one exception: it has no setter, so construction is the only
+  place it is ever set and ``lock.mode = ...`` raises ``AttributeError``.
 
 When ``thread_local=False``, all threads share the same context, including
 configuration values. This is useful for objects passed between threads or

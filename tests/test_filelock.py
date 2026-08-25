@@ -787,6 +787,21 @@ def test_non_thread_local_setter_visibility(lock_type: type[BaseFileLock], tmp_p
     assert observed == [pytest.approx(0.5)]
 
 
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_mode_is_read_only(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    """``mode`` has no setter, unlike the other per-thread configuration values.
+
+    Reading it back afterwards separates a missing setter from a missing attribute; no ``match`` because the message
+    differs across interpreters.
+    """
+    lock = lock_type(tmp_path / "x.lock", mode=0o644)
+
+    with pytest.raises(AttributeError):
+        lock.mode = 0o600  # ty: ignore[invalid-assignment]  # the absent setter is the contract under test
+
+    assert lock.mode == 0o644
+
+
 def test_subclass_compatibility(tmp_path: Path) -> None:
     class MyFileLock(FileLock):
         def __init__(

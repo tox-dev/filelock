@@ -675,8 +675,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             lock's internal context are per-thread**, including the configuration values ``poll_interval``, ``timeout``,
             ``blocking``, ``mode``, and ``lifetime``. Setting one of these properties from one thread does not change
             the value seen by another thread; threads that did not perform the write continue to see the value supplied
-            at construction time. If you need configuration values to be visible across threads, construct the lock
-            with ``thread_local=False``.
+            at construction time. ``mode`` has no setter, so construction is the only place it is ever set. If you need
+            configuration values to be visible across threads, construct the lock with ``thread_local=False``.
         :param blocking: whether the lock should be blocking or not
         :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per lock
             file. This is useful if you want to use the lock object for reentrant locking without needing to pass the
