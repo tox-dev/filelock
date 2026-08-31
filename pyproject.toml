@@ -153,6 +153,7 @@ lint.per-file-ignores."tests/**/*.py" = [
   "magic-value-comparison",               # Magic value used in comparison, consider replacing with a constant variable
   "non-lowercase-variable-in-function",   # variable in function should be lowercase
   "private-member-access",                # accessing private members acceptable in tests
+  "pytest-fixture-autouse",               # shared setup fixtures are meant to apply to every test
   "subprocess-without-shell-equals-true", # `subprocess` call: check for execution of untrusted input
   "too-many-arguments",                   # too many arguments in function definition
   "too-many-positional-arguments",        # too many positional arguments
