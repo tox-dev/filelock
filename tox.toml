@@ -63,6 +63,25 @@ commands = [
   ], extend = true },
 ]
 
+[env."3.14"]
+# Set COVERAGE_FILE again: overriding set_env here drops the value inherited from env_run_base, and without it
+# coverage writes .coverage in the repo root instead of {work_dir}/.coverage.3.14, so the CI rename cannot find it.
+set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage.{env_name}" }
+set_env.FILELOCK_OLD_CLIENT_PATH = "{env_tmp_dir}{/}filelock-3.20.0"
+set_env.PYTHONPATH = "{tox_root}{/}tasks"
+commands_pre = [
+  [
+    "uv",
+    "pip",
+    "install",
+    "--target",
+    "{env_tmp_dir}{/}filelock-3.20.0",
+    "--no-deps",
+    "--reinstall",
+    "filelock==3.20.0",
+  ],
+]
+
 [env.coverage]
 description = "combine coverage files and generate diff (against DIFF_AGAINST defaulting to origin/main)"
 skip_install = true
@@ -172,33 +191,14 @@ package = "editable"
 dependency_groups = [ "dev" ]
 commands = [ [ "uv", "pip", "list", "--format=columns" ], [ "python", "-c", 'print(r"{env_python}")' ] ]
 
-[env.release]
-description = "build the changelog from the news fragments for the given version, e.g. tox r -e release -- 3.30.0"
-skip_install = true
-dependency_groups = [ "release" ]
-commands = [ [ "towncrier", "build", "--yes", "--version", "{posargs}" ] ]
-
-[env."3.14"]
-# Set COVERAGE_FILE again: overriding set_env here drops the value inherited from env_run_base, and without it
-# coverage writes .coverage in the repo root instead of {work_dir}/.coverage.3.14, so the CI rename cannot find it.
-set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage.{env_name}" }
-set_env.FILELOCK_OLD_CLIENT_PATH = "{env_tmp_dir}{/}filelock-3.20.0"
-set_env.PYTHONPATH = "{tox_root}{/}tasks"
-commands_pre = [
-  [
-    "uv",
-    "pip",
-    "install",
-    "--target",
-    "{env_tmp_dir}{/}filelock-3.20.0",
-    "--no-deps",
-    "--reinstall",
-    "filelock==3.20.0",
-  ],
-]
-
 # tox invents an env on the fly only for a py or pypy factor, so GraalPy has to be declared to be selectable at all. It
 # stays out of env_list because, like PyPy, it is a CI-only check that runs unmeasured and feeds no coverage data: the
 # 100% gate remains CPython's. Its job is to keep the capability probes the suite gates on honest on a second runtime.
 [env."graalpy3.11"]
 description = "run the tests with pytest under {env_name}, unmeasured"
+
+[env.release]
+description = "build the changelog from the news fragments for the given version, e.g. tox r -e release -- 3.30.0"
+skip_install = true
+dependency_groups = [ "release" ]
+commands = [ [ "towncrier", "build", "--yes", "--version", "{posargs}" ] ]
