@@ -1,1 +1,0 @@
-Document that ``mode`` has no setter: unlike ``poll_interval``, ``timeout``, ``blocking`` and ``lifetime``, it is fixed at construction and ``lock.mode = ...`` raises ``AttributeError``.

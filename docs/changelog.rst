@@ -7,6 +7,14 @@
 .. towncrier release notes start
 
 ********************
+ 3.32.5 (2026-08-31)
+********************
+
+- ``SoftFileLease.token`` and ``AsyncSoftFileLease.token`` now read ``None`` after a failed acquisition, so a contender
+  turned away by a live holder no longer reports a token for a claim it never published. :pr:`721`
+- Document that ``mode`` has no setter: unlike ``poll_interval``, ``timeout``, ``blocking`` and ``lifetime``, it is fixed at construction and ``lock.mode = ...`` raises ``AttributeError``. :pr:`716`
+
+********************
  3.32.4 (2026-08-23)
 ********************
 
