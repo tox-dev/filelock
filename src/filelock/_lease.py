@@ -181,9 +181,7 @@ class SoftFileLease(MarkerSoftFileLock):
     def _acquire(self) -> None:
         claim = self._claim
         self._stop_heartbeat()  # no earlier claim's heartbeat outlives the acquisition of the next one
-        # The published record carries the token, so the claim has to name it before the marker is written. An attempt
-        # that ends up holding nothing hands it back, or token keeps naming a claim this process never took. A raise
-        # once the descriptor is held needs nothing here: that rollback releases, and a release clears the token.
+        # The published record reads the token, so it exists before the marker is written and goes back on failure.
         claim.token = token = secrets.token_hex(16)
         claim.compromise = None
         try:
@@ -197,7 +195,7 @@ class SoftFileLease(MarkerSoftFileLock):
             identity := self._context.lock_file_fd_identity
         ) is not None:
             self._start_heartbeat(claim, fd, identity, token)
-        else:  # the marker turned this contender away, so it published nothing and holds no claim to name
+        else:
             claim.token = None
 
     def _release(self) -> None:

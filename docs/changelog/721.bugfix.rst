@@ -1,3 +1,2 @@
-``SoftFileLease.token`` and ``AsyncSoftFileLease.token`` now read ``None`` after an acquisition that ends without the
-lease, so a contender turned away by a live holder, or one whose acquire raises, no longer reports a token for a claim
-it never published.
+``SoftFileLease.token`` and ``AsyncSoftFileLease.token`` now read ``None`` after a failed acquisition, so a contender
+turned away by a live holder no longer reports a token for a claim it never published.
