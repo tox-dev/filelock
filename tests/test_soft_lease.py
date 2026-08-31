@@ -82,6 +82,27 @@ def test_lease_token_names_the_claim_only_while_held(marker: Path) -> None:
     assert lease.token is None
 
 
+def test_lease_token_names_no_claim_after_a_contended_acquire(marker: Path) -> None:
+    contender = _lease(marker, timeout=0)
+
+    with _lease(marker):
+        with pytest.raises(Timeout):
+            contender.acquire()
+        assert contender.token is None
+
+
+def test_lease_token_names_no_claim_after_an_acquire_that_raises(tmp_path: Path) -> None:
+    # The marker's parent is a regular file, so the acquire raises while creating the directory, before it ever holds
+    # a descriptor. Nothing rolls the token back for it: that rollback only runs for an acquire that reached held.
+    (blocker := tmp_path / "blocker").touch()
+    lease = _lease(blocker / "resource.lock")
+
+    with pytest.raises(FileExistsError):
+        lease.acquire()
+
+    assert lease.token is None
+
+
 def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> None:
     holder = _lease(marker)
 
