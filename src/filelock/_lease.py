@@ -181,15 +181,22 @@ class SoftFileLease(MarkerSoftFileLock):
     def _acquire(self) -> None:
         claim = self._claim
         self._stop_heartbeat()  # no earlier claim's heartbeat outlives the acquisition of the next one
+        # The published record reads the token, so it exists before the marker is written and goes back on failure.
         claim.token = token = secrets.token_hex(16)
         claim.compromise = None
-        super()._acquire()
+        try:
+            super()._acquire()
+        except BaseException:
+            claim.token = None
+            raise
         # The context is thread-local by default, so the heartbeat thread cannot read the descriptor this one just
         # published, nor the claim this one owns. Hand it the fd, the inode it verified and the claim instead.
         if (fd := self._context.lock_file_fd) is not None and (
             identity := self._context.lock_file_fd_identity
         ) is not None:
             self._start_heartbeat(claim, fd, identity, token)
+        else:
+            claim.token = None
 
     def _release(self) -> None:
         self._stop_heartbeat()
