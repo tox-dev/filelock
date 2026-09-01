@@ -5,6 +5,7 @@ import secrets
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from math import isfinite
 from threading import Event, Thread, current_thread, local
 from typing import TYPE_CHECKING, Literal
 
@@ -131,8 +132,11 @@ class SoftFileLease(MarkerSoftFileLock):
             hide.
 
         """
-        if lease_duration <= 0:
-            msg = f"lease_duration must be positive, got {lease_duration!r}"
+        if isinstance(lease_duration, bool) or not isinstance(lease_duration, (int, float)):
+            msg = f"lease_duration must be a finite positive number, not {type(lease_duration).__name__}"
+            raise TypeError(msg)
+        if not isfinite(lease_duration) or lease_duration <= 0:
+            msg = f"lease_duration must be positive and finite, got {lease_duration!r}"
             raise ValueError(msg)
         if heartbeat_interval is None:
             heartbeat_interval = lease_duration / 3

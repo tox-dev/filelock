@@ -57,6 +57,25 @@ def _lease(
     )
 
 
+@pytest.mark.parametrize(
+    ("duration", "error_type"),
+    [
+        pytest.param(True, TypeError, id="true"),
+        pytest.param(False, TypeError, id="false"),
+        pytest.param(float("nan"), ValueError, id="nan"),
+        pytest.param(float("inf"), ValueError, id="positive-infinity"),
+        pytest.param(float("-inf"), ValueError, id="negative-infinity"),
+    ],
+)
+def test_lease_rejects_invalid_duration(
+    marker: Path,
+    duration: float | bool,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type, match="lease_duration"):
+        SoftFileLease(marker, lease_duration=duration, heartbeat_interval=_HEARTBEAT)
+
+
 def test_lease_publishes_its_claim(marker: Path) -> None:
     lease = _lease(marker)
 
