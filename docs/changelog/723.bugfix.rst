@@ -1,0 +1,2 @@
+``SoftFileLease`` and ``AsyncSoftFileLease`` now reject a boolean or non-finite ``lease_duration``, which used to
+publish an owner record their own ``owner`` property reads back as malformed.
