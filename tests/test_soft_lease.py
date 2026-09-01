@@ -57,25 +57,6 @@ def _lease(
     )
 
 
-@pytest.mark.parametrize(
-    ("duration", "error_type"),
-    [
-        pytest.param(True, TypeError, id="true"),
-        pytest.param(False, TypeError, id="false"),
-        pytest.param(float("nan"), ValueError, id="nan"),
-        pytest.param(float("inf"), ValueError, id="positive-infinity"),
-        pytest.param(float("-inf"), ValueError, id="negative-infinity"),
-    ],
-)
-def test_lease_rejects_invalid_duration(
-    marker: Path,
-    duration: float | bool,
-    error_type: type[Exception],
-) -> None:
-    with pytest.raises(error_type, match="lease_duration"):
-        SoftFileLease(marker, lease_duration=duration, heartbeat_interval=_HEARTBEAT)
-
-
 def test_lease_publishes_its_claim(marker: Path) -> None:
     lease = _lease(marker)
 
@@ -425,19 +406,28 @@ def test_lease_does_not_expire_a_strict_holder(marker: Path) -> None:  # pragma:
 
 
 @pytest.mark.parametrize(
-    ("lease_duration", "heartbeat_interval", "message"),
+    ("lease_duration", "heartbeat_interval", "error", "message"),
     [
-        pytest.param(0, None, "lease_duration must be positive", id="zero-duration"),
-        pytest.param(-1, None, "lease_duration must be positive", id="negative-duration"),
-        pytest.param(_DURATION, 0, "heartbeat_interval must be positive", id="zero-heartbeat"),
-        pytest.param(_DURATION, _DURATION, "below lease_duration", id="heartbeat-equals-duration"),
-        pytest.param(_DURATION, _DURATION * 2, "below lease_duration", id="heartbeat-over-duration"),
+        pytest.param(0, None, ValueError, "lease_duration must be positive", id="zero-duration"),
+        pytest.param(-1, None, ValueError, "lease_duration must be positive", id="negative-duration"),
+        pytest.param(float("nan"), _HEARTBEAT, ValueError, "positive and finite", id="nan-duration"),
+        pytest.param(float("inf"), _HEARTBEAT, ValueError, "positive and finite", id="infinite-duration"),
+        pytest.param(float("-inf"), _HEARTBEAT, ValueError, "positive and finite", id="negative-infinite-duration"),
+        pytest.param(True, None, TypeError, "number, not bool", id="true-duration"),
+        pytest.param(False, None, TypeError, "number, not bool", id="false-duration"),
+        pytest.param(_DURATION, 0, ValueError, "heartbeat_interval must be positive", id="zero-heartbeat"),
+        pytest.param(_DURATION, _DURATION, ValueError, "below lease_duration", id="heartbeat-equals-duration"),
+        pytest.param(_DURATION, _DURATION * 2, ValueError, "below lease_duration", id="heartbeat-over-duration"),
     ],
 )
 def test_lease_rejects_incoherent_settings(
-    marker: Path, lease_duration: float, heartbeat_interval: float | None, message: str
+    marker: Path,
+    lease_duration: float,
+    heartbeat_interval: float | None,
+    error: type[Exception],
+    message: str,
 ) -> None:
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(error, match=message):
         SoftFileLease(str(marker), lease_duration=lease_duration, heartbeat_interval=heartbeat_interval)
 
 
