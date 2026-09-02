@@ -14,6 +14,7 @@ import time
 import uuid
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 from weakref import WeakValueDictionary
@@ -173,16 +174,19 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         poll_interval: float = 0.25,
     ) -> None:
         self._creator_pid = os.getpid()
-        if heartbeat_interval <= 0:
-            msg = f"heartbeat_interval must be positive, got {heartbeat_interval}"
+        if not isfinite(heartbeat_interval) or heartbeat_interval <= 0:
+            msg = f"heartbeat_interval must be positive and finite, got {heartbeat_interval}"
             raise ValueError(msg)
         if stale_threshold is None:
             stale_threshold = heartbeat_interval * 3
-        if stale_threshold <= heartbeat_interval:
-            msg = f"stale_threshold must exceed heartbeat_interval ({stale_threshold} <= {heartbeat_interval})"
+        if not isfinite(stale_threshold) or stale_threshold <= heartbeat_interval:
+            msg = (
+                "stale_threshold must exceed heartbeat_interval and be finite "
+                f"({stale_threshold} <= {heartbeat_interval})"
+            )
             raise ValueError(msg)
-        if poll_interval <= 0:
-            msg = f"poll_interval must be positive, got {poll_interval}"
+        if not isfinite(poll_interval) or poll_interval <= 0:
+            msg = f"poll_interval must be positive and finite, got {poll_interval}"
             raise ValueError(msg)
 
         self.lock_file: str = os.fspath(lock_file)

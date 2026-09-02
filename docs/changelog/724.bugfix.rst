@@ -1,0 +1,2 @@
+``SoftReadWriteLock`` now rejects non-finite heartbeat, stale, and polling intervals at construction instead of
+allowing them to disrupt heartbeat or polling behavior later.
