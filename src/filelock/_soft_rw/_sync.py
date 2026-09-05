@@ -394,14 +394,22 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         else:
             self._unlink_writer_marker_if_ours(hold.token)
 
-    def _unlink_writer_marker_if_ours(self, token: str) -> None:
+    def _unlink_writer_marker_if_ours(self, token: str, *, deadline: float | None = None) -> None:
         # Remove the writer marker only while it still carries our token. If this holder was paused long
         # enough (a stop-the-world GC pause, SIGSTOP, a suspended VM) for a peer to evict the marker as
         # stale and claim the writer slot itself, the file now at <path>.write is the peer's live marker;
         # unlinking it by path would let a second writer through and break mutual exclusion. The state lock
         # serializes this against a concurrent break/claim, and the heartbeat is already stopped, so the
         # token we read is authoritative. Mirrors the token re-check the stale-break path already does.
-        with self._locks.state:
+        # ``deadline`` bounds the wait the same way acquisition does; release() passes ``None`` (its existing,
+        # unbounded behavior - it takes no timeout of its own to honor). The failed-acquisition cleanup call
+        # below is already past its own deadline, so it hands in the current instant as a one-shot,
+        # non-blocking attempt (#725): piling more unbounded waiting onto a call the caller expected to have
+        # already returned from would just move the "blocks forever" bug here instead of fixing it.
+        state = self._try_acquire_state(deadline)
+        if state is None:
+            return
+        with state:
             if (read := _read_marker(self._paths.write)) is None:
                 return
             info, _ = read
@@ -516,6 +524,19 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         hold.level += 1
         return AcquireReturnProxy(lock=self)
 
+    def _try_acquire_state(self, deadline: float | None) -> AcquireReturnProxy | None:
+        # The internal ".state" mutex has no heartbeat of its own (#725): a marker left behind by a peer that
+        # died mid-transition on another host is never evicted as stale, so waiting for it must still honor the
+        # caller's own acquisition deadline rather than blocking indefinitely underneath it. ``None`` here means
+        # "not yet, try again" rather than a hard failure, mirroring every other predicate this feeds into so
+        # _wait_for's own deadline check is what ultimately raises Timeout(self.lock_file) - not this call,
+        # which would otherwise leak the ".state" path as an implementation detail.
+        timeout = -1.0 if deadline is None else max(deadline - time.perf_counter(), 0.0)
+        try:
+            return self._locks.state.acquire(timeout=timeout)
+        except Timeout:
+            return None
+
     def _acquire_writer_slot(
         self,
         token: str,
@@ -528,11 +549,17 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self._open_readers_dir()
 
         def try_claim_writer() -> bool:
-            with self._locks.state:
+            state = self._try_acquire_state(deadline)
+            if state is None:
+                return False
+            with state:
                 return self._claim_writer_marker(token)
 
         def readers_drained_touching() -> bool:
-            with self._locks.state:
+            state = self._try_acquire_state(deadline)
+            if state is None:
+                return False
+            with state:
                 # A peer may replace an expired marker while this process pauses. Refresh only our token; touching a
                 # successor's marker would let this acquisition proceed without owning the writer slot.
                 if not self._touch_writer_marker_if_ours(token) and not self._claim_writer_marker(token):
@@ -546,7 +573,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         except Timeout:
             # Give up our writer claim so readers can make progress again, but only while the marker is
             # still ours: a peer may have evicted it as stale and claimed the slot while phase 2 waited.
-            self._unlink_writer_marker_if_ours(token)
+            # We're already past our own deadline, so this cleanup gets a single non-blocking attempt at
+            # ".state" rather than more unbounded waiting (#725).
+            self._unlink_writer_marker_if_ours(token, deadline=time.perf_counter())
             raise
         return self._paths.write, False
 
@@ -597,7 +626,10 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         full_reader_path = str(Path(self._paths.readers) / reader_name)
 
         def try_claim_reader() -> bool:
-            with self._locks.state:
+            state = self._try_acquire_state(deadline)
+            if state is None:
+                return False
+            with state:
                 _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
                 if _file_exists(self._paths.write):
                     return False
