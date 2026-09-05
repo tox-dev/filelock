@@ -19,6 +19,7 @@ from capabilities import CAPABILITIES
 
 from filelock import Timeout
 from filelock import _util as util_mod
+from filelock._identity import host_name
 from filelock._soft_rw import SoftReadWriteLock
 from filelock._soft_rw import _sync as sync_mod
 from tests.capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS, SKIP_ON_UNRELIABLE_PROCESS_SYNC
@@ -1300,3 +1301,73 @@ def test_refresh_marker_stops_once_a_peer_owns_the_marker(lock_file: str) -> Non
         assert lock._refresh_marker() is False
     finally:
         lock.close()
+
+
+def test_acquire_write_respects_timeout_for_unreclaimable_state_marker(lock_file: str) -> None:
+    # owner_is_stale refuses to probe a PID recorded under a different hostname (it cannot prove a foreign host's
+    # process is dead), so a ".state" marker from another host is never reclaimed. Writing one directly is the
+    # actual failure this issue describes, and needs no subprocess or liveness check to exercise (#725).
+    Path(f"{lock_file}.state").write_text(f"424242\n{host_name()}-other\n", encoding="utf-8")
+    lock = _make_lock(lock_file)
+    try:
+        start = time.perf_counter()
+        with pytest.raises(Timeout) as exc_info:
+            lock.acquire_write(timeout=0.3)
+        elapsed = time.perf_counter() - start
+        # Pre-fix this blocks forever, since the marker can never be proven stale; 2s is generous slack above the
+        # 0.3s deadline actually being asserted.
+        assert elapsed < 2
+        # The internal ".state" mutex is what actually ran out of time; the caller only knows about the public
+        # lock file, so the exception must not leak the companion path as an implementation detail.
+        assert exc_info.value.lock_file == lock_file
+    finally:
+        lock.close()
+
+
+def test_acquire_read_respects_timeout_for_unreclaimable_state_marker(lock_file: str) -> None:
+    # Same fix, the reader's side of _acquire_reader_slot (#725).
+    Path(f"{lock_file}.state").write_text(f"424242\n{host_name()}-other\n", encoding="utf-8")
+    lock = _make_lock(lock_file)
+    try:
+        start = time.perf_counter()
+        with pytest.raises(Timeout) as exc_info:
+            lock.acquire_read(timeout=0.3)
+        assert time.perf_counter() - start < 2
+        assert exc_info.value.lock_file == lock_file
+    finally:
+        lock.close()
+
+
+def test_writer_phase2_respects_timeout_when_state_becomes_unreclaimable(
+    lock_file: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Phase 1 (claiming the writer marker) can succeed before the ".state" marker is ever contended, then phase 2
+    # (waiting for readers to drain) re-acquires ".state" on every poll. A live reader keeps phase 2 looping; on
+    # the first poll sleep we simulate ".state" becoming an unreclaimable cross-host marker (#725).
+    reader = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
+    reader.acquire_read(timeout=2)
+    writer = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
+    state_marker = f"{lock_file}.state"
+    real_sleep = time.sleep
+    swapped = threading.Event()
+
+    def hook(seconds: float) -> None:
+        if not swapped.is_set():
+            swapped.set()
+            Path(state_marker).write_text(f"424242\n{host_name()}-other\n", encoding="utf-8")
+        real_sleep(seconds)
+
+    monkeypatch.setattr(sync_mod.time, "sleep", hook)
+    try:
+        start = time.perf_counter()
+        with pytest.raises(Timeout) as exc_info:
+            writer.acquire_write(timeout=0.3)
+        elapsed = time.perf_counter() - start
+        assert swapped.is_set()
+        assert elapsed < 2
+        assert exc_info.value.lock_file == lock_file
+    finally:
+        monkeypatch.setattr(sync_mod.time, "sleep", real_sleep)
+        writer.close()
+        reader.close()
