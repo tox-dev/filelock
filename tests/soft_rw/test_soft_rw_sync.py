@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import Timeout
+from filelock import AsyncSoftReadWriteLock, Timeout
 from filelock import _util as util_mod
 from filelock._soft_rw import SoftReadWriteLock
 from filelock._soft_rw import _sync as sync_mod
@@ -51,6 +51,45 @@ def _clear_singletons() -> Generator[None]:
 @pytest.fixture
 def lock_file(tmp_path: Path) -> str:
     return str(tmp_path / "test.lock")
+
+
+@pytest.mark.parametrize(
+    "lock_type",
+    [pytest.param(SoftReadWriteLock, id="sync"), pytest.param(AsyncSoftReadWriteLock, id="async")],
+)
+@pytest.mark.parametrize("cached", [pytest.param(False, id="new"), pytest.param(True, id="cached")])
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        pytest.param({name: value}, name, id=f"{name}-{label}")
+        for name in ("heartbeat_interval", "stale_threshold", "poll_interval")
+        for label, value in (("nan", float("nan")), ("infinity", float("inf")), ("negative-infinity", float("-inf")))
+    ]
+    + [
+        pytest.param({"heartbeat_interval": sys.float_info.max}, "stale_threshold", id="default-overflow"),
+    ],
+)
+def test_rejects_invalid_intervals(
+    tmp_path: Path,
+    lock_type: type[SoftReadWriteLock | AsyncSoftReadWriteLock],
+    cached: bool,
+    settings: dict[str, float],
+    message: str,
+) -> None:
+    path: Final = tmp_path / "timing.lock"
+    # Keep the weakly cached instance alive through the second construction.
+    existing: Final = SoftReadWriteLock(path) if cached else None
+    try:
+        with pytest.raises(ValueError, match=rf"{message} must .*finite"):
+            lock_type(
+                path,
+                heartbeat_interval=settings.get("heartbeat_interval", 30),
+                stale_threshold=settings.get("stale_threshold"),
+                poll_interval=settings.get("poll_interval", 0.25),
+            )
+    finally:
+        if existing is not None:
+            existing.close()
 
 
 def test_rejects_non_positive_heartbeat_interval(lock_file: str) -> None:
