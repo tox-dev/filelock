@@ -1,0 +1,2 @@
+Allow acquiring existing lock files that grant write access through group permissions or an ACL even when their
+owner-write mode bit is unset.
