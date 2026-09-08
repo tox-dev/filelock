@@ -8,9 +8,9 @@ class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # p
         super().__init__()
         self._lock_file = lock_file
 
-    def __reduce__(self) -> tuple[type[Timeout], tuple[str]]:
+    def __reduce__(self) -> tuple[type[Timeout], tuple[str], dict[str, object]]:
         # __init__ needs lock_file, so pickle must restore it as a constructor arg
-        return self.__class__, (self._lock_file,)
+        return self.__class__, (self._lock_file,), self.__dict__
 
     def __str__(self) -> str:  # pragma: needs hard-link
         return f"The file lock '{self._lock_file}' could not be acquired."
@@ -43,8 +43,10 @@ class SoftFileLockProtocolError(OSError):
 
     def __reduce__(
         self,
-    ) -> tuple[type[SoftFileLockProtocolError], tuple[str, str | None, str]]:  # pragma: needs hard-link
-        return self.__class__, (self._lock_file, self._claim_name, self._reason)
+    ) -> tuple[
+        type[SoftFileLockProtocolError], tuple[str, str | None, str], dict[str, object]
+    ]:  # pragma: needs hard-link
+        return self.__class__, (self._lock_file, self._claim_name, self._reason), self.__dict__
 
     def __str__(self) -> str:
         location = self._lock_file if self._claim_name is None else f"{self._lock_file}: claim {self._claim_name!r}"
