@@ -603,8 +603,8 @@ participating clocks and fence protected writes if an expired holder can resume.
 
    ``SoftReadWriteLock`` and ``ReadWriteLock`` are singletons by default. A second construction for the same path
    raises ``ValueError`` if ``timeout`` or ``blocking`` differ, but ``heartbeat_interval``, ``stale_threshold``, and
-   ``poll_interval`` are **silently ignored** on a cache hit: you get the first instance, with the first call's tuning.
-   Configure a path in one place.
+   ``poll_interval`` keep the first call's tuning on a cache hit. ``SoftReadWriteLock`` still validates these intervals
+   before returning the cached instance. Configure a path in one place.
 
 :meth:`get_lock() <filelock.SoftReadWriteLock.get_lock>` is sugar for the same singleton lookup, spelling the intent
 out at the call site. ``ReadWriteLock`` has the same classmethod. It offers nothing the constructor does not:

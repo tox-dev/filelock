@@ -14,6 +14,7 @@ import time
 import uuid
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 from weakref import WeakValueDictionary
@@ -109,6 +110,8 @@ class _SoftRWMeta(type):
                     f" cannot be changed to timeout={timeout}, blocking={blocking}"
                 )
                 raise ValueError(msg)
+            else:
+                _validate_intervals(heartbeat_interval, stale_threshold, poll_interval)
             return instance
 
 
@@ -173,17 +176,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         poll_interval: float = 0.25,
     ) -> None:
         self._creator_pid = os.getpid()
-        if heartbeat_interval <= 0:
-            msg = f"heartbeat_interval must be positive, got {heartbeat_interval}"
-            raise ValueError(msg)
-        if stale_threshold is None:
-            stale_threshold = heartbeat_interval * 3
-        if stale_threshold <= heartbeat_interval:
-            msg = f"stale_threshold must exceed heartbeat_interval ({stale_threshold} <= {heartbeat_interval})"
-            raise ValueError(msg)
-        if poll_interval <= 0:
-            msg = f"poll_interval must be positive, got {poll_interval}"
-            raise ValueError(msg)
+        stale_threshold = _validate_intervals(heartbeat_interval, stale_threshold, poll_interval)
 
         self.lock_file: str = os.fspath(lock_file)
         self.timeout: float = timeout
@@ -933,6 +926,24 @@ def _file_exists(path: str) -> bool:
 
 def _is_housekeeping_name(name: str) -> bool:
     return name.startswith(".") or _BREAK_SUFFIX in name
+
+
+def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None, poll_interval: float) -> float:
+    if not isfinite(heartbeat_interval) or heartbeat_interval <= 0:
+        msg = f"heartbeat_interval must be positive and finite, got {heartbeat_interval}"
+        raise ValueError(msg)
+    if stale_threshold is None:
+        stale_threshold = heartbeat_interval * 3
+    if not isfinite(stale_threshold) or stale_threshold <= heartbeat_interval:
+        msg = (
+            f"stale_threshold must exceed heartbeat_interval ({heartbeat_interval}) "
+            f"and be finite, got {stale_threshold}"
+        )
+        raise ValueError(msg)
+    if not isfinite(poll_interval) or poll_interval <= 0:
+        msg = f"poll_interval must be positive and finite, got {poll_interval}"
+        raise ValueError(msg)
+    return stale_threshold
 
 
 @dataclass(frozen=True)
