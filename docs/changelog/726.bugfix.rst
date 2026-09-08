@@ -1,2 +1,0 @@
-Honor acquisition timeouts and ``blocking=False`` during ``SoftReadWriteLock`` state-mutex contention, including
-failed writer cleanup. Cross-host recovery of an abandoned ``.state`` marker remains unsupported.

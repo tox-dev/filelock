@@ -1,1 +1,0 @@
-Preserve exception notes and custom attributes when copying or pickling ``Timeout`` and ``SoftFileLockProtocolError``.

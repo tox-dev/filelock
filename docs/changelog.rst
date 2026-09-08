@@ -7,6 +7,20 @@
 .. towncrier release notes start
 
 ********************
+ 3.32.6 (2026-09-08)
+********************
+
+- ``SoftFileLease`` and ``AsyncSoftFileLease`` now reject a boolean or non-finite ``lease_duration``, which used to
+  publish an owner record their own ``owner`` property reads back as malformed. :pr:`723`
+- Reject non-finite heartbeat, stale, and polling intervals in ``SoftReadWriteLock`` and ``AsyncSoftReadWriteLock``,
+  including cached singleton construction and overflow in the default stale threshold. :pr:`724`
+- Honor acquisition timeouts and ``blocking=False`` during ``SoftReadWriteLock`` state-mutex contention, including
+  failed writer cleanup. Cross-host recovery of an abandoned ``.state`` marker remains unsupported. :pr:`726`
+- Allow acquiring existing lock files that grant write access through group permissions or an ACL even when their
+  owner-write mode bit is unset. :pr:`728`
+- Preserve exception notes and custom attributes when copying or pickling ``Timeout`` and ``SoftFileLockProtocolError``. :pr:`729`
+
+********************
  3.32.5 (2026-08-31)
 ********************
 

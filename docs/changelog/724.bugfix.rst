@@ -1,2 +1,0 @@
-Reject non-finite heartbeat, stale, and polling intervals in ``SoftReadWriteLock`` and ``AsyncSoftReadWriteLock``,
-including cached singleton construction and overflow in the default stale threshold.
