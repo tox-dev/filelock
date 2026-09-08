@@ -387,20 +387,18 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         else:
             self._unlink_writer_marker_if_ours(hold.token)
 
-    def _unlink_writer_marker_if_ours(self, token: str) -> None:
-        # Remove the writer marker only while it still carries our token. If this holder was paused long
-        # enough (a stop-the-world GC pause, SIGSTOP, a suspended VM) for a peer to evict the marker as
-        # stale and claim the writer slot itself, the file now at <path>.write is the peer's live marker;
-        # unlinking it by path would let a second writer through and break mutual exclusion. The state lock
-        # serializes this against a concurrent break/claim, and the heartbeat is already stopped, so the
-        # token we read is authoritative. Mirrors the token re-check the stale-break path already does.
-        with self._locks.state:
-            if (read := _read_marker(self._paths.write)) is None:
-                return
-            info, _ = read
-            if info is None or not hmac.compare_digest(info.token, token):
-                return
-            _unlink(self._paths.write)
+    def _unlink_writer_marker_if_ours(self, token: str, *, blocking: bool = True) -> None:
+        # Serialize the token check and unlink so a paused holder cannot remove its successor's marker.
+        try:
+            with self._locks.state.acquire(blocking=blocking):
+                if (read := _read_marker(self._paths.write)) is None:
+                    return
+                info, _ = read
+                if info is not None and hmac.compare_digest(info.token, token):
+                    _unlink(self._paths.write)
+        except Timeout:
+            # Failed acquisition must return on time; peers can reclaim the unrefreshed writer marker.
+            return
 
     def _acquire(
         self,
@@ -485,7 +483,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             if is_reader:
                 _unlink(marker_name, dir_fd=self._readers_dir_fd)
             else:
-                self._unlink_writer_marker_if_ours(token)
+                self._unlink_writer_marker_if_ours(token, blocking=False)
             raise start_error
         return AcquireReturnProxy(lock=self)
 
@@ -521,25 +519,20 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self._open_readers_dir()
 
         def try_claim_writer() -> bool:
-            with self._locks.state:
-                return self._claim_writer_marker(token)
+            return self._claim_writer_marker(token)
 
         def readers_drained_touching() -> bool:
-            with self._locks.state:
-                # A peer may replace an expired marker while this process pauses. Refresh only our token; touching a
-                # successor's marker would let this acquisition proceed without owning the writer slot.
-                if not self._touch_writer_marker_if_ours(token) and not self._claim_writer_marker(token):
-                    return False
-                self._break_stale_readers(time.time())
-                return not self._any_readers()
+            # A paused contender must reclaim its slot before proceeding if a peer replaced its marker.
+            if not self._touch_writer_marker_if_ours(token) and not self._claim_writer_marker(token):
+                return False
+            self._break_stale_readers(time.time())
+            return not self._any_readers()
 
         self._wait_for(try_claim_writer, deadline=deadline, blocking=blocking)
         try:
             self._wait_for(readers_drained_touching, deadline=deadline, blocking=blocking)
         except Timeout:
-            # Give up our writer claim so readers can make progress again, but only while the marker is
-            # still ours: a peer may have evicted it as stale and claimed the slot while phase 2 waited.
-            self._unlink_writer_marker_if_ours(token)
+            self._unlink_writer_marker_if_ours(token, blocking=False)
             raise
         return self._paths.write, False
 
@@ -590,15 +583,14 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         full_reader_path = str(Path(self._paths.readers) / reader_name)
 
         def try_claim_reader() -> bool:
-            with self._locks.state:
-                _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
-                if _file_exists(self._paths.write):
-                    return False
-                if dir_fd is not None:  # pragma: needs dir-fd
-                    _atomic_create_marker(reader_name, token, dir_fd=dir_fd)
-                else:  # pragma: win32 cover
-                    _atomic_create_marker(full_reader_path, token)
-                return True
+            _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
+            if _file_exists(self._paths.write):
+                return False
+            if dir_fd is not None:  # pragma: needs dir-fd
+                _atomic_create_marker(reader_name, token, dir_fd=dir_fd)
+            else:  # pragma: win32 cover
+                _atomic_create_marker(full_reader_path, token)
+            return True
 
         self._wait_for(try_claim_reader, deadline=deadline, blocking=blocking)
         return (reader_name if dir_fd is not None else full_reader_path), True
@@ -611,8 +603,13 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         blocking: bool,
     ) -> None:
         while True:
-            if predicate():
-                return
+            # One retry loop owns the deadline, including contention on the state mutex.
+            try:
+                with self._locks.state.acquire(blocking=False):
+                    if predicate():
+                        return
+            except Timeout:
+                pass
             now = time.perf_counter()
             if not blocking:
                 raise Timeout(self.lock_file)
