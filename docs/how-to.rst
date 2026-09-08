@@ -599,6 +599,15 @@ participating clocks and fence protected writes if an expired holder can resume.
     with rw.read_lock(blocking=False):  # one attempt; ignores timeout entirely
         pass
 
+The acquisition deadline includes contention on the internal ``.state`` mutex. ``blocking=False`` makes one attempt
+per acquisition phase without sleeping. If a writer times out after claiming ``.write`` and cannot obtain ``.state``
+for cleanup, it leaves its writer marker for stale-marker recovery.
+
+The ``.state`` mutex has no heartbeat or cross-host expiry. A crashed host can leave it held; a finite acquisition
+timeout bounds retries but does not reclaim that marker. Writer release can still wait for ``.state`` without a
+deadline. Remove an abandoned state marker only after stopping the participating processes, including paused holders
+that could resume. Filesystem calls on an unresponsive network mount can also outlast the acquisition timeout.
+
 .. warning::
 
    ``SoftReadWriteLock`` and ``ReadWriteLock`` are singletons by default. A second construction for the same path
