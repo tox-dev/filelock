@@ -1,2 +1,2 @@
-``SoftReadWriteLock`` now rejects non-finite heartbeat, stale, and polling intervals at construction instead of
-allowing them to disrupt heartbeat or polling behavior later.
+Reject non-finite heartbeat, stale, and polling intervals in ``SoftReadWriteLock`` and ``AsyncSoftReadWriteLock``,
+including cached singleton construction and overflow in the default stale threshold.
