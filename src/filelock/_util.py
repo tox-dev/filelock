@@ -53,10 +53,15 @@ def raise_on_not_writable_file(filename: str) -> None:
     # No mtime guard: the old `if st_mtime != 0` skip covered NFS/Linux quirks where os.lstat returned an all-zero
     # struct, which it no longer does. Skipping on mtime 0 let a read-only file or a directory at the lock path pass
     # as missing, so acquire() blocked forever on an open that cannot succeed.
-    # A missing owner write bit does not rule out group permissions or ACLs.
-    # Keep the writable-mode fast path: an access probe can race with another
-    # holder unlinking its marker and report a writable file as inaccessible.
-    if not (file_stat.st_mode & stat.S_IWUSR) and not os.access(filename, os.W_OK):
+    # Match open() credentials where supported; group permissions and ACLs can grant access without S_IWUSR.
+    if not (file_stat.st_mode & stat.S_IWUSR) and not os.access(
+        filename, os.W_OK, effective_ids=os.access in os.supports_effective_ids
+    ):
+        try:
+            os.lstat(filename)
+        except FileNotFoundError:
+            # A holder may unlink its marker between lstat() and access(); let the caller attempt creation.
+            return
         raise PermissionError(EACCES, "Permission denied", filename)
 
     if stat.S_ISDIR(file_stat.st_mode):
