@@ -142,9 +142,8 @@ def test_raise_on_not_writable_file_still_rejects_readonly_file(tmp_path: Path) 
         path.chmod(0o644)
 
 
-# Writability follows the mode bits, so a read-only file is rejected whatever its mtime. The far-future row pins that
-# a later patch cannot narrow the check back to a single mtime range. The check reads the mode rather than probing
-# real access, so it holds for root too and needs no euid skip.
+# Read-only files must be rejected regardless of their modification time.
+@_SKIP_AS_ROOT
 @pytest.mark.parametrize("mtime", [0, 2_000_000_000], ids=["mtime-zero", "mtime-future"])
 def test_raise_on_not_writable_file_rejects_readonly_file_any_mtime(tmp_path: Path, mtime: int) -> None:
     path = tmp_path / "ro.lock"
@@ -165,3 +164,17 @@ def test_raise_on_not_writable_file_rejects_directory_with_mtime_zero(tmp_path: 
     os.utime(path, (0, 0))
     with pytest.raises(IsADirectoryError):  # pragma: win32 no cover
         raise_on_not_writable_file(str(path))
+
+
+@pytest.mark.parametrize("mode", [0o444, 0o464, 0o446])
+def test_writability_uses_effective_access(tmp_path: Path, mocker: MockerFixture, mode: int) -> None:
+    path = tmp_path / "acl.lock"
+    path.touch()
+    path.chmod(mode)
+    # Access may be granted by an ACL, group, or other permissions even when
+    # the owner write bit is unset. Model the OS access decision directly.
+    mocker.patch("filelock._util.os.access", return_value=True)
+    try:
+        raise_on_not_writable_file(str(path))
+    finally:
+        path.chmod(0o644)
