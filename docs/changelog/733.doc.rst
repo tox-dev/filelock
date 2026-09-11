@@ -1,0 +1,1 @@
+Correct the ``blocking`` parameter of :meth:`~filelock.BaseFileLock.acquire`: it does not default to ``True``, it defaults to ``None``, which means use the lock's :attr:`~filelock.BaseFileLock.blocking` attribute.

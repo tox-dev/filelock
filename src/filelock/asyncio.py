@@ -266,8 +266,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file, ``None`` means use the default
             :attr:`~BaseFileLock.poll_interval`
-        :param blocking: defaults to True. If False, function will return immediately if it cannot obtain a lock on the
-            first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
+        :param blocking: whether to block until the lock is acquired, ``None`` means use the default
+            :attr:`~BaseFileLock.blocking`. If ``False``, this method returns immediately if it cannot obtain a lock
+            on the first attempt. Otherwise, this method will block until the timeout expires or the lock is acquired.
         :param cancel_check: a callable returning ``True`` when the acquisition should be canceled. Checked on each poll
             iteration. When triggered, raises :class:`~Timeout` just like an expired timeout.
 
