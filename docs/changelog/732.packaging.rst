@@ -1,0 +1,1 @@
+Check symlink refusal by error code instead of error message so the test suite also passes with musl's wording.
