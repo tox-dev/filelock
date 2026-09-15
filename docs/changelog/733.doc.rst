@@ -1,0 +1,2 @@
+Document that :meth:`~filelock.BaseFileLock.acquire` reads ``blocking=None`` as the lock's ``blocking`` attribute and
+raises :class:`~filelock.Timeout` after one attempt when ``blocking=False``.
