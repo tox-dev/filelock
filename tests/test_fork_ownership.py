@@ -26,11 +26,6 @@ from filelock import (
 from tests.capability_marks import NEEDS_FORK, NEEDS_REGISTER_AT_FORK
 from tests.fork_helpers import exit_child, fork_process
 
-if sys.version_info >= (3, 11):
-    pass  # pragma: >=3.11 cover
-else:  # pragma: <3.11 cover
-    pass
-
 if TYPE_CHECKING:
     from pathlib import Path
 

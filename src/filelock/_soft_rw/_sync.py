@@ -31,8 +31,6 @@ if TYPE_CHECKING:
 
     from filelock._lease import CompromiseReason
 
-_PROTOCOL_SUFFIX: Final[str] = ".rw"
-
 _ALL_INSTANCES: Final[WeakValueDictionary[int, SoftReadWriteLock]] = WeakValueDictionary()
 _ALL_INSTANCES_LOCK: threading.Lock = threading.Lock()
 _SINGLETONS_UNDER_CONSTRUCTION: Final[set[Path]] = set()
@@ -190,7 +188,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self.poll_interval: float = poll_interval
 
         # Resolved once: a relative lock path must keep naming the same log after the process changes directory.
-        self._root = f"{_canonical(self.lock_file)}{_PROTOCOL_SUFFIX}"
+        self._root = f"{_canonical(self.lock_file)}.rw"
         self._files = OsFiles(self.lock_file)
         self._ledger = Ledger(time.monotonic)
         self._log = GenerationLog(self._files, self.lock_file, self._root)

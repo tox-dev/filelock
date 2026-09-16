@@ -35,10 +35,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.requires_hard_links
 
 
-_OWNER_READ_WRITE: Final[int] = 0o600
-_OWNER_ONLY: Final[int] = 0o700
-_FOREIGN_HOST: Final[str] = "terminated-pod"
-
 # Bounds how long a spawned process or thread may take to reach the lock, not how fast it must be: an interpreter
 # that starts slowly under a loaded suite is not a locking failure. The short negative waits below are deliberate,
 # since those assert a contender stays blocked and have to stay brief.
@@ -72,7 +68,7 @@ def _generations(lock_file: str) -> list[str]:
     return sorted(entry.name for entry in Path(f"{lock_file}.rw", "gen").iterdir() if not entry.name.startswith("."))
 
 
-def _plant_holder(lock_file: str, *, mode: Literal["read", "write"], host: str = _FOREIGN_HOST) -> str:
+def _plant_holder(lock_file: str, *, mode: Literal["read", "write"], host: str = "terminated-pod") -> str:
     # What a process on another host leaves behind when it dies holding the lock: its record and the snapshot naming it.
     files = OsFiles(lock_file)
     root = f"{lock_file}.rw"
@@ -1036,11 +1032,11 @@ def test_records_are_owner_only(lock_file: str) -> None:  # pragma: needs file-m
         with lock.write_lock(timeout=2):
             root = Path(f"{lock_file}.rw")
             for directory in (root, root / "gen", root / "holders"):
-                assert stat.S_IMODE(directory.lstat().st_mode) == _OWNER_ONLY
+                assert stat.S_IMODE(directory.lstat().st_mode) == 0o700
             generation = root / "gen" / _generations(lock_file)[-1]
-            assert stat.S_IMODE(generation.lstat().st_mode) == _OWNER_READ_WRITE
+            assert stat.S_IMODE(generation.lstat().st_mode) == 0o600
             (holder,) = _holders(lock_file)
-            assert stat.S_IMODE((root / "holders" / holder).lstat().st_mode) == _OWNER_READ_WRITE
+            assert stat.S_IMODE((root / "holders" / holder).lstat().st_mode) == 0o600
     finally:
         lock.close()
 

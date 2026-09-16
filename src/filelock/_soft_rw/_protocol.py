@@ -44,9 +44,6 @@ _MAX_RECORD_SIZE: Final[int] = 1 << 20
 #: far ``latest`` probes past a gap before it trusts that nothing newer exists, so it bounds how stale a directory
 #: listing may be before a participant could mistake an old generation for the head.
 _RETAINED_GENERATIONS: Final[int] = 64
-#: The nonce-refreshing commit a participant makes may lose the race to a peer; it re-reads and tries again this many
-#: times before handing the poll interval back to the caller, since a lost race is not a reason to wait.
-_COMMIT_ATTEMPTS: Final[int] = 4
 _GENERATIONS_DIRECTORY: Final[str] = "gen"
 _HOLDERS_DIRECTORY: Final[str] = "holders"
 _TEMPORARY_PREFIX: Final[str] = ".commit-"
@@ -96,9 +93,6 @@ class Snapshot:
             lines.append(f"writer={self.writer}")
         lines.extend(f"reader={token}" for token in sorted(self.readers))
         return "".join(f"{line}\n" for line in lines).encode("ascii")
-
-
-_EMPTY: Final[Snapshot] = Snapshot(generation=0, writer=None, readers=frozenset())
 
 
 def parse_snapshot(data: bytes) -> Snapshot | None:
@@ -202,7 +196,7 @@ class GenerationLog:
             if (start := self._start(listed)) is None:
                 if listed:
                     raise SoftFileLockProtocolError(self._lock_file, None, "generation log names no readable snapshot")
-                start = _EMPTY
+                start = Snapshot(generation=0, writer=None, readers=frozenset())
         latest = start
         generation = start.generation
         gap = 0
@@ -319,7 +313,9 @@ class Participant:
         that admits this participant, and a writer's final admission is itself a commit, so no admission can rest on a
         snapshot a peer is about to supersede.
         """
-        for _ in range(_COMMIT_ATTEMPTS):
+        # A lost race is not a reason to wait: re-read and try again before handing the poll interval back to the
+        # caller.
+        for _ in range(4):
             latest = self._log.latest()
             self._keep_claim_fresh(latest)
             self._sweep(latest)

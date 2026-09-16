@@ -17,18 +17,13 @@ from filelock._util import ensure_directory_exists, write_all
 from ._protocol import _GENERATIONS_DIRECTORY, _HOLDERS_DIRECTORY, _MAX_RECORD_SIZE
 
 _O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
-#: Keeps an open of a FIFO planted at a record path from blocking; the regular-file check below then rejects it.
-_O_NONBLOCK: Final[int] = getattr(os, "O_NONBLOCK", 0)
 #: Windows opens descriptors in text mode by default, which rewrites newlines; every record here is exact bytes.
 _O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
 #: ESTALE is what an NFS client reports for a file a peer unlinked out from under its cached handle: gone, not broken.
 _MISSING_ERRNOS: Final[frozenset[int]] = frozenset({ENOENT, ESTALE})
-_OWNER_ONLY_FILE: Final[int] = 0o600
-_OWNER_ONLY_DIRECTORY: Final[int] = 0o700
 #: Windows refuses an open with EACCES while another process is deleting the file or holds it open without sharing;
 #: both clear within moments, so an open is retried this long before the refusal is taken as real.
 _WINDOWS_OPEN_GRACE: Final[float] = 0.5
-_WINDOWS_OPEN_RETRY: Final[float] = 0.002
 
 
 class OsFiles:
@@ -39,7 +34,8 @@ class OsFiles:
 
     @staticmethod
     def read(path: str) -> bytes | None:
-        if (fd := _open(path, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_BINARY)) is None:
+        # O_NONBLOCK keeps an open of a FIFO planted at the path from blocking; the regular-file check below rejects it.
+        if (fd := _open(path, os.O_RDONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)) is None:
             return None
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -55,7 +51,7 @@ class OsFiles:
 
     @classmethod
     def create(cls, path: str, data: bytes) -> None:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, _OWNER_ONLY_FILE)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, 0o600)
         try:
             write_all(fd, data)
         except BaseException:
@@ -115,7 +111,7 @@ class OsFiles:
         ensure_directory_exists(root)
         for directory in (Path(root), Path(root, _GENERATIONS_DIRECTORY), Path(root, _HOLDERS_DIRECTORY)):
             with suppress(FileExistsError):
-                directory.mkdir(mode=_OWNER_ONLY_DIRECTORY)
+                directory.mkdir(mode=0o700)
             # mkdir has no O_NOFOLLOW, so check what the name resolves to before anything is created inside it.
             mode = directory.lstat().st_mode
             if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
@@ -140,7 +136,7 @@ def _open(path: str, flags: int) -> int | None:
             deadline = time.monotonic() + _WINDOWS_OPEN_GRACE
         elif time.monotonic() >= deadline:  # pragma: win32 cover
             return None
-        time.sleep(_WINDOWS_OPEN_RETRY)  # pragma: win32 cover
+        time.sleep(0.002)  # pragma: win32 cover
 
 
 def _attempt_open(path: str, flags: int) -> int | OSError:
