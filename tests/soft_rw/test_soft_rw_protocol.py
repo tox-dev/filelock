@@ -17,7 +17,7 @@ from typing import Final, Literal
 
 import pytest
 
-from filelock._soft_rw._protocol import Participant
+from filelock._soft_rw._protocol import GenerationLog, Ledger, Participant
 
 _STALE_THRESHOLD: Final[float] = 1.0
 _HEARTBEAT: Final[float] = 0.3
@@ -116,9 +116,18 @@ class _Scheduler:
 class _MemoryFiles:
     """An in-memory :class:`~filelock._soft_rw._protocol.Files` whose every call is one scheduler step."""
 
-    def __init__(self, scheduler: _Scheduler) -> None:
+    def __init__(self, scheduler: _Scheduler, *, stale_listings: float = 0.0) -> None:
         self._scheduler = scheduler
         self.files: dict[str, bytes] = {}
+        # An NFS client can serve a directory listing that predates a peer's commit; with this probability a listing
+        # comes from some earlier point in the tree's history rather than from now.
+        self._stale_listings = stale_listings
+        self._random = random.Random(scheduler.seed + 1)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded schedule, not entropy
+        self._history: list[list[str]] = [[]]
+
+    def _record(self) -> None:
+        self._history.append(sorted(self.files))
+        del self._history[:-128]
 
     def read(self, path: str) -> bytes | None:
         self._scheduler.yield_turn()
@@ -129,12 +138,14 @@ class _MemoryFiles:
         if _key(path) in self.files:  # pragma: no cover  # every name created here is a fresh token
             raise FileExistsError(path)
         self.files[_key(path)] = data
+        self._record()
 
     def link(self, source: str, target: str) -> bool:
         self._scheduler.yield_turn()
         if _key(target) in self.files or _key(source) not in self.files:
             return False
         self.files[_key(target)] = self.files[_key(source)]
+        self._record()
         return True
 
     def overwrite(self, path: str, data: bytes) -> bool:
@@ -144,15 +155,20 @@ class _MemoryFiles:
         ):  # pragma: no cover  # only a crashed participant loses its record, and it never writes again
             return False
         self.files[_key(path)] = data
+        self._record()
         return True
 
     def unlink(self, path: str) -> None:
         self._scheduler.yield_turn()
         self.files.pop(_key(path), None)
+        self._record()
 
     def listdir(self, path: str) -> list[str]:
         self._scheduler.yield_turn()
-        return [PurePosixPath(name).name for name in self.files if str(PurePosixPath(name).parent) == _key(path)]
+        names = (
+            self._random.choice(self._history) if self._random.random() < self._stale_listings else sorted(self.files)
+        )
+        return [PurePosixPath(name).name for name in names if str(PurePosixPath(name).parent) == _key(path)]
 
     def prepare(self, root: str) -> None:  # ruff:ignore[unused-method-argument]  # nothing to create in memory
         self._scheduler.yield_turn()
@@ -173,10 +189,11 @@ class _Outcome:
 
 
 class _Model:
-    def __init__(self, scheduler: _Scheduler) -> None:
+    def __init__(self, scheduler: _Scheduler, *, stale_listings: float = 0.0) -> None:
         self.scheduler = scheduler
-        self.files = _MemoryFiles(scheduler)
+        self.files = _MemoryFiles(scheduler, stale_listings=stale_listings)
         self.holding: dict[str, Literal["read", "write"]] = {}
+        self.last_granted = 0
         self.outcomes: list[_Outcome] = []
         self.threads: list[threading.Thread] = []
         self.violations: list[str] = []
@@ -191,11 +208,12 @@ class _Model:
         self.scheduler.register()
         participant = Participant(
             self.files,
-            "/lock",
             _ROOT,
             outcome.mode,
             stale_threshold=_STALE_THRESHOLD,
             clock=lambda: self.scheduler.clock,
+            ledger=Ledger(lambda: self.scheduler.clock),
+            log=GenerationLog(self.files, "/lock", _ROOT),
         )
         try:
             participant.publish()
@@ -208,11 +226,11 @@ class _Model:
                     return
                 self.scheduler.sleep(_POLL)
             outcome.granted_at = participant.generation
-            self._enter(participant.token, outcome.mode)
+            self._enter(participant.token, outcome.mode, outcome.granted_at)
             for _ in range(hold_beats):
                 self.scheduler.sleep(_HEARTBEAT)
                 if (
-                    participant.heartbeat() != "ok"
+                    participant.heartbeat()[0] != "ok"
                 ):  # pragma: no cover  # a live holder evicted: a regression the test reports
                     outcome.lost = True
                     break
@@ -224,9 +242,15 @@ class _Model:
         finally:
             self.scheduler.finish()
 
-    def _enter(self, token: str, mode: Literal["read", "write"]) -> None:
+    def _enter(self, token: str, mode: Literal["read", "write"], granted_at: int | None) -> None:
         # Recorded from the participant's thread while it holds the turn, so the check sees a consistent set.
         writers = [held for held in self.holding.values() if held == "write"]
+        if (
+            granted_at is None or granted_at <= self.last_granted
+        ):  # pragma: no cover  # a forked log, reported by the assertion
+            self.violations.append(f"grant at generation {granted_at} after generation {self.last_granted}")
+        else:
+            self.last_granted = granted_at
         if mode == "write" and self.holding:  # pragma: no cover  # an exclusion regression, reported by the assertion
             self.violations.append(
                 f"writer granted at {self.scheduler.clock:.2f} while {sorted(self.holding.values())}"
@@ -246,17 +270,23 @@ class _Model:
 
 
 @pytest.mark.parametrize(
-    ("seed", "crash_probability"),
+    ("seed", "crash_probability", "stale_listings"),
     [
-        pytest.param(seed, probability, id=f"seed{seed}-{'crashes' if probability else 'clean'}")
+        pytest.param(
+            seed,
+            probability,
+            stale,
+            id=f"seed{seed}-{'crashes' if probability else 'clean'}-{'stale-listings' if stale else 'fresh-listings'}",
+        )
         for seed in range(24)
         for probability in (0.0 if seed % 3 == 0 else 0.02,)
+        for stale in (0.3 if seed % 2 else 0.0,)
     ],
 )
 @pytest.mark.timeout(120)
-def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability: float) -> None:
+def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability: float, stale_listings: float) -> None:
     scheduler = _Scheduler(seed=seed, crash_probability=crash_probability, max_crashes=3)
-    model = _Model(scheduler)
+    model = _Model(scheduler, stale_listings=stale_listings)
     rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded mix of hold lengths, not entropy
     for index in range(8):
         model.add("write" if index % 3 == 0 else "read", hold_beats=rng.randint(1, 4))

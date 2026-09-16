@@ -772,6 +772,123 @@ def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
     lock.close()
 
 
+def test_short_attempts_still_evict_a_dead_holder(lock_file: str) -> None:
+    # How long a peer's record has stayed unchanged is knowledge the lock keeps across attempts: a caller whose every
+    # attempt is shorter than the stale threshold (a retry loop, blocking=False) must still get past a crashed holder.
+    _plant_holder(lock_file, mode="write")
+    lock = _make_lock(lock_file, heartbeat_interval=0.1, stale_threshold=0.3)
+    try:
+
+        def attempt() -> bool:
+            try:
+                lock.acquire_read(blocking=False)
+            except Timeout:
+                return False
+            return True
+
+        deadline = time.monotonic() + 5
+        while not attempt():
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        lock.release()
+    finally:
+        lock.close()
+
+
+def test_singleton_rejects_a_different_on_compromise(lock_file: str) -> None:
+    seen: list[LeaseCompromise] = []
+    first = SoftReadWriteLock(lock_file, on_compromise=seen.append)
+    try:
+        assert SoftReadWriteLock(lock_file) is first
+        assert SoftReadWriteLock(lock_file, on_compromise=seen.append) is first
+        with pytest.raises(ValueError, match="different on_compromise"):
+            SoftReadWriteLock(lock_file, on_compromise=seen.remove)
+    finally:
+        first.close()
+
+
+def test_release_from_on_compromise_leaves_cleanly(lock_file: str) -> None:
+    # The callback runs on the heartbeat thread; a release there has no thread to join and must still leave.
+    lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2)
+    lock = SoftReadWriteLock(
+        lock_file,
+        is_singleton=False,
+        heartbeat_interval=0.05,
+        stale_threshold=0.2,
+        poll_interval=0.02,
+        on_compromise=lambda _compromise: lock.release(force=True),
+    )
+    lock.acquire_write(timeout=2)
+    hold = lock._hold
+    assert hold is not None
+    try:
+        log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
+        latest = log.latest()
+        assert log.commit(Snapshot(generation=latest.generation + 1, writer=None, readers=frozenset()))
+        assert hold.heartbeat_stop.wait(timeout=_PROCESS_DEADLINE)
+        hold.heartbeat_thread.join(timeout=_PROCESS_DEADLINE)
+        assert lock._hold is None
+        assert _holders(lock_file) == []
+    finally:
+        lock.close()
+
+
+def test_lock_file_in_a_missing_directory_is_created(tmp_path: Path) -> None:
+    lock = _make_lock(str(tmp_path / "nested" / "deeper" / "x.lock"))
+    try:
+        with lock.write_lock(timeout=1):
+            pass
+    finally:
+        lock.close()
+
+
+def test_rejects_poll_interval_not_below_stale_threshold(lock_file: str) -> None:
+    with pytest.raises(ValueError, match="poll_interval must be below"):
+        SoftReadWriteLock(lock_file, heartbeat_interval=1, stale_threshold=3, poll_interval=3, is_singleton=False)
+
+
+def test_late_heartbeat_tick_does_not_stamp_a_later_hold(lock_file: str) -> None:
+    # A tick that outlived its release's join reports on the hold it served, never on whatever was acquired since.
+    lock = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
+    lock.acquire_write(timeout=2)
+    old = lock._hold
+    assert old is not None
+    lock.release()
+    lock.acquire_write(timeout=2)
+    try:
+        lock._report_compromise(old, "evicted", None)
+        assert lock.compromise is None
+    finally:
+        lock.release()
+        lock.close()
+
+
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
+def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) -> None:
+    # Generous timing here so the test stays stable on slow Windows runners where the holder's
+    # multiprocessing.spawn startup, the heartbeat thread scheduling, and the parent's clock resolution
+    # can all introduce sub-second jitter.
+    heartbeat, stale = 0.3, 1.5
+    held, release = Event(), Event()
+    holder = Process(
+        target=_worker,
+        args=(lock_file, "write", held, release, -1, True, heartbeat, stale, 0.05),
+    )
+    with cleanup_processes([holder]):
+        holder.start()
+        assert held.wait(timeout=_PROCESS_DEADLINE)
+        time.sleep(stale * 2)
+        lock = _make_lock(lock_file, heartbeat_interval=heartbeat, stale_threshold=stale)
+        try:
+            with pytest.raises(Timeout):
+                lock.acquire_write(timeout=stale * 2)
+        finally:
+            lock.close()
+        release.set()
+        holder.join(timeout=_PROCESS_DEADLINE)
+
+
 def test_generation_is_a_fencing_token(lock_file: str) -> None:
     first = _make_lock(lock_file)
     second = _make_lock(lock_file)
@@ -796,9 +913,10 @@ def test_foreign_host_holder_is_evicted_after_the_stale_threshold(lock_file: str
     _plant_holder(lock_file, mode="write")
     lock = _make_lock(lock_file, heartbeat_interval=0.1, stale_threshold=0.3)
     try:
+        started = time.monotonic()
         with pytest.raises(Timeout):
             lock.acquire_read(timeout=0.1)
-        started = time.monotonic()
+        # The first attempt already started watching the record, so the wait spans both attempts.
         with lock.read_lock(timeout=5):
             assert time.monotonic() - started >= 0.3 - 0.05
         assert _holders(lock_file) == []
@@ -861,10 +979,10 @@ def test_temporary_commit_files_are_swept(lock_file: str) -> None:
 def test_generations_are_compacted(lock_file: str) -> None:
     lock = _make_lock(lock_file)
     try:
-        for _ in range(30):
+        for _ in range(80):
             with lock.write_lock(timeout=2):
                 pass
-        assert len(_generations(lock_file)) <= 18
+        assert len(_generations(lock_file)) <= 66
     finally:
         lock.close()
 

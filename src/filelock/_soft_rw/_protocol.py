@@ -40,10 +40,13 @@ _GENERATION_DIGITS: Final[int] = 20
 _TOKEN_HEX_LENGTH: Final[int] = 32
 #: A snapshot line is ``reader=`` plus a token, so this bounds a hostile record without capping real reader counts.
 _MAX_RECORD_SIZE: Final[int] = 1 << 20
-#: Snapshots older than this many generations behind the latest are removed by whoever commits. A participant whose
-#: remembered generation was compacted away lists the directory again, so the window only trades directory size for
-#: how often a slow participant has to rescan.
-_RETAINED_GENERATIONS: Final[int] = 16
+#: Snapshots older than this many generations behind the latest are removed by whoever commits. The window is also how
+#: far ``latest`` probes past a gap before it trusts that nothing newer exists, so it bounds how stale a directory
+#: listing may be before a participant could mistake an old generation for the head.
+_RETAINED_GENERATIONS: Final[int] = 64
+#: The nonce-refreshing commit a participant makes may lose the race to a peer; it re-reads and tries again this many
+#: times before handing the poll interval back to the caller, since a lost race is not a reason to wait.
+_COMMIT_ATTEMPTS: Final[int] = 4
 _GENERATIONS_DIRECTORY: Final[str] = "gen"
 _HOLDERS_DIRECTORY: Final[str] = "holders"
 _TEMPORARY_PREFIX: Final[str] = ".commit-"
@@ -113,7 +116,13 @@ def parse_snapshot(data: bytes) -> Snapshot | None:
     readers: set[str] = set()
     for line in lines[1:-1]:
         key, _, value = line.partition("=")
-        if key == "generation" and generation is None and value.isdigit() and str(int(value)) == value:
+        if (
+            key == "generation"
+            and generation is None
+            and len(value) <= _GENERATION_DIGITS
+            and value.isdigit()
+            and str(int(value)) == value
+        ):
             generation = int(value)
         elif key == "writer" and writer is None and is_token(value):
             writer = value
@@ -165,7 +174,7 @@ class Ledger:
 
 
 class GenerationLog:
-    """The ordered snapshots under ``gen/``, read by probing names and advanced by linking the next one."""
+    """The ordered snapshots under ``gen/``, found by listing and probing, advanced by linking the next one."""
 
     def __init__(self, files: Files, lock_file: str, root: str) -> None:
         self._files = files
@@ -177,43 +186,54 @@ class GenerationLog:
         """
         The newest snapshot.
 
-        Probes ``gen/<N+1>`` by name from the last generation seen rather than listing the directory: a lookup of a
-        fresh name always reaches the server, while a directory listing can be served from a client cache that
-        predates a peer's commit. The listing is only the starting point, taken once and again whenever the remembered
-        generation turns out to have been compacted away.
+        Lists the directory on every call, since opening it is what makes an NFS client revalidate what it has cached
+        about the names inside, then starts from the newest readable generation the listing or memory names and probes
+        forward by name across the retained window. A listing served stale, a generation compacted between the listing
+        and the read, and a hole left by a committer that died before it compacted are all covered by the probe; only a
+        listing that names generations of which none can be read is refused, because that is a client so far behind
+        the log that nothing it reads can be trusted.
         """
-        if self._latest is None:
-            self._latest = self._rescan()
-        while True:
-            latest = self._probe_forward(self._latest)
-            # A remembered generation that no successor follows may itself have been compacted away while this
-            # participant was paused, in which case the real latest is far ahead and only a listing finds it.
-            if latest is not self._latest or latest.generation == 0 or self._exists(latest.generation):
-                self._latest = latest
-                return latest
-            self._latest = self._rescan()
+        listed = self._list()
+        start = self._start(listed)
+        if start is None:
+            # Everything the listing named is gone: peers compacted past it while this client looked. One more listing
+            # settles whether the directory is genuinely empty or this client cannot see the head at all.
+            listed = self._list()
+            if (start := self._start(listed)) is None:
+                if listed:
+                    raise SoftFileLockProtocolError(self._lock_file, None, "generation log names no readable snapshot")
+                start = _EMPTY
+        latest = start
+        generation = start.generation
+        gap = 0
+        while gap < _RETAINED_GENERATIONS:
+            generation += 1
+            if (snapshot := self._read(generation)) is None:
+                gap += 1
+                continue
+            latest = snapshot
+            gap = 0
+        self._latest = latest
+        return latest
 
-    def _exists(self, generation: int) -> bool:
-        return self._files.read(self._path(generation)) is not None
-
-    def _rescan(self) -> Snapshot:
-        generations = sorted(
+    def _list(self) -> list[int]:
+        listed = sorted(
             int(name)
             for name in self._files.listdir(str(self._directory))
             if name.isdigit() and len(name) == _GENERATION_DIGITS
         )
-        for generation in generations[:-_RETAINED_GENERATIONS]:
+        for generation in listed[:-_RETAINED_GENERATIONS]:
             self._files.unlink(self._path(generation))
-        for generation in reversed(generations):
+        return listed[-_RETAINED_GENERATIONS:]
+
+    def _start(self, listed: list[int]) -> Snapshot | None:
+        remembered = self._latest
+        for generation in reversed(listed):
+            if remembered is not None and remembered.generation >= generation:
+                return remembered
             if (snapshot := self._read(generation)) is not None:
                 return snapshot
-        return _EMPTY
-
-    def _probe_forward(self, start: Snapshot) -> Snapshot:
-        latest = start
-        while (successor := self._read(latest.generation + 1)) is not None:
-            latest = successor
-        return latest
+        return remembered
 
     def _read(self, generation: int) -> Snapshot | None:
         if (data := self._files.read(self._path(generation))) is None:
@@ -256,18 +276,21 @@ class Participant:
     One acquisition, from publishing a claim through holding the lock to leaving.
 
     ``advance`` is polled until it reports the lock granted, ``heartbeat`` runs on the holder's schedule, and ``leave``
-    commits the participant out. None of them sleep: the caller owns the deadline and the poll interval.
+    commits the participant out. None of them sleep: the caller owns the deadline and the poll interval. The ledger and
+    the log outlive one acquisition: how long a peer's record has stayed unchanged is knowledge every attempt against
+    the same lock shares, or a caller whose attempts are each shorter than the stale threshold could never evict.
     """
 
     def __init__(  # ruff:ignore[too-many-arguments]  # one value per protocol input; the lock builds this once per acquisition
         self,
         files: Files,
-        lock_file: str,
         root: str,
         mode: Mode,
         *,
         stale_threshold: float,
         clock: Callable[[], float],
+        ledger: Ledger,
+        log: GenerationLog,
     ) -> None:
         self.token: Final[str] = new_token()
         self.mode: Final[Mode] = mode
@@ -276,8 +299,8 @@ class Participant:
         self._root = root
         self._stale_threshold = stale_threshold
         self._clock = clock
-        self._ledger = Ledger(clock)
-        self._log = GenerationLog(files, lock_file, root)
+        self._ledger = ledger
+        self._log = log
         self._holder = self._holder_path(self.token)
         self._entered = False
         self._next_sweep = clock()
@@ -292,41 +315,41 @@ class Participant:
         Take the next step toward holding the lock; ``True`` once the lock is granted.
 
         A reader enters as soon as no live writer is named. A writer enters as soon as no live writer is named, which
-        blocks every new reader, then waits for the named readers to leave. Stale members are evicted along the way in
-        the same commit that admits this participant, so eviction and admission cannot interleave with a peer.
+        blocks every new reader, then waits for the named readers to leave. Stale members are evicted in the same commit
+        that admits this participant, and a writer's final admission is itself a commit, so no admission can rest on a
+        snapshot a peer is about to supersede.
         """
-        latest = self._log.latest()
-        self._keep_claim_fresh(latest)
-        self._sweep(latest)
-        stale = frozenset(token for token in latest.members - {self.token} if self._is_stale(token))
-        writer = None if latest.writer in stale else latest.writer
-        readers = latest.readers - stale
-        if not self._entered:
-            if writer is not None:
-                # A live writer blocks entry in both modes; only an eviction is worth committing.
-                if stale:
-                    self._commit(latest, writer, readers, stale)
+        for _ in range(_COMMIT_ATTEMPTS):
+            latest = self._log.latest()
+            self._keep_claim_fresh(latest)
+            self._sweep(latest)
+            stale = frozenset(token for token in latest.members - {self.token} if self._is_stale(token))
+            writer = None if latest.writer in stale else latest.writer
+            readers = latest.readers - stale
+            if not self._entered:
+                if writer is not None:
+                    # A live writer blocks entry in both modes; only an eviction is worth committing.
+                    if stale:
+                        self._commit(latest, writer, readers, stale)
+                    return False
+                writer, readers = (self.token, readers) if self.mode == "write" else (None, readers | {self.token})
+            granted = self.mode == "read" or not readers
+            if self._entered and not stale and not granted:
                 return False
-            writer, readers = (self.token, readers) if self.mode == "write" else (None, readers | {self.token})
-        granted = self.mode == "read" or not readers
-        if not self._entered or stale:
             if (generation := self._commit(latest, writer, readers, stale)) is None:
-                return False
-        elif granted:
-            generation = latest.generation
-        else:
-            return False
-        self._entered = True
-        if granted:
-            self.generation = generation
-        return granted
+                continue
+            self._entered = True
+            if granted:
+                self.generation = generation
+            return granted
+        return False
 
     def _keep_claim_fresh(self, latest: Snapshot) -> None:
-        # A wait can outlast the stale threshold, so the nonce changes on every poll; a peer then never reads a patient
-        # contender as a corpse. A record that has gone missing was taken by an evictor or a sweeper that did, so a
-        # writer evicted while draining re-enters behind whoever did, as any new contender would.
-        if self._entered and self.token not in latest.members:
-            self._entered = False
+        # The snapshot is the truth about membership: a commit the filesystem reported lost may have landed, and a peer
+        # may have evicted this participant while it waited to drain, so both directions are taken from it. A wait can
+        # outlast the stale threshold, so the nonce changes on every poll; a peer then never reads a patient contender
+        # as a corpse. A record that has gone missing was taken by an evictor or a sweeper that did.
+        self._entered = self.token in latest.members
         if not self._refresh_nonce():
             with suppress(FileExistsError):
                 self._files.create(self._holder, encode_holder(self.token, new_token()))
@@ -372,21 +395,26 @@ class Participant:
     def _refresh_nonce(self) -> bool:
         return self._files.overwrite(self._holder, encode_holder(self.token, new_token()))
 
-    def heartbeat(self) -> HeartbeatOutcome:
+    def heartbeat(self) -> tuple[HeartbeatOutcome, OSError | None]:
         """
         Refresh the nonce and confirm the latest snapshot still names this participant.
 
         ``lost`` means a peer evicted this participant or removed its holder record: the lock is no longer held, and the
-        holder must stop using what it protects. ``transient`` is a filesystem error worth retrying on the next tick.
+        holder must stop using what it protects. ``transient`` is a filesystem error refreshing the nonce, worth
+        retrying on the next tick. A failure to read the log or to sweep decides nothing about this holder's liveness,
+        so it is not counted against it.
         """
         try:
             if not self._refresh_nonce():
-                return "lost"
+                return "lost", None
+        except OSError as error:
+            return "transient", error
+        try:
             latest = self._log.latest()
             self._sweep(latest)
         except OSError:
-            return "transient"
-        return "ok" if self.token in latest.members else "lost"
+            return "ok", None
+        return ("ok" if self.token in latest.members else "lost"), None
 
     def leave(self) -> None:
         """Commit this participant out of the latest snapshot, then remove its holder record."""

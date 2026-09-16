@@ -235,5 +235,5 @@ def test_touch_does_not_follow_symlink(tmp_path: Path) -> None:  # pragma: needs
 
     touch(str(link))
 
-    assert victim.stat().st_mtime == pytest.approx(past)  # a timestamp round-trip need not be bit-exact
-    assert victim.read_text() == "do-not-touch"
+    assert victim.stat().st_mtime == pytest.approx(past, abs=1)  # a timestamp round-trip need not be bit-exact
+    assert link.lstat().st_mtime > victim.stat().st_mtime

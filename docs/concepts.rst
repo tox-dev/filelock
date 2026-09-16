@@ -674,10 +674,13 @@ succeed, the loser re-reads and tries again, and the record is complete before t
 so there is no critical section for a crash on any host to leave half done. Whatever a dead process leaves behind is
 either a snapshot that still names it, which a contender evicts, or an orphaned record, which a sweep collects.
 
-A participant finds the latest generation by probing ``gen/<N+1>`` by name from the last one it saw rather than by
-listing the directory: a lookup of a fresh name reaches the server, whereas an NFS directory listing can be served from a
-client cache that predates a peer's commit. The listing is only used cold and after compaction, which removes snapshots
-more than sixteen generations behind the latest.
+A participant finds the latest generation by listing the directory on every poll, which is what makes an NFS client
+revalidate what it has cached about the names inside, then probing forward by name from the newest readable generation
+the listing or its memory names, across a window of sixty-four generations. Compaction removes snapshots more than that
+window behind the latest, so a listing served stale, a generation removed between the listing and the read, and a hole
+left by a committer that died before it compacted are all bridged by the probe. A listing that names generations of
+which none can be read marks a client too far behind the log to trust anything it reads, and the acquire raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` rather than restart the sequence.
 
 Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
 new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers

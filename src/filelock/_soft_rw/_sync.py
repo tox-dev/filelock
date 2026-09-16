@@ -15,6 +15,7 @@ from weakref import WeakValueDictionary
 
 from filelock._api import (
     AcquireReturnProxy,
+    _canonical,
     _ensure_current_process,
     _register_fork_class,
     _register_fork_object,
@@ -22,7 +23,7 @@ from filelock._api import (
 from filelock._error import Timeout
 from filelock._lease import LeaseCompromise
 
-from ._protocol import Mode, Participant
+from ._protocol import GenerationLog, Ledger, Mode, Participant
 from ._storage import OsFiles
 
 if TYPE_CHECKING:
@@ -99,6 +100,11 @@ class _SoftRWMeta(type):
                     f"Singleton lock created with timeout={instance.timeout}, blocking={instance.blocking},"
                     f" cannot be changed to timeout={timeout}, blocking={blocking}"
                 )
+                raise ValueError(msg)
+            elif on_compromise is not None and instance._on_compromise != on_compromise:  # ruff: ignore[private-member-access]  # the metaclass owns the singleton it compares
+                # A tuning difference keeps the first caller's values; a different loss callback is a different safety
+                # contract, and returning the cached instance would silently drop it.
+                msg = f"Singleton lock created with a different on_compromise callback for {lock_file!s}"
                 raise ValueError(msg)
             else:
                 _validate_intervals(heartbeat_interval, stale_threshold, poll_interval)
@@ -183,8 +189,11 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self.stale_threshold: float = stale_threshold
         self.poll_interval: float = poll_interval
 
-        self._root = f"{self.lock_file}{_PROTOCOL_SUFFIX}"
+        # Resolved once: a relative lock path must keep naming the same log after the process changes directory.
+        self._root = f"{_canonical(self.lock_file)}{_PROTOCOL_SUFFIX}"
         self._files = OsFiles(self.lock_file)
+        self._ledger = Ledger(time.monotonic)
+        self._log = GenerationLog(self._files, self.lock_file, self._root)
         self._on_compromise = on_compromise
         self._locks = _Locks(internal=threading.Lock(), transaction=threading.Lock())
         self._hold: _Hold | None = None
@@ -394,9 +403,11 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             self._hold = None
 
         # Stop the heartbeat before leaving, so a late tick cannot re-read a snapshot this participant just left and
-        # report an eviction that was its own release.
+        # report an eviction that was its own release. on_compromise runs on that thread and may be what called here,
+        # in which case there is nothing to join.
         hold.heartbeat_stop.set()
-        hold.heartbeat_thread.join(timeout=self.heartbeat_interval + 1.0)
+        if hold.heartbeat_thread is not threading.current_thread():
+            hold.heartbeat_thread.join(timeout=self.heartbeat_interval + 1.0)
         hold.participant.leave()
 
     def _acquire(
@@ -447,11 +458,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         deadline = None if effective_timeout == -1 else start + effective_timeout
         participant = Participant(
             self._files,
-            self.lock_file,
             self._root,
             mode,
             stale_threshold=self.stale_threshold,
             clock=time.monotonic,
+            ledger=self._ledger,
+            log=self._log,
         )
         participant.publish()
         try:
@@ -539,21 +551,26 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # EIO on the NFS-style filesystems this lock targets) is not a loss: retry rather than report a false
         # compromise. Report the record unrefreshable only once failures have run long enough that a peer could evict
         # it before the next success would land, a margin before the record actually ages out.
-        outcome = participant.heartbeat()
+        outcome, error = participant.heartbeat()
         if outcome == "ok":
             hold.last_refresh = time.monotonic()
             return True
         if outcome == "lost":
-            self._report_compromise(participant, "evicted")
+            self._report_compromise(hold, "evicted", None)
             return False
         if time.monotonic() - hold.last_refresh >= self.stale_threshold - self.heartbeat_interval:
-            self._report_compromise(participant, "refresh-failed")
+            self._report_compromise(hold, "refresh-failed", error)
             return False
         return True
 
-    def _report_compromise(self, participant: Participant, reason: CompromiseReason) -> None:
-        compromise = LeaseCompromise(lock_file=self.lock_file, token=participant.token, reason=reason)
+    def _report_compromise(self, hold: _Hold, reason: CompromiseReason, error: OSError | None) -> None:
+        # A tick that outlived its release's join must not stamp the old hold's loss onto whatever was acquired since.
         with self._locks.internal:
+            if self._hold is not hold:
+                return
+            compromise = LeaseCompromise(
+                lock_file=self.lock_file, token=hold.participant.token, reason=reason, error=error
+            )
             self._compromise = compromise
         if self._on_compromise is not None:
             self._on_compromise(compromise)
@@ -597,6 +614,10 @@ def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None
         raise ValueError(msg)
     if not isfinite(poll_interval) or poll_interval <= 0:
         msg = f"poll_interval must be positive and finite, got {poll_interval}"
+        raise ValueError(msg)
+    # A waiting writer refreshes its record once per poll, so a poll slower than the threshold reads as dead.
+    if poll_interval >= stale_threshold:
+        msg = f"poll_interval must be below stale_threshold ({stale_threshold}), got {poll_interval}"
         raise ValueError(msg)
     return stale_threshold
 
