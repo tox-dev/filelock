@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from filelock._api import AcquireReturnProxy
+    from filelock._lease import LeaseCompromise
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -45,6 +46,8 @@ class AsyncSoftReadWriteLock:
     :param heartbeat_interval: seconds between heartbeat refreshes; default 30 s
     :param stale_threshold: seconds of mtime inactivity before a marker is stale; defaults to ``3 * heartbeat_interval``
     :param poll_interval: seconds between acquire retries under contention; default 0.25 s
+    :param on_compromise: called from the heartbeat thread with a :class:`~filelock.LeaseCompromise` when the hold is
+        lost
     :param loop: event loop for ``run_in_executor``; ``None`` uses the running loop
     :param executor: executor for ``run_in_executor``; ``None`` uses the default executor
 
@@ -62,6 +65,7 @@ class AsyncSoftReadWriteLock:
         heartbeat_interval: float = 30.0,
         stale_threshold: float | None = None,
         poll_interval: float = 0.25,
+        on_compromise: Callable[[LeaseCompromise], None] | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         executor: futures.Executor | None = None,
     ) -> None:
@@ -74,6 +78,7 @@ class AsyncSoftReadWriteLock:
             heartbeat_interval=heartbeat_interval,
             stale_threshold=stale_threshold,
             poll_interval=poll_interval,
+            on_compromise=on_compromise,
         )
         self._loop = loop
         self._executor = executor
@@ -92,6 +97,16 @@ class AsyncSoftReadWriteLock:
     def blocking(self) -> bool:
         """Whether ``acquire_*`` defaults to blocking; ``False`` makes contention raise immediately."""
         return self._lock.blocking
+
+    @property
+    def generation(self) -> int | None:
+        """The generation the current hold was granted at, a fencing token; ``None`` when no lock is held."""
+        return self._lock.generation
+
+    @property
+    def compromise(self) -> LeaseCompromise | None:
+        """How the current hold was lost, or ``None`` while it stands."""
+        return self._lock.compromise
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:

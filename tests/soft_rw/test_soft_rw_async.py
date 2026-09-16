@@ -10,6 +10,8 @@ import pytest
 
 from filelock import Timeout
 from filelock._soft_rw import AsyncSoftReadWriteLock, SoftReadWriteLock
+from filelock._soft_rw._protocol import GenerationLog
+from filelock._soft_rw._storage import OsFiles
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
@@ -18,6 +20,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pytest_mock import MockerFixture
+
+pytestmark = pytest.mark.requires_hard_links
 
 
 @pytest.fixture(autouse=True)
@@ -87,10 +91,11 @@ class _Gate:
         self._resume.set()
 
 
-def _markers(tmp_path: Path) -> list[str]:
-    readers = tmp_path / "foo.lock.readers"
-    reader_names = sorted(entry.name for entry in readers.iterdir()) if readers.is_dir() else []
-    return (["<write>"] if (tmp_path / "foo.lock.write").exists() else []) + reader_names
+def _members(tmp_path: Path, name: str = "foo.lock") -> list[str]:
+    lock_file = str(tmp_path / name)
+    latest = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw").latest()
+    holders = tmp_path / f"{name}.rw" / "holders"
+    return sorted(latest.members) + (sorted(entry.name for entry in holders.iterdir()) if holders.is_dir() else [])
 
 
 @pytest.mark.asyncio
@@ -122,6 +127,8 @@ async def test_async_exposes_configuration(tmp_path: Path) -> None:
         assert lock.blocking is False
         assert lock.loop is None
         assert lock.executor is None
+        assert lock.generation is None
+        assert lock.compromise is None
     finally:
         await lock.close()
 
@@ -132,7 +139,7 @@ async def test_async_raw_acquire_release_round_trip(tmp_path: Path) -> None:
     try:
         proxy = await lock.acquire_write(timeout=2)
         async with proxy:
-            pass
+            assert lock.generation is not None
         proxy = await lock.acquire_read(timeout=2)
         async with proxy:
             pass
@@ -186,7 +193,7 @@ async def test_async_leaked_singleton_is_closed_on_teardown(tmp_path: Path) -> N
     path = tmp_path / "singleton.lock"
     lock = AsyncSoftReadWriteLock(str(path), heartbeat_interval=0.5, stale_threshold=1.5, poll_interval=0.02)
     await lock.acquire_write(timeout=2)
-    assert path.with_name("singleton.lock.write").exists()
+    assert len(_members(tmp_path, "singleton.lock")) == 2
 
 
 @pytest.mark.asyncio
@@ -223,7 +230,7 @@ async def test_async_acquire_cancellation_hands_the_claim_back(
     assert gate.finished.wait(timeout=5), "the executor never finished the acquire it was already running"
 
     assert lock._lock._hold is None
-    assert _markers(tmp_path) == []
+    assert _members(tmp_path) == []
     contender = SoftReadWriteLock(str(tmp_path / "foo.lock"), is_singleton=False, poll_interval=0.02)
     try:
         with contender.write_lock(timeout=5):
@@ -249,7 +256,7 @@ async def test_async_acquire_cancellation_surfaces_a_failed_acquire(tmp_path: Pa
     assert info.value is acquire_error
     assert isinstance(acquire_error.__context__, asyncio.CancelledError)
     assert lock._lock._hold is None
-    assert _markers(tmp_path) == []
+    assert _members(tmp_path) == []
     await lock.close()
 
 
@@ -290,7 +297,7 @@ async def test_async_release_cancellation_drains_the_release(tmp_path: Path, moc
 
     assert gate.finished.is_set(), "the cancellation surfaced while the release was still running"
     assert lock._lock._hold is None
-    assert _markers(tmp_path) == []
+    assert _members(tmp_path) == []
     await lock.close()
 
 

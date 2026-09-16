@@ -885,6 +885,7 @@ raise SystemExit(os.waitstatus_to_exitcode(status))
     assert (result.returncode, result.stderr) == (0, "")
 
 
+@pytest.mark.requires_hard_links
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_parent_callback_rejects_reentrant_singleton_construction(tmp_path: Path) -> None:
@@ -1047,6 +1048,7 @@ if (
     assert (result.returncode, result.stderr) == (0, "")
 
 
+@pytest.mark.requires_hard_links
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_soft_read_write_construction_crossing_fork_does_not_poison_child_cache(tmp_path: Path) -> None:

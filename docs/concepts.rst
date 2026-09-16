@@ -260,8 +260,9 @@ when ``fcntl`` is unavailable.
 
 **Use SoftReadWriteLock** when:
 
-- You need reader/writer semantics on a tested shared filesystem.
-- Callers can stop protected work when heartbeat expiry permits another holder to enter.
+- You need reader/writer semantics on a tested shared filesystem that provides no-replace hard links.
+- Callers can stop protected work when ``on_compromise`` reports the hold lost, or fence the protected resource with
+  the ``generation`` the hold was granted at.
 
 Lock selection flowchart:
 
@@ -363,13 +364,14 @@ Read/write locks compared
       - Multiple readers, one writer
     - - Backing
       - Local SQLite
-      - Marker tree (``O_CREAT|O_EXCL|O_NOFOLLOW``) + heartbeat
+      - Generation log of immutable snapshots, committed by no-replace hard link, plus a nonce heartbeat
     - - Network filesystem
       - Not reliable (local only)
       - Works, including cross-host on multi-node clusters
     - - Stale recovery
       - SQLite transactions
-      - TTL heartbeat (``heartbeat_interval`` / ``stale_threshold``)
+      - A holder whose nonce stays unchanged for ``stale_threshold`` on the observer's own clock is evicted;
+        ``on_compromise`` tells it, ``generation`` fences it
     - - Async support
       - AsyncReadWriteLock
       - AsyncSoftReadWriteLock
@@ -378,7 +380,7 @@ Read/write locks compared
       - Yes
     - - Overhead
       - Medium (SQLite)
-      - Medium (daemon heartbeat thread + dirfd scans)
+      - Medium (daemon heartbeat thread + one hard link per transition)
 
 **********************
  TOCTOU vulnerability
@@ -517,9 +519,10 @@ Ownership scope per lock
      - Requires a local filesystem the SQLite VFS supports. A forked child must build a fresh instance. Crash recovery
        comes from SQLite's transactions.
    * - :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>`
-     - The acquisition object; a marker tree with a per-holder heartbeat
-     - A peer evicts a marker whose ``mtime`` has not advanced within ``stale_threshold``. A forked child loses the
-       lock; the inherited instance is fork-invalidated and its ``release()`` is a no-op.
+     - The acquisition object; the latest snapshot names its token and its holder record carries the heartbeat nonce
+     - A peer evicts a holder whose record has not changed within ``stale_threshold`` and the holder's next heartbeat
+       reports the loss through ``on_compromise``. A forked child loses the lock; the inherited instance is
+       fork-invalidated and its ``release()`` is a no-op.
 
 Task cancellation
 =================
@@ -656,47 +659,64 @@ thread pool via ``loop.run_in_executor``. This is the same approach used by :cla
 How does SoftReadWriteLock work on shared filesystems?
 ======================================================
 
-:class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` uses a marker directory tree. Deploy it on a shared filesystem
-only after verifying its required operations and cache behavior:
+:class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` keeps its whole state in a generation log under ``<path>.rw``.
+Deploy it on a shared filesystem only after verifying its required operations and cache behavior:
 
-- ``<path>.state`` is a short-held :class:`SoftFileLock <filelock.SoftFileLock>` used as the state mutex during
-  transitions.
-- ``<path>.write`` is the writer marker; its presence blocks readers and other writers.
-- ``<path>.readers/<host>.<pid>.<uuid>`` is one marker file per active reader.
+- ``<path>.rw/gen/<N>`` is an immutable snapshot: the writer token, if any, and the reader tokens holding the lock at
+  generation ``N``. Names are zero-padded so the newest sorts last.
+- ``<path>.rw/holders/<token>`` is one record per participant, carrying its token, pid, hostname, and a nonce the
+  heartbeat rewrites in place.
 
-Each marker stores a random 128-bit token, the holder's pid, and the holder's hostname. Every acquire uses
-``O_CREAT | O_EXCL | O_NOFOLLOW`` with mode ``0o600``; the readers directory uses mode ``0o700`` and a ``lstat``
-check plus a dirfd-relative open to close symlink races (which ``mkdir`` alone cannot).
+Every transition (a reader entering, a writer entering, anyone leaving, a stale member being evicted) is one commit: the
+participant reads the latest snapshot, writes the successor it wants to a private temporary file, and hard-links that
+file to ``gen/<N+1>``. A no-replace hard link is an atomic compare-and-swap. Only one link to that name can ever
+succeed, the loser re-reads and tries again, and the record is complete before the name exists. There is no state mutex,
+so there is no critical section for a crash on any host to leave half done. Whatever a dead process leaves behind is
+either a snapshot that still names it, which a contender evicts, or an orphaned record, which a sweep collects.
 
-Writer acquisition is two-phase and writer-preferring: phase one atomically claims ``<path>.write`` (which blocks
-any new reader as soon as it exists), phase two polls the ``readers/`` directory until every reader has exited.
-New readers wait behind an observed writer marker, which gives writers preference among cooperating participants.
+A participant finds the latest generation by probing ``gen/<N+1>`` by name from the last one it saw rather than by
+listing the directory: a lookup of a fresh name reaches the server, whereas an NFS directory listing can be served from a
+client cache that predates a peer's commit. The listing is only used cold and after compaction, which removes snapshots
+more than sixteen generations behind the latest.
+
+Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
+new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers
+preference among cooperating participants.
 
 Cross-host stale detection
 ==========================
 
-On a multi-node cluster, a process on ``node-42`` that crashes while holding a lock cannot be detected via
-``kill(pid, 0)`` from ``node-17``; the pid means nothing to a different kernel. ``SoftReadWriteLock`` therefore
-uses a **TTL with a heartbeat** rather than ``SoftFileLock``'s PID-alive check:
+On a multi-node cluster, a process on ``node-42`` that crashes while holding the lock cannot be detected via
+``kill(pid, 0)`` from ``node-17``, and a replacement pod scheduled under a new hostname cannot be told apart from a
+stranger. Liveness therefore rests on a **nonce, not a clock**:
 
-- Each lock instance starts a daemon thread on acquire. The thread refreshes the marker's ``mtime`` every
-  ``heartbeat_interval`` seconds (default 30 s).
-- A peer may evict a marker whose ``mtime`` has not advanced in ``stale_threshold`` seconds (default 90 s).
-- Eviction is atomic: read → rename to a unique ``.break.<pid>.<nonce>`` file → re-verify token and mtime →
-  unlink. On verification failure the ``.break.*`` file stays for TTL or atexit cleanup; rollback-rename is itself
-  racy and is not attempted.
-- The heartbeat thread stops itself on token mismatch or a vanished marker, so a replaced or evicted marker
-  never gets accidentally refreshed.
+- Each holder's daemon heartbeat thread rewrites the nonce in its record every ``heartbeat_interval`` seconds (default
+  30 s), and a contender waiting to enter rewrites its own on every poll.
+- A contender records the bytes it read from each member's record and the moment it read them on its own
+  ``time.monotonic()``. A member whose bytes have not changed for ``stale_threshold`` seconds (default 90 s) is
+  evicted: the contender commits a snapshot without it, in the same commit that admits the contender, and removes its
+  record.
+- No timestamp is ever compared across hosts. A heartbeat's ``mtime`` would be stamped by the file server's clock and
+  read against the client's, so it plays no part; the only clock in the protocol measures the gap between two
+  observations made by one process. Clock skew between hosts, or against the file server, cannot make a live holder
+  look dead.
+- The heartbeat also re-reads the latest snapshot, so an evicted holder learns it on its next tick: the thread stops,
+  :attr:`compromise <filelock.SoftReadWriteLock.compromise>` is set, and ``on_compromise`` runs.
 
-The trade-off: ``stale_threshold`` must be larger than any realistic pause a holder might hit (GC, syscall delay,
-filesystem delay). Pick it generously, synchronize participating clocks, and fence protected writes if an expired
-holder can resume.
+The generation a hold was granted at is :attr:`generation <filelock.SoftReadWriteLock.generation>`, a monotonic fencing
+token: a resource that rejects writes carrying a lower generation than the highest it has accepted refuses a holder that
+paused past ``stale_threshold``, was evicted, and resumed. The lock itself cannot stop that holder, so
+``stale_threshold`` must still exceed any realistic pause a holder might hit (GC, syscall delay, filesystem delay).
+
+The protocol needs atomic no-replace hard links, exclusive creation, and a coherent read of a file opened by name. NFSv3
+and later provide all three, and Amazon EFS is NFSv4.1. Where the filesystem refuses hard links the lock raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` rather than degrade.
 
 Fork semantics
 ==============
 
 Python threads do not survive ``fork()``. A process that forks while holding a ``SoftReadWriteLock`` would leave
-the child with the marker files, the lock-level state, and no heartbeat thread; the parent would keep
+the child with the holder record, the lock-level state, and no heartbeat thread; the parent would keep
 refreshing while the child would not, and both would believe they hold the lock. ``SoftReadWriteLock`` registers
 an ``os.register_at_fork(after_in_child=...)`` hook that replaces the inherited ``threading.Lock`` objects with
 fresh ones and marks the instance fork-invalidated. ``release()`` on an invalidated instance is a no-op, so an
@@ -704,8 +724,8 @@ inherited ``with lock.read_lock():`` block can unwind in the child without raisi
 fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMongo's connection-pool semantics.
 
 **Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
-permissions can exclude another UID. A process with the same effective UID can alter the markers. Clock errors and
-filesystem cache behavior can also trigger expiry while a holder remains active.
+permissions can exclude another UID. A process with the same effective UID can alter the records. A filesystem that
+delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a holder remains active.
 
 ****************************
  File permissions and mode

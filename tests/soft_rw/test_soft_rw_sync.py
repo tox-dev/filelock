@@ -3,13 +3,12 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import signal
-import socket
 import stat
 import sys
 import threading
 import time
 from contextlib import closing, suppress
-from errno import EIO, ENOENT
+from errno import EIO
 from multiprocessing import Event, Process
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -17,10 +16,13 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import AsyncSoftReadWriteLock, Timeout
-from filelock import _util as util_mod
+from filelock import AsyncSoftReadWriteLock, SoftFileLockProtocolError, Timeout
+from filelock._lease import LeaseCompromise
 from filelock._soft_rw import SoftReadWriteLock
+from filelock._soft_rw import _storage as storage_mod
 from filelock._soft_rw import _sync as sync_mod
+from filelock._soft_rw._protocol import GenerationLog, Snapshot, encode_holder, new_token
+from filelock._soft_rw._storage import OsFiles
 from tests.capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS, SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.process_helpers import cleanup_processes
 
@@ -30,8 +32,12 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
+pytestmark = pytest.mark.requires_hard_links
+
 
 _OWNER_READ_WRITE: Final[int] = 0o600
+_OWNER_ONLY: Final[int] = 0o700
+_FOREIGN_HOST: Final[str] = "terminated-pod"
 
 # Bounds how long a spawned process or thread may take to reach the lock, not how fast it must be: an interpreter
 # that starts slowly under a loaded suite is not a locking failure. The short negative waits below are deliberate,
@@ -51,6 +57,34 @@ def _clear_singletons() -> Generator[None]:
 @pytest.fixture
 def lock_file(tmp_path: Path) -> str:
     return str(tmp_path / "test.lock")
+
+
+def _state(lock_file: str) -> Snapshot:
+    return GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw").latest()
+
+
+def _holders(lock_file: str) -> list[str]:
+    holders = Path(f"{lock_file}.rw", "holders")
+    return sorted(entry.name for entry in holders.iterdir()) if holders.is_dir() else []
+
+
+def _generations(lock_file: str) -> list[str]:
+    return sorted(entry.name for entry in Path(f"{lock_file}.rw", "gen").iterdir() if not entry.name.startswith("."))
+
+
+def _plant_holder(lock_file: str, *, mode: Literal["read", "write"], host: str = _FOREIGN_HOST) -> str:
+    # What a process on another host leaves behind when it dies holding the lock: its record and the snapshot naming it.
+    files = OsFiles(lock_file)
+    root = f"{lock_file}.rw"
+    files.prepare(root)
+    token = new_token()
+    record = encode_holder(token, new_token()).replace(b"host=", f"host={host}?".encode("ascii"), 1)
+    files.create(str(Path(root, "holders", token)), record)
+    log = GenerationLog(files, lock_file, root)
+    latest = log.latest()
+    writer, readers = (token, latest.readers) if mode == "write" else (latest.writer, latest.readers | {token})
+    assert log.commit(Snapshot(generation=latest.generation + 1, writer=writer, readers=readers))
+    return token
 
 
 @pytest.mark.parametrize(
@@ -177,7 +211,7 @@ def test_leaked_acquired_singleton_is_closed_on_teardown(lock_file: str) -> None
     # A live heartbeat thread keeps the singleton reachable, so the autouse teardown finds and closes it.
     lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.5)
     lock.acquire_write(timeout=2)
-    assert Path(f"{lock_file}.write").exists()
+    assert _state(lock_file).writer is not None
 
 
 def test_reentrant_read_holds_and_releases(lock_file: str) -> None:
@@ -195,8 +229,8 @@ def test_reentrant_write_holds_and_releases(lock_file: str) -> None:
     lock = _make_lock(lock_file)
     try:
         with lock.write_lock(timeout=2), lock.write_lock(timeout=2):
-            assert Path(f"{lock_file}.write").exists()
-        assert not Path(f"{lock_file}.write").exists()
+            assert _state(lock_file).writer is not None
+        assert _state(lock_file).writer is None
     finally:
         lock.close()
 
@@ -393,7 +427,7 @@ def test_writer_preference_blocks_new_readers(lock_file: str) -> None:
         # Start reader2 only once the writer's marker is on disk: a fixed sleep undershoots on a Windows runner still
         # spawning the writer's interpreter, and reader2 then slips in ahead of the writer's intent.
         deadline = time.monotonic() + _PROCESS_DEADLINE
-        while not Path(f"{lock_file}.write").exists():
+        while _state(lock_file).writer is None:
             assert time.monotonic() < deadline
             time.sleep(0.01)
         reader2.start()
@@ -537,7 +571,8 @@ def test_writer_phase2_timeout_releases_marker(lock_file: str) -> None:
                 writer.acquire_write(timeout=0.3)
         finally:
             writer.close()
-        assert not Path(f"{lock_file}.write").exists()
+        assert _state(lock_file).writer is None
+        assert len(_holders(lock_file)) == 1
     finally:
         reader.release()
         reader.close()
@@ -563,7 +598,7 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs
                 pass
         finally:
             lock.close()
-        assert not Path(f"{lock_file}.write").exists()
+        assert _state(lock_file).writer is None
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
@@ -588,16 +623,24 @@ def test_dead_reader_evicted_by_writer(lock_file: str) -> None:  # pragma: needs
             lock.close()
 
 
-def test_heartbeat_self_stops_when_marker_vanishes(lock_file: str) -> None:
-    lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2)
+def test_heartbeat_reports_eviction_and_stops(lock_file: str) -> None:
+    # A peer that waited out the stale threshold commits a snapshot without this holder. The next heartbeat sees the
+    # snapshot no longer naming it, records the loss, and stops refreshing a claim that no longer exists.
+    seen: list[LeaseCompromise] = []
+    lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2, on_compromise=seen.append)
     lock.acquire_write(timeout=2)
     try:
-        Path(f"{lock_file}.write").unlink()
-        time.sleep(0.15)  # two-plus heartbeat ticks to observe the vanished marker and self-stop
+        hold = lock._hold
+        assert hold is not None
+        log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
+        latest = log.latest()
+        assert log.commit(Snapshot(generation=latest.generation + 1, writer=None, readers=frozenset()))
+        assert hold.heartbeat_stop.wait(timeout=_PROCESS_DEADLINE)
+        assert lock.compromise == LeaseCompromise(lock_file=lock_file, token=hold.participant.token, reason="evicted")
+        assert seen == [lock.compromise]
     finally:
         lock.release(force=True)
         lock.close()
-    # The vanished marker leaves nothing to evict, so a peer can acquire.
     peer = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2)
     try:
         with peer.write_lock(timeout=1):
@@ -606,57 +649,58 @@ def test_heartbeat_self_stops_when_marker_vanishes(lock_file: str) -> None:
         peer.close()
 
 
-def test_heartbeat_self_stops_on_token_replacement(lock_file: str) -> None:
+def test_heartbeat_reports_a_removed_holder_record(lock_file: str) -> None:
     lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2)
-    lock.acquire_write(timeout=2)
+    lock.acquire_read(timeout=2)
     try:
-        # A well-formed marker holding a different token.
-        Path(f"{lock_file}.write").write_bytes(b"0" * 32 + b"\n1\nhost\n")
-        time.sleep(0.15)
+        hold = lock._hold
+        assert hold is not None
+        Path(f"{lock_file}.rw", "holders", hold.participant.token).unlink()
+        assert hold.heartbeat_stop.wait(timeout=_PROCESS_DEADLINE)
+        assert lock.compromise is not None
+        assert lock.compromise.reason == "evicted"
     finally:
         lock.release(force=True)
         lock.close()
 
 
-def test_release_keeps_a_peers_writer_marker(lock_file: str) -> None:
-    # A holder paused past the stale threshold (GC pause, SIGSTOP, suspended VM) can have its marker evicted
-    # by a peer that then claims the writer slot. On release the holder must not unlink that peer's live
-    # marker; unlinking it would let a second writer through and break mutual exclusion.
+def test_release_leaves_a_peers_claim_alone(lock_file: str) -> None:
+    # A holder paused past the stale threshold (GC pause, SIGSTOP, suspended VM) can be evicted, after which a peer
+    # holds the writer slot. Releasing must only ever commit this holder out, never touch the peer's claim.
     lock = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
     lock.acquire_write(timeout=2)
     try:
-        write_marker = f"{lock_file}.write"
-        peer_marker = b"a" * 32 + b"\n1\npeerhost\n"
-        Path(write_marker).write_bytes(peer_marker)
+        peer = _plant_holder(lock_file, mode="write")
         lock.release()
-        assert Path(write_marker).read_bytes() == peer_marker
+        assert _state(lock_file).writer == peer
+        assert _holders(lock_file) == [peer]
     finally:
         lock.close()
 
 
-def test_writer_phase2_does_not_complete_on_a_peers_marker(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A writer paused past stale_threshold during phase 2 (waiting for readers to drain) can have its stale
-    # marker evicted by a peer that reclaims .write with its own token. Phase 2 must notice the foreign marker
-    # rather than keep touching it and completing the acquire as if we still held the slot, which would let two
-    # writers run at once. A live reader keeps phase 2 looping; on the first poll sleep we simulate the eviction
-    # by overwriting .write with a peer token and draining the reader.
+def test_writer_evicted_while_draining_queues_behind_its_evictor(
+    lock_file: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A writer paused past stale_threshold while waiting for readers can be evicted; a peer then names itself writer.
+    # The resumed writer must not finish its acquire as if it still held the slot. Instead it queues again.
     reader = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
     reader.acquire_read(timeout=2)
     writer = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
-    write_marker = f"{lock_file}.write"
-    peer_marker = b"a" * 32 + b"\n1\npeerhost\n"
     real_sleep = time.sleep
     swapped = threading.Event()
+    peer: list[str] = []
 
-    # Only the writer's phase-2 poll loop calls the patched sleep (the reader's heartbeat waits on an Event), so the
-    # swap lands on the first poll and the second poll ends the wait. Driving the timeout from the hook instead of the
-    # wall clock keeps this deterministic: a loaded runner could otherwise blow the deadline during phase-2 setup and
-    # raise Timeout before the first sleep ever ran, leaving the swap uninjected.
     def hook(seconds: float) -> None:  # ruff:ignore[unused-function-argument]  # replaces time.sleep; the duration is irrelevant to the swap
         if swapped.is_set():
             raise Timeout(lock_file)
         swapped.set()
-        Path(write_marker).write_bytes(peer_marker)
+        # The peer evicts the draining writer and takes the slot; the reader leaves so only the slot blocks the writer.
+        files = OsFiles(lock_file)
+        log = GenerationLog(files, lock_file, f"{lock_file}.rw")
+        latest = log.latest()
+        peer.append(_plant_holder(lock_file, mode="read"))
+        latest = log.latest()
+        assert log.commit(Snapshot(generation=latest.generation + 1, writer=peer[0], readers=frozenset()))
         reader.release()
 
     monkeypatch.setattr(sync_mod.time, "sleep", hook)
@@ -664,75 +708,46 @@ def test_writer_phase2_does_not_complete_on_a_peers_marker(lock_file: str, monke
         with pytest.raises(Timeout):
             writer.acquire_write(timeout=30)
         assert swapped.is_set()
-        # We never overwrote or refreshed the peer's live marker.
-        assert Path(write_marker).read_bytes() == peer_marker
+        assert _state(lock_file).writer == peer[0]
     finally:
         monkeypatch.setattr(sync_mod.time, "sleep", real_sleep)
         writer.close()
         reader.close()
 
 
-def test_heartbeat_survives_transient_touch_error(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    # On the NFS-style filesystems this lock targets, a transient ESTALE/EIO on the heartbeat touch is
-    # routine; it must not kill the heartbeat and drop the lease while we still believe we hold it.
-    def boom(name: str, *, fd: int | None = None) -> None:  # ruff:ignore[unused-function-argument]  # matches the patched touch signature and always raises
-        raise OSError(EIO, "Input/output error")
-
-    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
+def test_heartbeat_survives_a_transient_refresh_error(lock_file: str, mocker: MockerFixture) -> None:
+    # On the NFS-style filesystems this lock targets, a transient ESTALE/EIO on the heartbeat is routine; it must not
+    # kill the heartbeat and drop the claim while we still believe we hold it.
+    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.5)
     lock.acquire_write(timeout=2)
     try:
         hold = lock._hold
         assert hold is not None
-        monkeypatch.setattr(sync_mod, "touch", boom)
-        time.sleep(0.2)  # ~10 ticks, every one failing the touch
+        mocker.patch.object(storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"))
+        time.sleep(0.2)  # ~10 ticks, every one failing the refresh
         assert hold.heartbeat_thread.is_alive()
         assert not hold.heartbeat_stop.is_set()
+        assert lock.compromise is None
     finally:
+        mocker.stopall()
         lock.release(force=True)
         lock.close()
 
 
-@pytest.mark.parametrize(
-    "target", [pytest.param("_open_marker_fd", id="open"), pytest.param("_read_marker_fd", id="read")]
-)
-def test_heartbeat_survives_a_transient_marker_error(
-    lock_file: str, monkeypatch: pytest.MonkeyPatch, target: str
-) -> None:
-    # A transient ESTALE/EIO opening or reading the marker is routine on the NFS-style filesystems this lock targets.
-    # Unlike the marker actually vanishing, it must not stop the heartbeat and drop the lease.
-    def boom(*_args: object, **_kwargs: object) -> None:
-        raise OSError(EIO, "Input/output error")
-
-    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
+def test_heartbeat_reports_refresh_failures_that_outlast_the_margin(lock_file: str, mocker: MockerFixture) -> None:
+    # Failures that run long enough for a peer to evict the record before the next success could land are a loss the
+    # holder must hear about, a margin before the record actually ages out.
+    seen: list[LeaseCompromise] = []
+    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.1, on_compromise=seen.append)
     lock.acquire_write(timeout=2)
     try:
         hold = lock._hold
         assert hold is not None
-        monkeypatch.setattr(sync_mod, target, boom)
-        time.sleep(0.2)  # ~10 ticks, every one failing the open or read
-        assert hold.heartbeat_thread.is_alive()
-        assert not hold.heartbeat_stop.is_set()
-    finally:
-        lock.release(force=True)
-        lock.close()
-
-
-def test_heartbeat_stops_when_marker_evicted(lock_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    # An O_NOFOLLOW open failing with ENOENT means the marker we held is gone: a peer evicted us. Unlike a transient
-    # filesystem error, this is an unambiguous loss, so the heartbeat must stop rather than keep retrying.
-    def gone(name: str, *, dir_fd: int | None = None) -> int:  # ruff:ignore[unused-function-argument]  # matches the patched _open_marker_fd signature and always raises
-        raise FileNotFoundError(ENOENT, "No such file or directory")
-
-    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.2)
-    lock.acquire_write(timeout=2)
-    try:
-        hold = lock._hold
-        assert hold is not None
-        monkeypatch.setattr(sync_mod, "_open_marker_fd", gone)
+        mocker.patch.object(storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"))
         assert hold.heartbeat_stop.wait(timeout=_PROCESS_DEADLINE)
-        hold.heartbeat_thread.join(timeout=_PROCESS_DEADLINE)
-        assert not hold.heartbeat_thread.is_alive()
+        assert [compromise.reason for compromise in seen] == ["refresh-failed"]
     finally:
+        mocker.stopall()
         lock.release(force=True)
         lock.close()
 
@@ -742,7 +757,7 @@ def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
     # A heartbeat thread the OS refuses (an rlimit reached) must not leave a hold behind: a peer would evict the
-    # unrefreshed marker and acquire while this instance still believed it held the lock, and release() would raise
+    # unrefreshed record and acquire while this instance still believed it held the lock, and release() would raise
     # joining a thread that never started.
     mocker.patch.object(sync_mod._HeartbeatThread, "start", side_effect=RuntimeError("can't start new thread"))
     lock = _make_lock(lock_file)
@@ -751,202 +766,132 @@ def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
         acquire(timeout=2)
 
     assert lock._hold is None
-    assert not Path(lock._paths.write).exists()
-    assert not lock._any_readers()
+    assert _state(lock_file).members == frozenset()
+    assert _holders(lock_file) == []
     lock.release(force=True)  # a handed-back slot leaves nothing to release, so this must not raise
     lock.close()
 
 
-@SKIP_ON_UNRELIABLE_PROCESS_SYNC
-@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
-def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) -> None:
-    # Generous timing here so the test stays stable on slow Windows runners where the holder's
-    # multiprocessing.spawn startup, the heartbeat thread scheduling, and the parent's mtime resolution
-    # can all introduce sub-second jitter.
-    heartbeat, stale = 0.3, 1.5
-    held, release = Event(), Event()
-    holder = Process(
-        target=_worker,
-        args=(lock_file, "write", held, release, -1, True, heartbeat, stale, 0.05),
-    )
-    with cleanup_processes([holder]):
-        holder.start()
-        assert held.wait(timeout=_PROCESS_DEADLINE)
-        time.sleep(stale * 2)
-        lock = _make_lock(lock_file, heartbeat_interval=heartbeat, stale_threshold=stale)
-        try:
-            with pytest.raises(Timeout):
-                lock.acquire_write(timeout=0.5)
-        finally:
-            lock.close()
-        release.set()
-        holder.join(timeout=_PROCESS_DEADLINE)
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        pytest.param(b"deadbeefdeadbeefdeadbeefdeadbeef\nnotanumber\nhost\n", id="non-numeric-pid"),
-        pytest.param(b"deadbeefdeadbeefdeadbeefdeadbeef\n0\nhost\n", id="zero-pid"),
-        pytest.param(b"deadbeefdeadbeefdeadbeefdeadbeef\n9999999999\nhost\n", id="pid-too-large"),
-        pytest.param(b"bogus\n4711\nhost\n", id="wrong-length-token"),
-        pytest.param(b"ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\n4711\nhost\n", id="non-hex-token"),
-        pytest.param(b"deadbeefdeadbeefdeadbeefdeadbeef\n4711\nhost with space\n", id="hostname-space"),
-        pytest.param(b"deadbeefdeadbeefdeadbeefdeadbeef\n4711\nhost\n\n\n", id="trailing-blank-lines"),
-        pytest.param(b"only one line\n", id="too-few-lines"),
-        pytest.param(b"a\nb\nc\nd\n", id="too-many-lines"),
-        pytest.param(b"x" * 2048, id="oversized"),
-        pytest.param("ééé\n4711\nhost\n".encode(), id="non-ascii"),
-    ],
-)
-def test_stale_malformed_marker_is_evicted(lock_file: str, content: bytes) -> None:
-    _write_stale_marker(f"{lock_file}.write", content)
-    lock = _make_lock(lock_file)
+def test_generation_is_a_fencing_token(lock_file: str) -> None:
+    first = _make_lock(lock_file)
+    second = _make_lock(lock_file)
     try:
-        with lock.write_lock(timeout=2):
-            pass
+        assert first.generation is None
+        with first.write_lock(timeout=2):
+            granted = first.generation
+            assert granted is not None
+        with second.write_lock(timeout=2):
+            later = second.generation
+            assert later is not None
+            assert later > granted
+        assert second.generation is None
+    finally:
+        first.close()
+        second.close()
+
+
+def test_foreign_host_holder_is_evicted_after_the_stale_threshold(lock_file: str) -> None:
+    # The report behind #725: a pod dies on another host holding the lock, and a replacement pod under a different
+    # hostname must still get in. Liveness is a nonce that stopped changing, so the hostname never enters into it.
+    _plant_holder(lock_file, mode="write")
+    lock = _make_lock(lock_file, heartbeat_interval=0.1, stale_threshold=0.3)
+    try:
+        with pytest.raises(Timeout):
+            lock.acquire_read(timeout=0.1)
+        started = time.monotonic()
+        with lock.read_lock(timeout=5):
+            assert time.monotonic() - started >= 0.3 - 0.05
+        assert _holders(lock_file) == []
     finally:
         lock.close()
 
 
-@pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
-@pytest.mark.parametrize(
-    "raw",
-    [pytest.param("host with space", id="space"), pytest.param("wörks", id="non-ascii")],
-)
-@pytest.mark.timeout(10)
-def test_out_of_grammar_hostname_keeps_the_slot_held(
-    lock_file: str, mocker: MockerFixture, raw: str, mode: Literal["read", "write"]
-) -> None:
-    # A kernel hostname outside the marker grammar used to reach the marker verbatim, so a holder published a marker
-    # its own heartbeat read as malformed. A write slot then never claimed at all, and a read slot aged out under its
-    # live reader and fell to the next contender.
-    mocker.patch("filelock._identity.socket.gethostname", return_value=raw)
-    holder = _make_lock(lock_file)
-    acquire = holder.acquire_write if mode == "write" else holder.acquire_read
-    acquire(timeout=2)
-    try:
-        contender = _make_lock(lock_file)
-        try:
-            # longer than the stale threshold, so only a heartbeat that reads its own marker keeps the slot
-            with pytest.raises(Timeout):
-                contender.acquire_write(timeout=1)
-        finally:
-            contender.close()
-    finally:
-        holder.release()
-        holder.close()
-
-
-def test_fifo_write_marker_does_not_block(lock_file: str) -> None:  # pragma: needs fifo
-    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
-    marker = f"{lock_file}.write"
-    os.mkfifo(marker)
-    past = time.time() - 1000
-    os.utime(marker, (past, past))
-    # Without O_NONBLOCK this open blocks forever; the lock instead reads the FIFO as a stale marker and evicts it.
-    lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2):
-            pass
-    finally:
-        lock.close()
-
-
-def test_fifo_write_marker_with_writer_is_evicted(lock_file: str) -> None:  # pragma: needs fifo
-    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
-    marker = f"{lock_file}.write"
-    os.mkfifo(marker)
-    past = time.time() - 1000
-    os.utime(marker, (past, past))
-    # A writer attached to the FIFO makes the non-blocking read raise EAGAIN on all platforms, matching a
-    # writerless FIFO on FreeBSD (#587). The lock must evict the stale marker by mtime without reading it, so
-    # the acquire completes instead of timing out.
-    reader_fd = os.open(marker, os.O_RDONLY | os.O_NONBLOCK)
-    writer_fd = os.open(marker, os.O_WRONLY)
-    lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2):
-            pass
-    finally:
-        lock.close()
-        os.close(writer_fd)
-        os.close(reader_fd)
-
-
-@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW required")
-def test_symlinked_write_marker_is_refused(lock_file: str, tmp_path: Path) -> None:  # pragma: needs o-nofollow
-    victim = tmp_path / "victim"
-    victim.write_text("do-not-touch")
-    Path(f"{lock_file}.write").symlink_to(victim)
-    lock = _make_lock(lock_file)
-    try:
-        with pytest.raises((OSError, Timeout)):
-            lock.acquire_write(timeout=0.5)
-    finally:
-        lock.close()
-    assert victim.read_text() == "do-not-touch"
-
-
-@pytest.mark.skipif(
-    os.utime not in os.supports_follow_symlinks, reason="os.utime cannot refuse symlinks on this platform"
-)
-def test_touch_does_not_follow_symlink(lock_file: str, tmp_path: Path) -> None:  # pragma: needs utime-nofollow
-    # The phase-2 writer-drain touch refreshes the .write marker by path (no held fd); if a peer swaps a
-    # symlink in, the touch must land on the link itself, not the file it points at.
-    victim = tmp_path / "victim"
-    victim.write_text("do-not-touch")
-    past = time.time() - 1000
-    os.utime(victim, (past, past))
-    marker = Path(f"{lock_file}.write")
-    marker.symlink_to(victim)
-
-    util_mod.touch(str(marker))
-
-    assert victim.stat().st_mtime == pytest.approx(past)  # a timestamp round-trip need not be bit-exact
-    assert victim.read_text() == "do-not-touch"
-
-
-@pytest.mark.skipif(not util_mod._SUPPORTS_UTIME_FD, reason="os.utime cannot target an fd on this platform")
-def test_refresh_touches_verified_fd_not_swapped_path(  # pragma: needs utime-fd
-    lock_file: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # A peer can swap our marker for a symlink in the window after the heartbeat's O_NOFOLLOW open but before
-    # the touch; because the refresh touches the verified fd, the swapped symlink's target stays untouched.
-    victim = tmp_path / "victim"
-    victim.write_text("do-not-touch")
-    past = time.time() - 1000
-    os.utime(victim, (past, past))
-
-    lock = _make_lock(lock_file, heartbeat_interval=30, stale_threshold=90)
+def test_release_never_blocks_on_an_abandoned_claim(lock_file: str) -> None:
+    # The other half of #725: a writer holding the lock could not let go while a foreign host's marker sat in the way.
+    # Leaving is one commit of the holder's own token, so nothing a dead peer left can block it.
+    lock = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
     lock.acquire_write(timeout=2)
+    _plant_holder(lock_file, mode="read")
+    started = time.monotonic()
+    lock.release()
+    assert time.monotonic() - started < 1
+    assert _state(lock_file).writer is None
+    lock.close()
+
+
+def test_malformed_generation_record_fails_closed(lock_file: str) -> None:
+    lock = _make_lock(lock_file)
     try:
-        marker = Path(f"{lock_file}.write")
-        real_open = sync_mod._open_marker
-
-        def swap_after_open(name: str, *, dir_fd: int | None = None) -> int | None:
-            fd = real_open(name, dir_fd=dir_fd)
-            if fd is not None and Path(name) == marker:  # pragma: no branch  # the refresh only opens the marker
-                marker.unlink()
-                marker.symlink_to(victim)
-            return fd
-
-        monkeypatch.setattr(sync_mod, "_open_marker", swap_after_open)
-        assert lock._refresh_marker() is True
-        assert victim.stat().st_mtime == pytest.approx(past)  # a timestamp round-trip need not be bit-exact
-        assert victim.read_text() == "do-not-touch"
+        with lock.write_lock(timeout=2):
+            pass
+        latest = _generations(lock_file)[-1]
+        Path(f"{lock_file}.rw", "gen", f"{int(latest) + 1:020d}").write_bytes(b"garbage\n")
+        with pytest.raises(SoftFileLockProtocolError, match="malformed generation record"):
+            lock.acquire_write(timeout=1)
     finally:
-        lock.release(force=True)
         lock.close()
 
 
-@pytest.mark.skipif(not CAPABILITIES["symlink"], reason="staging the readers directory as a symlink")
-def test_symlinked_readers_directory_is_refused(lock_file: str, tmp_path: Path) -> None:  # pragma: needs symlink
+def test_malformed_holder_record_is_evicted(lock_file: str) -> None:
+    # A record that cannot be parsed still identifies nobody who refreshes it, so it ages out like any other.
+    token = _plant_holder(lock_file, mode="write")
+    Path(f"{lock_file}.rw", "holders", token).write_bytes(b"\x00garbage")
+    lock = _make_lock(lock_file, heartbeat_interval=0.1, stale_threshold=0.3)
+    try:
+        with lock.write_lock(timeout=5):
+            pass
+    finally:
+        lock.close()
+
+
+def test_temporary_commit_files_are_swept(lock_file: str) -> None:
+    orphan = Path(f"{lock_file}.rw", "gen", ".commit-abandoned")
+    lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2)
+    try:
+        with lock.write_lock(timeout=2):
+            pass
+        orphan.write_bytes(b"left by a crash between create and link")
+        with lock.write_lock(timeout=2):
+            time.sleep(0.6)
+        assert not orphan.exists()
+    finally:
+        lock.close()
+
+
+def test_generations_are_compacted(lock_file: str) -> None:
+    lock = _make_lock(lock_file)
+    try:
+        for _ in range(30):
+            with lock.write_lock(timeout=2):
+                pass
+        assert len(_generations(lock_file)) <= 18
+    finally:
+        lock.close()
+
+
+def test_a_participant_behind_a_compacted_generation_rescans(lock_file: str) -> None:
+    lock = _make_lock(lock_file)
+    peer = _make_lock(lock_file)
+    try:
+        with lock.write_lock(timeout=2):
+            pass
+        stale_log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
+        remembered = stale_log.latest()
+        for _ in range(40):
+            with peer.write_lock(timeout=2):
+                pass
+        assert not Path(f"{lock_file}.rw", "gen", f"{remembered.generation:020d}").exists()
+        assert stale_log.latest().generation == _state(lock_file).generation
+    finally:
+        lock.close()
+        peer.close()
+
+
+@pytest.mark.skipif(not CAPABILITIES["symlink"], reason="staging the protocol directory as a symlink")
+def test_symlinked_protocol_directory_is_refused(lock_file: str, tmp_path: Path) -> None:  # pragma: needs symlink
     victim_dir = tmp_path / "victim_dir"
     victim_dir.mkdir()
-    Path(f"{lock_file}.readers").symlink_to(victim_dir)
+    Path(f"{lock_file}.rw").symlink_to(victim_dir)
     lock = _make_lock(lock_file)
     try:
         with pytest.raises(RuntimeError, match="not a directory or is a symlink"):
@@ -956,8 +901,8 @@ def test_symlinked_readers_directory_is_refused(lock_file: str, tmp_path: Path) 
     assert list(victim_dir.iterdir()) == []
 
 
-def test_readers_path_as_regular_file_is_refused(lock_file: str) -> None:
-    Path(f"{lock_file}.readers").write_bytes(b"x")
+def test_protocol_path_as_regular_file_is_refused(lock_file: str) -> None:
+    Path(f"{lock_file}.rw").write_bytes(b"x")
     lock = _make_lock(lock_file)
     try:
         with pytest.raises(RuntimeError, match="not a directory or is a symlink"):
@@ -967,48 +912,32 @@ def test_readers_path_as_regular_file_is_refused(lock_file: str) -> None:
 
 
 @NEEDS_FILE_MODE
-def test_write_marker_is_created_with_0600(lock_file: str) -> None:  # pragma: needs file-mode
+def test_records_are_owner_only(lock_file: str) -> None:  # pragma: needs file-mode
     lock = _make_lock(lock_file)
     try:
         with lock.write_lock(timeout=2):
-            assert stat.S_IMODE(Path(f"{lock_file}.write").lstat().st_mode) == 0o600
+            root = Path(f"{lock_file}.rw")
+            for directory in (root, root / "gen", root / "holders"):
+                assert stat.S_IMODE(directory.lstat().st_mode) == _OWNER_ONLY
+            generation = root / "gen" / _generations(lock_file)[-1]
+            assert stat.S_IMODE(generation.lstat().st_mode) == _OWNER_READ_WRITE
+            (holder,) = _holders(lock_file)
+            assert stat.S_IMODE((root / "holders" / holder).lstat().st_mode) == _OWNER_READ_WRITE
     finally:
         lock.close()
 
 
-@NEEDS_FILE_MODE
-def test_readers_directory_is_created_with_0700(lock_file: str) -> None:  # pragma: needs file-mode
-    lock = _make_lock(lock_file)
-    try:
-        with lock.read_lock(timeout=2):
-            assert stat.S_IMODE(Path(f"{lock_file}.readers").lstat().st_mode) == 0o700
-    finally:
-        lock.close()
-
-
-def test_writer_ignores_housekeeping_files_in_readers_dir(lock_file: str) -> None:
-    # A writer's phase-2 drain scan must not mistake dotfiles or leftover .break.* files from aborted
-    # evictions for live readers.
-    readers = Path(f"{lock_file}.readers")
-    readers.mkdir(mode=0o700, exist_ok=True)
-    (readers / ".hidden").write_bytes(b"ignored")
-    (readers / "stale.break.12345.abcdef").write_bytes(b"also ignored")
+def test_stray_files_in_the_protocol_directories_are_ignored(lock_file: str) -> None:
+    root = Path(f"{lock_file}.rw")
+    (root / "gen").mkdir(parents=True)
+    (root / "holders").mkdir()
+    (root / "gen" / ".hidden").write_bytes(b"ignored")
+    (root / "gen" / "not-a-generation").write_bytes(b"ignored")
+    (root / "holders" / "not-a-token").write_bytes(b"ignored")
     lock = _make_lock(lock_file)
     try:
         with lock.write_lock(timeout=2):
             pass
-    finally:
-        lock.close()
-
-
-@NEEDS_FILE_MODE
-def test_reader_file_is_created_with_0600(lock_file: str) -> None:  # pragma: needs file-mode
-    lock = _make_lock(lock_file)
-    try:
-        with lock.read_lock(timeout=2):
-            entries = list(Path(f"{lock_file}.readers").iterdir())
-            assert len(entries) == 1
-            assert stat.S_IMODE(entries[0].lstat().st_mode) == 0o600
     finally:
         lock.close()
 
@@ -1073,7 +1002,7 @@ def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:  # pragma: nee
         child = _fork_process(target=time.sleep, args=(0.05,))
         child.start()
         child.join(timeout=_PROCESS_DEADLINE)
-        assert Path(f"{path}.write").exists()
+        assert _state(path).writer is not None
         peer = SoftReadWriteLock(
             path,
             heartbeat_interval=0.2,
@@ -1089,7 +1018,7 @@ def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:  # pragma: nee
     finally:
         lock.release()
         lock.close()
-    assert not Path(f"{path}.write").exists()
+    assert _state(path).writer is None
 
 
 def _make_lock(
@@ -1099,6 +1028,7 @@ def _make_lock(
     stale_threshold: float = 0.5,
     poll_interval: float = 0.02,
     is_singleton: bool = False,
+    on_compromise: Callable[[LeaseCompromise], None] | None = None,
 ) -> SoftReadWriteLock:
     return SoftReadWriteLock(
         path,
@@ -1106,6 +1036,7 @@ def _make_lock(
         stale_threshold=stale_threshold,
         poll_interval=poll_interval,
         is_singleton=is_singleton,
+        on_compromise=on_compromise,
     )
 
 
@@ -1160,12 +1091,6 @@ def _sigkill_worker(  # pragma: forked child
         lock.acquire_write()
     acquired_event.set()
     time.sleep(60)
-
-
-def _write_stale_marker(path: str, content: bytes) -> None:
-    Path(path).write_bytes(content)
-    past = time.time() - 1000
-    os.utime(path, (past, past))
 
 
 def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:  # pragma: needs fork
@@ -1287,58 +1212,13 @@ def test_cleanup_closes_the_process() -> None:
         proc.is_alive()
 
 
-def test_write_marker_zero_write_rolls_back(lock_file: str, mocker: MockerFixture) -> None:
+def test_record_zero_write_rolls_back(lock_file: str, mocker: MockerFixture) -> None:
     mocker.patch("filelock._util.os.write", return_value=0)
 
     lock = SoftReadWriteLock(lock_file, is_singleton=False)
     with pytest.raises(OSError, match="0 bytes"):
         lock.acquire_write(timeout=1)
-    assert not Path(f"{lock_file}.write").exists()
-
-
-def test_touch_writer_marker_returns_false_when_marker_missing(lock_file: str) -> None:
-    lock = SoftReadWriteLock(lock_file, is_singleton=False)
-    assert lock._touch_writer_marker_if_ours("0" * 32) is False
-
-
-def test_claim_writer_marker_returns_false_on_create_race(lock_file: str, mocker: MockerFixture) -> None:
-    lock = SoftReadWriteLock(lock_file, is_singleton=False)
-    mocker.patch.object(sync_mod, "_atomic_create_marker", side_effect=FileExistsError)
-    with lock._locks.state:
-        assert lock._claim_writer_marker("0" * 32) is False
-
-
-def test_atomic_create_marker_rolls_back_on_write_failure(tmp_path: Path, mocker: MockerFixture) -> None:
-    marker = str(tmp_path / "marker")
-    mocker.patch.object(sync_mod, "write_all", side_effect=OSError("write boom"))
-    with pytest.raises(OSError, match="write boom"):
-        sync_mod._atomic_create_marker(marker, "0" * 32)
-    assert not Path(marker).exists()
-
-
-def test_same_file_true_for_matching_identity(tmp_path: Path) -> None:
-    target = tmp_path / "present"
-    target.write_bytes(b"x")
-    st = os.lstat(target)
-    assert sync_mod._same_file(str(target), (st.st_dev, st.st_ino), dir_fd=None) is True
-
-
-def test_same_file_false_when_stat_fails(tmp_path: Path) -> None:
-    assert sync_mod._same_file(str(tmp_path / "absent"), (1, 2), dir_fd=None) is False
-
-
-def test_refresh_marker_stops_once_a_peer_owns_the_marker(lock_file: str) -> None:
-    # A peer that evicted our marker and wrote its own owns the file now; refreshing it would keep a stranger's
-    # marker alive, so the heartbeat has to stop instead.
-    lock = _make_lock(lock_file)
-    try:
-        lock.acquire_write(timeout=2)
-        foreign = f"{'0' * 32}\n{os.getpid()}\n{socket.gethostname()}\n".encode("ascii")
-        Path(f"{lock_file}.write").write_bytes(foreign)
-
-        assert lock._refresh_marker() is False
-    finally:
-        lock.close()
+    assert _holders(lock_file) == []
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -1351,9 +1231,10 @@ def test_refresh_marker_stops_once_a_peer_owns_the_marker(lock_file: str) -> Non
         pytest.param(10, False, id="nonblocking-finite"),
     ],
 )
-def test_state_contention_obeys_acquisition_policy(
-    abandoned_state: Path, mocker: MockerFixture, mode: Literal["read", "write"], timeout: float, *, blocking: bool
+def test_contention_obeys_acquisition_policy(
+    lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"], timeout: float, *, blocking: bool
 ) -> None:
+    _plant_holder(lock_file, mode="write")
     real_sleep: Final = time.sleep
 
     def sleep(seconds: float) -> None:
@@ -1362,55 +1243,40 @@ def test_state_contention_obeys_acquisition_policy(
         real_sleep(seconds)
 
     mocker.patch("time.sleep", autospec=True, side_effect=sleep)
-    with closing(SoftReadWriteLock(abandoned_state, timeout=timeout, blocking=blocking, poll_interval=10)) as lock:
+    with closing(SoftReadWriteLock(lock_file, timeout=timeout, blocking=blocking, poll_interval=10)) as lock:
         acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
         with pytest.raises(Timeout) as caught:
             acquire()
-        assert caught.value.lock_file == str(abandoned_state)
+        assert caught.value.lock_file == lock_file
+    assert _state(lock_file).readers == frozenset()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
-async def test_async_state_contention_reports_public_path(
-    abandoned_state: Path, mode: Literal["read", "write"]
-) -> None:
-    lock: Final = AsyncSoftReadWriteLock(abandoned_state, timeout=0.02)
+async def test_async_contention_reports_public_path(lock_file: str, mode: Literal["read", "write"]) -> None:
+    _plant_holder(lock_file, mode="write")
+    lock: Final = AsyncSoftReadWriteLock(lock_file, timeout=0.02)
     try:
         acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
         with pytest.raises(Timeout) as caught:
             await acquire()
-        assert caught.value.lock_file == str(abandoned_state)
+        assert caught.value.lock_file == lock_file
     finally:
         await lock.close()
 
 
-@pytest.mark.parametrize("blocking", [pytest.param(True, id="deadline"), pytest.param(False, id="nonblocking")])
-def test_writer_timeout_leaves_claim_if_state_is_busy(tmp_path: Path, mocker: MockerFixture, *, blocking: bool) -> None:
-    path: Final = tmp_path / "test.lock"
-    with (
-        closing(SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=10)) as reader,
-        closing(SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=10, poll_interval=0.01)) as writer,
-    ):
-        real_unlink: Final = Path.unlink
-        state: Final = Path(f"{path}.state")
-        writer_marker: Final = Path(f"{path}.write")
-
-        def unlink(marker: Path, *, missing_ok: bool = False) -> None:
-            real_unlink(marker, missing_ok=missing_ok)
-            # A peer claims .state after phase one, before this writer can scan readers or clean up.
-            if marker == state and writer_marker.exists():
-                state.write_text(f"424242\n{socket.gethostname()}-other\n", encoding="utf-8")
-
-        mocker.patch.object(Path, "unlink", autospec=True, side_effect=unlink)
+def test_writer_timeout_commits_itself_out(lock_file: str) -> None:
+    # A writer that gives up while draining must not stay named: it would block every reader until a peer waited out
+    # the stale threshold. Its own token is all it removes, so the reader it waited on keeps its hold.
+    reader = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
+    writer = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40, poll_interval=0.01)
+    try:
         reader.acquire_read()
-        with pytest.raises(Timeout) as caught:
-            writer.acquire_write(timeout=0.02, blocking=blocking)
-        assert caught.value.lock_file == str(path)
-        assert writer_marker.exists()
-
-
-@pytest.fixture
-def abandoned_state(tmp_path: Path) -> Path:
-    path: Final = tmp_path / "test.lock"
-    Path(f"{path}.state").write_text(f"424242\n{socket.gethostname()}-other\n", encoding="utf-8")
-    return path
+        with pytest.raises(Timeout):
+            writer.acquire_write(timeout=0.05)
+        state = _state(lock_file)
+        assert state.writer is None
+        assert len(state.readers) == 1
+    finally:
+        reader.close()
+        writer.close()

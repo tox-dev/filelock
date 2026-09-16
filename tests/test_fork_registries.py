@@ -8,7 +8,11 @@ import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NoReturn
 
+import pytest
+
 from filelock import BaseFileLock
+from filelock._soft_rw._protocol import GenerationLog
+from filelock._soft_rw._storage import OsFiles
 from tests.capability_marks import NEEDS_CLASS_COLLECTION, NEEDS_FORK
 from tests.fork_helpers import exit_child, fork_process
 
@@ -44,6 +48,7 @@ def test_equal_unhashable_locks_reset_independently(tmp_path: Path) -> None:  # 
     assert os.waitstatus_to_exitcode(status) == 0
 
 
+@pytest.mark.requires_hard_links
 def test_equal_unhashable_soft_read_write_locks_survive_atexit_registry(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
@@ -70,7 +75,11 @@ for lock in locks:
         timeout=10,
     )
 
-    assert (result.returncode, [path.with_name(f"{path.name}.write").exists() for path in paths]) == (0, [False, False])
+    assert (result.returncode, [_writer_named(path) for path in paths]) == (0, [False, False])
+
+
+def _writer_named(path: Path) -> bool:
+    return GenerationLog(OsFiles(str(path)), str(path), f"{path}.rw").latest().writer is not None
 
 
 @NEEDS_CLASS_COLLECTION

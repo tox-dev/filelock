@@ -551,8 +551,9 @@ filelock cannot make that operation safe.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` is SQLite-backed and requires a local filesystem supported by the active
 SQLite VFS. On a shared filesystem, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` only after verifying
-exclusive creation, rename, unlink, timestamps, and cache visibility across participating hosts. Its heartbeat permits
-a peer to evict a marker after ``stale_threshold`` even if the old holder later resumes.
+exclusive creation, no-replace hard links, unlink, and cache visibility across participating hosts. A peer evicts a
+holder whose heartbeat has stopped for ``stale_threshold``, even if the old holder later resumes; ``on_compromise``
+tells that holder.
 
 .. code-block:: python
 
@@ -573,15 +574,27 @@ that hold locks for seconds-to-minutes. Tune them for your deployment:
 
     rw = SoftReadWriteLock(
         "/shared/nfs/data.lock",
-        heartbeat_interval=30,   # how often to refresh the marker's mtime
-        stale_threshold=90,      # declare a marker stale after this many seconds of no refresh
+        heartbeat_interval=30,   # how often the heartbeat rewrites the holder's nonce
+        stale_threshold=90,      # evict a holder after this many seconds without a change
         poll_interval=0.25,      # how long to sleep between acquire retries
     )
 
 Pick ``stale_threshold`` larger than any realistic process or filesystem pause. ``heartbeat_interval`` should be
 roughly ``stale_threshold / 3``; ``stale_threshold`` defaults to exactly that and must strictly exceed the interval.
-Lower ``poll_interval`` reduces acquisition latency at the cost of more filesystem metadata calls. Synchronize
-participating clocks and fence protected writes if an expired holder can resume.
+Lower ``poll_interval`` reduces acquisition latency at the cost of more filesystem metadata calls. No clock is
+compared across hosts, so clock skew cannot evict a live holder. Fence protected writes with ``generation`` if an
+expired holder can resume:
+
+.. code-block:: python
+
+    def stop_working(compromise):
+        print(f"lost the lock: {compromise.reason}")
+
+    rw = SoftReadWriteLock("/shared/nfs/data.lock", on_compromise=stop_working)
+
+    with rw.write_lock():
+        # A store that rejects a lower generation than the highest it accepted refuses an evicted holder that resumes.
+        store.write(payload, fence=rw.generation)
 
 ``timeout`` and ``blocking`` set instance-wide defaults that each acquisition inherits. Passing ``None`` per call means
 "use the instance default", which is not the same as ``-1``:
@@ -599,14 +612,10 @@ participating clocks and fence protected writes if an expired holder can resume.
     with rw.read_lock(blocking=False):  # one attempt; ignores timeout entirely
         pass
 
-The acquisition deadline includes contention on the internal ``.state`` mutex. ``blocking=False`` makes one attempt
-per acquisition phase without sleeping. If a writer times out after claiming ``.write`` and cannot obtain ``.state``
-for cleanup, it leaves its writer marker for stale-marker recovery.
-
-The ``.state`` mutex has no heartbeat or cross-host expiry. A crashed host can leave it held; a finite acquisition
-timeout bounds retries but does not reclaim that marker. Writer release can still wait for ``.state`` without a
-deadline. Remove an abandoned state marker only after stopping the participating processes, including paused holders
-that could resume. Filesystem calls on an unresponsive network mount can also outlast the acquisition timeout.
+``blocking=False`` makes one attempt without sleeping. A writer that gives up while waiting for readers commits itself
+out of the snapshot, so its own timeout never leaves readers blocked. A holder that died on another host is evicted by
+the next contender once ``stale_threshold`` has passed, whichever host it runs on. Filesystem calls on an unresponsive
+network mount can still outlast the acquisition timeout.
 
 .. warning::
 
@@ -622,9 +631,9 @@ out at the call site. ``ReadWriteLock`` has the same classmethod. It offers noth
 
     assert SoftReadWriteLock.get_lock("/shared/nfs/data.lock") is SoftReadWriteLock("/shared/nfs/data.lock")
 
-Writer acquisition is two-phase and writer-preferring: phase one claims the writer marker (which blocks any
-new reader), phase two waits for existing readers to drain. This rules out writer starvation under read-heavy
-workloads. See :doc:`concepts` for the full model.
+Writer acquisition is writer-preferring: a writer enters the next snapshot as soon as no live writer is named (which
+blocks any new reader), then waits for the readers that snapshot names to leave. This rules out writer starvation under
+read-heavy workloads. See :doc:`concepts` for the full model.
 
 **Fork caveat.** A process that forks while holding a ``SoftReadWriteLock`` loses the lock in the child. filelock marks
 the inherited instance fork-invalidated; ``release()`` on it becomes a no-op, and the child must construct a fresh
@@ -632,9 +641,9 @@ the inherited instance fork-invalidated; ``release()`` on it becomes a no-op, an
 pools.
 
 **Trust boundary.** The class coordinates cooperating processes at one UID. Mode bits (``0o600`` / ``0o700``) keep other
-UIDs out; they do not make a same-UID co-tenant safe, since it owns the markers and can rewrite or delete them directly.
-Incorrect clocks or cache behavior can also trigger expiry while a holder remains active. See
-:ref:`concepts:The same-UID boundary` for the full contract.
+UIDs out; they do not make a same-UID co-tenant safe, since it owns the records and can rewrite or delete them directly.
+A filesystem that delays a heartbeat's visibility past ``stale_threshold`` can also trigger expiry while a holder
+remains active. See :ref:`concepts:The same-UID boundary` for the full contract.
 
 ***********************************
  Use async read / write locks
@@ -707,7 +716,7 @@ For a shared filesystem whose marker and cache behavior has been verified, use
 
 It takes the same tuning as its synchronous peer plus the async pair, so the full signature is
 ``AsyncSoftReadWriteLock(lock_file, timeout=-1, *, blocking=True, is_singleton=True, heartbeat_interval=30.0,
-stale_threshold=None, poll_interval=0.25, loop=None, executor=None)``. It has no SQLite thread affinity to respect, so
+stale_threshold=None, poll_interval=0.25, on_compromise=None, loop=None, executor=None)``. It has no SQLite thread affinity to respect, so
 ``executor=None`` means the loop's default executor: it creates nothing and owns nothing, and its ``close()`` only
 delegates to the synchronous lock.
 

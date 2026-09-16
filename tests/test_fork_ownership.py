@@ -8,7 +8,6 @@ import sys
 import threading
 from errno import EBADF
 from queue import Queue
-from stat import S_ISDIR
 from typing import TYPE_CHECKING, Final, Literal, NoReturn
 
 import pytest
@@ -28,9 +27,9 @@ from tests.capability_marks import NEEDS_FORK, NEEDS_REGISTER_AT_FORK
 from tests.fork_helpers import exit_child, fork_process
 
 if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
+    pass  # pragma: >=3.11 cover
 else:  # pragma: <3.11 cover
-    from exceptiongroup import BaseExceptionGroup
+    pass
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -108,6 +107,7 @@ def test_async_child_release_preserves_parent_lock(
     assert _probe_lock(sync_lock_type, path)
 
 
+@pytest.mark.requires_hard_links
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None:
@@ -325,73 +325,6 @@ def test_fork_from_on_acquired_invalidates_child_acquire(tmp_path: Path) -> None
     lock.release()
 
 
-@NEEDS_REGISTER_AT_FORK
-def test_reader_directory_registration_failure_closes_descriptor(  # pragma: needs fork
-    tmp_path: Path, mocker: MockerFixture
-) -> None:
-    lock = SoftReadWriteLock(
-        str(tmp_path / "parent.lock"),
-        is_singleton=False,
-        heartbeat_interval=0.1,
-        stale_threshold=0.5,
-    )
-    real_fstat = os.fstat
-    directory_fds: list[int] = []
-
-    def fail_directory_fstat(fd: int) -> os.stat_result:
-        stat_result = real_fstat(fd)
-        assert S_ISDIR(stat_result.st_mode)
-        directory_fds.append(fd)
-        msg = "directory identity unavailable"
-        raise OSError(msg)
-
-    mocker.patch("os.fstat", side_effect=fail_directory_fstat)
-    with pytest.raises(OSError, match="directory identity unavailable"):
-        lock.acquire_read()
-
-    with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
-        real_fstat(directory_fds[0])
-    lock.close()
-
-
-@NEEDS_REGISTER_AT_FORK
-def test_reader_directory_registration_and_close_errors_are_grouped(  # pragma: needs fork
-    tmp_path: Path, mocker: MockerFixture
-) -> None:
-    lock = SoftReadWriteLock(
-        str(tmp_path / "parent.lock"),
-        is_singleton=False,
-        heartbeat_interval=0.1,
-        stale_threshold=0.5,
-    )
-    real_close, real_fstat = os.close, os.fstat
-    directory_fds: list[int] = []
-
-    def fail_directory_fstat(fd: int) -> os.stat_result:
-        stat_result = real_fstat(fd)
-        assert S_ISDIR(stat_result.st_mode)
-        directory_fds.append(fd)
-        msg = "directory identity unavailable"
-        raise OSError(msg)
-
-    def fail_directory_close(fd: int) -> None:
-        assert fd == directory_fds[0]
-        msg = "directory close failed"
-        raise OSError(msg)
-
-    mocker.patch("os.fstat", side_effect=fail_directory_fstat)
-    mocker.patch("os.close", side_effect=fail_directory_close)
-    with pytest.raises(BaseExceptionGroup) as info:
-        lock.acquire_read()
-    real_close(directory_fds[0])
-    lock.close()
-
-    assert [(type(error), str(error)) for error in info.value.exceptions] == [
-        (OSError, "directory identity unavailable"),
-        (OSError, "directory close failed"),
-    ]
-
-
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_child_callback_registered_before_filelock_can_acquire(tmp_path: Path) -> None:
@@ -451,6 +384,7 @@ parent.release()
         pytest.param("soft-rw", id="soft-read-write"),
     ],
 )
+@pytest.mark.requires_hard_links
 def test_child_interpreter_exit_preserves_parent_lock(
     tmp_path: Path, kind: Literal["native", "soft", "soft-rw"]
 ) -> None:

@@ -366,8 +366,8 @@ primitive survives the object stores and network mounts it targets. filelock dra
 
 Keep SQLite-backed :class:`ReadWriteLock <filelock.ReadWriteLock>` on a local filesystem supported by the active SQLite
 VFS. On a shared filesystem, use :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` only after verifying exclusive
-creation, rename, unlink, timestamps, and cache visibility across participating hosts. Heartbeat expiry permits another
-holder to enter if an old process pauses and later resumes.
+creation, no-replace hard links, unlink, and cache visibility across participating hosts. Heartbeat expiry permits
+another holder to enter if an old process pauses and later resumes.
 
 .. code-block:: python
 
@@ -383,20 +383,20 @@ holder to enter if an old process pauses and later resumes.
         data = data_file.read_text()
 
     with rw.write_lock():
-        # New readers wait behind an observed writer marker.
+        # New readers wait behind the writer named in the latest snapshot.
         data_file.write_text(new_data)
 
-While the lock is held, you will see a few sidecar files on disk next to ``work.lock``:
+While the lock is held, you will see a protocol directory on disk next to ``work.lock``:
 
 .. code-block:: text
 
-    work.lock.state         # short-lived state mutex, exists only during transitions
-    work.lock.write         # writer marker, exists while a writer is claiming or holding
-    work.lock.readers/      # directory with one file per active reader
+    work.lock.rw/gen/00000000000000000042   # immutable snapshot: which tokens read and which one writes
+    work.lock.rw/holders/<token>            # one record per participant; its nonce is the heartbeat
 
-A daemon heartbeat thread refreshes each marker's ``mtime`` every ``heartbeat_interval`` seconds. A peer may evict a
-marker after ``stale_threshold`` seconds without a refresh. Set the threshold above expected process and filesystem
-pauses, synchronize participating clocks, and fence protected writes if an expired process can resume:
+A daemon heartbeat thread rewrites each holder's nonce every ``heartbeat_interval`` seconds. A peer may evict a holder
+whose record has not changed for ``stale_threshold`` seconds on the peer's own clock, so hosts never compare clocks.
+Set the threshold above expected process and filesystem pauses, and fence protected writes with ``generation`` if an
+expired process can resume:
 
 .. code-block:: python
 
@@ -408,7 +408,7 @@ pauses, synchronize participating clocks, and fence protected writes if an expir
 
 Those two numbers are a ratio, not a pair of independent knobs. restic's repository lock runs the same model with a
 5-minute refresh against a 30-minute stale timeout, and treats a lock it could not refresh within 22.5 minutes as lost:
-the margin absorbs clock drift and a slow filesystem. See :doc:`concepts` for the full explanation of the heartbeat +
+the margin absorbs a slow filesystem. See :doc:`concepts` for the full explanation of the heartbeat +
 TTL model.
 
 *******************************

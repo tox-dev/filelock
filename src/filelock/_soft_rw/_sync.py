@@ -1,51 +1,36 @@
-"""Cross-process and cross-host reader/writer lock built on :class:`SoftFileLock` primitives."""
+"""Cross-process and cross-host reader/writer lock over a generation log of immutable snapshots."""
 
 from __future__ import annotations
 
 import atexit
-import hmac
 import os
-import re
-import secrets
-import stat
-import sys
 import threading
 import time
-import uuid
-from contextlib import closing, contextmanager, suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final
 from weakref import WeakValueDictionary
 
 from filelock._api import (
     AcquireReturnProxy,
     _ensure_current_process,
-    _fork_transition,
-    _raise_grouped_errors,
     _register_fork_class,
     _register_fork_object,
-    _register_owned_descriptor,
-    _unregister_owned_descriptor,
 )
 from filelock._error import Timeout
-from filelock._identity import host_name
-from filelock._soft import SoftFileLock
-from filelock._util import ensure_directory_exists, touch, write_all
+from filelock._lease import LeaseCompromise
+
+from ._protocol import Mode, Participant
+from ._storage import OsFiles
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
+    from filelock._lease import CompromiseReason
 
-_Mode = Literal["read", "write"]
-_BREAK_SUFFIX: Final[str] = ".break"
-_MAX_MARKER_SIZE: Final[int] = 1024
-_O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
-_O_NONBLOCK: Final[int] = getattr(os, "O_NONBLOCK", 0)
-# dirfd-relative I/O is a Unix-only optimization; Windows cannot ``os.open()`` a directory at all, and
-# its ``os`` module skips dir_fd support entirely. When disabled, callers fall back to full-path ops.
-_SUPPORTS_DIR_FD: Final[bool] = sys.platform != "win32" and os.open in os.supports_dir_fd
+_PROTOCOL_SUFFIX: Final[str] = ".rw"
 
 _ALL_INSTANCES: Final[WeakValueDictionary[int, SoftReadWriteLock]] = WeakValueDictionary()
 _ALL_INSTANCES_LOCK: threading.Lock = threading.Lock()
@@ -66,8 +51,11 @@ class _SoftRWMeta(type):
         heartbeat_interval: float = 30.0,
         stale_threshold: float | None = None,
         poll_interval: float = 0.25,
+        on_compromise: Callable[[LeaseCompromise], None] | None = None,
     ) -> SoftReadWriteLock:
         _ensure_current_process()
+        # Passed through only when set, so a subclass that declares its own constructor without it keeps working.
+        extra = {} if on_compromise is None else {"on_compromise": on_compromise}
         if not is_singleton:
             return super().__call__(
                 lock_file,
@@ -77,6 +65,7 @@ class _SoftRWMeta(type):
                 heartbeat_interval=heartbeat_interval,
                 stale_threshold=stale_threshold,
                 poll_interval=poll_interval,
+                **extra,
             )
 
         normalized = Path(lock_file).resolve()
@@ -97,6 +86,7 @@ class _SoftRWMeta(type):
                         heartbeat_interval=heartbeat_interval,
                         stale_threshold=stale_threshold,
                         poll_interval=poll_interval,
+                        **extra,
                     )
                 finally:
                     _SINGLETONS_UNDER_CONSTRUCTION.discard(normalized)
@@ -117,25 +107,27 @@ class _SoftRWMeta(type):
 
 class SoftReadWriteLock(metaclass=_SoftRWMeta):
     """
-    Cross-process and cross-host reader/writer lock built on :class:`SoftFileLock` primitives.
+    Cross-process and cross-host reader/writer lock for shared filesystems.
 
-    Use this class instead of :class:`~filelock.ReadWriteLock` when the lock file lives on a network
-    filesystem (NFS, Lustre with ``-o flock``, HPC cluster shared storage). ``ReadWriteLock`` is backed
-    by SQLite and cannot run on NFS because SQLite's ``fcntl`` locking is unreliable there.
+    Use this class instead of :class:`~filelock.ReadWriteLock` when the lock file lives on a network filesystem (NFS,
+    Lustre, HPC cluster shared storage). ``ReadWriteLock`` is backed by SQLite and cannot run on NFS because SQLite's
+    ``fcntl`` locking is unreliable there.
 
-    Layout on disk for a lock at ``foo.lock``:
+    The lock's state is a log of immutable snapshots under ``foo.lock.rw/gen/<N>``, each naming the writer and the
+    readers holding the lock at generation ``N``. Every acquire, release, and eviction publishes the next snapshot with
+    one atomic no-replace hard link, so no transition can be left half done by a crash on any host. Each participant
+    also keeps ``foo.lock.rw/holders/<token>``, a record whose nonce a daemon heartbeat thread rewrites every
+    ``heartbeat_interval`` seconds. A contender evicts a member whose record has not changed for ``stale_threshold``
+    seconds of the contender's own monotonic clock; no clock is ever compared across hosts, so skew between hosts or
+    against the file server cannot make a live holder look dead.
 
-    - ``foo.lock.state`` — a :class:`SoftFileLock` taken only during state transitions (microseconds).
-    - ``foo.lock.write`` — writer marker; its presence means a writer is claiming or holding the lock.
-    - ``foo.lock.readers/<host>.<pid>.<uuid>`` — one file per reader.
+    Writer acquire is writer-preferring: a writer enters the snapshot as soon as no live writer is named, which blocks
+    any new reader, then waits for the named readers to leave. Writer starvation is impossible.
 
-    Each marker stores a random token (``secrets.token_hex(16)``), the holder's pid, and the holder's
-    hostname. A daemon heartbeat thread refreshes ``mtime`` on every held marker. A marker whose mtime
-    has not advanced in ``stale_threshold`` seconds may be evicted by any process on any host, giving
-    correct behavior when a compute node crashes with a lock held.
-
-    Writer acquire is two-phase and writer-preferring: phase 1 claims ``.write`` (blocking any new
-    reader), phase 2 waits for existing readers to drain. Writer starvation is impossible.
+    An expired holder is not fenced by the lock: a process paused past ``stale_threshold`` resumes believing it holds
+    the lock until its next heartbeat reports the loss through ``on_compromise``. :attr:`generation` is a monotonic
+    fencing token for the protected resource: a store that rejects writes carrying a lower generation than the highest
+    it has accepted refuses such a holder.
 
     Reentrancy, upgrade/downgrade rules, thread pinning, and singleton caching by resolved path match
     :class:`~filelock.ReadWriteLock`.
@@ -143,21 +135,26 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     Forking invalidates the inherited instance in the child so the child cannot double-own the lock with its parent;
     ``release()`` on that instance is a no-op, and the child must construct a new instance if it needs a lock.
 
-    Trust boundary: protects against same-UID non-cooperating processes (one host or cross-host) and
-    same-host different-UID users via ``0o600`` / ``0o700`` permissions. Does not protect against root
-    compromise, NTP tampering on same-UID cross-host nodes, or multi-tenant mounts where hostile
-    co-tenants share the UID.
+    Trust boundary: protects against same-UID non-cooperating processes (one host or cross-host) and same-host
+    different-UID users via ``0o600`` / ``0o700`` permissions. Does not protect against root compromise or multi-tenant
+    mounts where hostile co-tenants share the UID.
 
-    :param lock_file: path to the lock file; sidecar state/write/readers live next to it
+    :param lock_file: path to the lock file; the protocol directory lives next to it as ``<lock_file>.rw``
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately on contention
     :param is_singleton: if ``True``, reuse existing instances for the same resolved path
     :param heartbeat_interval: seconds between heartbeat refreshes; default 30 s
-    :param stale_threshold: seconds of ``mtime`` inactivity before a marker is stale; defaults to
+    :param stale_threshold: seconds a holder record may stay unchanged before a contender evicts it; defaults to
         ``3 * heartbeat_interval``, matching etcd's ``LeaseKeepAlive`` convention
     :param poll_interval: seconds between acquire retries under contention; default 0.25 s
+    :param on_compromise: called from the heartbeat thread with a :class:`~filelock.LeaseCompromise` when the hold is
+        lost: a peer evicted it, or refreshes failed for long enough that a peer could have
 
     .. versionadded:: 3.27.0
+
+    .. versionchanged:: 3.33.0
+
+        The on-disk protocol is a generation log; earlier releases cannot share a lock path with this one.
 
     """
 
@@ -174,6 +171,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         heartbeat_interval: float = 30.0,
         stale_threshold: float | None = None,
         poll_interval: float = 0.25,
+        on_compromise: Callable[[LeaseCompromise], None] | None = None,
     ) -> None:
         self._creator_pid = os.getpid()
         stale_threshold = _validate_intervals(heartbeat_interval, stale_threshold, poll_interval)
@@ -185,20 +183,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self.stale_threshold: float = stale_threshold
         self.poll_interval: float = poll_interval
 
-        self._paths = _Paths(
-            state=f"{self.lock_file}.state",
-            write=f"{self.lock_file}.write",
-            readers=f"{self.lock_file}.readers",
-        )
-        ensure_directory_exists(self.lock_file)
-        self._locks = _Locks(
-            internal=threading.Lock(),
-            transaction=threading.Lock(),
-            state=SoftFileLock(self._paths.state, timeout=-1),
-        )
-        self._readers_dir_fd: int | None = None
-        self._readers_dir_fd_token: int | None = None
+        self._root = f"{self.lock_file}{_PROTOCOL_SUFFIX}"
+        self._files = OsFiles(self.lock_file)
+        self._on_compromise = on_compromise
+        self._locks = _Locks(internal=threading.Lock(), transaction=threading.Lock())
         self._hold: _Hold | None = None
+        self._compromise: LeaseCompromise | None = None
         self._closed: bool = False
 
         with _ALL_INSTANCES_LOCK:
@@ -212,6 +202,35 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         cls._instances = WeakValueDictionary()
         cls._instances_lock = threading.RLock()
         _SINGLETONS_UNDER_CONSTRUCTION.clear()
+
+    @property
+    def generation(self) -> int | None:
+        """
+        The generation at which the current hold was granted, or ``None`` when no lock is held.
+
+        Generations are monotonic across every participant on every host, so this is a fencing token: pass it to the
+        protected resource and have the resource reject any operation carrying a lower generation than the highest it
+        has accepted. That refuses a holder that paused past ``stale_threshold``, was evicted, and resumed.
+
+        .. versionadded:: 3.33.0
+
+        """
+        with self._locks.internal:
+            return None if self._hold is None else self._hold.participant.generation
+
+    @property
+    def compromise(self) -> LeaseCompromise | None:
+        """
+        How the current hold was lost, or ``None`` while it stands.
+
+        Set by the heartbeat thread once a peer has evicted this holder or refreshes have failed for long enough that a
+        peer could have. The holder should stop using the protected resource when it is set.
+
+        .. versionadded:: 3.33.0
+
+        """
+        with self._locks.internal:
+            return self._compromise
 
     @contextmanager
     def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
@@ -259,8 +278,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire a
         read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed). On the 0→1
-        transition a daemon heartbeat thread is started that refreshes the reader marker's ``mtime`` every
-        ``heartbeat_interval`` seconds so peers on other hosts do not evict the marker as stale.
+        transition the reader publishes its holder record, enters the next snapshot once no live writer is named, and
+        starts a daemon heartbeat thread that rewrites the record's nonce every ``heartbeat_interval`` seconds so peers
+        on other hosts do not evict it.
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means block
             indefinitely
@@ -272,6 +292,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :raises RuntimeError: if a write lock is already held on this instance, if this instance was invalidated by
             :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises SoftFileLockProtocolError: if a snapshot cannot be read without risking overlap, or the filesystem
+            refuses the no-replace hard links the protocol commits with
 
         """
         return self._acquire("read", timeout, blocking=blocking)
@@ -285,9 +307,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         allowed). Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
         :class:`RuntimeError`.
 
-        Writer acquisition runs in two phases. Phase 1 atomically claims ``<path>.write`` via ``O_CREAT | O_EXCL``,
-        which immediately blocks any new reader on any host. Phase 2 waits for existing readers to drain. Writer
-        starvation is impossible: new readers see ``<path>.write`` during phase 2 and wait behind the pending writer.
+        A writer enters the next snapshot as its writer as soon as no live writer is named, which blocks every new
+        reader on every host, then waits for the readers that snapshot names to leave. Writer starvation is impossible:
+        new readers see the named writer and wait behind it.
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means block
             indefinitely
@@ -299,6 +321,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :raises RuntimeError: if a read lock is already held, if a write lock is held by a different thread, if this
             instance was invalidated by :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises SoftFileLockProtocolError: if a snapshot cannot be read without risking overlap, or the filesystem
+            refuses the no-replace hard links the protocol commits with
 
         """
         return self._acquire("write", timeout, blocking=blocking)
@@ -314,7 +338,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         """
         Return the singleton :class:`SoftReadWriteLock` for *lock_file*.
 
-        :param lock_file: path to the lock file; sidecar state/write/readers live next to it
+        :param lock_file: path to the lock file; the protocol directory lives next to it as ``<lock_file>.rw``
         :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
 
@@ -327,7 +351,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     def close(self) -> None:
         """
-        Release any held lock and release internal filesystem resources.
+        Release any held lock and mark the instance closed.
 
         Idempotent. After calling this method the instance can no longer acquire locks — subsequent acquires raise
         :class:`RuntimeError`. A fork-invalidated instance is closed without raising.
@@ -336,25 +360,16 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             return
         self.release(force=True)
         with self._locks.internal:
-            if self._closed:
-                return
             self._closed = True
-            if self._readers_dir_fd is not None:  # pragma: needs dir-fd
-                with _fork_transition():
-                    if self._readers_dir_fd_token is not None:  # pragma: needs dir-fd
-                        _unregister_owned_descriptor(self._readers_dir_fd_token)
-                    self._readers_dir_fd_token = None
-                    fd, self._readers_dir_fd = self._readers_dir_fd, None
-                    with suppress(OSError):  # pragma: needs dir-fd
-                        os.close(fd)
 
     def release(self, *, force: bool = False) -> None:
         """
         Release one level of the current lock.
 
-        When the lock level reaches zero the heartbeat thread is stopped and the held marker file is unlinked. On a
-        fork-invalidated instance (that is, the child of a :func:`os.fork` call made while the parent held a lock)
-        this method is a no-op so inherited ``with`` blocks can unwind cleanly in the child.
+        When the lock level reaches zero the heartbeat thread is stopped, the participant is committed out of the next
+        snapshot, and its holder record is removed. On a fork-invalidated instance (that is, the child of a
+        :func:`os.fork` call made while the parent held a lock) this method is a no-op so inherited ``with`` blocks can
+        unwind cleanly in the child.
 
         :param force: if ``True``, release the lock completely regardless of the current lock level
 
@@ -378,31 +393,15 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 return
             self._hold = None
 
-        # Order matters: signal → join → unlink. A late tick on a deleted marker is harmless and the
-        # heartbeat's token check would catch a re-acquisition race, but joining first removes that race.
+        # Stop the heartbeat before leaving, so a late tick cannot re-read a snapshot this participant just left and
+        # report an eviction that was its own release.
         hold.heartbeat_stop.set()
         hold.heartbeat_thread.join(timeout=self.heartbeat_interval + 1.0)
-        if hold.is_reader:
-            _unlink(hold.marker_name, dir_fd=self._readers_dir_fd)
-        else:
-            self._unlink_writer_marker_if_ours(hold.token)
-
-    def _unlink_writer_marker_if_ours(self, token: str, *, blocking: bool = True) -> None:
-        # Serialize the token check and unlink so a paused holder cannot remove its successor's marker.
-        try:
-            with self._locks.state.acquire(blocking=blocking):
-                if (read := _read_marker(self._paths.write)) is None:
-                    return
-                info, _ = read
-                if info is not None and hmac.compare_digest(info.token, token):
-                    _unlink(self._paths.write)
-        except Timeout:
-            # Failed acquisition must return on time; peers can reclaim the unrefreshed writer marker.
-            return
+        hold.participant.leave()
 
     def _acquire(
         self,
-        mode: _Mode,
+        mode: Mode,
         timeout: float | None,
         *,
         blocking: bool | None,
@@ -436,7 +435,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     def _do_acquire_inner(
         self,
-        mode: _Mode,
+        mode: Mode,
         effective_timeout: float,
         start: float,
         *,
@@ -446,48 +445,58 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             if self._hold is not None:
                 return self._validate_reentrant(mode)
         deadline = None if effective_timeout == -1 else start + effective_timeout
-        token = secrets.token_hex(16)
-        if mode == "write":
-            marker_name, is_reader = self._acquire_writer_slot(token, deadline=deadline, blocking=blocking)
-        else:
-            marker_name, is_reader = self._acquire_reader_slot(token, deadline=deadline, blocking=blocking)
+        participant = Participant(
+            self._files,
+            self.lock_file,
+            self._root,
+            mode,
+            stale_threshold=self.stale_threshold,
+            clock=time.monotonic,
+        )
+        participant.publish()
+        try:
+            self._wait_for(participant.advance, deadline=deadline, blocking=blocking)
+        except BaseException:
+            # A contender that gives up must not stay named in the snapshot: a writer left there would block every
+            # reader until a peer waits out the stale threshold. Its own token is all leave() touches, so it cannot
+            # undo a peer's claim.
+            with suppress(OSError):
+                participant.leave()
+            raise
         stop_event = threading.Event()
-        heartbeat = _HeartbeatThread(
-            refresh=self._refresh_marker,
-            interval=self.heartbeat_interval,
-            stop_event=stop_event,
-            name=f"filelock-heartbeat-{id(self):x}",
+        hold = _Hold(
+            level=1,
+            mode=mode,
+            write_thread_id=threading.get_ident() if mode == "write" else None,
+            participant=participant,
+            heartbeat_thread=_HeartbeatThread(
+                refresh=lambda: self._refresh(participant, hold),
+                interval=self.heartbeat_interval,
+                stop_event=stop_event,
+                name=f"filelock-heartbeat-{id(self):x}",
+            ),
+            heartbeat_stop=stop_event,
+            last_refresh=time.monotonic(),
         )
         # Publish the hold and start its heartbeat under one internal-lock section, so a concurrent release() never
         # observes a hold whose thread has not started and joins it. If the OS refuses the thread, clear the hold and
-        # unlink the marker we claimed: left in place, a peer evicts it as stale and acquires while this instance still
-        # believes it holds the lock.
+        # leave: left in place, a peer evicts the unrefreshed record and acquires while this instance still believes it
+        # holds the lock.
         start_error: BaseException | None = None
         with self._locks.internal:
-            self._hold = _Hold(
-                level=1,
-                mode=mode,
-                write_thread_id=threading.get_ident() if mode == "write" else None,
-                marker_name=marker_name,
-                is_reader=is_reader,
-                token=token,
-                heartbeat_thread=heartbeat,
-                heartbeat_stop=stop_event,
-            )
+            self._hold = hold
+            self._compromise = None
             try:
-                heartbeat.start()
+                hold.heartbeat_thread.start()
             except BaseException as error:  # ruff:ignore[blind-except]  # clear the slot below and re-raise
                 self._hold = None
                 start_error = error
         if start_error is not None:
-            if is_reader:
-                _unlink(marker_name, dir_fd=self._readers_dir_fd)
-            else:
-                self._unlink_writer_marker_if_ours(token, blocking=False)
+            participant.leave()
             raise start_error
         return AcquireReturnProxy(lock=self)
 
-    def _validate_reentrant(self, mode: _Mode) -> AcquireReturnProxy:
+    def _validate_reentrant(self, mode: Mode) -> AcquireReturnProxy:
         hold = self._hold
         assert hold is not None  # ruff:ignore[assert]  # callers dispatch here only inside the self._hold is not None branch
         if hold.mode != mode:
@@ -507,94 +516,6 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         hold.level += 1
         return AcquireReturnProxy(lock=self)
 
-    def _acquire_writer_slot(
-        self,
-        token: str,
-        *,
-        deadline: float | None,
-        blocking: bool,
-    ) -> tuple[str, bool]:
-        # Phase 2 scans readers/ via dirfd (where supported), so we need it open even though writers never
-        # create files inside.
-        self._open_readers_dir()
-
-        def try_claim_writer() -> bool:
-            return self._claim_writer_marker(token)
-
-        def readers_drained_touching() -> bool:
-            # A paused contender must reclaim its slot before proceeding if a peer replaced its marker.
-            if not self._touch_writer_marker_if_ours(token) and not self._claim_writer_marker(token):
-                return False
-            self._break_stale_readers(time.time())
-            return not self._any_readers()
-
-        self._wait_for(try_claim_writer, deadline=deadline, blocking=blocking)
-        try:
-            self._wait_for(readers_drained_touching, deadline=deadline, blocking=blocking)
-        except Timeout:
-            self._unlink_writer_marker_if_ours(token, blocking=False)
-            raise
-        return self._paths.write, False
-
-    def _claim_writer_marker(self, token: str) -> bool:
-        # Claim the writer slot for ``token``. Must be called holding ``self._locks.state``. Evicts a
-        # stale marker first, then refuses to claim while a live ``.write`` exists so a peer holding the
-        # slot is waited out instead of overwritten.
-        _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
-        if _file_exists(self._paths.write):
-            return False
-        try:
-            _atomic_create_marker(self._paths.write, token)
-        except FileExistsError:
-            return False
-        return True
-
-    def _touch_writer_marker_if_ours(self, token: str) -> bool:
-        # Refresh the writer marker through a single O_NOFOLLOW fd, but only while it still carries our
-        # token. Returns False when the marker is gone or now belongs to a peer that reclaimed the slot,
-        # so the caller can re-claim rather than keep a stranger's marker alive. Mirrors _refresh_marker.
-        fd = _open_marker(self._paths.write)
-        if fd is None:
-            return False
-        try:
-            try:
-                data = os.read(fd, _MAX_MARKER_SIZE + 1)
-            except OSError:  # pragma: no cover - e.g. EAGAIN from a hostile FIFO that has a writer attached
-                return False
-            info = _parse_marker_bytes(data)
-            if info is None or not hmac.compare_digest(info.token, token):
-                return False
-            with suppress(OSError):
-                touch(self._paths.write, fd=fd)
-            return True
-        finally:
-            os.close(fd)
-
-    def _acquire_reader_slot(
-        self,
-        token: str,
-        *,
-        deadline: float | None,
-        blocking: bool,
-    ) -> tuple[str, bool]:
-        self._open_readers_dir()
-        reader_name = f"{uuid.uuid4().hex}.{os.getpid()}"
-        dir_fd = self._readers_dir_fd
-        full_reader_path = str(Path(self._paths.readers) / reader_name)
-
-        def try_claim_reader() -> bool:
-            _break_stale_marker(self._paths.write, stale_threshold=self.stale_threshold, now=time.time())
-            if _file_exists(self._paths.write):
-                return False
-            if dir_fd is not None:  # pragma: needs dir-fd
-                _atomic_create_marker(reader_name, token, dir_fd=dir_fd)
-            else:  # pragma: win32 cover
-                _atomic_create_marker(full_reader_path, token)
-            return True
-
-        self._wait_for(try_claim_reader, deadline=deadline, blocking=blocking)
-        return (reader_name if dir_fd is not None else full_reader_path), True
-
     def _wait_for(
         self,
         predicate: Callable[[], bool],
@@ -602,14 +523,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         deadline: float | None,
         blocking: bool,
     ) -> None:
-        while True:
-            # One retry loop owns the deadline, including contention on the state mutex.
-            try:
-                with self._locks.state.acquire(blocking=False):
-                    if predicate():
-                        return
-            except Timeout:
-                pass
+        while not predicate():
             now = time.perf_counter()
             if not blocking:
                 raise Timeout(self.lock_file)
@@ -620,123 +534,33 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 sleep_for = min(sleep_for, max(deadline - now, 0.0))
             time.sleep(sleep_for)
 
-    def _open_readers_dir(self) -> None:
-        readers_path = Path(self._paths.readers)
-        with suppress(FileExistsError):
-            readers_path.mkdir(mode=0o700)
-        # mkdir has no O_NOFOLLOW, so verify via lstat that we did not land on an attacker-placed symlink
-        # or a regular file before we open or scan inside.
-        st = os.lstat(self._paths.readers)
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
-            msg = f"{self._paths.readers} exists but is not a directory or is a symlink; refusing to use it"
-            raise RuntimeError(msg)
-        if self._readers_dir_fd is None and _SUPPORTS_DIR_FD:  # pragma: needs dir-fd
-            with _fork_transition():
-                fd = os.open(self._paths.readers, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW)
-                try:
-                    token = _register_owned_descriptor(fd)
-                except BaseException as registration_error:
-                    try:
-                        os.close(fd)
-                    except BaseException as close_error:  # ruff:ignore[blind-except]  # both errors surface via the group below
-                        _raise_grouped_errors(
-                            "reader directory registration and descriptor close both failed",
-                            registration_error,
-                            close_error,
-                        )
-                    raise
-                self._readers_dir_fd = fd
-                self._readers_dir_fd_token = token
-
-    def _any_readers(self) -> bool:
-        with closing(self._iter_reader_entries()) as entries:
-            for _ in entries:
-                return True
-        return False
-
-    def _iter_reader_entries(self) -> Generator[tuple[str, bool]]:
-        """
-        Yield ``(name, dirfd_relative)`` pairs for every live reader marker.
-
-        ``dirfd_relative`` is ``True`` when *name* should be passed to ``dir_fd=``-aware syscalls; ``False``
-        when *name* is a full path because dirfd-relative I/O is unavailable on this platform.
-
-        A consumer that stops early must close this generator: while suspended it holds the ``scandir`` handle open,
-        and leaving that to the collector surfaces as an unraisable exception inside whatever runs next.
-        """
-        if self._readers_dir_fd is not None:  # pragma: needs dir-fd
-            with os.scandir(self._readers_dir_fd) as it:
-                for entry in it:
-                    if not _is_housekeeping_name(entry.name):
-                        yield entry.name, True
-            return
-        readers_path = Path(self._paths.readers)  # pragma: win32 cover
-        with os.scandir(readers_path) as it:  # pragma: win32 cover
-            for entry in it:  # pragma: win32 cover
-                if not _is_housekeeping_name(entry.name):  # pragma: win32 cover
-                    yield str(readers_path / entry.name), False  # pragma: win32 cover
-
-    def _break_stale_readers(self, now: float) -> None:
-        names: list[tuple[str, int | None]] = []
-        try:
-            with closing(self._iter_reader_entries()) as entries:
-                for name, dirfd_relative in entries:
-                    names.append((name, self._readers_dir_fd if dirfd_relative else None))
-        except OSError:  # pragma: no cover - transient NFS scandir hiccup
-            return
-        for name, fd in names:
-            _break_stale_marker(name, stale_threshold=self.stale_threshold, now=now, dir_fd=fd)
-
-    def _refresh_marker(self) -> bool:
-        with self._locks.internal:
-            hold = self._hold
-            if hold is None:  # pragma: no cover - race between stop_event.set and join
-                return False
-            marker_name = hold.marker_name
-            token = hold.token
-            dir_fd = self._readers_dir_fd if hold.is_reader else None
-
-        # Open once with O_NOFOLLOW and touch that exact descriptor. Refreshing through the verified fd
-        # (instead of re-opening by name) closes the window where a peer unlinks our marker and drops a symlink
-        # or a different file at the path between the read and the touch: utime then lands on the inode we
-        # verified, or nowhere. Only an unambiguous loss stops the heartbeat: the marker gone, or a peer's token
-        # in its place. A transient filesystem error (ESTALE / EIO on the NFS-style filesystems this lock targets)
-        # keeps the heartbeat alive to retry next tick, the way the touch below already does, so one blip does not
-        # silently drop a held lock.
-        try:
-            fd = _open_marker_fd(marker_name, dir_fd=dir_fd)
-        except FileNotFoundError:
+    def _refresh(self, participant: Participant, hold: _Hold) -> bool:
+        # The loop ends at the first loss, so the holder hears about it once. A transient filesystem error (ESTALE /
+        # EIO on the NFS-style filesystems this lock targets) is not a loss: retry rather than report a false
+        # compromise. Report the record unrefreshable only once failures have run long enough that a peer could evict
+        # it before the next success would land, a margin before the record actually ages out.
+        outcome = participant.heartbeat()
+        if outcome == "ok":
+            hold.last_refresh = time.monotonic()
+            return True
+        if outcome == "lost":
+            self._report_compromise(participant, "evicted")
             return False
-        except OSError:
-            return True
-        try:
-            try:
-                data = _read_marker_fd(fd)
-            except OSError:  # a transient read error or EAGAIN from a hostile FIFO; retry rather than drop the lock
-                return True
-            info = _parse_marker_bytes(data)
-            # Token mismatch means another process already evicted our marker and created its own; stop the
-            # thread so it does not keep a stranger's file alive.
-            if info is None or not hmac.compare_digest(info.token, token):
-                return False
-            # A transient touch failure (ESTALE / EIO on the NFS-style filesystems this lock targets) must not
-            # kill the heartbeat thread: the read above just confirmed the marker is still ours, so swallow the
-            # error and retry on the next tick rather than letting the lease lapse while we still hold the lock.
-            with suppress(OSError):
-                touch(marker_name, fd=fd)
-            return True
-        finally:
-            os.close(fd)
+        if time.monotonic() - hold.last_refresh >= self.stale_threshold - self.heartbeat_interval:
+            self._report_compromise(participant, "refresh-failed")
+            return False
+        return True
+
+    def _report_compromise(self, participant: Participant, reason: CompromiseReason) -> None:
+        compromise = LeaseCompromise(lock_file=self.lock_file, token=participant.token, reason=reason)
+        with self._locks.internal:
+            self._compromise = compromise
+        if self._on_compromise is not None:
+            self._on_compromise(compromise)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
-        self._locks = _Locks(
-            internal=threading.Lock(),
-            transaction=threading.Lock(),
-            state=self._locks.state,
-        )
+        self._locks = _Locks(internal=threading.Lock(), transaction=threading.Lock())
         self._hold = None
-        self._readers_dir_fd = None
-        self._readers_dir_fd_token = None
 
 
 class _HeartbeatThread(threading.Thread):
@@ -759,172 +583,6 @@ class _HeartbeatThread(threading.Thread):
                 return
 
 
-def _read_marker(name: str, *, dir_fd: int | None = None) -> tuple[_MarkerInfo | None, float] | None:
-    fd = _open_marker(name, dir_fd=dir_fd)
-    if fd is None:
-        return None
-    try:
-        st = os.fstat(fd)
-        # A legitimate marker is a regular file, so anything else at the path (a FIFO, say) is reported as a
-        # malformed marker (its mtime still drives stale eviction) without being read. Reading is where
-        # platforms diverge: an empty non-blocking read yields 0 bytes on Linux/macOS but EAGAIN on FreeBSD,
-        # and the EAGAIN used to abort the stale-break and wedge the acquire until timeout (#587).
-        if not stat.S_ISREG(st.st_mode):  # pragma: needs fifo
-            return None, st.st_mtime
-        data = os.read(fd, _MAX_MARKER_SIZE + 1)
-    except OSError:  # pragma: no cover - marker vanished or turned unreadable between open and read
-        return None
-    finally:
-        os.close(fd)
-    return _parse_marker_bytes(data), st.st_mtime
-
-
-def _read_marker_fd(fd: int) -> bytes:
-    return os.read(fd, _MAX_MARKER_SIZE + 1)
-
-
-def _open_marker_fd(name: str, *, dir_fd: int | None = None) -> int:
-    # The file is ours; these guard a hostile mid-flight swap. O_NOFOLLOW rejects a symlink; O_NONBLOCK keeps
-    # a real FIFO from blocking the open forever, so it reads as a malformed marker instead of wedging a peer
-    # that holds the state lock.
-    flags = os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK
-    return os.open(name, flags, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.open(name, flags)
-
-
-def _open_marker(name: str, *, dir_fd: int | None = None) -> int | None:
-    try:
-        return _open_marker_fd(name, dir_fd=dir_fd)
-    except OSError:
-        return None
-
-
-def _parse_marker_bytes(data: bytes) -> _MarkerInfo | None:
-    # Trust nothing about attacker-controlled markers; any deviation returns None so callers fall through
-    # to stale cleanup. ``re.match`` caches compiled patterns internally, so the regex is built only once
-    # despite being defined inline.
-    if not data or len(data) > _MAX_MARKER_SIZE:
-        return None
-    try:
-        text = data.decode("ascii")
-    except UnicodeDecodeError:
-        return None
-    match = re.match(
-        r"""
-        \A                                  # start of string
-        (?P<token>    [0-9a-f]{32}     ) \n # 128-bit hex token
-        (?P<pid>      [1-9][0-9]{0,9}  ) \n # decimal pid: no leading zero, ≤ 10 digits
-        (?P<hostname> [\x21-\x7e]{1,253})   # printable non-whitespace ASCII (RFC 1123 hostname limit)
-        \n*                                 # tolerate sloppy writers that append extra newlines
-        \Z                                  # end of string
-        """,
-        text,
-        re.VERBOSE,
-    )
-    if match is None:
-        return None
-    pid = int(match["pid"], 10)
-    if pid > 2**31 - 1:
-        return None
-    return _MarkerInfo(token=match["token"], pid=pid, hostname=match["hostname"])
-
-
-def _unlink(name: str, *, dir_fd: int | None = None) -> None:
-    with suppress(FileNotFoundError):
-        if _SUPPORTS_DIR_FD and dir_fd is not None:  # pragma: needs dir-fd
-            # Path.unlink has no dir_fd support, so we stay on os.unlink for the dirfd path.
-            os.unlink(name, dir_fd=dir_fd)
-        else:
-            Path(name).unlink()
-
-
-def _break_stale_marker(  # ruff:ignore[too-many-return-statements]  # each return is a distinct abort/commit point in the break protocol
-    name: str,
-    *,
-    stale_threshold: float,
-    now: float,
-    dir_fd: int | None = None,
-) -> bool:
-    # Atomic break pattern: read → rename to unique break-name → re-verify → unlink. The rename gives us a
-    # private name nobody else can touch; if the re-verify sees a newer mtime or a different token, the
-    # legitimate holder's heartbeat fired between read and rename and we must abort (leaving the .break.*
-    # file behind rather than rollback-renaming, because rollback is itself racy).
-    if (read_result := _read_marker(name, dir_fd=dir_fd)) is None:
-        return False
-    info_before, mtime_before = read_result
-    if now - mtime_before <= stale_threshold:
-        return False
-    if info_before is None:
-        _unlink(name, dir_fd=dir_fd)
-        return True
-
-    break_name = f"{name}{_BREAK_SUFFIX}.{os.getpid()}.{secrets.token_hex(16)}"
-    try:
-        if _SUPPORTS_DIR_FD and dir_fd is not None:  # pragma: needs dir-fd
-            os.rename(name, break_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        else:
-            Path(name).rename(break_name)
-    except OSError:  # pragma: no cover - race where the marker vanishes between read and rename
-        return False
-
-    read_after = _read_marker(break_name, dir_fd=dir_fd)
-    if read_after is None:  # pragma: no cover - race where a peer unlinks the break-name file
-        return False
-    info_after, mtime_after = read_after
-    if info_after is None:  # pragma: no cover - content replaced post-rename by a racing peer
-        _unlink(break_name, dir_fd=dir_fd)
-        return True
-    if not hmac.compare_digest(info_before.token, info_after.token):  # pragma: no cover - race only
-        return False
-    if mtime_after > mtime_before:  # pragma: no cover - heartbeat raced our rename
-        return False
-    _unlink(break_name, dir_fd=dir_fd)
-    return True
-
-
-def _atomic_create_marker(name: str, token: str, *, dir_fd: int | None = None) -> None:
-    # O_NOFOLLOW blocks the symlink-overwrite attack where an attacker pre-creates the marker path as a
-    # symlink pointing at a victim file. Mode 0o600 keeps the token unreadable to other users.
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | _O_NOFOLLOW
-    if _SUPPORTS_DIR_FD and dir_fd is not None:  # pragma: needs dir-fd
-        fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
-    else:
-        fd = os.open(name, flags, 0o600)
-    # Write the whole record before the marker counts as created. On failure remove it only while the path still names
-    # the file we opened, so a rollback never deletes a marker a concurrent reader recreated at this name.
-    identity: tuple[int, int] | None = None
-    try:
-        st = os.fstat(fd)
-        identity = st.st_dev, st.st_ino
-        write_all(fd, f"{token}\n{os.getpid()}\n{host_name()}\n".encode("ascii"))
-    except BaseException:
-        os.close(fd)
-        if identity is not None and _same_file(name, identity, dir_fd=dir_fd):
-            _unlink(name, dir_fd=dir_fd)
-        raise
-    else:
-        os.close(fd)
-
-
-def _same_file(name: str, identity: tuple[int, int], *, dir_fd: int | None) -> bool:
-    try:
-        st = os.lstat(name, dir_fd=dir_fd) if _SUPPORTS_DIR_FD and dir_fd is not None else os.lstat(name)
-    except OSError:
-        return False
-    return (st.st_dev, st.st_ino) == identity
-
-
-def _file_exists(path: str) -> bool:
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return False
-    return stat.S_ISREG(st.st_mode)
-
-
-def _is_housekeeping_name(name: str) -> bool:
-    return name.startswith(".") or _BREAK_SUFFIX in name
-
-
 def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None, poll_interval: float) -> float:
     if not isfinite(heartbeat_interval) or heartbeat_interval <= 0:
         msg = f"heartbeat_interval must be positive and finite, got {heartbeat_interval}"
@@ -943,25 +601,10 @@ def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None
     return stale_threshold
 
 
-@dataclass(frozen=True)
-class _Paths:
-    state: str
-    write: str
-    readers: str
-
-
 @dataclass
 class _Locks:
     internal: threading.Lock
     transaction: threading.Lock
-    state: SoftFileLock
-
-
-@dataclass(frozen=True)
-class _MarkerInfo:
-    token: str
-    pid: int
-    hostname: str
 
 
 @dataclass
@@ -969,13 +612,12 @@ class _Hold:
     """Everything that exists only while a lock is held; ``None`` when the instance has no lock."""
 
     level: int
-    mode: _Mode
+    mode: Mode
     write_thread_id: int | None
-    marker_name: str
-    is_reader: bool
-    token: str
+    participant: Participant
     heartbeat_thread: _HeartbeatThread
     heartbeat_stop: threading.Event
+    last_refresh: float
 
 
 def _cleanup_all_instances() -> None:  # pragma: no cover - runs from atexit at interpreter shutdown

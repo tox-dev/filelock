@@ -1,0 +1,2 @@
+The :class:`~filelock.SoftReadWriteLock` on-disk protocol is a generation log under ``<path>.rw``. A process running
+an earlier release cannot share a lock path with this one, and the filesystem must provide no-replace hard links.
