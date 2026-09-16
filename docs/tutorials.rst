@@ -408,8 +408,7 @@ expired process can resume:
 
 Those two numbers are a ratio, not a pair of independent knobs. restic's repository lock runs the same model with a
 5-minute refresh against a 30-minute stale timeout, and treats a lock it could not refresh within 22.5 minutes as lost:
-the margin absorbs a slow filesystem. See :doc:`concepts` for the full explanation of the heartbeat +
-TTL model.
+the margin absorbs a slow filesystem. See :doc:`concepts` for the full explanation of the nonce heartbeat.
 
 *******************************
  Stronger soft-lock contracts

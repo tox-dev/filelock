@@ -669,17 +669,17 @@ Deploy it on a shared filesystem only after verifying its required operations an
 
 Every transition (a reader entering, a writer entering, anyone leaving, a stale member being evicted) is one commit: the
 participant reads the latest snapshot, writes the successor it wants to a private temporary file, and hard-links that
-file to ``gen/<N+1>``. A no-replace hard link is an atomic compare-and-swap. Only one link to that name can ever
-succeed, the loser re-reads and tries again, and the record is complete before the name exists. There is no state mutex,
-so there is no critical section for a crash on any host to leave half done. Whatever a dead process leaves behind is
-either a snapshot that still names it, which a contender evicts, or an orphaned record, which a sweep collects.
+file to ``gen/<N+1>``. A no-replace hard link is an atomic compare-and-swap: one link to that name succeeds, the loser
+re-reads and tries again, and the record is complete before the name exists. There is no state mutex, so there is no
+critical section for a crash on any host to leave half done. A dead process leaves behind either a snapshot that still
+names it, which a contender evicts, or an orphaned record, which a sweep collects.
 
-A participant finds the latest generation by listing the directory on every poll, which is what makes an NFS client
-revalidate what it has cached about the names inside, then probing forward by name from the newest readable generation
-the listing or its memory names, across a window of sixty-four generations. Compaction removes snapshots more than that
-window behind the latest, so a listing served stale, a generation removed between the listing and the read, and a hole
-left by a committer that died before it compacted are all bridged by the probe. A listing that names generations of
-which none can be read marks a client too far behind the log to trust anything it reads, and the acquire raises
+A participant finds the latest generation by listing the directory on each poll, which makes an NFS client revalidate
+what it has cached about the names inside, then probing forward by name from the newest readable generation the listing
+or its memory names, across a window of sixty-four generations. Compaction removes snapshots more than that window
+behind the latest, so the probe bridges a listing served stale, a generation removed between the listing and the read,
+and a hole left by a committer that died before it compacted. A listing that names generations of which none can be
+read marks a client too far behind the log to trust anything it reads; the acquire then raises
 :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` rather than restart the sequence.
 
 Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
@@ -689,22 +689,22 @@ preference among cooperating participants.
 Cross-host stale detection
 ==========================
 
-On a multi-node cluster, a process on ``node-42`` that crashes while holding the lock cannot be detected via
-``kill(pid, 0)`` from ``node-17``, and a replacement pod scheduled under a new hostname cannot be told apart from a
-stranger. Liveness therefore rests on a **nonce, not a clock**:
+On a multi-node cluster, ``kill(pid, 0)`` on ``node-17`` cannot detect that a process on ``node-42`` crashed while
+holding the lock, and nothing distinguishes a replacement pod under a new hostname from a stranger. Liveness rests on a
+nonce:
 
 - Each holder's daemon heartbeat thread rewrites the nonce in its record every ``heartbeat_interval`` seconds (default
   30 s), and a contender waiting to enter rewrites its own on every poll.
 - A contender records the bytes it read from each member's record and the moment it read them on its own
-  ``time.monotonic()``. A member whose bytes have not changed for ``stale_threshold`` seconds (default 90 s) is
-  evicted: the contender commits a snapshot without it, in the same commit that admits the contender, and removes its
-  record.
-- No timestamp is ever compared across hosts. A heartbeat's ``mtime`` would be stamped by the file server's clock and
-  read against the client's, so it plays no part; the only clock in the protocol measures the gap between two
+  ``time.monotonic()``. Once a member's bytes have stayed unchanged for ``stale_threshold`` seconds (default 90 s), the
+  contender evicts it by committing a snapshot without it, in the same commit that admits the contender, and removes
+  its record.
+- The protocol compares no timestamp across hosts. A heartbeat's ``mtime`` would carry the file server's clock and be
+  read against the client's, so it plays no part; the one clock in the protocol measures the gap between two
   observations made by one process. Clock skew between hosts, or against the file server, cannot make a live holder
   look dead.
 - The heartbeat also re-reads the latest snapshot, so an evicted holder learns it on its next tick: the thread stops,
-  :attr:`compromise <filelock.SoftReadWriteLock.compromise>` is set, and ``on_compromise`` runs.
+  the lock sets :attr:`compromise <filelock.SoftReadWriteLock.compromise>`, and ``on_compromise`` runs.
 
 The generation a hold was granted at is :attr:`generation <filelock.SoftReadWriteLock.generation>`, a monotonic fencing
 token: a resource that rejects writes carrying a lower generation than the highest it has accepted refuses a holder that

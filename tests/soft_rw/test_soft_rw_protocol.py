@@ -3,7 +3,7 @@ Model check of the generation-log protocol under an adversarial scheduler.
 
 Every participant runs on its own thread over an in-memory filesystem, and every filesystem call hands the turn back to
 a seeded scheduler that picks which participant runs next, advances a fake clock, and sometimes kills the participant
-it just picked. That interleaves the protocol at the granularity of single filesystem operations, including inside a
+it picked. That interleaves the protocol at the granularity of single filesystem operations, including inside a
 commit, and a crash at any of those points leaves exactly what a dead process would leave on disk.
 """
 

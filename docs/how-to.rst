@@ -613,8 +613,8 @@ expired holder can resume:
         pass
 
 ``blocking=False`` makes one attempt without sleeping. A writer that gives up while waiting for readers commits itself
-out of the snapshot, so its own timeout never leaves readers blocked. A holder that died on another host is evicted by
-the next contender once ``stale_threshold`` has passed, whichever host it runs on. Filesystem calls on an unresponsive
+out of the snapshot, so its own timeout does not leave readers blocked. The next contender, on whichever host, evicts
+a holder that died on another host once ``stale_threshold`` has passed. Filesystem calls on an unresponsive
 network mount can still outlast the acquisition timeout.
 
 .. warning::

@@ -195,7 +195,7 @@ def test_leave_retries_a_commit_a_peer_won(tmp_path: Path, mocker: MockerFixture
 
 def test_waiting_contender_republishes_a_swept_record(tmp_path: Path) -> None:
     # A record removed out from under a contender (a sweeper that mistook it, an operator) comes back on its next poll,
-    # so the contender is never admitted with nothing for peers to watch.
+    # so peers always have a record to watch by the time the contender is admitted.
     lock_file = str(tmp_path / "x.lock")
     files = OsFiles(lock_file)
     root = f"{lock_file}.rw"
@@ -211,7 +211,7 @@ def test_waiting_contender_republishes_a_swept_record(tmp_path: Path) -> None:
 
 
 def test_waiting_contender_keeps_an_undeletable_record(tmp_path: Path, mocker: MockerFixture) -> None:
-    # Windows can leave the record in place while refusing the rewrite; the contender then just carries on.
+    # Windows can leave the record in place while refusing the rewrite; the contender carries on.
     lock_file = str(tmp_path / "x.lock")
     files = OsFiles(lock_file)
     root = f"{lock_file}.rw"
@@ -435,7 +435,7 @@ def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFix
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows retries a refused open as a sharing race")
 def test_read_refused_on_posix_raises(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
-    # Reading a peer's record as missing when it is merely unreadable would age it as a constant and evict a holder.
+    # Reading a peer's record as missing when it is unreadable would age it as a constant and evict a holder.
     mocker.patch.object(storage_mod.os, "open", side_effect=PermissionError("denied"))
     with pytest.raises(PermissionError):
         OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "record"))

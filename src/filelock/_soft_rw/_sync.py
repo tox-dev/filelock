@@ -217,7 +217,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         """
         The generation at which the current hold was granted, or ``None`` when no lock is held.
 
-        Generations are monotonic across every participant on every host, so this is a fencing token: pass it to the
+        Generations are monotonic across all participants and hosts, so this is a fencing token: pass it to the
         protected resource and have the resource reject any operation carrying a lower generation than the highest it
         has accepted. That refuses a holder that paused past ``stale_threshold``, was evicted, and resumed.
 

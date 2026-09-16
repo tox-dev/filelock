@@ -666,7 +666,7 @@ def test_heartbeat_reports_a_removed_holder_record(lock_file: str) -> None:
 
 def test_release_leaves_a_peers_claim_alone(lock_file: str) -> None:
     # A holder paused past the stale threshold (GC pause, SIGSTOP, suspended VM) can be evicted, after which a peer
-    # holds the writer slot. Releasing must only ever commit this holder out, never touch the peer's claim.
+    # holds the writer slot. Releasing commits this holder out and leaves the peer's claim alone.
     lock = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
     lock.acquire_write(timeout=2)
     try:
@@ -736,7 +736,7 @@ def test_heartbeat_survives_a_transient_refresh_error(lock_file: str, mocker: Mo
 
 def test_heartbeat_reports_refresh_failures_that_outlast_the_margin(lock_file: str, mocker: MockerFixture) -> None:
     # Failures that run long enough for a peer to evict the record before the next success could land are a loss the
-    # holder must hear about, a margin before the record actually ages out.
+    # holder must hear about, a margin before the record ages out.
     seen: list[LeaseCompromise] = []
     lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.1, on_compromise=seen.append)
     lock.acquire_write(timeout=2)
@@ -848,7 +848,7 @@ def test_rejects_poll_interval_not_below_stale_threshold(lock_file: str) -> None
 
 
 def test_late_heartbeat_tick_does_not_stamp_a_later_hold(lock_file: str) -> None:
-    # A tick that outlived its release's join reports on the hold it served, never on whatever was acquired since.
+    # A tick that outlived its release's join reports on the hold it served, not on a hold acquired since.
     lock = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
     lock.acquire_write(timeout=2)
     old = lock._hold
@@ -909,7 +909,7 @@ def test_generation_is_a_fencing_token(lock_file: str) -> None:
 
 def test_foreign_host_holder_is_evicted_after_the_stale_threshold(lock_file: str) -> None:
     # The report behind #725: a pod dies on another host holding the lock, and a replacement pod under a different
-    # hostname must still get in. Liveness is a nonce that stopped changing, so the hostname never enters into it.
+    # hostname must still get in. Liveness is a nonce that stopped changing, so the hostname plays no part in it.
     _plant_holder(lock_file, mode="write")
     lock = _make_lock(lock_file, heartbeat_interval=0.1, stale_threshold=0.3)
     try:

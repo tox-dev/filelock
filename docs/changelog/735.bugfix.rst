@@ -1,4 +1,4 @@
 :class:`~filelock.SoftReadWriteLock` no longer deadlocks when a holder dies on another host mid-transition, and
-``release()`` no longer waits on a mutex a dead host left behind (:pr:`725`, :pr:`735`). The state mutex is gone:
-every transition is one atomic snapshot commit, and liveness is a heartbeat nonce read on the observer's own clock
+``release()`` no longer waits on a mutex a dead host left behind (:pr:`725`, :pr:`735`). The state mutex is gone.
+Each transition is one atomic snapshot commit, and liveness is a heartbeat nonce read on the observer's own clock
 rather than an ``mtime`` read against another host's.
