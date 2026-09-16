@@ -143,6 +143,33 @@ def test_leave_without_entering_only_drops_the_record(tmp_path: Path) -> None:
     assert participant.generation is None
 
 
+def test_leave_retries_a_commit_a_peer_won(tmp_path: Path, mocker: MockerFixture) -> None:
+    # A peer can publish the next generation between leave() reading the latest one and linking its successor; the
+    # holder then re-reads and commits itself out of whatever the peer published.
+    lock_file = str(tmp_path / "x.lock")
+    files = OsFiles(lock_file)
+    root = f"{lock_file}.rw"
+    reader = Participant(files, lock_file, root, "read", stale_threshold=100, clock=lambda: 0.0)
+    reader.publish()
+    assert reader.advance()
+    real_commit = GenerationLog.commit
+    lost = []
+
+    def commit_after_a_peer(log: GenerationLog, successor: Snapshot) -> bool:
+        if not lost:
+            lost.append(successor)
+            peer = GenerationLog(files, lock_file, root)
+            still_reading = successor.readers | {reader.token}
+            assert real_commit(peer, Snapshot(generation=successor.generation, writer=None, readers=still_reading))
+        return real_commit(log, successor)
+
+    mocker.patch.object(GenerationLog, "commit", autospec=True, side_effect=commit_after_a_peer)
+    reader.leave()
+    latest = GenerationLog(files, lock_file, root).latest()
+    assert latest.members == frozenset()
+    assert latest.generation == lost[0].generation + 1
+
+
 def test_waiting_contender_republishes_a_swept_record(tmp_path: Path) -> None:
     # A record removed out from under a contender (a sweeper that mistook it, an operator) comes back on its next poll,
     # so the contender is never admitted with nothing for peers to watch.
