@@ -1,1 +1,0 @@
-Validate final-symlink refusal by error number so the test works across libc implementations.

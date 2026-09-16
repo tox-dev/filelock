@@ -7,6 +7,14 @@
 .. towncrier release notes start
 
 ********************
+ 3.32.7 (2026-09-16)
+********************
+
+- Validate final-symlink refusal by error number so the test works across libc implementations. :pr:`737`
+- Document that :meth:`~filelock.BaseFileLock.acquire` reads ``blocking=None`` as the lock's ``blocking`` attribute and
+  raises :class:`~filelock.Timeout` after one attempt when ``blocking=False``. :pr:`733`
+
+********************
  3.32.6 (2026-09-08)
 ********************
 
