@@ -77,11 +77,8 @@ for lock in locks:
         timeout=10,
     )
 
-    assert (result.returncode, [_writer_named(path) for path in paths]) == (0, [False, False])
-
-
-def _writer_named(path: Path) -> bool:
-    return GenerationLog(OsFiles(str(path)), str(path), f"{path}.rw").latest().writer is not None
+    writers = [GenerationLog(OsFiles(str(path)), str(path), f"{path}.rw").latest().writer for path in paths]
+    assert (result.returncode, writers) == (0, [None, None])
 
 
 @NEEDS_CLASS_COLLECTION

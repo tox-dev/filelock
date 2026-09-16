@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import os
-import sys
 from errno import EIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
 from filelock._soft_rw import _storage as storage_mod
@@ -232,12 +230,10 @@ def test_read_other_errors_propagate(tmp_path: Path, mocker: MockerFixture) -> N
         OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "absent"))
 
 
-def test_read_non_regular_file_is_empty(tmp_path: Path) -> None:  # pragma: needs fifo
-    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
-    fifo = tmp_path / "fifo"
-    os.mkfifo(fifo)
-    assert OsFiles(str(tmp_path / "x.lock")).read(str(fifo)) == b""
+def test_read_non_regular_file_is_empty(tmp_path: Path) -> None:
+    # The null device is a character device on every platform, so it stands in for anything planted at a record path
+    # that is not a regular file.
+    assert OsFiles(str(tmp_path / "x.lock")).read(os.devnull) == b""
 
 
 def test_create_rolls_back_a_failed_write(tmp_path: Path, mocker: MockerFixture) -> None:

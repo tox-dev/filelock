@@ -885,10 +885,9 @@ raise SystemExit(os.waitstatus_to_exitcode(status))
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@pytest.mark.requires_hard_links
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
-def test_parent_callback_rejects_reentrant_singleton_construction(tmp_path: Path) -> None:  # pragma: needs hard-link
+def test_parent_callback_rejects_reentrant_singleton_construction(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
 
