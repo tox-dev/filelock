@@ -13,14 +13,11 @@ import random
 import threading
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Final, Literal
+from typing import Final, Literal
 
 import pytest
 
 from filelock._soft_rw._protocol import Participant
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 _STALE_THRESHOLD: Final[float] = 1.0
 _HEARTBEAT: Final[float] = 0.3
@@ -149,7 +146,7 @@ class _MemoryFiles:
         self._scheduler.yield_turn()
         return [PurePosixPath(name).name for name in self.files if str(PurePosixPath(name).parent) == path]
 
-    def prepare(self, _root: str) -> None:
+    def prepare(self, root: str) -> None:  # ruff:ignore[unused-method-argument]  # nothing to create in memory
         self._scheduler.yield_turn()
 
 
@@ -234,13 +231,14 @@ class _Model:
             assert not thread.is_alive()
 
 
-def _scenarios() -> Iterator[pytest.ParameterSet]:
-    for seed in range(24):
-        crash_probability = 0.0 if seed % 3 == 0 else 0.02
-        yield pytest.param(seed, crash_probability, id=f"seed{seed}-{'crashes' if crash_probability else 'clean'}")
-
-
-@pytest.mark.parametrize(("seed", "crash_probability"), list(_scenarios()))
+@pytest.mark.parametrize(
+    ("seed", "crash_probability"),
+    [
+        pytest.param(seed, probability, id=f"seed{seed}-{'crashes' if probability else 'clean'}")
+        for seed in range(24)
+        for probability in (0.0 if seed % 3 == 0 else 0.02,)
+    ],
+)
 @pytest.mark.timeout(120)
 def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability: float) -> None:
     scheduler = _Scheduler(seed=seed, crash_probability=crash_probability, max_crashes=3)
