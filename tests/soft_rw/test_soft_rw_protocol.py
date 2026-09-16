@@ -329,6 +329,7 @@ def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
     assert b"reader=" not in latest
 
 
+@pytest.mark.timeout(120)
 def test_fencing_generations_are_strictly_increasing_across_grants() -> None:
     scheduler = _Scheduler(seed=7, crash_probability=0.0, max_crashes=0)
     model = _Model(scheduler)

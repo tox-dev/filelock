@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from errno import EIO
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -438,6 +439,17 @@ def test_read_refused_on_posix_raises(tmp_path: Path, mocker: MockerFixture) -> 
     mocker.patch.object(storage_mod.os, "open", side_effect=PermissionError("denied"))
     with pytest.raises(PermissionError):
         OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "record"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows retries a refused open as a sharing race")
+def test_read_refused_on_windows_is_missing_after_the_grace(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: win32 cover
+    # A file still refusing after the grace has been delete-pending longer than any deletion takes: on its way out.
+    mocker.patch.object(storage_mod.os, "open", side_effect=PermissionError("sharing violation"))
+    started = time.monotonic()
+    assert OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "record")) is None
+    assert time.monotonic() - started >= storage_mod._WINDOWS_OPEN_GRACE - 0.05
 
 
 def test_prepare_creates_missing_parents(tmp_path: Path) -> None:
