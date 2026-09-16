@@ -686,6 +686,85 @@ Readers enter as soon as no live writer is named. A writer enters as soon as no 
 new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers
 preference among cooperating participants.
 
+Generation log walkthrough
+===========================
+
+The prose above states the protocol; the sequences below show it running.
+
+A writer's first commit finds no live writer and lands on the first try:
+
+.. mermaid::
+
+    sequenceDiagram
+        box rgba(21, 101, 192, 0.16) Processes
+            participant A as Writer A
+        end
+        box rgba(46, 125, 50, 0.16) Shared filesystem
+            participant FS as <path>.rw
+        end
+        A->>+FS: list gen/, read gen/7
+        FS-->>-A: writer=None, readers={}
+        Note over A: write successor to a temp file
+        A->>+FS: link temp -> gen/8
+        FS-->>-A: link landed
+        Note over A: holds the lock at generation 8
+
+Two contenders can read the same latest snapshot and both try to claim the next one. Only one hard link lands; the
+loser's failure is the signal to retry, not an error to report:
+
+.. mermaid::
+
+    sequenceDiagram
+        box rgba(21, 101, 192, 0.16) Processes
+            participant A as Writer A
+            participant B as Writer B
+        end
+        box rgba(46, 125, 50, 0.16) Shared filesystem
+            participant FS as <path>.rw
+        end
+        A->>+FS: read gen/7
+        FS-->>-A: writer=None
+        B->>+FS: read gen/7
+        FS-->>-B: writer=None
+        A->>+FS: link temp -> gen/8
+        FS-->>-A: landed
+        B->>+FS: link temp -> gen/8
+        FS-->>-B: name already exists
+        Note over B: re-read the latest generation
+        B->>+FS: read gen/8
+        FS-->>-B: writer=A
+        Note over B: retry from gen/9 once A leaves or goes stale
+
+A writer that arrives while readers already hold the lock names itself immediately, which blocks every later reader
+before the writer itself is granted, then waits for the readers already in to leave:
+
+.. mermaid::
+
+    sequenceDiagram
+        box rgba(21, 101, 192, 0.16) Processes
+            participant R1 as Reader R1
+            participant W as Writer W
+            participant R2 as Reader R2
+        end
+        box rgba(46, 125, 50, 0.16) Shared filesystem
+            participant FS as <path>.rw
+        end
+        R1->>+FS: link temp -> gen/5 (readers={R1})
+        FS-->>-R1: landed
+        Note over R1: holds a read lock
+        W->>+FS: commit gen/6 (writer=W, readers={R1})
+        FS-->>-W: landed
+        Note over W: named as writer; every new reader now blocks
+        R2->>+FS: read gen/6
+        FS-->>-R2: writer=W
+        Note over R2: writer already named, waits behind W
+        R1->>+FS: commit gen/7 (writer=W, readers={})
+        FS-->>-R1: landed
+        Note over R1: releases; removed from readers
+        W->>+FS: commit gen/8 (writer=W, readers={})
+        FS-->>-W: landed
+        Note over W: readers drained, granted at generation 8
+
 Cross-host stale detection
 ==========================
 
@@ -705,6 +784,39 @@ nonce:
   look dead.
 - The heartbeat also re-reads the latest snapshot, so an evicted holder learns it on its next tick: the thread stops,
   the lock sets :attr:`compromise <filelock.SoftReadWriteLock.compromise>`, and ``on_compromise`` runs.
+
+A writer on ``node-17`` that crashes mid-hold leaves a snapshot naming it and a heartbeat that stops. A contender on
+``node-42`` cannot ask ``node-17`` whether the process is still alive, so it watches the nonce instead, and evicts once
+that nonce has sat unchanged for a full ``stale_threshold``:
+
+.. mermaid::
+
+    sequenceDiagram
+        box rgba(21, 101, 192, 0.16) node-17
+            participant A as Writer A
+        end
+        box rgba(46, 125, 50, 0.16) Shared filesystem
+            participant FS as <path>.rw
+        end
+        box rgba(230, 81, 0, 0.16) node-42
+            participant B as Contender B
+        end
+        A->>+FS: commit gen/9 (writer=A)
+        FS-->>-A: landed
+        A->>FS: heartbeat: rewrite holders/A nonce
+        Note over A: crashes; heartbeat stops
+        B->>+FS: read gen/9, read holders/A
+        FS-->>-B: writer=A, nonce=n1
+        Note over B: records n1 and its own time.monotonic()
+        loop every poll, until stale_threshold elapses
+            B->>+FS: read holders/A
+            FS-->>-B: nonce still n1
+        end
+        Note over B: n1 unchanged for stale_threshold; A counts as stale
+        B->>+FS: commit gen/10 (writer=B, A evicted)
+        FS-->>-B: landed
+        B->>FS: unlink holders/A
+        Note over B: granted at generation 10; A's holder record collected
 
 The generation a hold was granted at is :attr:`generation <filelock.SoftReadWriteLock.generation>`, a monotonic fencing
 token: a resource that rejects writes carrying a lower generation than the highest it has accepted refuses a holder that
