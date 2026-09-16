@@ -110,7 +110,7 @@ def test_async_child_release_preserves_parent_lock(
 @pytest.mark.requires_hard_links
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
-def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None:
+def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None:  # pragma: needs hard-link
     path = str(tmp_path / "parent.lock")
     older = SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5)
     newer = SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5)
@@ -387,7 +387,7 @@ parent.release()
 @pytest.mark.requires_hard_links
 def test_child_interpreter_exit_preserves_parent_lock(
     tmp_path: Path, kind: Literal["native", "soft", "soft-rw"]
-) -> None:
+) -> None:  # pragma: needs hard-link
     script = """
 from __future__ import annotations
 

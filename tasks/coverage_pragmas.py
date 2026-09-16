@@ -63,8 +63,12 @@ _CAPABILITY_MODULES: Final[dict[str, tuple[str, ...]]] = {
     "hard-link": (
         "*/tests/test_strict_soft*.py",
         "*/tests\\test_strict_soft*.py",
+        "*/tests/soft_rw/*.py",
+        "*\\tests\\soft_rw\\*.py",
         "*/filelock/_strict.py",
         "*\\filelock\\_strict.py",
+        "*/filelock/_soft_rw/*.py",
+        "*\\filelock\\_soft_rw\\*.py",
     ),
 }
 

@@ -50,6 +50,7 @@ class _Scheduler:
     crashes: int = 0
     _random: random.Random = field(init=False)
     _condition: threading.Condition = field(default_factory=threading.Condition)
+    _expected: int = 0
     _live: set[int] = field(default_factory=set)
     _parked: dict[int, float] = field(default_factory=dict)
     _turn: int | None = None
@@ -58,9 +59,16 @@ class _Scheduler:
     def __post_init__(self) -> None:
         self._random = random.Random(self.seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded schedule is the point, not entropy
 
+    def expect(self) -> None:
+        # Counted before the thread starts, so the first step cannot conclude that nobody is left to run.
+        with self._condition:
+            self._expected += 1
+
     def register(self) -> None:
         with self._condition:
+            self._expected -= 1
             self._live.add(threading.get_ident())
+            self._condition.notify_all()
 
     def yield_turn(self, wake_at: float | None = None) -> None:
         me = threading.get_ident()
@@ -86,7 +94,7 @@ class _Scheduler:
     def step(self) -> bool:
         """Run one participant for one filesystem operation; ``False`` once every participant has finished."""
         with self._condition:
-            while self._turn is not None or set(self._parked) != self._live:
+            while self._expected or self._turn is not None or set(self._parked) != self._live:
                 self._condition.wait()
             if not self._live:
                 return False
@@ -114,40 +122,45 @@ class _MemoryFiles:
 
     def read(self, path: str) -> bytes | None:
         self._scheduler.yield_turn()
-        return self.files.get(path)
+        return self.files.get(_key(path))
 
     def create(self, path: str, data: bytes) -> None:
         self._scheduler.yield_turn()
-        if path in self.files:  # pragma: no cover  # every name created here is a fresh token
+        if _key(path) in self.files:  # pragma: no cover  # every name created here is a fresh token
             raise FileExistsError(path)
-        self.files[path] = data
+        self.files[_key(path)] = data
 
     def link(self, source: str, target: str) -> bool:
         self._scheduler.yield_turn()
-        if target in self.files or source not in self.files:
+        if _key(target) in self.files or _key(source) not in self.files:
             return False
-        self.files[target] = self.files[source]
+        self.files[_key(target)] = self.files[_key(source)]
         return True
 
     def overwrite(self, path: str, data: bytes) -> bool:
         self._scheduler.yield_turn()
         if (
-            path not in self.files
+            _key(path) not in self.files
         ):  # pragma: no cover  # only a crashed participant loses its record, and it never writes again
             return False
-        self.files[path] = data
+        self.files[_key(path)] = data
         return True
 
     def unlink(self, path: str) -> None:
         self._scheduler.yield_turn()
-        self.files.pop(path, None)
+        self.files.pop(_key(path), None)
 
     def listdir(self, path: str) -> list[str]:
         self._scheduler.yield_turn()
-        return [PurePosixPath(name).name for name in self.files if str(PurePosixPath(name).parent) == path]
+        return [PurePosixPath(name).name for name in self.files if str(PurePosixPath(name).parent) == _key(path)]
 
     def prepare(self, root: str) -> None:  # ruff:ignore[unused-method-argument]  # nothing to create in memory
         self._scheduler.yield_turn()
+
+
+def _key(path: str) -> str:
+    # The protocol joins paths with the host separator; the in-memory tree keys them the POSIX way on every platform.
+    return path.replace("\\", "/")
 
 
 @dataclass
@@ -171,6 +184,7 @@ class _Model:
     def add(self, mode: Literal["read", "write"], hold_beats: int) -> None:
         outcome = _Outcome(mode)
         self.outcomes.append(outcome)
+        self.scheduler.expect()
         self.threads.append(threading.Thread(target=self._run, args=(outcome, hold_beats), daemon=True))
 
     def _run(self, outcome: _Outcome, hold_beats: int) -> None:

@@ -49,7 +49,9 @@ def test_equal_unhashable_locks_reset_independently(tmp_path: Path) -> None:  # 
 
 
 @pytest.mark.requires_hard_links
-def test_equal_unhashable_soft_read_write_locks_survive_atexit_registry(tmp_path: Path) -> None:
+def test_equal_unhashable_soft_read_write_locks_survive_atexit_registry(
+    tmp_path: Path,
+) -> None:  # pragma: needs hard-link
     script = """
 from __future__ import annotations
 
