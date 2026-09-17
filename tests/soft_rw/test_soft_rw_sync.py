@@ -55,6 +55,15 @@ def lock_file(tmp_path: Path) -> str:
     return str(tmp_path / "test.lock")
 
 
+@pytest.fixture
+def lock(lock_file: str) -> Generator[SoftReadWriteLock]:
+    instance = _make_lock(lock_file)
+    try:
+        yield instance
+    finally:
+        instance.close()
+
+
 def _state(lock_file: str) -> Snapshot:
     return GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw").latest()
 
@@ -122,19 +131,24 @@ def test_rejects_invalid_intervals(
             existing.close()
 
 
-def test_rejects_non_positive_heartbeat_interval(lock_file: str) -> None:
-    with pytest.raises(ValueError, match="heartbeat_interval must be positive"):
-        SoftReadWriteLock(lock_file, heartbeat_interval=0, is_singleton=False)
-
-
-def test_rejects_stale_threshold_not_greater_than_heartbeat(lock_file: str) -> None:
-    with pytest.raises(ValueError, match="stale_threshold must exceed"):
-        SoftReadWriteLock(lock_file, heartbeat_interval=10, stale_threshold=5, is_singleton=False)
-
-
-def test_rejects_non_positive_poll_interval(lock_file: str) -> None:
-    with pytest.raises(ValueError, match="poll_interval must be positive"):
-        SoftReadWriteLock(lock_file, poll_interval=0, is_singleton=False)
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        pytest.param({"heartbeat_interval": 0}, "heartbeat_interval must be positive", id="heartbeat-non-positive"),
+        pytest.param(
+            {"heartbeat_interval": 10, "stale_threshold": 5}, "stale_threshold must exceed", id="stale-not-greater"
+        ),
+        pytest.param({"poll_interval": 0}, "poll_interval must be positive", id="poll-non-positive"),
+        pytest.param(
+            {"heartbeat_interval": 1, "stale_threshold": 3, "poll_interval": 3},
+            "poll_interval must be below",
+            id="poll-not-below-stale",
+        ),
+    ],
+)
+def test_rejects_invalid_interval_relationship(lock_file: str, kwargs: dict[str, float], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        SoftReadWriteLock(lock_file, is_singleton=False, **kwargs)
 
 
 def test_public_attributes(lock_file: str) -> None:
@@ -210,47 +224,36 @@ def test_leaked_acquired_singleton_is_closed_on_teardown(lock_file: str) -> None
     assert _state(lock_file).writer is not None
 
 
-def test_reentrant_read_holds_and_releases(lock_file: str) -> None:
-    lock = _make_lock(lock_file)
-    try:
-        with lock.read_lock(timeout=2), lock.read_lock(timeout=2):
-            pass
-        with lock.read_lock(timeout=2):
-            pass
-    finally:
-        lock.close()
+def test_reentrant_read_holds_and_releases(lock: SoftReadWriteLock) -> None:
+    with lock.read_lock(timeout=2), lock.read_lock(timeout=2):
+        pass
+    with lock.read_lock(timeout=2):
+        pass
 
 
-def test_reentrant_write_holds_and_releases(lock_file: str) -> None:
-    lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2), lock.write_lock(timeout=2):
-            assert _state(lock_file).writer is not None
-        assert _state(lock_file).writer is None
-    finally:
-        lock.close()
+def test_reentrant_write_holds_and_releases(lock_file: str, lock: SoftReadWriteLock) -> None:
+    with lock.write_lock(timeout=2), lock.write_lock(timeout=2):
+        assert _state(lock_file).writer is not None
+    assert _state(lock_file).writer is None
 
 
-def test_upgrade_from_read_to_write_raises(lock_file: str) -> None:
-    lock = _make_lock(lock_file)
-    try:
-        with lock.read_lock(timeout=2), pytest.raises(RuntimeError, match="upgrade not allowed"):
-            lock.acquire_write(timeout=1)
-    finally:
-        lock.close()
+@pytest.mark.parametrize(
+    ("first_mode", "second_mode", "direction"),
+    [
+        pytest.param("read", "write", "upgrade", id="upgrade"),
+        pytest.param("write", "read", "downgrade", id="downgrade"),
+    ],
+)
+def test_change_of_mode_while_held_raises(
+    lock: SoftReadWriteLock, first_mode: Literal["read", "write"], second_mode: Literal["read", "write"], direction: str
+) -> None:
+    first_lock = lock.read_lock if first_mode == "read" else lock.write_lock
+    second_acquire = lock.acquire_read if second_mode == "read" else lock.acquire_write
+    with first_lock(timeout=2), pytest.raises(RuntimeError, match=f"{direction} not allowed"):
+        second_acquire(timeout=1)
 
 
-def test_downgrade_from_write_to_read_raises(lock_file: str) -> None:
-    lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2), pytest.raises(RuntimeError, match="downgrade not allowed"):
-            lock.acquire_read(timeout=1)
-    finally:
-        lock.close()
-
-
-def test_write_lock_is_thread_pinned(lock_file: str) -> None:
-    lock = _make_lock(lock_file)
+def test_write_lock_is_thread_pinned(lock: SoftReadWriteLock) -> None:
     errors: list[BaseException] = []
     lock.acquire_write(timeout=2)
 
@@ -264,7 +267,6 @@ def test_write_lock_is_thread_pinned(lock_file: str) -> None:
     thread.start()
     thread.join()
     lock.release()
-    lock.close()
     assert len(errors) == 1
     assert isinstance(errors[0], (RuntimeError, Timeout))
 
@@ -312,16 +314,12 @@ def test_release_force_without_hold_is_noop(lock_file: str) -> None:
         lock.close()
 
 
-def test_release_force_on_reentrant_lock_drops_all(lock_file: str) -> None:
-    lock = _make_lock(lock_file)
-    try:
-        lock.acquire_read(timeout=2)
-        lock.acquire_read(timeout=2)
-        lock.release(force=True)
-        with lock.write_lock(timeout=2):
-            pass
-    finally:
-        lock.close()
+def test_release_force_on_reentrant_lock_drops_all(lock: SoftReadWriteLock) -> None:
+    lock.acquire_read(timeout=2)
+    lock.acquire_read(timeout=2)
+    lock.release(force=True)
+    with lock.write_lock(timeout=2):
+        pass
 
 
 def test_close_is_idempotent(lock_file: str) -> None:
@@ -357,36 +355,20 @@ def test_multiple_readers_can_hold_simultaneously(lock_file: str) -> None:
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 4)
-def test_write_lock_excludes_writers(lock_file: str) -> None:
+@pytest.mark.parametrize("contender_mode", [pytest.param("write", id="writer"), pytest.param("read", id="reader")])
+def test_write_lock_excludes_contender(lock_file: str, contender_mode: Literal["read", "write"]) -> None:
     held, release = Event(), Event()
-    second = Event()
-    holder = Process(target=_worker, args=(lock_file, "write", held, release))
-    contender = Process(target=_worker, args=(lock_file, "write", second, None, 0.3, True))
-    with cleanup_processes([holder, contender]):
-        holder.start()
-        assert held.wait(timeout=_PROCESS_DEADLINE)
-        contender.start()
-        assert not second.wait(timeout=0.5)
-        release.set()
-        holder.join(timeout=_PROCESS_DEADLINE)
-        contender.join(timeout=_PROCESS_DEADLINE)
-
-
-@SKIP_ON_UNRELIABLE_PROCESS_SYNC
-@pytest.mark.timeout(_PROCESS_DEADLINE * 4)
-def test_write_lock_excludes_readers(lock_file: str) -> None:
-    held, release = Event(), Event()
-    reader_acquired = Event()
+    contender_acquired = Event()
     writer = Process(target=_worker, args=(lock_file, "write", held, release))
-    reader = Process(target=_worker, args=(lock_file, "read", reader_acquired, None, 0.3, True))
-    with cleanup_processes([writer, reader]):
+    contender = Process(target=_worker, args=(lock_file, contender_mode, contender_acquired, None, 0.3, True))
+    with cleanup_processes([writer, contender]):
         writer.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
-        reader.start()
-        assert not reader_acquired.wait(timeout=0.5)
+        contender.start()
+        assert not contender_acquired.wait(timeout=0.5)
         release.set()
         writer.join(timeout=_PROCESS_DEADLINE)
-        reader.join(timeout=_PROCESS_DEADLINE)
+        contender.join(timeout=_PROCESS_DEADLINE)
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
@@ -518,38 +500,30 @@ def test_two_readers_in_same_process_share_slot(lock_file: str) -> None:
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
-def test_timeout_raises(lock_file: str) -> None:
+def test_timeout_raises(lock_file: str, lock: SoftReadWriteLock) -> None:
     held, release = Event(), Event()
     holder = Process(target=_worker, args=(lock_file, "write", held, release))
     with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
-        lock = _make_lock(lock_file)
-        try:
-            with pytest.raises(Timeout):
-                lock.acquire_write(timeout=0.3)
-        finally:
-            lock.close()
+        with pytest.raises(Timeout):
+            lock.acquire_write(timeout=0.3)
         release.set()
         holder.join(timeout=_PROCESS_DEADLINE)
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
-def test_non_blocking_writer_contended_raises(lock_file: str) -> None:
+def test_non_blocking_writer_contended_raises(lock_file: str, lock: SoftReadWriteLock) -> None:
     held, release = Event(), Event()
     holder = Process(target=_worker, args=(lock_file, "write", held, release))
     with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
-        lock = _make_lock(lock_file)
-        try:
-            with pytest.raises(Timeout):
-                lock.acquire_write(timeout=1, blocking=False)
-            with pytest.raises(Timeout):
-                lock.acquire_read(timeout=1, blocking=False)
-        finally:
-            lock.close()
+        with pytest.raises(Timeout):
+            lock.acquire_write(timeout=1, blocking=False)
+        with pytest.raises(Timeout):
+            lock.acquire_read(timeout=1, blocking=False)
         release.set()
         holder.join(timeout=_PROCESS_DEADLINE)
 
@@ -557,9 +531,18 @@ def test_non_blocking_writer_contended_raises(lock_file: str) -> None:
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @NEEDS_POSIX_SIGNALS
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
-def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs posix-signals
+@pytest.mark.parametrize(
+    ("dead_mode", "contender_mode"),
+    [pytest.param("write", "read", id="dead-writer"), pytest.param("read", "write", id="dead-reader")],
+)
+def test_dead_holder_evicted_by_contender(
+    lock_file: str,
+    lock: SoftReadWriteLock,
+    dead_mode: Literal["read", "write"],
+    contender_mode: Literal["read", "write"],
+) -> None:  # pragma: needs posix-signals
     held = Event()
-    holder = Process(target=_sigkill_worker, args=(lock_file, "write", held, 0.1, 0.5))
+    holder = Process(target=_sigkill_worker, args=(lock_file, dead_mode, held, 0.1, 0.5))
     with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
@@ -568,35 +551,12 @@ def test_dead_writer_evicted_by_reader(lock_file: str) -> None:  # pragma: needs
         os.kill(pid, getattr(signal, "SIGKILL"))  # ruff:ignore[get-attr-with-constant] - signal.SIGKILL is POSIX-only
         holder.join(timeout=_PROCESS_DEADLINE)
         time.sleep(0.8)
-        lock = _make_lock(lock_file)
-        try:
-            with lock.read_lock(timeout=5):
-                pass
-        finally:
-            lock.close()
-        assert _state(lock_file).writer is None
-
-
-@SKIP_ON_UNRELIABLE_PROCESS_SYNC
-@NEEDS_POSIX_SIGNALS
-@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
-def test_dead_reader_evicted_by_writer(lock_file: str) -> None:  # pragma: needs posix-signals
-    held = Event()
-    holder = Process(target=_sigkill_worker, args=(lock_file, "read", held, 0.1, 0.5))
-    with cleanup_processes([holder]):
-        holder.start()
-        assert held.wait(timeout=_PROCESS_DEADLINE)
-        pid = holder.pid
-        assert pid is not None
-        os.kill(pid, getattr(signal, "SIGKILL"))  # ruff:ignore[get-attr-with-constant] - signal.SIGKILL is POSIX-only
-        holder.join(timeout=_PROCESS_DEADLINE)
-        time.sleep(0.8)
-        lock = _make_lock(lock_file)
-        try:
-            with lock.write_lock(timeout=5):
-                pass
-        finally:
-            lock.close()
+        contender = lock.read_lock if contender_mode == "read" else lock.write_lock
+        with contender(timeout=5):
+            pass
+        if contender_mode == "read":
+            # A write lock's success already proves no live reader or writer remained; a read lock's does not.
+            assert _state(lock_file).writer is None
 
 
 def test_heartbeat_reports_eviction_and_stops(lock_file: str) -> None:
@@ -730,13 +690,12 @@ def test_heartbeat_reports_refresh_failures_that_outlast_the_margin(lock_file: s
 
 @pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
 def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
-    lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
+    lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
     # A heartbeat thread the OS refuses (an rlimit reached) must not leave a hold behind: a peer would evict the
     # unrefreshed record and acquire while this instance still believed it held the lock, and release() would raise
     # joining a thread that never started.
     mocker.patch.object(sync_mod._HeartbeatThread, "start", side_effect=RuntimeError("can't start new thread"))
-    lock = _make_lock(lock_file)
     acquire = lock.acquire_write if mode == "write" else lock.acquire_read
     with pytest.raises(RuntimeError, match="can't start new thread"):
         acquire(timeout=2)
@@ -745,7 +704,6 @@ def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
     assert _state(lock_file).members == frozenset()
     assert _holders(lock_file) == []
     lock.release(force=True)  # a handed-back slot leaves nothing to release, so this must not raise
-    lock.close()
 
 
 def test_short_attempts_still_evict_a_dead_holder(lock_file: str) -> None:
@@ -815,11 +773,6 @@ def test_lock_file_in_a_missing_directory_is_created(tmp_path: Path) -> None:
             pass
     finally:
         lock.close()
-
-
-def test_rejects_poll_interval_not_below_stale_threshold(lock_file: str) -> None:
-    with pytest.raises(ValueError, match="poll_interval must be below"):
-        SoftReadWriteLock(lock_file, heartbeat_interval=1, stale_threshold=3, poll_interval=3, is_singleton=False)
 
 
 def test_late_heartbeat_tick_does_not_stamp_a_later_hold(lock_file: str) -> None:
@@ -912,17 +865,13 @@ def test_release_never_blocks_on_an_abandoned_claim(lock_file: str) -> None:
     lock.close()
 
 
-def test_malformed_generation_record_fails_closed(lock_file: str) -> None:
-    lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2):
-            pass
-        latest = _generations(lock_file)[-1]
-        Path(f"{lock_file}.rw", "gen", f"{int(latest) + 1:020d}").write_bytes(b"garbage\n")
-        with pytest.raises(SoftFileLockProtocolError, match="malformed generation record"):
-            lock.acquire_write(timeout=1)
-    finally:
-        lock.close()
+def test_malformed_generation_record_fails_closed(lock_file: str, lock: SoftReadWriteLock) -> None:
+    with lock.write_lock(timeout=2):
+        pass
+    latest = _generations(lock_file)[-1]
+    Path(f"{lock_file}.rw", "gen", f"{int(latest) + 1:020d}").write_bytes(b"garbage\n")
+    with pytest.raises(SoftFileLockProtocolError, match="malformed generation record"):
+        lock.acquire_write(timeout=1)
 
 
 def test_malformed_holder_record_is_evicted(lock_file: str) -> None:
@@ -951,15 +900,11 @@ def test_temporary_commit_files_are_swept(lock_file: str) -> None:
         lock.close()
 
 
-def test_generations_are_compacted(lock_file: str) -> None:
-    lock = _make_lock(lock_file)
-    try:
-        for _ in range(80):
-            with lock.write_lock(timeout=2):
-                pass
-        assert len(_generations(lock_file)) <= 66
-    finally:
-        lock.close()
+def test_generations_are_compacted(lock_file: str, lock: SoftReadWriteLock) -> None:
+    for _ in range(80):
+        with lock.write_lock(timeout=2):
+            pass
+    assert len(_generations(lock_file)) <= 66
 
 
 def test_a_participant_behind_a_compacted_generation_rescans(lock_file: str) -> None:
@@ -981,98 +926,68 @@ def test_a_participant_behind_a_compacted_generation_rescans(lock_file: str) -> 
 
 
 @pytest.mark.skipif(not CAPABILITIES["symlink"], reason="staging the protocol directory as a symlink")
-def test_symlinked_protocol_directory_is_refused(lock_file: str, tmp_path: Path) -> None:  # pragma: needs symlink
+def test_symlinked_protocol_directory_is_refused(
+    lock_file: str, tmp_path: Path, lock: SoftReadWriteLock
+) -> None:  # pragma: needs symlink
     victim_dir = tmp_path / "victim_dir"
     victim_dir.mkdir()
     Path(f"{lock_file}.rw").symlink_to(victim_dir)
-    lock = _make_lock(lock_file)
-    try:
-        with pytest.raises(RuntimeError, match="not a directory or is a symlink"):
-            lock.acquire_read(timeout=0.5)
-    finally:
-        lock.close()
+    with pytest.raises(RuntimeError, match="not a directory or is a symlink"):
+        lock.acquire_read(timeout=0.5)
     assert list(victim_dir.iterdir()) == []
 
 
-def test_protocol_path_as_regular_file_is_refused(lock_file: str) -> None:
+def test_protocol_path_as_regular_file_is_refused(lock_file: str, lock: SoftReadWriteLock) -> None:
     Path(f"{lock_file}.rw").write_bytes(b"x")
-    lock = _make_lock(lock_file)
-    try:
-        with pytest.raises(RuntimeError, match="not a directory or is a symlink"):
-            lock.acquire_read(timeout=0.5)
-    finally:
-        lock.close()
+    with pytest.raises(RuntimeError, match="not a directory or is a symlink"):
+        lock.acquire_read(timeout=0.5)
 
 
 @NEEDS_FILE_MODE
-def test_records_are_owner_only(lock_file: str) -> None:  # pragma: needs file-mode
-    lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2):
-            root = Path(f"{lock_file}.rw")
-            for directory in (root, root / "gen", root / "holders"):
-                assert stat.S_IMODE(directory.lstat().st_mode) == 0o700
-            generation = root / "gen" / _generations(lock_file)[-1]
-            assert stat.S_IMODE(generation.lstat().st_mode) == 0o600
-            (holder,) = _holders(lock_file)
-            assert stat.S_IMODE((root / "holders" / holder).lstat().st_mode) == 0o600
-    finally:
-        lock.close()
+def test_records_are_owner_only(lock_file: str, lock: SoftReadWriteLock) -> None:  # pragma: needs file-mode
+    with lock.write_lock(timeout=2):
+        root = Path(f"{lock_file}.rw")
+        for directory in (root, root / "gen", root / "holders"):
+            assert stat.S_IMODE(directory.lstat().st_mode) == 0o700
+        generation = root / "gen" / _generations(lock_file)[-1]
+        assert stat.S_IMODE(generation.lstat().st_mode) == 0o600
+        (holder,) = _holders(lock_file)
+        assert stat.S_IMODE((root / "holders" / holder).lstat().st_mode) == 0o600
 
 
-def test_stray_files_in_the_protocol_directories_are_ignored(lock_file: str) -> None:
+def test_stray_files_in_the_protocol_directories_are_ignored(lock_file: str, lock: SoftReadWriteLock) -> None:
     root = Path(f"{lock_file}.rw")
     (root / "gen").mkdir(parents=True)
     (root / "holders").mkdir()
     (root / "gen" / ".hidden").write_bytes(b"ignored")
     (root / "gen" / "not-a-generation").write_bytes(b"ignored")
     (root / "holders" / "not-a-token").write_bytes(b"ignored")
-    lock = _make_lock(lock_file)
-    try:
-        with lock.write_lock(timeout=2):
-            pass
-    finally:
-        lock.close()
+    with lock.write_lock(timeout=2):
+        pass
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @NEEDS_FORK
 @pytest.mark.timeout(_PROCESS_DEADLINE * 2)
-def test_child_cannot_reuse_parents_lock_instance(tmp_path: Path) -> None:  # pragma: needs fork
+@pytest.mark.parametrize(
+    ("scenario", "names"),
+    [
+        pytest.param("reuse-raises", ("foo.lock",), id="reuse-raises"),
+        pytest.param("release-is-silent", ("foo.lock",), id="release-is-silent"),
+        pytest.param("fresh-lock-after-fork", ("parent.lock", "child.lock"), id="fresh-lock-after-fork"),
+    ],
+)
+def test_child_fork_lock_behavior(tmp_path: Path, scenario: str, names: tuple[str, ...]) -> None:  # pragma: needs fork
+    # Resolved by name, not passed as the parametrize value: the targets are defined later in this module, and a
+    # decorator evaluates its arguments at import time, before those definitions exist.
+    target = {
+        "reuse-raises": _reuse_inherited_lock,
+        "release-is-silent": _release_inherited_lock,
+        "fresh-lock-after-fork": _reacquire_fresh_lock_in_child,
+    }[scenario]
     ctx = mp.get_context("spawn")
     result, failure = ctx.Event(), ctx.Event()
-    proc = ctx.Process(target=_reuse_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
-    with cleanup_processes([proc]):
-        proc.start()
-        proc.join(timeout=_PROCESS_DEADLINE)
-        assert not failure.is_set()
-        assert result.is_set()
-
-
-@SKIP_ON_UNRELIABLE_PROCESS_SYNC
-@NEEDS_FORK
-@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
-def test_child_release_on_inherited_lock_is_silent(tmp_path: Path) -> None:  # pragma: needs fork
-    ctx = mp.get_context("spawn")
-    result, failure = ctx.Event(), ctx.Event()
-    proc = ctx.Process(target=_release_inherited_lock, args=(str(tmp_path / "foo.lock"), result, failure))
-    with cleanup_processes([proc]):
-        proc.start()
-        proc.join(timeout=_PROCESS_DEADLINE)
-        assert not failure.is_set()
-        assert result.is_set()
-
-
-@SKIP_ON_UNRELIABLE_PROCESS_SYNC
-@NEEDS_FORK
-@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
-def test_child_can_acquire_a_different_lock_after_fork(tmp_path: Path) -> None:  # pragma: needs fork
-    ctx = mp.get_context("spawn")
-    result, failure = ctx.Event(), ctx.Event()
-    proc = ctx.Process(
-        target=_reacquire_fresh_lock_in_child,
-        args=(str(tmp_path / "parent.lock"), str(tmp_path / "child.lock"), result, failure),
-    )
+    proc = ctx.Process(target=target, args=(*(str(tmp_path / name) for name in names), result, failure))
     with cleanup_processes([proc]):
         proc.start()
         proc.join(timeout=_PROCESS_DEADLINE)
@@ -1375,4 +1290,3 @@ def test_writer_timeout_commits_itself_out(lock_file: str) -> None:
     finally:
         writer.close()
         reader.close()
-        writer.close()

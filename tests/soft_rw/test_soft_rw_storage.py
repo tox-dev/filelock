@@ -16,19 +16,38 @@ from filelock._soft_rw import _storage as storage_mod
 from filelock._soft_rw._storage import OsFiles
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pytest_mock import MockerFixture
 
 pytestmark = pytest.mark.requires_hard_links
 
 
-def test_read_missing_file_is_none(tmp_path: Path) -> None:
-    assert OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "absent")) is None
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        pytest.param(lambda files, path: files.read(path), None, id="read"),
+        pytest.param(lambda files, path: files.overwrite(path, b"data"), False, id="overwrite"),
+        pytest.param(lambda files, path: files.listdir(path), [], id="listdir"),
+    ],
+)
+def test_missing_path_returns_default(tmp_path: Path, call: Callable[[OsFiles, str], object], expected: object) -> None:
+    assert call(OsFiles(str(tmp_path / "x.lock")), str(tmp_path / "absent")) == expected
 
 
-def test_read_other_errors_propagate(tmp_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda files, path: files.read(path), id="read"),
+        pytest.param(lambda files, path: files.overwrite(path, b"data"), id="overwrite"),
+    ],
+)
+def test_open_other_errors_propagate(
+    tmp_path: Path, mocker: MockerFixture, call: Callable[[OsFiles, str], object]
+) -> None:
     mocker.patch.object(storage_mod.os, "open", side_effect=OSError(EIO, "Input/output error"))
     with pytest.raises(OSError, match="Input/output error"):
-        OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "absent"))
+        call(OsFiles(str(tmp_path / "x.lock")), str(tmp_path / "absent"))
 
 
 def test_read_non_regular_file_is_empty(tmp_path: Path) -> None:
@@ -80,16 +99,6 @@ def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFix
         OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
-def test_overwrite_missing_file_is_false(tmp_path: Path) -> None:
-    assert not OsFiles(str(tmp_path / "x.lock")).overwrite(str(tmp_path / "absent"), b"data")
-
-
-def test_overwrite_other_errors_propagate(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(storage_mod.os, "open", side_effect=OSError(EIO, "Input/output error"))
-    with pytest.raises(OSError, match="Input/output error"):
-        OsFiles(str(tmp_path / "x.lock")).overwrite(str(tmp_path / "absent"), b"data")
-
-
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch.object(Path, "unlink", side_effect=PermissionError("held open"))
     OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
@@ -99,10 +108,6 @@ def test_unlink_other_errors_propagate(tmp_path: Path, mocker: MockerFixture) ->
     mocker.patch.object(Path, "unlink", side_effect=OSError(EIO, "Input/output error"))
     with pytest.raises(OSError, match="Input/output error"):
         OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
-
-
-def test_listdir_missing_directory_is_empty(tmp_path: Path) -> None:
-    assert OsFiles(str(tmp_path / "x.lock")).listdir(str(tmp_path / "absent")) == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows retries a refused open as a sharing race")

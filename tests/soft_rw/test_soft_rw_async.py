@@ -99,20 +99,12 @@ def _members(tmp_path: Path, name: str = "foo.lock") -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_async_write_lock_context_manager(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
+async def test_async_lock_context_manager(tmp_path: Path, mode: Literal["read", "write"]) -> None:
     lock = _make(tmp_path)
     try:
-        async with lock.write_lock(timeout=2):
-            pass
-    finally:
-        await lock.close()
-
-
-@pytest.mark.asyncio
-async def test_async_read_lock_context_manager(tmp_path: Path) -> None:
-    lock = _make(tmp_path)
-    try:
-        async with lock.read_lock(timeout=2):
+        context = lock.write_lock if mode == "write" else lock.read_lock
+        async with context(timeout=2):
             pass
     finally:
         await lock.close()

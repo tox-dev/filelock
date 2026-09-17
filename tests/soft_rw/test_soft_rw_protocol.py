@@ -56,6 +56,21 @@ def _participant(
     )
 
 
+@pytest.fixture
+def lock_file(tmp_path: Path) -> str:
+    return str(tmp_path / "x.lock")
+
+
+@pytest.fixture
+def files(lock_file: str) -> OsFiles:
+    return OsFiles(lock_file)
+
+
+@pytest.fixture
+def root(lock_file: str) -> str:
+    return f"{lock_file}.rw"
+
+
 @pytest.mark.parametrize(
     "snapshot",
     [
@@ -113,17 +128,13 @@ def test_ledger_measures_how_long_a_value_stays_unchanged() -> None:
     assert ledger.observe("a", None) == pytest.approx(0.0)
 
 
-def test_log_starts_empty(tmp_path: Path) -> None:
-    lock_file = str(tmp_path / "x.lock")
-    log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
+def test_log_starts_empty(lock_file: str, files: OsFiles, root: str) -> None:
+    log = GenerationLog(files, lock_file, root)
     assert log.latest() == Snapshot(generation=0, writer=None, readers=frozenset())
 
 
 @pytest.mark.requires_hard_links
-def test_commit_refuses_a_generation_that_exists(tmp_path: Path) -> None:
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
+def test_commit_refuses_a_generation_that_exists(lock_file: str, files: OsFiles, root: str) -> None:
     files.prepare(root)
     first = GenerationLog(files, lock_file, root)
     second = GenerationLog(files, lock_file, root)
@@ -136,11 +147,10 @@ def test_commit_refuses_a_generation_that_exists(tmp_path: Path) -> None:
 
 
 @pytest.mark.requires_hard_links
-def test_rescan_skips_a_generation_removed_after_listing(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_rescan_skips_a_generation_removed_after_listing(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
     # A listing can name a generation a peer compacts before it is read; the next older one still stands in.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
     files.prepare(root)
     log = GenerationLog(files, lock_file, root)
     assert log.commit(Snapshot(generation=1, writer=None, readers=frozenset()))
@@ -152,10 +162,7 @@ def test_rescan_skips_a_generation_removed_after_listing(tmp_path: Path, mocker:
     assert fresh.latest().generation == 1
 
 
-def test_malformed_generation_raises(tmp_path: Path) -> None:
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
+def test_malformed_generation_raises(lock_file: str, files: OsFiles, root: str) -> None:
     files.prepare(root)
     Path(root, "gen", f"{1:020d}").write_bytes(b"filelock-rw/1\ngeneration=5\n")
     log = GenerationLog(files, lock_file, root)
@@ -164,9 +171,8 @@ def test_malformed_generation_raises(tmp_path: Path) -> None:
     assert caught.value.claim_name == f"{1:020d}"
 
 
-def test_leave_without_entering_only_drops_the_record(tmp_path: Path) -> None:
-    lock_file = str(tmp_path / "x.lock")
-    participant = _participant(OsFiles(lock_file), lock_file, "read", stale_threshold=1)
+def test_leave_without_entering_only_drops_the_record(lock_file: str, files: OsFiles) -> None:
+    participant = _participant(files, lock_file, "read", stale_threshold=1)
     participant.publish()
     assert Path(f"{lock_file}.rw", "holders", participant.token).exists()
     participant.leave()
@@ -175,12 +181,9 @@ def test_leave_without_entering_only_drops_the_record(tmp_path: Path) -> None:
 
 
 @pytest.mark.requires_hard_links
-def test_leave_retries_a_commit_a_peer_won(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root: str, mocker: MockerFixture) -> None:
     # A peer can publish the next generation between leave() reading the latest one and linking its successor; the
     # holder then re-reads and commits itself out of whatever the peer published.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
     reader = _participant(files, lock_file, "read", stale_threshold=100)
     reader.publish()
     assert reader.advance()
@@ -203,12 +206,9 @@ def test_leave_retries_a_commit_a_peer_won(tmp_path: Path, mocker: MockerFixture
 
 
 @pytest.mark.requires_hard_links
-def test_waiting_contender_republishes_a_swept_record(tmp_path: Path) -> None:
+def test_waiting_contender_republishes_a_swept_record(lock_file: str, files: OsFiles, root: str) -> None:
     # A record removed out from under a contender (a sweeper that mistook it, an operator) comes back on its next poll,
     # so peers always have a record to watch by the time the contender is admitted.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
     writer = _participant(files, lock_file, "write", stale_threshold=100)
     writer.publish()
     assert writer.advance()
@@ -221,11 +221,10 @@ def test_waiting_contender_republishes_a_swept_record(tmp_path: Path) -> None:
 
 
 @pytest.mark.requires_hard_links
-def test_waiting_contender_keeps_an_undeletable_record(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_waiting_contender_keeps_an_undeletable_record(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
     # Windows can leave the record in place while refusing the rewrite; the contender carries on.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
     reader = _participant(files, lock_file, "read", stale_threshold=100)
     reader.publish()
     mocker.patch.object(OsFiles, "overwrite", return_value=False)
@@ -234,11 +233,8 @@ def test_waiting_contender_keeps_an_undeletable_record(tmp_path: Path, mocker: M
 
 
 @pytest.mark.requires_hard_links
-def test_blocked_contender_still_evicts_stale_readers(tmp_path: Path) -> None:
+def test_blocked_contender_still_evicts_stale_readers(lock_file: str, files: OsFiles, root: str) -> None:
     # A live writer blocks entry, but a dead reader named beside it is evicted anyway so the writer can drain.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
     clock = [0.0]
     dead = _participant(files, lock_file, "read", stale_threshold=1, clock=lambda: clock[0])
     dead.publish()
@@ -258,11 +254,9 @@ def test_blocked_contender_still_evicts_stale_readers(tmp_path: Path) -> None:
 
 
 @pytest.mark.requires_hard_links
-def test_writer_admission_after_the_last_reader_leaves_is_a_commit(tmp_path: Path) -> None:
+def test_writer_admission_after_the_last_reader_leaves_is_a_commit(lock_file: str, files: OsFiles, root: str) -> None:
     # The final grant must publish a generation of its own: a grant read off a snapshot a peer is about to supersede
     # would let an evictor and the resumed writer both hold.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
     reader = _participant(files, lock_file, "read")
     reader.publish()
     assert reader.advance()
@@ -270,16 +264,16 @@ def test_writer_admission_after_the_last_reader_leaves_is_a_commit(tmp_path: Pat
     writer.publish()
     assert not writer.advance()
     reader.leave()
-    left_at = GenerationLog(files, lock_file, f"{lock_file}.rw").latest().generation
+    left_at = GenerationLog(files, lock_file, root).latest().generation
     assert writer.advance()
     assert writer.generation == left_at + 1
 
 
 @pytest.mark.requires_hard_links
-def test_a_commit_reported_lost_that_landed_is_recognized(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_a_commit_reported_lost_that_landed_is_recognized(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
     # A link that landed but whose identity check failed must not leave the writer blocking on its own token.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
     writer = _participant(files, lock_file, "write")
     writer.publish()
     real_link = OsFiles.link
@@ -297,14 +291,11 @@ def test_a_commit_reported_lost_that_landed_is_recognized(tmp_path: Path, mocker
     # The denied commit entered it at generation 1; the admission it then recognized is a commit of its own.
     assert writer.generation == 2
     assert len(denied) == 1
-    assert GenerationLog(files, lock_file, f"{lock_file}.rw").latest().writer == writer.token
+    assert GenerationLog(files, lock_file, root).latest().writer == writer.token
 
 
 @pytest.mark.requires_hard_links
-def test_latest_probes_across_a_compaction_hole(tmp_path: Path) -> None:
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
+def test_latest_probes_across_a_compaction_hole(lock_file: str, files: OsFiles, root: str) -> None:
     files.prepare(root)
     log = GenerationLog(files, lock_file, root)
     for generation in range(1, 6):
@@ -314,12 +305,11 @@ def test_latest_probes_across_a_compaction_hole(tmp_path: Path) -> None:
     assert behind.latest().generation == 5
 
 
-def test_a_listing_naming_only_compacted_generations_fails_closed(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_a_listing_naming_only_compacted_generations_fails_closed(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
     # A client that can see names but read none of them is behind the log by more than the retained window; treating
     # that as an empty log would restart the sequence and fork it.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
     files.prepare(root)
     mocker.patch.object(OsFiles, "listdir", return_value=[f"{generation:020d}" for generation in (4, 5)])
     with pytest.raises(SoftFileLockProtocolError, match="names no readable snapshot"):
@@ -327,12 +317,11 @@ def test_a_listing_naming_only_compacted_generations_fails_closed(tmp_path: Path
 
 
 @pytest.mark.requires_hard_links
-def test_a_listing_compacted_from_under_the_reader_is_taken_again(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_a_listing_compacted_from_under_the_reader_is_taken_again(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
     # Peers can compact every generation a listing named before this client reads one; a second listing then finds
     # the head rather than failing closed on the first.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
     files.prepare(root)
     log = GenerationLog(files, lock_file, root)
     assert log.commit(Snapshot(generation=1, writer=_FIRST, readers=frozenset()))
@@ -343,22 +332,18 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(tmp_path: Path
 
 
 @pytest.mark.requires_hard_links
-def test_heartbeat_ignores_a_broken_successor_record(tmp_path: Path) -> None:
+def test_heartbeat_ignores_a_broken_successor_record(lock_file: str, files: OsFiles, root: str) -> None:
     # A record nobody can parse breaks every acquire, and that is its own error; it says nothing about whether this
     # holder is alive, so the heartbeat must keep the nonce fresh rather than stop and hand the lock to a peer.
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
     writer = _participant(files, lock_file, "write")
     writer.publish()
     assert writer.advance()
-    Path(f"{lock_file}.rw", "gen", f"{2:020d}").write_bytes(b"garbage\n")
+    Path(root, "gen", f"{2:020d}").write_bytes(b"garbage\n")
     assert writer.heartbeat() == ("ok", None)
 
 
 @pytest.mark.requires_hard_links
-def test_heartbeat_reports_the_refresh_error(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_file = str(tmp_path / "x.lock")
-    files = OsFiles(lock_file)
+def test_heartbeat_reports_the_refresh_error(lock_file: str, files: OsFiles, mocker: MockerFixture) -> None:
     writer = _participant(files, lock_file, "write")
     writer.publish()
     assert writer.advance()
