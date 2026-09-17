@@ -420,8 +420,8 @@ def test_writer_preference_blocks_new_readers(lock_file: str) -> None:
         reader1.start()
         assert r1_held.wait(timeout=_PROCESS_DEADLINE)
         writer.start()
-        # Start reader2 only once the writer's marker is on disk: a fixed sleep undershoots on a Windows runner still
-        # spawning the writer's interpreter, and reader2 then slips in ahead of the writer's intent.
+        # Start reader2 only once the writer is named in the latest snapshot: a fixed sleep undershoots on a Windows
+        # runner still spawning the writer's interpreter, and reader2 then slips in ahead of the writer's intent.
         deadline = time.monotonic() + _PROCESS_DEADLINE
         while _state(lock_file).writer is None:
             assert time.monotonic() < deadline
@@ -552,26 +552,6 @@ def test_non_blocking_writer_contended_raises(lock_file: str) -> None:
             lock.close()
         release.set()
         holder.join(timeout=_PROCESS_DEADLINE)
-
-
-@pytest.mark.timeout(10)
-def test_writer_phase2_timeout_releases_marker(lock_file: str) -> None:
-    # A live reader whose heartbeat stays fresh blocks the phase-2 drain; the writer must abandon its
-    # phase-1 claim so the next writer can retry.
-    reader = _make_lock(lock_file)
-    reader.acquire_read(timeout=2)
-    try:
-        writer = _make_lock(lock_file)
-        try:
-            with pytest.raises(Timeout):
-                writer.acquire_write(timeout=0.3)
-        finally:
-            writer.close()
-        assert _state(lock_file).writer is None
-        assert len(_holders(lock_file)) == 1
-    finally:
-        reader.release()
-        reader.close()
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
@@ -805,7 +785,6 @@ def test_singleton_rejects_a_different_on_compromise(lock_file: str) -> None:
 
 def test_release_from_on_compromise_leaves_cleanly(lock_file: str) -> None:
     # The callback runs on the heartbeat thread; a release there has no thread to join and must still leave.
-    lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2)
     lock = SoftReadWriteLock(
         lock_file,
         is_singleton=False,
@@ -921,7 +900,7 @@ def test_foreign_host_holder_is_evicted_after_the_stale_threshold(lock_file: str
 
 
 def test_release_never_blocks_on_an_abandoned_claim(lock_file: str) -> None:
-    # The other half of #725: a writer holding the lock could not let go while a foreign host's marker sat in the way.
+    # The other half of #725: a writer holding the lock could not let go while a foreign host's record sat in the way.
     # Leaving is one commit of the holder's own token, so nothing a dead peer left can block it.
     lock = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
     lock.acquire_write(timeout=2)
@@ -1381,7 +1360,8 @@ async def test_async_contention_reports_public_path(lock_file: str, mode: Litera
 
 def test_writer_timeout_commits_itself_out(lock_file: str) -> None:
     # A writer that gives up while draining must not stay named: it would block every reader until a peer waited out
-    # the stale threshold. Its own token is all it removes, so the reader it waited on keeps its hold.
+    # the stale threshold. Its own token is all it removes, both from the snapshot and from the holder registry, so
+    # the reader it waited on keeps its hold.
     reader = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
     writer = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40, poll_interval=0.01)
     try:
@@ -1391,6 +1371,8 @@ def test_writer_timeout_commits_itself_out(lock_file: str) -> None:
         state = _state(lock_file)
         assert state.writer is None
         assert len(state.readers) == 1
+        assert len(_holders(lock_file)) == 1
     finally:
+        writer.close()
         reader.close()
         writer.close()

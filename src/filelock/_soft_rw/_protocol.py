@@ -188,8 +188,7 @@ class GenerationLog:
         the log that nothing it reads can be trusted.
         """
         listed = self._list()
-        start = self._start(listed)
-        if start is None:
+        if (start := self._start(listed)) is None:
             # Everything the listing named is gone: peers compacted past it while this client looked. One more listing
             # settles whether the directory is genuinely empty or this client cannot see the head at all.
             listed = self._list()
