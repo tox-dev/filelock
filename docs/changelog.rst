@@ -6,6 +6,25 @@
 
 .. towncrier release notes start
 
+*******************
+ 4.0.0 (2026-09-17)
+*******************
+
+- The :class:`~filelock.SoftReadWriteLock` on-disk protocol is a generation log under ``<path>.rw``, and a process
+  running an earlier release does not see it: an old and a new participant on one lock path do not exclude each
+  other. Stop every participant, upgrade them all, then restart them; the new code ignores leftover ``.state``,
+  ``.write`` and ``.readers/`` files, and you can delete them. The filesystem must provide no-replace hard links, as
+  it must for :class:`~filelock.StrictSoftFileLock`, so a runtime without ``os.link`` raises
+  :class:`~filelock.SoftFileLockProtocolError` on acquire. Constructing a singleton again with a different
+  ``on_compromise``, or with ``poll_interval`` at or above ``stale_threshold``, now raises :class:`ValueError`. :pr:`735`
+- :class:`~filelock.SoftReadWriteLock` exposes :attr:`~filelock.SoftReadWriteLock.generation` as a fencing token for
+  the protected resource and reports a lost hold through ``on_compromise`` and
+  :attr:`~filelock.SoftReadWriteLock.compromise`. :pr:`735`
+- :class:`~filelock.SoftReadWriteLock` no longer deadlocks when a holder dies on another host mid-transition, and
+  ``release()`` no longer waits on a mutex a dead host left behind (:pr:`725`, :pr:`735`). The state mutex is gone.
+  Each transition is one atomic snapshot commit, and liveness is a heartbeat nonce read on the observer's own clock
+  rather than an ``mtime`` read against another host's. :pr:`735`
+
 ********************
  3.32.7 (2026-09-16)
 ********************

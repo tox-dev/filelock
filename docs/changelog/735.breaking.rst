@@ -1,7 +1,0 @@
-The :class:`~filelock.SoftReadWriteLock` on-disk protocol is a generation log under ``<path>.rw``, and a process
-running an earlier release does not see it: an old and a new participant on one lock path do not exclude each
-other. Stop every participant, upgrade them all, then restart them; the new code ignores leftover ``.state``,
-``.write`` and ``.readers/`` files, and you can delete them. The filesystem must provide no-replace hard links, as
-it must for :class:`~filelock.StrictSoftFileLock`, so a runtime without ``os.link`` raises
-:class:`~filelock.SoftFileLockProtocolError` on acquire. Constructing a singleton again with a different
-``on_compromise``, or with ``poll_interval`` at or above ``stale_threshold``, now raises :class:`ValueError`.

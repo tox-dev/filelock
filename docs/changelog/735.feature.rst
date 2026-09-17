@@ -1,3 +1,0 @@
-:class:`~filelock.SoftReadWriteLock` exposes :attr:`~filelock.SoftReadWriteLock.generation` as a fencing token for
-the protected resource and reports a lost hold through ``on_compromise`` and
-:attr:`~filelock.SoftReadWriteLock.compromise`.
