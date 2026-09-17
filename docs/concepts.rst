@@ -691,77 +691,82 @@ Generation log walkthrough
 
 The prose above states the protocol; the sequences below show it running.
 
-A writer's first commit finds no live writer and lands on the first try:
+A writer's first commit finds no live writer and lands on the first try. The lock file is ``/var/lock/app.lock``, so
+the log lives at ``/var/lock/app.lock.rw``, and the writer's holder record is named after its own token,
+``a10f6c2e8b3d4a1f9c7e2b6d0a4f8c31``:
 
 .. mermaid::
 
     sequenceDiagram
         box rgba(21, 101, 192, 0.16) Processes
-            participant A as Writer A
+            participant A as Writer (token a10f6c2e...f8c31)
         end
-        box rgba(46, 125, 50, 0.16) Shared filesystem
-            participant FS as <path>.rw
+        box rgba(46, 125, 50, 0.16) /var/lock/app.lock.rw
+            participant FS as gen/ and holders/
         end
-        A->>+FS: list gen/, read gen/7
+        A->>+FS: list gen/, read gen/00000000000000000007
         FS-->>-A: writer=None, readers={}
-        Note over A: write successor to a temp file
-        A->>+FS: link temp -> gen/8
+        Note over A: write successor to .commit-9e4b1a7c3f082d6e5a0c9b2f7e1d4a83, create holders/a10f6c2e...f8c31
+        A->>+FS: link .commit-9e4b1a7c3f082d6e5a0c9b2f7e1d4a83 -> gen/00000000000000000008
         FS-->>-A: link landed
         Note over A: holds the lock at generation 8
 
 Two contenders can read the same latest snapshot and both try to claim the next one. Only one hard link lands; the
-loser's failure is the signal to retry, not an error to report:
+loser's failure is the signal to retry, not an error to report. Writer A keeps the token above; Writer B's token is
+``b20e5d1f7a2c3b0e8d6f4a9c1b7e3052``:
 
 .. mermaid::
 
     sequenceDiagram
         box rgba(21, 101, 192, 0.16) Processes
-            participant A as Writer A
-            participant B as Writer B
+            participant A as Writer (token a10f6c2e...f8c31)
+            participant B as Writer (token b20e5d1f...e3052)
         end
-        box rgba(46, 125, 50, 0.16) Shared filesystem
-            participant FS as <path>.rw
+        box rgba(46, 125, 50, 0.16) /var/lock/app.lock.rw
+            participant FS as gen/ and holders/
         end
-        A->>+FS: read gen/7
+        A->>+FS: read gen/00000000000000000007
         FS-->>-A: writer=None
-        B->>+FS: read gen/7
+        B->>+FS: read gen/00000000000000000007
         FS-->>-B: writer=None
-        A->>+FS: link temp -> gen/8
+        A->>+FS: link .commit-2d8f6b0a4e7c1930b5d8a2f6c9e0b174 -> gen/00000000000000000008
         FS-->>-A: landed
-        B->>+FS: link temp -> gen/8
+        B->>+FS: link .commit-6a1c9e3d7f0b2854c6a9d1e3f5b7c082 -> gen/00000000000000000008
         FS-->>-B: name already exists
         Note over B: re-read the latest generation
-        B->>+FS: read gen/8
-        FS-->>-B: writer=A
-        Note over B: retry from gen/9 once A leaves or goes stale
+        B->>+FS: read gen/00000000000000000008
+        FS-->>-B: writer=a10f6c2e...f8c31
+        Note over B: retry from gen/00000000000000000009 once A leaves or goes stale
 
 A writer that arrives while readers already hold the lock names itself immediately, which blocks every later reader
-before the writer itself is granted, then waits for the readers already in to leave:
+before the writer itself is granted, then waits for the readers already in to leave. Reader R1's token is
+``c1e9b4d2f6a08c3e7b1d5f902a6c48e7``, the writer's is ``e5a1c9f307b28d4e6a0c3f819d5b7e24``, and Reader R2's is
+``d4f2a8c6e0b3719d5a2c7e8f014b6d93``:
 
 .. mermaid::
 
     sequenceDiagram
         box rgba(21, 101, 192, 0.16) Processes
-            participant R1 as Reader R1
-            participant W as Writer W
-            participant R2 as Reader R2
+            participant R1 as Reader (token c1e9b4d2...c48e7)
+            participant W as Writer (token e5a1c9f3...b7e24)
+            participant R2 as Reader (token d4f2a8c6...b6d93)
         end
-        box rgba(46, 125, 50, 0.16) Shared filesystem
-            participant FS as <path>.rw
+        box rgba(46, 125, 50, 0.16) /var/lock/app.lock.rw
+            participant FS as gen/ and holders/
         end
-        R1->>+FS: link temp -> gen/5 (readers={R1})
+        R1->>+FS: link .commit-3f0e8c2a6d1974b0e5a8c1d3f6b9e207 -> gen/00000000000000000005 (readers={c1e9b4d2...c48e7})
         FS-->>-R1: landed
         Note over R1: holds a read lock
-        W->>+FS: commit gen/6 (writer=W, readers={R1})
+        W->>+FS: commit gen/00000000000000000006 (writer=e5a1c9f3...b7e24, readers={c1e9b4d2...c48e7})
         FS-->>-W: landed
-        Note over W: named as writer; every new reader now blocks
-        R2->>+FS: read gen/6
-        FS-->>-R2: writer=W
+        Note over W: named as writer, every new reader now blocks
+        R2->>+FS: read gen/00000000000000000006
+        FS-->>-R2: writer=e5a1c9f3...b7e24
         Note over R2: writer already named, waits behind W
-        R1->>+FS: commit gen/7 (writer=W, readers={})
+        R1->>+FS: commit gen/00000000000000000007 (writer=e5a1c9f3...b7e24, readers={})
         FS-->>-R1: landed
-        Note over R1: releases; removed from readers
-        W->>+FS: commit gen/8 (writer=W, readers={})
+        Note over R1: releases, removed from readers, holders/c1e9b4d2...c48e7 unlinked
+        W->>+FS: commit gen/00000000000000000008 (writer=e5a1c9f3...b7e24, readers={})
         FS-->>-W: landed
         Note over W: readers drained, granted at generation 8
 
@@ -787,36 +792,37 @@ nonce:
 
 A writer on ``node-17`` that crashes mid-hold leaves a snapshot naming it and a heartbeat that stops. A contender on
 ``node-42`` cannot ask ``node-17`` whether the process is still alive, so it watches the nonce instead, and evicts once
-that nonce has sat unchanged for a full ``stale_threshold``:
+that nonce has sat unchanged for a full ``stale_threshold``. The writer's token is
+``a10f6c2e8b3d4a1f9c7e2b6d0a4f8c31``, and the contender's is ``f30c8e1a2d4b6970c3e5a8f1b2d4e607``:
 
 .. mermaid::
 
     sequenceDiagram
         box rgba(21, 101, 192, 0.16) node-17
-            participant A as Writer A
+            participant A as Writer (token a10f6c2e...f8c31)
         end
-        box rgba(46, 125, 50, 0.16) Shared filesystem
-            participant FS as <path>.rw
+        box rgba(46, 125, 50, 0.16) /var/lock/app.lock.rw
+            participant FS as gen/ and holders/
         end
         box rgba(230, 81, 0, 0.16) node-42
-            participant B as Contender B
+            participant B as Contender (token f30c8e1a...4e607)
         end
-        A->>+FS: commit gen/9 (writer=A)
+        A->>+FS: commit gen/00000000000000000009 (writer=a10f6c2e...f8c31)
         FS-->>-A: landed
-        A->>FS: heartbeat: rewrite holders/A nonce
-        Note over A: crashes; heartbeat stops
-        B->>+FS: read gen/9, read holders/A
-        FS-->>-B: writer=A, nonce=n1
-        Note over B: records n1 and its own time.monotonic()
+        A->>FS: heartbeat: rewrite holders/a10f6c2e...f8c31 nonce
+        Note over A: crashes, heartbeat stops
+        B->>+FS: read gen/00000000000000000009, read holders/a10f6c2e...f8c31
+        FS-->>-B: writer=a10f6c2e...f8c31, nonce=7f2e9a01
+        Note over B: records nonce 7f2e9a01 and its own time.monotonic()
         loop every poll, until stale_threshold elapses
-            B->>+FS: read holders/A
-            FS-->>-B: nonce still n1
+            B->>+FS: read holders/a10f6c2e...f8c31
+            FS-->>-B: nonce still 7f2e9a01
         end
-        Note over B: n1 unchanged for stale_threshold; A counts as stale
-        B->>+FS: commit gen/10 (writer=B, A evicted)
+        Note over B: nonce unchanged for stale_threshold, a10f6c2e...f8c31 counts as stale
+        B->>+FS: commit gen/00000000000000000010 (writer=f30c8e1a...4e607, a10f6c2e...f8c31 evicted)
         FS-->>-B: landed
-        B->>FS: unlink holders/A
-        Note over B: granted at generation 10; A's holder record collected
+        B->>FS: unlink holders/a10f6c2e...f8c31
+        Note over B: granted at generation 10, the crashed writer's holder record collected
 
 The generation a hold was granted at is :attr:`generation <filelock.SoftReadWriteLock.generation>`, a monotonic fencing
 token: a resource that rejects writes carrying a lower generation than the highest it has accepted refuses a holder that
