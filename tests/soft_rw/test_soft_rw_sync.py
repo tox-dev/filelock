@@ -132,23 +132,25 @@ def test_rejects_invalid_intervals(
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "match"),
+    ("heartbeat_interval", "stale_threshold", "poll_interval", "match"),
     [
-        pytest.param({"heartbeat_interval": 0}, "heartbeat_interval must be positive", id="heartbeat-non-positive"),
-        pytest.param(
-            {"heartbeat_interval": 10, "stale_threshold": 5}, "stale_threshold must exceed", id="stale-not-greater"
-        ),
-        pytest.param({"poll_interval": 0}, "poll_interval must be positive", id="poll-non-positive"),
-        pytest.param(
-            {"heartbeat_interval": 1, "stale_threshold": 3, "poll_interval": 3},
-            "poll_interval must be below",
-            id="poll-not-below-stale",
-        ),
+        pytest.param(0, None, 0.25, "heartbeat_interval must be positive", id="heartbeat-non-positive"),
+        pytest.param(10, 5, 0.25, "stale_threshold must exceed", id="stale-not-greater"),
+        pytest.param(30, None, 0, "poll_interval must be positive", id="poll-non-positive"),
+        pytest.param(1, 3, 3, "poll_interval must be below", id="poll-not-below-stale"),
     ],
 )
-def test_rejects_invalid_interval_relationship(lock_file: str, kwargs: dict[str, float], match: str) -> None:
+def test_rejects_invalid_interval_relationship(
+    lock_file: str, heartbeat_interval: float, stale_threshold: float | None, poll_interval: float, match: str
+) -> None:
     with pytest.raises(ValueError, match=match):
-        SoftReadWriteLock(lock_file, is_singleton=False, **kwargs)
+        SoftReadWriteLock(
+            lock_file,
+            is_singleton=False,
+            heartbeat_interval=heartbeat_interval,
+            stale_threshold=stale_threshold,
+            poll_interval=poll_interval,
+        )
 
 
 def test_public_attributes(lock_file: str) -> None:
