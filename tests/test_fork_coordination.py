@@ -1049,7 +1049,9 @@ if (
 
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
-def test_soft_read_write_construction_crossing_fork_does_not_poison_child_cache(tmp_path: Path) -> None:
+def test_soft_read_write_construction_crossing_fork_does_not_poison_child_cache(
+    tmp_path: Path,
+) -> None:
     script = """
 from __future__ import annotations
 

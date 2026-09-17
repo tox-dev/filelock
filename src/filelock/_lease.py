@@ -26,7 +26,9 @@ if TYPE_CHECKING:
     else:  # pragma: no cover (<py311)
         from typing_extensions import Unpack
 
-CompromiseReason = Literal["marker-missing", "owner-changed", "refresh-failed"]
+#: ``evicted`` is a :class:`~filelock.SoftReadWriteLock` loss: a peer waited out the stale threshold and committed a
+#: generation without this holder.
+CompromiseReason = Literal["marker-missing", "owner-changed", "refresh-failed", "evicted"]
 
 _RefreshOutcome = Literal["ok", "lost", "transient"]
 

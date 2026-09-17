@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from filelock._api import AcquireReturnProxy
+    from filelock._lease import LeaseCompromise
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -35,16 +36,19 @@ class AsyncSoftReadWriteLock:
     Async wrapper around :class:`SoftReadWriteLock` for ``asyncio`` applications.
 
     The sync class's blocking filesystem operations run on a thread pool via ``loop.run_in_executor()``. The
-    underlying :class:`SoftReadWriteLock` handles reentrancy, upgrade/downgrade rules, fork handling, heartbeat and
-    TTL stale detection, and singleton behavior.
+    underlying :class:`SoftReadWriteLock` handles reentrancy, upgrade/downgrade rules, fork handling, the heartbeat
+    and stale eviction, and singleton behavior.
 
-    :param lock_file: path to the lock file; sidecar state/write/readers live next to it
+    :param lock_file: path to the lock file; the protocol directory lives next to it as ``<lock_file>.rw``
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately on contention
     :param is_singleton: if ``True``, reuse existing :class:`SoftReadWriteLock` instances per resolved path
     :param heartbeat_interval: seconds between heartbeat refreshes; default 30 s
-    :param stale_threshold: seconds of mtime inactivity before a marker is stale; defaults to ``3 * heartbeat_interval``
+    :param stale_threshold: seconds a holder record may stay unchanged before a contender evicts it; defaults to
+        ``3 * heartbeat_interval``
     :param poll_interval: seconds between acquire retries under contention; default 0.25 s
+    :param on_compromise: called from the heartbeat thread with a :class:`~filelock.LeaseCompromise` when the hold is
+        lost
     :param loop: event loop for ``run_in_executor``; ``None`` uses the running loop
     :param executor: executor for ``run_in_executor``; ``None`` uses the default executor
 
@@ -62,6 +66,7 @@ class AsyncSoftReadWriteLock:
         heartbeat_interval: float = 30.0,
         stale_threshold: float | None = None,
         poll_interval: float = 0.25,
+        on_compromise: Callable[[LeaseCompromise], None] | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         executor: futures.Executor | None = None,
     ) -> None:
@@ -74,6 +79,7 @@ class AsyncSoftReadWriteLock:
             heartbeat_interval=heartbeat_interval,
             stale_threshold=stale_threshold,
             poll_interval=poll_interval,
+            on_compromise=on_compromise,
         )
         self._loop = loop
         self._executor = executor
@@ -92,6 +98,16 @@ class AsyncSoftReadWriteLock:
     def blocking(self) -> bool:
         """Whether ``acquire_*`` defaults to blocking; ``False`` makes contention raise immediately."""
         return self._lock.blocking
+
+    @property
+    def generation(self) -> int | None:
+        """The generation the current hold was granted at, a fencing token; ``None`` when no lock is held."""
+        return self._lock.generation
+
+    @property
+    def compromise(self) -> LeaseCompromise | None:
+        """How the current hold was lost, or ``None`` while it stands."""
+        return self._lock.compromise
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
@@ -168,8 +184,8 @@ class AsyncSoftReadWriteLock:
         """
         Acquire an exclusive write lock.
 
-        See :meth:`SoftReadWriteLock.acquire_write` for the two-phase writer-preferring semantics. The blocking work
-        runs inside ``run_in_executor``.
+        See :meth:`SoftReadWriteLock.acquire_write` for the writer-preferring semantics. The blocking work runs inside
+        ``run_in_executor``.
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
@@ -209,7 +225,7 @@ class AsyncSoftReadWriteLock:
 
     async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
         # run_in_executor cannot recall work the pool already started, so canceling the caller does not stop the sync
-        # acquire: it still creates its marker, sets the hold, and starts the heartbeat, which keeps the marker fresh
+        # acquire: it still commits its claim, sets the hold, and starts the heartbeat, which keeps the record fresh
         # forever so no peer on any host can evict it as stale. Wait the submitted call out and hand the claim back,
         # the way AsyncReadWriteLock does.
         acquire_future = self._submit(acquire)

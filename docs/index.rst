@@ -110,11 +110,11 @@ Choose the right lock for your use case:
     .. grid-item-card::
         **SoftReadWriteLock**
 
-        Reader/writer marker lease for tested shared filesystems.
+        Reader/writer lease over a generation log, for tested shared filesystems.
 
-        - ✓ Heartbeat-based marker expiry
+        - ✓ Clock-free heartbeat expiry
         - ✓ Writer preference
-        - ✓ Explicit clock and filesystem requirements
+        - ✓ Fencing generation for the protected resource
         - ✓ Async via AsyncSoftReadWriteLock
 
     .. grid-item-card::

@@ -4,6 +4,7 @@ import os
 import socket
 import stat
 import sys
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock, Timeout
-from filelock._util import break_lock_file, raise_on_not_writable_file
+from filelock._util import break_lock_file, raise_on_not_writable_file, touch
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -217,3 +218,22 @@ def readonly_marker(tmp_path: Path) -> Generator[Path]:
     finally:
         with suppress(FileNotFoundError):
             path.chmod(0o644)
+
+
+@pytest.mark.skipif(
+    os.utime not in os.supports_follow_symlinks, reason="os.utime cannot refuse symlinks on this platform"
+)
+def test_touch_does_not_follow_symlink(tmp_path: Path) -> None:  # pragma: needs utime-nofollow
+    # A path-based touch must land on the link itself, not the file it points at, matching the O_NOFOLLOW reads
+    # elsewhere: a peer that swaps a symlink in cannot redirect the refresh onto a victim file.
+    victim = tmp_path / "victim"
+    victim.write_text("do-not-touch")
+    past = time.time() - 1000
+    os.utime(victim, (past, past))
+    link = tmp_path / "link"
+    link.symlink_to(victim)
+
+    touch(str(link))
+
+    assert victim.stat().st_mtime == pytest.approx(past, abs=1)  # a timestamp round-trip need not be bit-exact
+    assert link.lstat().st_mtime > victim.stat().st_mtime
