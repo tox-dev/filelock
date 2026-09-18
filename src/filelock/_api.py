@@ -362,6 +362,7 @@ class FileLockMeta(ABCMeta):
     ) -> _T:
         _ensure_current_process()
         lifetime = _resolve_lifetime(lifetime, cls, stacklevel=cls._constructor_lifetime_warning_stacklevel)
+        poll_interval = _resolve_poll_interval(poll_interval)
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
         # __del__ then trips over the missing context.
         context_error_policy = _resolve_context_error_policy(context_error_policy)
@@ -533,6 +534,18 @@ def _resolve_lifetime(lifetime: float | None, cls: type[BaseFileLock], *, stackl
             stacklevel=stacklevel,
         )
     return lifetime
+
+
+
+def _resolve_poll_interval(poll_interval: float) -> float:
+    """Validate ``poll_interval`` used for ``time.sleep`` / ``asyncio.sleep`` retries."""
+    if isinstance(poll_interval, bool) or not isinstance(poll_interval, (int, float)):
+        msg = f"poll_interval must be a finite non-negative number, not {type(poll_interval).__name__}"
+        raise TypeError(msg)
+    if poll_interval < 0 or (isinstance(poll_interval, float) and not math.isfinite(poll_interval)):
+        msg = f"poll_interval must be finite and non-negative, not {poll_interval!r}"
+        raise ValueError(msg)
+    return float(poll_interval)
 
 
 def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
@@ -879,8 +892,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         :param value: the new value, in seconds
 
+        :raises ValueError: if *value* is negative or not finite
+        :raises TypeError: if *value* is not a real number
+
         """
-        self._context.poll_interval = value
+        self._context.poll_interval = _resolve_poll_interval(value)
 
     @property
     def lifetime(self) -> float | None:
@@ -1038,6 +1054,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             poll_interval = poll_intervall
 
         poll_interval = poll_interval if poll_interval is not None else self._context.poll_interval
+        poll_interval = _resolve_poll_interval(poll_interval)
 
         start_time = time.perf_counter()
         # Wait for admission before touching any state: a caller refused entry must leave the counter, the registry and
