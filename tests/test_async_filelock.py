@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import EINTR, EIO, ENOSYS
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import pytest
 
@@ -162,6 +162,50 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
     assert not lock_3.is_locked
     assert not lock_4.is_locked
     assert not lock_5.is_locked
+
+
+async def _set_poll_interval(
+    lock_type: type[BaseAsyncFileLock],
+    entry_point: Literal["constructor", "setter", "acquire"],
+    lock: BaseAsyncFileLock,
+    value: object,
+) -> None:
+    value = cast("float", value)
+    if entry_point == "constructor":
+        lock_type(lock.lock_file, poll_interval=value)
+    elif entry_point == "setter":
+        lock.poll_interval = value
+    else:
+        await lock.acquire(poll_interval=value, timeout=0)
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("entry_point", ["constructor", "setter", "acquire"])
+@pytest.mark.parametrize(
+    ("bad_value", "error_type", "message"),
+    [
+        pytest.param(-1, ValueError, "finite and non-negative", id="negative-int"),
+        pytest.param(-0.5, ValueError, "finite and non-negative", id="negative-float"),
+        pytest.param(float("nan"), ValueError, "finite and non-negative", id="nan"),
+        pytest.param(float("inf"), ValueError, "finite and non-negative", id="positive-infinity"),
+        pytest.param(float("-inf"), ValueError, "finite and non-negative", id="negative-infinity"),
+        pytest.param(True, TypeError, "poll_interval must be", id="true"),
+        pytest.param(False, TypeError, "poll_interval must be", id="false"),
+        pytest.param("5", TypeError, "poll_interval must be", id="string"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_poll_interval_rejects_invalid_value(
+    lock_type: type[BaseAsyncFileLock],
+    entry_point: Literal["constructor", "setter", "acquire"],
+    bad_value: object,
+    error_type: type[ValueError | TypeError],
+    message: str,
+    tmp_path: Path,
+) -> None:
+    lock = lock_type(str(tmp_path / "a"))
+    with pytest.raises(error_type, match=message):
+        await _set_poll_interval(lock_type, entry_point, lock, bad_value)
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
