@@ -536,7 +536,6 @@ def _resolve_lifetime(lifetime: float | None, cls: type[BaseFileLock], *, stackl
     return lifetime
 
 
-
 def _resolve_poll_interval(poll_interval: float) -> float:
     """Validate ``poll_interval`` used for ``time.sleep`` / ``asyncio.sleep`` retries."""
     if isinstance(poll_interval, bool) or not isinstance(poll_interval, (int, float)):
