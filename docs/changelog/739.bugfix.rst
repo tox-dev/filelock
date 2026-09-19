@@ -1,0 +1,2 @@
+``poll_interval`` is now validated at construction, on the setter, and on ``acquire()``: a negative, non-finite, or
+non-numeric value raises :class:`ValueError`/:class:`TypeError` immediately instead of failing inside ``time.sleep``.

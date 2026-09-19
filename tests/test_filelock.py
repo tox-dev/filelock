@@ -16,7 +16,7 @@ from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -538,6 +538,11 @@ def test_default_poll_interval(lock_type: type[BaseFileLock], tmp_path: Path) ->
     lock_2.poll_interval = 0.2
     assert lock_2.poll_interval == pytest.approx(0.2)
 
+    lock_3 = lock_type(str(lock_path), poll_interval=0)
+    assert lock_3.poll_interval == 0
+    lock_3.poll_interval = 0.0
+    assert lock_3.poll_interval == pytest.approx(0.0)
+
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_poll_interval_used_by_context_manager(
@@ -573,6 +578,49 @@ def test_poll_interval_acquire_override(lock_type: type[BaseFileLock], tmp_path:
         lock_2.acquire(poll_interval=0.15)
     sleep_mock.assert_called_with(0.15)
     lock_1.release()
+
+
+def _set_poll_interval(
+    lock_type: type[BaseFileLock],
+    entry_point: Literal["constructor", "setter", "acquire"],
+    lock: BaseFileLock,
+    value: object,
+) -> None:
+    value = cast("float", value)
+    if entry_point == "constructor":
+        lock_type(lock.lock_file, poll_interval=value)
+    elif entry_point == "setter":
+        lock.poll_interval = value
+    else:
+        lock.acquire(poll_interval=value, timeout=0)
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize("entry_point", ["constructor", "setter", "acquire"])
+@pytest.mark.parametrize(
+    ("bad_value", "error_type", "message"),
+    [
+        pytest.param(-1, ValueError, "finite and non-negative", id="negative-int"),
+        pytest.param(-0.5, ValueError, "finite and non-negative", id="negative-float"),
+        pytest.param(float("nan"), ValueError, "finite and non-negative", id="nan"),
+        pytest.param(float("inf"), ValueError, "finite and non-negative", id="positive-infinity"),
+        pytest.param(float("-inf"), ValueError, "finite and non-negative", id="negative-infinity"),
+        pytest.param(True, TypeError, "poll_interval must be", id="true"),
+        pytest.param(False, TypeError, "poll_interval must be", id="false"),
+        pytest.param("5", TypeError, "poll_interval must be", id="string"),
+    ],
+)
+def test_poll_interval_rejects_invalid_value(
+    lock_type: type[BaseFileLock],
+    entry_point: Literal["constructor", "setter", "acquire"],
+    bad_value: object,
+    error_type: type[ValueError | TypeError],
+    message: str,
+    tmp_path: Path,
+) -> None:
+    lock = lock_type(str(tmp_path / "a"))
+    with pytest.raises(error_type, match=message):
+        _set_poll_interval(lock_type, entry_point, lock, bad_value)
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])

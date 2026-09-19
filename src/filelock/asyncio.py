@@ -29,6 +29,7 @@ from ._api import (
     _raise_cleanup_errors,
     _raise_grouped_errors,
     _register_fork_object,
+    _resolve_poll_interval,
 )
 from ._async import (
     _AsyncTransitionGate,
@@ -299,6 +300,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
         if poll_interval is None:
             poll_interval = self._context.poll_interval
+        poll_interval = _resolve_poll_interval(poll_interval)
 
         start_time = time.perf_counter()
         try:
