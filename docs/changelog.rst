@@ -7,6 +7,13 @@
 .. towncrier release notes start
 
 *******************
+ 4.0.1 (2026-09-19)
+*******************
+
+- ``poll_interval`` is now validated at construction, on the setter, and on ``acquire()``: a negative, non-finite, or
+  non-numeric value raises :class:`ValueError`/:class:`TypeError` immediately instead of failing inside ``time.sleep``. :pr:`739`
+
+*******************
  4.0.0 (2026-09-17)
 *******************
 
