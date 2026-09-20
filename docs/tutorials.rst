@@ -245,6 +245,7 @@ should keep serving everything else. Use the async variants with ``async with``:
         async with lock:
             blob = Path("cache/models/bert-base/a1b2c3.bin")
             if not blob.exists():
+                blob.parent.mkdir(parents=True, exist_ok=True)
                 blob.write_bytes(await download(url))
             return blob.read_bytes()
 
