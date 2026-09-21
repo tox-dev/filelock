@@ -44,7 +44,8 @@ Two more constraints worth designing around:
 - **All contenders must agree on the path.** A lock is a rendezvous on one pathname. Resolve symlinks and relative
   paths the same way everywhere, or two processes will politely lock different files. Bind-mounted containers make this
   easy to get wrong: the same file, two paths, no exclusion.
-- **The lock file's directory must already exist.** filelock creates the lock file, not its parents.
+- **Create the resource's directory when using a separate lock tree.** filelock creates the lock file's parent
+  directories automatically, but it does not create directories for the resource being protected.
 
 *****************************************
  Keep correctness independent of the lock
