@@ -7,9 +7,10 @@ import threading
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
+from capabilities import CAPABILITIES
 
 from filelock import BaseFileLock, Timeout, has_fcntl
-from tests.capability_marks import NEEDS_FORK, NEEDS_FORK1
+from tests.capability_marks import NEEDS_AUDIT_EVENTS, NEEDS_FORK, NEEDS_FORK1
 from tests.fork_helpers import exit_child, fork_process
 
 if TYPE_CHECKING:
@@ -17,6 +18,10 @@ if TYPE_CHECKING:
 
 _FORK_WARNING: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings(
     "ignore:.*multi-threaded, use of fork.*:DeprecationWarning"
+)
+_NEEDS_SETTRACE_SAFE_AUDIT_HOOKS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["settrace-safe-audit-hooks"],
+    reason="a Python audit hook makes concurrent sys.settrace calls raise on this runtime, so filelock installs none",
 )
 
 
@@ -166,6 +171,23 @@ if second_status != 0 or owner.is_alive() or statuses.get(timeout=1) != 0:
 
 
 @NEEDS_FORK  # pragma: needs fork
+@NEEDS_AUDIT_EVENTS
+def test_import_adds_audit_hook_only_where_settrace_survives_it() -> None:
+    script = """
+import sys
+
+added = []
+sys.addaudithook(lambda event, _args: added.append(event) if event == "sys.addaudithook" else None)
+import filelock
+print(len(added))
+"""
+    result = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, text=True, timeout=10)
+
+    assert (int(result.stdout) > 0) is CAPABILITIES["settrace-safe-audit-hooks"]
+
+
+@NEEDS_FORK  # pragma: needs fork
+@_NEEDS_SETTRACE_SAFE_AUDIT_HOOKS  # pragma: needs settrace-safe-audit-hooks
 def test_audit_hook_survives_interpreter_shutdown() -> None:
     script = """
 from __future__ import annotations
@@ -192,6 +214,7 @@ api.__dict__["_late_shutdown_audit"] = LateAudit()
 
 
 @NEEDS_FORK  # pragma: needs fork
+@_NEEDS_SETTRACE_SAFE_AUDIT_HOOKS  # pragma: needs settrace-safe-audit-hooks
 @pytest.mark.parametrize(
     "event",
     [

@@ -161,6 +161,24 @@ def _delivers_audit_events() -> bool:
     return bool(delivered)
 
 
+def _survives_settrace_inside_audit_hook() -> bool:
+    # CPython before 3.12 holds one process-wide flag while settrace and setprofile run their audit hooks, so a nested
+    # call raises. Probe through setprofile: re-installing the trace function would unhook coverage's C tracer.
+    nested: list[bool] = []
+
+    def setprofile_again(event: str, _args: object) -> None:
+        if event == "sys.setprofile" and not nested:
+            nested.append(True)
+            sys.setprofile(sys.getprofile())
+
+    sys.addaudithook(setprofile_again)
+    try:
+        sys.setprofile(sys.getprofile())
+    except RuntimeError:
+        return False
+    return True
+
+
 def _refuses_to_open_a_symlink() -> bool:
     # GraalPy accepts O_NOFOLLOW then follows the link anyway, so ask for the refusal rather than the constant.
     if not hasattr(os, "O_NOFOLLOW"):
@@ -228,6 +246,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "generator-exception-context": _preserves_context_thrown_into_a_generator(),
     "coroutine-cancellation": _propagates_a_cancellation_thrown_into_a_coroutine(),
     "audit-events": _delivers_audit_events(),
+    "settrace-safe-audit-hooks": _survives_settrace_inside_audit_hook(),
     "fd-directory": any(Path(view).is_dir() for view in ("/dev/fd", "/proc/self/fd")),
     "fifo": hasattr(os, "mkfifo"),
     "af-unix": hasattr(socket, "AF_UNIX"),
