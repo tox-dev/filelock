@@ -27,6 +27,7 @@ from filelock import (
     BaseFileLock,
     ContextErrorPolicy,
     FileLock,
+    SoftFileLease,
     SoftFileLock,
     SoftFileLockProtocolError,
     StrictSoftFileLock,
@@ -51,7 +52,7 @@ else:  # pragma: <3.11 cover
     from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
 
     from pytest_mock import MockerFixture
 
@@ -797,6 +798,169 @@ def test_lock_can_be_non_thread_local(
 
     assert lock.lock_counter == 2
 
+    lock.release(force=True)
+
+
+_SHARED_THREADS: Final[int] = 8
+# Every wait is bounded so a regression fails as an assertion. A hang would reach pytest-timeout instead, which on
+# Windows can only end the whole session.
+_SHARED_WAIT: Final[float] = 10
+
+
+def _run_shared_threads(target: Callable[[int], None]) -> None:
+    # An exception escaping a worker surfaces as PytestUnhandledThreadExceptionWarning, which filterwarnings fails.
+    threads = [threading.Thread(target=target, args=(idx,), daemon=True) for idx in range(_SHARED_THREADS)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(_SHARED_WAIT)
+    assert not [thread for thread in threads if thread.is_alive()]
+
+
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        pytest.param(FileLock, id="native"),
+        pytest.param(SoftFileLock, id="soft"),
+        pytest.param(SoftFileLease, id="lease"),
+        pytest.param(StrictSoftFileLock, id="strict", marks=pytest.mark.requires_hard_links),
+    ],
+)
+def test_shared_instance_concurrent_acquire_release_leaves_lock_free(
+    tmp_path: Path, lock_type: type[BaseFileLock]
+) -> None:
+    lock = lock_type(tmp_path / "a.lock", thread_local=False)
+    barrier = threading.Barrier(_SHARED_THREADS, timeout=_SHARED_WAIT)
+
+    def work(_: int) -> None:
+        barrier.wait()
+        for _ in range(500):
+            lock.acquire(timeout=_SHARED_WAIT)
+            lock.release()
+
+    _run_shared_threads(work)
+
+    assert (lock.lock_counter, lock.is_locked) == (0, False)
+    with lock_type(tmp_path / "a.lock", timeout=0):
+        pass
+
+
+def test_shared_lease_marker_names_the_lease_token(tmp_path: Path) -> None:
+    marker = tmp_path / "a.lock"
+    lease = SoftFileLease(marker, thread_local=False)
+    barrier = threading.Barrier(_SHARED_THREADS, timeout=_SHARED_WAIT)
+    published: list[tuple[str | None, str]] = []
+
+    def work(idx: int) -> None:
+        for _ in range(50):
+            barrier.wait()
+            lease.acquire(timeout=_SHARED_WAIT)
+            barrier.wait()
+            if idx == 0:
+                published.append((lease.token, marker.read_text()))
+                lease.release(force=True)
+            barrier.wait()
+
+    _run_shared_threads(work)
+
+    assert [(token, content) for token, content in published if f"token={token}\n" not in content] == []
+
+
+def test_shared_instance_released_on_another_thread_frees_the_acquirer(tmp_path: Path) -> None:
+    shared = FileLock(tmp_path / "a.lock", thread_local=False)
+
+    def acquire_fresh() -> None:
+        with FileLock(tmp_path / "a.lock"):
+            pass
+
+    with ThreadPoolExecutor(max_workers=1) as acquirer:
+        acquirer.submit(shared.acquire).result(_SHARED_WAIT)
+        shared.release()
+
+        acquirer.submit(acquire_fresh).result(_SHARED_WAIT)
+
+
+def test_shared_instance_release_behind_a_failed_acquire_is_a_no_op(tmp_path: Path) -> None:
+    releasing = threading.Event()
+
+    def release_from_another_thread() -> None:
+        releasing.set()
+        lock.release()
+
+    releaser = threading.Thread(target=release_from_another_thread, daemon=True)
+
+    def fail_after_starting_release(_: int) -> None:
+        releaser.start()
+        releasing.wait(_SHARED_WAIT)
+        # The releaser saw the lock held and now waits on the transition this acquire still holds; give it time to
+        # get there before the rollback frees the lock under it.
+        releaser.join(0.2)
+        msg = "hook failed"
+        raise RuntimeError(msg)
+
+    lock = FileLock(tmp_path / "a.lock", thread_local=False, on_acquired=fail_after_starting_release)
+    with pytest.raises(RuntimeError, match="hook failed"):
+        lock.acquire(timeout=_SHARED_WAIT)
+    releaser.join(_SHARED_WAIT)
+
+    assert (releaser.is_alive(), lock.lock_counter, lock.is_locked) == (False, 0, False)
+
+
+@pytest.fixture
+def paused_in_transition(tmp_path: Path) -> Generator[FileLock]:
+    inside, resume = threading.Event(), threading.Event()
+
+    def pause(_: int) -> None:
+        inside.set()
+        resume.wait(_SHARED_WAIT)
+
+    lock = FileLock(tmp_path / "a.lock", thread_local=False, on_acquired=pause)
+    holder = threading.Thread(target=lock.acquire, kwargs={"timeout": _SHARED_WAIT}, daemon=True)
+    holder.start()
+    assert inside.wait(_SHARED_WAIT)
+    yield lock
+    resume.set()
+    holder.join(_SHARED_WAIT)
+    lock.release(force=True)
+
+
+@pytest.mark.parametrize("admission", ["timeout", "blocking", "cancel"])
+def test_shared_instance_refuses_entry_during_another_threads_transition(
+    paused_in_transition: FileLock, admission: Literal["timeout", "blocking", "cancel"]
+) -> None:
+    with pytest.raises(Timeout):
+        _acquire_shared_with(paused_in_transition, admission)
+
+    assert paused_in_transition.lock_counter == 1
+
+
+def _acquire_shared_with(lock: FileLock, admission: Literal["timeout", "blocking", "cancel"]) -> None:
+    if admission == "timeout":
+        lock.acquire(timeout=0)
+    elif admission == "blocking":
+        lock.acquire(blocking=False)
+    else:
+        lock.acquire(cancel_check=lambda: True)
+
+
+def test_shared_instance_waiter_enters_once_the_transition_finishes(tmp_path: Path) -> None:
+    inside, resume = threading.Event(), threading.Event()
+
+    def pause(_: int) -> None:
+        inside.set()
+        resume.wait(_SHARED_WAIT)
+
+    lock = FileLock(tmp_path / "a.lock", thread_local=False, on_acquired=pause)
+    holder = threading.Thread(target=lock.acquire, kwargs={"timeout": _SHARED_WAIT}, daemon=True)
+    holder.start()
+    assert inside.wait(_SHARED_WAIT)
+    # Let the waiter spin through several gate slices before the holder's transition ends.
+    threading.Timer(0.1, resume.set).start()
+
+    lock.acquire(timeout=_SHARED_WAIT, poll_interval=0.01)
+    holder.join(_SHARED_WAIT)
+
+    assert (holder.is_alive(), lock.lock_counter) == (False, 2)
     lock.release(force=True)
 
 
