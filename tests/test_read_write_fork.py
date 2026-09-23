@@ -1021,7 +1021,7 @@ def _async_fork_script() -> str:
                 pass
             else:
                 raise AssertionError("async child cleanup released the parent's lock")
-            asyncio.run(lock.release())
+        # Each asyncio.run is a new task and a hold belongs to the task that took it, so close() releases the parent's.
         asyncio.run(lock.close())
         with sqlite3.connect(lock_path) as connection:
             assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)

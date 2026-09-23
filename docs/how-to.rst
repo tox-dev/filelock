@@ -666,6 +666,17 @@ to a thread pool via ``loop.run_in_executor``:
     async with rw.write_lock():
         await update_shared_data()
 
+Each ``asyncio`` task owns its own hold, whichever executor thread runs the SQLite call. Tasks share a read lock, and a
+task asking for the write lock waits until the other holders release, with waiting writers ahead of new readers. A task
+that acquires again nests into its hold. Only the task that acquired may release; a release from another task raises
+:class:`RuntimeError`. :class:`AsyncSoftReadWriteLock <filelock.AsyncSoftReadWriteLock>` follows the same rules.
+
+.. warning::
+
+    On Python 3.10 and 3.11, ``asyncio.wait_for(rw.acquire_write(), 5)`` runs the acquire in a child task, which then
+    owns the hold, so releasing it from the caller raises. Bound the wait with the lock's own ``timeout`` or with
+    ``asyncio.timeout()`` instead.
+
 You can pass a custom executor, and an explicit event loop:
 
 .. code-block:: python

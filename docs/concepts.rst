@@ -656,6 +656,11 @@ implementation. Because Python's :mod:`sqlite3` module has no async API, all blo
 thread pool via ``loop.run_in_executor``. This is the same approach used by :class:`BaseAsyncFileLock
 <filelock.BaseAsyncFileLock>`.
 
+The sync lock tracks its owner per thread, and the executor thread that runs a call does not identify the calling
+task. The async wrappers therefore track ownership per task, as ``aiorwlock`` does. Only a task's first acquire and last
+release reach the sync lock; the wrapper queues or nests the calls in between. Holds on :class:`BaseAsyncFileLock
+<filelock.BaseAsyncFileLock>` belong to the instance instead, so tasks sharing one nest into the same hold.
+
 How does SoftReadWriteLock work on shared filesystems?
 ======================================================
 

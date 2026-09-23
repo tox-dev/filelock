@@ -1,0 +1,2 @@
+:class:`~filelock.AsyncReadWriteLock` and :class:`~filelock.AsyncSoftReadWriteLock` now give each ``asyncio`` task its
+own hold, so tasks sharing one instance no longer enter the write lock together.

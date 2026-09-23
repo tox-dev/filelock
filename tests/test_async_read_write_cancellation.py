@@ -149,9 +149,8 @@ async def test_acquire_cancellation_surfaces_compensation_failure(lock_file: str
         assert cancellation.args == ("cancel acquire",)
         assert_read_write_lock_state(lock_file, "read", available=False)
 
-        await lock.release()
-        assert_read_write_lock_state(lock_file, "read", available=True)
         await lock.close()
+        assert_read_write_lock_state(lock_file, "read", available=True)
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -271,9 +270,13 @@ async def test_cancellation_surfaces_rollback_error(
         mocker, asyncio.get_running_loop(), rollback_started, finish_rollback
     )
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    await lock.acquire_write()
     executor = lock.executor
-    task = asyncio.create_task(lock.release() if operation == "release" else lock.close())
+
+    async def acquire_then_finish() -> None:
+        await lock.acquire_write()
+        await (lock.release() if operation == "release" else lock.close())
+
+    task = asyncio.create_task(acquire_then_finish())
     await rollback_started.wait()
     task.cancel(f"cancel {operation}")
     finish_rollback.set()
@@ -287,8 +290,6 @@ async def test_cancellation_surfaces_rollback_error(
     assert_read_write_lock_state(lock_file, "read", available=False)
     assert executor.submit(int).result(timeout=5) == 0
 
-    if operation == "release":
-        await lock.release()
     await lock.close()
     assert_read_write_lock_state(lock_file, "read", available=True)
     with pytest.raises(RuntimeError):
@@ -336,7 +337,6 @@ async def test_context_cancellation_preserves_body_and_rollback_contexts(
     probe_mode: Literal["read", "write"] = "write" if mode == "read" else "read"
     assert_read_write_lock_state(lock_file, probe_mode, available=False)
 
-    await lock.release()
     await lock.close()
     assert_read_write_lock_state(lock_file, probe_mode, available=True)
 
