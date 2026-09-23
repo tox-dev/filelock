@@ -7,6 +7,17 @@
 .. towncrier release notes start
 
 *******************
+ 4.0.2 (2026-09-23)
+*******************
+
+- Concurrent ``acquire()`` and ``release()`` on a ``thread_local=False`` lock no longer leak the OS lock, close a
+  descriptor twice, drop a lease token, or leave a false deadlock after a cross-thread release (:issue:`744`). :pr:`745`
+- :class:`~filelock.AsyncReadWriteLock` and :class:`~filelock.AsyncSoftReadWriteLock` now give each ``asyncio`` task its
+  own hold, so tasks sharing one instance no longer enter the write lock together. :pr:`746`
+- Correct the async cache example to create its data directory and clarify automatic creation of lock-file parent directories. :pr:`740`
+- Exclude sphinx-llm 1.1.0 from documentation dependencies because its Markdown builder emits unknown-node warnings. :pr:`742`
+
+*******************
  4.0.1 (2026-09-19)
 *******************
 

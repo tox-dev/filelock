@@ -1,2 +1,0 @@
-Concurrent ``acquire()`` and ``release()`` on a ``thread_local=False`` lock no longer leak the OS lock, close a
-descriptor twice, drop a lease token, or leave a false deadlock after a cross-thread release (:issue:`744`).
