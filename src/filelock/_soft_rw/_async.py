@@ -6,7 +6,7 @@ import asyncio
 import functools
 import os
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
 
 from filelock._async import (
     _BackendOutcome,
@@ -14,6 +14,7 @@ from filelock._async import (
     _drain_future,
     _future_result,
     _raise_cancelled_error,
+    _task_owners_for,
     _wait_until_done,
 )
 
@@ -35,9 +36,11 @@ class AsyncSoftReadWriteLock:
     """
     Async wrapper around :class:`SoftReadWriteLock` for ``asyncio`` applications.
 
-    The sync class's blocking filesystem operations run on a thread pool via ``loop.run_in_executor()``. The
-    underlying :class:`SoftReadWriteLock` handles reentrancy, upgrade/downgrade rules, fork handling, the heartbeat
-    and stale eviction, and singleton behavior.
+    The sync class's blocking filesystem operations run on a thread pool via ``loop.run_in_executor()``. Each
+    ``asyncio`` task owns its own hold. Tasks share a read lock, and a task asking for the write lock waits until the
+    other holders release, with waiting writers ahead of new readers. Upgrading or downgrading a held lock raises
+    :class:`RuntimeError`. The underlying :class:`SoftReadWriteLock` handles forks, the heartbeat, and stale eviction.
+    Singleton wrappers share one sync lock and its task holds.
 
     :param lock_file: path to the lock file; the protocol directory lives next to it as ``<lock_file>.rw``
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
@@ -81,6 +84,7 @@ class AsyncSoftReadWriteLock:
             poll_interval=poll_interval,
             on_compromise=on_compromise,
         )
+        self._owners = _task_owners_for(self._lock)
         self._loop = loop
         self._executor = executor
 
@@ -127,7 +131,7 @@ class AsyncSoftReadWriteLock:
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
 
-        :raises RuntimeError: if a write lock is already held on this instance
+        :raises RuntimeError: if the calling task already holds the write lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
@@ -145,7 +149,7 @@ class AsyncSoftReadWriteLock:
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
 
-        :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
+        :raises RuntimeError: if the calling task already holds the read lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
@@ -169,13 +173,13 @@ class AsyncSoftReadWriteLock:
 
         :returns: a proxy usable as an async context manager to release the lock
 
-        :raises RuntimeError: if a write lock is already held, if this instance was invalidated by
+        :raises RuntimeError: if the calling task already holds the write lock, if this instance was invalidated by
             :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
         self._raise_if_inherited()
-        await self._run_acquire(functools.partial(self._lock.acquire_read, timeout, blocking=blocking))
+        await self._acquire("read", timeout, blocking=blocking)
         return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
 
     async def acquire_write(
@@ -192,31 +196,51 @@ class AsyncSoftReadWriteLock:
 
         :returns: a proxy usable as an async context manager to release the lock
 
-        :raises RuntimeError: if a read lock is already held, if a write lock is held by a different thread, if
-            this instance was invalidated by :func:`os.fork`, or if :meth:`close` was called
+        :raises RuntimeError: if the calling task already holds the read lock, if this instance was invalidated by
+            :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
         self._raise_if_inherited()
-        await self._run_acquire(functools.partial(self._lock.acquire_write, timeout, blocking=blocking))
+        await self._acquire("write", timeout, blocking=blocking)
         return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
+
+    async def _acquire(self, mode: Literal["read", "write"], timeout: float | None, *, blocking: bool | None) -> None:
+        blocking = self._lock.blocking if blocking is None else blocking
+        sync_acquire = self._lock.acquire_read if mode == "read" else self._lock.acquire_write
+
+        async def enter(remaining: float) -> None:
+            await self._run_acquire(functools.partial(sync_acquire, remaining, blocking=blocking))
+
+        await self._owners.acquire(
+            mode,
+            timeout=self._lock.timeout if timeout is None else timeout,
+            blocking=blocking,
+            lock_file=self.lock_file,
+            enter=enter,
+        )
 
     async def release(self, *, force: bool = False) -> None:
         """
-        Release one level of the current lock.
+        Release one level of the calling task's hold.
 
-        :param force: if ``True``, release the lock completely regardless of the current lock level
+        The wrapper releases the lock once no task holds it.
 
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``
+        :param force: if ``True``, drop the calling task's whole hold at any nesting level
+
+        :raises RuntimeError: if the calling task holds no lock and *force* is ``False``
 
         """
         if self._creator_pid == os.getpid():
-            await self._run(self._lock.release, force=force)
+            await self._owners.release(
+                force=force, lock_file=self.lock_file, leave=functools.partial(self._run, self._lock.release)
+            )
 
     async def close(self) -> None:
         """Release any held lock and release the underlying filesystem resources. Idempotent."""
         if self._creator_pid == os.getpid():
             await self._run(self._lock.close)
+            self._owners.reset()
 
     def _raise_if_inherited(self) -> None:
         if self._creator_pid != os.getpid():  # pragma: forked child

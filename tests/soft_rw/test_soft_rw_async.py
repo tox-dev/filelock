@@ -189,6 +189,55 @@ async def test_async_leaked_singleton_is_closed_on_teardown(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_async_tasks_sharing_a_lock_take_the_write_lock_one_at_a_time(tmp_path: Path) -> None:
+    lock = _make(tmp_path)
+    inside = peak = 0
+
+    async def write() -> None:
+        nonlocal inside, peak
+        async with lock.write_lock(timeout=10):
+            inside += 1
+            peak = max(peak, inside)
+            await asyncio.sleep(0.001)
+            inside -= 1
+
+    await asyncio.gather(*(write() for _ in range(10)))
+    await lock.close()
+
+    assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_async_tasks_sharing_a_lock_hold_the_read_lock_together(tmp_path: Path) -> None:
+    lock = _make(tmp_path)
+    readers = 0
+    both_inside = asyncio.Event()
+
+    async def read() -> None:
+        nonlocal readers
+        async with lock.read_lock(timeout=10):
+            readers += 1
+            if readers == 2:
+                both_inside.set()
+            await asyncio.wait_for(both_inside.wait(), 10)
+
+    await asyncio.gather(read(), read())
+    await lock.close()
+
+    assert readers == 2
+
+
+@pytest.mark.asyncio
+async def test_async_release_from_a_task_that_does_not_hold_raises(tmp_path: Path) -> None:
+    lock = _make(tmp_path)
+    await lock.acquire_write(timeout=5)
+    with pytest.raises(RuntimeError, match="not held by this task"):
+        await asyncio.create_task(lock.release())
+    await lock.release()
+    await lock.close()
+
+
+@pytest.mark.asyncio
 async def test_async_writer_times_out_behind_reader(tmp_path: Path) -> None:
     reader = _make(tmp_path)
     await reader.acquire_read(timeout=2)
@@ -276,9 +325,8 @@ async def test_async_acquire_cancellation_surfaces_a_failed_release(tmp_path: Pa
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_release_cancellation_drains_the_release(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _make(tmp_path)
-    await lock.acquire_write(timeout=5)
     gate = _Gate(mocker, "release")
-    task = asyncio.create_task(lock.release())
+    task = asyncio.create_task(_acquire_write_then_release(lock))
     await gate.started.wait()
     task.cancel("cancel release")
     # Resume only after the cancellation has had a chance to propagate, so the cancellation reaching the caller
@@ -297,10 +345,9 @@ async def test_async_release_cancellation_drains_the_release(tmp_path: Path, moc
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_release_cancellation_surfaces_a_failed_release(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _make(tmp_path)
-    await lock.acquire_write(timeout=5)
     release_error = RuntimeError("release failed")
     gate = _Gate(mocker, "release", fail_with=release_error)
-    task = asyncio.create_task(lock.release())
+    task = asyncio.create_task(_acquire_write_then_release(lock))
     await gate.started.wait()
     task.cancel("cancel release")
     gate.resume()
@@ -311,3 +358,9 @@ async def test_async_release_cancellation_surfaces_a_failed_release(tmp_path: Pa
     assert isinstance(release_error.__context__, asyncio.CancelledError)
     mocker.stopall()
     await lock.close()
+
+
+async def _acquire_write_then_release(lock: AsyncSoftReadWriteLock) -> None:
+    # A hold belongs to the task that took it, so the task whose release gets canceled has to acquire first.
+    await lock.acquire_write(timeout=5)
+    await lock.release()

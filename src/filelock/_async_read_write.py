@@ -8,7 +8,7 @@ import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
 
 from ._api import (
     _append_exception_context,
@@ -22,6 +22,7 @@ from ._async import (
     _drain_future,
     _future_result,
     _raise_cancelled_error,
+    _task_owners_for,
     _wait_until_done,
 )
 from ._read_write import ReadWriteLock
@@ -42,8 +43,10 @@ class AsyncReadWriteLock:
     Async wrapper around :class:`ReadWriteLock` for use in ``asyncio`` applications.
 
     This wrapper dispatches every blocking SQLite operation to a thread pool via ``loop.run_in_executor()`` because
-    Python's :mod:`sqlite3` module has no async API. It delegates reentrancy, upgrade/downgrade rules, and singleton
-    behavior to the underlying :class:`ReadWriteLock`.
+    Python's :mod:`sqlite3` module has no async API. Each ``asyncio`` task owns its own hold. Tasks share a read lock,
+    and a task asking for the write lock waits until the other holders release, with waiting writers ahead of new
+    readers. As with :class:`ReadWriteLock`, upgrading or downgrading a held lock raises :class:`RuntimeError`.
+    Singleton wrappers over one path share their task holds.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
@@ -76,6 +79,7 @@ class AsyncReadWriteLock:
         _register_fork_object(self)
         with _fork_transition():
             self._lock = ReadWriteLock(lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
+            self._owners = _task_owners_for(self._lock)
             self._loop = loop
             self._owns_executor = executor is None
             self._executor = executor or ThreadPoolExecutor(max_workers=1)
@@ -177,12 +181,12 @@ class AsyncReadWriteLock:
 
         :returns: a proxy that can be used as an async context manager to release the lock
 
-        :raises RuntimeError: if a write lock is already held on this instance
+        :raises RuntimeError: if the calling task already holds the write lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
         self._raise_if_unusable()
-        await self._run_acquire(functools.partial(self._lock.acquire_read, timeout, blocking=blocking))
+        await self._acquire("read", timeout, blocking=blocking)
         return AsyncAcquireReadWriteReturnProxy(lock=self)
 
     async def acquire_write(self, timeout: float = -1, *, blocking: bool = True) -> AsyncAcquireReadWriteReturnProxy:
@@ -196,29 +200,39 @@ class AsyncReadWriteLock:
 
         :returns: a proxy that can be used as an async context manager to release the lock
 
-        :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
+        :raises RuntimeError: if the calling task already holds the read lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
         self._raise_if_unusable()
-        await self._run_acquire(functools.partial(self._lock.acquire_write, timeout, blocking=blocking))
+        await self._acquire("write", timeout, blocking=blocking)
         return AsyncAcquireReadWriteReturnProxy(lock=self)
+
+    async def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> None:
+        sync_acquire = self._lock.acquire_read if mode == "read" else self._lock.acquire_write
+
+        async def enter(remaining: float) -> None:
+            await self._run_acquire(functools.partial(sync_acquire, remaining, blocking=blocking))
+
+        await self._owners.acquire(mode, timeout=timeout, blocking=blocking, lock_file=self.lock_file, enter=enter)
 
     async def release(self, *, force: bool = False) -> None:
         """
-        Release one level of the current lock.
+        Release one level of the calling task's hold.
 
-        See :meth:`ReadWriteLock.release` for full semantics.
+        The wrapper releases the database lock once no task holds it.
 
-        :param force: if ``True``, release the lock completely regardless of the current lock level
+        :param force: if ``True``, drop the calling task's whole hold at any nesting level
 
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``
+        :raises RuntimeError: if the calling task holds no lock and *force* is ``False``
 
         """
         _ensure_current_process()
         if self._inherited:  # pragma: needs fork
             return
-        await self._run(self._lock.release, force=force)
+        await self._owners.release(
+            force=force, lock_file=self.lock_file, leave=functools.partial(self._run, self._lock.release)
+        )
 
     async def close(self) -> None:
         """
@@ -241,10 +255,12 @@ class AsyncReadWriteLock:
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             self._closed = True
+            self._owners.reset()
             self._shutdown_owned_executor()
             raise
         _future_result(close_future)
         self._closed = True
+        self._owners.reset()
         # Wait for the worker to exit rather than letting it drain in the background: a caller that forks right
         # after closing deserves a single-threaded process, and os.fork warns about any surviving thread.
         if self._owns_executor:
