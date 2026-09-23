@@ -7,6 +7,15 @@
 .. towncrier release notes start
 
 *******************
+ 4.0.3 (2026-09-23)
+*******************
+
+- Importing filelock on CPython 3.10 or 3.11 no longer makes new threads fail with ``RuntimeError: Cannot install a trace
+  function while another trace function is being installed`` under coverage or a debugger. filelock skips its fork-safety
+  audit hook there, so forking from inside a thread's own lock-state transition no longer raises immediately on those
+  versions. :pr:`747`
+
+*******************
  4.0.2 (2026-09-23)
 *******************
 
