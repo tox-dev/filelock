@@ -537,9 +537,11 @@ descriptor and its SQLite memory per active lock. CPython 3.10 and 3.11 need an 
 deallocator from closing the handle; later versions suppress finalization through the connection subclass. Both paths
 avoid the ``sqlite3_close()`` call that SQLite forbids after a fork.
 
-filelock normally rejects ``fork()`` from a callback that runs during a SQLite operation. If another audit hook blocks
-that guard from registering, a child created at this boundary exits with status 70 before it can touch the inherited
-connection; the parent operation continues.
+filelock normally rejects ``fork()`` from a callback that runs during a SQLite operation. The guard is an audit hook,
+and CPython 3.10 and 3.11 fail a concurrent ``sys.settrace`` call while any Python audit hook runs, which coverage and
+debuggers make on every thread start, so filelock skips it there. Without the guard, whether skipped or blocked by
+another audit hook, a child created at this boundary exits with status 70 before it can touch the inherited connection;
+the parent operation continues.
 
 A native or signal callback that forks while its thread is executing inside SQLite can resume in inherited C state;
 filelock cannot make that operation safe.

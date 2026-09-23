@@ -1569,12 +1569,16 @@ _DESCRIPTOR_TOKENS: Final[count[int]] = count()
 _TRANSITION_TOKENS: Final[count[int]] = count()
 _FORK_STATE: Final = _ForkState()
 _FORK_AUDIT_EVENTS: Final[frozenset[str]] = frozenset({"os.fork", "os.forkpty"})
+# CPython before 3.12 guards sys.settrace with one process-wide flag that stays set while audit hooks run, so a thread
+# switch inside a Python hook makes a concurrent settrace raise. Coverage and debuggers call it on every thread start.
+_SETTRACE_SURVIVES_AUDIT_HOOKS: Final[bool] = sys.implementation.name != "cpython" or sys.version_info >= (3, 12)
 
 
 def _register_fork_hooks() -> None:
     if _REGISTER_AT_FORK is None:
         return  # pragma: lacks fork
-    sys.addaudithook(_audit_fork_safety)  # pragma: needs fork
+    if _SETTRACE_SURVIVES_AUDIT_HOOKS:  # pragma: needs fork  # pragma: needs settrace-safe-audit-hooks
+        sys.addaudithook(_audit_fork_safety)
     _REGISTER_AT_FORK(  # pragma: needs fork
         before=_pin_fork_objects,
         after_in_parent=_resume_parent_after_fork,
