@@ -634,10 +634,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     #: protocol state in the marker and reject it.
     _on_acquired_supported: bool = True
 
-    #: Whether a shared instance serializes its physical acquire and release behind one gate. A backend that publishes
-    #: several files per owner needs it; a single-file backend is atomic and leaves it off to skip the gate entirely.
-    _serialize_transitions: bool = False
-
     #: Ceiling in seconds on the jittered backoff between contended acquisition retries. ``0`` keeps the fixed
     #: poll cadence; a multi-file backend sets it so contending processes desynchronize instead of livelocking.
     _poll_backoff_cap: float = 0.0
@@ -1095,21 +1091,21 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         poll_interval: float,
         start_time: float,
     ) -> Generator[None]:
-        # One thread at a time drives the physical transition of a shared instance. A protocol that publishes several
-        # files per owner leaves a half-built claim visible otherwise, and a second thread would read it as a holder.
-        # Only such a backend opts in; a single-file backend and a thread-local context each need no gate.
-        if not self._serialize_transitions or self._is_thread_local:
+        # One thread at a time drives the physical transition of a shared instance: its counter, descriptor and claim
+        # state are plain attributes every thread reads and writes, so an unserialized loser clears the winner's
+        # descriptor or double-closes it. Waiting in slices keeps cancel_check and the timeout live. A thread-local
+        # context is never shared, so it skips the gate.
+        if self._is_thread_local:
             yield
             return
-        while not self._transition_lock.acquire(blocking=False):  # pragma: needs hard-link
+        while not self._transition_lock.acquire(timeout=poll_interval if blocking else 0):
             if not blocking or (cancel_check is not None and cancel_check()):
                 raise Timeout(self.lock_file)
             if timeout >= 0 and time.perf_counter() - start_time >= timeout:
                 raise Timeout(self.lock_file)
-            time.sleep(poll_interval)
-        try:  # pragma: needs hard-link
+        try:
             yield
-        finally:  # pragma: needs hard-link
+        finally:
             self._transition_lock.release()
 
     def release(self, force: bool = False) -> None:  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
@@ -1121,9 +1117,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         """
         # A shared instance releases under the same gate its acquisition ran through, so a thread entering the lock
-        # never observes a partially torn-down owner.
-        serialize = self._serialize_transitions and not self._is_thread_local
-        with self._transition_lock if serialize else contextlib.nullcontext():
+        # never observes a partially torn-down owner. Only an acquirer that found the lock free holds the gate for
+        # long, so an unheld lock returns without waiting behind it.
+        if self._context.lock_file_fd is None:
+            return
+        with contextlib.nullcontext() if self._is_thread_local else self._transition_lock:
             if self._creator_pid != os.getpid() or not self.is_locked:
                 return
             if not force and self._context.lock_counter > 1:
@@ -1177,6 +1175,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.pending_lock_file_fd_identity = None
         self._context.lock_counter = 0
         self._context.lock_file_key = None
+        self._context.lock_file_registry = None
 
     def _descriptors_for_fork(self) -> tuple[tuple[int, tuple[int, int] | None], ...]:  # pragma: needs fork
         descriptors: list[tuple[int, tuple[int, int] | None]] = []
@@ -1386,14 +1385,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             key = self._registry_key(canonical)
             # The holder scope is resolved once at commit so a later release from another flow drops the right entry.
             self._context.lock_file_key = key
+            # A shared instance may be released from another thread, which must clear the entry in the acquirer's
+            # registry: the releaser's own thread-local registry never held it.
+            self._context.lock_file_registry = _registry.held
             _registry.held[key] = id(self)
 
     def _drop_registry_entry(self) -> None:
         """Forget the key owned by this hold without resolving a mutable path again."""
-        key = self._context.lock_file_key
-        self._context.lock_file_key = None
-        if key is not None:
-            _registry.held.pop(key, None)
+        key, registry = self._context.lock_file_key, self._context.lock_file_registry
+        self._context.lock_file_key = self._context.lock_file_registry = None
+        if registry is not None:
+            registry.pop(key, None)
 
     def _commit_release(self) -> None:
         """Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry."""
@@ -1503,6 +1505,9 @@ class FileLockContext:
 
     #: Canonical registry key captured when the first physical acquisition commits.
     lock_file_key: Hashable | None = None
+
+    #: The acquiring thread's deadlock registry holding :attr:`lock_file_key`.
+    lock_file_registry: dict[Hashable, int] | None = None
 
     #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
     owner_claim_paths: tuple[str, ...] = ()

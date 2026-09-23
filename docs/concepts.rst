@@ -881,8 +881,12 @@ each thread gets its own context via ``threading.local``. This means:
 
 When ``thread_local=False``, all threads share the same context, including
 configuration values. This is useful for objects passed between threads or
-for cases where you want a property setter to affect all threads, but it
-requires external coordination to avoid lock-counter mismatches.
+for cases where you want a property setter to affect all threads. The shared
+instance runs one ``acquire()`` or ``release()`` at a time, so threads calling
+them concurrently, with or without the GIL, keep the counter and the held lock
+consistent. It is still a single owner: a second thread's ``acquire()`` nests
+into the hold rather than waiting for it, and any thread's ``release()``
+counts against the shared counter, so balancing them is up to the caller.
 
 Async locks default to ``thread_local=False`` because the thread that calls ``acquire()`` (via
 ``run_in_executor``) may differ from the thread that calls ``release()``. Using ``thread_local=True`` with
