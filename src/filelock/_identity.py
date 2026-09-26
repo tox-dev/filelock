@@ -12,16 +12,8 @@ from typing import Final
 _HOST_NAME_LIMIT: Final[int] = 253
 #: The bytes those formats carry verbatim: printable non-space ASCII, less the ``?`` reserved for the escape.
 _HOST_NAME_VERBATIM: Final[frozenset[int]] = frozenset(range(0x21, 0x7F)) - {ord("?")}
-#: Characters a truncated name gives up to a digest of what it dropped, so two long names cannot fold together.
+#: The characters at the end of an over-long name that carry a digest of the part cut off.
 _HOST_NAME_DIGEST_LEN: Final[int] = 8
-
-
-def _escaped_host_name() -> str:
-    """The hostname escaped into the marker grammar, without regard to the field limit."""
-    return "".join(
-        chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
-        for byte in socket.gethostname().encode("utf-8", "surrogateescape")
-    )
 
 
 def host_name() -> str:
@@ -35,17 +27,16 @@ def host_name() -> str:
     out-of-grammar byte as ``?<hex>`` leaves a real name untouched and still keeps two hosts apart, which
     :func:`owner_is_stale` relies on to refuse to probe a foreign PID.
 
-    A name that overruns the limit is cut short, but the tail it drops is folded into a digest, because cutting alone
-    maps every name sharing the first 253 characters onto one identity, and :func:`owner_is_stale` would then take a
-    live foreign holder's marker for its own and probe a local PID against it.
+    An over-long name ends in a digest of the part cut to fit the limit. A bare cut gives every name that shares the
+    kept prefix one identity, and :func:`owner_is_stale` would then probe a local PID for another host's holder.
     """
-    escaped = _escaped_host_name()
-    if len(escaped) <= _HOST_NAME_LIMIT:
-        name = escaped
-    else:
+    name = "".join(
+        chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
+        for byte in socket.gethostname().encode("utf-8", "surrogateescape")
+    )
+    if len(name) > _HOST_NAME_LIMIT:
         keep = _HOST_NAME_LIMIT - _HOST_NAME_DIGEST_LEN - 1
-        digest = hashlib.sha256(escaped[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]
-        name = f"{escaped[:keep]}-{digest}"
+        name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
     # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
     return name or "?"
 
