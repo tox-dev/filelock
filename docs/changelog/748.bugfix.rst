@@ -1,0 +1,1 @@
+Fold a truncated hostname into a digest so two hostnames that share the first 253 characters can no longer be treated as the same host by ``owner_is_stale``, which could let a live foreign holder's lock be reclaimed.
