@@ -29,8 +29,8 @@ _NEEDS_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
         pytest.param("wörks", "w?c3?b6rks", id="non-ascii"),
         pytest.param("who?", "who?3f", id="escape-character"),
         pytest.param("b\udcffd", "b?ffd", id="undecodable-byte"),
-        pytest.param("x" * 300, "x" * 253, id="over-long"),
-        pytest.param("ä" * 200, "?c3?a4" * 42, id="over-long-escaped"),
+        pytest.param("x" * 300, "x" * 244 + "-04c26261", id="over-long"),
+        pytest.param("ä" * 200, "?c3?a4" * 40 + "?c3?-de6b44df", id="over-long-escaped"),
         pytest.param("", "?", id="empty"),
     ],
 )
