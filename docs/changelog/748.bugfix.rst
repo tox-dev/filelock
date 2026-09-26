@@ -1,2 +1,0 @@
-Hostnames that still differ after their first 253 escaped characters now publish distinct owners, so a soft lock no
-longer takes another such host's live holder for its own and reclaims its marker.

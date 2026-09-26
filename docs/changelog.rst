@@ -7,6 +7,13 @@
 .. towncrier release notes start
 
 *******************
+ 4.0.4 (2026-09-26)
+*******************
+
+- Hostnames that still differ after their first 253 escaped characters now publish distinct owners, so a soft lock no
+  longer takes another such host's live holder for its own and reclaims its marker. :pr:`748`
+
+*******************
  4.0.3 (2026-09-23)
 *******************
 
