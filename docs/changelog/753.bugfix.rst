@@ -1,3 +1,2 @@
-The `file-mode` capability probe now checks that a `0o000` file is actually unreadable instead of only checking that
-`chmod` reads the bits back. A privileged user stores the bits and ignores them, so the three tests that stage an
-unreadable claim, marker or folder now skip on such a runner rather than fail there.
+Skip access-denial checks when the process can read mode-``0o000`` files. Keep mode-bit checks enabled for privileged
+processes on filesystems that support POSIX permissions.

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from tests.capability_marks import NEEDS_FILE_MODE
+from tests.capability_marks import NEEDS_FILE_PERMISSIONS
 
 if sys.version_info >= (3, 11):
     from builtins import ExceptionGroup  # pragma: >=3.11 cover
@@ -285,7 +285,7 @@ def test_strict_soft_rejects_non_directory_coordination_path(tmp_path: Path) -> 
         StrictSoftFileLock(lock_path).acquire()
 
 
-@NEEDS_FILE_MODE  # pragma: needs file-mode
+@NEEDS_FILE_PERMISSIONS  # pragma: needs file-permissions
 def test_strict_soft_unreadable_claim_fails_closed(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)

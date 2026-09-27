@@ -214,22 +214,31 @@ def _reports_object_tracebacks() -> bool:
     return True
 
 
-def _enforces_file_mode() -> bool:
-    # A chmod that reads back only proves the filesystem stores the bits, not that anything obeys them, so ask the
-    # question the tests actually ask: does a mode with every bit cleared actually stop this process from reading? A
-    # privileged user bypasses the check (root, and any uid the CAP_DAC_OVERRIDE capability covers), so the probe
-    # answers False there and the tests that stage an unreadable file or folder skip instead of failing for a reason
-    # that has nothing to do with the lock.
+def _supports_file_mode() -> bool:
+    with _unreadable_file() as probe:
+        return probe.stat().st_mode & 0o777 == 0
+
+
+def _enforces_file_permissions() -> bool:
+    # Privileged processes can retain mode bits while bypassing access checks.
+    with _unreadable_file() as probe:
+        try:
+            probe.read_bytes()
+        except PermissionError:
+            return True
+        return False
+
+
+@contextmanager
+def _unreadable_file() -> Iterator[Path]:
     with tempfile.TemporaryDirectory() as directory:
-        probe = Path(directory, "probe")
+        probe: Final[Path] = Path(directory, "probe")
         probe.touch()
         probe.chmod(0)
         try:
-            probe.read_bytes()
-        except OSError:
-            return True
-        else:
-            return False
+            yield probe
+        finally:
+            probe.chmod(0o600)
 
 
 #: Capability -> whether this runtime provides it. Tests gate their skipif on this same mapping.
@@ -246,7 +255,8 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "fcntl": find_spec("fcntl") is not None,
     "unlink-open-file": _supports_unlinking_an_open_file(),
     "posix-signals": hasattr(signal, "SIGKILL"),
-    "file-mode": _enforces_file_mode(),
+    "file-mode": _supports_file_mode(),
+    "file-permissions": _enforces_file_permissions(),
     "prompt-finalization": _finalizes_on_last_reference(),
     "collected-finalization": _finalizes_on_collection(),
     "class-collection": _collects_classes(),
