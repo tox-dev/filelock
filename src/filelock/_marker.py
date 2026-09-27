@@ -3,11 +3,11 @@ from __future__ import annotations
 import math
 import os
 from contextlib import suppress
-from typing import Final, Literal, NamedTuple, cast
+from typing import Final, Literal, NamedTuple
 
-from ._identity import host_name, process_start_token
+from ._identity import host_name, owner_is_stale, process_start_token
 from ._soft import SoftFileLock, _read_lock_file
-from ._util import write_all
+from ._util import break_lock_file, write_all
 
 #: Protocol 1 is the legacy ``<pid>\n<hostname>\n[<start_token>\n]`` marker that :class:`SoftFileLock` still writes.
 #: Protocol 2 carries the owner mode and the lease claim. A protocol 1 reader treats a protocol 2 marker as malformed
@@ -16,34 +16,14 @@ _PROTOCOL: Final[str] = "filelock/2"
 
 _MAX_PID: Final[int] = 2**31 - 1
 
-#: The modes this version publishes. A marker naming anything else was written by a filelock whose contract this
-#: version does not implement, so it parses as ``unknown`` rather than as a contract it would honor.
-_PUBLISHED_MODES: Final[frozenset[str]] = frozenset({"lease", "exclusive"})
-
-#: ``lease`` is published only by a lock whose holder agreed to be superseded once its duration lapses, so a lease
-#: contender may reclaim it by age. ``exclusive`` is published by a lock that grants no such consent: the marker names a
-#: live owner that no contender may age out, which is what makes it the safe default for the base marker lock.
-#: ``unknown`` is never published: it names a mode some other filelock wrote that this version cannot interpret. Such a
-#: record still identifies a live owner, so it is parsed rather than read as malformed and aged out.
+#: Preserve unknown contracts so contenders cannot mistake them for malformed, reclaimable markers.
 OwnerMode = Literal["lease", "exclusive", "unknown"]
-
-
-class OwnerRecord(NamedTuple):
-    """The owner published in a protocol 2 marker."""
-
-    pid: int
-    hostname: str
-    mode: OwnerMode
-    token: str | None = None
-    lease_duration: float | None = None
-    start: int | None = None
 
 
 class MarkerSoftFileLock(SoftFileLock):
     """An existence lock whose marker carries a protocol 2 owner record."""
 
-    #: Filled in by each mode so the published record states the contract its holder acquired under. The base class is
-    #: an existence lock whose holder never agreed to be superseded, so it defaults to the non-reclaimable contract.
+    #: Age-based expiry requires a lease contract; an exclusive holder grants none.
     _owner_mode: OwnerMode = "exclusive"
 
     @property
@@ -86,6 +66,15 @@ class MarkerSoftFileLock(SoftFileLock):
         """
         self.break_lock()
 
+    def _try_break_stale_lock(self) -> None:
+        with suppress(OSError, ValueError):
+            snapshot: Final[tuple[str | None, float, int]] = _read_lock_file(self.lock_file)
+            owner: Final[OwnerRecord | None]
+            if (owner := parse_marker(snapshot[0])) is None:
+                super()._try_break_stale_lock()
+            elif owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
+                break_lock_file(self.lock_file, *snapshot[1:])
+
     def _read_owner(self) -> OwnerRecord | None:
         with suppress(OSError, ValueError):
             return parse_marker(_read_lock_file(self.lock_file)[0])
@@ -101,6 +90,17 @@ class MarkerSoftFileLock(SoftFileLock):
             mode=self._owner_mode,
             start=process_start_token(os.getpid()),
         )
+
+
+class OwnerRecord(NamedTuple):
+    """Keep optional metadata when reading unknown lock modes."""
+
+    pid: int
+    hostname: str
+    mode: OwnerMode
+    token: str | None = None
+    lease_duration: float | None = None
+    start: int | None = None
 
 
 def encode_marker(record: OwnerRecord) -> bytes:
@@ -135,7 +135,7 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
     # A record naming no mode at all states no contract and stays malformed.
     if (published := fields.get("mode")) is None:
         return None
-    mode: OwnerMode = cast("OwnerMode", published) if published in _PUBLISHED_MODES else "unknown"
+    mode: Final[OwnerMode] = published if published in {"lease", "exclusive"} else "unknown"
     hostname = fields.get("host")
     if not hostname or "pid" not in fields:
         return None
