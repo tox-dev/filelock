@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import os
 import time
+from multiprocessing import get_context
 from typing import TYPE_CHECKING
 
 import pytest
 
-from filelock import SoftFileLease, Timeout
+from filelock import MarkerSoftFileLock, OwnerRecord, SoftFileLease, Timeout
 from filelock._identity import process_start_token
-from filelock._marker import OwnerRecord, encode_marker
+from filelock._marker import encode_marker
+from tests.process_helpers import cleanup_processes
 
 if TYPE_CHECKING:
+    from multiprocessing.process import BaseProcess
     from pathlib import Path
+    from typing import Final
 
     from pytest_mock import MockerFixture
 
@@ -158,3 +162,68 @@ def test_marker_force_break_removes_the_marker(tmp_path: Path) -> None:
     SoftFileLease(marker).force_break()
 
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("acquire", [pytest.param(True, id="acquire"), pytest.param(False, id="context")])
+def test_marker_lock_publishes_exclusive(marker: Path, *, acquire: bool) -> None:
+    lock: Final[MarkerSoftFileLock] = MarkerSoftFileLock(marker)
+    with lock.acquire() if acquire else lock:
+        owner: Final[OwnerRecord | None]
+        assert (owner := MarkerSoftFileLock(lock.lock_file).owner) is not None
+        assert (lock.is_locked, lock.is_lock_held_by_us, lock.pid, owner.mode) == (True, True, os.getpid(), "exclusive")
+    assert (lock.is_locked, lock.pid, lock.owner) == (False, None, None)
+
+
+@pytest.mark.parametrize(
+    "contender_type",
+    [pytest.param(MarkerSoftFileLock, id="marker"), pytest.param(SoftFileLease, id="lease")],
+)
+def test_marker_lock_excludes_contenders(marker: Path, contender_type: type[MarkerSoftFileLock]) -> None:
+    with MarkerSoftFileLock(marker):
+        os.utime(marker, (0, 0))
+        with pytest.raises(Timeout):
+            contender_type(marker, timeout=0.1).acquire()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("exclusive", id="exclusive"),
+        pytest.param("lease", id="lease"),
+        pytest.param("future", id="unknown"),
+    ],
+)
+def test_marker_lock_preserves_live_records(marker: Path, mode: str) -> None:
+    with MarkerSoftFileLock(marker):
+        record: Final[str] = marker.read_text(encoding="utf-8").replace("mode=exclusive", f"mode={mode}")
+    marker.write_text(record + "token=t\nduration=1\n", encoding="utf-8")
+    os.utime(marker, (0, 0))
+    with pytest.raises(Timeout):
+        MarkerSoftFileLock(marker, timeout=0.1).acquire()
+
+
+def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
+    process: Final[BaseProcess] = get_context("spawn").Process(target=_leave_marker, args=(marker,))
+    with cleanup_processes([process]):
+        process.start()
+        process.join(timeout=5)
+        assert process.exitcode == 0
+    with MarkerSoftFileLock(marker, timeout=1) as lock:
+        assert lock.pid == os.getpid()
+
+
+def test_marker_lock_reclaims_malformed_record(marker: Path) -> None:
+    marker.write_text("broken", encoding="utf-8")
+    os.utime(marker, (0, 0))
+    with MarkerSoftFileLock(marker, timeout=1) as lock:
+        assert lock.pid == os.getpid()
+
+
+@pytest.fixture
+def marker(tmp_path: Path) -> Path:
+    return tmp_path / "a"
+
+
+def _leave_marker(marker: Path) -> None:
+    with MarkerSoftFileLock(marker):
+        os._exit(0)
