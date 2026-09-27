@@ -1,0 +1,2 @@
+Reject negative timeouts other than ``-1`` in blocking ``AsyncReadWriteLock`` and ``AsyncSoftReadWriteLock`` acquisitions.
+Keep ``-1`` as an unlimited wait and ignore timeouts when ``blocking=False``.

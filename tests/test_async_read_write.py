@@ -5,6 +5,7 @@ import gc
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
@@ -503,6 +504,45 @@ async def test_async_acquire_respects_settings(
         with pytest.raises(Timeout):
             await asyncio.create_task(acquire(timeout=call_timeout, blocking=call_blocking))
         assert minimum <= time.perf_counter() - started < 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    "timeout",
+    [pytest.param(-2, id="integer"), pytest.param(-0.5, id="fraction"), pytest.param(float("-inf"), id="infinite")],
+)
+@pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
+@pytest.mark.parametrize("contended", [pytest.param(True, id="contended"), pytest.param(False, id="free")])
+async def test_async_acquire_rejects_negative_timeout(
+    lock_file: str, mode: Literal["read", "write"], timeout: float, *, configured: bool, contended: bool
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file, timeout=timeout if configured else -1, is_singleton=False)
+    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    try:
+        async with AsyncExitStack() as stack:
+            if contended:
+                await stack.enter_async_context(lock.write_lock(timeout=0))
+            with pytest.raises(ValueError, match="timeout must be a non-negative number or -1"):
+                await asyncio.create_task(acquire() if configured else acquire(timeout=timeout))
+    finally:
+        await lock.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
+async def test_async_nonblocking_ignores_negative_timeout(
+    lock_file: str, mode: Literal["read", "write"], *, configured: bool
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file, timeout=-2, blocking=not configured, is_singleton=False)
+    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    try:
+        async with await (acquire() if configured else acquire(timeout=-2, blocking=False)):
+            with pytest.raises(Timeout):
+                await asyncio.create_task(lock.acquire_write(timeout=-2, blocking=False))
+    finally:
+        await lock.close()
 
 
 @pytest_asyncio.fixture(loop_scope="function")  # Join shutdown workers before later fork tests.

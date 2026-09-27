@@ -142,6 +142,9 @@ class _TaskOwners:
         enter: Callable[[float], Awaitable[None]],
     ) -> None:
         task = _current_task()
+        if blocking and timeout < 0 and timeout != -1:
+            msg: Final = "timeout must be a non-negative number or -1"
+            raise ValueError(msg)
         deadline = None if timeout < 0 else time.perf_counter() + timeout
         waiting_writer = False
         try:
