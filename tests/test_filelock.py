@@ -40,7 +40,7 @@ from filelock import (
 from filelock._api import _append_exception_context, _raise_grouped_errors, _registry
 from tests.capability_marks import (
     NEEDS_FCNTL,
-    NEEDS_FILE_MODE,
+    NEEDS_FILE_PERMISSIONS,
     NEEDS_PARENT_SYMLINK_COLLAPSE,
     NEEDS_PROMPT_FINALIZATION,
     NEEDS_SYMLINK,
@@ -98,17 +98,13 @@ def make_ro(path: Path) -> Iterator[None]:
 
 
 @pytest.fixture
-def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:  # pragma: needs file-mode
+def tmp_path_ro(tmp_path: Path) -> Iterator[Path]:  # pragma: needs file-permissions
     with make_ro(tmp_path):
         yield tmp_path
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-@NEEDS_FILE_MODE  # pragma: needs file-mode
-@pytest.mark.skipif(
-    sys.platform != "win32" and os.geteuid() == 0,
-    reason="Cannot make a read only file (that the current user: root can't read)",
-)
+@NEEDS_FILE_PERMISSIONS  # pragma: needs file-permissions
 def test_ro_folder(lock_type: type[BaseFileLock], tmp_path_ro: Path) -> None:
     lock = lock_type(str(tmp_path_ro / "a"))
     with pytest.raises(PermissionError, match="Permission denied"):

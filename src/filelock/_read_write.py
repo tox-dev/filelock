@@ -327,15 +327,16 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             validation_connection = self._open_connection(sqlite_timeout=5.0)
             validation_connection.close()
 
-    def acquire_read(self, timeout: float = -1, *, blocking: bool = True) -> AcquireReturnProxy:
+    def acquire_read(self, timeout: float | None = None, *, blocking: bool | None = None) -> AcquireReturnProxy:
         """
         Acquire a shared read lock.
 
         If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire a
         read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed).
 
-        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
+            ``None`` uses the instance setting
 
         :returns: a proxy that can be used as a context manager to release the lock
 
@@ -343,9 +344,13 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
-        return self._acquire("read", timeout, blocking=blocking)
+        return self._acquire(
+            "read",
+            self.timeout if timeout is None else timeout,
+            blocking=self.blocking if blocking is None else blocking,
+        )
 
-    def acquire_write(self, timeout: float = -1, *, blocking: bool = True) -> AcquireReturnProxy:
+    def acquire_write(self, timeout: float | None = None, *, blocking: bool | None = None) -> AcquireReturnProxy:
         """
         Acquire an exclusive write lock.
 
@@ -354,8 +359,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
         :class:`RuntimeError`.
 
-        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
+            ``None`` uses the instance setting
 
         :returns: a proxy that can be used as a context manager to release the lock
 
@@ -363,7 +369,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
 
         """
-        return self._acquire("write", timeout, blocking=blocking)
+        return self._acquire(
+            "write",
+            self.timeout if timeout is None else timeout,
+            blocking=self.blocking if blocking is None else blocking,
+        )
 
     @contextmanager
     def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
@@ -376,10 +386,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
 
         """
-        if timeout is None:
-            timeout = self.timeout
-        if blocking is None:
-            blocking = self.blocking
         self.acquire_read(timeout, blocking=blocking)
         try:
             yield
@@ -397,10 +403,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
 
         """
-        if timeout is None:
-            timeout = self.timeout
-        if blocking is None:
-            blocking = self.blocking
         self.acquire_write(timeout, blocking=blocking)
         try:
             yield

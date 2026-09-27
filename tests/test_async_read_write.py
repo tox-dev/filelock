@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, XFAIL_WITHOUT_COROUTINE_CANCELLATION
+from tests.read_write_helpers import ACQUIRE_SETTINGS
 
 pytest.importorskip("sqlite3")
 
@@ -486,19 +487,7 @@ def assert_mode_held(lock_file: str, mode: Literal["read", "write"]) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.parametrize("shared", [pytest.param(False, id="sqlite"), pytest.param(True, id="task-owner")])
-@pytest.mark.parametrize(
-    ("instance_timeout", "instance_blocking", "call_timeout", "call_blocking", "minimum", "omitted"),
-    [
-        pytest.param(0.2, True, None, None, 0.1, True, id="instance-timeout"),
-        pytest.param(30, False, None, None, 0, True, id="instance-nonblocking"),
-        pytest.param(0.2, True, None, None, 0.1, False, id="none-timeout"),
-        pytest.param(30, False, None, None, 0, False, id="none-nonblocking"),
-        pytest.param(30, True, 0.2, None, 0.1, False, id="call-timeout"),
-        pytest.param(0.2, False, None, True, 0.1, False, id="call-blocking"),
-        pytest.param(30, True, None, False, 0, False, id="call-nonblocking"),
-        pytest.param(30, True, 0, None, 0, False, id="zero-timeout"),
-    ],
-)
+@ACQUIRE_SETTINGS
 async def test_async_acquire_respects_settings(
     async_locks: tuple[AsyncReadWriteLock, AsyncReadWriteLock],
     mode: Literal["read", "write"],

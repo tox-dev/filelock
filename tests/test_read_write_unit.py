@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import TYPE_CHECKING, Literal
+import time
+from contextlib import closing
+from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 
 from tests.capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT
+from tests.read_write_helpers import ACQUIRE_SETTINGS
 
 pytest.importorskip("sqlite3")
 
@@ -679,3 +682,48 @@ def test_connection_close_from_another_process_leaves_it_open(lock_file: str, mo
     mocker.stopall()
     assert connection.execute("select 1").fetchone() == (1,)
     lock.release()
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@ACQUIRE_SETTINGS
+def test_acquire_respects_settings(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock],
+    mode: Literal["read", "write"],
+    instance_timeout: float,
+    call_timeout: float | None,
+    minimum: float,
+    *,
+    instance_blocking: bool,
+    call_blocking: bool | None,
+    omitted: bool,
+) -> None:
+    contender: Final[ReadWriteLock] = sync_locks[1]
+    contender.timeout = instance_timeout
+    contender.blocking = instance_blocking
+    acquire: Final = contender.acquire_read if mode == "read" else contender.acquire_write
+    with sync_locks[0].write_lock():
+        started: Final[float] = time.perf_counter()
+        with pytest.raises(Timeout):
+            acquire() if omitted else acquire(timeout=call_timeout, blocking=call_blocking)
+        assert minimum <= time.perf_counter() - started < 5
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+def test_acquire_default_excludes_contender(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock], mode: Literal["read", "write"]
+) -> None:
+    holder: Final[ReadWriteLock] = sync_locks[0]
+    contender: Final[ReadWriteLock] = sync_locks[1]
+    with holder.acquire_read() if mode == "read" else holder.acquire_write(), pytest.raises(Timeout):
+        contender.acquire_write(blocking=False)
+    with contender.acquire_write(), pytest.raises(Timeout):
+        holder.acquire_write(blocking=False)
+
+
+@pytest.fixture
+def sync_locks(tmp_path: Path) -> Generator[tuple[ReadWriteLock, ReadWriteLock]]:
+    with (
+        closing(ReadWriteLock(tmp_path / "a", timeout=30, is_singleton=False)) as holder,
+        closing(ReadWriteLock(tmp_path / "a", timeout=30, is_singleton=False)) as contender,
+    ):
+        yield holder, contender

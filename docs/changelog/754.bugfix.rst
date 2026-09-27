@@ -1,2 +1,0 @@
-Honor instance ``timeout`` and ``blocking`` settings in ``AsyncReadWriteLock`` acquisition, including waits between
-tasks on one instance. Preserve explicit per-call overrides.
