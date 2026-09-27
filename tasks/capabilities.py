@@ -214,16 +214,32 @@ def _reports_object_tracebacks() -> bool:
     return True
 
 
-def _enforces_file_mode() -> bool:
-    # Without POSIX permission bits a chmod does not read back.
+def _supports_file_mode() -> bool:
+    with _unreadable_file() as probe:
+        return probe.stat().st_mode & 0o777 == 0
+
+
+def _enforces_file_permissions() -> bool:
+    # Privileged processes can retain mode bits while bypassing access checks.
+    with _unreadable_file() as probe:
+        try:
+            probe.read_bytes()
+        except PermissionError:
+            return True
+        return False
+
+
+@contextmanager
+def _unreadable_file() -> Iterator[Path]:
     with tempfile.TemporaryDirectory() as directory:
-        probe = Path(directory, "probe")
+        probe: Final[Path] = Path(directory, "probe")
         probe.touch()
-        probe.chmod(_OWNER_READ_WRITE)
-        return probe.stat().st_mode & 0o777 == _OWNER_READ_WRITE
+        probe.chmod(0)
+        try:
+            yield probe
+        finally:
+            probe.chmod(0o600)
 
-
-_OWNER_READ_WRITE: Final[int] = 0o600
 
 #: Capability -> whether this runtime provides it. Tests gate their skipif on this same mapping.
 CAPABILITIES: Final[dict[str, bool]] = {
@@ -239,7 +255,8 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "fcntl": find_spec("fcntl") is not None,
     "unlink-open-file": _supports_unlinking_an_open_file(),
     "posix-signals": hasattr(signal, "SIGKILL"),
-    "file-mode": _enforces_file_mode(),
+    "file-mode": _supports_file_mode(),
+    "file-permissions": _enforces_file_permissions(),
     "prompt-finalization": _finalizes_on_last_reference(),
     "collected-finalization": _finalizes_on_collection(),
     "class-collection": _collects_classes(),

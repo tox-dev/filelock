@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import runpy
 import socket
 import stat
 import sys
 import time
 from contextlib import suppress
+from errno import EACCES, EIO, ENOENT, EPERM
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -237,3 +239,35 @@ def test_touch_does_not_follow_symlink(tmp_path: Path) -> None:  # pragma: needs
 
     assert victim.stat().st_mtime == pytest.approx(past, abs=1)  # a timestamp round-trip need not be bit-exact
     assert link.lstat().st_mtime > victim.stat().st_mtime
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(None, False, id="privileged"),
+        pytest.param(PermissionError(EACCES, "denied"), True, id="access-denied"),
+        pytest.param(PermissionError(EPERM, "denied"), True, id="operation-denied"),
+    ],
+)
+@pytest.mark.usefixtures("_read_failure")
+def test_file_permissions_capability(*, expected: bool) -> None:
+    assert runpy.run_module("capabilities")["CAPABILITIES"]["file-permissions"] is expected
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(OSError(EIO, "probe failed"), id="io-error"),
+        pytest.param(OSError(ENOENT, "probe failed"), id="missing-file"),
+    ],
+)
+@pytest.mark.usefixtures("_read_failure")
+def test_file_permissions_probe_propagates_io_errors(error: OSError) -> None:
+    with pytest.raises(OSError, match="probe failed") as raised:
+        runpy.run_module("capabilities")
+    assert raised.value is error
+
+
+@pytest.fixture
+def _read_failure(mocker: MockerFixture, error: OSError | None) -> None:
+    mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=error, return_value=b"")
