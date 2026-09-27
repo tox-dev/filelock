@@ -170,14 +170,18 @@ class AsyncReadWriteLock:
                 _append_exception_context(release_error, body_error)
             raise
 
-    async def acquire_read(self, timeout: float = -1, *, blocking: bool = True) -> AsyncAcquireReadWriteReturnProxy:
+    async def acquire_read(
+        self, timeout: float | None = None, *, blocking: bool | None = None
+    ) -> AsyncAcquireReadWriteReturnProxy:
         """
         Acquire a shared read lock.
 
         See :meth:`ReadWriteLock.acquire_read` for full semantics.
 
-        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means block
+            indefinitely
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable;
+            ``None`` uses the instance default
 
         :returns: a proxy that can be used as an async context manager to release the lock
 
@@ -189,14 +193,18 @@ class AsyncReadWriteLock:
         await self._acquire("read", timeout, blocking=blocking)
         return AsyncAcquireReadWriteReturnProxy(lock=self)
 
-    async def acquire_write(self, timeout: float = -1, *, blocking: bool = True) -> AsyncAcquireReadWriteReturnProxy:
+    async def acquire_write(
+        self, timeout: float | None = None, *, blocking: bool | None = None
+    ) -> AsyncAcquireReadWriteReturnProxy:
         """
         Acquire an exclusive write lock.
 
         See :meth:`ReadWriteLock.acquire_write` for full semantics.
 
-        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means block
+            indefinitely
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable;
+            ``None`` uses the instance default
 
         :returns: a proxy that can be used as an async context manager to release the lock
 
@@ -208,13 +216,22 @@ class AsyncReadWriteLock:
         await self._acquire("write", timeout, blocking=blocking)
         return AsyncAcquireReadWriteReturnProxy(lock=self)
 
-    async def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> None:
+    async def _acquire(self, mode: Literal["read", "write"], timeout: float | None, *, blocking: bool | None) -> None:
+        # Resolve the "not overridden" sentinels here, where both entry points meet, so a bare acquire honors the
+        # instance values the same way read_lock()/write_lock() do.
+        blocking = self._lock.blocking if blocking is None else blocking
         sync_acquire = self._lock.acquire_read if mode == "read" else self._lock.acquire_write
 
         async def enter(remaining: float) -> None:
             await self._run_acquire(functools.partial(sync_acquire, remaining, blocking=blocking))
 
-        await self._owners.acquire(mode, timeout=timeout, blocking=blocking, lock_file=self.lock_file, enter=enter)
+        await self._owners.acquire(
+            mode,
+            timeout=self._lock.timeout if timeout is None else timeout,
+            blocking=blocking,
+            lock_file=self.lock_file,
+            enter=enter,
+        )
 
     async def release(self, *, force: bool = False) -> None:
         """

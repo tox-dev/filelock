@@ -114,6 +114,23 @@ async def test_non_blocking_conflict(lock_file: str, mode: Literal["read", "writ
         holder.release()
 
 
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.asyncio
+async def test_acquire_uses_instance_defaults(lock_file: str, mode: Literal["read", "write"]) -> None:
+    # A bare acquire_read()/acquire_write() must consult the instance timeout and blocking, exactly as
+    # read_lock()/write_lock() already do. Without that, the per-call defaults (blocking forever) win and a
+    # caller who configured a deadline waits for a holder that never releases.
+    holder = ReadWriteLock(lock_file, is_singleton=False)
+    (holder.acquire_write if mode == "read" else holder.acquire_read)()
+    try:
+        lock = AsyncReadWriteLock(lock_file, timeout=_TASK_WAIT, blocking=False, is_singleton=False)
+        with pytest.raises(Timeout):
+            await (lock.acquire_read if mode == "read" else lock.acquire_write)()
+        await lock.close()
+    finally:
+        holder.release()
+
+
 @pytest.mark.asyncio
 async def test_timeout_expires(lock_file: str) -> None:
     holder = ReadWriteLock(lock_file, is_singleton=False)
