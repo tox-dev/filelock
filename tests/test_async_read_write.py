@@ -505,6 +505,20 @@ async def test_async_acquire_respects_settings(
         assert minimum <= time.perf_counter() - started < 5
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+async def test_async_acquire_rejects_timeout_below_negative_one(lock_file: str, mode: Literal["read", "write"]) -> None:
+    lock: Final[AsyncReadWriteLock] = AsyncReadWriteLock(lock_file, is_singleton=False)
+    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    try:
+        # -1 is the one negative timeout that means "wait without a limit". ReadWriteLock rejects anything below it,
+        # and the wrapper documents the same sentinel, so a lesser value is a caller error rather than a longer wait.
+        with pytest.raises(ValueError, match="timeout must be a non-negative number or -1"):
+            await acquire(timeout=-2)
+    finally:
+        await lock.close()
+
+
 @pytest_asyncio.fixture(loop_scope="function")  # Join shutdown workers before later fork tests.
 async def async_locks(
     tmp_path: Path, instance_timeout: float, *, instance_blocking: bool, shared: bool

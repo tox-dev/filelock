@@ -1,0 +1,3 @@
+``AsyncReadWriteLock`` and ``AsyncSoftReadWriteLock`` now reject a ``timeout`` below ``-1`` with the same ``ValueError``
+the sync classes raise, instead of treating every negative timeout as a wait without a limit and hanging. ``-1`` itself
+still means "wait without a limit".

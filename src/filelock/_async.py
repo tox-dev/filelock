@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
+#: The one negative timeout that means "wait without a limit", matching the sync reader/writer locks.
+_INFINITE_TIMEOUT: Final[float] = -1
+
 
 class _AsyncTransitionUnavailableError(Exception):
     pass
@@ -142,6 +145,14 @@ class _TaskOwners:
         enter: Callable[[float], Awaitable[None]],
     ) -> None:
         task = _current_task()
+        # -1 is the only negative timeout that means "wait without a limit"; the sync classes reject a lesser value
+        # with the wording timeout_for_sqlite already uses, so a wait here must not silently become an infinite one.
+        # Checked inline rather than by calling that helper, which also clamps and logs a warning for an outsized
+        # finite timeout that the caller has not reached yet. Unlike a finite timeout, an infinite one has no deadline
+        # to abandon it, so a typo here would hang the task rather than raise.
+        if timeout < 0 and timeout != _INFINITE_TIMEOUT:
+            msg = "timeout must be a non-negative number or -1"
+            raise ValueError(msg)
         deadline = None if timeout < 0 else time.perf_counter() + timeout
         waiting_writer = False
         try:

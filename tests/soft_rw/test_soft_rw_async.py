@@ -140,6 +140,19 @@ async def test_async_raw_acquire_release_round_trip(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+async def test_async_acquire_rejects_timeout_below_negative_one(tmp_path: Path, mode: Literal["read", "write"]) -> None:
+    lock = _make(tmp_path)
+    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
+    try:
+        # The async wrappers share one task-ownership layer, so the sentinel check belongs there for both families.
+        with pytest.raises(ValueError, match="timeout must be a non-negative number or -1"):
+            await acquire(timeout=-2)
+    finally:
+        await lock.close()
+
+
+@pytest.mark.asyncio
 async def test_async_custom_loop_and_executor(tmp_path: Path) -> None:
     with ThreadPoolExecutor(max_workers=1) as executor:
         loop = asyncio.get_running_loop()
