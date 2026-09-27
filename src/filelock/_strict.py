@@ -311,20 +311,22 @@ def _open_sentinel(path: Path) -> int | None:
 
 
 def _read_claims(lock_file: str, directory: Path) -> tuple[StrictSoftFileClaim, ...]:
-    try:
-        with os.scandir(directory) as entries:
-            names = _public_claim_names(directory, entries)
-    except OSError as error:
-        reason = f"cannot list claim directory: {error.strerror or type(error).__name__}"
-        raise SoftFileLockProtocolError(lock_file, None, reason) from error
-
     claims: list[StrictSoftFileClaim] = []
-    for name in names:
+    for name in _list_claim_names(lock_file, directory):
         if (name_parts := _parse_claim_name(name)) is None:
             raise SoftFileLockProtocolError(lock_file, name, "unknown claim name or protocol version")
         if (record := _read_claim_record(lock_file, directory, name)) is not None:
             claims.append(_parse_claim(lock_file, name, name_parts, record))
     return tuple(claims)
+
+
+def _list_claim_names(lock_file: str, directory: Path) -> list[str]:
+    try:
+        with os.scandir(directory) as entries:
+            return _public_claim_names(directory, entries)
+    except OSError as error:
+        reason = f"cannot list claim directory: {error.strerror or type(error).__name__}"
+        raise SoftFileLockProtocolError(lock_file, None, reason) from error
 
 
 def _read_claim_record(lock_file: str, directory: Path, name: str) -> bytes | None:
@@ -347,6 +349,9 @@ def _read_claim_record(lock_file: str, directory: Path, name: str) -> bytes | No
                 # A stale handle that outlives revalidation is a claim the server no longer has (RFC 1813
                 # NFS3ERR_STALE): skip it like ENOENT. Skipping a peer's vanished claim can only overcount
                 # contention, never free a held lock.
+                return None
+            # Windows can deny opens after a peer removes the claim from the directory.
+            if name not in _list_claim_names(lock_file, directory):
                 return None
             reason = f"cannot read claim: {pending.strerror or str(pending) or type(pending).__name__}"
             raise SoftFileLockProtocolError(lock_file, name, reason) from pending

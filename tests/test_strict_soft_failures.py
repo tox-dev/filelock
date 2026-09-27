@@ -1309,14 +1309,28 @@ def test_strict_soft_doorway_claim_unlink_failure_commits_owned(tmp_path: Path, 
     lock.force_break(competitor_name)
 
 
-def test_strict_soft_permission_denied_claim_read_fails_closed(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "resource.lock"
-    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
-    mocker.patch("filelock._strict._CLAIM_READ_GRACE", 0.02)
-    _open_raising_for(claim, PermissionError(EACCES, "sharing violation"), mocker)
+@pytest.mark.parametrize("vanished", [pytest.param(True, id="removed"), pytest.param(False, id="still-listed")])
+def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: MockerFixture, *, vanished: bool) -> None:
+    lock_path: Final = tmp_path / "resource.lock"
+    claim: Final = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=[0, 1])
+    mocker.patch("filelock._strict.time.sleep", autospec=True)
+    attempts = 0
 
-    with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
-        _ = StrictSoftFileLock(lock_path).claims
+    def deny_open(_path: _PathValue, _flags: int) -> int:
+        nonlocal attempts
+        attempts += 1
+        if vanished and attempts == 2:
+            claim.unlink()
+        raise PermissionError(EACCES, "sharing violation")
+
+    mocker.patch("filelock._strict.os.open", autospec=True, side_effect=deny_open)
+
+    if vanished:
+        assert StrictSoftFileLock(lock_path).claims == ()
+    else:
+        with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
+            _ = StrictSoftFileLock(lock_path).claims
 
 
 def test_strict_soft_claim_read_retries_after_a_slow_denied_attempt(tmp_path: Path, mocker: MockerFixture) -> None:
