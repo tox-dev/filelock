@@ -215,15 +215,22 @@ def _reports_object_tracebacks() -> bool:
 
 
 def _enforces_file_mode() -> bool:
-    # Without POSIX permission bits a chmod does not read back.
+    # A chmod that reads back only proves the filesystem stores the bits, not that anything obeys them, so ask the
+    # question the tests actually ask: does a mode with every bit cleared actually stop this process from reading? A
+    # privileged user bypasses the check (root, and any uid the CAP_DAC_OVERRIDE capability covers), so the probe
+    # answers False there and the tests that stage an unreadable file or folder skip instead of failing for a reason
+    # that has nothing to do with the lock.
     with tempfile.TemporaryDirectory() as directory:
         probe = Path(directory, "probe")
         probe.touch()
-        probe.chmod(_OWNER_READ_WRITE)
-        return probe.stat().st_mode & 0o777 == _OWNER_READ_WRITE
+        probe.chmod(0)
+        try:
+            probe.read_bytes()
+        except OSError:
+            return True
+        else:
+            return False
 
-
-_OWNER_READ_WRITE: Final[int] = 0o600
 
 #: Capability -> whether this runtime provides it. Tests gate their skipif on this same mapping.
 CAPABILITIES: Final[dict[str, bool]] = {

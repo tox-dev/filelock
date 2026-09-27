@@ -54,7 +54,8 @@ NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 )
 
 NEEDS_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["file-mode"], reason="making a folder or a claim unreadable needs POSIX permission bits"
+    not CAPABILITIES["file-mode"],
+    reason="making a folder or a claim unreadable needs permission bits this process obeys, so a privileged user skips",
 )
 
 NEEDS_UNLINK_OPEN_FILE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
