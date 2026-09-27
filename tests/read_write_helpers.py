@@ -1,12 +1,27 @@
 from __future__ import annotations
 
 import multiprocessing
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
+
+import pytest
 
 from filelock import ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
     from multiprocessing.sharedctypes import Synchronized
+
+
+ACQUIRE_SETTINGS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
+    ("instance_timeout", "instance_blocking", "call_timeout", "call_blocking", "minimum"),
+    [
+        pytest.param(0.2, True, None, None, 0.1, id="instance-timeout"),
+        pytest.param(30, False, None, None, 0, id="instance-nonblocking"),
+        pytest.param(30, True, 0.2, None, 0.1, id="call-timeout"),
+        pytest.param(0.2, False, None, True, 0.1, id="call-blocking"),
+        pytest.param(30, True, None, False, 0, id="call-nonblocking"),
+        pytest.param(30, True, 0, None, 0, id="zero-timeout"),
+    ],
+)
 
 
 def assert_read_write_lock_state(lock_file: str, mode: Literal["read", "write"], *, available: bool) -> None:
@@ -36,4 +51,4 @@ def _probe_read_write_lock(lock_file: str, mode: Literal["read", "write"], acqui
     lock.close()
 
 
-__all__ = ["assert_read_write_lock_state"]
+__all__ = ["ACQUIRE_SETTINGS", "assert_read_write_lock_state"]

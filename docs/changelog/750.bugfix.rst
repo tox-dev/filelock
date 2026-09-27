@@ -1,0 +1,2 @@
+Honor instance ``timeout`` and ``blocking`` settings in sync and async ``ReadWriteLock`` acquisition, including waits
+between tasks on one instance. Preserve explicit per-call overrides.
