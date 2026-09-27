@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import gc
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
+import pytest_asyncio
 
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
@@ -17,7 +19,7 @@ import sqlite3
 from filelock import AsyncReadWriteLock, ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import AsyncIterator, Generator
     from pathlib import Path
 
 # Bounds every wait on another task, so a lock that never admits it fails the test instead of hanging the suite.
@@ -109,23 +111,6 @@ async def test_non_blocking_conflict(lock_file: str, mode: Literal["read", "writ
         lock = AsyncReadWriteLock(lock_file, is_singleton=False)
         with pytest.raises(Timeout):
             await (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False)
-        await lock.close()
-    finally:
-        holder.release()
-
-
-@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
-@pytest.mark.asyncio
-async def test_acquire_uses_instance_defaults(lock_file: str, mode: Literal["read", "write"]) -> None:
-    # A bare acquire_read()/acquire_write() must consult the instance timeout and blocking, exactly as
-    # read_lock()/write_lock() already do. Without that, the per-call defaults (blocking forever) win and a
-    # caller who configured a deadline waits for a holder that never releases.
-    holder = ReadWriteLock(lock_file, is_singleton=False)
-    (holder.acquire_write if mode == "read" else holder.acquire_read)()
-    try:
-        lock = AsyncReadWriteLock(lock_file, timeout=_TASK_WAIT, blocking=False, is_singleton=False)
-        with pytest.raises(Timeout):
-            await (lock.acquire_read if mode == "read" else lock.acquire_write)()
         await lock.close()
     finally:
         holder.release()
@@ -496,3 +481,58 @@ def assert_mode_held(lock_file: str, mode: Literal["read", "write"]) -> None:
     with pytest.raises(Timeout):
         acquire(blocking=False)
     contender.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize("shared", [pytest.param(False, id="sqlite"), pytest.param(True, id="task-owner")])
+@pytest.mark.parametrize(
+    ("instance_timeout", "instance_blocking", "call_timeout", "call_blocking", "minimum", "omitted"),
+    [
+        pytest.param(0.2, True, None, None, 0.1, True, id="instance-timeout"),
+        pytest.param(30, False, None, None, 0, True, id="instance-nonblocking"),
+        pytest.param(0.2, True, None, None, 0.1, False, id="none-timeout"),
+        pytest.param(30, False, None, None, 0, False, id="none-nonblocking"),
+        pytest.param(30, True, 0.2, None, 0.1, False, id="call-timeout"),
+        pytest.param(0.2, False, None, True, 0.1, False, id="call-blocking"),
+        pytest.param(30, True, None, False, 0, False, id="call-nonblocking"),
+        pytest.param(30, True, 0, None, 0, False, id="zero-timeout"),
+    ],
+)
+async def test_async_acquire_respects_settings(
+    async_locks: tuple[AsyncReadWriteLock, AsyncReadWriteLock],
+    mode: Literal["read", "write"],
+    call_timeout: float | None,
+    minimum: float,
+    *,
+    call_blocking: bool | None,
+    omitted: bool,
+) -> None:
+    contender: Final[AsyncReadWriteLock] = async_locks[1]
+    acquire: Final = contender.acquire_read if mode == "read" else contender.acquire_write
+    async with async_locks[0].write_lock():
+        started: Final[float] = time.perf_counter()
+        with pytest.raises(Timeout):
+            await asyncio.create_task(acquire() if omitted else acquire(timeout=call_timeout, blocking=call_blocking))
+        assert minimum <= time.perf_counter() - started < 5
+
+
+@pytest_asyncio.fixture(loop_scope="function")  # Join shutdown workers before later fork tests.
+async def async_locks(
+    tmp_path: Path, instance_timeout: float, *, instance_blocking: bool, shared: bool
+) -> AsyncIterator[tuple[AsyncReadWriteLock, AsyncReadWriteLock]]:
+    holder: Final[AsyncReadWriteLock] = AsyncReadWriteLock(
+        tmp_path / "a", timeout=instance_timeout, blocking=instance_blocking, is_singleton=False
+    )
+    contender: Final[AsyncReadWriteLock] = (
+        holder
+        if shared
+        else AsyncReadWriteLock(
+            tmp_path / "a", timeout=instance_timeout, blocking=instance_blocking, is_singleton=False
+        )
+    )
+    try:
+        yield holder, contender
+    finally:
+        await holder.close()
+        await contender.close()

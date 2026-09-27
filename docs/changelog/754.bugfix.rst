@@ -1,5 +1,2 @@
-``AsyncReadWriteLock.acquire_read()`` and ``acquire_write()`` now honor the instance ``timeout`` and ``blocking``. Both
-hardcoded blocking-forever values as their per-call defaults, so a bare ``acquire_read()`` on a lock constructed with
-``timeout=1.5, blocking=False`` consulted neither and waited out the current holder however long it held the lock. They
-take ``None`` as the "not overridden" sentinel and fall back to the instance values, matching ``BaseFileLock``,
-``SoftFileLock`` and the async soft reader/writer lock; ``read_lock()`` and ``write_lock()`` are unchanged.
+Honor instance ``timeout`` and ``blocking`` settings in ``AsyncReadWriteLock`` acquisition, including waits between
+tasks on one instance. Preserve explicit per-call overrides.
