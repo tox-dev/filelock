@@ -9,6 +9,7 @@ from filelock import ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
     from multiprocessing.sharedctypes import Synchronized
+    from multiprocessing.synchronize import Event
 
 
 ACQUIRE_SETTINGS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
@@ -27,12 +28,17 @@ ACQUIRE_SETTINGS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
 
 
 def assert_read_write_lock_state(lock_file: str, mode: Literal["read", "write"], *, available: bool) -> None:
-    context = multiprocessing.get_context("spawn")
-    acquired = context.Value("b", False)
-    probe = context.Process(target=_probe_read_write_lock, args=(lock_file, mode, acquired))
+    context: Final = multiprocessing.get_context("spawn")
+    acquired: Final = context.Value("b", False)
+    ready: Final = context.Event()
+    finished: Final = context.Event()
+    probe: Final = context.Process(target=_probe_read_write_lock, args=(lock_file, mode, acquired, ready, finished))
     probe.start()
     try:
-        probe.join(timeout=5)
+        # Spawn imports and coverage shutdown need separate budgets from the lock operation.
+        assert ready.wait(timeout=10), "read-write lock probe did not start"
+        assert finished.wait(timeout=5), "read-write lock probe did not finish"
+        probe.join(timeout=10)
         assert not probe.is_alive(), "read-write lock probe did not exit"
         assert (probe.exitcode, acquired.value) == (0, available)
     finally:
@@ -42,15 +48,21 @@ def assert_read_write_lock_state(lock_file: str, mode: Literal["read", "write"],
         probe.close()
 
 
-def _probe_read_write_lock(lock_file: str, mode: Literal["read", "write"], acquired: Synchronized[bool]) -> None:
-    lock = ReadWriteLock(lock_file, is_singleton=False)
+def _probe_read_write_lock(
+    lock_file: str, mode: Literal["read", "write"], acquired: Synchronized[bool], ready: Event, finished: Event
+) -> None:
+    lock: Final = ReadWriteLock(lock_file, is_singleton=False)
+    ready.set()
     try:
-        (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False)
-    except Timeout:
-        return
-    acquired.value = True
-    lock.release()
-    lock.close()
+        try:
+            (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False)
+        except Timeout:
+            return
+        acquired.value = True
+        lock.release()
+    finally:
+        lock.close()
+        finished.set()
 
 
 __all__ = ["ACQUIRE_SETTINGS", "assert_read_write_lock_state"]
