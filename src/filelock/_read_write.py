@@ -334,10 +334,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire a
         read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed).
 
-        :param timeout: maximum wait time in seconds; ``None`` means use the instance :attr:`timeout`, and ``-1`` means
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means
             block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable;
-            ``None`` means use the instance :attr:`blocking`
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+
 
         :returns: a proxy that can be used as a context manager to release the lock
 
@@ -360,10 +360,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
         :class:`RuntimeError`.
 
-        :param timeout: maximum wait time in seconds; ``None`` means use the instance :attr:`timeout`, and ``-1`` means
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means
             block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable;
-            ``None`` means use the instance :attr:`blocking`
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+
 
         :returns: a proxy that can be used as a context manager to release the lock
 
