@@ -1,4 +1,2 @@
-``ReadWriteLock.acquire_read()`` and ``acquire_write()`` ignored the instance ``timeout`` and ``blocking`` values and
-used the hardcoded defaults ``-1`` and ``True`` instead, so a lock built with ``timeout=0.4`` could block indefinitely.
-Both parameters now default to ``None``, which falls back to the instance value, matching ``BaseFileLock.acquire()`` and
-the existing ``read_lock()``/``write_lock()`` context managers.
+Honor instance ``timeout`` and ``blocking`` settings in sync and async ``ReadWriteLock`` acquisition, including waits
+between tasks on one instance. Preserve explicit per-call overrides.

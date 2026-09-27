@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import TYPE_CHECKING, Literal
+from contextlib import closing
+from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 
 from tests.capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT
+from tests.read_write_helpers import ACQUIRE_SETTINGS
 
 pytest.importorskip("sqlite3")
 
@@ -682,59 +684,45 @@ def test_connection_close_from_another_process_leaves_it_open(lock_file: str, mo
     lock.release()
 
 
-def test_acquire_uses_the_instance_timeout(tmp_path: Path) -> None:
-    # acquire_read/acquire_write hardcoded timeout=-1 and blocking=True, so both instance options were ignored and a
-    # caller with timeout=0.4 blocked indefinitely (#750).
-    path = tmp_path / "a"
-    # a write lock blocks readers, so it is the one that can make a read contend
-    with ReadWriteLock(path, timeout=5, is_singleton=False).write_lock():
-        contender = ReadWriteLock(path, timeout=0.4, is_singleton=False)
-        started = time.perf_counter()
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@ACQUIRE_SETTINGS
+def test_acquire_respects_settings(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock],
+    mode: Literal["read", "write"],
+    instance_timeout: float,
+    call_timeout: float | None,
+    minimum: float,
+    *,
+    instance_blocking: bool,
+    call_blocking: bool | None,
+) -> None:
+    contender: Final[ReadWriteLock] = sync_locks[1]
+    contender.timeout = instance_timeout
+    contender.blocking = instance_blocking
+    acquire: Final = contender.acquire_read if mode == "read" else contender.acquire_write
+    with sync_locks[0].write_lock():
+        started: Final[float] = time.perf_counter()
         with pytest.raises(Timeout):
-            contender.acquire_read()
-        # honored the instance timeout rather than blocking forever
-        assert 0.1 < time.perf_counter() - started < 10
-        contender.close()
+            acquire(timeout=call_timeout, blocking=call_blocking)
+        assert minimum <= time.perf_counter() - started < 5
 
 
-def test_acquire_honours_instance_blocking_false(tmp_path: Path) -> None:
-    # blocking=False must fail immediately instead of waiting out the instance timeout.
-    path = tmp_path / "a"
-    with ReadWriteLock(path, timeout=5, is_singleton=False).read_lock():
-        contender = ReadWriteLock(path, timeout=30, blocking=False, is_singleton=False)
-        started = time.perf_counter()
-        with pytest.raises(Timeout):
-            contender.acquire_write()
-        assert time.perf_counter() - started < 5
-        contender.close()
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+def test_acquire_default_excludes_contender(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock], mode: Literal["read", "write"]
+) -> None:
+    holder: Final[ReadWriteLock] = sync_locks[0]
+    contender: Final[ReadWriteLock] = sync_locks[1]
+    with holder.acquire_read() if mode == "read" else holder.acquire_write(), pytest.raises(Timeout):
+        contender.acquire_write(blocking=False)
+    with contender.acquire_write(), pytest.raises(Timeout):
+        holder.acquire_write(blocking=False)
 
 
-def test_acquire_per_call_timeout_overrides_the_instance(tmp_path: Path) -> None:
-    path = tmp_path / "a"
-    with ReadWriteLock(path, timeout=5, is_singleton=False).write_lock():
-        # an explicit per-call value still wins over the instance default
-        contender = ReadWriteLock(path, timeout=30, is_singleton=False)
-        started = time.perf_counter()
-        with pytest.raises(Timeout):
-            contender.acquire_read(timeout=0.4)
-        assert 0.1 < time.perf_counter() - started < 10
-        contender.close()
-
-
-def test_acquire_write_uses_the_instance_timeout(tmp_path: Path) -> None:
-    path = tmp_path / "a"
-    with ReadWriteLock(path, timeout=5, is_singleton=False).write_lock():
-        contender = ReadWriteLock(path, timeout=0.4, is_singleton=False)
-        started = time.perf_counter()
-        with pytest.raises(Timeout):
-            contender.acquire_write()
-        assert 0.1 < time.perf_counter() - started < 10
-        contender.close()
-
-
-def test_acquire_defaults_still_wait_then_succeed(tmp_path: Path) -> None:
-    # the ordinary path must keep working: a free lock is acquired with no explicit arguments
-    lock = ReadWriteLock(tmp_path / "a", timeout=5, is_singleton=False)
-    with lock.read_lock():
-        pass
-    lock.close()
+@pytest.fixture
+def sync_locks(tmp_path: Path) -> Generator[tuple[ReadWriteLock, ReadWriteLock]]:
+    with (
+        closing(ReadWriteLock(tmp_path / "a", timeout=30, is_singleton=False)) as holder,
+        closing(ReadWriteLock(tmp_path / "a", timeout=30, is_singleton=False)) as contender,
+    ):
+        yield holder, contender

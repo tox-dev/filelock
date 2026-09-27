@@ -334,10 +334,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire a
         read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed).
 
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means
-            block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
+            ``None`` uses the instance setting
 
         :returns: a proxy that can be used as a context manager to release the lock
 
@@ -347,8 +346,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         """
         return self._acquire(
             "read",
-            _resolve_timeout(timeout, self.timeout),
-            blocking=_resolve_blocking(blocking=blocking, default=self.blocking),
+            self.timeout if timeout is None else timeout,
+            blocking=self.blocking if blocking is None else blocking,
         )
 
     def acquire_write(self, timeout: float | None = None, *, blocking: bool | None = None) -> AcquireReturnProxy:
@@ -360,10 +359,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
         :class:`RuntimeError`.
 
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means
-            block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
+            ``None`` uses the instance setting
 
         :returns: a proxy that can be used as a context manager to release the lock
 
@@ -373,8 +371,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         """
         return self._acquire(
             "write",
-            _resolve_timeout(timeout, self.timeout),
-            blocking=_resolve_blocking(blocking=blocking, default=self.blocking),
+            self.timeout if timeout is None else timeout,
+            blocking=self.blocking if blocking is None else blocking,
         )
 
     @contextmanager
@@ -753,16 +751,6 @@ def _abort_forked_sqlite_transition() -> None:  # pragma: forked child
 def _track_sqlite_use(event: str, _args: Unused) -> None:
     if event == "sqlite3.connect":
         _FORKED_DATABASES.note_sqlite_use()
-
-
-def _resolve_timeout(timeout: float | None, default: float) -> float:
-    """Per-call ``None`` means "use the instance default", matching :meth:`BaseFileLock.acquire`."""
-    return default if timeout is None else timeout
-
-
-def _resolve_blocking(*, blocking: bool | None, default: bool) -> bool:
-    """Per-call ``None`` means "use the instance default", matching :meth:`BaseFileLock.acquire`."""
-    return default if blocking is None else blocking
 
 
 def timeout_for_sqlite(timeout: float, *, blocking: bool, already_waited: float) -> int:

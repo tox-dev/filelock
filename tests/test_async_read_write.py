@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import gc
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
+import pytest_asyncio
 
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, XFAIL_WITHOUT_COROUTINE_CANCELLATION
+from tests.read_write_helpers import ACQUIRE_SETTINGS
 
 pytest.importorskip("sqlite3")
 
@@ -17,7 +20,7 @@ import sqlite3
 from filelock import AsyncReadWriteLock, ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import AsyncIterator, Generator
     from pathlib import Path
 
 # Bounds every wait on another task, so a lock that never admits it fails the test instead of hanging the suite.
@@ -479,3 +482,45 @@ def assert_mode_held(lock_file: str, mode: Literal["read", "write"]) -> None:
     with pytest.raises(Timeout):
         acquire(blocking=False)
     contender.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize("shared", [pytest.param(False, id="sqlite"), pytest.param(True, id="task-owner")])
+@ACQUIRE_SETTINGS
+async def test_async_acquire_respects_settings(
+    async_locks: tuple[AsyncReadWriteLock, AsyncReadWriteLock],
+    mode: Literal["read", "write"],
+    call_timeout: float | None,
+    minimum: float,
+    *,
+    call_blocking: bool | None,
+) -> None:
+    contender: Final[AsyncReadWriteLock] = async_locks[1]
+    acquire: Final = contender.acquire_read if mode == "read" else contender.acquire_write
+    async with async_locks[0].write_lock():
+        started: Final[float] = time.perf_counter()
+        with pytest.raises(Timeout):
+            await asyncio.create_task(acquire(timeout=call_timeout, blocking=call_blocking))
+        assert minimum <= time.perf_counter() - started < 5
+
+
+@pytest_asyncio.fixture(loop_scope="function")  # Join shutdown workers before later fork tests.
+async def async_locks(
+    tmp_path: Path, instance_timeout: float, *, instance_blocking: bool, shared: bool
+) -> AsyncIterator[tuple[AsyncReadWriteLock, AsyncReadWriteLock]]:
+    holder: Final[AsyncReadWriteLock] = AsyncReadWriteLock(
+        tmp_path / "a", timeout=instance_timeout, blocking=instance_blocking, is_singleton=False
+    )
+    contender: Final[AsyncReadWriteLock] = (
+        holder
+        if shared
+        else AsyncReadWriteLock(
+            tmp_path / "a", timeout=instance_timeout, blocking=instance_blocking, is_singleton=False
+        )
+    )
+    try:
+        yield holder, contender
+    finally:
+        await holder.close()
+        await contender.close()
