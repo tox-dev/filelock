@@ -1,0 +1,3 @@
+``MarkerSoftFileLock.acquire()`` raised :exc:`AttributeError` because ``_owner_mode`` was only ever assigned by the
+lease subclass, so the base marker lock could not be used at all. It now publishes a new ``exclusive`` owner mode, which
+like ``lease`` round-trips through the marker record and, unlike ``lease``, is never reclaimed by age.

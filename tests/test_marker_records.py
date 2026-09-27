@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from filelock import SoftFileLease, Timeout
+from filelock import MarkerSoftFileLock, SoftFileLease, Timeout
 from filelock._identity import process_start_token
-from filelock._marker import OwnerRecord, encode_marker
+from filelock._marker import OwnerRecord, encode_marker, parse_marker
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -158,3 +158,68 @@ def test_marker_force_break_removes_the_marker(tmp_path: Path) -> None:
     SoftFileLease(marker).force_break()
 
     assert not marker.exists()
+
+
+def test_marker_lock_acquires_and_publishes_exclusive(tmp_path: Path) -> None:
+    # MarkerSoftFileLock declared _owner_mode but only its lease subclass assigned it, so every entry point raised
+    # AttributeError before locking anything (#749).
+    marker = tmp_path / "a"
+    lock = MarkerSoftFileLock(marker)
+
+    lock.acquire()
+    try:
+        assert lock.is_locked
+        assert lock.is_lock_held_by_us
+        assert lock.pid == os.getpid()
+        assert lock.owner is not None
+        # The holder never agreed to be superseded, so it must not claim the reclaimable contract.
+        assert lock.owner.mode == "exclusive"
+    finally:
+        lock.release()
+
+    assert not lock.is_locked
+    assert lock.pid is None
+
+
+def test_marker_lock_context_manager_works(tmp_path: Path) -> None:
+    with MarkerSoftFileLock(tmp_path / "a") as lock:
+        assert lock.is_locked
+    assert not lock.is_locked
+
+
+def test_marker_lock_excludes_another_marker_lock(tmp_path: Path) -> None:
+    held = MarkerSoftFileLock(tmp_path / "a", timeout=0.2)
+    contender = MarkerSoftFileLock(tmp_path / "a", timeout=0.2)
+    held.acquire()
+    try:
+        with pytest.raises(Timeout):
+            contender.acquire()
+    finally:
+        held.release()
+
+
+def test_lease_does_not_reclaim_an_exclusive_marker(tmp_path: Path) -> None:
+    # A lease may only age out a marker whose holder published "lease"; an "exclusive" record names a live owner that
+    # never consented, so the lease must keep waiting rather than reclaim it.
+    marker = tmp_path / "a"
+    held = MarkerSoftFileLock(marker, timeout=0.2)
+    held.acquire()
+    try:
+        with pytest.raises(Timeout):
+            SoftFileLease(marker, lease_duration=0.1, timeout=0.5).acquire()
+    finally:
+        held.release()
+
+
+def test_exclusive_mode_survives_a_marker_roundtrip(tmp_path: Path) -> None:
+    marker = tmp_path / "a"
+    lock = MarkerSoftFileLock(marker)
+    lock.acquire()
+    try:
+        record = parse_marker(marker.read_text(encoding="utf-8"))
+    finally:
+        lock.release()
+    assert record is not None
+    assert record.mode == "exclusive"
+    # round-trips through encode/parse without falling back to "unknown"
+    assert parse_marker(encode_marker(record).decode()) == record

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 from contextlib import suppress
-from typing import Final, Literal, NamedTuple
+from typing import Final, Literal, NamedTuple, cast
 
 from ._identity import host_name, process_start_token
 from ._soft import SoftFileLock, _read_lock_file
@@ -16,9 +16,16 @@ _PROTOCOL: Final[str] = "filelock/2"
 
 _MAX_PID: Final[int] = 2**31 - 1
 
+#: The modes this version publishes. A marker naming anything else was written by a filelock whose contract this
+#: version does not implement, so it parses as ``unknown`` rather than as a contract it would honor.
+_PUBLISHED_MODES: Final[frozenset[str]] = frozenset({"lease", "exclusive"})
+
+#: ``lease`` is published only by a lock whose holder agreed to be superseded once its duration lapses, so a lease
+#: contender may reclaim it by age. ``exclusive`` is published by a lock that grants no such consent: the marker names a
+#: live owner that no contender may age out, which is what makes it the safe default for the base marker lock.
 #: ``unknown`` is never published: it names a mode some other filelock wrote that this version cannot interpret. Such a
 #: record still identifies a live owner, so it is parsed rather than read as malformed and aged out.
-OwnerMode = Literal["lease", "unknown"]
+OwnerMode = Literal["lease", "exclusive", "unknown"]
 
 
 class OwnerRecord(NamedTuple):
@@ -35,8 +42,9 @@ class OwnerRecord(NamedTuple):
 class MarkerSoftFileLock(SoftFileLock):
     """An existence lock whose marker carries a protocol 2 owner record."""
 
-    #: Filled in by each mode so the published record states the contract its holder acquired under.
-    _owner_mode: OwnerMode
+    #: Filled in by each mode so the published record states the contract its holder acquired under. The base class is
+    #: an existence lock whose holder never agreed to be superseded, so it defaults to the non-reclaimable contract.
+    _owner_mode: OwnerMode = "exclusive"
 
     @property
     def owner(self) -> OwnerRecord | None:
@@ -127,7 +135,7 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
     # A record naming no mode at all states no contract and stays malformed.
     if (published := fields.get("mode")) is None:
         return None
-    mode: OwnerMode = "lease" if published == "lease" else "unknown"
+    mode: OwnerMode = cast("OwnerMode", published) if published in _PUBLISHED_MODES else "unknown"
     hostname = fields.get("host")
     if not hostname or "pid" not in fields:
         return None
