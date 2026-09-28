@@ -1,2 +1,0 @@
-Reject negative blocking timeouts other than ``-1`` before reentrant ``ReadWriteLock`` and ``SoftReadWriteLock``
-acquisition. Preserve unlimited waits and nonblocking acquisition.

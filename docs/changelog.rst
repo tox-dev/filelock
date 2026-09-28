@@ -7,6 +7,13 @@
 .. towncrier release notes start
 
 *******************
+ 4.0.6 (2026-09-28)
+*******************
+
+- Reject negative blocking timeouts other than ``-1`` before reentrant ``ReadWriteLock`` and ``SoftReadWriteLock``
+  acquisition. Preserve unlimited waits and nonblocking acquisition. :pr:`756`
+
+*******************
  4.0.5 (2026-09-28)
 *******************
 
