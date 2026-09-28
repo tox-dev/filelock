@@ -503,8 +503,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         with _fork_transition():
             self._raise_if_unusable()
             if blocking and timeout < 0 and timeout != -1:
-                msg = "timeout must be a non-negative number or -1"
-                raise ValueError(msg)
+                message: Final[str] = "timeout must be a non-negative number or -1"
+                raise ValueError(message)
             operation_pid = _GETPID()
             thread_id = threading.get_ident()
             with self._internal_lock:

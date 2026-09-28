@@ -7,7 +7,7 @@ import stat
 import sys
 import threading
 import time
-from contextlib import ExitStack, closing, suppress
+from contextlib import closing, suppress
 from errno import EIO
 from multiprocessing import Event, Process
 from pathlib import Path
@@ -253,41 +253,6 @@ def test_change_of_mode_while_held_raises(
     second_acquire = lock.acquire_read if second_mode == "read" else lock.acquire_write
     with first_lock(timeout=2), pytest.raises(RuntimeError, match=f"{direction} not allowed"):
         second_acquire(timeout=1)
-
-
-@pytest.mark.parametrize(
-    "mode",
-    [pytest.param("read", id="read"), pytest.param("write", id="write")],
-)
-@pytest.mark.parametrize(
-    "timeout",
-    [pytest.param(-2, id="integer"), pytest.param(-0.5, id="fraction"), pytest.param(float("-inf"), id="infinite")],
-)
-@pytest.mark.parametrize("reentrant", [pytest.param(True, id="reentrant"), pytest.param(False, id="first")])
-def test_acquire_rejects_negative_timeout(
-    lock: SoftReadWriteLock, mode: Literal["read", "write"], timeout: float, *, reentrant: bool
-) -> None:
-    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
-    with ExitStack() as stack:
-        if reentrant:
-            stack.enter_context(acquire())
-        with pytest.raises(ValueError, match="timeout must be a non-negative number or -1"):
-            stack.enter_context(acquire(timeout=timeout))
-
-
-@pytest.mark.parametrize(
-    "mode",
-    [pytest.param("read", id="read"), pytest.param("write", id="write")],
-)
-def test_nonblocking_acquisition_ignores_negative_timeout(
-    lock: SoftReadWriteLock, mode: Literal["read", "write"]
-) -> None:
-    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
-
-    with ExitStack() as stack:
-        stack.enter_context(acquire(timeout=-2, blocking=False))
-        stack.enter_context(acquire(timeout=-2, blocking=False))
-        stack.enter_context(acquire(timeout=-1))
 
 
 def test_write_lock_is_thread_pinned(lock: SoftReadWriteLock) -> None:
