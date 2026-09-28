@@ -496,13 +496,14 @@ async def test_async_acquire_respects_settings(
     minimum: float,
     *,
     call_blocking: bool | None,
+    omitted: bool,
 ) -> None:
     contender: Final[AsyncReadWriteLock] = async_locks[1]
     acquire: Final = contender.acquire_read if mode == "read" else contender.acquire_write
     async with async_locks[0].write_lock():
         started: Final[float] = time.perf_counter()
         with pytest.raises(Timeout):
-            await asyncio.create_task(acquire(timeout=call_timeout, blocking=call_blocking))
+            await asyncio.create_task(acquire() if omitted else acquire(timeout=call_timeout, blocking=call_blocking))
         assert minimum <= time.perf_counter() - started < 5
 
 

@@ -695,6 +695,7 @@ def test_acquire_respects_settings(
     *,
     instance_blocking: bool,
     call_blocking: bool | None,
+    omitted: bool,
 ) -> None:
     contender: Final[ReadWriteLock] = sync_locks[1]
     contender.timeout = instance_timeout
@@ -703,7 +704,7 @@ def test_acquire_respects_settings(
     with sync_locks[0].write_lock():
         started: Final[float] = time.perf_counter()
         with pytest.raises(Timeout):
-            acquire(timeout=call_timeout, blocking=call_blocking)
+            acquire() if omitted else acquire(timeout=call_timeout, blocking=call_blocking)
         assert minimum <= time.perf_counter() - started < 5
 
 
