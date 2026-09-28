@@ -8,7 +8,12 @@ import pytest
 from filelock import ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
-    from multiprocessing.connection import Connection
+    import sys
+
+    if sys.platform == "win32":
+        from multiprocessing.connection import PipeConnection as Connection
+    else:
+        from multiprocessing.connection import Connection
 
 
 ACQUIRE_SETTINGS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
