@@ -425,6 +425,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             if self._closed:
                 msg = f"SoftReadWriteLock on {self.lock_file} has been closed"
                 raise RuntimeError(msg)
+            if blocking and timeout < 0 and timeout != -1:
+                message: Final[str] = "timeout must be a non-negative number or -1"
+                raise ValueError(message)
             if self._hold is not None:
                 return self._validate_reentrant(mode)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from contextlib import closing
+from contextlib import ExitStack, closing
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
@@ -16,7 +16,7 @@ pytest.importorskip("sqlite3")
 import sqlite3
 from pathlib import Path
 
-from filelock import Timeout
+from filelock import SoftReadWriteLock, Timeout
 from filelock._read_write import (
     _FORKED_DATABASES,
     _MAX_SQLITE_TIMEOUT_MS,
@@ -725,5 +725,76 @@ def sync_locks(tmp_path: Path) -> Generator[tuple[ReadWriteLock, ReadWriteLock]]
     with (
         closing(ReadWriteLock(tmp_path / "a", timeout=30, is_singleton=False)) as holder,
         closing(ReadWriteLock(tmp_path / "a", timeout=30, is_singleton=False)) as contender,
+    ):
+        yield holder, contender
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    "timeout",
+    [pytest.param(-2, id="integer"), pytest.param(-0.5, id="fraction"), pytest.param(float("-inf"), id="infinite")],
+)
+@pytest.mark.parametrize("reentrant", [pytest.param(True, id="reentrant"), pytest.param(False, id="first")])
+def test_acquire_rejects_negative_timeout(
+    timeout_locks: tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock],
+    mode: Literal["read", "write"],
+    timeout: float,
+    *,
+    reentrant: bool,
+) -> None:
+    holder: Final = timeout_locks[0]
+    acquire: Final = holder.acquire_read if mode == "read" else holder.acquire_write
+    with ExitStack() as stack:
+        if reentrant:
+            stack.enter_context(acquire())
+        with pytest.raises(ValueError, match=r"^timeout must be a non-negative number or -1$"):
+            stack.enter_context(acquire(timeout=timeout))
+    with timeout_locks[1].acquire_write(blocking=False), pytest.raises(Timeout):
+        holder.acquire_write(blocking=False)
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    ("timeout", "blocking"),
+    [
+        pytest.param(-2, False, id="nonblocking-integer"),
+        pytest.param(-0.5, False, id="nonblocking-fraction"),
+        pytest.param(float("-inf"), False, id="nonblocking-infinite"),
+        pytest.param(-1, True, id="unlimited"),
+        pytest.param(0, True, id="immediate"),
+    ],
+)
+def test_acquire_valid_timeout_preserves_nested_hold(
+    timeout_locks: tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock],
+    mode: Literal["read", "write"],
+    timeout: float,
+    *,
+    blocking: bool,
+) -> None:
+    holder: Final = timeout_locks[0]
+    contender: Final = timeout_locks[1]
+    acquire: Final = holder.acquire_read if mode == "read" else holder.acquire_write
+    with acquire(timeout=timeout, blocking=blocking):
+        with acquire(timeout=timeout, blocking=blocking), pytest.raises(Timeout):
+            contender.acquire_write(blocking=False)
+        with pytest.raises(Timeout):
+            contender.acquire_write(blocking=False)
+    with contender.acquire_write(blocking=False), pytest.raises(Timeout):
+        holder.acquire_write(blocking=False)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(ReadWriteLock, id="sqlite"),
+        pytest.param(SoftReadWriteLock, id="soft", marks=pytest.mark.requires_hard_links),
+    ]
+)
+def timeout_locks(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> Generator[tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock]]:
+    lock_type: Final[type[ReadWriteLock | SoftReadWriteLock]] = request.param
+    with (
+        closing(lock_type(tmp_path / "a", is_singleton=False)) as holder,
+        closing(lock_type(tmp_path / "a", is_singleton=False)) as contender,
     ):
         yield holder, contender
