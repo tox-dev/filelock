@@ -7,7 +7,7 @@ import sqlite3
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pytest
 
@@ -19,10 +19,13 @@ from tests.read_write_helpers import assert_read_write_lock_state
 if TYPE_CHECKING:
     from collections.abc import Callable
     from multiprocessing.sharedctypes import Synchronized
-    from multiprocessing.synchronize import Event as EventType
     from pathlib import Path
 
     from pytest_mock import MockerFixture
+
+
+# Three probes can each spend 25 seconds on startup, acquisition and shutdown, before executor and GC cleanup.
+pytestmark = pytest.mark.timeout(120)
 
 
 @pytest.fixture
@@ -52,9 +55,11 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(
         task.cancel("first cancellation")
         release_executor.set()
         await rollback_started.wait()
-        assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=False)
-        task.cancel("second cancellation")
-        finish_rollback.set()
+        try:
+            assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=False)
+            task.cancel("second cancellation")
+        finally:
+            finish_rollback.set()
         with pytest.raises(asyncio.CancelledError) as info:
             await task
         blocker.result(timeout=5)
@@ -158,37 +163,25 @@ async def test_acquire_cancellation_surfaces_compensation_failure(lock_file: str
 async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
-    context = multiprocessing.get_context("spawn")
-    holder_acquired = context.Event()
-    release_holder = context.Event()
-    holder = context.Process(
-        target=_hold_read_write_lock,
-        args=(lock_file, "write" if mode == "read" else "read", holder_acquired, release_holder),
-    )
-    holder.start()
+    holder: Final = ReadWriteLock(lock_file, is_singleton=False)
     try:
-        assert holder_acquired.wait(timeout=5), "read-write lock holder did not acquire"
-        execute_started = asyncio.Event()
+        (holder.acquire_write if mode == "read" else holder.acquire_read)(blocking=False)
+        execute_started: Final = asyncio.Event()
         _patch_async_execute_signal(mocker, asyncio.get_running_loop(), execute_started)
-        lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-        task = asyncio.create_task((lock.acquire_read if mode == "read" else lock.acquire_write)())
+        lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
+        task: Final = asyncio.create_task((lock.acquire_read if mode == "read" else lock.acquire_write)())
         await execute_started.wait()
         task.cancel("cancel blocked acquire")
-        release_holder.set()
+        holder.release()
         with pytest.raises(asyncio.CancelledError) as info:
             await task
         assert_cancellation_message(info.value, "cancel blocked acquire")
-        holder.join(timeout=5)
-        assert not holder.is_alive(), "read-write lock holder did not exit"
         assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=True)
         with pytest.raises(RuntimeError, match="not held"):
             await lock.release()
         await lock.close()
     finally:
-        release_holder.set()
-        if holder.is_alive():  # pragma: no cover - cleanup for a hung child after the assertion fails
-            holder.terminate()
-            holder.join(timeout=5)
+        holder.close()
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -349,7 +342,7 @@ def _patch_async_rollback(
 ) -> None:
     def rollback(real_connection: sqlite3.Connection) -> None:
         loop.call_soon_threadsafe(rollback_started.set)
-        assert finish_rollback.wait(timeout=5)
+        finish_rollback.wait()
         real_connection.rollback()
 
     _patch_async_connection(mocker, rollback=rollback)
@@ -513,19 +506,3 @@ def _patch_async_connection(
 def _block_executor(executor_started: threading.Event, release_executor: threading.Event) -> None:
     executor_started.set()
     assert release_executor.wait(timeout=5)
-
-
-def _hold_read_write_lock(
-    lock_file: str,
-    mode: Literal["read", "write"],
-    acquired: EventType,
-    release: EventType,
-) -> None:
-    lock = ReadWriteLock(lock_file, is_singleton=False)
-    (lock.acquire_read if mode == "read" else lock.acquire_write)()
-    acquired.set()
-    try:
-        assert release.wait(timeout=10)
-    finally:
-        lock.release()
-        lock.close()
