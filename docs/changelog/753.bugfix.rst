@@ -1,2 +1,0 @@
-Skip access-denial checks when the process can read mode-``0o000`` files. Keep mode-bit checks enabled for privileged
-processes on filesystems that support POSIX permissions.

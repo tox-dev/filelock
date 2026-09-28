@@ -7,6 +7,21 @@
 .. towncrier release notes start
 
 *******************
+ 4.0.5 (2026-09-28)
+*******************
+
+- Fix ``MarkerSoftFileLock`` acquisition and prevent contenders from evicting live protocol-2 owners after two seconds.
+  Reclaim recognized records after owner death; preserve unknown contracts. :pr:`749`
+- Honor instance ``timeout`` and ``blocking`` settings in sync and async ``ReadWriteLock`` acquisition, including waits
+  between tasks on one instance. Preserve explicit per-call overrides. :pr:`750`
+- Skip access-denial checks when the process can read mode-``0o000`` files. Keep mode-bit checks enabled for privileged
+  processes on filesystems that support POSIX permissions. :pr:`753`
+- Skip vanished ``StrictSoftFileLock`` claims after a read-permission retry expires. Recheck the directory before raising
+  a protocol error so concurrent removal does not turn a stale claim listing into an acquisition failure. :pr:`754`
+- Reject negative timeouts other than ``-1`` in blocking ``AsyncReadWriteLock`` and ``AsyncSoftReadWriteLock`` acquisitions.
+  Keep ``-1`` as an unlimited wait and ignore timeouts when ``blocking=False``. :pr:`755`
+
+*******************
  4.0.4 (2026-09-26)
 *******************
 

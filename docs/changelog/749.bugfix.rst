@@ -1,2 +1,0 @@
-Fix ``MarkerSoftFileLock`` acquisition and prevent contenders from evicting live protocol-2 owners after two seconds.
-Reclaim recognized records after owner death; preserve unknown contracts.

@@ -1,2 +1,0 @@
-Skip vanished ``StrictSoftFileLock`` claims after a read-permission retry expires. Recheck the directory before raising
-a protocol error so concurrent removal does not turn a stale claim listing into an acquisition failure.
