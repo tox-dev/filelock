@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import secrets
+import stat
 import sys
 import time
 import warnings
@@ -365,6 +366,11 @@ class FileLockMeta(ABCMeta):
         poll_interval = _resolve_poll_interval(poll_interval)
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
         # __del__ then trips over the missing context.
+        # A lock reopens, reads, or deletes the files it creates, so a mode that denies the owner read or write fails
+        # later and for good.
+        if mode != _UNSET_FILE_MODE and ~mode & (stat.S_IRUSR | stat.S_IWUSR):
+            msg = f"mode={mode:#o} must grant the owner read and write for {cls.__name__}"
+            raise ValueError(msg)
         context_error_policy = _resolve_context_error_policy(context_error_policy)
         close_error_policy = _resolve_close_error_policy(close_error_policy)
         preserve_lock_file = _resolve_preserve_lock_file(
@@ -677,7 +683,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it to a
             negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
         :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask and
-            default ACLs, preserving POSIX default ACL inheritance in shared directories.
+            default ACLs, preserving POSIX default ACL inheritance in shared directories. Construction raises
+            :class:`ValueError` unless it grants the owner read and write, which the lock needs for its own files.
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set to
             ``False`` then the lock will be reentrant across threads. When ``True`` (the default), **all fields of the
             lock's internal context are per-thread**, including the configuration values ``poll_interval``, ``timeout``,

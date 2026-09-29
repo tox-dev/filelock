@@ -864,6 +864,11 @@ inheritance so the lock file gets the directory's default permissions rather tha
 When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock uses that value directly via ``os.open``. This
 overrides any default ACLs on the directory.
 
+An explicit ``mode`` must grant the owner read and write, or construction raises :class:`ValueError`. A lock reopens,
+reads, and deletes the files it creates, so without those bits it fails later and stays broken: a native lock on its
+second acquire, a :class:`~filelock.StrictSoftFileLock` on its first, and a :class:`~filelock.SoftFileLock` when it
+tries to reclaim a crashed holder's marker.
+
 *****************************
  Thread-local vs shared state
 *****************************
