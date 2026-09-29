@@ -1107,7 +1107,7 @@ def test_singleton_locks_must_be_initialized_with_the_same_args(lock_type: type[
     args: dict[str, Any] = {"timeout": -1, "mode": 0o644, "thread_local": True, "blocking": True, "poll_interval": 0.05}
     alternate_args: dict[str, Any] = {
         "timeout": 10,
-        "mode": 0,
+        "mode": 0o600,
         "thread_local": False,
         "blocking": False,
         "poll_interval": 0.1,

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from filelock import FileLock, SoftFileLock
+from filelock import AsyncFileLock, FileLock, SoftFileLock, StrictSoftFileLock
 from filelock._api import _UNSET_FILE_MODE, BaseFileLock
 
 if TYPE_CHECKING:
@@ -129,3 +129,13 @@ def test_singleton_default_vs_explicit_mode_differ(tmp_path: Path) -> None:
 
 def test_unset_file_mode_sentinel_value() -> None:
     assert _UNSET_FILE_MODE == -1
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, StrictSoftFileLock, AsyncFileLock])
+@pytest.mark.parametrize(
+    "mode",
+    [pytest.param(0o444, id="no-write"), pytest.param(0o200, id="no-read"), pytest.param(0, id="none")],
+)
+def test_mode_without_owner_read_write_raises(lock_type: type[BaseFileLock], mode: int, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must grant the owner read and write"):
+        lock_type(tmp_path / "a.lock", mode=mode)
