@@ -7,6 +7,13 @@
 .. towncrier release notes start
 
 *******************
+ 4.0.7 (2026-09-29)
+*******************
+
+- File locks now raise ``ValueError`` at construction when ``mode`` denies the owner read or write, such as
+  ``mode=0o444``, instead of failing on a later acquire and staying broken until someone deletes the lock file. :pr:`760`
+
+*******************
  4.0.6 (2026-09-28)
 *******************
 
