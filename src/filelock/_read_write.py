@@ -8,7 +8,6 @@ import stat
 import sys
 import threading
 import time
-import weakref
 from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeAlias, cast
 from weakref import WeakValueDictionary
@@ -750,19 +749,14 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
 def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: float) -> _ForkSafeConnection:
     _FORKED_DATABASES.note_sqlite_use()
-    # A symlink at the path would make SQLite open, lock, or create its target. Hold a descriptor that refuses one for
-    # the connection's life, so the name SQLite opens stays that file.
-    fd = _open_lock_database(database)
-    target = database if sys.platform == "win32" else f"{_FD_DIR}/{fd}"
+    # A symlink at the path would make SQLite open, lock, or create its target, so connect through a descriptor that
+    # refuses one. SQLite opens its own descriptor on the file inside connect(), so ours can close after the call.
+    fd: Final[int] = _open_lock_database(database)
+    target: Final[str] = database if sys.platform == "win32" else f"{_FD_DIR}/{fd}"
     try:
-        connection = sqlite3.connect(
-            target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
-        )
-    except BaseException:
+        return sqlite3.connect(target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout)
+    finally:
         os.close(fd)
-        raise
-    weakref.finalize(connection, os.close, fd)
-    return connection
 
 
 def _open_lock_database(database: str) -> int:

@@ -1,0 +1,2 @@
+``ReadWriteLock`` and ``AsyncReadWriteLock`` close the descriptor that checks the database path once SQLite has
+connected, so on PyPy a dropped lock leaves no descriptor open until garbage collection runs.
