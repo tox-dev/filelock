@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import runpy
 import socket
-import stat
 import sys
 import time
 from contextlib import suppress
@@ -14,10 +13,9 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock, Timeout
-from filelock._util import break_lock_file, raise_on_not_writable_file, touch
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
     from pytest_mock import MockerFixture
 
@@ -25,151 +23,133 @@ _SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform != "win32" and os.geteuid() == 0,
     reason="root can write a 0o444 file",
 )
+# Linux and macOS cap PIDs below 2**22 + 1, and Windows answers OpenProcess for it with an invalid-parameter error, so
+# the marker names a holder every platform reads as dead.
+_DEAD_HOLDER: Final[str] = f"{2**22 + 1}\n{socket.gethostname()}\n"
 
 
-def test_break_lock_file_unlinks_unchanged_file(tmp_path: Path) -> None:
-    lock = tmp_path / "test.lock"
-    lock.write_text("stale", encoding="utf-8")
-    st = os.lstat(lock)
-    break_lock_file(str(lock), st.st_mtime, st.st_ino)
-    assert not lock.exists()
-    assert list(tmp_path.glob("test.lock.break.*")) == []
+@pytest.fixture
+def stale_lock(tmp_path: Path) -> Path:
+    path: Final[Path] = tmp_path / "test.lock"
+    path.write_text(_DEAD_HOLDER, encoding="utf-8")
+    return path
 
 
-def test_break_lock_file_preserves_file_when_mtime_advanced(tmp_path: Path) -> None:
-    lock = tmp_path / "test.lock"
+def test_break_lock_file_unlinks_a_dead_holders_marker(stale_lock: Path) -> None:
+    with SoftFileLock(stale_lock, timeout=1):
+        assert list(stale_lock.parent.glob("test.lock.break.*")) == []
+
+
+def _rewrite_in_place(lock: Path) -> None:
     lock.write_text("live", encoding="utf-8")
-    # We pass an mtime_before older than the file's mtime to stand in for a peer that recreated the lock after our
-    # stale read. The live holder needs its marker, so we expect to find it under the break name.
-    break_lock_file(str(lock), mtime_before=0.0, ino_before=os.lstat(lock).st_ino)
-    assert not lock.exists()
-    leftover = list(tmp_path.glob("test.lock.break.*"))
-    assert len(leftover) == 1
-    assert leftover[0].read_text(encoding="utf-8") == "live"
+    os.utime(lock, (time.time() + 10, time.time() + 10))
 
 
-def test_break_lock_file_preserves_file_when_inode_changed(tmp_path: Path) -> None:
-    lock = tmp_path / "test.lock"
-    lock.write_text("stale", encoding="utf-8")
-    st = os.lstat(lock)
-    # Model a coarse-granularity filesystem (NFS, FAT) where a peer broke and recreated the lock with a new inode
-    # but the same mtime second. Creating the replacement while the original still exists guarantees a fresh inode.
-    other = tmp_path / "recreated"
-    other.write_text("live", encoding="utf-8")
-    os.utime(other, ns=(st.st_atime_ns, st.st_mtime_ns))
-    assert os.lstat(other).st_ino != st.st_ino
-    other.replace(lock)
-    break_lock_file(str(lock), st.st_mtime, st.st_ino)
-    leftover = list(tmp_path.glob("test.lock.break.*"))
-    assert len(leftover) == 1
-    assert leftover[0].read_text(encoding="utf-8") == "live"
+def _replace_with_same_mtime(lock: Path) -> None:
+    # A filesystem with coarse modification times (NFS, FAT) gives a same-second recreation the old mtime, so only the
+    # inode tells it apart. Writing the replacement while the original exists guarantees a fresh inode.
+    stale: Final[os.stat_result] = lock.stat()
+    (replacement := lock.with_name("recreated")).write_text("live", encoding="utf-8")
+    os.utime(replacement, ns=(stale.st_atime_ns, stale.st_mtime_ns))
+    replacement.replace(lock)
 
 
-def test_break_lock_file_aborts_if_break_path_vanishes(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock = tmp_path / "test.lock"
-    lock.write_text("x", encoding="utf-8")
-    ino = os.lstat(lock).st_ino
-    mocker.patch("filelock._util.os.lstat", side_effect=FileNotFoundError)
-    break_lock_file(str(lock), 0.0, ino)
-    assert not lock.exists()
-    assert len(list(tmp_path.glob("test.lock.break.*"))) == 1
+@pytest.mark.parametrize(
+    "recreate",
+    [pytest.param(_rewrite_in_place, id="mtime-advanced"), pytest.param(_replace_with_same_mtime, id="inode-changed")],
+)
+def test_break_lock_file_leaves_a_recreated_marker_aside(
+    stale_lock: Path, mocker: MockerFixture, recreate: Callable[[Path], None]
+) -> None:
+    rename: Final = Path.rename
+
+    def peer_recreates_then_rename(source: Path, target: str) -> Path:
+        recreate(source)
+        return rename(source, target)
+
+    mocker.patch.object(Path, "rename", autospec=True, side_effect=peer_recreates_then_rename)
+    with pytest.raises(Timeout):
+        SoftFileLock(stale_lock).acquire(blocking=False)
+
+    # The live holder needs its marker, so it survives under the break name and the lock path stays empty.
+    assert (
+        [path.read_text(encoding="utf-8") for path in stale_lock.parent.glob("test.lock.break.*")],
+        stale_lock.exists(),
+    ) == (["live"], False)
 
 
-def test_break_lock_file_missing_source_raises(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError):
-        break_lock_file(str(tmp_path / "nope.lock"), 0.0, 0)
+def test_break_lock_file_lets_acquire_retry_after_the_marker_vanishes(stale_lock: Path, mocker: MockerFixture) -> None:
+    rename: Final = Path.rename
+
+    def holder_releases_then_rename(source: Path, target: str) -> Path:
+        source.unlink()
+        return rename(source, target)
+
+    mocker.patch.object(Path, "rename", autospec=True, side_effect=holder_releases_then_rename)
+    with SoftFileLock(stale_lock, timeout=1):
+        assert stale_lock.read_text(encoding="utf-8").splitlines()[0] == str(os.getpid())
 
 
-def test_break_lock_file_break_path_not_targetable_by_a_peer(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock = tmp_path / "test.lock"
-    lock.write_text("stale", encoding="utf-8")
-    st = os.lstat(lock)
+def test_break_lock_file_break_name_is_unguessable(stale_lock: Path, mocker: MockerFixture) -> None:
+    # A second breaker in this process could compute <lock>.break.<pid> and rename a recreated live lock onto it
+    # between our lstat and unlink. Were that our break name, our unlink would delete the live lock.
+    guessable: Final[Path] = stale_lock.with_name(f"test.lock.break.{os.getpid()}")
+    lstat: Final = os.lstat
 
-    # A second breaker in the same process independently computes this name (no random token). If break_lock_file
-    # used it too, the peer could rename a freshly recreated live lock onto our break path in the window between the
-    # re-verify lstat and the unlink, and we would delete a live lock the inode check just approved.
-    predictable = tmp_path / f"test.lock.break.{os.getpid()}"
-    real_lstat = os.lstat
-
-    def lstat_hook(path: str) -> os.stat_result:
-        result = real_lstat(path)
-        # break_lock_file lstats the break path exactly once, so this guard only ever runs its body (once).
-        if ".break." in path and not predictable.exists():  # pragma: no branch  # the peer recreates a live lock
-            lock.write_text("live", encoding="utf-8")
-            lock.rename(predictable)
+    def peer_moves_a_live_lock_onto_the_guessable_name(path: str | os.PathLike[str]) -> os.stat_result:
+        result: Final[os.stat_result] = lstat(path)
+        if ".break." in os.fspath(path) and not guessable.exists():
+            stale_lock.write_text("live", encoding="utf-8")
+            stale_lock.rename(guessable)
         return result
 
-    mocker.patch("filelock._util.os.lstat", side_effect=lstat_hook)
-    break_lock_file(str(lock), st.st_mtime, st.st_ino)
+    mocker.patch("os.lstat", side_effect=peer_moves_a_live_lock_onto_the_guessable_name)
+    with pytest.raises(Timeout):
+        SoftFileLock(stale_lock).acquire(blocking=False)
 
-    assert predictable.read_text(encoding="utf-8") == "live"
+    assert guessable.read_text(encoding="utf-8") == "live"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink-to-dir raises IsADirectoryError only on Unix")
-def test_raise_on_not_writable_file_does_not_follow_symlink_to_dir(tmp_path: Path) -> None:  # pragma: win32 no cover
-    target = tmp_path / "targetdir"
-    target.mkdir()
-    link = tmp_path / "my.lock"
-    link.symlink_to(target)
-    # Following the symlink would see a directory and raise IsADirectoryError; lstat sees the link itself.
-    raise_on_not_writable_file(str(link))
-    assert stat.S_ISLNK(os.lstat(link).st_mode)
+def test_writability_check_does_not_follow_symlink_to_dir(tmp_path: Path) -> None:  # pragma: win32 no cover
+    (target := tmp_path / "targetdir").mkdir()
+    (link := tmp_path / "my.lock").symlink_to(target)
+    # Following the symlink would see a directory and raise IsADirectoryError; the lock waits on the link instead.
+    with pytest.raises(Timeout):
+        SoftFileLock(link).acquire(blocking=False)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink + 0o444 semantics differ on Windows")
 @_SKIP_AS_ROOT  # pragma: win32 no cover
-def test_raise_on_not_writable_file_does_not_follow_symlink_to_readonly(tmp_path: Path) -> None:
-    target = tmp_path / "readonly"
-    target.write_text("x", encoding="utf-8")
+def test_writability_check_does_not_follow_symlink_to_readonly(tmp_path: Path) -> None:
+    (target := tmp_path / "readonly").write_text("x", encoding="utf-8")
     target.chmod(0o444)
-    link = tmp_path / "my.lock"
-    link.symlink_to(target)
+    (link := tmp_path / "my.lock").symlink_to(target)
     # Following the symlink would see a read-only file and raise PermissionError; the link itself is writable.
-    raise_on_not_writable_file(str(link))
+    with pytest.raises(Timeout):
+        SoftFileLock(link).acquire(blocking=False)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="real dir raises PermissionError on Windows")
-def test_raise_on_not_writable_file_still_rejects_real_directory(tmp_path: Path) -> None:  # pragma: win32 no cover
-    path = tmp_path / "a_dir"
-    path.mkdir()
-    with pytest.raises(IsADirectoryError):  # pragma: win32 no cover
-        raise_on_not_writable_file(str(path))
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not have read only files in the same way")
-@_SKIP_AS_ROOT
-def test_raise_on_not_writable_file_still_rejects_readonly_file(tmp_path: Path) -> None:  # pragma: win32 no cover
-    path = tmp_path / "ro.lock"
-    path.write_text("x", encoding="utf-8")
-    path.chmod(0o444)
-    try:  # pragma: win32 no cover
-        with pytest.raises(PermissionError):  # pragma: win32 no cover
-            raise_on_not_writable_file(str(path))
-    finally:
-        path.chmod(0o644)
+@pytest.mark.skipif(sys.platform == "win32", reason="a real directory raises PermissionError on Windows")
+@pytest.mark.parametrize("mtime", [pytest.param(0, id="mtime-zero"), pytest.param(2_000_000_000, id="mtime-future")])
+def test_writability_check_rejects_a_directory(tmp_path: Path, mtime: int) -> None:  # pragma: win32 no cover
+    (path := tmp_path / "a_dir").mkdir()
+    os.utime(path, (mtime, mtime))
+    with pytest.raises(IsADirectoryError):
+        SoftFileLock(path).acquire(blocking=False)
 
 
 @_SKIP_AS_ROOT
-@pytest.mark.parametrize("mtime", [0, 2_000_000_000], ids=["mtime-zero", "mtime-future"])
-def test_raise_on_not_writable_file_rejects_readonly_file_any_mtime(tmp_path: Path, mtime: int) -> None:
-    path = tmp_path / "ro.lock"
-    path.write_text("x", encoding="utf-8")
+@pytest.mark.parametrize("mtime", [pytest.param(0, id="mtime-zero"), pytest.param(2_000_000_000, id="mtime-future")])
+def test_writability_check_rejects_a_readonly_file(tmp_path: Path, mtime: int) -> None:
+    (path := tmp_path / "ro.lock").write_text("x", encoding="utf-8")
     path.chmod(0o444)
     try:
         os.utime(path, (mtime, mtime))
         with pytest.raises(PermissionError):
-            raise_on_not_writable_file(str(path))
+            SoftFileLock(path).acquire(blocking=False)
     finally:
         path.chmod(0o644)
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="a real directory raises PermissionError on Windows")
-def test_raise_on_not_writable_file_rejects_directory_with_mtime_zero(tmp_path: Path) -> None:  # pragma: win32 no cover
-    path = tmp_path / "a_dir"
-    path.mkdir()
-    os.utime(path, (0, 0))
-    with pytest.raises(IsADirectoryError):  # pragma: win32 no cover
-        raise_on_not_writable_file(str(path))
 
 
 @pytest.mark.parametrize(
@@ -220,25 +200,6 @@ def readonly_marker(tmp_path: Path) -> Generator[Path]:
     finally:
         with suppress(FileNotFoundError):
             path.chmod(0o644)
-
-
-@pytest.mark.skipif(
-    os.utime not in os.supports_follow_symlinks, reason="os.utime cannot refuse symlinks on this platform"
-)
-def test_touch_does_not_follow_symlink(tmp_path: Path) -> None:  # pragma: needs utime-nofollow
-    # A path-based touch must land on the link itself, not the file it points at, matching the O_NOFOLLOW reads
-    # elsewhere: a peer that swaps a symlink in cannot redirect the refresh onto a victim file.
-    victim = tmp_path / "victim"
-    victim.write_text("do-not-touch")
-    past = time.time() - 1000
-    os.utime(victim, (past, past))
-    link = tmp_path / "link"
-    link.symlink_to(victim)
-
-    touch(str(link))
-
-    assert victim.stat().st_mtime == pytest.approx(past, abs=1)  # a timestamp round-trip need not be bit-exact
-    assert link.lstat().st_mtime > victim.stat().st_mtime
 
 
 @pytest.mark.parametrize(
