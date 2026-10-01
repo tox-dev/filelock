@@ -332,4 +332,5 @@ else:  # pragma: win32 no cover
 
 __all__ = [
     "WindowsFileLock",
+    "_open_non_reparse_fd",
 ]

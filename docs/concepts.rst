@@ -408,6 +408,9 @@ symlinks.
 On older platforms without ``O_NOFOLLOW``, prefer :class:`UnixFileLock <filelock.UnixFileLock>` or
 :class:`WindowsFileLock <filelock.WindowsFileLock>` for security-sensitive applications.
 
+:class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path and keeps SQLite on the file it
+checked, so a link planted in a shared directory cannot point the lock at another file.
+
 ***************************************
  What filelock doesn't protect against
 ***************************************

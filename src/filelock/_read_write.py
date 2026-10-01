@@ -4,15 +4,18 @@ import logging
 import os
 import pathlib
 import sqlite3
+import stat
 import sys
 import threading
 import time
+import weakref
 from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeAlias, cast
 from weakref import WeakValueDictionary
 
 from ._api import (
     AcquireReturnProxy,
+    _canonical,
     _ensure_current_process,
     _fork_transition,
     _raise_chained_errors,
@@ -20,6 +23,9 @@ from ._api import (
     _register_fork_object,
 )
 from ._error import Timeout
+
+if sys.platform == "win32":  # pragma: win32 cover
+    from ._windows import _open_non_reparse_fd
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -45,6 +51,12 @@ _DatabaseIdentity: TypeAlias = tuple[int, int]
 # sqlite3_busy_timeout() accepts a C int, max 2_147_483_647 on 32-bit. Use a lower value to be safe (~23 days).
 _MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
 _UNSAFE_FORK_EXIT_STATUS: Final[int] = 70
+# O_NONBLOCK keeps an open from blocking on a FIFO planted at the path; the regular-file check then rejects it.
+_DB_OPEN_FLAGS: Final[int] = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+# Linux names an open descriptor under /proc/self/fd, macOS and the BSDs under /dev/fd. SQLite connects through that
+# name, so it reopens the inode already validated, and journal_mode=MEMORY keeps it from deriving an on-disk journal
+# name from the synthetic path.
+_FD_DIR: Final[str] = "/proc/self/fd" if sys.platform == "linux" else "/dev/fd"
 
 
 class _SQLiteTransitionContext(threading.local):
@@ -209,7 +221,8 @@ class _ReadWriteLockMeta(type):
                 raise RuntimeError(msg)
             return instance
 
-        normalized = pathlib.Path(lock_file).resolve()
+        # Resolve only the parent, so a symlink at the lock path stays its own key instead of aliasing its target.
+        normalized = pathlib.Path(_canonical(lock_file))
         with cls._instances_lock:
             if normalized not in cls._instances:
                 if normalized in cls._instances_under_construction:  # pragma: no cover - exercised in an audit callback
@@ -306,7 +319,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         is_singleton: bool = True,  # ruff:ignore[unused-method-argument]  # consumed by _ReadWriteLockMeta.__call__
     ) -> None:
         self.lock_file = os.fspath(lock_file)
-        self._canonical_path = pathlib.Path(lock_file).resolve()
+        self._canonical_path = pathlib.Path(_canonical(lock_file))
         _FORKED_DATABASES.raise_if_poisoned(self._canonical_path)
         self.timeout = timeout
         self.blocking = blocking
@@ -737,13 +750,34 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
 def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: float) -> _ForkSafeConnection:
     _FORKED_DATABASES.note_sqlite_use()
-    return sqlite3.connect(
-        database,
-        check_same_thread=False,
-        factory=factory,
-        cached_statements=0,
-        timeout=timeout,
-    )
+    # A symlink at the path would make SQLite open, lock, or create its target. Hold a descriptor that refuses one for
+    # the connection's life, so the name SQLite opens stays that file.
+    fd = _open_lock_database(database)
+    target = database if sys.platform == "win32" else f"{_FD_DIR}/{fd}"
+    try:
+        connection = sqlite3.connect(
+            target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+        )
+    except BaseException:
+        os.close(fd)
+        raise
+    weakref.finalize(connection, os.close, fd)
+    return connection
+
+
+def _open_lock_database(database: str) -> int:
+    if sys.platform == "win32":  # pragma: win32 cover
+        # The handle refuses a reparse point and omits delete sharing, so the name cannot be swapped while it is open.
+        if (fd := _open_non_reparse_fd(database, 0o600)) is None:
+            msg = f"lock database {database!r} is being deleted or held without sharing"
+            raise PermissionError(msg)
+        return fd
+    fd = os.open(database, _DB_OPEN_FLAGS, 0o600)  # pragma: win32 no cover
+    if not stat.S_ISREG(os.fstat(fd).st_mode):  # pragma: win32 no cover
+        os.close(fd)
+        msg = f"refusing a non-regular lock database: {database!r}"
+        raise OSError(msg)
+    return fd  # pragma: win32 no cover
 
 
 @contextmanager

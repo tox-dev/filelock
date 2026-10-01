@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import ctypes
+import os
 import sys
 import time
 from multiprocessing import Event, Process, Value, set_start_method
 from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pytest
+from capabilities import CAPABILITIES
 
 pytest.importorskip("sqlite3")
 
@@ -369,37 +372,61 @@ def test_sequential_lock_modes(
             pass
 
 
-@pytest.mark.parametrize(
-    "path_change",
-    [pytest.param("cwd", id="relative-cwd"), pytest.param("symlink", id="retargeted-symlink")],
-)
-def test_read_write_lock_keeps_constructed_database(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_change: Literal["cwd", "symlink"]
-) -> None:
+def test_read_write_lock_keeps_constructed_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     first_directory = tmp_path / "first"
     second_directory = tmp_path / "second"
     first_directory.mkdir()
     second_directory.mkdir()
     first_database = first_directory / "lock.db"
     second_database = second_directory / "lock.db"
-    if path_change == "cwd":
-        monkeypatch.chdir(first_directory)
-        lock = ReadWriteLock("lock.db", is_singleton=False)
-        monkeypatch.chdir(second_directory)
-    else:
-        lock_path = tmp_path / "lock.db"
-        try:
-            lock_path.symlink_to(first_database)
-        except OSError as error:  # pragma: no cover - platform policy can deny symlink creation
-            pytest.skip(str(error))
-        lock = ReadWriteLock(lock_path, is_singleton=False)
-        lock_path.unlink()
-        lock_path.symlink_to(second_database)
+    monkeypatch.chdir(first_directory)
+    lock = ReadWriteLock("lock.db", is_singleton=False)
+    monkeypatch.chdir(second_directory)
 
     with lock.read_lock():
         assert_read_write_lock_state(str(first_database), "write", available=False)
         assert_read_write_lock_state(str(second_database), "write", available=True)
     lock.close()
+
+
+def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:
+    # Following it would let anyone who can create names in the lock directory make the victim create the target.
+    target = tmp_path / "target.db"
+    link = tmp_path / "lock.db"
+    try:
+        link.symlink_to(target)
+    except OSError as error:  # pragma: no cover - platform policy can deny symlink creation
+        pytest.skip(str(error))
+    # Construction opens a connection, so the refusal lands there; acquiring reopens and refuses the same way.
+    with pytest.raises(OSError, match=r"symbolic link|symlink"):
+        ReadWriteLock(link, is_singleton=False).acquire_read()
+    assert not target.exists()
+
+
+def test_read_write_lock_refuses_a_non_regular_path(tmp_path: Path) -> None:
+    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
+        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
+    # A FIFO planted at the lock path opens without blocking (O_NONBLOCK) but is not a database to hand SQLite.
+    lock_path = tmp_path / "lock.db"  # pragma: win32 no cover
+    os.mkfifo(lock_path)  # pragma: win32 no cover
+    with pytest.raises(OSError, match="non-regular"):  # pragma: win32 no cover
+        ReadWriteLock(lock_path, is_singleton=False)
+
+
+def test_read_write_lock_refuses_a_database_held_without_sharing(tmp_path: Path) -> None:
+    if sys.platform != "win32":  # pragma: win32 no cover
+        pytest.skip("share modes exist only on Windows")  # the platform arm also narrows so ty resolves ctypes.WinDLL
+    # Another process holding the database with no sharing blocks the handle that pins its name, so construction fails.
+    lock_path = tmp_path / "lock.db"  # pragma: win32 cover
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # pragma: win32 cover
+    kernel32.CreateFileW.restype = ctypes.c_void_p  # pragma: win32 cover
+    # GENERIC_READ | GENERIC_WRITE, no sharing, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL
+    handle = kernel32.CreateFileW(str(lock_path), 0xC0000000, 0, None, 2, 0x80, None)  # pragma: win32 cover
+    try:  # pragma: win32 cover
+        with pytest.raises(PermissionError, match="held without sharing"):
+            ReadWriteLock(lock_path, is_singleton=False)
+    finally:  # pragma: win32 cover
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
 @pytest.mark.parametrize(

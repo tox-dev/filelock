@@ -12,6 +12,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import ReadWriteLock
+from filelock._read_write import _FD_DIR
 from tests.capability_marks import (
     NEEDS_AUDIT_EVENTS,
     NEEDS_COLLECTED_FINALIZATION,
@@ -42,7 +43,10 @@ def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
         if event != "sqlite3.connect":
             return
         database = args[0]
-        if isinstance(database, (str, bytes)) and os.fsdecode(database) == str(lock_path):
+        # The lock connects through /dev/fd or /proc/self/fd, or by its own path on Windows.
+        if isinstance(database, (str, bytes)) and (
+            (path := os.fsdecode(database)) == str(lock_path) or path.startswith(f"{_FD_DIR}/")
+        ):
             connection_events += 1
 
     sys.addaudithook(audit_hook)
@@ -692,6 +696,7 @@ def _fork_during_sqlite_script() -> str:  # pragma: needs fork
             from _typeshed import StrOrBytesPath
 
         from filelock import ReadWriteLock
+        from filelock._read_write import _FD_DIR
 
         warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*fork\(\).*")
 
@@ -711,7 +716,7 @@ def _fork_during_sqlite_script() -> str:  # pragma: needs fork
             database = args[0]
             if (
                 isinstance(database, (str, bytes))
-                and os.fsdecode(database) == lock_path
+                and ((path := os.fsdecode(database)) == lock_path or path.startswith(_FD_DIR + "/"))
             ):
                 waiter_inside_connect.set()
                 assert continue_connect.wait(5)
