@@ -500,6 +500,9 @@ But upgrading from read to write (or downgrading) raises an error:
         with rw.write_lock():  # RuntimeError
             pass
 
+A write lock belongs to the thread that acquired it, so ``release()`` from another thread raises ``RuntimeError``.
+``release(force=True)`` and ``close()`` drop it from any thread.
+
 ``ReadWriteLock`` opens a SQLite connection for an outer acquisition and closes it after the final matching
 ``release()``. Reentrant acquisitions share that transaction. Call ``close()`` to release a held lock and invalidate the
 instance:
@@ -598,6 +601,10 @@ expired holder can resume:
     with rw.write_lock():
         # A store that rejects a lower generation than the highest it accepted refuses an evicted holder that resumes.
         store.write(payload, fence=rw.generation)
+
+As with ``ReadWriteLock``, ``release()`` of a write lock from another thread raises ``RuntimeError``. ``on_compromise``
+runs on the hold's own heartbeat thread, so it may release, and ``release(force=True)`` and ``close()`` work from any
+thread.
 
 ``timeout`` and ``blocking`` set instance-wide defaults that each acquisition inherits. Passing ``None`` per call means
 "use the instance default", which is not the same as ``-1``:

@@ -417,7 +417,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :param force: if ``True``, release the lock completely regardless of the current lock level
 
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``
+        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if a write lock is held by
+            another thread and *force* is ``False``
 
         """
         with _fork_transition():
@@ -443,6 +444,14 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     def _release(self, *, force: bool, close: bool) -> None:
         with self._transaction_lock, self._internal_lock:
+            # The connection runs with check_same_thread=False, so a release from another thread would end the owner's
+            # transaction under it and let a second writer in.
+            if not force and self._current_mode == "write" and (cur := threading.get_ident()) != self._write_thread_id:
+                msg = (
+                    f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
+                    f"from thread {cur} while it is held by thread {self._write_thread_id}"
+                )
+                raise RuntimeError(msg)
             if self._lock_level == 0:
                 if force and self._con is None:
                     if close:
