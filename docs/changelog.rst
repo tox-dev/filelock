@@ -7,6 +7,13 @@
 .. towncrier release notes start
 
 *******************
+ 4.0.8 (2026-10-01)
+*******************
+
+- ``ReadWriteLock.release()`` and ``SoftReadWriteLock.release()`` from a thread that does not hold the write lock now
+  raise ``RuntimeError`` instead of dropping the holder's lock and letting a second writer in. :pr:`761`
+
+*******************
  4.0.7 (2026-09-29)
 *******************
 
