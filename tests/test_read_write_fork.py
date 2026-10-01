@@ -6,13 +6,13 @@ import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolates process-global audit hooks and fork exits
 import sys
 import textwrap
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 from capabilities import CAPABILITIES
 
 from filelock import ReadWriteLock
-from filelock._read_write import _FD_DIR
 from tests.capability_marks import (
     NEEDS_AUDIT_EVENTS,
     NEEDS_COLLECTED_FINALIZATION,
@@ -21,8 +21,6 @@ from tests.capability_marks import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from _typeshed import StrOrBytesPath
 
 _NEEDS_FD_DIRECTORY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
@@ -45,7 +43,7 @@ def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
         database = args[0]
         # The lock connects through /dev/fd or /proc/self/fd, or by its own path on Windows.
         if isinstance(database, (str, bytes)) and (
-            (path := os.fsdecode(database)) == str(lock_path) or path.startswith(f"{_FD_DIR}/")
+            (path := os.fsdecode(database)) == str(lock_path) or path.startswith(("/dev/fd/", "/proc/self/fd/"))
         ):
             connection_events += 1
 
@@ -68,6 +66,22 @@ def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) 
     result = _run_fork_script(_dropped_instances_script(), [str(tmp_path)], timeout=10)
 
     assert result == (0, "", "")
+
+
+@_NEEDS_FD_DIRECTORY
+def test_read_write_lock_holds_one_descriptor_on_its_database(tmp_path: Path) -> None:  # pragma: needs fd-directory
+    lock_path: Final[Path] = tmp_path / "held.db"
+    with ReadWriteLock(lock_path, is_singleton=False).read_lock():
+        database: Final[os.stat_result] = lock_path.stat()
+        held = 0
+        for entry in (Path("/dev/fd") if Path("/dev/fd").is_dir() else Path("/proc/self/fd")).iterdir():
+            # The descriptor that listed the directory is gone by the time we stat it.
+            with contextlib.suppress(OSError):
+                descriptor: Final[os.stat_result] = os.fstat(int(entry.name))
+                held += (descriptor.st_dev, descriptor.st_ino) == (database.st_dev, database.st_ino)
+
+    # SQLite keeps its own descriptor, so the one that refused a symlink must not outlive connect().
+    assert held == 1
 
 
 @NEEDS_FORK  # pragma: needs fork
@@ -696,7 +710,6 @@ def _fork_during_sqlite_script() -> str:  # pragma: needs fork
             from _typeshed import StrOrBytesPath
 
         from filelock import ReadWriteLock
-        from filelock._read_write import _FD_DIR
 
         warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*fork\(\).*")
 
@@ -716,7 +729,7 @@ def _fork_during_sqlite_script() -> str:  # pragma: needs fork
             database = args[0]
             if (
                 isinstance(database, (str, bytes))
-                and ((path := os.fsdecode(database)) == lock_path or path.startswith(_FD_DIR + "/"))
+                and ((path := os.fsdecode(database)) == lock_path or path.startswith(("/dev/fd/", "/proc/self/fd/")))
             ):
                 waiter_inside_connect.set()
                 assert continue_connect.wait(5)
