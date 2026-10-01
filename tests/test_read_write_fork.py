@@ -559,11 +559,13 @@ def _concurrent_operation_script() -> str:
         assert not acquire_thread.is_alive()
         assert not operation_thread.is_alive()
         assert acquire_errors.empty()
-        assert operation_errors.empty()
         if operation == "release":
+            assert "while it is held by thread" in str(operation_errors.get_nowait())
+            lock.release(force=True)
             with lock.write_lock():
                 pass
         else:
+            assert operation_errors.empty()
             try:
                 lock.acquire_read()
             except sqlite3.ProgrammingError as error:

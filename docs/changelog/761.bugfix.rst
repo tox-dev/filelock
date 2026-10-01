@@ -1,0 +1,2 @@
+``ReadWriteLock.release()`` and ``SoftReadWriteLock.release()`` from a thread that does not hold the write lock now
+raise ``RuntimeError`` instead of dropping the holder's lock and letting a second writer in.

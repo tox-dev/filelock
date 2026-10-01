@@ -202,6 +202,31 @@ async def test_custom_executor(lock_file: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_write_release_lands_on_another_executor_thread(lock_file: str) -> None:
+    executor = ThreadPoolExecutor(max_workers=2)
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
+    await lock.acquire_write()
+    started, gate = threading.Event(), threading.Event()
+
+    def park() -> None:
+        started.set()
+        gate.wait(_TASK_WAIT)
+
+    # The pool's only thread ran the acquire; parking it there forces the release onto a second worker.
+    parked = asyncio.get_running_loop().run_in_executor(executor, park)
+    await asyncio.to_thread(started.wait, _TASK_WAIT)
+    try:
+        await lock.release()
+    finally:
+        gate.set()
+        await parked
+    async with lock.write_lock(timeout=_TASK_WAIT):
+        pass
+    await lock.close()
+    executor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_close_shuts_down_owned_executor(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     executor = lock.executor

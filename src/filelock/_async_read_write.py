@@ -230,8 +230,10 @@ class AsyncReadWriteLock:
         _ensure_current_process()
         if self._inherited:  # pragma: needs fork
             return
+        # The task table owns the nesting, so the backend is always one level deep here, and a caller-supplied executor
+        # can run this on another worker than the acquire: force=True is the backend's cross-thread release.
         await self._owners.release(
-            force=force, lock_file=self.lock_file, leave=functools.partial(self._run, self._lock.release)
+            force=force, lock_file=self.lock_file, leave=functools.partial(self._run, self._lock.release, force=True)
         )
 
     async def close(self) -> None:
@@ -276,7 +278,7 @@ class AsyncReadWriteLock:
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             try:
-                await _drain_future(self._submit(self._lock.release))
+                await _drain_future(self._submit(self._lock.release, force=True))
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             raise

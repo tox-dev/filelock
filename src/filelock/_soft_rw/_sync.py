@@ -380,7 +380,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         :param force: if ``True``, release the lock completely regardless of the current lock level
 
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``
+        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if a write lock is held by
+            another thread and *force* is ``False``
 
         """
         if self._creator_pid != os.getpid():  # pragma: forked child
@@ -391,6 +392,18 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 if force:
                     return
                 msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
+                raise RuntimeError(msg)
+            # Another thread's release would leave the generation log under the writer and let a peer in. The hold's
+            # own heartbeat thread may release it, since on_compromise runs there.
+            if (
+                not force
+                and hold.mode == "write"
+                and (cur := threading.get_ident()) not in {hold.write_thread_id, hold.heartbeat_thread.ident}
+            ):
+                msg = (
+                    f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
+                    f"from thread {cur} while it is held by thread {hold.write_thread_id}"
+                )
                 raise RuntimeError(msg)
             if force:
                 hold.level = 0

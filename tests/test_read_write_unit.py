@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, closing
+from functools import partial
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
@@ -27,7 +29,7 @@ from filelock._read_write import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
     from pytest_mock import MockerFixture
 
@@ -290,6 +292,40 @@ def test_write_lock_reentrant_from_different_thread_prohibited(lock_file: str) -
     lock.release()
     assert error is not None
     assert "while it is held by thread" in str(error)
+
+
+def test_write_lock_release_from_different_thread_prohibited(lock_file: str) -> None:
+    with (
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as contender,
+        ThreadPoolExecutor(max_workers=1) as other_thread,
+    ):
+        lock.acquire_write()
+        with pytest.raises(RuntimeError, match="while it is held by thread"):
+            other_thread.submit(lock.release).result()
+        with pytest.raises(Timeout):
+            contender.acquire_write(blocking=False)
+
+
+@pytest.mark.parametrize(
+    "drop",
+    [
+        pytest.param(ReadWriteLock.close, id="close"),
+        pytest.param(partial(ReadWriteLock.release, force=True), id="force-release"),
+    ],
+)
+def test_write_lock_drop_from_different_thread_needs_an_explicit_override(
+    lock_file: str, drop: Callable[[ReadWriteLock], None]
+) -> None:
+    with (
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as contender,
+        ThreadPoolExecutor(max_workers=1) as other_thread,
+    ):
+        lock.acquire_write()
+        other_thread.submit(drop, lock).result()
+        with contender.write_lock(blocking=False):
+            pass
 
 
 @pytest.mark.parametrize(

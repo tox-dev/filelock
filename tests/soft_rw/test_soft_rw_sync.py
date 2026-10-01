@@ -7,8 +7,10 @@ import stat
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, suppress
 from errno import EIO
+from functools import partial
 from multiprocessing import Event, Process
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -271,6 +273,32 @@ def test_write_lock_is_thread_pinned(lock: SoftReadWriteLock) -> None:
     lock.release()
     assert len(errors) == 1
     assert isinstance(errors[0], (RuntimeError, Timeout))
+
+
+def test_write_lock_release_from_different_thread_prohibited(lock_file: str, lock: SoftReadWriteLock) -> None:
+    with closing(_make_lock(lock_file)) as contender, ThreadPoolExecutor(max_workers=1) as other_thread:
+        lock.acquire_write(timeout=2)
+        with pytest.raises(RuntimeError, match="while it is held by thread"):
+            other_thread.submit(lock.release).result()
+        with pytest.raises(Timeout):
+            contender.acquire_write(blocking=False)
+
+
+@pytest.mark.parametrize(
+    "drop",
+    [
+        pytest.param(SoftReadWriteLock.close, id="close"),
+        pytest.param(partial(SoftReadWriteLock.release, force=True), id="force-release"),
+    ],
+)
+def test_write_lock_drop_from_different_thread_needs_an_explicit_override(
+    lock_file: str, lock: SoftReadWriteLock, drop: Callable[[SoftReadWriteLock], None]
+) -> None:
+    with closing(_make_lock(lock_file)) as contender, ThreadPoolExecutor(max_workers=1) as other_thread:
+        lock.acquire_write(timeout=2)
+        other_thread.submit(drop, lock).result()
+        with contender.write_lock(blocking=False):
+            pass
 
 
 def test_blocking_acquire_without_timeout_waits_for_release(lock_file: str) -> None:
@@ -743,7 +771,8 @@ def test_singleton_rejects_a_different_on_compromise(lock_file: str) -> None:
         first.close()
 
 
-def test_release_from_on_compromise_leaves_cleanly(lock_file: str) -> None:
+@pytest.mark.parametrize("force", [pytest.param(True, id="force"), pytest.param(False, id="plain")])
+def test_release_from_on_compromise_leaves_cleanly(lock_file: str, force: bool) -> None:
     # The callback runs on the heartbeat thread; a release there has no thread to join and must still leave.
     lock = SoftReadWriteLock(
         lock_file,
@@ -751,7 +780,7 @@ def test_release_from_on_compromise_leaves_cleanly(lock_file: str) -> None:
         heartbeat_interval=0.05,
         stale_threshold=0.2,
         poll_interval=0.02,
-        on_compromise=lambda _compromise: lock.release(force=True),
+        on_compromise=lambda _compromise: lock.release(force=force),
     )
     lock.acquire_write(timeout=2)
     hold = lock._hold
