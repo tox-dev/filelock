@@ -11,11 +11,11 @@ from typing import Final
 
 def write_all(fd: int, data: bytes) -> None:
     """
-    Write the whole buffer to *fd*, looping over the short writes ``os.write`` is allowed to make.
+    Write the whole buffer to *fd*, looping over the short writes POSIX lets ``os.write`` make.
 
-    A marker written with a bare ``os.write`` can land partially: a peer reading it mid-write parses a truncated record
-    as malformed or as a foreign holder. Looping until the buffer drains keeps the record atomic in the process and
-    kernel view. No ``fsync``: filelock needs a complete record, not crash-durable storage.
+    A caller that stopped after one short write would leave a truncated marker behind. A peer that reads between two
+    writes sees a prefix of the record; each caller has to tolerate that. Lock records need not survive a power loss, so
+    we skip ``fsync``.
 
     :param fd: file descriptor open for writing.
     :param data: bytes to write in full.
@@ -82,29 +82,28 @@ def ensure_directory_exists(filename: Path | str) -> None:
 
 def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> None:
     """
-    Atomically break a stale lock file judged stale at modification time *mtime_before*.
+    Remove the lock file a caller found stale with modification time *mtime_before* and inode *ino_before*.
 
-    Rename the file to a process-private name before unlinking it, so two processes breaking the same lock cannot
-    delete each other's work: only one rename of a given inode wins, the loser gets ``OSError``. After the rename,
-    re-check the file. A newer modification time, or a different inode than *ino_before*, means a peer recreated the
-    lock between the stale decision and the rename, so we grabbed a live file and abort, leaving the renamed file in
-    place. A rollback rename is itself racy, the same trade-off as the soft read/write marker break. The inode check
-    matters because filesystems with coarse modification-time granularity (NFS, FAT) can give a same-second recreation
-    the old mtime, so mtime alone would miss it and unlink a live lock; the inode is the reliable identity, mirroring
-    the token re-check in the soft read/write marker break. ``lstat`` avoids following a hostile symlink swapped in
-    after the decision.
+    Several processes may race to break the same lock; the first to rename the file takes it, and the rest get
+    ``OSError``. If we find a newer modification time or another inode on the renamed file, a peer recreated the lock
+    after we judged it stale, and we leave that live file under the break name. Its holder keeps running with no file at
+    the lock path, so a third process can acquire the lock alongside it. We do not rename the file back, because on
+    POSIX that would replace any marker a third process created after our rename. StrictSoftFileLock has no such race.
+    Its sole way to remove another process's claim is an operator's ``force_break``. We compare inodes as well as
+    modification times because NFS and FAT store modification times at coarse granularity, and a peer that recreates the
+    lock within that granularity leaves the old mtime on it. We call ``lstat`` to avoid following a symlink a peer swaps
+    in after our stale check.
 
-    The break name carries a random token so it is unguessable and unique per attempt. Without it two breakers in the
-    same process share ``<lock>.break.<pid>``, and a second break can rename a recreated live lock onto that path in
-    the window between the re-verify ``lstat`` above and the ``unlink`` below, deleting a live lock the inode check
-    just approved. A private name keeps anyone else from targeting our break path, matching the soft read/write marker
-    break.
+    We add a random token to the break name so other processes cannot guess it and two breakers in one process do not
+    share ``<lock>.break.<pid>``. With a shared name, the second breaker could rename a recreated live lock onto that
+    path between our ``lstat`` and ``unlink``, and our ``unlink`` would delete it.
 
     :param lock_file: path to the lock file to break.
-    :param mtime_before: modification time observed when the lock was judged stale.
-    :param ino_before: inode number observed when the lock was judged stale.
+    :param mtime_before: modification time the caller saw when it judged the lock stale.
+    :param ino_before: inode number the caller saw when it judged the lock stale.
 
-    :raises OSError: if the rename fails (e.g. the file vanished or is not owned in a sticky directory).
+    :raises OSError: if the rename fails, for example because the file vanished or another user owns it in a sticky
+        directory.
 
     """
     break_path = f"{lock_file}.break.{os.getpid()}.{secrets.token_hex(16)}"

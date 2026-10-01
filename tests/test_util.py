@@ -39,8 +39,8 @@ def test_break_lock_file_unlinks_unchanged_file(tmp_path: Path) -> None:
 def test_break_lock_file_preserves_file_when_mtime_advanced(tmp_path: Path) -> None:
     lock = tmp_path / "test.lock"
     lock.write_text("live", encoding="utf-8")
-    # An mtime_before older than the file's real mtime models a peer recreating the lock after our stale read.
-    # break_lock_file renames the live file aside but must not unlink it, so we never end with two live holders.
+    # We pass an mtime_before older than the file's mtime to stand in for a peer that recreated the lock after our
+    # stale read. The live holder needs its marker, so we expect to find it under the break name.
     break_lock_file(str(lock), mtime_before=0.0, ino_before=os.lstat(lock).st_ino)
     assert not lock.exists()
     leftover = list(tmp_path.glob("test.lock.break.*"))
