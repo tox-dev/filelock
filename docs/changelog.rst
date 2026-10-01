@@ -7,6 +7,15 @@
 .. towncrier release notes start
 
 *******************
+ 4.0.9 (2026-10-01)
+*******************
+
+- ``ReadWriteLock`` and ``AsyncReadWriteLock`` close the descriptor that checks the database path once SQLite has
+  connected, so on PyPy a dropped lock leaves no descriptor open until garbage collection runs. :pr:`763`
+- ``ReadWriteLock`` and ``AsyncReadWriteLock`` refuse a symlink at the database path instead of following it, so a
+  user who can create names in a shared lock directory cannot point the lock at another file (GHSA-j8f7-rjxc-mr56).
+
+*******************
  4.0.8 (2026-10-01)
 *******************
 
