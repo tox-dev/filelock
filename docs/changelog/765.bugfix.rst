@@ -1,3 +1,0 @@
-Reusing a singleton ``AsyncFileLock`` with another ``loop``, ``executor`` or ``run_in_executor``, or a singleton
-``SoftFileLease`` with another ``lease_duration``, ``heartbeat_interval`` or ``on_compromise``, now raises
-``ValueError`` instead of returning the lock with its original options.

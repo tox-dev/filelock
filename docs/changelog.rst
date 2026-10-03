@@ -6,6 +6,14 @@
 
 .. towncrier release notes start
 
+********************
+ 4.0.10 (2026-10-03)
+********************
+
+- Reusing a singleton ``AsyncFileLock`` with another ``loop``, ``executor`` or ``run_in_executor``, or a singleton
+  ``SoftFileLease`` with another ``lease_duration``, ``heartbeat_interval`` or ``on_compromise``, now raises
+  ``ValueError`` instead of returning the lock with its original options. :pr:`765`
+
 *******************
  4.0.9 (2026-10-01)
 *******************
