@@ -38,7 +38,7 @@ CloseErrorPolicy = Literal["default", "raise", "suppress"]
 _CLOSE_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"default", "raise", "suppress"})
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Mapping
     from types import TracebackType
     from typing import Protocol
 
@@ -433,11 +433,12 @@ class FileLockMeta(ABCMeta):
             "fallback_to_soft": (fallback_to_soft, instance.fallback_to_soft),
             "preserve_lock_file": (preserve_lock_file, instance.preserve_lock_file),
         }
-        non_matching_params = {
+        non_matching_params: dict[str, tuple[object, object]] = {
             name: (passed_param, set_param)
             for name, (passed_param, set_param) in params_to_check.items()
             if passed_param != set_param
         }
+        non_matching_params.update(instance._singleton_extra_mismatches(kwargs))  # ruff:ignore[private-member-access]  # validates the managed instance's subclass options
         # Callables compare by identity, not equality: two equal callables can close over different state, so a
         # singleton must reject a different hook object even if it compares equal. Keep it out of the scalar dict above.
         hook_mismatch = on_acquired is not instance.on_acquired
@@ -748,6 +749,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             lifetime=lifetime,
         )
         _register_fork_object(self)
+
+    def _singleton_extra_mismatches(  # ruff:ignore[no-self-use]  # subclasses validate their own instance options here
+        self, _kwargs: Mapping[str, object], /
+    ) -> dict[str, tuple[object, object]]:
+        return {}
 
     def is_thread_local(self) -> bool:
         """:returns: a flag indicating if this lock is thread local or not"""

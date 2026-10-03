@@ -516,6 +516,66 @@ async def test_singleton_avoids_deadlock(tmp_path: Path, lock_type: type[BaseAsy
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("run_in_executor", [False, True])
+def test_singleton_rejects_different_run_in_executor(
+    tmp_path: Path, lock_type: type[BaseAsyncFileLock], run_in_executor: bool
+) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock = lock_type(lock_path, is_singleton=True, run_in_executor=run_in_executor)
+    assert lock_type(lock_path, is_singleton=True, run_in_executor=run_in_executor) is lock
+
+    with pytest.raises(ValueError, match="run_in_executor"):
+        lock_type(lock_path, is_singleton=True, run_in_executor=not run_in_executor)
+
+    assert lock.run_in_executor is run_in_executor
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("initial_none", [False, True])
+def test_singleton_rejects_different_loop(
+    tmp_path: Path, lock_type: type[BaseAsyncFileLock], initial_none: bool
+) -> None:
+    loop = asyncio.new_event_loop()
+    other_loop = asyncio.new_event_loop()
+    try:
+        initial_loop = None if initial_none else loop
+        lock_path = tmp_path / "test.lock"
+        lock = lock_type(lock_path, is_singleton=True, loop=initial_loop)
+        assert lock_type(lock_path, is_singleton=True, loop=initial_loop) is lock
+
+        with pytest.raises(ValueError, match="loop"):
+            lock_type(lock_path, is_singleton=True, loop=other_loop)
+
+        if not initial_none:
+            with pytest.raises(ValueError, match="loop"):
+                lock_type(lock_path, is_singleton=True)
+        assert lock.loop is initial_loop
+    finally:
+        loop.close()
+        other_loop.close()
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("initial_none", [False, True])
+def test_singleton_rejects_different_executor(
+    tmp_path: Path, lock_type: type[BaseAsyncFileLock], initial_none: bool
+) -> None:
+    with ThreadPoolExecutor() as executor, ThreadPoolExecutor() as other_executor:
+        initial_executor = None if initial_none else executor
+        lock_path = tmp_path / "test.lock"
+        lock = lock_type(lock_path, is_singleton=True, executor=initial_executor)
+        assert lock_type(lock_path, is_singleton=True, executor=initial_executor) is lock
+
+        with pytest.raises(ValueError, match="executor"):
+            lock_type(lock_path, is_singleton=True, executor=other_executor)
+
+        if not initial_none:
+            with pytest.raises(ValueError, match="executor"):
+                lock_type(lock_path, is_singleton=True)
+        assert lock.executor is initial_executor
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
     # The registry is per-thread, so a second acquire from a different task must not look like a reentrant deadlock.
