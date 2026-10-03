@@ -8,11 +8,12 @@ from contextlib import suppress
 from errno import EIO, ENOENT
 from threading import Thread
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
 
 import pytest
 
 from filelock import (
+    AsyncSoftFileLease,
     FileLock,
     LeaseCompromise,
     LeaseSettingsMismatch,
@@ -394,6 +395,52 @@ def test_lease_rejects_a_peer_configured_with_another_duration(marker: Path) -> 
 
     with holder, pytest.raises(LeaseSettingsMismatch, match="must agree on lease_duration"):
         _lease(marker, lease_duration=_DURATION * 3).acquire()
+
+
+class _LeaseSettings(TypedDict, total=False):
+    lease_duration: float
+    heartbeat_interval: float
+    on_compromise: Callable[[LeaseCompromise], None]
+
+
+_LEASE_TYPES: Final = [pytest.param(SoftFileLease, id="sync"), pytest.param(AsyncSoftFileLease, id="async")]
+
+
+@pytest.fixture
+def lease_settings() -> _LeaseSettings:
+    return {"lease_duration": 6, "heartbeat_interval": 1, "on_compromise": lambda _compromise: None}
+
+
+@pytest.mark.parametrize("lease_type", _LEASE_TYPES)
+def test_lease_singleton_reuses_the_instance_for_the_same_settings(
+    marker: Path, lease_type: type[SoftFileLease], lease_settings: _LeaseSettings
+) -> None:
+    lease = lease_type(str(marker), is_singleton=True, **lease_settings)
+    assert lease_type(str(marker), is_singleton=True, **lease_settings) is lease
+
+
+@pytest.mark.parametrize("lease_type", _LEASE_TYPES)
+def test_lease_singleton_resolves_an_omitted_heartbeat_before_comparing(
+    marker: Path, lease_type: type[SoftFileLease]
+) -> None:
+    lease = lease_type(str(marker), is_singleton=True, lease_duration=6)
+    assert lease_type(str(marker), is_singleton=True, lease_duration=6, heartbeat_interval=2) is lease
+
+
+@pytest.mark.parametrize(
+    "setting", [pytest.param(name, id=name) for name in ("lease_duration", "heartbeat_interval", "on_compromise")]
+)
+@pytest.mark.parametrize("lease_type", _LEASE_TYPES)
+def test_lease_singleton_rejects_reuse_with_another_setting(
+    marker: Path,
+    lease_type: type[SoftFileLease],
+    lease_settings: _LeaseSettings,
+    setting: Literal["lease_duration", "heartbeat_interval", "on_compromise"],
+) -> None:
+    _held = lease_type(str(marker), is_singleton=True, **lease_settings)  # the cache only keeps it weakly
+    del lease_settings[setting]
+    with pytest.raises(ValueError, match=rf"\n\t{setting} \(existing lock has "):
+        lease_type(str(marker), is_singleton=True, **lease_settings)
 
 
 @pytest.mark.requires_hard_links

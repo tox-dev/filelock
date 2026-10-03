@@ -7,7 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from math import isfinite
 from threading import Event, Thread, current_thread, local
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from ._error import LeaseSettingsMismatch
 from ._identity import owner_is_stale
@@ -17,9 +17,9 @@ from ._util import break_lock_file, touch
 
 if TYPE_CHECKING:
     import sys
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
-    from ._api import LockOptions
+    from ._api import LockOptions, _ExtraValue
 
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
         from typing import Unpack
@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 CompromiseReason = Literal["marker-missing", "owner-changed", "refresh-failed", "evicted"]
 
 _RefreshOutcome = Literal["ok", "lost", "transient"]
+_DEFAULT_LEASE_DURATION: Final[float] = 30.0
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,7 @@ class SoftFileLease(MarkerSoftFileLock):
         self,
         lock_file: str | os.PathLike[str],
         *,
-        lease_duration: float = 30.0,
+        lease_duration: float = _DEFAULT_LEASE_DURATION,
         heartbeat_interval: float | None = None,
         on_compromise: Callable[[LeaseCompromise], None] | None = None,
         **kwargs: Unpack[LockOptions],
@@ -154,6 +155,19 @@ class SoftFileLease(MarkerSoftFileLock):
         self._claims: _LeaseClaimHolder = (
             _ThreadLocalLeaseClaimHolder if self.is_thread_local() else _LeaseClaimHolder
         )()
+
+    def _singleton_extra_mismatches(self, kwargs: Mapping[str, _ExtraValue], /) -> dict[str, tuple[str, str]]:
+        mismatches = super()._singleton_extra_mismatches(kwargs)
+        if (lease_duration := kwargs.get("lease_duration", _DEFAULT_LEASE_DURATION)) != self._lease_duration:
+            mismatches["lease_duration"] = (str(lease_duration), str(self._lease_duration))
+        # An omitted heartbeat_interval resolves as in __init__; a differing duration is already reported above.
+        heartbeat_interval = kwargs.get("heartbeat_interval")
+        if (self._lease_duration / 3 if heartbeat_interval is None else heartbeat_interval) != self._heartbeat_interval:
+            mismatches["heartbeat_interval"] = (str(heartbeat_interval), str(self._heartbeat_interval))
+        # A callback compares by identity, as on_acquired does: two equal callables can close over different state.
+        if (on_compromise := kwargs.get("on_compromise")) is not self._on_compromise:
+            mismatches["on_compromise"] = (str(on_compromise), str(self._on_compromise))
+        return mismatches
 
     @property
     def _claim(self) -> _LeaseClaim:
