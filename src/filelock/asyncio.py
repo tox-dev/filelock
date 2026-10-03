@@ -227,11 +227,13 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         _register_fork_object(self)
 
     def _singleton_extra_mismatches(self, kwargs: Mapping[str, object], /) -> dict[str, tuple[object, object]]:
-        mismatches: dict[str, tuple[object, object]] = {
-            name: (kwargs[name], value)
+        mismatches = super()._singleton_extra_mismatches(kwargs)
+        # Loops and executors compare by identity: a different one schedules the lock's work elsewhere.
+        mismatches.update(
+            (name, (kwargs[name], value))
             for name, value in (("loop", self.loop), ("executor", self.executor))
             if kwargs[name] is not value
-        }
+        )
         if kwargs["run_in_executor"] != self.run_in_executor:
             mismatches["run_in_executor"] = (kwargs["run_in_executor"], self.run_in_executor)
         return mismatches

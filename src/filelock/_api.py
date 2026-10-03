@@ -438,7 +438,8 @@ class FileLockMeta(ABCMeta):
             for name, (passed_param, set_param) in params_to_check.items()
             if passed_param != set_param
         }
-        non_matching_params.update(instance._singleton_extra_mismatches(kwargs))  # ruff:ignore[private-member-access]  # validates the managed instance's subclass options
+        # The metaclass owns the instance it returns, so reading the subclass hook stays inside this module's contract.
+        non_matching_params.update(instance._singleton_extra_mismatches(kwargs))  # ruff:ignore[private-member-access]
         # Callables compare by identity, not equality: two equal callables can close over different state, so a
         # singleton must reject a different hook object even if it compares equal. Keep it out of the scalar dict above.
         hook_mismatch = on_acquired is not instance.on_acquired
@@ -750,9 +751,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         )
         _register_fork_object(self)
 
-    def _singleton_extra_mismatches(  # ruff:ignore[no-self-use]  # subclasses validate their own instance options here
+    def _singleton_extra_mismatches(  # ruff:ignore[no-self-use]  # the base class adds no options of its own
         self, _kwargs: Mapping[str, object], /
     ) -> dict[str, tuple[object, object]]:
+        # A subclass's own options reach the metaclass only as kwargs, and only the subclass knows their defaults and
+        # how __init__ resolves them, so each override compares its options and merges what super() reports.
         return {}
 
     def is_thread_local(self) -> bool:
