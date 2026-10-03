@@ -50,7 +50,7 @@ from ._windows import WindowsFileLock
 
 if TYPE_CHECKING:
     import sys
-    from collections.abc import Awaitable, Callable, Coroutine, Hashable
+    from collections.abc import Awaitable, Callable, Coroutine, Hashable, Mapping
     from concurrent import futures
     from types import TracebackType
 
@@ -225,6 +225,18 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             executor=executor,
         )
         _register_fork_object(self)
+
+    def _singleton_extra_mismatches(self, kwargs: Mapping[str, _ExtraValue], /) -> dict[str, tuple[str, str]]:
+        mismatches = super()._singleton_extra_mismatches(kwargs)
+        # Loops and executors compare by identity: a different one schedules the lock's work elsewhere.
+        mismatches.update(
+            (name, (str(kwargs[name]), str(value)))
+            for name, value in (("loop", self.loop), ("executor", self.executor))
+            if kwargs[name] is not value
+        )
+        if kwargs["run_in_executor"] != self.run_in_executor:
+            mismatches["run_in_executor"] = (str(kwargs["run_in_executor"]), str(self.run_in_executor))
+        return mismatches
 
     @property
     def run_in_executor(self) -> bool:
