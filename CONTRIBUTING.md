@@ -15,7 +15,7 @@ This page lists the steps needed to set up a development environment and contrib
    or for a specific python version
 
    ```shell
-   tox run -f py311
+   tox run -e 3.11
    ```
 
 1. Running other tox commands (eg. linting):
