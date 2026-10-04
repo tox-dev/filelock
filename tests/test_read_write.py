@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import sys
 import time
 from multiprocessing import Event, Process, Value, set_start_method
@@ -398,7 +399,7 @@ def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:
     except OSError as error:  # pragma: no cover - platform policy can deny symlink creation
         pytest.skip(str(error))
     # Construction opens a connection, so the refusal lands there; acquiring reopens and refuses the same way.
-    with pytest.raises(OSError, match=r"symbolic link|symlink"):
+    with pytest.raises(OSError, match=re.escape(str(link))):
         ReadWriteLock(link, is_singleton=False).acquire_read()
     assert not target.exists()
 
