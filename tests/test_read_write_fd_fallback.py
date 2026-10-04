@@ -26,11 +26,6 @@ pytestmark: Final = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def missing_descriptor_path(mocker: MockerFixture) -> None:
-    mocker.patch("os.access", autospec=True, return_value=False)
-
-
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 def test_missing_descriptor_path_preserves_contention(database: Path, mode: Literal["read", "write"]) -> None:
     lock: Final = ReadWriteLock(database, is_singleton=False)
@@ -49,13 +44,7 @@ async def test_missing_descriptor_path_preserves_async_contention(
     await lock.close()
 
 
-@pytest.fixture
-def database(tmp_path: Path) -> Path:
-    return tmp_path / "lock.db"
-
-
-def test_missing_descriptor_path_removes_alias_after_release(tmp_path: Path, created_directories: list[Path]) -> None:
-    database: Final = tmp_path / "lock.db"
+def test_missing_descriptor_path_removes_alias_after_release(database: Path, created_directories: list[Path]) -> None:
     lock: Final = ReadWriteLock(database, is_singleton=False)
     lock.acquire_read()
     assert [directory.exists() for directory in created_directories] == [False, True]
@@ -63,28 +52,13 @@ def test_missing_descriptor_path_removes_alias_after_release(tmp_path: Path, cre
     assert [directory.exists() for directory in created_directories] == [False, False]
 
 
-@pytest.fixture
-def created_directories(mocker: MockerFixture) -> list[Path]:
-    directories: Final[list[Path]] = []
-    mkdtemp: Final = tempfile.mkdtemp
-
-    def create_directory(*, prefix: str) -> str:
-        directory: Final = mkdtemp(prefix=prefix)
-        directories.append(Path(directory))
-        return directory
-
-    mocker.patch("tempfile.mkdtemp", autospec=True, side_effect=create_directory)
-    return directories
-
-
 @pytest.mark.parametrize(
     "boundary",
     [pytest.param("os.link", id="link"), pytest.param("sqlite3.connect", id="connect")],
 )
 def test_missing_descriptor_path_cleans_up_after_failure(
-    tmp_path: Path, mocker: MockerFixture, boundary: str, created_directories: list[Path]
+    database: Path, mocker: MockerFixture, boundary: str, created_directories: list[Path]
 ) -> None:
-    database: Final = tmp_path / "lock.db"
     mocker.patch(boundary, autospec=True, side_effect=OSError("cannot open database"))
     with pytest.raises(OSError, match="cannot open database"):
         ReadWriteLock(database, is_singleton=False)
@@ -93,9 +67,8 @@ def test_missing_descriptor_path_cleans_up_after_failure(
 
 @pytest.mark.parametrize("replacement_kind", [pytest.param("file", id="file"), pytest.param("symlink", id="symlink")])
 def test_missing_descriptor_path_rejects_replaced_database(
-    tmp_path: Path, mocker: MockerFixture, replacement_kind: str, created_directories: list[Path]
+    database: Path, tmp_path: Path, mocker: MockerFixture, replacement_kind: str, created_directories: list[Path]
 ) -> None:
-    database: Final = tmp_path / "lock.db"
     replacement: Final = tmp_path / "replacement.db"
     if replacement_kind == "file":
         replacement.touch()
@@ -114,3 +87,27 @@ def test_missing_descriptor_path_rejects_replaced_database(
         [False],
         False,
     )
+
+
+@pytest.fixture
+def database(tmp_path: Path) -> Path:
+    return tmp_path / "lock.db"
+
+
+@pytest.fixture
+def created_directories(mocker: MockerFixture) -> list[Path]:
+    directories: Final[list[Path]] = []
+    mkdtemp: Final = tempfile.mkdtemp
+
+    def create_directory(*, prefix: str) -> str:
+        directory: Final = mkdtemp(prefix=prefix)
+        directories.append(Path(directory))
+        return directory
+
+    mocker.patch("tempfile.mkdtemp", autospec=True, side_effect=create_directory)
+    return directories
+
+
+@pytest.fixture(autouse=True)
+def missing_descriptor_path(mocker: MockerFixture) -> None:
+    mocker.patch("os.access", autospec=True, return_value=False)
