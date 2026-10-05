@@ -354,6 +354,20 @@ def test_is_lock_held_by_us(lock_path: Path, content: str | None, expected: bool
     assert SoftFileLock(lock_path).is_lock_held_by_us is expected
 
 
+@_REQUIRES_START_TOKEN
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    [pytest.param(0, True, id="matching_start_token"), pytest.param(1, False, id="recycled_pid")],
+)
+def test_is_lock_held_by_us_checks_start_token(lock_path: Path, offset: int, *, expected: bool) -> None:
+    # A marker whose start token differs from ours was written by an earlier process that reused this PID, which
+    # acquisition already breaks as stale, so it must not read as held by us either.
+    token = process_start_token(os.getpid())
+    assert token is not None
+    lock_path.write_text(_holder(os.getpid(), start=token + offset), encoding="utf-8")
+    assert SoftFileLock(lock_path).is_lock_held_by_us is expected
+
+
 @pytest.mark.parametrize(
     "exists",
     [pytest.param(True, id="exists"), pytest.param(False, id="missing")],

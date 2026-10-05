@@ -61,6 +61,19 @@ def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
     return current is not None and current != start_token
 
 
+def owner_is_current_process(pid: int, hostname: str, start_token: int | None) -> bool:
+    """
+    Whether the recorded owner is this process, so a marker left by a recycled PID is not mistaken for our own.
+
+    A recorded start token must match this process's: the same PID with a different token, or with a token where this
+    process exposes none, was written by an earlier process that reused the number. A marker without a token falls back
+    to the PID and hostname.
+    """
+    if pid != os.getpid() or hostname != host_name():
+        return False
+    return start_token is None or start_token == process_start_token(pid)
+
+
 if sys.platform == "win32":  # pragma: win32 cover
     import ctypes
     from ctypes import wintypes
@@ -199,6 +212,7 @@ else:  # pragma: win32 no cover
 
 __all__ = [
     "host_name",
+    "owner_is_current_process",
     "owner_is_stale",
     "process_alive",
     "process_start_token",

@@ -5,7 +5,7 @@ import os
 from contextlib import suppress
 from typing import Final, Literal, NamedTuple
 
-from ._identity import host_name, owner_is_stale, process_start_token
+from ._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
 from ._soft import SoftFileLock, _read_lock_file
 from ._util import break_lock_file, write_all
 
@@ -51,11 +51,11 @@ class MarkerSoftFileLock(SoftFileLock):
         """
         Whether the marker on disk names this process.
 
-        :returns: ``True`` when the marker's PID and hostname match this process
+        :returns: ``True`` when the marker's PID and hostname match this process, and its start token when recorded
 
         """
         owner = self._read_owner()
-        return owner is not None and owner.pid == os.getpid() and owner.hostname == host_name()
+        return owner is not None and owner_is_current_process(owner.pid, owner.hostname, owner.start)
 
     def force_break(self) -> None:
         """
