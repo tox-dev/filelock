@@ -661,7 +661,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if mode == "read":
                 # SQLite takes the SHARED lock only when a statement reads; BEGIN alone stays deferred.
                 # https://www.sqlite.org/lockingv3.html#transaction_control
-                statements += " SELECT name FROM sqlite_schema LIMIT 1;"
+                # sqlite_schema is an alias added in SQLite 3.33.0; sqlite_master works on every version.
+                statements += " SELECT name FROM sqlite_master LIMIT 1;"
             connection.executescript(statements).close()
 
     def _open_connection(self, *, sqlite_timeout: float) -> _ForkSafeConnection:
