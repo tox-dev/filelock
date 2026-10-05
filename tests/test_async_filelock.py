@@ -32,7 +32,7 @@ else:  # pragma: no cover (<py311)
     from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
 
     from pytest_mock import MockerFixture
 
@@ -854,7 +854,7 @@ async def test_soft_second_release_does_not_close_reused_descriptor(
 
 
 @contextmanager
-def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Iterator[tuple[OSError, list[int]]]:
+def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Generator[tuple[OSError, list[int]], None, None]:
     real_close = os.close
     close_error = OSError(EINTR, "close failed")
     attempts: list[int] = []

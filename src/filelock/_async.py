@@ -15,7 +15,7 @@ from ._api import _append_exception_context, _fork_transition, _raise_chained_er
 from ._error import Timeout
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable
 
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
@@ -39,7 +39,7 @@ class _AsyncTransitionGate:
         self._tail: ConcurrentFuture[None] | None = None
 
     @contextlib.asynccontextmanager
-    async def hold(self) -> AsyncIterator[None]:
+    async def hold(self) -> AsyncGenerator[None, None]:
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
         with self._tail_lock:
             predecessor = self._tail
@@ -63,7 +63,7 @@ class _AsyncTransitionGate:
         cancel_check: Callable[[], bool] | None,
         deadline: float | None,
         poll_interval: float,
-    ) -> AsyncIterator[None]:
+    ) -> AsyncGenerator[None, None]:
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
         with self._tail_lock:
             predecessor = self._tail

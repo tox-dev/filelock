@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Generator, Iterator
+    from collections.abc import AsyncGenerator, Generator, Iterator
 
 
 def _supports_symlink() -> bool:
@@ -131,7 +131,7 @@ def _propagates_a_cancellation_thrown_into_a_coroutine() -> bool:
     # Driven by hand so the probe needs no event loop: GraalPy answers athrow with RuntimeError instead of the
     # CancelledError, so every cancellation crossing an async context manager surfaces as the wrong exception.
     @asynccontextmanager
-    async def gate() -> AsyncIterator[None]:
+    async def gate() -> AsyncGenerator[None, None]:
         await _Suspend()
         yield
 

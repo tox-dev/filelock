@@ -24,7 +24,7 @@ else:  # pragma: no cover (<py311)
     from exceptiongroup import ExceptionGroup
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from unittest.mock import MagicMock
 
     from pytest_mock import MockerFixture
@@ -642,7 +642,7 @@ def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: M
 
 
 @contextmanager
-def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Iterator[tuple[OSError, list[int]]]:
+def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[tuple[OSError, list[int]], None, None]:
     real_close = os.close
     close_error = OSError(EINTR, "close failed")
     attempts: list[int] = []
