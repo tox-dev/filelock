@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -20,7 +19,7 @@ if TYPE_CHECKING:
 pytestmark: Final = [
     pytest.mark.requires_hard_links,
     pytest.mark.skipif(
-        sys.platform == "win32" or not CAPABILITIES["link-follow-symlinks"],
+        not CAPABILITIES["posix-hard-link"],
         reason="private database aliases need POSIX hard links without following symlinks",
     ),
 ]

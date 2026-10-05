@@ -241,6 +241,9 @@ def _unreadable_file() -> Iterator[Path]:
             probe.chmod(0o600)
 
 
+_LINK_FOLLOW_SYMLINKS: Final[bool] = _honors_link_follow_symlinks()
+
+
 #: Capability -> whether this runtime provides it. Tests gate their skipif on this same mapping.
 CAPABILITIES: Final[dict[str, bool]] = {
     "fork": hasattr(os, "fork") and hasattr(os, "register_at_fork"),
@@ -274,7 +277,8 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "sqlite3": find_spec("sqlite3") is not None,
     # A source consumer may run the suite unmeasured, and a forked child then has nothing to flush.
     "coverage": find_spec("coverage") is not None,
-    "link-follow-symlinks": _honors_link_follow_symlinks(),
+    "link-follow-symlinks": _LINK_FOLLOW_SYMLINKS,
+    "posix-hard-link": sys.platform != "win32" and _LINK_FOLLOW_SYMLINKS,
     "tracemalloc-object-traceback": _reports_object_tracebacks(),
     # Only the tox env that installs a released filelock sets this.
     "old-client": bool(os.environ.get("FILELOCK_OLD_CLIENT_PATH")),

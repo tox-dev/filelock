@@ -172,7 +172,7 @@ class _ForkSafeConnection(sqlite3.Connection):
                 return
             with _fork_transition():
                 sqlite3.Connection.close(self)
-                if (directory := self._database_directory) is not None:
+                if (directory := self._database_directory) is not None:  # pragma: needs posix-hard-link
                     shutil.rmtree(directory)
                     self._database_directory = None
                 if (decrement := self._decrement_escrow) is not None:  # pragma: <3.12 cover  # pragma: needs fork
@@ -767,7 +767,7 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
     directory: pathlib.Path | None = None
     try:
         # NetBSD's static /dev/fd exposes only descriptors 0-63; a private hard link also pins the validated inode.
-        if sys.platform != "win32" and not os.access(target, os.F_OK):
+        if sys.platform != "win32" and not os.access(target, os.F_OK):  # pragma: needs posix-hard-link
             directory = pathlib.Path(tempfile.mkdtemp(prefix=".filelock-"))
             target = directory / "lock.db"
             os.link(database, target, follow_symlinks=False)
@@ -786,9 +786,9 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
         directory = None
         return connection
     finally:
-        if fd is not None:
+        if fd is not None:  # pragma: needs posix-hard-link
             os.close(fd)
-        if directory is not None:
+        if directory is not None:  # pragma: needs posix-hard-link
             shutil.rmtree(directory)
 
 
