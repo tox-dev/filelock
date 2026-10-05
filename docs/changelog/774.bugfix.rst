@@ -1,0 +1,2 @@
+``is_lock_held_by_us`` on ``SoftFileLock`` and ``MarkerSoftFileLock`` now also checks the recorded start token, so a
+marker left by an earlier process that reused this PID no longer reads as held by us.
