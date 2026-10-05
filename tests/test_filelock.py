@@ -88,7 +88,7 @@ def test_simple(
 
 
 @contextmanager
-def make_ro(path: Path) -> Iterator[None]:
+def make_ro(path: Path) -> Generator[None, None, None]:
     write = S_IWUSR | S_IWGRP | S_IWOTH
     path.chmod(path.stat().st_mode & ~write)
     try:
