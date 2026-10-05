@@ -7,6 +7,14 @@
 .. towncrier release notes start
 
 ********************
+ 4.0.11 (2026-10-05)
+********************
+
+- ``ReadWriteLock`` and ``AsyncReadWriteLock`` use a validated private hard link when ``/dev/fd`` has no entry for the
+  database descriptor, supporting NetBSD's static descriptor directory beyond descriptor 63. The temporary location must
+  share a filesystem with the database. The symlink refusal test accepts NetBSD's error wording.
+
+********************
  4.0.10 (2026-10-03)
 ********************
 
