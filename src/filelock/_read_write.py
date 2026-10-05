@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import shutil
 import sqlite3
 import stat
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager, suppress
@@ -151,6 +153,7 @@ _FORKED_DATABASES: Final = _ForkedDatabaseRegistry()
 class _ForkSafeConnection(sqlite3.Connection):
     _creator_pid: int
     _decrement_escrow: Callable[[sqlite3.Connection], None] | None
+    _database_directory: pathlib.Path | None
 
     def __new__(
         cls,
@@ -160,6 +163,7 @@ class _ForkSafeConnection(sqlite3.Connection):
         connection = super().__new__(cls)
         connection._creator_pid = _GETPID()
         connection._decrement_escrow = None
+        connection._database_directory = None
         return connection
 
     def close(self) -> None:
@@ -168,9 +172,16 @@ class _ForkSafeConnection(sqlite3.Connection):
                 return
             with _fork_transition():
                 sqlite3.Connection.close(self)
+                if (directory := self._database_directory) is not None:  # pragma: needs posix-hard-link
+                    shutil.rmtree(directory)
+                    self._database_directory = None
                 if (decrement := self._decrement_escrow) is not None:  # pragma: <3.12 cover  # pragma: needs fork
                     self._decrement_escrow = None
                     decrement(self)
+
+    def retain_database_directory(self, directory: pathlib.Path | None) -> None:
+        """Keep the private link until SQLite no longer checks its path."""
+        self._database_directory = directory
 
     def acquire_escrow(  # pragma: <3.12 cover  # pragma: needs fork
         self,
@@ -183,7 +194,7 @@ class _ForkSafeConnection(sqlite3.Connection):
             self._decrement_escrow = decrement
 
     def __del__(self) -> None:
-        with suppress(sqlite3.Error, RuntimeError):
+        with suppress(sqlite3.Error, RuntimeError, OSError):
             self.close()
 
 
@@ -751,12 +762,34 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
     _FORKED_DATABASES.note_sqlite_use()
     # A symlink at the path would make SQLite open, lock, or create its target, so connect through a descriptor that
     # refuses one. SQLite opens its own descriptor on the file inside connect(), so ours can close after the call.
-    fd: Final[int] = _open_lock_database(database)
-    target: Final[str] = database if sys.platform == "win32" else f"{_FD_DIR}/{fd}"
+    fd: int | None = _open_lock_database(database)
+    target = pathlib.Path(database if sys.platform == "win32" else f"{_FD_DIR}/{fd}")
+    directory: pathlib.Path | None = None
     try:
-        return sqlite3.connect(target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout)
+        # NetBSD's static /dev/fd exposes only descriptors 0-63; a private hard link also pins the validated inode.
+        if sys.platform != "win32" and not os.access(target, os.F_OK):  # pragma: needs posix-hard-link
+            directory = pathlib.Path(tempfile.mkdtemp(prefix=".filelock-"))
+            target = directory / "lock.db"
+            os.link(database, target, follow_symlinks=False)
+            linked: Final = target.stat(follow_symlinks=False)
+            opened: Final = os.fstat(fd)
+            if (linked.st_dev, linked.st_ino) != (opened.st_dev, opened.st_ino):
+                msg = f"lock database changed while opening: {database!r}"
+                raise OSError(msg)
+            # Closing any descriptor on this inode clears the process's POSIX locks; SQLite must open after this close.
+            os.close(fd)
+            fd = None
+        connection: Final = sqlite3.connect(
+            os.fspath(target), check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+        )
+        connection.retain_database_directory(directory)
+        directory = None
+        return connection
     finally:
-        os.close(fd)
+        if fd is not None:  # pragma: needs posix-hard-link
+            os.close(fd)
+        if directory is not None:  # pragma: needs posix-hard-link
+            shutil.rmtree(directory)
 
 
 def _open_lock_database(database: str) -> int:
