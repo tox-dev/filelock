@@ -7,6 +7,12 @@
 .. towncrier release notes start
 
 ********************
+ 4.0.12 (2026-10-05)
+********************
+
+- Fix read-lock acquisition on SQLite versions older than 3.33.0 by using ``sqlite_master`` for the schema probe. :pr:`769`
+
+********************
  4.0.11 (2026-10-05)
 ********************
 
