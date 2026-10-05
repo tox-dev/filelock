@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Generator, Iterator
+    from collections.abc import AsyncGenerator, Generator
 
 
 def _supports_symlink() -> bool:
@@ -107,7 +107,7 @@ def _collects_classes() -> bool:
 def _preserves_context_thrown_into_a_generator() -> bool:
     # GraalPy resets __context__ when contextlib throws into the suspended generator, losing the chained cause.
     @contextmanager
-    def probe() -> Iterator[None]:
+    def probe() -> Generator[None, None, None]:
         yield
 
     error = KeyError("thrown")
@@ -230,7 +230,7 @@ def _enforces_file_permissions() -> bool:
 
 
 @contextmanager
-def _unreadable_file() -> Iterator[Path]:
+def _unreadable_file() -> Generator[Path, None, None]:
     with tempfile.TemporaryDirectory() as directory:
         probe: Final[Path] = Path(directory, "probe")
         probe.touch()

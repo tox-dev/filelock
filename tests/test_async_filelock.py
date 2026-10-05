@@ -854,7 +854,9 @@ async def test_soft_second_release_does_not_close_reused_descriptor(
 
 
 @contextmanager
-def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Generator[tuple[OSError, list[int]], None, None]:
+def _close_after_commit(
+    mocker: MockerFixture, lock: AsyncSoftFileLock
+) -> Generator[tuple[OSError, list[int]], None, None]:
     real_close = os.close
     close_error = OSError(EINTR, "close failed")
     attempts: list[int] = []
