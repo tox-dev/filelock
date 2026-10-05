@@ -1,0 +1,1 @@
+Fix read-lock acquisition on SQLite versions older than 3.33.0 by using ``sqlite_master`` for the schema probe.

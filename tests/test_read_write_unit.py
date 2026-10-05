@@ -692,6 +692,26 @@ def test_finish_connection_skips_rollback_when_already_released(lock_file: str) 
         con.execute("SELECT 1")
 
 
+def test_read_lock_uses_sqlite_master_for_schema_probe(lock_file: str, mocker: MockerFixture) -> None:
+    """Read lock must work on SQLite < 3.33.0 where sqlite_schema does not exist."""
+    from filelock._read_write import _ForkSafeConnection
+
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    original_executescript = _ForkSafeConnection.executescript
+
+    def old_sqlite_executescript(self: _ForkSafeConnection, sql: str) -> sqlite3.Cursor:
+        if "sqlite_schema" in sql:
+            raise sqlite3.OperationalError("no such table: sqlite_schema")
+        return original_executescript(self, sql)
+
+    mocker.patch.object(_ForkSafeConnection, "executescript", old_sqlite_executescript)
+    proxy = lock.acquire_read()
+    assert lock._lock_level == 1
+    assert lock._current_mode == "read"
+    lock.release()
+    assert lock._lock_level == 0
+
+
 def test_dropping_a_lock_closes_its_connection(lock_file: str) -> None:
     # Nothing else closes a lock dropped while still holding one, so the connection would outlive it.
     lock = ReadWriteLock(lock_file, is_singleton=False)
