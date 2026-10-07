@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Final
 
 from ._api import BaseFileLock, _raise_grouped_errors
-from ._identity import host_name, owner_is_stale, process_start_token
+from ._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
 from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file, write_all
 
@@ -132,14 +132,14 @@ class SoftFileLock(BaseFileLock):
         """
         Whether this lock is held by the current process.
 
-        :returns: ``True`` if the lock file exists and names the current process's PID and hostname
+        :returns: ``True`` if the lock file exists and names the current process's PID, hostname and, when recorded,
+            start token
 
         """
         with suppress(OSError, ValueError):
             holder = _parse_lock_holder(_read_lock_file(self.lock_file)[0])
             if holder is not None:
-                pid, hostname, _ = holder
-                return pid == os.getpid() and hostname == host_name()
+                return owner_is_current_process(*holder)
         return False
 
     def break_lock(self) -> None:

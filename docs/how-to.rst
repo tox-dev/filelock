@@ -926,8 +926,8 @@ record per owner under ``work.lock.filelock/claims``. Read those through
 :attr:`claims <filelock.StrictSoftFileLock.claims>` instead, as :ref:`how-to:Use fail-closed soft locks` shows.
 
 ``owner`` reads the marker on disk each time, so it reports whoever currently holds the path, not necessarily this
-process. To ask specifically about this process, use ``is_lock_held_by_us``, which compares both the PID and the
-hostname:
+process. To ask specifically about this process, use ``is_lock_held_by_us``, which compares the PID, the hostname
+and, when the marker records one, the process start token:
 
 .. code-block:: python
 

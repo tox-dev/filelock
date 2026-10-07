@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from filelock import MarkerSoftFileLock, OwnerRecord, SoftFileLease, Timeout
-from filelock._identity import process_start_token
+from filelock._identity import host_name, process_start_token
 from filelock._marker import encode_marker
 from tests.process_helpers import cleanup_processes
 
@@ -150,6 +150,20 @@ def test_lease_ages_out_a_malformed_record(tmp_path: Path) -> None:
 def test_marker_pid_and_owner_are_none_without_marker(tmp_path: Path) -> None:
     lease = SoftFileLease(tmp_path / "a")
     assert (lease.pid, lease.owner, lease.is_lock_held_by_us) == (None, None, False)
+
+
+@pytest.mark.skipif(process_start_token(os.getpid()) is None, reason="platform exposes no proven process start time")
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    [pytest.param(0, True, id="matching-start"), pytest.param(1, False, id="recycled-pid")],
+)
+def test_marker_is_lock_held_by_us_checks_start(marker: Path, offset: int, *, expected: bool) -> None:
+    # Same PID and host as ours; a different start token means an earlier process reused this PID.
+    start = process_start_token(os.getpid())
+    assert start is not None
+    record = OwnerRecord(pid=os.getpid(), hostname=host_name(), mode="exclusive", start=start + offset)
+    marker.write_bytes(encode_marker(record))
+    assert MarkerSoftFileLock(marker).is_lock_held_by_us is expected
 
 
 def test_marker_force_break_removes_the_marker(tmp_path: Path) -> None:
