@@ -1,0 +1,3 @@
+``BaseFileLock.acquire()`` on a lock built with ``thread_local=False`` now holds a queued caller for at most the
+``timeout`` it asked for, instead of a whole ``poll_interval`` slice on the transition gate another thread holds. The
+async gate already clamped that wait to the remaining deadline.

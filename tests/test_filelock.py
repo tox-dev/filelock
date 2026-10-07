@@ -961,6 +961,19 @@ def test_shared_instance_waiter_enters_once_the_transition_finishes(tmp_path: Pa
     lock.release(force=True)
 
 
+def test_shared_instance_admission_wait_respects_the_caller_timeout(paused_in_transition: FileLock) -> None:
+    # The gate is waited in poll_interval slices, so a slice wider than the budget this caller has left holds it past
+    # the maximum wait time acquire() promises. The async gate clamps every slice to the remaining deadline.
+    budget, slice_seconds = 0.2, 2.0
+
+    start = time.perf_counter()
+    with pytest.raises(Timeout):
+        paused_in_transition.acquire(timeout=budget, poll_interval=slice_seconds)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 3 * budget
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_thread_local_setter_visibility(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     """Property setters stay per-thread when thread_local=True.
