@@ -452,7 +452,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         elif timeout == -1:
             acquired = self._locks.transaction.acquire(blocking=True)
         else:
-            acquired = self._locks.transaction.acquire(blocking=True, timeout=timeout)
+            # Lock.acquire raises OverflowError past TIMEOUT_MAX, which is 49.7 days on Windows.
+            acquired = self._locks.transaction.acquire(blocking=True, timeout=min(timeout, threading.TIMEOUT_MAX))
         if not acquired:
             raise Timeout(self.lock_file) from None
         try:

@@ -745,7 +745,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         elif timeout == -1:
             acquired = self._transaction_lock.acquire(blocking=True)
         else:
-            acquired = self._transaction_lock.acquire(blocking=True, timeout=timeout)
+            # Lock.acquire raises OverflowError past TIMEOUT_MAX, which is 49.7 days on Windows.
+            acquired = self._transaction_lock.acquire(blocking=True, timeout=min(timeout, threading.TIMEOUT_MAX))
         if not acquired:
             raise Timeout(self.lock_file) from None
 

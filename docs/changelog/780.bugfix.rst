@@ -1,0 +1,2 @@
+:class:`~filelock.ReadWriteLock` and :class:`~filelock.SoftReadWriteLock` accept a timeout above
+:data:`threading.TIMEOUT_MAX` instead of raising :class:`OverflowError`.
