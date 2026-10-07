@@ -128,6 +128,7 @@ def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixt
         pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), id="oversized"),
         pytest.param(b"not-a-pid\nhostname\n", id="two_line_bad_pid"),
         pytest.param(f"{_DEAD_PID}\nhostname\nnot-a-token\n".encode(), id="three_line_bad_start_token"),
+        pytest.param(f"{_DEAD_PID}\nother-ho".encode(), id="truncated_hostname"),
     ],
 )
 def test_unparseable_lock_evicted_when_old(lock_path: Path, content: bytes) -> None:
@@ -148,6 +149,13 @@ def test_unparseable_lock_evicted_when_old(lock_path: Path, content: bytes) -> N
 )
 def test_unparseable_lock_not_evicted_when_fresh(lock_path: Path, content: bytes) -> None:
     lock_path.write_bytes(content)
+    _assert_times_out(lock_path)
+
+
+@_REQUIRES_START_TOKEN
+def test_fresh_marker_with_truncated_start_token_not_evicted(lock_path: Path) -> None:
+    # A reader racing our own write sees a cut start token, which must not pass for a recycled PID and break our lock.
+    lock_path.write_text(f"{os.getpid()}\n{_HOST}\n{process_start_token(os.getpid())}"[:-1], encoding="utf-8")
     _assert_times_out(lock_path)
 
 
@@ -323,6 +331,7 @@ def test_windows_process_probe_closes_handles(lock_path: Path) -> None:  # pragm
         pytest.param(b"\xff\xfe\n", None, id="non_utf8"),
         pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), None, id="oversized"),
         pytest.param(b"42\n", None, id="single_line"),
+        pytest.param(f"{os.getpid()}\n{_HOST}".encode(), None, id="truncated"),
         pytest.param(_holder(0).encode(), None, id="out_of_range_pid"),
         pytest.param(_holder(os.getpid()).encode(), os.getpid(), id="valid"),
     ],
