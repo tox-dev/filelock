@@ -1,3 +1,2 @@
-``ReadWriteLock`` and ``SoftReadWriteLock`` accept a timeout above ``threading.TIMEOUT_MAX`` (49.7 days on Windows)
-instead of failing with ``OverflowError`` before reaching the database or the marker directory; the in-process wait now
-runs in slices the thread lock accepts while keeping the caller's deadline.
+:class:`~filelock.ReadWriteLock` and :class:`~filelock.SoftReadWriteLock` accept a timeout above
+:data:`threading.TIMEOUT_MAX` instead of raising :class:`OverflowError`.
