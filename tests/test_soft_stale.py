@@ -635,6 +635,26 @@ def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: 
     )
 
 
+def test_publication_rollback_removes_marker_when_close_fails(lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
+    lock = SoftFileLock(lock_path)
+    with (
+        _close_after_commit(mocker, lock) as (close_error, attempts),
+        pytest.raises(OSError, match="close failed") as info,
+    ):
+        lock.acquire(timeout=0)
+    assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, False)
+
+
+def test_publication_rollback_close_failure_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
+    _hold_reports_foreign_identity(mocker)
+    lock = SoftFileLock(lock_path)
+    with _close_after_commit(mocker, lock), pytest.raises(OSError, match="close failed"):
+        lock.acquire(timeout=0)
+    assert lock_path.exists()
+
+
 def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: MockerFixture) -> None:
     # The patch binds os.close process-wide, so a descriptor that is not the lock's, whether closed on another thread
     # or by a finalizer the collector happens to run on this one, must pass through cleanly and stay out of the
@@ -673,7 +693,8 @@ def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[
     real_mark_released = lock._mark_descriptor_released
 
     def mark_released() -> None:
-        released.append(lock._context.lock_file_fd)
+        context = lock._context
+        released.append(context.pending_lock_file_fd if context.lock_file_fd is None else context.lock_file_fd)
         real_mark_released()
 
     def close(fd: int) -> None:

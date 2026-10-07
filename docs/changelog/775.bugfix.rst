@@ -1,0 +1,2 @@
+:class:`~filelock.SoftFileLock` removes its marker when writing it fails and closing the descriptor fails too, so the
+lock path no longer stays blocked.
