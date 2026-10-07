@@ -772,7 +772,6 @@ def sync_locks(tmp_path: Path) -> Generator[tuple[ReadWriteLock, ReadWriteLock]]
         pytest.param(-2, id="integer"),
         pytest.param(-0.5, id="fraction"),
         pytest.param(float("-inf"), id="negative-infinite"),
-        pytest.param(float("inf"), id="infinite"),
         pytest.param(float("nan"), id="nan"),
     ],
 )
@@ -789,7 +788,7 @@ def test_acquire_rejects_invalid_timeout(
     with ExitStack() as stack:
         if reentrant:
             stack.enter_context(acquire())
-        with pytest.raises(ValueError, match=r"^timeout must be a finite non-negative number or -1$"):
+        with pytest.raises(ValueError, match=r"^timeout must be a non-negative number or -1$"):
             stack.enter_context(acquire(timeout=timeout))
     with timeout_locks[1].acquire_write(blocking=False), pytest.raises(Timeout):
         holder.acquire_write(blocking=False)
@@ -805,6 +804,7 @@ def test_acquire_rejects_invalid_timeout(
         pytest.param(float("inf"), False, id="nonblocking-infinite"),
         pytest.param(float("nan"), False, id="nonblocking-nan"),
         pytest.param(-1, True, id="unlimited"),
+        pytest.param(float("inf"), True, id="infinite"),
         pytest.param(0, True, id="immediate"),
     ],
 )

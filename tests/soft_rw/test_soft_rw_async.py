@@ -148,7 +148,6 @@ async def test_async_raw_acquire_release_round_trip(tmp_path: Path) -> None:
         pytest.param(-2, id="integer"),
         pytest.param(-0.5, id="fraction"),
         pytest.param(float("-inf"), id="negative-infinite"),
-        pytest.param(float("inf"), id="infinite"),
         pytest.param(float("nan"), id="nan"),
     ],
 )
@@ -163,7 +162,7 @@ async def test_async_acquire_rejects_invalid_timeout(
         async with AsyncExitStack() as stack:
             if contended:
                 await stack.enter_async_context(lock.write_lock(timeout=0))
-            with pytest.raises(ValueError, match="timeout must be a finite non-negative number or -1"):
+            with pytest.raises(ValueError, match="timeout must be a non-negative number or -1"):
                 await asyncio.create_task(acquire() if configured else acquire(timeout=timeout))
     finally:
         await lock.close()
@@ -185,6 +184,19 @@ async def test_async_nonblocking_ignores_invalid_timeout(
         async with await (acquire() if configured else acquire(timeout=timeout, blocking=False)):
             with pytest.raises(Timeout):
                 await asyncio.create_task(lock.acquire_write(timeout=timeout, blocking=False))
+    finally:
+        await lock.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+async def test_async_acquire_accepts_infinite_timeout(tmp_path: Path, mode: Literal["read", "write"]) -> None:
+    lock: Final = _make(tmp_path)
+    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    try:
+        async with await acquire(timeout=float("inf")):
+            with pytest.raises(Timeout):
+                await asyncio.create_task(lock.acquire_write(blocking=False))
     finally:
         await lock.close()
 

@@ -7,7 +7,6 @@ import contextlib
 import time
 from concurrent.futures import Future as ConcurrentFuture
 from dataclasses import dataclass
-from math import isfinite
 from threading import Lock
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypeVar, cast
 from weakref import WeakKeyDictionary
@@ -143,8 +142,8 @@ class _TaskOwners:
         enter: Callable[[float], Awaitable[None]],
     ) -> None:
         task = _current_task()
-        if blocking and timeout != -1 and not (timeout >= 0 and isfinite(timeout)):
-            msg: Final = "timeout must be a finite non-negative number or -1"
+        if blocking and not (timeout >= 0 or timeout == -1):  # nan fails both comparisons
+            msg: Final = "timeout must be a non-negative number or -1"
             raise ValueError(msg)
         deadline = None if timeout < 0 else time.perf_counter() + timeout
         waiting_writer = False

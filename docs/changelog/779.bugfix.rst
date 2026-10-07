@@ -1,3 +1,2 @@
-Reject ``nan`` and ``inf`` blocking timeouts in ``ReadWriteLock``, ``SoftReadWriteLock`` and their async wrappers with
-the lock's own ``ValueError`` rather than an ``OverflowError``, the thread lock's message, or an unbounded wait. ``-1``
-remains the unlimited wait and ``blocking=False`` still ignores the timeout.
+:class:`~filelock.ReadWriteLock`, :class:`~filelock.SoftReadWriteLock` and their async wrappers treat a
+:data:`math.inf` timeout like ``-1`` and raise :class:`ValueError` for ``nan``.
