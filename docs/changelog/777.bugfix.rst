@@ -1,3 +1,2 @@
-``BaseFileLock.acquire()`` on a lock built with ``thread_local=False`` now holds a queued caller for at most the
-``timeout`` it asked for, instead of a whole ``poll_interval`` slice on the transition gate another thread holds. The
-async gate already clamped that wait to the remaining deadline.
+:meth:`~filelock.BaseFileLock.acquire` and :meth:`~filelock.BaseAsyncFileLock.acquire` no longer wait past ``timeout``
+when ``poll_interval`` is longer than the time left.

@@ -394,8 +394,11 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 start_time=start_time,
             ):
                 raise Timeout(lock_filename)
-            _LOGGER.debug("Lock %s not acquired on %s, waiting %s seconds ...", lock_id, lock_filename, poll_interval)
-            await asyncio.sleep(poll_interval)
+            delay = poll_interval
+            if timeout >= 0:
+                delay = min(delay, max(start_time + timeout - time.perf_counter(), 0.0))
+            _LOGGER.debug("Lock %s not acquired on %s, waiting %s seconds ...", lock_id, lock_filename, delay)
+            await asyncio.sleep(delay)
 
     async def _run_acquire_attempt(self) -> None:
         acquire_future = self._start_internal_method(

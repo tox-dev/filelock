@@ -553,13 +553,13 @@ def test_poll_interval_used_by_context_manager(
     sleep_mock = mocker.patch("filelock._api.time.sleep")
     with pytest.raises(Timeout):
         lock_2.acquire()
-    sleep_mock.assert_called_with(0.05)
+    sleep_mock.assert_any_call(0.05)
 
     sleep_mock.reset_mock()
     lock_2.poll_interval = 0.1
     with pytest.raises(Timeout):
         lock_2.acquire()
-    sleep_mock.assert_called_with(0.1)
+    sleep_mock.assert_any_call(0.1)
     lock_1.release()
 
 
@@ -573,7 +573,7 @@ def test_poll_interval_acquire_override(lock_type: type[BaseFileLock], tmp_path:
     sleep_mock = mocker.patch("filelock._api.time.sleep")
     with pytest.raises(Timeout):
         lock_2.acquire(poll_interval=0.15)
-    sleep_mock.assert_called_with(0.15)
+    sleep_mock.assert_any_call(0.15)
     lock_1.release()
 
 
@@ -962,16 +962,10 @@ def test_shared_instance_waiter_enters_once_the_transition_finishes(tmp_path: Pa
 
 
 def test_shared_instance_admission_wait_respects_the_caller_timeout(paused_in_transition: FileLock) -> None:
-    # The gate is waited in poll_interval slices, so a slice wider than the budget this caller has left holds it past
-    # the maximum wait time acquire() promises. The async gate clamps every slice to the remaining deadline.
-    budget, slice_seconds = 0.2, 2.0
-
     start = time.perf_counter()
     with pytest.raises(Timeout):
-        paused_in_transition.acquire(timeout=budget, poll_interval=slice_seconds)
-    elapsed = time.perf_counter() - start
-
-    assert elapsed < 3 * budget
+        paused_in_transition.acquire(timeout=0.05, poll_interval=_SHARED_WAIT)
+    assert time.perf_counter() - start < _SHARED_WAIT / 2
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -1530,6 +1524,16 @@ def test_non_blocking_acquire_ignores_nan_timeout(lock_type: type[BaseFileLock],
     lock = lock_type(tmp_path / "a")
     with lock.acquire(timeout=float("nan"), blocking=False):
         assert lock.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_poll_wait_stays_within_timeout(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
+    lock_path = tmp_path / "test.lock"
+    with lock_type(lock_path):
+        start = time.perf_counter()
+        with pytest.raises(Timeout):
+            lock_type(lock_path).acquire(timeout=0.05, poll_interval=10)
+        assert time.perf_counter() - start < 5
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])

@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -487,6 +488,17 @@ async def test_non_blocking_acquire_ignores_nan_timeout(lock_type: type[BaseAsyn
     lock = lock_type(tmp_path / "a")
     async with await lock.acquire(timeout=float("nan"), blocking=False):
         assert lock.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_poll_wait_stays_within_timeout(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
+    lock_path = tmp_path / "test.lock"
+    async with lock_type(lock_path):
+        start = time.perf_counter()
+        with pytest.raises(Timeout):
+            await lock_type(lock_path).acquire(timeout=0.05, poll_interval=10)
+        assert time.perf_counter() - start < 5
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])

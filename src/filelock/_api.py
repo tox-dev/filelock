@@ -1131,33 +1131,19 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             yield
             return
         deadline = None if timeout < 0 else start_time + timeout
+        wait = poll_interval if blocking else 0.0
+        # wait leads the min() so a non-blocking call, whose nan timeout goes unchecked, waits 0 rather than nan.
         while not self._transition_lock.acquire(
-            timeout=self._gate_slice(poll_interval=poll_interval, blocking=blocking, deadline=deadline)
+            timeout=wait if deadline is None else min(wait, max(deadline - time.perf_counter(), 0.0))
         ):
             if not blocking or (cancel_check is not None and cancel_check()):
                 raise Timeout(self.lock_file)
-            if timeout >= 0 and time.perf_counter() - start_time >= timeout:
+            if deadline is not None and time.perf_counter() >= deadline:
                 raise Timeout(self.lock_file)
         try:
             yield
         finally:
             self._transition_lock.release()
-
-    @staticmethod
-    def _gate_slice(*, poll_interval: float, blocking: bool, deadline: float | None) -> float:
-        """
-        Seconds to wait for the transition gate on one attempt.
-
-        ``deadline`` is the caller's timeout measured from the start of the acquisition, so a slice never outlasts the
-        budget left: a ``poll_interval`` slice on its own holds a caller well past a timeout it has already partly
-        spent, and it grows with a polling interval the caller chose for the lock file rather than for this gate.
-        The async gate clamps the same wait to the remaining deadline.
-        """
-        if not blocking:
-            return 0.0
-        if deadline is None:  # an indefinite wait has no deadline to stay inside
-            return poll_interval
-        return min(poll_interval, max(deadline - time.perf_counter(), 0.0))
 
     def release(self, force: bool = False) -> None:  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         """
@@ -1297,6 +1283,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 raise Timeout(lock_filename)
             attempt += 1
             delay = self._poll_delay(poll_interval, attempt)
+            if timeout >= 0:
+                delay = min(delay, max(start_time + timeout - time.perf_counter(), 0.0))
             msg = "Lock %s not acquired on %s, waiting %s seconds ..."
             _LOGGER.debug(msg, lock_id, lock_filename, delay)
             time.sleep(delay)
