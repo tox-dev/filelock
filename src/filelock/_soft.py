@@ -78,10 +78,12 @@ class SoftFileLock(BaseFileLock):
             self._write_lock_info(fd)
         except BaseException:
             self._mark_descriptor_released()
-            os.close(fd)
-            with suppress(OSError):
-                if identity is not None and _file_identity(os.lstat(self.lock_file)) == identity:
-                    Path(self.lock_file).unlink()
+            try:
+                os.close(fd)
+            finally:
+                with suppress(OSError):
+                    if identity is not None and _file_identity(os.lstat(self.lock_file)) == identity:
+                        Path(self.lock_file).unlink()
             raise
         self._mark_descriptor_owned(fd, identity)
 

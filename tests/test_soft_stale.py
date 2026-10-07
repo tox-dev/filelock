@@ -616,6 +616,57 @@ def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: 
     )
 
 
+@pytest.mark.parametrize("close_error_type", [OSError, KeyboardInterrupt])
+@pytest.mark.parametrize("replace_marker", [False, True])
+def test_publication_rollback_cleans_marker_after_close_failure(
+    lock_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    close_error_type: type[BaseException],
+    replace_marker: bool,
+) -> None:
+    lock = SoftFileLock(lock_path)
+    replacement = lock_path.with_suffix(".replacement")
+    replacement.write_bytes(b"successor")
+    write_error = OSError(ENOSPC, "publication failed")
+    close_error = close_error_type("close failed")
+    real_write = lock._write_lock_info
+    real_close = os.close
+    published: list[int] = []
+    attempts: list[int] = []
+    unrelated_fd = os.open(replacement, os.O_RDONLY)
+
+    def write(fd: int) -> None:
+        published.append(fd)
+        real_write(fd)
+        raise write_error
+
+    def close(fd: int) -> None:
+        real_close(fd)
+        if fd in published:
+            attempts.append(fd)
+            if replace_marker:
+                replacement.replace(lock_path)
+            raise close_error
+
+    with monkeypatch.context() as patch:
+        patch.setattr(lock, "_write_lock_info", write)
+        patch.setattr("filelock._soft.os.close", close)
+        os.close(unrelated_fd)
+        with pytest.raises(close_error_type) as info:
+            lock.acquire(timeout=0)
+
+    assert info.value is close_error
+    assert close_error.__context__ is write_error
+    assert len(attempts) == 1
+    assert not lock.is_locked
+    if replace_marker:
+        assert lock_path.read_bytes() == b"successor"
+    else:
+        assert not lock_path.exists()
+        with SoftFileLock(lock_path).acquire(timeout=0):
+            pass
+
+
 def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: MockerFixture) -> None:
     # The patch binds os.close process-wide, so a descriptor that is not the lock's, whether closed on another thread
     # or by a finalizer the collector happens to run on this one, must pass through cleanly and stay out of the
