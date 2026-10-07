@@ -41,6 +41,8 @@ if TYPE_CHECKING:
         pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=nan\n", id="lease-duration-nan"),
         pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=inf\n", id="lease-duration-inf"),
         pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=5\nstart=later\n", id="start-nan"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=exclu", id="truncated-mode"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=1", id="truncated-duration"),
     ],
 )
 def test_unreadable_record_names_no_owner(tmp_path: Path, record: str) -> None:
@@ -226,8 +228,15 @@ def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
         assert lock.pid == os.getpid()
 
 
-def test_marker_lock_reclaims_malformed_record(marker: Path) -> None:
-    marker.write_text("broken", encoding="utf-8")
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param("broken", id="broken"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=exclu", id="truncated-mode"),
+    ],
+)
+def test_marker_lock_reclaims_malformed_record(marker: Path, record: str) -> None:
+    marker.write_text(record, encoding="utf-8")
     os.utime(marker, (0, 0))
     with MarkerSoftFileLock(marker, timeout=1) as lock:
         assert lock.pid == os.getpid()

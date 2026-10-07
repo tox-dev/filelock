@@ -239,7 +239,9 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
     # holder's process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now).
     # Anything else (wrong line count, a non-integer PID or start token, empty or unreadable content) is unparsable;
     # returning None lets the caller treat it as a malformed lock to self-heal rather than a holder.
-    if not content or len(lines := content.strip().splitlines()) not in {2, 3}:
+    # Every writer since 3.22 ends each line with "\n", so a record without one was cut by a crash or read mid-write. As
+    # a holder it would name a foreign host no one reclaims, or a start token that lets a contender break a live lock.
+    if not content or not content.endswith("\n") or len(lines := content.strip().splitlines()) not in {2, 3}:
         return None
     try:
         pid = int(lines[0])

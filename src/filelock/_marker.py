@@ -117,7 +117,14 @@ def encode_marker(record: OwnerRecord) -> bytes:
 
 def parse_marker(content: str | None) -> OwnerRecord | None:
     """Return the owner a protocol 2 marker names, or ``None`` when the record is malformed or protocol 1."""
-    if not content or not (lines := content.strip().splitlines()) or lines[0] != _PROTOCOL:
+    # A record cut before its final newline may end in a prefix such as "mode=exclu", an unknown contract no contender
+    # reclaims; read as malformed, it ages out after the grace window instead.
+    if (
+        not content
+        or not content.endswith("\n")
+        or not (lines := content.strip().splitlines())
+        or lines[0] != _PROTOCOL
+    ):
         return None
     fields: dict[str, str] = {}
     for line in lines[1:]:
