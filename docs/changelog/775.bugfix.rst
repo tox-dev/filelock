@@ -1,1 +1,2 @@
-Attempt to remove the failed acquisition's marker when closing its descriptor raises in ``SoftFileLock``, while preserving a replacement marker.
+:class:`~filelock.SoftFileLock` removes its marker when writing it fails and closing the descriptor fails too, so the
+lock path no longer stays blocked.

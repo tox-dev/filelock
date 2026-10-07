@@ -81,9 +81,7 @@ class SoftFileLock(BaseFileLock):
             try:
                 os.close(fd)
             finally:
-                with suppress(OSError):
-                    if identity is not None and _file_identity(os.lstat(self.lock_file)) == identity:
-                        Path(self.lock_file).unlink()
+                self._unlink_held_marker(identity)
             raise
         self._mark_descriptor_owned(fd, identity)
 
