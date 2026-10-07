@@ -190,6 +190,7 @@ async def _set_poll_interval(
         pytest.param(float("nan"), ValueError, "finite and non-negative", id="nan"),
         pytest.param(float("inf"), ValueError, "finite and non-negative", id="positive-infinity"),
         pytest.param(float("-inf"), ValueError, "finite and non-negative", id="negative-infinity"),
+        pytest.param(threading.TIMEOUT_MAX * 2, ValueError, "TIMEOUT_MAX", id="above-timeout-max"),
         pytest.param(True, TypeError, "poll_interval must be", id="true"),
         pytest.param(False, TypeError, "poll_interval must be", id="false"),
         pytest.param("5", TypeError, "poll_interval must be", id="string"),
@@ -456,6 +457,36 @@ async def test_finite_timeout_gives_timeout_not_deadlock(tmp_path: Path, lock_ty
         lock2 = lock_type(lock_path, timeout=0.1)
         with pytest.raises(Timeout):
             await lock2.acquire()
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_infinite_timeout_gives_deadlock_not_hang(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
+    lock_path = tmp_path / "test.lock"
+    async with lock_type(lock_path):
+        lock = lock_type(lock_path, timeout=float("inf"))
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            await lock.acquire()
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("from_default", [pytest.param(True, id="default"), pytest.param(False, id="argument")])
+@pytest.mark.asyncio
+async def test_blocking_acquire_rejects_nan_timeout(
+    lock_type: type[BaseAsyncFileLock], from_default: bool, tmp_path: Path
+) -> None:
+    lock = lock_type(tmp_path / "a", timeout=float("nan") if from_default else -1)
+    with pytest.raises(ValueError, match="not nan"):
+        await lock.acquire(timeout=None if from_default else float("nan"))
+    assert not lock.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_non_blocking_acquire_ignores_nan_timeout(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
+    lock = lock_type(tmp_path / "a")
+    async with await lock.acquire(timeout=float("nan"), blocking=False):
+        assert lock.is_locked
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])

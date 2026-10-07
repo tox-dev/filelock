@@ -15,7 +15,7 @@ from collections.abc import Callable, Hashable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count, starmap
-from threading import Condition, RLock, get_ident, local
+from threading import TIMEOUT_MAX, Condition, RLock, get_ident, local
 from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
@@ -552,7 +552,20 @@ def _resolve_poll_interval(poll_interval: float) -> float:
     if poll_interval < 0 or (isinstance(poll_interval, float) and not math.isfinite(poll_interval)):
         msg = f"poll_interval must be finite and non-negative, not {poll_interval!r}"
         raise ValueError(msg)
+    # Lock.acquire and time.sleep raise OverflowError past this bound, which is only ~49.7 days on Windows.
+    if poll_interval > TIMEOUT_MAX:
+        msg = f"poll_interval must not exceed threading.TIMEOUT_MAX ({TIMEOUT_MAX}), not {poll_interval!r}"
+        raise ValueError(msg)
     return float(poll_interval)
+
+
+def _resolve_timeout(timeout: float, *, blocking: bool) -> float:
+    """Validate an acquire ``timeout``; every negative value waits without a limit."""
+    if blocking and math.isnan(timeout):
+        msg = "timeout must be a number of seconds, not nan"
+        raise ValueError(msg)
+    # The fail-fast deadlock check only sees a negative timeout as unlimited, so spell inf that way.
+    return -1 if timeout == math.inf else timeout
 
 
 def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
@@ -903,7 +916,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         :param value: the new value, in seconds
 
-        :raises ValueError: if *value* is negative or not finite
+        :raises ValueError: if *value* is negative, not finite, or above :data:`threading.TIMEOUT_MAX`
         :raises TypeError: if *value* is not a real number
 
         """
@@ -1032,6 +1045,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         :returns: a context object that will unlock the file when the context is exited
 
         :raises Timeout: if fails to acquire lock within the timeout period
+        :raises ValueError: if a blocking call gets a ``nan`` timeout, or *poll_interval* exceeds
+            :data:`threading.TIMEOUT_MAX`
 
         .. code-block:: python
 
@@ -1066,6 +1081,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         poll_interval = poll_interval if poll_interval is not None else self._context.poll_interval
         poll_interval = _resolve_poll_interval(poll_interval)
+        timeout = _resolve_timeout(timeout, blocking=blocking)
 
         start_time = time.perf_counter()
         # Wait for admission before touching any state: a caller refused entry must leave the counter, the registry and
@@ -1863,5 +1879,6 @@ __all__ = [
     "_register_fork_class",
     "_register_fork_object",
     "_register_owned_descriptor",
+    "_resolve_timeout",
     "_unregister_owned_descriptor",
 ]

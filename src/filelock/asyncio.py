@@ -30,6 +30,7 @@ from ._api import (
     _raise_grouped_errors,
     _register_fork_object,
     _resolve_poll_interval,
+    _resolve_timeout,
 )
 from ._async import (
     _AsyncTransitionGate,
@@ -288,6 +289,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :returns: a context object that will unlock the file when the context is exited
 
         :raises Timeout: if fails to acquire lock within the timeout period
+        :raises ValueError: if a blocking call gets a ``nan`` timeout, or *poll_interval* exceeds
+            :data:`threading.TIMEOUT_MAX`
 
         .. code-block:: python
 
@@ -313,6 +316,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         if poll_interval is None:
             poll_interval = self._context.poll_interval
         poll_interval = _resolve_poll_interval(poll_interval)
+        timeout = _resolve_timeout(timeout, blocking=blocking)
 
         start_time = time.perf_counter()
         try:
