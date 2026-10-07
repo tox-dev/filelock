@@ -51,7 +51,7 @@ class MarkerSoftFileLock(SoftFileLock):
         """
         Whether the marker on disk names this process.
 
-        :returns: ``True`` when the marker's PID and hostname match this process, and its start token when recorded
+        :returns: ``True`` when the marker names this process's PID, hostname and, when recorded, start token
 
         """
         owner = self._read_owner()

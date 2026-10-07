@@ -132,8 +132,8 @@ class SoftFileLock(BaseFileLock):
         """
         Whether this lock is held by the current process.
 
-        :returns: ``True`` if the lock file exists and names the current process's PID and hostname, and its start token
-            when the marker records one
+        :returns: ``True`` if the lock file exists and names the current process's PID, hostname and, when recorded,
+            start token
 
         """
         with suppress(OSError, ValueError):

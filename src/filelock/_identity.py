@@ -63,11 +63,11 @@ def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
 
 def owner_is_current_process(pid: int, hostname: str, start_token: int | None) -> bool:
     """
-    Whether the recorded owner is this process, so a marker left by a recycled PID is not mistaken for our own.
+    Whether the recorded owner is this process, so a marker a recycled PID left behind never reads as ours.
 
-    A recorded start token must match this process's: the same PID with a different token, or with a token where this
-    process exposes none, was written by an earlier process that reused the number. A marker without a token falls back
-    to the PID and hostname.
+    Fail closed: a recorded start token must match this process's. One that differs was written by an earlier process
+    that reused this PID, and when this process cannot read its own token nothing proves the marker is ours. A marker
+    without a token falls back to the PID and hostname.
     """
     if pid != os.getpid() or hostname != host_name():
         return False
