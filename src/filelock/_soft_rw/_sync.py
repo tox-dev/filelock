@@ -8,7 +8,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from math import isfinite
+from math import inf, isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 from weakref import WeakValueDictionary
@@ -438,9 +438,11 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             if self._closed:
                 msg = f"SoftReadWriteLock on {self.lock_file} has been closed"
                 raise RuntimeError(msg)
-            if blocking and timeout < 0 and timeout != -1:
+            if blocking and not (timeout >= 0 or timeout == -1):  # nan fails both comparisons
                 message: Final[str] = "timeout must be a non-negative number or -1"
                 raise ValueError(message)
+            # threading.Lock rejects an infinite timeout, so route it to the unlimited wait -1 already spells.
+            timeout = -1 if timeout == inf else timeout
             if self._hold is not None:
                 return self._validate_reentrant(mode)
 

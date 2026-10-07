@@ -142,7 +142,7 @@ class _TaskOwners:
         enter: Callable[[float], Awaitable[None]],
     ) -> None:
         task = _current_task()
-        if blocking and timeout < 0 and timeout != -1:
+        if blocking and not (timeout >= 0 or timeout == -1):  # nan fails both comparisons
             msg: Final = "timeout must be a non-negative number or -1"
             raise ValueError(msg)
         deadline = None if timeout < 0 else time.perf_counter() + timeout

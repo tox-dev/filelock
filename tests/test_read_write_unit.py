@@ -768,10 +768,15 @@ def sync_locks(tmp_path: Path) -> Generator[tuple[ReadWriteLock, ReadWriteLock]]
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.parametrize(
     "timeout",
-    [pytest.param(-2, id="integer"), pytest.param(-0.5, id="fraction"), pytest.param(float("-inf"), id="infinite")],
+    [
+        pytest.param(-2, id="integer"),
+        pytest.param(-0.5, id="fraction"),
+        pytest.param(float("-inf"), id="negative-infinite"),
+        pytest.param(float("nan"), id="nan"),
+    ],
 )
 @pytest.mark.parametrize("reentrant", [pytest.param(True, id="reentrant"), pytest.param(False, id="first")])
-def test_acquire_rejects_negative_timeout(
+def test_acquire_rejects_invalid_timeout(
     timeout_locks: tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock],
     mode: Literal["read", "write"],
     timeout: float,
@@ -795,8 +800,11 @@ def test_acquire_rejects_negative_timeout(
     [
         pytest.param(-2, False, id="nonblocking-integer"),
         pytest.param(-0.5, False, id="nonblocking-fraction"),
-        pytest.param(float("-inf"), False, id="nonblocking-infinite"),
+        pytest.param(float("-inf"), False, id="nonblocking-negative-infinite"),
+        pytest.param(float("inf"), False, id="nonblocking-infinite"),
+        pytest.param(float("nan"), False, id="nonblocking-nan"),
         pytest.param(-1, True, id="unlimited"),
+        pytest.param(float("inf"), True, id="infinite"),
         pytest.param(0, True, id="immediate"),
     ],
 )
