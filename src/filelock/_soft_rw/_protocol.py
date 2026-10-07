@@ -210,10 +210,11 @@ class GenerationLog:
         return latest
 
     def _list(self) -> list[int]:
+        # isdigit() alone admits Unicode digits: superscripts int() rejects, fullwidth ones it parses to another number.
         listed = sorted(
             int(name)
             for name in self._files.listdir(str(self._directory))
-            if name.isdigit() and len(name) == _GENERATION_DIGITS
+            if len(name) == _GENERATION_DIGITS and name.isascii() and name.isdigit()
         )
         for generation in listed[:-_RETAINED_GENERATIONS]:
             self._files.unlink(self._path(generation))

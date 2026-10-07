@@ -171,6 +171,13 @@ def test_malformed_generation_raises(lock_file: str, files: OsFiles, root: str) 
     assert caught.value.claim_name == f"{1:020d}"
 
 
+def test_non_ascii_digit_generation_name_is_ignored(lock_file: str, files: OsFiles, root: str) -> None:
+    files.prepare(root)
+    Path(root, "gen", f"{1:020d}").write_bytes(Snapshot(generation=1, writer=_FIRST, readers=frozenset()).encode())
+    Path(root, "gen", "²" * 20).write_bytes(b"not a generation")
+    assert GenerationLog(files, lock_file, root).latest() == Snapshot(generation=1, writer=_FIRST, readers=frozenset())
+
+
 def test_leave_without_entering_only_drops_the_record(lock_file: str, files: OsFiles) -> None:
     participant = _participant(files, lock_file, "read", stale_threshold=1)
     participant.publish()
