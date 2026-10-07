@@ -24,6 +24,7 @@ from ._api import (
     _register_fork_object,
 )
 from ._error import Timeout
+from ._util import acquire_within
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import _open_non_reparse_fd
@@ -742,7 +743,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         elif timeout == -1:
             acquired = self._transaction_lock.acquire(blocking=True)
         else:
-            acquired = self._transaction_lock.acquire(blocking=True, timeout=timeout)
+            acquired = acquire_within(self._transaction_lock, timeout)
         if not acquired:
             raise Timeout(self.lock_file) from None
 

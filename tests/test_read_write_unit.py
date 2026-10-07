@@ -819,6 +819,17 @@ def test_acquire_valid_timeout_preserves_nested_hold(
         holder.acquire_write(blocking=False)
 
 
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+def test_acquire_accepts_timeout_above_lock_limit(
+    timeout_locks: tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock],
+    mode: Literal["read", "write"],
+) -> None:
+    holder: Final = timeout_locks[0]
+    acquire: Final = holder.acquire_read if mode == "read" else holder.acquire_write
+    with acquire(timeout=threading.TIMEOUT_MAX * 2), pytest.raises(Timeout):
+        timeout_locks[1].acquire_write(blocking=False)
+
+
 @pytest.fixture(
     params=[
         pytest.param(ReadWriteLock, id="sqlite"),

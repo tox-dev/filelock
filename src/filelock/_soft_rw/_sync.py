@@ -22,6 +22,7 @@ from filelock._api import (
 )
 from filelock._error import Timeout
 from filelock._lease import LeaseCompromise
+from filelock._util import acquire_within
 
 from ._protocol import GenerationLog, Ledger, Mode, Participant
 from ._storage import OsFiles
@@ -450,7 +451,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         elif timeout == -1:
             acquired = self._locks.transaction.acquire(blocking=True)
         else:
-            acquired = self._locks.transaction.acquire(blocking=True, timeout=timeout)
+            acquired = acquire_within(self._locks.transaction, timeout)
         if not acquired:
             raise Timeout(self.lock_file) from None
         try:

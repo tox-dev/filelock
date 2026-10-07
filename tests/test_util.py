@@ -4,6 +4,7 @@ import os
 import runpy
 import socket
 import sys
+import threading
 import time
 from contextlib import suppress
 from errno import EACCES, EIO, ENOENT, EPERM
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock, Timeout
+from filelock._util import acquire_within
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -232,3 +234,24 @@ def test_file_permissions_probe_propagates_io_errors(error: OSError) -> None:
 @pytest.fixture
 def _read_failure(mocker: MockerFixture, error: OSError | None) -> None:
     mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=error, return_value=b"")
+
+
+def test_acquire_within_keeps_waiting_past_timeout_max(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(threading, "TIMEOUT_MAX", 0.01)
+    lock: Final = threading.Lock()
+    lock.acquire()
+    release: Final = threading.Timer(0.1, lock.release)
+    release.start()
+    try:
+        assert acquire_within(lock, 5)
+    finally:
+        release.join()
+
+
+def test_acquire_within_gives_up_at_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(threading, "TIMEOUT_MAX", 0.01)
+    lock: Final = threading.Lock()
+    lock.acquire()
+    started: Final = time.perf_counter()
+    assert not acquire_within(lock, 0.05)
+    assert time.perf_counter() - started >= 0.04

@@ -4,6 +4,8 @@ import os
 import secrets
 import stat
 import sys
+import threading
+import time
 from errno import EACCES, EIO, EISDIR
 from pathlib import Path
 from typing import Final
@@ -28,6 +30,32 @@ def write_all(fd: int, data: bytes) -> None:
         if (written := os.write(fd, remaining)) == 0:
             raise OSError(EIO, "os.write wrote 0 bytes before the record was complete")
         remaining = remaining[written:]
+
+
+def acquire_within(lock: threading.Lock, timeout: float) -> bool:
+    """
+    Block on *lock* for up to *timeout* seconds, in slices ``threading.Lock.acquire`` accepts.
+
+    ``Lock.acquire`` refuses a timeout above ``threading.TIMEOUT_MAX`` with ``OverflowError``. That limit is 49.7 days
+    on Windows, so a read-write lock asked to wait two months failed on the in-process lock before it reached the
+    database or the marker directory, while the same call worked on Linux. Wait in slices no longer than the limit and
+    keep the caller's deadline across them.
+
+    :param lock: the lock to take.
+    :param timeout: finite, non-negative seconds to wait; ``0`` makes one attempt.
+
+    :returns: ``True`` once the lock is held, ``False`` when the deadline passes first.
+
+    """
+    if timeout <= threading.TIMEOUT_MAX:  # the common case: one call, no clock reads
+        return lock.acquire(timeout=timeout)
+    deadline: Final[float] = time.perf_counter() + timeout
+    while True:
+        remaining = max(deadline - time.perf_counter(), 0.0)
+        if lock.acquire(timeout=min(remaining, threading.TIMEOUT_MAX)):
+            return True
+        if remaining <= threading.TIMEOUT_MAX:
+            return False
 
 
 def raise_on_not_writable_file(filename: str) -> None:
@@ -132,6 +160,7 @@ _SUPPORTS_UTIME_NOFOLLOW: Final[bool] = os.utime in os.supports_follow_symlinks
 
 
 __all__ = [
+    "acquire_within",
     "break_lock_file",
     "ensure_directory_exists",
     "raise_on_not_writable_file",
