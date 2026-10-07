@@ -1,2 +1,2 @@
-``SoftReadWriteLock`` ignores a file in its generation log whose name is non-ASCII Unicode digits rather than crashing
-on it, so a same-host peer can no longer stop a holder's heartbeat and have its record reclaimed while it still runs.
+:class:`~filelock.SoftReadWriteLock` ignores a generation-log entry whose name is not 20 ASCII digits, which used to
+stop its heartbeat thread or delete real generations.
