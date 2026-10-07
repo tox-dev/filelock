@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager, suppress
+from math import isfinite
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeAlias, cast
 from weakref import WeakValueDictionary
 
@@ -534,8 +535,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
         with _fork_transition():
             self._raise_if_unusable()
-            if blocking and timeout < 0 and timeout != -1:
-                message: Final[str] = "timeout must be a non-negative number or -1"
+            if blocking and timeout != -1 and not (timeout >= 0 and isfinite(timeout)):
+                message: Final[str] = "timeout must be a finite non-negative number or -1"
                 raise ValueError(message)
             operation_pid = _GETPID()
             thread_id = threading.get_ident()

@@ -144,11 +144,17 @@ async def test_async_raw_acquire_release_round_trip(tmp_path: Path) -> None:
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.parametrize(
     "timeout",
-    [pytest.param(-2, id="integer"), pytest.param(-0.5, id="fraction"), pytest.param(float("-inf"), id="infinite")],
+    [
+        pytest.param(-2, id="integer"),
+        pytest.param(-0.5, id="fraction"),
+        pytest.param(float("-inf"), id="negative-infinite"),
+        pytest.param(float("inf"), id="infinite"),
+        pytest.param(float("nan"), id="nan"),
+    ],
 )
 @pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
 @pytest.mark.parametrize("contended", [pytest.param(True, id="contended"), pytest.param(False, id="free")])
-async def test_async_acquire_rejects_negative_timeout(
+async def test_async_acquire_rejects_invalid_timeout(
     tmp_path: Path, mode: Literal["read", "write"], timeout: float, *, configured: bool, contended: bool
 ) -> None:
     lock: Final = _make(tmp_path, timeout=timeout if configured else -1)
@@ -157,7 +163,7 @@ async def test_async_acquire_rejects_negative_timeout(
         async with AsyncExitStack() as stack:
             if contended:
                 await stack.enter_async_context(lock.write_lock(timeout=0))
-            with pytest.raises(ValueError, match="timeout must be a non-negative number or -1"):
+            with pytest.raises(ValueError, match="timeout must be a finite non-negative number or -1"):
                 await asyncio.create_task(acquire() if configured else acquire(timeout=timeout))
     finally:
         await lock.close()
@@ -165,16 +171,20 @@ async def test_async_acquire_rejects_negative_timeout(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    "timeout",
+    [pytest.param(-2, id="integer"), pytest.param(float("inf"), id="infinite"), pytest.param(float("nan"), id="nan")],
+)
 @pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
-async def test_async_nonblocking_ignores_negative_timeout(
-    tmp_path: Path, mode: Literal["read", "write"], *, configured: bool
+async def test_async_nonblocking_ignores_invalid_timeout(
+    tmp_path: Path, mode: Literal["read", "write"], timeout: float, *, configured: bool
 ) -> None:
-    lock: Final = _make(tmp_path, timeout=-2, blocking=not configured)
+    lock: Final = _make(tmp_path, timeout=timeout, blocking=not configured)
     acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
     try:
-        async with await (acquire() if configured else acquire(timeout=-2, blocking=False)):
+        async with await (acquire() if configured else acquire(timeout=timeout, blocking=False)):
             with pytest.raises(Timeout):
-                await asyncio.create_task(lock.acquire_write(timeout=-2, blocking=False))
+                await asyncio.create_task(lock.acquire_write(timeout=timeout, blocking=False))
     finally:
         await lock.close()
 
