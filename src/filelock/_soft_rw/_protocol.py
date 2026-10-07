@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import string
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -210,10 +211,14 @@ class GenerationLog:
         return latest
 
     def _list(self) -> list[int]:
+        # A generation name is exactly _GENERATION_DIGITS ASCII decimal digits. str.isdigit() also accepts Unicode
+        # digits such as superscripts that int() then rejects, so a same-host peer could plant a file whose name
+        # passes the filter but crashes int() out of here, down through latest() and a holder's heartbeat, which
+        # catches only OSError; the thread would die with its record unrefreshed and a peer could evict a live holder.
         listed = sorted(
             int(name)
             for name in self._files.listdir(str(self._directory))
-            if name.isdigit() and len(name) == _GENERATION_DIGITS
+            if len(name) == _GENERATION_DIGITS and all(character in string.digits for character in name)
         )
         for generation in listed[:-_RETAINED_GENERATIONS]:
             self._files.unlink(self._path(generation))

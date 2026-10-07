@@ -23,7 +23,15 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import SoftFileLockProtocolError
-from filelock._soft_rw._protocol import GenerationLog, Ledger, Participant, Snapshot, encode_holder, parse_snapshot
+from filelock._soft_rw._protocol import (
+    _GENERATION_DIGITS,
+    GenerationLog,
+    Ledger,
+    Participant,
+    Snapshot,
+    encode_holder,
+    parse_snapshot,
+)
 from filelock._soft_rw._storage import OsFiles
 
 if TYPE_CHECKING:
@@ -169,6 +177,17 @@ def test_malformed_generation_raises(lock_file: str, files: OsFiles, root: str) 
     with pytest.raises(SoftFileLockProtocolError, match="malformed generation record") as caught:
         log.latest()
     assert caught.value.claim_name == f"{1:020d}"
+
+
+def test_unicode_digit_generation_name_is_ignored(lock_file: str, files: OsFiles, root: str) -> None:
+    # A same-host peer plants a file whose name is _GENERATION_DIGITS Unicode "No" digits (superscript two). These
+    # pass str.isdigit() but int() rejects them, so an unfiltered listing crashed latest() with ValueError rather
+    # than reading the name as not-a-generation.
+    files.prepare(root)
+    Path(root, "gen", f"{1:020d}").write_bytes(Snapshot(generation=1, writer=_FIRST, readers=frozenset()).encode())
+    Path(root, "gen", "²" * _GENERATION_DIGITS).write_bytes(b"not a generation")
+    log = GenerationLog(files, lock_file, root)
+    assert log.latest() == Snapshot(generation=1, writer=_FIRST, readers=frozenset())
 
 
 def test_leave_without_entering_only_drops_the_record(lock_file: str, files: OsFiles) -> None:
