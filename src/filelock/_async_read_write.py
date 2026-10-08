@@ -49,7 +49,7 @@ class AsyncReadWriteLock:
     Singleton wrappers over one path share their task holds.
 
     :param lock_file: path to the SQLite database file used as the lock
-    :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
+    :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
     :param is_singleton: if ``True``, reuse existing :class:`ReadWriteLock` instances for the same resolved path
     :param loop: event loop for ``run_in_executor``; ``None`` uses the running loop
@@ -170,7 +170,8 @@ class AsyncReadWriteLock:
 
         See :meth:`ReadWriteLock.acquire_read` for full semantics.
 
-        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
+            busy-timeout cap of about 23 days
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
             ``None`` uses the instance setting
 
@@ -192,7 +193,8 @@ class AsyncReadWriteLock:
 
         See :meth:`ReadWriteLock.acquire_write` for full semantics.
 
-        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
+            busy-timeout cap of about 23 days
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
             ``None`` uses the instance setting
 

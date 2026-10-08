@@ -519,7 +519,12 @@ def _patch_async_connection(
             configuration["executescript.side_effect"] = functools.partial(executescript, real_connection)
         if rollback is not None:
             configuration["rollback.side_effect"] = functools.partial(rollback, real_connection)
-        connection = mocker.MagicMock(spec_set=type(real_connection), wraps=real_connection, **configuration)
+        connection = mocker.MagicMock(
+            spec_set=type(real_connection),
+            wraps=real_connection,
+            database_identity=None,
+            **configuration,
+        )
         mocker.patch.object(
             type(connection),
             "in_transaction",

@@ -211,7 +211,9 @@ class _ForkSafeConnection(sqlite3.Connection):
     _creator_pid: int
     _decrement_escrow: Callable[[sqlite3.Connection], None] | None
     _database_directory: pathlib.Path | None
-    _probe_identity: _DatabaseIdentity | None
+    #: The inode SQLite connected through: its probes stay open until close, and an acquisition checks that the path
+    #: still names it.
+    database_identity: _DatabaseIdentity | None = None
 
     def __new__(
         cls,
@@ -222,7 +224,6 @@ class _ForkSafeConnection(sqlite3.Connection):
         connection._creator_pid = _GETPID()
         connection._decrement_escrow = None
         connection._database_directory = None
-        connection._probe_identity = None
         return connection
 
     def close(self) -> None:
@@ -234,8 +235,8 @@ class _ForkSafeConnection(sqlite3.Connection):
                 if (directory := self._database_directory) is not None:  # pragma: needs posix-hard-link
                     shutil.rmtree(directory)
                     self._database_directory = None
-                if (identity := self._probe_identity) is not None:  # pragma: win32 no cover
-                    self._probe_identity = None
+                if (identity := self.database_identity) is not None:  # pragma: win32 no cover
+                    self.database_identity = None
                     _PROBE_DESCRIPTORS.release(identity)
                 if (decrement := self._decrement_escrow) is not None:  # pragma: <3.12 cover  # pragma: needs fork
                     self._decrement_escrow = None
@@ -246,7 +247,7 @@ class _ForkSafeConnection(sqlite3.Connection):
     ) -> None:
         """Keep the private link and this inode's probe descriptors until SQLite no longer uses them."""
         self._database_directory = directory
-        self._probe_identity = probe_identity
+        self.database_identity = probe_identity
 
     def acquire_escrow(  # pragma: <3.12 cover  # pragma: needs fork
         self,
@@ -351,7 +352,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     WAL-mode database raises :class:`ValueError`.
 
     :param lock_file: path to the SQLite database file used as the lock
-    :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
+    :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
     :param is_singleton: if ``True``, reuse existing instances for the same resolved path
 
@@ -380,7 +381,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Return the singleton :class:`ReadWriteLock` for *lock_file*.
 
         :param lock_file: path to the SQLite database file used as the lock
-        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
+        :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
 
         :returns: the singleton lock instance
@@ -428,7 +429,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire a
         read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed).
 
-        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
+            busy-timeout cap of about 23 days
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
             ``None`` uses the instance setting
 
@@ -453,7 +455,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
         :class:`RuntimeError`.
 
-        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
+            busy-timeout cap of about 23 days
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
             ``None`` uses the instance setting
 
@@ -758,6 +761,20 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 # sqlite_schema is an alias added in SQLite 3.33.0; sqlite_master works on every version.
                 statements += " SELECT name FROM sqlite_master LIMIT 1;"
             connection.executescript(statements).close()
+            self._raise_if_database_replaced(connection)
+
+    def _raise_if_database_replaced(self, connection: _ForkSafeConnection) -> None:
+        # Windows pins the name: SQLite opens the database without delete sharing, so it cannot be unlinked or renamed.
+        if (identity := connection.database_identity) is None:  # pragma: win32 cover
+            return
+        try:  # pragma: win32 no cover
+            current = self._canonical_path.stat(follow_symlinks=False)
+        except FileNotFoundError:  # pragma: win32 no cover
+            current = None
+        # The lock lives on the inode, so one taken after the path moved on excludes no later opener.
+        if current is None or (current.st_dev, current.st_ino) != identity:  # pragma: win32 no cover
+            msg = f"lock database {self.lock_file!r} was unlinked or replaced while acquiring; leave it in place"
+            raise OSError(msg)
 
     def _open_connection(self, *, sqlite_timeout: float) -> _ForkSafeConnection:
         with _sqlite_transition():
