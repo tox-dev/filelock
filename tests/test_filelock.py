@@ -15,14 +15,16 @@ from errno import EAGAIN, EINTR, EIO, ENOSPC, ENOSYS, EWOULDBLOCK
 from inspect import getframeinfo, stack
 from pathlib import Path, PurePath
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
-from types import TracebackType
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from types import ModuleType, TracebackType
+from typing import TYPE_CHECKING, Any, Final, Literal, cast, get_args
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
 import pytest
 from capabilities import CAPABILITIES
 
+import filelock
+import filelock.version
 from filelock import (
     BaseFileLock,
     ContextErrorPolicy,
@@ -2975,3 +2977,28 @@ def test_unix_soft_fallback_keeps_a_replaced_file(tmp_path: Path, mocker: Mocker
 
     assert isinstance(lock, SoftFileLock)  # fell back after refusing to unlink the mismatched file
     assert lock_path.exists()  # the replacement file was left in place
+
+
+def test_version_attribute_is_the_version_submodule() -> None:
+    assert isinstance(filelock.version, ModuleType)
+
+
+def test_version_submodule_matches_dunder_version() -> None:
+    assert filelock.version.__version__ == filelock.__version__
+
+
+def test_has_fcntl_matches_native_unix_alias() -> None:
+    assert filelock.has_fcntl is (filelock.FileLock is filelock.UnixFileLock)
+
+
+@pytest.mark.parametrize(
+    ("alias", "values"),
+    [
+        pytest.param(filelock.OwnerMode, ("lease", "exclusive", "unknown"), id="owner-mode"),
+        pytest.param(
+            filelock.CompromiseReason, ("marker-missing", "owner-changed", "refresh-failed", "evicted"), id="reason"
+        ),
+    ],
+)
+def test_public_literal_aliases_list_their_values(alias: object, values: tuple[str, ...]) -> None:
+    assert get_args(alias) == values

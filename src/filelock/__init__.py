@@ -4,6 +4,10 @@ A platform independent file lock that supports the with-statement.
 .. autodata:: filelock.__version__
     :no-value:
 
+.. autodata:: filelock.OwnerMode
+
+.. autodata:: filelock.CompromiseReason
+
 """
 
 from __future__ import annotations
@@ -15,8 +19,8 @@ from typing import TYPE_CHECKING, Final
 from ._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy, LockOptions
 from ._descriptor import lock_descriptor, unlock_descriptor
 from ._error import LeaseSettingsMismatch, SoftFileLockLifetimeWarning, SoftFileLockProtocolError, Timeout
-from ._lease import LeaseCompromise, SoftFileLease
-from ._marker import MarkerSoftFileLock, OwnerRecord
+from ._lease import CompromiseReason, LeaseCompromise, SoftFileLease
+from ._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord
 
 if TYPE_CHECKING:
     from ._async_read_write import (
@@ -36,7 +40,8 @@ else:
 from ._soft import SoftFileLock
 from ._soft_rw import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
 from ._strict import StrictSoftFileClaim, StrictSoftFileClaimState, StrictSoftFileLock
-from ._unix import UnixFileLock, has_fcntl
+from ._unix import UnixFileLock
+from ._unix import has_fcntl as _has_fcntl
 from ._windows import WindowsFileLock
 from .asyncio import (
     AsyncAcquireReturnProxy,
@@ -47,10 +52,16 @@ from .asyncio import (
     AsyncWindowsFileLock,
     BaseAsyncFileLock,
 )
-from .version import version
+from .version import __version__ as _version
 
 #: version of the project as a string
-__version__: Final[str] = version
+__version__: Final[str] = _version
+
+#: ``True`` when :func:`fcntl.flock` is available. Off Windows, :data:`FileLock` then resolves to
+#: :class:`UnixFileLock`, otherwise to :class:`SoftFileLock`. Always ``False`` on Windows.
+#:
+#: :meta hide-value:
+has_fcntl: Final[bool] = _has_fcntl
 
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -90,12 +101,14 @@ __all__ = [
     "BaseAsyncFileLock",
     "BaseFileLock",
     "CloseErrorPolicy",
+    "CompromiseReason",
     "ContextErrorPolicy",
     "FileLock",
     "LeaseCompromise",
     "LeaseSettingsMismatch",
     "LockOptions",
     "MarkerSoftFileLock",
+    "OwnerMode",
     "OwnerRecord",
     "ReadWriteLock",
     "SoftFileLease",
@@ -110,6 +123,7 @@ __all__ = [
     "UnixFileLock",
     "WindowsFileLock",
     "__version__",
+    "has_fcntl",
     "lock_descriptor",
     "unlock_descriptor",
 ]

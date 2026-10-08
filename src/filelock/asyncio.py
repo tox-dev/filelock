@@ -776,3 +776,8 @@ __all__ = [
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",
 ]
+
+
+def __dir__() -> list[str]:
+    # The module imports its sync bases and helpers at top level; list only the public async API.
+    return list(__all__)

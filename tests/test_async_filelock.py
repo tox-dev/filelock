@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
 
 import pytest
 
+import filelock.asyncio
 from filelock import (
     AsyncFileLock,
     AsyncSoftFileLease,
@@ -1285,3 +1286,7 @@ def test_async_del_without_any_loop_returns(tmp_path: Path, mocker: MockerFixtur
 
     # An unlocked finalizer asserts nothing on its own; the lookup and the absent release pin the path it took.
     assert (get_running_loop.called, release.called, lock.is_locked) == (True, False, False)
+
+
+def test_asyncio_module_dir_lists_only_its_public_api() -> None:
+    assert dir(filelock.asyncio) == sorted(filelock.asyncio.__all__)
