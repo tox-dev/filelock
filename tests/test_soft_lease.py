@@ -25,6 +25,7 @@ from filelock import (
     StrictSoftFileLock,
     Timeout,
 )
+from filelock._identity import host_name
 from filelock._soft import _MALFORMED_LOCK_AGE_THRESHOLD
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, NEEDS_PROMPT_FINALIZATION, NEEDS_UNLINK_OPEN_FILE
 
@@ -71,7 +72,7 @@ def test_lease_publishes_its_claim(marker: Path) -> None:
         assert owner is not None
         assert (owner.pid, owner.hostname, owner.mode, owner.lease_duration) == (
             os.getpid(),
-            socket.gethostname(),
+            host_name(),
             "lease",
             _DURATION,
         )
@@ -151,7 +152,7 @@ def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture
     ],
 )
 def test_lease_reclaims_a_dead_same_host_holder(marker: Path, contract: str) -> None:
-    marker.write_text(f"filelock/2\npid=999999\nhost={socket.gethostname()}\n{contract}", encoding="utf-8")
+    marker.write_text(f"filelock/2\npid=999999\nhost={host_name()}\n{contract}", encoding="utf-8")
 
     with _lease(marker) as lease:
         assert lease.is_lock_held_by_us

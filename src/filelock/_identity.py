@@ -14,6 +14,9 @@ _HOST_NAME_LIMIT: Final[int] = 253
 _HOST_NAME_VERBATIM: Final[frozenset[int]] = frozenset(range(0x21, 0x7F)) - {ord("?")}
 #: The characters at the end of an over-long name that carry a digest of the part cut off.
 _HOST_NAME_DIGEST_LEN: Final[int] = 8
+#: The kernel ABI fixes the initial PID namespace's inode (``PID_NS_INIT_INO`` in ``linux/nsfs.h``); every namespace
+#: created later draws one from ``0xF0000000`` up, so this value names the host's own namespace.
+_INITIAL_PID_NAMESPACE: Final[int] = 0xEFFFFFFC
 
 
 def host_name() -> str:
@@ -27,18 +30,36 @@ def host_name() -> str:
     out-of-grammar byte as ``?<hex>`` leaves a real name untouched and still keeps two hosts apart, which
     :func:`owner_is_stale` relies on to refuse to probe a foreign PID.
 
+    Linux appends the PID namespace, as Mercurial's lock prefix does. Two containers in one pod share the hostname and
+    the boot id but not the PID namespace, so a PID recorded in one names another process, or none, in the other. The
+    suffix starts with a ``?`` no escape can produce, so ``a`` in a namespace never reads as a host literally named
+    ``a?pidns-...``. The initial namespace adds nothing, which keeps a host's name what older releases recorded.
+
     An over-long name ends in a digest of the part cut to fit the limit. A bare cut gives every name that shares the
     kept prefix one identity, and :func:`owner_is_stale` would then probe a local PID for another host's holder.
     """
-    name = "".join(
-        chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
-        for byte in socket.gethostname().encode("utf-8", "surrogateescape")
+    name = (
+        "".join(
+            chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
+            for byte in socket.gethostname().encode("utf-8", "surrogateescape")
+        )
+        + _pid_namespace_suffix()
     )
     if len(name) > _HOST_NAME_LIMIT:
         keep = _HOST_NAME_LIMIT - _HOST_NAME_DIGEST_LEN - 1
         name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
     # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
     return name or "?"
+
+
+def _pid_namespace_suffix() -> str:
+    try:
+        namespace = Path("/proc/self/ns/pid").stat().st_ino
+    except OSError:
+        # Only Linux exposes the file, from kernel 3.8 on; elsewhere, and in sandboxes that hide /proc/self/ns, nothing
+        # tells namespaces apart.
+        return ""
+    return "" if namespace == _INITIAL_PID_NAMESPACE else f"?pidns-{namespace:x}"
 
 
 def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:

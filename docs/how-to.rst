@@ -931,7 +931,10 @@ returns an :class:`OwnerRecord <filelock.OwnerRecord>`:
 
 Every record holds ``socket.gethostname()`` with each byte outside printable non-space ASCII, and each ``?``,
 escaped as ``?<hex>``, since a marker line cannot carry a space, a newline, or a byte no codec encodes. A
-conventional hostname reaches the record unchanged, so an escape names a host whose kernel hostname is not one.
+conventional hostname reaches the record unchanged, so an escape names a host whose kernel hostname is not one. On
+Linux, a process outside the host's initial PID namespace appends ``?pidns-<inode>``, so a container's records never
+match a sibling container's that shares its hostname; see :ref:`concepts:How does stale lock detection work across
+platforms?`.
 
 :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` does **not** publish this record and has no ``owner``: it
 derives from :class:`BaseFileLock <filelock.BaseFileLock>`, keeps a permanent sentinel at the lock path, and stores one
