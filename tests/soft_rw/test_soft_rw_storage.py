@@ -63,6 +63,15 @@ def test_create_rolls_back_a_failed_write(tmp_path: Path, mocker: MockerFixture)
     assert not (tmp_path / "record").exists()
 
 
+@pytest.mark.parametrize("durable", [pytest.param(True, id="durable"), pytest.param(False, id="holder")])
+def test_create_flushes_only_a_durable_record(tmp_path: Path, mocker: MockerFixture, *, durable: bool) -> None:
+    # A generation linked into place outlives its writer's host; unflushed, a crash would leave it empty for everyone.
+    fsync = mocker.spy(storage_mod.os, "fsync")
+    OsFiles(str(tmp_path / "x.lock")).create(str(tmp_path / "record"), b"data", durable=durable)
+    assert fsync.call_count == durable
+    assert (tmp_path / "record").read_bytes() == b"data"
+
+
 def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixture) -> None:
     # An NFS retransmit can report a link that landed as failed; the target naming the source's file is what counts.
     real_link = storage_mod._link_no_follow

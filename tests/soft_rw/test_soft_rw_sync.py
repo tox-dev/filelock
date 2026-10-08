@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import shutil
 import signal
 import stat
 import sys
@@ -70,13 +71,19 @@ def _state(lock_file: str) -> Snapshot:
     return GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw").latest()
 
 
+def _remove_log(lock_file: str) -> None:
+    # The documented recovery: a rename takes the whole log away at once, so no participant reads it half deleted.
+    Path(f"{lock_file}.rw").rename(removed := Path(f"{lock_file}.rw.removed"))
+    shutil.rmtree(removed)
+
+
 def _holders(lock_file: str) -> list[str]:
     holders = Path(f"{lock_file}.rw", "holders")
     return sorted(entry.name for entry in holders.iterdir()) if holders.is_dir() else []
 
 
 def _generations(lock_file: str) -> list[str]:
-    return sorted(entry.name for entry in Path(f"{lock_file}.rw", "gen").iterdir() if not entry.name.startswith("."))
+    return sorted(entry.name for entry in Path(f"{lock_file}.rw", "gen").iterdir() if entry.name.isdigit())
 
 
 def _plant_holder(lock_file: str, *, mode: Literal["read", "write"], host: str = "terminated-pod") -> str:
@@ -929,6 +936,47 @@ def test_malformed_generation_record_fails_closed(lock_file: str, lock: SoftRead
     Path(f"{lock_file}.rw", "gen", f"{int(latest) + 1:020d}").write_bytes(b"garbage\n")
     with pytest.raises(SoftFileLockProtocolError, match="malformed generation record"):
         lock.acquire_write(timeout=1)
+
+
+def test_removing_the_log_recovers_without_admitting_a_second_writer(lock_file: str, lock: SoftReadWriteLock) -> None:
+    # Removing <lock>.rw is the documented recovery from a malformed record; an instance that remembers the old log must
+    # wait behind whoever acquires the restarted one.
+    with lock.write_lock(timeout=2):
+        pass
+    _remove_log(lock_file)
+    peer = _make_lock(lock_file)
+    try:
+        with peer.write_lock(timeout=2):
+            assert peer.generation == 1
+            with pytest.raises(Timeout):
+                lock.acquire_write(blocking=False)
+        with lock.write_lock(timeout=2):
+            assert lock.generation == 3
+    finally:
+        peer.close()
+
+
+def test_a_contender_waiting_when_the_log_is_removed_starts_over(
+    lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture
+) -> None:
+    lock.acquire_write(timeout=2)
+    real_advance = Participant.advance
+    removed: list[str] = []
+
+    def remove_once_blocked(participant: Participant) -> bool:
+        if not (granted := real_advance(participant)) and not removed:
+            _remove_log(lock_file)
+            removed.append(participant.token)
+        return granted
+
+    mocker.patch.object(Participant, "advance", autospec=True, side_effect=remove_once_blocked)
+    waiter = _make_lock(lock_file)
+    try:
+        waiter.acquire_write(timeout=_PROCESS_DEADLINE)
+        assert removed
+        assert waiter.generation == 1
+    finally:
+        waiter.close()
 
 
 def test_malformed_holder_record_is_evicted(lock_file: str) -> None:

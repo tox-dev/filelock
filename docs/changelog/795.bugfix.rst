@@ -1,0 +1,2 @@
+:class:`~filelock.SoftReadWriteLock` no longer admits a second writer after ``<path>.rw`` is removed under a live
+instance, and flushes each snapshot before publishing it so a crash cannot leave an empty one that wedges every peer.
