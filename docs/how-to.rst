@@ -808,6 +808,16 @@ acquisition activates the path; filelock 3.20.0 and other legacy clients then ti
 strict holds. Age expiry, ``break_lock()``, or manual sentinel deletion voids this guarantee. See the `filelock 3.20.0
 release <https://github.com/tox-dev/filelock/releases/tag/3.20.0>`_ for the oldest migration client tested by filelock.
 
+A soft-lock owner's marker at ``work.lock`` (from ``SoftFileLock``, ``MarkerSoftFileLock`` or ``SoftFileLease``) blocks
+strict acquisition like any holder, without appearing in ``lock.claims``;
+:attr:`lock_path_occupant <filelock.StrictSoftFileLock.lock_path_occupant>` describes it, with its PID and host when the
+marker records them. A file strict cannot read or parse blocks the same way, because filelock before 3.22 wrote an
+empty marker and Windows refuses to read a marker its holder keeps open. A marker whose owner on this host has exited
+raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming that owner, and a directory,
+symlink, or other node no lock writes raises the same error after half a second. Strict mode never removes what it
+found. A crashed owner on another host, or one that left no PID, cannot be told apart from a live one, so its marker
+blocks until an operator who has confirmed that owner is gone deletes ``work.lock``.
+
 A crash can leave an intent, a held claim, or both claims for one token. Strict mode treats each claim as live because
 PID and clock checks cannot prove that another host or a recycled process has stopped using the resource. Inspect the
 parsed claims before recovery:

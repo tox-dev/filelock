@@ -16,7 +16,9 @@ from typing import TYPE_CHECKING, Final, Literal, cast
 
 from ._api import BaseFileLock, _canonical, _raise_cleanup_errors
 from ._error import SoftFileLockProtocolError
-from ._identity import host_name, process_start_token
+from ._identity import host_name, owner_is_stale, process_start_token
+from ._marker import parse_marker
+from ._soft import _parse_lock_holder
 from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from ._util import ensure_directory_exists, write_all
 
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
 StrictSoftFileClaimState = Literal["intent", "held"]
+_OccupantState = Literal["sentinel", "held", "exited", "damaged"]
 
 _CLAIM_STATES: Final[frozenset[str]] = frozenset({"intent", "held"})
 _COORDINATION_SUFFIX: Final[str] = ".filelock"
@@ -40,6 +43,10 @@ _UNLINK_MAX_RETRIES: Final[int] = 10
 #: How long a scan waits out a claim held in Windows' delete-pending state before treating it as unreadable.
 _CLAIM_READ_GRACE: Final[float] = 0.5
 _CLAIM_READ_RETRY: Final[float] = 0.002
+#: How long the lock path may hold a node no lock writes, or a record that fails to read, before acquisition names it.
+#: The grace rides out a peer replacing the path mid-inspection; what persists past it is damage.
+_SENTINEL_READ_GRACE: Final[float] = 0.5
+_NODE_DESCRIPTIONS: Final[dict[int, str]] = {stat.S_IFDIR: "a directory", stat.S_IFLNK: "a symlink"}
 #: Windows opens descriptors in text mode by default, which rewrites newlines and truncates a record at a control byte.
 #: The claim and sentinel records are exact binary, so every record descriptor must be binary; POSIX ignores the flag.
 _O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
@@ -206,6 +213,25 @@ class StrictSoftFileLock(BaseFileLock):
         """Published claims that block acquisition."""
         return _read_existing_claims(self.lock_file, self._claim_directory)
 
+    @property
+    def lock_path_occupant(self) -> str | None:
+        """
+        What sits at the lock path in place of the strict sentinel, or ``None`` when the sentinel or nothing is there.
+
+        A soft-lock owner's marker blocks acquisition without appearing in :attr:`~filelock.StrictSoftFileLock.claims`;
+        this describes it, naming the PID and host when the marker records them. A directory, a symlink, or a marker
+        whose owner on this host has exited makes acquisition raise :class:`~filelock.SoftFileLockProtocolError` instead
+        and needs an operator to remove it.
+        """
+        try:
+            fd, _, occupant = _inspect_lock_path(Path(_canonical(self.lock_file)))
+        except FileNotFoundError:
+            return None
+        if fd is None:
+            return occupant
+        os.close(fd)
+        return None
+
     def force_break(self, claim_name: str) -> None:
         """Remove one named claim, allowing overlap if its owner still holds the protected resource."""
         _validate_force_break_name(claim_name)
@@ -289,11 +315,9 @@ class _PrivateRecordReclaimedError(Exception):
 
 def _open_or_create_sentinel(lock_file: str, path: Path, mode: int) -> int | None:
     try:
-        return _open_sentinel(path)
+        return _open_sentinel(lock_file, path)
     except FileNotFoundError:
         pass
-    except OSError:
-        return None
 
     _reclaim_sentinel_private_records(path)
     try:
@@ -308,17 +332,64 @@ def _open_or_create_sentinel(lock_file: str, path: Path, mode: int) -> int | Non
         if publication_cleanup_error is not None:  # pragma: needs dir-fd
             raise publication_cleanup_error
     try:
-        return _open_sentinel(path)
-    except OSError:
+        return _open_sentinel(lock_file, path)
+    except FileNotFoundError:
         return None
 
 
-def _open_sentinel(path: Path) -> int | None:
-    fd, record = _open_record(path, len(_LEGACY_SENTINEL))
+def _open_sentinel(lock_file: str, path: Path) -> int | None:
+    # Only a soft-lock owner that may still run keeps the path from being the sentinel, and it blocks like any holder
+    # until it releases. Anything else surfaces as a protocol error: claims cannot show it and force_break() cannot
+    # remove it, so waiting on it would wedge every strict contender with no diagnostic. An owner proven gone raises at
+    # once; other damage first waits out a short grace.
+    deadline: float | None = None
+    while True:
+        fd, state, occupant = _inspect_lock_path(path)
+        if fd is not None or state == "held":
+            return fd
+        if deadline is None:
+            deadline = time.monotonic() + _SENTINEL_READ_GRACE
+        if state == "exited" or time.monotonic() >= deadline:
+            raise SoftFileLockProtocolError(
+                lock_file, None, f"expected the strict sentinel at the lock path, found {occupant}"
+            )
+        time.sleep(_CLAIM_READ_RETRY)
+
+
+def _inspect_lock_path(path: Path) -> tuple[int | None, _OccupantState, str]:
+    # Return the sentinel's descriptor, or describe what sits at the path instead and whether it may be a soft-lock
+    # owner that still runs ("held"), one this host proves gone ("exited"), or a node no lock writes ("damaged").
+    if not stat.S_ISREG(mode := path.lstat().st_mode):
+        return None, "damaged", _NODE_DESCRIPTIONS.get(stat.S_IFMT(mode), "a special file")
+    try:
+        fd, record = _open_record(path, _CLAIM_RECORD_LIMIT)
+    except FileNotFoundError:
+        raise
+    except PermissionError as error:
+        # Windows denies the read while a legacy holder keeps its marker open, and a holder running as another user
+        # may leave it unreadable here, so a marker that cannot be read may still be held.
+        return None, "held", f"a file it cannot read ({error.strerror or error})"
+    except OSError as error:
+        return None, "damaged", f"a file it cannot read ({error.strerror or error})"
     if record == _LEGACY_SENTINEL:
-        return fd
+        return fd, "sentinel", "the strict sentinel"
     os.close(fd)
-    return None
+    return None, *_describe_soft_marker(record.decode("utf-8", errors="replace"))
+
+
+def _describe_soft_marker(content: str) -> tuple[_OccupantState, str]:
+    # A SoftFileLock, MarkerSoftFileLock or SoftFileLease owner holds the path legitimately until it releases, so its
+    # marker is contention. One this host proves gone is named, never removed: strict never acts on an inferred death.
+    if (record := parse_marker(content)) is not None:
+        pid, hostname, start = record.pid, record.hostname, record.start
+    elif (holder := _parse_lock_holder(content)) is not None:
+        pid, hostname, start = holder
+    else:
+        # filelock before 3.22 left an empty marker, or one without a final newline, so an unparsable file may be held.
+        return "held", "a file that is neither the sentinel nor a soft-lock marker it can parse"
+    if owner_is_stale(pid, hostname, start):
+        return "exited", f"a soft-lock marker left by pid {pid} on {hostname}, which has exited"
+    return "held", f"a soft-lock marker held by pid {pid} on {hostname}"
 
 
 def _read_claims(lock_file: str, directory: Path) -> tuple[StrictSoftFileClaim, ...]:
