@@ -774,6 +774,9 @@ Every platform stores a process start token in the marker to guard against PID r
 them unchanged for two seconds.
 That recovery path is not fail closed.
 
+Two contenders that break the same stale marker can admit a third holder in a window of two syscalls; see
+:ref:`concepts:How does stale lock detection work across platforms?` for the details.
+
 ********************************
  Use fail-closed soft locks
 ********************************

@@ -670,6 +670,16 @@ cannot be read, and a marker from another host all read as held. The start token
 remove it once it has seen it unchanged for two seconds, so a half-written marker never wedges acquisition. This is the rule PostgreSQL, Qt
 ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
 
+Breaking a marker leaves a short window. The contender renames the marker to a private ``<lock>.break.*`` name, so only
+one of several breakers takes it, then checks the renamed file's inode and modification time. A mismatch means a peer
+broke the same marker and acquired between the stale check and the rename, so the contender hard-links that live marker
+back to the lock path and drops the break name. A third process that creates a marker in the two syscalls between the
+rename and the link keeps the path, and the live marker stays under the break name. Both then hold the lock. Mercurial
+closes this window by serializing breakers on a separate ``<lock>.break`` lock; filelock does not, because a breaker that
+crashes would leave that lock needing stale detection of its own and a 3.29 peer never takes it. Where ``os.link`` is
+missing or the filesystem refuses hard links, the live marker stays under the break name. The same applies to the
+``lifetime`` and :class:`SoftFileLease <filelock.SoftFileLease>` expiry breaks.
+
 Why is ReadWriteLock backed by SQLite?
 ======================================
 
