@@ -353,8 +353,12 @@ Available async lock classes:
 
 - :class:`AsyncFileLock <filelock.AsyncFileLock>`, platform-aware (recommended).
 - :class:`AsyncSoftFileLock <filelock.AsyncSoftFileLock>`.
+- :class:`AsyncStrictSoftFileLock <filelock.AsyncStrictSoftFileLock>`.
+- :class:`AsyncSoftFileLease <filelock.AsyncSoftFileLease>`.
 - :class:`AsyncUnixFileLock <filelock.AsyncUnixFileLock>`.
 - :class:`AsyncWindowsFileLock <filelock.AsyncWindowsFileLock>`.
+- :class:`AsyncReadWriteLock <filelock.AsyncReadWriteLock>`.
+- :class:`AsyncSoftReadWriteLock <filelock.AsyncSoftReadWriteLock>`.
 
 *********************************
  Use locks with multiple threads
@@ -1026,13 +1030,13 @@ holder, the protected resource must be linearizable and fence on a monotonic gen
 
     from filelock import SoftFileLease, StrictSoftFileLock
 
-    with StrictSoftFileLock("work.lock", timeout=30):
+    with StrictSoftFileLock("strict.lock", timeout=30):
         pass  # no peer enters while this holder lives
 
     def stop_working(compromise):
         print("lost the claim:", compromise.reason)
 
-    with SoftFileLease("work.lock", lease_duration=60, on_compromise=stop_working):
+    with SoftFileLease("lease.lock", lease_duration=60, on_compromise=stop_working):
         pass  # a peer may enter 60s after the last refresh
 
 Every contender for a path must agree on ``lease_duration``; one that disagrees raises

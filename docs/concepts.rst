@@ -393,6 +393,8 @@ For example, this code has a TOCTOU vulnerability:
 
 .. code-block:: python
 
+    import os
+
     if os.path.exists("sensitive.txt"):  # Check
         data = open("sensitive.txt").read()  # Use (race window here!)
 
@@ -401,12 +403,17 @@ different file.
 
 How filelock mitigates this:
 
-:class:`SoftFileLock <filelock.SoftFileLock>` on systems without ``O_NOFOLLOW`` support may be vulnerable. But on most
-modern platforms (Linux, macOS, Windows), ``O_NOFOLLOW`` is supported, and filelock uses it to refuse following
-symlinks.
+The defense differs by platform:
 
-On older platforms without ``O_NOFOLLOW``, prefer :class:`UnixFileLock <filelock.UnixFileLock>` or
-:class:`WindowsFileLock <filelock.WindowsFileLock>` for security-sensitive applications.
+- On Unix, filelock opens lock files with ``O_NOFOLLOW``, so a symlink planted at the lock path makes the open fail
+  instead of reaching its target.
+- Windows has no ``O_NOFOLLOW``. :class:`WindowsFileLock <filelock.WindowsFileLock>` opens the file without following
+  reparse points and rejects a symlink or junction by inspecting the handle it locks, so a swap between check and use
+  cannot redirect it. Only the last path component is guarded; the lock directory must not be writable by untrusted
+  users.
+- :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL``, which fails on any
+  existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
+  file as malformed, then checks the opened handle again with ``fstat``.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path and keeps SQLite on the file it
 checked, so a link planted in a shared directory cannot point the lock at another file.

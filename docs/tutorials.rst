@@ -334,7 +334,7 @@ the lock file and can detect stale locks.
     lock = PIDLockFile("/tmp/myapp.lock")
     lock.acquire()
     print(lock.read_pid())
-    print(lock.is_lock_held_by_us())
+    print(lock.i_am_locking())
     lock.release()
 
     # After (filelock):
@@ -349,7 +349,7 @@ the lock file and can detect stale locks.
 Key differences from ``PIDLockFile``:
 
 - ``read_pid()`` is now a property: ``lock.pid``
-- ``is_lock_held_by_us()`` is now a property: ``lock.is_lock_held_by_us``
+- ``i_am_locking()`` is now the ``lock.is_lock_held_by_us`` property
 - ``break_lock()`` is now ``lock.break_lock()`` (same name)
 - Stale lock detection happens automatically on acquire (all platforms)
 - Supports context managers, reentrant locking, timeouts, and all other filelock features

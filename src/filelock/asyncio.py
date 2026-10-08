@@ -767,7 +767,7 @@ class AsyncUnixFileLock(UnixFileLock, BaseAsyncFileLock):
 
 
 class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):
-    """Uses the :func:`msvcrt.locking` to hard lock the lock file on windows systems."""
+    """Uses ``LockFileEx`` to hard lock a byte range of the lock file on Windows systems."""
 
 
 __all__ = [
