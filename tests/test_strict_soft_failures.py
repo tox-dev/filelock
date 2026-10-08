@@ -494,11 +494,13 @@ def test_strict_soft_reaper_does_not_retry_sharing_error(tmp_path: Path, mocker:
         side_effect=PermissionError(EACCES, "sharing violation"),
     )
 
-    started = time.perf_counter()
+    # Count the backoff sleeps instead of timing the scan: the reaper's clock probe does real I/O that a slow
+    # Windows runner can stretch past any fixed wall-clock budget.
+    sleep = mocker.patch("filelock._strict.time.sleep")
+
     assert StrictSoftFileLock(lock_path).claims == ()
-    elapsed = time.perf_counter() - started
     reaper_unlinks = [call.args[0] for call in unlink.call_args_list].count(private_path)
-    assert (reaper_unlinks, elapsed < 0.1, private_path.exists()) == (1, True, True)
+    assert (reaper_unlinks, sleep.call_count, private_path.exists()) == (1, 0, True)
 
 
 @pytest.mark.parametrize("record", ["claim", "sentinel"])
