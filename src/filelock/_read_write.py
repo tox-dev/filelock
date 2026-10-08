@@ -339,7 +339,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     Allows concurrent shared readers or a single exclusive writer. The lock is reentrant within the same mode (multiple
     ``acquire_read`` calls nest, as do multiple ``acquire_write`` calls from the same thread), but upgrading from read
     to write or downgrading from write to read raises :class:`RuntimeError`. Write locks are pinned to the thread that
-    acquired them.
+    acquired them, and each thread sharing a read lock can release only the levels it acquired.
+
+    An instance coordinates processes, not threads: a thread asking for the opposite mode of another thread's hold
+    raises :class:`RuntimeError` instead of waiting. Threads that must wait for each other each need their own
+    instance (``is_singleton=False``).
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. The path is handed to :func:`sqlite3.connect` as given, so a ``.db`` extension is a convention rather
@@ -404,6 +408,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._lock_level = 0
         self._current_mode: Literal["read", "write"] | None = None
         self._write_thread_id: int | None = None
+        self._read_depths: dict[int, int] = {}
         self._acquisition_thread_ids: set[int] = set()
         self._con: _ForkSafeConnection | None = None
         self._connection_transaction_released = True
@@ -506,8 +511,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :param force: if ``True``, release the lock completely regardless of the current lock level
 
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if a write lock is held by
-            another thread and *force* is ``False``
+        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if the calling thread holds
+            no level of the current lock and *force* is ``False``
 
         """
         with _fork_transition():
@@ -533,14 +538,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     def _release(self, *, force: bool, close: bool) -> None:
         with self._transaction_lock, self._internal_lock:
-            # The connection runs with check_same_thread=False, so a release from another thread would end the owner's
-            # transaction under it and let a second writer in.
-            if not force and self._current_mode == "write" and (cur := threading.get_ident()) != self._write_thread_id:
-                msg = (
-                    f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
-                    f"from thread {cur} while it is held by thread {self._write_thread_id}"
-                )
-                raise RuntimeError(msg)
+            if not force:
+                self._raise_if_not_holder(threading.get_ident())
             if self._lock_level == 0:
                 if force and self._con is None:
                     if close:
@@ -550,7 +549,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
                     raise RuntimeError(msg)
             if not force and self._lock_level > 1:
-                self._lock_level -= 1
+                self._leave_one_level(threading.get_ident())
                 return
             try:
                 self._finish_connection()
@@ -562,10 +561,35 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if close:
                 self._closed = True
 
+    def _raise_if_not_holder(self, thread_id: int) -> None:
+        # The connection runs with check_same_thread=False, so a release from another thread would end the owner's
+        # transaction under it and let a second writer in.
+        if self._current_mode == "write" and thread_id != self._write_thread_id:
+            msg = (
+                f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id} while it is held by thread {self._write_thread_id}"
+            )
+            raise RuntimeError(msg)
+        # Readers share that one transaction too, so a thread that holds no read level would end another's hold.
+        if self._current_mode == "read" and thread_id not in self._read_depths:
+            msg = (
+                f"Cannot release read lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id}, which does not hold it"
+            )
+            raise RuntimeError(msg)
+
+    def _leave_one_level(self, thread_id: int) -> None:
+        self._lock_level -= 1
+        if self._current_mode == "read":
+            self._read_depths[thread_id] -= 1
+            if not self._read_depths[thread_id]:
+                del self._read_depths[thread_id]
+
     def _clear_lock_state(self) -> None:
         self._lock_level = 0
         self._current_mode = None
         self._write_thread_id = None
+        self._read_depths = {}
 
     def __del__(self) -> None:
         if _GETPID() == getattr(self, "_creator_pid", None) and (connection := getattr(self, "_con", None)) is not None:
@@ -680,6 +704,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._lock_level = 1
             if mode == "write":
                 self._write_thread_id = threading.get_ident()
+            else:
+                self._read_depths = {threading.get_ident(): 1}
         return AcquireReturnProxy(lock=self)
 
     def _open_for_acquisition(self, timeout: float, *, blocking: bool, operation_pid: int, start_time: float) -> None:
@@ -787,20 +813,27 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 raise rollback_error
 
     def _validate_reentrant(self, mode: Literal["read", "write"]) -> AcquireReturnProxy:
+        cur = threading.get_ident()
         if self._current_mode != mode:
             opposite = "write" if mode == "read" else "read"
-            direction = "downgrade" if mode == "read" else "upgrade"
-            msg = (
-                f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): "
-                f"already holding a {opposite} lock ({direction} not allowed)"
-            )
+            if cur == self._write_thread_id or cur in self._read_depths:
+                direction = "downgrade" if mode == "read" else "upgrade"
+                reason = f"already holding a {opposite} lock ({direction} not allowed)"
+            else:
+                reason = (
+                    f"another thread holds a {opposite} lock on this instance, which coordinates processes rather "
+                    "than threads; give each thread its own instance with is_singleton=False"
+                )
+            msg = f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): {reason}"
             raise RuntimeError(msg)
-        if mode == "write" and (cur := threading.get_ident()) != self._write_thread_id:
+        if mode == "write" and cur != self._write_thread_id:
             msg = (
                 f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
                 f"from thread {cur} while it is held by thread {self._write_thread_id}"
             )
             raise RuntimeError(msg)
+        if mode == "read":
+            self._read_depths[cur] = self._read_depths.get(cur, 0) + 1
         self._lock_level += 1
         return AcquireReturnProxy(lock=self)
 

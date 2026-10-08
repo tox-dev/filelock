@@ -501,7 +501,16 @@ But upgrading from read to write (or downgrading) raises an error:
             pass
 
 A write lock belongs to the thread that acquired it, so ``release()`` from another thread raises ``RuntimeError``.
-``release(force=True)`` and ``close()`` drop it from any thread.
+Threads that share a read lock each own their levels, and ``release()`` from a thread holding none raises
+``RuntimeError`` too. ``release(force=True)`` and ``close()`` drop the lock from any thread.
+
+One instance coordinates processes, not threads: a thread that asks for the opposite mode of another thread's hold gets
+``RuntimeError`` instead of waiting. Threads that must wait for each other need their own hold, so give each thread its
+own instance:
+
+.. code-block:: python
+
+    rw = ReadWriteLock("data.db", is_singleton=False)  # one per thread
 
 ``ReadWriteLock`` opens a SQLite connection for an outer acquisition and closes it after the final matching
 ``release()``. Reentrant acquisitions share that transaction. Call ``close()`` to release a held lock and invalidate the

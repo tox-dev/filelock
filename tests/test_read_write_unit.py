@@ -307,6 +307,78 @@ def test_write_lock_release_from_different_thread_prohibited(lock_file: str) -> 
             contender.acquire_write(blocking=False)
 
 
+def test_read_lock_release_from_a_thread_without_a_read_hold_prohibited(lock_file: str) -> None:
+    with (
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as contender,
+        ThreadPoolExecutor(max_workers=1) as other_thread,
+    ):
+        lock.acquire_read()
+        with pytest.raises(RuntimeError, match="which does not hold it"):
+            other_thread.submit(lock.release).result()
+        with pytest.raises(Timeout):
+            contender.acquire_write(blocking=False)
+
+
+def test_read_lock_release_past_a_threads_own_depth_prohibited(lock_file: str) -> None:
+    with (
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as contender,
+        ThreadPoolExecutor(max_workers=1) as other_thread,
+    ):
+        lock.acquire_read()
+        lock.acquire_read()
+        other_thread.submit(lock.acquire_read).result()
+        other_thread.submit(lock.release).result()
+        with pytest.raises(RuntimeError, match="which does not hold it"):
+            other_thread.submit(lock.release).result()
+        with pytest.raises(Timeout):
+            contender.acquire_write(blocking=False)
+
+
+def test_read_lock_shared_by_threads_ends_with_the_last_reader(lock_file: str) -> None:
+    with (
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as contender,
+        ThreadPoolExecutor(max_workers=1) as other_thread,
+    ):
+        lock.acquire_read()
+        other_thread.submit(lock.acquire_read).result()
+        lock.release()
+        other_thread.submit(lock.release).result()
+        with contender.write_lock(blocking=False):
+            pass
+
+
+@pytest.mark.parametrize(
+    ("held", "requested"),
+    [
+        pytest.param(ReadWriteLock.acquire_read, ReadWriteLock.acquire_write, id="read-held"),
+        pytest.param(ReadWriteLock.acquire_write, ReadWriteLock.acquire_read, id="write-held"),
+    ],
+)
+def test_opposite_mode_from_another_thread_names_the_per_thread_instance_fix(
+    lock_file: str,
+    held: Callable[[ReadWriteLock], object],
+    requested: Callable[[ReadWriteLock], object],
+) -> None:
+    with closing(ReadWriteLock(lock_file, is_singleton=False)) as lock, ThreadPoolExecutor(max_workers=1) as other:
+        held(lock)
+        with pytest.raises(RuntimeError, match="give each thread its own instance"):
+            other.submit(requested, lock).result()
+
+
+def test_thread_with_its_own_instance_contends_instead_of_raising(lock_file: str) -> None:
+    with (
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
+        closing(ReadWriteLock(lock_file, is_singleton=False)) as own,
+        ThreadPoolExecutor(max_workers=1) as other_thread,
+    ):
+        lock.acquire_read()
+        with pytest.raises(Timeout):
+            other_thread.submit(partial(own.acquire_write, blocking=False)).result()
+
+
 @pytest.mark.parametrize(
     "drop",
     [
@@ -524,8 +596,8 @@ def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) ->
 @pytest.mark.parametrize(
     ("acquire_mode", "conflicting_mode", "match"),
     [
-        pytest.param("read", "write", "downgrade not allowed", id="read-blocked-by-write"),
-        pytest.param("write", "read", "upgrade not allowed", id="write-blocked-by-read"),
+        pytest.param("read", "write", "another thread holds a write lock", id="read-blocked-by-write"),
+        pytest.param("write", "read", "another thread holds a read lock", id="write-blocked-by-read"),
     ],
 )
 def test_double_check_wrong_mode_raises(
