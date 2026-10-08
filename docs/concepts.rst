@@ -726,8 +726,10 @@ Deploy it on a shared filesystem only after verifying its required operations an
   restic's repository id and PostgreSQL's system identifier name theirs. Removing the directory removes it.
 - ``<path>.rw/gen/HEAD`` is a copy of the newest snapshot, replaced by rename after every commit. A crash between the
   link and the rename, or two committers' renames landing out of order, leaves it behind the head, never ahead.
-- ``<path>.rw/holders/<token>`` is one record per participant, carrying its token, pid, hostname, and a nonce the
-  heartbeat rewrites in place.
+- ``<path>.rw/holders/<token>`` is one record per participant, carrying its token, pid, hostname, its
+  ``stale_threshold`` as a lease, and a nonce the heartbeat rewrites in place. A peer evicts the participant only once
+  the record has stayed unchanged for the longer of its own threshold and that lease, as the `DynamoDB lock client
+  <https://github.com/awslabs/amazon-dynamodb-lock-client>`_ waits out the lease the holder recorded.
 
 Every transition (a reader entering, a writer entering, anyone leaving, a stale member being evicted) is one commit: the
 participant reads the latest snapshot, writes the successor it wants to a private temporary file, and hard-links that

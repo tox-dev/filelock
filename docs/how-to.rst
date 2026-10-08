@@ -596,8 +596,10 @@ that hold locks for seconds-to-minutes. Tune them for your deployment:
 
 Pick ``stale_threshold`` larger than any realistic process or filesystem pause. ``heartbeat_interval`` should be
 roughly ``stale_threshold / 3``; ``stale_threshold`` defaults to exactly that and must strictly exceed the interval.
-Lower ``poll_interval`` reduces acquisition latency at the cost of more filesystem metadata calls. No clock is
-compared across hosts, so clock skew cannot evict a live holder. Fence protected writes with ``generation`` if an
+Lower ``poll_interval`` reduces acquisition latency at the cost of more filesystem metadata calls. Each holder writes
+its ``stale_threshold`` into its record, and a peer evicts it only once the longer of its own threshold and that one has
+passed, so a peer tuned tighter does not evict a live holder that heartbeats on a slower schedule. No clock is compared
+across hosts, so clock skew cannot evict a live holder. Fence protected writes with ``generation`` if an
 expired holder can resume:
 
 .. code-block:: python
@@ -648,9 +650,10 @@ restart too, so reset the high-water mark of any resource you fence with ``gener
 .. warning::
 
    ``SoftReadWriteLock`` and ``ReadWriteLock`` are singletons by default. A second construction for the same path
-   raises ``ValueError`` if ``timeout`` or ``blocking`` differ, but ``heartbeat_interval``, ``stale_threshold``, and
-   ``poll_interval`` keep the first call's tuning on a cache hit. ``SoftReadWriteLock`` still validates these intervals
-   before returning the cached instance. Configure a path in one place.
+   raises ``ValueError`` if ``timeout`` or ``blocking`` differ, and ``SoftReadWriteLock`` also raises when it passes a
+   different ``on_compromise``. ``heartbeat_interval``, ``stale_threshold``, and ``poll_interval`` keep the first call's
+   tuning on a cache hit. ``SoftReadWriteLock`` still validates these intervals before returning the cached instance.
+   Configure a path in one place.
 
 :meth:`get_lock() <filelock.SoftReadWriteLock.get_lock>` is sugar for the same singleton lookup, spelling the intent
 out at the call site. ``ReadWriteLock`` has the same classmethod. It offers nothing the constructor does not:

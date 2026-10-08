@@ -155,6 +155,16 @@ def test_read_refused_on_windows_is_missing_after_the_grace(
     assert time.monotonic() - started >= storage_mod._WINDOWS_OPEN_GRACE - 0.05
 
 
+def test_prepare_checks_the_directories_once_unless_forced(tmp_path: Path, mocker: MockerFixture) -> None:
+    files = OsFiles(str(tmp_path / "x.lock"))
+    ensure = mocker.spy(storage_mod, "ensure_directory_exists")
+    files.prepare(root := str(tmp_path / "x.lock.rw"))
+    files.prepare(root)
+    assert ensure.call_count == 1
+    files.prepare(root, force=True)
+    assert ensure.call_count == 2
+
+
 def test_prepare_creates_missing_parents(tmp_path: Path) -> None:
     root = str(tmp_path / "nested" / "deeper" / "x.lock.rw")
     OsFiles(str(tmp_path / "nested" / "deeper" / "x.lock")).prepare(root)
