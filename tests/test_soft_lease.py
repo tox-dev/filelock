@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 import os
 import socket
+import threading
 import time
 from contextlib import suppress
 from errno import EIO, ENOENT
@@ -21,6 +22,7 @@ from filelock import (
     StrictSoftFileLock,
     Timeout,
 )
+from filelock._soft import _MALFORMED_LOCK_AGE_THRESHOLD
 from tests.capability_marks import NEEDS_UNLINK_OPEN_FILE
 
 if TYPE_CHECKING:
@@ -128,21 +130,25 @@ def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) 
         holder.release()
 
 
-def test_lease_self_heals_a_malformed_marker(marker: Path) -> None:
+def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture) -> None:
     # A partial write or a foreign file leaves a marker the lease parser cannot read. Rather than block every
     # contender until timeout, the base self-heal evicts it once it ages past the malformed grace window.
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=_MALFORMED_LOCK_AGE_THRESHOLD))
     marker.write_text("not a protocol 2 record\n", encoding="utf-8")
-    os.utime(marker, (0, 0))
 
     with _lease(marker) as lease:
         assert lease.is_lock_held_by_us
 
 
-def test_lease_reclaims_a_dead_same_host_holder(marker: Path) -> None:
-    marker.write_text(
-        f"filelock/2\npid=999999\nhost={socket.gethostname()}\nmode=lease\ntoken=abc\nduration={_DURATION!r}\n",
-        encoding="utf-8",
-    )
+@pytest.mark.parametrize(
+    "contract",
+    [
+        pytest.param(f"mode=lease\ntoken=abc\nduration={_DURATION!r}\n", id="lease"),
+        pytest.param("mode=exclusive\n", id="exclusive"),
+    ],
+)
+def test_lease_reclaims_a_dead_same_host_holder(marker: Path, contract: str) -> None:
+    marker.write_text(f"filelock/2\npid=999999\nhost={socket.gethostname()}\n{contract}", encoding="utf-8")
 
     with _lease(marker) as lease:
         assert lease.is_lock_held_by_us
@@ -492,16 +498,15 @@ def test_lease_drops_lifetime_with_a_warning(marker: Path) -> None:
 
 
 def test_lease_supersedes_a_live_holder_once_its_claim_ages_out(marker: Path, mocker: MockerFixture) -> None:
-    # A live holder whose refresh stalled keeps its marker, yet a contender takes it once the marker ages past
-    # lease_duration. Windows cannot delete a live holder's open marker, so drive the age branch with a non-stale
-    # owner and an aged marker rather than a real second process.
+    # A live holder whose refresh stalled keeps its marker, yet a contender takes it once it has watched the marker go
+    # lease_duration without a refresh. Windows cannot delete a live holder's open marker, so drive the age branch with
+    # a non-stale owner and a clock that steps a full duration per look rather than a real second process.
     mocker.patch("filelock._lease.owner_is_stale", return_value=False)
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=_DURATION))
     marker.write_text(
         f"filelock/2\npid={os.getpid()}\nhost={socket.gethostname()}\nmode=lease\ntoken=stalled\nduration={_DURATION!r}\n",
         encoding="utf-8",
     )
-    aged = time.time() - (_DURATION + 5)
-    os.utime(marker, (aged, aged))
 
     with _lease(marker) as contender:
         assert contender.is_lock_held_by_us
@@ -568,3 +573,42 @@ def test_native_lock_rejects_a_lease_duration(marker: Path) -> None:
 
     with pytest.raises(TypeError, match="does not support non-default lock options: lease_duration"):
         construct(str(marker), lease_duration=5)
+
+
+def test_lease_does_not_age_out_a_live_exclusive_owner(marker: Path, mocker: MockerFixture) -> None:
+    # An exclusive owner never agreed to expire, so only proof of death may reclaim it, however long it sits unchanged.
+    mocker.patch("filelock._lease.owner_is_stale", return_value=False)
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=_DURATION))
+    marker.write_text(f"filelock/2\npid={os.getpid()}\nhost={socket.gethostname()}\nmode=exclusive\n", encoding="utf-8")
+
+    with pytest.raises(Timeout):
+        _lease(marker).acquire()
+
+    assert marker.exists()
+
+
+def test_lease_keeps_a_claim_refreshed_by_a_host_whose_clock_lags(marker: Path, mocker: MockerFixture) -> None:
+    # The holder's clock runs an hour behind, so every refresh stamps an hour-old mtime. The claim is live as long as
+    # the mtime keeps changing; reading it against this host's wall clock would supersede the holder at once.
+    mocker.patch("filelock._lease.owner_is_stale", return_value=False)
+    marker.write_text(
+        f"filelock/2\npid={os.getpid()}\nhost={socket.gethostname()}\nmode=lease\ntoken=skewed\nduration={_DURATION!r}\n",
+        encoding="utf-8",
+    )
+    stop = threading.Event()
+
+    def refresh_an_hour_behind() -> None:
+        while not stop.wait(_HEARTBEAT):
+            lagging = time.time() - 3600
+            os.utime(marker, (lagging, lagging))
+
+    refresher = Thread(target=refresh_an_hour_behind)
+    refresher.start()
+    try:
+        with pytest.raises(Timeout):
+            _lease(marker, timeout=_DURATION * 3).acquire()
+    finally:
+        stop.set()
+        refresher.join()
+
+    assert marker.read_text(encoding="utf-8").endswith("token=skewed\nduration=0.9\n")

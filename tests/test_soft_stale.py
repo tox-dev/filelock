@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import itertools
 import os
 import socket
 import sys
@@ -15,7 +16,7 @@ from capabilities import CAPABILITIES
 
 from filelock import CloseErrorPolicy, SoftFileLock
 from filelock._identity import process_start_token
-from filelock._soft import _MAX_LOCK_FILE_SIZE
+from filelock._soft import _MALFORMED_LOCK_AGE_THRESHOLD, _MAX_LOCK_FILE_SIZE
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
@@ -131,9 +132,9 @@ def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixt
         pytest.param(f"{_DEAD_PID}\nother-ho".encode(), id="truncated_hostname"),
     ],
 )
+@pytest.mark.usefixtures("unchanged_past_grace")
 def test_unparseable_lock_evicted_when_old(lock_path: Path, content: bytes) -> None:
     lock_path.write_bytes(content)
-    os.utime(lock_path, (0, 0))
     # An unreadable lock (bad line count, non-integer pid/start token, empty, or oversized) must self-heal
     # instead of staying stuck; a matching line count alone does not make a file well-formed.
     _assert_self_heals(lock_path)
@@ -167,9 +168,9 @@ def test_fresh_marker_with_truncated_start_token_not_evicted(lock_path: Path) ->
         pytest.param(2**31, id="oversized"),
     ],
 )
+@pytest.mark.usefixtures("unchanged_past_grace")
 def test_out_of_range_pid_self_heals_when_old(lock_path: Path, pid: int) -> None:
     lock_path.write_text(_holder(pid), encoding="utf-8")
-    os.utime(lock_path, (0, 0))
     # pid 0 or -1 makes os.kill probe the caller's own process group (reads as alive), so the lock is never
     # reclaimed; an oversized pid raises OverflowError out of stale detection. Both are malformed and must
     # self-heal, matching what _parse_marker_bytes rejects.
@@ -209,6 +210,7 @@ def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
     assert SoftFileLock(lock_path).pid is None  # pragma: win32 no cover
 
 
+@pytest.mark.usefixtures("unchanged_past_grace")
 def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None:
     if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
         pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
@@ -218,13 +220,13 @@ def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None
     reader = os.open(lock_path, os.O_RDONLY | os.O_NONBLOCK)  # pragma: win32 no cover
     writer = os.open(lock_path, os.O_WRONLY | os.O_NONBLOCK)  # pragma: win32 no cover
     try:  # pragma: win32 no cover
-        os.utime(lock_path, (0, 0))
         _assert_self_heals(lock_path)
     finally:
         os.close(reader)  # pragma: win32 no cover
         os.close(writer)  # pragma: win32 no cover
 
 
+@pytest.mark.usefixtures("unchanged_past_grace")
 def test_socket_lock_file_self_heals(lock_path: Path) -> None:
     if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("AF_UNIX sockets are unix-only")
@@ -237,7 +239,6 @@ def test_socket_lock_file_self_heals(lock_path: Path) -> None:
     # A Unix-domain socket cannot be os.open()ed as a file. Before the lstat guard the failed open was swallowed by
     # stale detection so acquisition wedged; an aged socket now self-heals like any other non-regular node.
     try:  # pragma: linux cover
-        os.utime(lock_path, (0, 0))
         _assert_self_heals(lock_path)
     finally:
         sock.close()  # pragma: linux cover
@@ -735,3 +736,19 @@ def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Pa
     lock._windows_unlink_if_ours(_file_identity(os.lstat(marker)))
 
     assert marker.exists()
+
+
+@pytest.fixture
+def unchanged_past_grace(mocker: MockerFixture) -> None:
+    # Each look at the marker lands a full grace window after the previous one on the observer's clock, so an unchanged
+    # malformed marker ages out on the second look without the test sleeping through the window.
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=_MALFORMED_LOCK_AGE_THRESHOLD))
+
+
+def test_unparseable_lock_with_an_ancient_mtime_not_evicted_on_first_sight(lock_path: Path) -> None:
+    # The mtime carries the writer's or the file server's clock, so an ancient one may be a marker written a moment ago
+    # by a host whose clock runs behind; only time watched on this process's own clock ages it out.
+    lock_path.write_bytes(b"not-a-pid\n")
+    os.utime(lock_path, (0, 0))
+
+    _assert_times_out(lock_path)

@@ -567,12 +567,19 @@ linearizable and must reject any operation carrying a fencing generation lower t
 Chubby's lock sequence number and ZooKeeper's ``zxid`` are checked by the resource, not the client. A token names a
 claim; only a generation the resource validates can fence one.
 
+A lease expires on the contender's own clock. The holder's heartbeat rewrites the marker's modification time, and a
+contender times how long that time stays the same on its ``time.monotonic()``, the rule :class:`SoftReadWriteLock
+<filelock.SoftReadWriteLock>` applies to its nonce. The marker's ``mtime`` carries the writer's or the file server's
+clock, so the contender only compares it with its own earlier reading, never with its wall clock: skew between hosts
+cannot expire a live claim. In exchange a contender that first sees a long-abandoned marker still waits a full
+``lease_duration`` before taking it, and the filesystem must store modification times finer than ``lease_duration``.
+
 Malformed and legacy markers
 ============================
 
 A soft lock treats a record it cannot parse as malformed, not as a holder. A plain :class:`SoftFileLock
-<filelock.SoftFileLock>` self-heals a malformed marker once it ages past a short grace window, which absorbs the brief
-gap between creating a marker and writing its record. A strict lock never age-breaks, so it fails closed on an
+<filelock.SoftFileLock>` self-heals a malformed marker once it has watched it stay unchanged for a short grace window on
+its own monotonic clock, which absorbs the brief gap between creating a marker and writing its record. A strict lock never age-breaks, so it fails closed on an
 unreadable claim. A marker written by an older filelock stays readable: the process start token is an integer, so a 3.29
 reader parses a newer marker as well-formed and stays conservative rather than evicting a live holder.
 
@@ -656,7 +663,7 @@ is a recycled PID, so the process that wrote the marker is gone; a live PID whos
 cannot be read, and a marker from another host all read as held. The start token is ``kill(pid, 0)`` plus the
 ``starttime`` from ``/proc/<pid>/stat`` folded with the boot id on Linux, ``sysctl`` process start time on macOS, and the
 ``GetProcessTimes`` creation time on Windows. A malformed or unparsable record follows a separate rule: a waiter may
-remove it after two seconds, so a half-written marker never wedges acquisition. This is the rule PostgreSQL, Qt
+remove it once it has seen it unchanged for two seconds, so a half-written marker never wedges acquisition. This is the rule PostgreSQL, Qt
 ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
 
 Why is ReadWriteLock backed by SQLite?
