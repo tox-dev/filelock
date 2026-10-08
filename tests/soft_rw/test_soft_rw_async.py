@@ -427,6 +427,56 @@ async def test_async_release_cancellation_drains_the_release(tmp_path: Path, moc
     await lock.close()
 
 
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_async_release_cancellation_hands_the_lock_to_the_next_task(
+    tmp_path: Path, mocker: MockerFixture, mode: Literal["read", "write"]
+) -> None:
+    lock = _make(tmp_path)
+    gate = _Gate(mocker, "release")
+    task = asyncio.create_task(_acquire_then_release(lock, mode))
+    await gate.started.wait()
+    task.cancel("cancel release")
+    gate.resume()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await lock.acquire_write(timeout=2)
+    peer = SoftReadWriteLock(str(tmp_path / "foo.lock"), is_singleton=False, poll_interval=0.02)
+    try:
+        with pytest.raises(Timeout):
+            peer.acquire_read(blocking=False)
+    finally:
+        peer.close()
+    await lock.release()
+    await lock.close()
+
+
+@pytest.mark.parametrize("fail", [pytest.param(False, id="closed"), pytest.param(True, id="failed")])
+@pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_async_close_cancellation_drains_the_close(tmp_path: Path, mocker: MockerFixture, *, fail: bool) -> None:
+    lock = _make(tmp_path)
+    await lock.acquire_write(timeout=5)
+    close_error = RuntimeError("close failed")
+    gate = _Gate(mocker, "close", fail_with=close_error if fail else None)
+    task = asyncio.create_task(lock.close())
+    await gate.started.wait()
+    task.cancel("cancel close")
+    gate.resume()
+    with pytest.raises(RuntimeError if fail else asyncio.CancelledError) as info:
+        await task
+
+    assert gate.finished.is_set()
+    if fail:
+        assert info.value is close_error
+        assert isinstance(close_error.__context__, asyncio.CancelledError)
+        mocker.stopall()
+        await lock.close()
+    assert _members(tmp_path) == []
+
+
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_release_cancellation_surfaces_a_failed_release(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -449,4 +499,9 @@ async def test_async_release_cancellation_surfaces_a_failed_release(tmp_path: Pa
 async def _acquire_write_then_release(lock: AsyncSoftReadWriteLock) -> None:
     # A hold belongs to the task that took it, so the task whose release gets canceled has to acquire first.
     await lock.acquire_write(timeout=5)
+    await lock.release()
+
+
+async def _acquire_then_release(lock: AsyncSoftReadWriteLock, mode: Literal["read", "write"]) -> None:
+    await (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=5)
     await lock.release()

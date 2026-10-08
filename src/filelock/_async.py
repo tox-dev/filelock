@@ -202,7 +202,9 @@ class _TaskOwners:
                     return "enter"
             return self._changed
 
-    async def release(self, *, force: bool, lock_file: str, leave: Callable[[], Awaitable[None]]) -> None:
+    async def release(
+        self, *, force: bool, lock_file: str, leave: Callable[[], asyncio.Future[_BackendOutcome[None]]]
+    ) -> None:
         task = _current_task()
         with self._lock:
             if (depth := self._depths.get(task)) is None:
@@ -219,12 +221,15 @@ class _TaskOwners:
             self._transitioning = True
             mode = self._mode
         try:
-            await leave()
+            cancellation = await _drain_cancellation(leave())
         except BaseException:
             # The sync lock may still hold the transaction, so keep the hold for a retried release to find.
             self._finish_transition(mode=mode, holder=task)
             raise
         self._finish_transition(mode=None)
+        if cancellation is not None:
+            # The drained release succeeded: restoring the hold here would leave a phantom no backend call can clear.
+            raise cancellation
 
     def reset(self) -> None:
         with self._lock:
@@ -270,6 +275,21 @@ async def _drain_future(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
         with contextlib.suppress(asyncio.CancelledError):
             await _wait_until_done(future)
     return _future_result(future)
+
+
+async def _drain_cancellation(future: asyncio.Future[_BackendOutcome[None]]) -> asyncio.CancelledError | None:
+    # Hand a caller cancellation back instead of raising it, so the caller can tell a call that completed under it from
+    # one that failed.
+    try:
+        await _wait_until_done(future)
+    except asyncio.CancelledError as cancellation:
+        try:
+            await _drain_future(future)
+        except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
+            _raise_cancelled_error(cancellation, error)
+        return cancellation
+    _future_result(future)
+    return None
 
 
 async def _wait_until_done(future: asyncio.Future[_T]) -> None:
