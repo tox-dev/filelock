@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
-from math import isfinite
+from threading import TIMEOUT_MAX
 from typing import Final
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -28,22 +28,23 @@ def lock_descriptor(fd: int, *, blocking: bool = True, poll_interval: float = 0.
     :param fd: an open file descriptor the caller owns.
     :param blocking: when ``True`` (default), retry the nonblocking attempt every *poll_interval* seconds until it
         succeeds; when ``False``, make one attempt.
-    :param poll_interval: finite, positive seconds between attempts while blocking; ignored when *blocking* is
-        ``False``.
+    :param poll_interval: positive seconds between attempts while blocking, at most :data:`threading.TIMEOUT_MAX`;
+        ignored when *blocking* is ``False``.
 
     :returns: ``True`` once the lock is held, or ``False`` on contention when ``blocking`` is ``False``.
 
     :raises OSError: for a permanent native failure, such as an invalid descriptor, or with ``errno.ENOSYS`` when the
         Python build lacks the native locking primitive. The descriptor is left open.
-    :raises ValueError: if a blocking call receives a non-finite or non-positive *poll_interval*.
+    :raises ValueError: if a blocking call receives a *poll_interval* outside that range, including ``nan``.
 
     .. versionadded:: 3.30.0
 
     """
     if not blocking:
         return _lock_fd_nonblocking(fd)
-    if not isfinite(poll_interval) or poll_interval <= 0:
-        msg: Final[str] = f"poll_interval must be finite and greater than 0, got {poll_interval}"
+    # time.sleep raises OverflowError past TIMEOUT_MAX; nan fails both comparisons.
+    if not 0 < poll_interval <= TIMEOUT_MAX:
+        msg: Final[str] = f"poll_interval must be greater than 0 and at most {TIMEOUT_MAX}, got {poll_interval}"
         raise ValueError(msg)
     while not _lock_fd_nonblocking(fd):
         time.sleep(poll_interval)

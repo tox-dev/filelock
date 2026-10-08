@@ -140,6 +140,7 @@ _INVALID_DESCRIPTOR_POLL_INTERVALS: Final = (
     pytest.param(float("nan"), id="nan"),
     pytest.param(float("inf"), id="positive-infinity"),
     pytest.param(float("-inf"), id="negative-infinity"),
+    pytest.param(threading.TIMEOUT_MAX * 2, id="above-timeout-max"),
 )
 
 
@@ -2450,7 +2451,7 @@ def test_lock_descriptor_invalid_fd_raises(tmp_path: Path) -> None:
     _INVALID_DESCRIPTOR_POLL_INTERVALS,
 )
 def test_lock_descriptor_rejects_invalid_blocking_poll_interval(poll_interval: float) -> None:
-    with pytest.raises(ValueError, match="poll_interval must be finite and greater than 0"):
+    with pytest.raises(ValueError, match="poll_interval must be greater than 0 and at most"):
         lock_descriptor(-1, poll_interval=poll_interval)
 
 
@@ -2527,7 +2528,10 @@ def test_unlock_descriptor_failure_allows_retry(tmp_path: Path, mocker: MockerFi
         os.close(fd)
 
 
-def test_lock_descriptor_blocking_retries_until_free(tmp_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.parametrize("poll_interval", [0.01, threading.TIMEOUT_MAX], ids=["short", "timeout-max"])
+def test_lock_descriptor_blocking_retries_until_free(
+    tmp_path: Path, mocker: MockerFixture, poll_interval: float
+) -> None:
     path = str(tmp_path / "a")
     holder = os.open(path, os.O_RDWR | os.O_CREAT)
     fd = os.open(path, os.O_RDWR | os.O_CREAT)
@@ -2536,8 +2540,8 @@ def test_lock_descriptor_blocking_retries_until_free(tmp_path: Path, mocker: Moc
     # second attempt wins. Only the clock is mocked, so a single sleep call proves exactly one retry happened.
     sleep = mocker.patch("filelock._descriptor.time.sleep", side_effect=lambda _: unlock_descriptor(holder))
     try:
-        assert lock_descriptor(fd, blocking=True, poll_interval=0.01) is True
-        sleep.assert_called_once_with(0.01)
+        assert lock_descriptor(fd, blocking=True, poll_interval=poll_interval) is True
+        sleep.assert_called_once_with(poll_interval)
         unlock_descriptor(fd)
     finally:
         os.close(holder)
