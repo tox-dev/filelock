@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import functools
 import os
 import secrets
 import stat
@@ -20,7 +21,7 @@ from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from ._util import ensure_directory_exists, write_all
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 StrictSoftFileClaimState = Literal["intent", "held"]
 
@@ -101,8 +102,9 @@ class StrictSoftFileLock(BaseFileLock):
     #: out, so only force_break() removes it.
     _lifetime_supported: bool = False
     _lifetime_unsupported_reason: str = "a strict claim is never broken by age, only by force_break()"
-    #: Contending processes each publish and rescan several files, so back their retries off across a jittered window
-    #: rather than let them collide on every poll. Seconds; keeps a waiter responsive once it wins.
+    #: Contending processes each publish and rescan several files, so a waiter polling faster than this cap spreads its
+    #: retries across a jittered window that widens up to it. Seconds. At or above the cap, which includes the default
+    #: poll_interval, the window never exceeds the interval and every retry waits exactly poll_interval.
     _poll_backoff_cap: float = 0.05
 
     def _acquire(self) -> None:
@@ -284,7 +286,7 @@ def _open_or_create_sentinel(lock_file: str, path: Path, mode: int) -> int | Non
     except OSError:
         return None
 
-    _reclaim_sentinel_private_records(path, time.time())
+    _reclaim_sentinel_private_records(path)
     try:
         publication_cleanup_error = _publish_record(os.fspath(path), _LEGACY_SENTINEL, mode)
     except _PrivateRecordReclaimedError:
@@ -377,7 +379,9 @@ def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[byt
 
 def _public_claim_names(directory: Path, entries: Iterator[os.DirEntry[str]]) -> list[str]:
     names: list[str] = []
-    now = time.time()
+    now = functools.cache(
+        functools.partial(_filesystem_now, directory, _claim_name("held", secrets.token_hex(_TOKEN_HEX_LENGTH // 2)))
+    )
     for entry in entries:
         if not entry.name.startswith("."):
             names.append(entry.name)
@@ -585,15 +589,18 @@ def _private_public_name(private_name: str) -> str | None:
     return public_name
 
 
-def _reclaim_sentinel_private_records(path: Path, now: float) -> None:
+def _reclaim_sentinel_private_records(path: Path) -> None:
     directory_ref = os.fspath(path.parent), None
+    now = functools.cache(functools.partial(_filesystem_now, path.parent, path.name))
     with os.scandir(path.parent) as entries:
         for entry in entries:
             if _private_public_name(entry.name) == path.name:
                 _reclaim_private_record(directory_ref, entry.name, now)
 
 
-def _reclaim_private_record(directory_ref: tuple[str, int | None], private_name: str, now: float) -> None:
+def _reclaim_private_record(
+    directory_ref: tuple[str, int | None], private_name: str, now: Callable[[], float | None]
+) -> None:
     directory, directory_fd = directory_ref
     try:
         private_stat = (
@@ -606,7 +613,9 @@ def _reclaim_private_record(directory_ref: tuple[str, int | None], private_name:
     if not stat.S_ISREG(private_stat.st_mode):
         msg = f"{Path(directory, private_name)} is not a regular private record"
         raise OSError(msg)
-    if private_stat.st_nlink == 1 and now - private_stat.st_mtime < _PRIVATE_RECORD_GRACE:
+    if private_stat.st_nlink == 1 and (
+        (current := now()) is None or current - private_stat.st_mtime < _PRIVATE_RECORD_GRACE
+    ):
         return
     try:
         _unlink_private_record_once(directory_ref, private_name)
@@ -615,6 +624,28 @@ def _reclaim_private_record(directory_ref: tuple[str, int | None], private_name:
     except OSError as error:
         if error.errno not in {EACCES, EPERM}:
             raise
+
+
+def _filesystem_now(directory: Path, public_name: str) -> float | None:
+    # A network filesystem stamps mtimes with the server's clock, which can run seconds away from this client's, so a
+    # record's age read against time.time() can make a live publisher's record look abandoned. Read "now" from the same
+    # clock instead: create and write a probe the way a record is created and written, and take its mtime. liblockfile
+    # does the same with a file's atime after a read. The probe carries a private-record name, so a peer reaps it if
+    # this process dies before removing it. A scanner that cannot create it trusts no age and leaves the record.
+    probe = directory / _private_record_name(public_name)
+    try:
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError:
+        return None
+    try:
+        write_all(fd, b"\n")
+        return os.fstat(fd).st_mtime
+    finally:
+        os.close(fd)
+        # Like the reaper, tolerate a Windows sharing violation or a peer that already reaped a paused probe: a probe
+        # left behind is an abandoned private record the next scan collects.
+        with contextlib.suppress(FileNotFoundError, PermissionError):
+            probe.unlink()
 
 
 def _unlink_private_record_once(directory_ref: tuple[str, int | None], private_name: str) -> None:
