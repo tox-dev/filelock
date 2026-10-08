@@ -1,0 +1,2 @@
+The documentation's canonical link, ``og:url`` and sitemap entries point at the versioned page on Read the Docs instead
+of a domain-root URL that returns 404.
