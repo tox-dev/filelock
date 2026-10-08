@@ -511,6 +511,45 @@ def _convert_to_wal(path: str) -> None:
         connection.close()
 
 
+@pytest.mark.parametrize("replace", [pytest.param(False, id="unlinked"), pytest.param(True, id="replaced")])
+def test_read_write_lock_refuses_a_database_moved_after_connect(
+    tmp_path: Path, mocker: MockerFixture, *, replace: bool
+) -> None:
+    if sys.platform == "win32":  # pragma: win32 cover
+        pytest.skip("SQLite holds the database open without delete sharing, so its name cannot move")
+    # A waiter connects, then the path moves on before its BEGIN lands; the lock it takes then excludes no later opener.
+    lock_path = tmp_path / "lock.db"  # pragma: win32 no cover
+    lock = ReadWriteLock(lock_path, is_singleton=False)  # pragma: win32 no cover
+    real_connect = sqlite3.connect  # pragma: win32 no cover
+
+    def connect_then_move(  # pragma: win32 no cover
+        database: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        connection = real_connect(
+            database,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+        if replace:
+            (replacement := tmp_path / "replacement.db").touch()
+            replacement.replace(lock_path)
+        else:
+            lock_path.unlink()
+        return connection
+
+    mocker.patch("sqlite3.connect", side_effect=connect_then_move)  # pragma: win32 no cover
+    with pytest.raises(OSError, match="unlinked or replaced"):  # pragma: win32 no cover
+        lock.acquire_write()
+    lock.close()  # pragma: win32 no cover
+
+
 def test_read_write_lock_refuses_a_database_held_without_sharing(tmp_path: Path) -> None:
     if sys.platform != "win32":  # pragma: win32 no cover
         pytest.skip("share modes exist only on Windows")  # the platform arm also narrows so ty resolves ctypes.WinDLL
@@ -605,6 +644,7 @@ def _patch_rollback_failure(mocker: MockerFixture, *, after_rollback: bool) -> s
         connection = mocker.MagicMock(
             spec_set=type(real_connection),
             wraps=real_connection,
+            database_identity=None,
             **{"rollback.side_effect": rollback},
         )
         mocker.patch.object(

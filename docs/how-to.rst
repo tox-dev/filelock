@@ -525,6 +525,14 @@ instance:
     finally:
         rw.close()
 
+A ``timeout`` of ``-1`` waits up to SQLite's busy-timeout cap of about 23 days, then raises
+:class:`~filelock.Timeout`.
+
+Leave the database file in place while any process may hold the lock. The lock lives on the file, not on its name, so
+after an unlink or a replace the next opener creates a fresh file and acquires at once while the old holder keeps its
+lock on the orphan. On POSIX an acquisition that sees the path replaced while it waited raises :class:`OSError` instead
+of taking a lock no later opener can see.
+
 SQLite prohibits using or closing a database connection inherited across ``fork()``. filelock invalidates an
 inherited ``ReadWriteLock`` or ``AsyncReadWriteLock`` in the child. Acquisition raises ``RuntimeError``; ``release()``
 and ``close()`` do nothing so context-manager cleanup cannot release the parent's transaction. On CPython, if no

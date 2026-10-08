@@ -1,0 +1,2 @@
+:class:`~filelock.ReadWriteLock` raises :class:`OSError` when its database is unlinked or replaced while an acquisition
+waits, instead of taking a lock that no later opener sees.
