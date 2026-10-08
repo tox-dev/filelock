@@ -13,9 +13,9 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from collections.abc import Callable, Hashable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from itertools import count, pairwise, starmap
-from threading import TIMEOUT_MAX, Condition, RLock, get_ident, local
+from threading import TIMEOUT_MAX, Condition, RLock, Thread, current_thread, get_ident, local
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
@@ -802,6 +802,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             poll_interval=poll_interval,
             lifetime=lifetime,
         )
+        #: Every thread's committed hold on a thread-local lock, so another thread can release it (see release).
+        self._thread_holds: dict[int, tuple[FileLockContext, Thread]] = {}
         _register_fork_object(self)
 
     def _singleton_extra_mismatches(  # ruff:ignore[no-self-use]  # the base class adds no options of its own
@@ -1064,7 +1066,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             _raise_body_and_release(body_error, release_error)
 
     def __del__(self) -> None:
-        """Force-release so a dropped reference never leaks a held lock."""
+        """Force-release so a dropped reference never leaks a held lock, including every thread's hold."""
         if vars(self).get("_creator_pid") != os.getpid():
             return  # pragma: forked child
         # A finalizer must not raise. A release error during garbage collection would otherwise surface as an
@@ -1072,6 +1074,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         # best-effort cleanup; an explicit release() reports the same error to a caller who can act on it.
         with contextlib.suppress(Exception):
             self.release(force=True)
+        # Nothing references the lock any more, so no thread can still be inside it through this instance.
+        with contextlib.suppress(Exception):
+            self._release_thread_holds(exited_only=False)
 
     def acquire(
         self,
@@ -1203,16 +1208,26 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
         itself may be deleted automatically, the behavior is platform-specific.
 
-        :param force: If true, the lock counter is ignored and the lock is released in every case.
+        :param force: If true, the lock counter is ignored and the lock is released in every case. On a thread-local
+            lock it also releases the holds of threads that exited without releasing; a hold of a thread still running
+            stays with that thread. Dropping the last reference to the lock releases every thread's hold.
 
         """
+        self._release_current(force=force)
+        if force:
+            self._release_thread_holds(exited_only=True)
+
+    def _release_current(self, *, force: bool) -> None:
         # A shared instance releases under the same gate its acquisition ran through, so a thread entering the lock
         # never observes a partially torn-down owner. Only an acquirer that found the lock free holds the gate for
         # long, so an unheld lock returns without waiting behind it.
         if self._context.lock_file_fd is None:
             return
         with contextlib.nullcontext() if self._is_thread_local else self._transition_lock:
-            if self._creator_pid != os.getpid() or not self.is_locked:
+            # A signal handler runs on the releasing thread between two bytecodes, so it can land after the backend
+            # unlocked but before it cleared the descriptor; releasing again there would close the number twice, and
+            # the second close could hit an unrelated file that reused it. The interrupted release finishes the job.
+            if self._creator_pid != os.getpid() or not self.is_locked or self._context.releasing:
                 return
             if not force and self._context.lock_counter > 1:
                 self._context.lock_counter -= 1
@@ -1220,6 +1235,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
             lock_id, lock_filename = id(self), self.lock_file
             _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
+            self._context.releasing = True
             try:
                 self._release_with_fork_tracking()
             except BaseException:
@@ -1229,8 +1245,24 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 if not self.is_locked:
                     self._commit_release()
                 raise
+            finally:
+                self._context.releasing = False
             self._commit_release()
             _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+
+    def _release_thread_holds(self, *, exited_only: bool) -> None:
+        if not isinstance(context := self._context, ThreadLocalFileContext):
+            return
+        own = context.current
+        for held, thread in tuple(self._thread_holds.values()):
+            if exited_only and thread.is_alive():
+                continue
+            # Point this thread's view at the other thread's state for the length of the release.
+            context.current = held
+            try:
+                self._release_current(force=True)
+            finally:
+                context.current = own
 
     def _raise_if_inherited(self) -> None:
         if self._creator_pid != os.getpid():  # pragma: forked child
@@ -1242,6 +1274,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.pending_lock_file_fd_identity = None
         self._context.lock_file_fd = fd
         self._context.lock_file_fd_identity = identity
+        if isinstance(context := self._context, ThreadLocalFileContext):
+            self._thread_holds[id(context.current)] = context.current, current_thread()
 
     def _mark_descriptor_pending(self, fd: int, identity: tuple[int, int] | None = None) -> None:
         self._context.pending_lock_file_fd = fd
@@ -1252,10 +1286,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.pending_lock_file_fd_identity = None
         self._context.lock_file_fd = None
         self._context.lock_file_fd_identity = None
+        if isinstance(context := self._context, ThreadLocalFileContext):
+            self._thread_holds.pop(id(context.current), None)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         # fork copies the lock in whatever state the parent's threads left it, so give the child an unheld one.
         self._transition_lock = RLock()
+        if isinstance(self._context, ThreadLocalFileContext):
+            self._thread_holds.clear()
         self._context.owner_claim_paths = ()
         self._context.claim_root = None
         self._context.lock_file_fd = None
@@ -1264,6 +1302,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.pending_lock_file_fd = None
         self._context.pending_lock_file_fd_identity = None
         self._context.lock_counter = 0
+        self._context.releasing = False
         self._context.lock_file_key = None
         self._context.lock_file_registry = None
 
@@ -1608,13 +1647,57 @@ class FileLockContext:
     #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
     owner_claim_paths: tuple[str, ...] = ()
 
+    #: Whether :meth:`BaseFileLock.release` is tearing this hold down, so a re-entrant call from a signal handler on the
+    #: same thread returns instead of closing the descriptor a second time.
+    releasing: bool = False
+
     #: Canonical lock path resolved when an acquisition starts. A waiter polling a relative path must keep publishing
     #: into the directory it started in, even when another thread changes the working directory mid-wait.
     claim_root: str | None = None
 
 
 class ThreadLocalFileContext(FileLockContext, local):
-    """A thread local version of the ``FileLockContext`` class."""
+    """
+    A thread local version of the ``FileLockContext`` class.
+
+    Each thread reads and writes its own :class:`FileLockContext`, kept in :attr:`current`. A plain thread-local
+    context hides a thread's hold from every other thread, so neither ``release(force=True)`` nor the finalizer could
+    unlock it once that thread exited or dropped the lock. Keeping the state in an ordinary object lets the lock hold on
+    to it and release it from another thread.
+    """
+
+    current: FileLockContext
+
+    # threading.local runs __init__ again with these arguments the first time each thread touches the context.
+    def __init__(  # ruff:ignore[too-many-arguments]  # mirrors the FileLockContext fields set at construction
+        self,
+        *,
+        lock_file: str,
+        timeout: float,
+        mode: int,
+        blocking: bool,
+        poll_interval: float,
+        lifetime: float | None = None,
+    ) -> None:
+        self.current = FileLockContext(
+            lock_file=lock_file,
+            timeout=timeout,
+            mode=mode,
+            blocking=blocking,
+            poll_interval=poll_interval,
+            lifetime=lifetime,
+        )
+
+
+def _delegate_to_current(name: str) -> property:
+    return property(
+        lambda context: getattr(context.current, name),
+        lambda context, value: setattr(context.current, name, value),
+    )
+
+
+for _field in fields(FileLockContext):
+    setattr(ThreadLocalFileContext, _field.name, _delegate_to_current(_field.name))
 
 
 @dataclass(frozen=True)

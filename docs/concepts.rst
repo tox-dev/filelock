@@ -960,6 +960,9 @@ each thread gets its own context via ``threading.local``. This means:
   thread accesses the context.
 - ``mode`` is the one exception: it has no setter, so construction is the only
   place it is ever set and ``lock.mode = ...`` raises ``AttributeError``.
+- The instance still keeps track of every thread's hold. ``release(force=True)``
+  also releases holds left by threads that exited, and garbage collecting the
+  lock releases every thread's hold.
 
 When ``thread_local=False``, all threads share the same context, including
 configuration values. This is useful for objects passed between threads or

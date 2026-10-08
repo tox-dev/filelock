@@ -1270,21 +1270,31 @@ regardless of the counter, pass ``force=True``:
     lock.release(force=True)
     print(lock.is_locked)  # False, fully released
 
-This is useful in error recovery or cleanup handlers where you need to ensure the lock is fully released:
+On a thread-local lock (the default), ``force=True`` also releases holds left by threads that exited without releasing.
+Holds of threads still running stay theirs. Dropping the last reference to the lock releases every thread's hold.
+
+Do not release from a signal handler. Python runs the handler on the main thread between two bytecodes of whatever it
+was doing, which can be the middle of a ``release()`` of the same lock. Raise from the handler instead, and let the
+``with`` block or a ``finally`` release the lock as the stack unwinds:
 
 .. code-block:: python
 
     import signal
 
-    lock = FileLock("work.lock")
+    from filelock import FileLock
 
 
-    def cleanup(signum, frame):
-        lock.release(force=True)
+    def stop(signum, frame):
         raise SystemExit(1)
 
 
-    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGTERM, stop)
+
+    with FileLock("work.lock"):
+        ...  # SIGTERM unwinds through here and the with block releases the lock
+
+A ``release()`` that does run inside a handler while the interrupted code was already releasing that lock on the same
+thread returns without doing anything, and the interrupted release finishes the job.
 
 *******************************
  Check your own lock state
