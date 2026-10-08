@@ -680,6 +680,17 @@ crashes would leave that lock needing stale detection of its own and a 3.29 peer
 missing or the filesystem refuses hard links, the live marker stays under the break name. The same applies to the
 ``lifetime`` and :class:`SoftFileLease <filelock.SoftFileLease>` expiry breaks.
 
+A PID means something only inside its PID namespace, and two containers in one pod share the hostname and the boot id
+without sharing one. On Linux the recorded hostname therefore names the namespace too, as ``<host>?pidns-<inode>`` with
+the inode of ``/proc/self/ns/pid`` in hex, the way Mercurial's lock prefix does. A contender in a sibling container
+reads the marker as foreign and waits instead of probing a PID that names another process there. A process in the
+host's initial namespace records the bare hostname, as earlier releases did. The namespace cannot be folded into the
+start token instead: a 3.30 reader compares the whole token and would read any new one as a recycled PID. Two limits
+remain. Where ``/proc/self/ns/pid`` cannot be read, the bare hostname is all that separates namespaces. Markers from a
+release before the namespace was recorded carry the bare hostname, so a contender inside a container treats them as
+foreign and never reclaims them; once the holder is known to be gone, remove such a marker with ``break_lock()``. An
+older reader likewise treats a namespaced marker as foreign and leaves it in place.
+
 Why is ReadWriteLock backed by SQLite?
 ======================================
 

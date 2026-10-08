@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 import sys
-from errno import ENODEV, EPERM
+from errno import EACCES, ENODEV, EPERM
 from typing import TYPE_CHECKING, Final
 
 import pytest
 
 from filelock._identity import host_name, owner_is_stale, process_alive, process_start_token
+from tests.pid_namespace_helpers import INITIAL_PID_NAMESPACE, pin_pid_namespace
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -36,15 +37,39 @@ _NEEDS_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     ],
 )
 def test_host_name_escapes_out_of_grammar_bytes(raw: str, expected: str, mocker: MockerFixture) -> None:
+    pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
     mocker.patch("filelock._identity.socket.gethostname", return_value=raw)
     assert host_name() == expected
 
 
 def test_host_name_keeps_over_long_names_apart_past_the_limit(mocker: MockerFixture) -> None:
+    pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
     mocker.patch("filelock._identity.socket.gethostname", side_effect=["a" * 253 + "-alpha", "a" * 253 + "-bravo"])
     alpha, bravo = host_name(), host_name()
 
     assert (alpha != bravo, len(alpha), len(bravo)) == (True, 253, 253)
+
+
+@pytest.mark.parametrize(
+    ("namespace", "expected"),
+    [
+        pytest.param(INITIAL_PID_NAMESPACE, "build-01", id="initial"),
+        pytest.param(0xF0000A1C, "build-01?pidns-f0000a1c", id="container"),
+        pytest.param(PermissionError(EACCES, "Permission denied"), "build-01", id="unreadable"),
+    ],
+)
+def test_host_name_names_the_pid_namespace(namespace: int | OSError, expected: str, mocker: MockerFixture) -> None:
+    pin_pid_namespace(mocker, namespace)
+    mocker.patch("filelock._identity.socket.gethostname", return_value="build-01")
+    assert host_name() == expected
+
+
+def test_host_name_keeps_a_namespace_apart_from_a_lookalike_host(mocker: MockerFixture) -> None:
+    mocker.patch("filelock._identity.socket.gethostname", side_effect=["a", "a?pidns-f0000001"])
+    pin_pid_namespace(mocker, 0xF0000001)
+    in_namespace: Final[str] = host_name()
+    pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
+    assert in_namespace != host_name()
 
 
 def test_process_alive_true_for_self() -> None:
@@ -104,6 +129,17 @@ def test_owner_is_stale_live_process_mismatched_token_reclaimed() -> None:
     token = process_start_token(os.getpid())
     assert token is not None
     assert owner_is_stale(os.getpid(), host_name(), token + 1) is True
+
+
+@_NEEDS_START_TOKEN
+def test_owner_is_stale_sibling_pid_namespace_never_reclaimed(mocker: MockerFixture) -> None:
+    # Two containers in one pod share the hostname; the same PID in the holder's namespace is another process.
+    token = process_start_token(os.getpid())
+    assert token is not None
+    pin_pid_namespace(mocker, 0xF0000001)
+    holder_host: Final[str] = host_name()
+    pin_pid_namespace(mocker, 0xF0000002)
+    assert owner_is_stale(os.getpid(), holder_host, token + 1) is False
 
 
 def test_owner_is_stale_live_process_unreadable_token_held(mocker: MockerFixture) -> None:

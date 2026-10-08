@@ -30,7 +30,7 @@ from filelock import (
     StrictSoftFileLock,
     Timeout,
 )
-from filelock._identity import process_start_token
+from filelock._identity import host_name, process_start_token
 from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_hard_link_unsupported_errnos
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ def test_strict_soft_acquire_publishes_owner_claim(tmp_path: Path) -> None:
         owner = {
             "token": held.token,
             "pid": os.getpid(),
-            "hostname": socket.gethostname(),
+            "hostname": host_name(),
             "start": process_start_token(os.getpid()),
         }
         assert (held, intent) == (

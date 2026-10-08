@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import socket
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interpreter isolates the blocked fcntl import
 import sys
 from errno import EIO, ENOSYS
@@ -11,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock, Timeout, UnixFileLock
-from filelock._identity import process_start_token
+from filelock._identity import host_name, process_start_token
 from tests.capability_marks import NEEDS_FCNTL
 
 if TYPE_CHECKING:
@@ -95,7 +94,7 @@ def test_fallback_writes_pid_and_hostname(tmp_path: Path) -> None:  # pragma: ne
 
     with UnixFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").splitlines()
-    expected = [str(os.getpid()), socket.gethostname()]
+    expected = [str(os.getpid()), host_name()]
     if (token := process_start_token(os.getpid())) is not None:  # pragma: no branch  # CI always exposes a start time
         expected.append(str(token))
     assert lines == expected

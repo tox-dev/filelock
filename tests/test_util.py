@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import runpy
-import socket
 import sys
 import time
 from contextlib import suppress
@@ -13,6 +12,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock, Timeout
+from filelock._identity import host_name
 from tests.capability_marks import NEEDS_SYMLINK
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ _SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 )
 # Linux and macOS cap PIDs below 2**22 + 1, and Windows answers OpenProcess for it with an invalid-parameter error, so
 # the marker names a holder every platform reads as dead.
-_DEAD_HOLDER: Final[str] = f"{2**22 + 1}\n{socket.gethostname()}\n"
+_DEAD_HOLDER: Final[str] = f"{2**22 + 1}\n{host_name()}\n"
 
 
 @pytest.fixture
@@ -237,7 +237,7 @@ def test_writability_rejects_denied_marker(readonly_marker: Path, mocker: Mocker
 @pytest.fixture
 def readonly_marker(tmp_path: Path) -> Generator[Path]:
     path: Final = tmp_path / "test.lock"
-    path.write_text(f"424242\n{socket.gethostname()}-other\n", encoding="utf-8")
+    path.write_text(f"424242\n{host_name()}-other\n", encoding="utf-8")
     path.chmod(0o444)
     try:
         yield path

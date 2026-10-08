@@ -6,7 +6,7 @@ import os
 import socket
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from errno import EACCES, EINTR, ENODEV, ENOSPC, EPERM
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -14,10 +14,11 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import CloseErrorPolicy, SoftFileLock
-from filelock._identity import process_start_token
+from filelock import CloseErrorPolicy, SoftFileLock, Timeout
+from filelock._identity import host_name, process_start_token
 from filelock._soft import _MALFORMED_LOCK_AGE_THRESHOLD, _MAX_LOCK_FILE_SIZE
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.pid_namespace_helpers import pin_pid_namespace
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import ExceptionGroup  # pragma: >=3.11 cover
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
 
-_HOST: Final[str] = socket.gethostname()
+_HOST: Final[str] = host_name()
 _DEAD_PID: Final[int] = 2**22 + 1
 _WIN_ERROR_ACCESS_DENIED: Final[int] = 5
 _WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
@@ -95,6 +96,27 @@ def test_recycled_pid_marker_self_heals(lock_path: Path) -> None:
     assert token is not None
     lock_path.write_text(_holder(os.getpid(), start=token + 1), encoding="utf-8")
     _assert_self_heals(lock_path)
+
+
+@_REQUIRES_START_TOKEN
+@pytest.mark.parametrize(
+    ("contender_namespace", "reclaimed"),
+    [pytest.param(0xF0000001, True, id="same-namespace"), pytest.param(0xF0000002, False, id="sibling-namespace")],
+)
+def test_recycled_pid_marker_self_heals_only_in_its_pid_namespace(
+    lock_path: Path, mocker: MockerFixture, contender_namespace: int, *, reclaimed: bool
+) -> None:
+    token = process_start_token(os.getpid())
+    assert token is not None
+    pin_pid_namespace(mocker, 0xF0000001)
+    lock_path.write_text(_holder(os.getpid(), host=host_name(), start=token + 1), encoding="utf-8")
+    pin_pid_namespace(mocker, contender_namespace)
+
+    lock: Final[SoftFileLock] = SoftFileLock(lock_path, timeout=0.1)
+    with suppress(Timeout):
+        lock.acquire()
+    assert lock.is_locked is reclaimed
+    lock.release()
 
 
 @_REQUIRES_START_TOKEN
