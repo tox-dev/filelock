@@ -1437,7 +1437,8 @@ lock and a ``FileLock`` path lock on the same file contend with each other.
         os.close(fd)
 
 Pass ``blocking=False`` for a single attempt that returns ``False`` on contention and ignores ``poll_interval``.
-Blocking calls require a finite, positive ``poll_interval``. There is no async wrapper. Run it in an executor, or drive
+Blocking calls require a finite, positive ``poll_interval`` no greater than :data:`threading.TIMEOUT_MAX`.
+There is no async wrapper. Run it in an executor, or drive
 ``blocking=False`` from your own polling loop. On Windows *fd* must be a synchronous descriptor.
 
 This is the tool for interoperating with a lock protocol you did not define. `conda
