@@ -26,6 +26,7 @@ from capabilities import CAPABILITIES
 import filelock
 import filelock.version
 from filelock import (
+    AsyncFileLock,
     BaseFileLock,
     ContextErrorPolicy,
     FileLock,
@@ -2137,6 +2138,57 @@ def test_context_group_base_exception_leaf_is_base_group(
 def test_invalid_context_error_policy_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="context_error_policy must be"):
         SoftFileLock(str(tmp_path / "a"), context_error_policy="explode")  # ty: ignore[invalid-argument-type]
+
+
+@pytest.fixture
+def without_exceptiongroup(mocker: MockerFixture) -> None:  # pragma: <3.11 cover
+    # A bare `pip install filelock` on 3.10 has no backport, so its import fails.
+    mocker.patch.dict(sys.modules, {"exceptiongroup": None})
+
+
+_NEEDS_MISSING_EXCEPTION_GROUP: Final = pytest.mark.skipif(
+    sys.version_info >= (3, 11), reason="BaseExceptionGroup is a builtin on 3.11+"
+)
+
+
+@_NEEDS_MISSING_EXCEPTION_GROUP
+@pytest.mark.usefixtures("without_exceptiongroup")
+def test_without_exceptiongroup_rejects_group_policy(tmp_path: Path) -> None:  # pragma: <3.11 cover
+    with pytest.raises(ValueError, match="requires Python"):
+        FileLock(str(tmp_path / "a"), context_error_policy="group")
+
+
+@_NEEDS_MISSING_EXCEPTION_GROUP
+@pytest.mark.usefixtures("without_exceptiongroup")
+def test_without_exceptiongroup_chains_hook_and_release_failure(  # pragma: <3.11 cover
+    tmp_path: Path, close_failure: tuple[Callable[[int], None], OSError, RuntimeError]
+) -> None:
+    capture, release_error, _ = close_failure
+    hook_error = ValueError("hook failed")
+
+    def hook(fd: int) -> None:
+        capture(fd)
+        raise hook_error
+
+    lock = FileLock(str(tmp_path / "a"), close_error_policy="raise", on_acquired=hook)
+    with pytest.raises(OSError, match="release failed") as info:
+        lock.acquire()
+    assert (info.value, release_error.__context__) == (release_error, hook_error)
+
+
+@_NEEDS_MISSING_EXCEPTION_GROUP
+@pytest.mark.usefixtures("without_exceptiongroup")
+@pytest.mark.asyncio
+async def test_without_exceptiongroup_async_chains_body_and_release_failure(  # pragma: <3.11 cover
+    tmp_path: Path, close_failure: tuple[Callable[[int], None], OSError, RuntimeError]
+) -> None:
+    capture, release_error, _ = close_failure
+    body_error = ValueError("body failed")
+    lock = AsyncFileLock(str(tmp_path / "a"), close_error_policy="raise", on_acquired=capture)
+    with pytest.raises(OSError, match="release failed") as info:
+        async with lock:
+            raise body_error
+    assert (info.value, release_error.__context__) == (release_error, body_error)
 
 
 def test_singleton_rejects_different_context_policy(tmp_path: Path) -> None:
