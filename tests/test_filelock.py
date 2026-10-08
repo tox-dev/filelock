@@ -501,6 +501,74 @@ def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_2.release()
 
 
+def _acquire_in_exited_thread(lock: BaseFileLock) -> None:
+    worker = threading.Thread(target=lock.acquire)
+    worker.start()
+    worker.join()
+
+
+@contextmanager
+def _held_by_live_thread(box: list[BaseFileLock]) -> Generator[None]:
+    acquired, done = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        # Popping leaves the worker without a reference, so only the test's own name keeps the lock alive.
+        box.pop().acquire()
+        acquired.set()
+        done.wait()
+
+    worker = threading.Thread(target=hold)
+    worker.start()
+    acquired.wait()
+    try:
+        yield
+    finally:
+        done.set()
+        worker.join()
+
+
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_del_releases_hold_of_exited_thread(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = str(tmp_path / "a")
+    lock = lock_type(lock_path)
+    _acquire_in_exited_thread(lock)
+    del lock
+    with lock_type(lock_path, blocking=False) as other:
+        assert other.is_locked
+
+
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_del_releases_hold_of_live_thread(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = str(tmp_path / "a")
+    lock = lock_type(lock_path)
+    with _held_by_live_thread([lock]):
+        del lock
+        with lock_type(lock_path, blocking=False) as other:
+            assert other.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_force_release_releases_hold_of_exited_thread(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = str(tmp_path / "a")
+    lock = lock_type(lock_path)
+    _acquire_in_exited_thread(lock)
+    lock.release(force=True)
+    with lock_type(lock_path, blocking=False) as other:
+        assert other.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_force_release_keeps_hold_of_live_thread(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = str(tmp_path / "a")
+    lock = lock_type(lock_path)
+    with _held_by_live_thread([lock]):
+        lock.release(force=True)
+        with pytest.raises(Timeout):
+            lock_type(lock_path, blocking=False).acquire()
+
+
 def test_cleanup_soft_lock(tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
 
@@ -1281,6 +1349,29 @@ def test_waiter_fd_cannot_split_lock_after_release(tmp_path: Path) -> None:
             replacement.release()
     finally:
         os.close(waiter_fd)
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_release_reentered_after_unlock_closes_descriptor_once(tmp_path: Path, mocker: MockerFixture) -> None:
+    # typeshed hides fcntl's members off POSIX, so state the invariant the capability gate already enforces.
+    assert sys.platform != "win32"
+    import fcntl
+
+    lock = FileLock(str(tmp_path / "a.lock"))
+    lock.acquire()
+    real_flock = fcntl.flock
+    unlocked: list[int] = []
+
+    def unlock_then_reenter(fd: int, operation: int) -> None:
+        real_flock(fd, operation)
+        unlocked.append(fd)
+        # A signal handler landing right after the kernel unlock runs this on the releasing thread.
+        lock.release(force=True)
+
+    mocker.patch("fcntl.flock", side_effect=unlock_then_reenter)
+    close = mocker.spy(os, "close")
+    lock.release()
+    assert ([call.args for call in close.call_args_list], lock.is_locked) == ([(unlocked[0],)], False)
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl

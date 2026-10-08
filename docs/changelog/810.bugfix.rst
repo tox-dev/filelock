@@ -1,0 +1,2 @@
+:meth:`~filelock.BaseFileLock.release` with ``force=True`` and garbage collection release holds other threads left
+on a thread-local lock, and a ``release()`` re-entered from a signal handler no longer closes the descriptor twice.
