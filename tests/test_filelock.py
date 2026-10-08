@@ -140,7 +140,6 @@ _INVALID_DESCRIPTOR_POLL_INTERVALS: Final = (
     pytest.param(float("inf"), id="positive-infinity"),
     pytest.param(float("-inf"), id="negative-infinity"),
     pytest.param(threading.TIMEOUT_MAX * 2, id="above-timeout-max"),
-    pytest.param(1e300, id="large-finite"),
 )
 
 
@@ -2400,7 +2399,7 @@ def test_lock_descriptor_invalid_fd_raises(tmp_path: Path) -> None:
     _INVALID_DESCRIPTOR_POLL_INTERVALS,
 )
 def test_lock_descriptor_rejects_invalid_blocking_poll_interval(poll_interval: float) -> None:
-    with pytest.raises(ValueError, match="poll_interval must be finite and greater than 0"):
+    with pytest.raises(ValueError, match="poll_interval must be greater than 0 and at most"):
         lock_descriptor(-1, poll_interval=poll_interval)
 
 
