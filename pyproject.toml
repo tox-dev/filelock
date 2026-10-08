@@ -108,6 +108,7 @@ release = [
 version.source = "vcs"
 build.hooks.vcs.version-file = "src/filelock/version.py"
 build.targets.sdist.include = [
+  "/docs",
   "/src",
   "/tasks",
   "/tests",
