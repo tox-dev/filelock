@@ -1,0 +1,2 @@
+:class:`~filelock.SoftFileLock` and :class:`~filelock.SoftFileLease` put back a live successor's marker that a racing
+stale break moved aside, so a third contender no longer acquires beside the successor.

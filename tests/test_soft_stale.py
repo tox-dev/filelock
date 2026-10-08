@@ -190,6 +190,27 @@ def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
     _assert_times_out(lock_path)
 
 
+@pytest.mark.requires_hard_links
+def test_stale_break_racing_a_successor_admits_no_third_holder(  # pragma: needs hard-link
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    successor: Final[SoftFileLock] = SoftFileLock(lock_path, timeout=0)
+    rename: Final = Path.rename
+
+    def successor_breaks_and_acquires_first(source: Path, target: str) -> Path:
+        source.unlink()
+        successor.acquire()
+        return rename(source, target)
+
+    mocker.patch.object(Path, "rename", autospec=True, side_effect=successor_breaks_and_acquires_first)
+    _assert_times_out(lock_path)
+    mocker.stopall()
+
+    _assert_times_out(lock_path)
+    successor.release()
+
+
 @NEEDS_SYMLINK
 def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) -> None:  # pragma: needs symlink
     target = tmp_path / "target"

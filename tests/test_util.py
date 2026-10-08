@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock, Timeout
+from tests.capability_marks import NEEDS_SYMLINK
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -40,12 +41,12 @@ def test_break_lock_file_unlinks_a_dead_holders_marker(stale_lock: Path) -> None
         assert list(stale_lock.parent.glob("test.lock.break.*")) == []
 
 
-def _rewrite_in_place(lock: Path) -> None:
+def _rewrite_in_place(lock: Path) -> None:  # pragma: needs hard-link
     lock.write_text("live", encoding="utf-8")
     os.utime(lock, (time.time() + 10, time.time() + 10))
 
 
-def _replace_with_same_mtime(lock: Path) -> None:
+def _replace_with_same_mtime(lock: Path) -> None:  # pragma: needs hard-link
     # A filesystem with coarse modification times (NFS, FAT) gives a same-second recreation the old mtime, so only the
     # inode tells it apart. Writing the replacement while the original exists guarantees a fresh inode.
     stale: Final[os.stat_result] = lock.stat()
@@ -54,11 +55,12 @@ def _replace_with_same_mtime(lock: Path) -> None:
     replacement.replace(lock)
 
 
+@pytest.mark.requires_hard_links
 @pytest.mark.parametrize(
     "recreate",
     [pytest.param(_rewrite_in_place, id="mtime-advanced"), pytest.param(_replace_with_same_mtime, id="inode-changed")],
 )
-def test_break_lock_file_leaves_a_recreated_marker_aside(
+def test_break_lock_file_restores_a_recreated_marker(  # pragma: needs hard-link
     stale_lock: Path, mocker: MockerFixture, recreate: Callable[[Path], None]
 ) -> None:
     rename: Final = Path.rename
@@ -71,11 +73,53 @@ def test_break_lock_file_leaves_a_recreated_marker_aside(
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
 
-    # The live holder needs its marker, so it survives under the break name and the lock path stays empty.
+    assert (stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("test.lock.break.*"))) == ("live", [])
+
+
+@pytest.mark.requires_hard_links
+def test_break_lock_file_keeps_a_third_marker_created_after_the_rename(  # pragma: needs hard-link
+    stale_lock: Path, mocker: MockerFixture
+) -> None:
+    rename: Final = Path.rename
+
+    def peer_recreates_then_third_creates(source: Path, target: str) -> Path:
+        _rewrite_in_place(source)
+        result: Final[Path] = rename(source, target)
+        source.write_text("third", encoding="utf-8")
+        return result
+
+    mocker.patch.object(Path, "rename", autospec=True, side_effect=peer_recreates_then_third_creates)
+    with pytest.raises(Timeout):
+        SoftFileLock(stale_lock).acquire(blocking=False)
+
+    # link never replaces, so the third marker keeps the path and the live one waits under the break name.
     assert (
+        stale_lock.read_text(encoding="utf-8"),
         [path.read_text(encoding="utf-8") for path in stale_lock.parent.glob("test.lock.break.*")],
-        stale_lock.exists(),
-    ) == (["live"], False)
+    ) == ("third", ["live"])
+
+
+@NEEDS_SYMLINK
+def test_break_lock_file_leaves_a_swapped_in_symlink_aside(  # pragma: needs symlink
+    stale_lock: Path, mocker: MockerFixture
+) -> None:
+    (target := stale_lock.with_name("target")).write_text("victim", encoding="utf-8")
+    rename: Final = Path.rename
+
+    def peer_swaps_in_a_symlink_then_rename(source: Path, destination: str) -> Path:
+        source.unlink()
+        source.symlink_to(target)
+        return rename(source, destination)
+
+    mocker.patch.object(Path, "rename", autospec=True, side_effect=peer_swaps_in_a_symlink_then_rename)
+    with pytest.raises(Timeout):
+        SoftFileLock(stale_lock).acquire(blocking=False)
+
+    # Linking the symlink back would follow it and publish the victim file's inode at the lock path.
+    assert ([path.is_symlink() for path in stale_lock.parent.glob("test.lock.break.*")], stale_lock.exists()) == (
+        [True],
+        False,
+    )
 
 
 def test_break_lock_file_lets_acquire_retry_after_the_marker_vanishes(stale_lock: Path, mocker: MockerFixture) -> None:
