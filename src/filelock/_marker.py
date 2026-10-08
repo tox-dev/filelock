@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from contextlib import suppress
 from typing import Final, Literal, NamedTuple
 
 from ._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
-from ._soft import SoftFileLock, _read_lock_file
+from ._soft import SoftFileLock, _read_lock_file, parse_decimal
 from ._util import break_lock_file, write_all
 
 #: Protocol 1 is the legacy ``<pid>\n<hostname>\n[<start_token>\n]`` marker that :class:`SoftFileLock` still writes.
@@ -15,6 +16,10 @@ from ._util import break_lock_file, write_all
 _PROTOCOL: Final[str] = "filelock/2"
 
 _MAX_PID: Final[int] = 2**31 - 1
+
+#: The forms ``repr`` gives a positive finite float or int, so whitespace, underscores and non-ASCII digits, which
+#: ``float()`` would accept, read as malformed.
+_DURATION: Final[re.Pattern[str]] = re.compile(r"[0-9]+(?:\.[0-9]+)?(?:e[+-][0-9]+)?", re.ASCII)
 
 #: Preserve unknown contracts so contenders cannot mistake them for malformed, reclaimable markers.
 OwnerMode = Literal["lease", "exclusive", "unknown"]
@@ -147,20 +152,27 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
     if not hostname or "pid" not in fields:
         return None
     try:
-        pid = int(fields["pid"])
-        duration = float(fields["duration"]) if "duration" in fields else None
-        start = int(fields["start"]) if "start" in fields else None
+        pid = parse_decimal(fields["pid"])
+        duration = _parse_duration(fields["duration"]) if "duration" in fields else None
+        start = parse_decimal(fields["start"]) if "start" in fields else None
     except ValueError:
         return None
     if not 1 <= pid <= _MAX_PID:
         return None
     token = fields.get("token")
-    # float() accepts "nan" and "inf", and neither is non-positive, so a duration <= 0 guard alone would read such a
-    # marker as a valid lease. A nan duration mismatches every configured duration and so wedges reclaim, where a
-    # malformed marker ages out through the grace window.
-    if mode == "lease" and (token is None or duration is None or not (math.isfinite(duration) and duration > 0)):
+    # The grammar already refuses "nan" and "inf", but "1e400" overflows to inf, which mismatches every configured
+    # duration and so wedges reclaim, where a malformed marker ages out through the grace window. An empty token names
+    # no claim.
+    if mode == "lease" and (not token or duration is None or not (math.isfinite(duration) and duration > 0)):
         return None
     return OwnerRecord(pid=pid, hostname=hostname, mode=mode, token=token, lease_duration=duration, start=start)
+
+
+def _parse_duration(text: str) -> float:
+    if not _DURATION.fullmatch(text):
+        msg = f"not a lease duration: {text!r}"
+        raise ValueError(msg)
+    return float(text)
 
 
 __all__ = [

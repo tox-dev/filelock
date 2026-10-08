@@ -24,8 +24,14 @@ class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # p
         return self._lock_file
 
 
-class SoftFileLockLifetimeWarning(DeprecationWarning):
-    """The configured soft-lock lifetime permits overlapping live holders after expiry."""
+class SoftFileLockLifetimeWarning(FutureWarning):
+    """
+    The configured soft-lock lifetime permits overlapping live holders after expiry.
+
+    It derives from :class:`FutureWarning`, which Python shows by default wherever the lock is configured; a
+    :class:`DeprecationWarning` would only show in ``__main__``.
+
+    """
 
 
 class LeaseSettingsMismatch(ValueError):  # ruff:ignore[error-suffix-on-exception-name]  # public exception name; renaming breaks the API

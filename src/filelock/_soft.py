@@ -78,6 +78,7 @@ class SoftFileLock(BaseFileLock):
         identity: tuple[int, int] | None = None
         try:
             identity = _file_identity(os.fstat(fd))
+            self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
         except BaseException:
             self._mark_descriptor_released()
@@ -87,6 +88,13 @@ class SoftFileLock(BaseFileLock):
                 self._unlink_held_marker(identity)
             raise
         self._mark_descriptor_owned(fd, identity)
+
+    def _apply_explicit_mode(self, fd: int) -> None:
+        # os.open filters the mode through the umask, so an explicit mode lands as given only through fchmod, the way
+        # UnixFileLock applies it. Windows maps the mode to a read-only bit that os.open already set.
+        if self.has_explicit_mode and sys.platform != "win32":  # pragma: win32 no cover
+            with suppress(PermissionError):
+                os.fchmod(fd, self._context.mode)
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
@@ -257,8 +265,8 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
     if not content or not content.endswith("\n") or len(lines := content.strip().splitlines()) not in {2, 3}:
         return None
     try:
-        pid = int(lines[0])
-        start_token = int(lines[2]) if len(lines) == _MARKER_WITH_START_TOKEN_LINE_COUNT else None
+        pid = parse_decimal(lines[0])
+        start_token = parse_decimal(lines[2]) if len(lines) == _MARKER_WITH_START_TOKEN_LINE_COUNT else None
     except ValueError:
         return None
     # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid
@@ -270,6 +278,21 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
     return pid, lines[1], start_token
 
 
+def parse_decimal(text: str) -> int:
+    """
+    Read a PID or start token as a writer formats it: ASCII digits only.
+
+    :raises ValueError: for anything else ``int()`` would accept, such as ``1_000``, surrounding whitespace, a sign or
+        non-ASCII digits; no filelock writes those
+
+    """
+    if not (text.isascii() and text.isdigit()):
+        msg = f"not a decimal integer: {text!r}"
+        raise ValueError(msg)
+    return int(text)
+
+
 __all__ = [
     "SoftFileLock",
+    "parse_decimal",
 ]
