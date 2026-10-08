@@ -1,0 +1,2 @@
+:class:`~filelock.SoftReadWriteLock` waits out a holder's own ``stale_threshold`` before evicting it, shares one log
+between a symlink and its target, and no longer leaks ledger entries or the holder record of a failed acquire.

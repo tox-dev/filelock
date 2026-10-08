@@ -26,7 +26,13 @@ from filelock._soft_rw import _storage as storage_mod
 from filelock._soft_rw import _sync as sync_mod
 from filelock._soft_rw._protocol import GenerationLog, Participant, Snapshot, encode_holder, new_token
 from filelock._soft_rw._storage import OsFiles
-from tests.capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS, SKIP_ON_UNRELIABLE_PROCESS_SYNC
+from tests.capability_marks import (
+    NEEDS_FILE_MODE,
+    NEEDS_FORK,
+    NEEDS_POSIX_SIGNALS,
+    NEEDS_SYMLINK,
+    SKIP_ON_UNRELIABLE_PROCESS_SYNC,
+)
 from tests.process_helpers import cleanup_processes
 
 if TYPE_CHECKING:
@@ -92,7 +98,7 @@ def _plant_holder(lock_file: str, *, mode: Literal["read", "write"], host: str =
     root = f"{lock_file}.rw"
     files.prepare(root)
     token = new_token()
-    record = encode_holder(token, new_token()).replace(b"host=", f"host={host}?".encode("ascii"), 1)
+    record = encode_holder(token, new_token(), 0.5).replace(b"host=", f"host={host}?".encode("ascii"), 1)
     files.create(str(Path(root, "holders", token)), record)
     log = GenerationLog(files, lock_file, root)
     latest = log.latest()
@@ -648,6 +654,28 @@ def test_heartbeat_reports_eviction_and_stops(lock_file: str) -> None:
         peer.close()
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_raising_on_compromise_still_stops_the_heartbeat(lock_file: str) -> None:
+    def fail(_compromise: LeaseCompromise) -> None:
+        msg = "callback failed"
+        raise RuntimeError(msg)
+
+    lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2, on_compromise=fail)
+    lock.acquire_write(timeout=2)
+    try:
+        hold = lock._hold
+        assert hold is not None
+        log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
+        latest = log.latest()
+        assert log.commit(Snapshot(generation=latest.generation + 1, writer=None, readers=frozenset()))
+        hold.heartbeat_thread.join(timeout=_PROCESS_DEADLINE)
+        assert not hold.heartbeat_thread.is_alive()
+        assert hold.heartbeat_stop.is_set()
+    finally:
+        lock.release(force=True)
+        lock.close()
+
+
 def test_heartbeat_reports_a_removed_holder_record(lock_file: str) -> None:
     lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2)
     lock.acquire_read(timeout=2)
@@ -790,6 +818,20 @@ def test_short_attempts_still_evict_a_dead_holder(lock_file: str) -> None:
         lock.release()
     finally:
         lock.close()
+
+
+@NEEDS_SYMLINK
+def test_a_symlinked_lock_path_shares_its_targets_log(tmp_path: Path) -> None:
+    # The singleton cache already maps both spellings to one instance; separate instances must agree on the log too.
+    (alias := tmp_path / "alias.lock").symlink_to(target := tmp_path / "real.lock")
+    first = _make_lock(str(alias))
+    second = _make_lock(str(target))
+    try:
+        with first.write_lock(timeout=2), pytest.raises(Timeout):
+            second.acquire_write(blocking=False)
+    finally:
+        first.close()
+        second.close()
 
 
 def test_singleton_rejects_a_different_on_compromise(lock_file: str) -> None:

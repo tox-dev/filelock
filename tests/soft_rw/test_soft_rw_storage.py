@@ -108,6 +108,23 @@ def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFix
         OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
+def test_replace_renames_over_the_target(tmp_path: Path) -> None:
+    (source := tmp_path / "source").write_bytes(b"new")
+    (target := tmp_path / "target").write_bytes(b"old")
+    assert OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
+    assert target.read_bytes() == b"new"
+    assert not source.exists()
+
+
+def test_replace_refused_leaves_the_target(tmp_path: Path, mocker: MockerFixture) -> None:
+    # Windows refuses to rename over a file a reader holds open; the caller keeps the older target.
+    (source := tmp_path / "source").write_bytes(b"new")
+    (target := tmp_path / "target").write_bytes(b"old")
+    mocker.patch.object(storage_mod.Path, "replace", side_effect=PermissionError("in use"))
+    assert not OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
+    assert target.read_bytes() == b"old"
+
+
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch.object(Path, "unlink", side_effect=PermissionError("held open"))
     OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
@@ -136,6 +153,16 @@ def test_read_refused_on_windows_is_missing_after_the_grace(
     started = time.monotonic()
     assert OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "record")) is None
     assert time.monotonic() - started >= storage_mod._WINDOWS_OPEN_GRACE - 0.05
+
+
+def test_prepare_checks_the_directories_once_unless_forced(tmp_path: Path, mocker: MockerFixture) -> None:
+    files = OsFiles(str(tmp_path / "x.lock"))
+    ensure = mocker.spy(storage_mod, "ensure_directory_exists")
+    files.prepare(root := str(tmp_path / "x.lock.rw"))
+    files.prepare(root)
+    assert ensure.call_count == 1
+    files.prepare(root, force=True)
+    assert ensure.call_count == 2
 
 
 def test_prepare_creates_missing_parents(tmp_path: Path) -> None:

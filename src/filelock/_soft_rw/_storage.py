@@ -31,6 +31,7 @@ class OsFiles:
 
     def __init__(self, lock_file: str) -> None:
         self._lock_file = lock_file
+        self._prepared = False
 
     @staticmethod
     def read(path: str) -> bytes | None:
@@ -82,6 +83,16 @@ class OsFiles:
         return False
 
     @staticmethod
+    def replace(source: str, target: str) -> bool:
+        try:
+            Path(source).replace(target)
+        except PermissionError:
+            # Windows refuses to rename over a file another process has open without sharing delete access; a reader
+            # holds it for one read, and a target left one rename behind is what the caller already tolerates.
+            return False
+        return True
+
+    @staticmethod
     def overwrite(path: str, data: bytes) -> bool:
         if (fd := _open(path, os.O_WRONLY | _O_NOFOLLOW | _O_BINARY)) is None:
             return False
@@ -108,8 +119,9 @@ class OsFiles:
         except FileNotFoundError:
             return []
 
-    @staticmethod
-    def prepare(root: str) -> None:
+    def prepare(self, root: str, *, force: bool = False) -> None:
+        if self._prepared and not force:
+            return
         ensure_directory_exists(root)
         for directory in (Path(root), Path(root, _GENERATIONS_DIRECTORY), Path(root, _HOLDERS_DIRECTORY)):
             with suppress(FileExistsError):
@@ -119,6 +131,7 @@ class OsFiles:
             if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
                 msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
                 raise RuntimeError(msg)
+        self._prepared = True
 
 
 def _open(path: str, flags: int) -> int | None:
