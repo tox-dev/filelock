@@ -211,6 +211,11 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     Keeping one pathname prevents contenders from coordinating through different inodes, which would break mutual
     exclusion; remove the file only after the complete lock protocol has stopped using it.
 
+    Filesystems without ``flock``: when ``flock`` fails with ``ENOSYS``, the lock switches to :class:`SoftFileLock
+    <filelock.SoftFileLock>` and emits a warning, unless constructed with ``fallback_to_soft=False``. Before switching it
+    removes the empty file only if this acquire created it. A file that already existed may be another process's soft
+    marker, so it stays: the soft lock waits on a live holder and reclaims an empty leftover once it is two seconds old.
+
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,
     but filelock includes stale lock detection (though without fcntl, this detection is less reliable than on systems
