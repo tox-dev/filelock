@@ -1,0 +1,2 @@
+:meth:`ReadWriteLock.release() <filelock.ReadWriteLock.release>` from a thread that holds no read level raises
+:class:`RuntimeError` instead of ending another thread's read lock and letting a writer in.
