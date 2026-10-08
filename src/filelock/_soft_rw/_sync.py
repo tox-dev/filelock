@@ -15,7 +15,6 @@ from weakref import WeakValueDictionary
 
 from filelock._api import (
     AcquireReturnProxy,
-    _canonical,
     _ensure_current_process,
     _register_fork_class,
     _register_fork_object,
@@ -67,7 +66,7 @@ class _SoftRWMeta(type):
                 **extra,
             )
 
-        normalized = Path(lock_file).resolve()
+        normalized = _resolved(lock_file)
         with cls._instances_lock:
             instance = cls._instances.get(normalized)
             if instance is None:
@@ -188,7 +187,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self.poll_interval: float = poll_interval
 
         # Resolved once: a relative lock path must keep naming the same log after the process changes directory.
-        self._root = f"{_canonical(self.lock_file)}.rw"
+        self._root = f"{_resolved(self.lock_file)}.rw"
         self._files = OsFiles(self.lock_file)
         self._ledger = Ledger(time.monotonic)
         self._log = GenerationLog(self._files, self.lock_file, self._root)
@@ -624,10 +623,19 @@ class _HeartbeatThread(threading.Thread):
         self._stop_event = stop_event
 
     def run(self) -> None:
-        while not self._stop_event.wait(self._interval):
-            if not self._refresh():
-                self._stop_event.set()
-                return
+        # Set on every exit, an on_compromise that raises included, so nothing waits on a thread that is gone.
+        try:
+            while not self._stop_event.wait(self._interval):
+                if not self._refresh():
+                    return
+        finally:
+            self._stop_event.set()
+
+
+def _resolved(lock_file: str | os.PathLike[str]) -> Path:
+    # The singleton key and the log root share one resolution. Keyed apart, a symlink and its target shared an instance
+    # but not a log, so two non-singleton instances on the two spellings both held the write lock.
+    return Path(lock_file).resolve()
 
 
 def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None, poll_interval: float) -> float:

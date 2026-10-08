@@ -24,6 +24,7 @@ import os
 import secrets
 from contextlib import suppress
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
@@ -87,8 +88,12 @@ class Files(Protocol):
     def listdir(self, path: str) -> list[str]:
         """The names in the directory, or an empty list when it does not exist."""
 
-    def prepare(self, root: str) -> None:
-        """Create the protocol directories under *root*, refusing anything at those paths that is not a directory."""
+    def prepare(self, root: str, *, force: bool = False) -> None:
+        """
+        Create the protocol directories under *root*, refusing anything at those paths that is not a directory.
+
+        Done once per lock; *force* repeats it after a write found a directory missing.
+        """
 
 
 @dataclass(frozen=True)
@@ -154,9 +159,34 @@ def new_token() -> str:
     return secrets.token_hex(_TOKEN_HEX_LENGTH // 2)
 
 
-def encode_holder(token: str, nonce: str) -> bytes:
-    """The ``holders/<token>`` record; only the nonce changes between heartbeats, so the length stays constant."""
-    return f"{_PROTOCOL}\ntoken={token}\npid={os.getpid()}\nhost={host_name()}\nnonce={nonce}\n".encode("ascii")
+def encode_holder(token: str, nonce: str, lease: float) -> bytes:
+    """
+    The ``holders/<token>`` record; only the nonce changes between heartbeats, so the length stays constant.
+
+    *lease* is the writer's own ``stale_threshold``: a peer configured tighter must not read this holder's longer
+    heartbeat interval as death, so evictors wait the longer of their threshold and this one.
+    """
+    return (
+        f"{_PROTOCOL}\ntoken={token}\npid={os.getpid()}\nhost={host_name()}\nlease={float(lease)!r}\nnonce={nonce}\n"
+    ).encode("ascii")
+
+
+def holder_lease(record: bytes | None) -> float | None:
+    """The ``lease`` a holder record carries, or ``None`` when it has none (an older release) or it is malformed."""
+    try:
+        lines = (record or b"").decode("ascii").split("\n")
+    except UnicodeDecodeError:
+        return None
+    for line in lines:
+        if line.startswith("lease="):
+            text = line.removeprefix("lease=")
+            # Only the exact spelling repr() writes: float() alone also takes "1_000", " 1", and non-ASCII digits.
+            try:
+                lease = float(text)
+            except ValueError:
+                return None
+            return lease if isfinite(lease) and lease > 0 and repr(lease) == text else None
+    return None
 
 
 class Ledger:
@@ -182,6 +212,11 @@ class Ledger:
 
     def forget(self, key: str) -> None:
         self._seen.pop(key, None)
+
+    def retain(self, keys: set[str]) -> None:
+        """Drop every key not in *keys*: peers that left would otherwise stay in the ledger for the lock's lifetime."""
+        for key in self._seen.keys() - keys:
+            del self._seen[key]
 
 
 class GenerationLog:
@@ -224,7 +259,7 @@ class GenerationLog:
         # Generation 0 is the empty log, which has no record to read back.
         if self._latest is not None and self._latest.generation:
             named.add(self._latest.generation)
-        start = self._head()
+        start = head = self._head()
         for generation in sorted(named, reverse=True):
             if start is not None and generation <= start.generation:
                 break
@@ -232,7 +267,9 @@ class GenerationLog:
                 start = snapshot
                 break
         if start is not None:
-            return self._probe(start)
+            # HEAD current means every generation up to it is published and the next commit replaces it, so the first
+            # missing name is the end; probing the whole window on every poll cost 64 failed opens.
+            return self._probe(start, patience=1 if start is head else _RETAINED_GENERATIONS)
         newest = max(named, default=0)
         found = self._probe(Snapshot(generation=newest, writer=None, readers=frozenset()))
         return found if found.generation > newest or not named else None
@@ -270,11 +307,11 @@ class GenerationLog:
             self._files.unlink(self._path(generation))
         return listed[-_RETAINED_GENERATIONS:]
 
-    def _probe(self, start: Snapshot) -> Snapshot:
+    def _probe(self, start: Snapshot, patience: int = _RETAINED_GENERATIONS) -> Snapshot:
         latest = start
         generation = start.generation
         gap = 0
-        while gap < _RETAINED_GENERATIONS:
+        while gap < patience:
             generation += 1
             if (snapshot := self._read(generation)) is None:
                 gap += 1
@@ -309,7 +346,8 @@ class GenerationLog:
         # Renames from two committers can land out of order and leave HEAD a generation behind; it only ever claims a
         # generation that was committed, so readers take it as a floor and probe past it.
         self._publish(self._head_path, data, self._files.replace)
-        self._files.unlink(self._path(successor.generation - _RETAINED_GENERATIONS - 1))
+        if (expired := successor.generation - _RETAINED_GENERATIONS - 1) > 0:
+            self._files.unlink(self._path(expired))
         return True
 
     def _publish(self, target: str, data: bytes, place: Callable[[str, str], bool]) -> bool:
@@ -370,7 +408,18 @@ class Participant:
     def publish(self) -> None:
         """Create the holder record peers watch for liveness; it exists before the token appears in any snapshot."""
         self._files.prepare(self._root)
-        self._files.create(self._holder, encode_holder(self.token, new_token()))
+        self._create_holder()
+
+    def _create_holder(self) -> None:
+        try:
+            self._files.create(self._holder, self._record())
+        except FileNotFoundError:
+            # Removing the whole log takes the directories with it.
+            self._files.prepare(self._root, force=True)
+            self._files.create(self._holder, self._record())
+
+    def _record(self) -> bytes:
+        return encode_holder(self.token, new_token(), self._stale_threshold)
 
     def advance(self) -> bool:
         """
@@ -413,12 +462,11 @@ class Participant:
         # may have evicted this participant while it waited to drain, so both directions are taken from it. A wait can
         # outlast the stale threshold, so the nonce changes on every poll; a peer then never reads a patient contender
         # as a corpse. A record that has gone missing was taken by an evictor or a sweeper that did, or by a removal of
-        # the whole log, which takes the directories with it.
+        # the whole log.
         self._entered = self.token in latest.members
         if not self._refresh_nonce():
-            self._files.prepare(self._root)
             with suppress(FileExistsError):
-                self._files.create(self._holder, encode_holder(self.token, new_token()))
+                self._create_holder()
 
     def _sweep(self, latest: Snapshot) -> None:
         # A participant that crashed before its first commit leaves a record no snapshot names, and a commit that
@@ -427,17 +475,21 @@ class Participant:
         if (now := self._clock()) < self._next_sweep:
             return
         self._next_sweep = now + self._stale_threshold / 2
+        watched = set(latest.members)
         holders = Path(self._root, _HOLDERS_DIRECTORY)
         for name in self._files.listdir(str(holders)):
             if name != self.token and name not in latest.members and is_token(name):
-                self._collect(f"holder:{name}", str(holders / name))
+                watched.add(key := f"holder:{name}")
+                self._collect(key, str(holders / name))
         generations = Path(self._root, _GENERATIONS_DIRECTORY)
         for name in self._files.listdir(str(generations)):
             if name.startswith(_TEMPORARY_PREFIX):
-                self._collect(f"temporary:{name}", str(generations / name))
+                watched.add(key := f"temporary:{name}")
+                self._collect(key, str(generations / name))
+        self._ledger.retain(watched)
 
     def _collect(self, key: str, path: str) -> None:
-        if self._ledger.observe(key, self._files.read(path)) >= self._stale_threshold:
+        if self._unchanged_for_its_lease(key, path):
             self._files.unlink(path)
             self._ledger.forget(key)
 
@@ -453,13 +505,17 @@ class Participant:
         return successor.generation
 
     def _is_stale(self, token: str) -> bool:
-        return self._ledger.observe(token, self._files.read(self._holder_path(token))) >= self._stale_threshold
+        return self._unchanged_for_its_lease(token, self._holder_path(token))
+
+    def _unchanged_for_its_lease(self, key: str, path: str) -> bool:
+        record = self._files.read(path)
+        return self._ledger.observe(key, record) >= max(self._stale_threshold, holder_lease(record) or 0.0)
 
     def _holder_path(self, token: str) -> str:
         return str(Path(self._root, _HOLDERS_DIRECTORY, token))
 
     def _refresh_nonce(self) -> bool:
-        return self._files.overwrite(self._holder, encode_holder(self.token, new_token()))
+        return self._files.overwrite(self._holder, self._record())
 
     def heartbeat(self) -> tuple[HeartbeatOutcome, OSError | None]:
         """
@@ -484,17 +540,21 @@ class Participant:
 
     def leave(self) -> None:
         """Commit this participant out of the latest snapshot, then remove its holder record."""
-        while self.token in (latest := self._log.latest()).members:
-            successor = Snapshot(
-                generation=latest.generation + 1,
-                writer=None if latest.writer == self.token else latest.writer,
-                readers=latest.readers - {self.token},
-            )
-            if self._log.commit(successor):
-                break
-        self._entered = False
-        self.generation = None
-        self._files.unlink(self._holder)
+        # The record goes even when the log cannot be read: a contender that never entered then leaves nothing behind,
+        # and a member still named ages out the same way with or without one.
+        try:
+            while self.token in (latest := self._log.latest()).members:
+                successor = Snapshot(
+                    generation=latest.generation + 1,
+                    writer=None if latest.writer == self.token else latest.writer,
+                    readers=latest.readers - {self.token},
+                )
+                if self._log.commit(successor):
+                    break
+        finally:
+            self._entered = False
+            self.generation = None
+            self._files.unlink(self._holder)
 
 
 __all__ = [
@@ -506,6 +566,7 @@ __all__ = [
     "Participant",
     "Snapshot",
     "encode_holder",
+    "holder_lease",
     "is_token",
     "new_token",
     "parse_snapshot",
