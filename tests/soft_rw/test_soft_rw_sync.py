@@ -23,7 +23,7 @@ from filelock._lease import LeaseCompromise
 from filelock._soft_rw import SoftReadWriteLock
 from filelock._soft_rw import _storage as storage_mod
 from filelock._soft_rw import _sync as sync_mod
-from filelock._soft_rw._protocol import GenerationLog, Snapshot, encode_holder, new_token
+from filelock._soft_rw._protocol import GenerationLog, Participant, Snapshot, encode_holder, new_token
 from filelock._soft_rw._storage import OsFiles
 from tests.capability_marks import NEEDS_FILE_MODE, NEEDS_FORK, NEEDS_POSIX_SIGNALS, SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.process_helpers import cleanup_processes
@@ -365,6 +365,32 @@ def test_acquire_on_closed_raises(lock_file: str) -> None:
         lock.acquire_read(timeout=1)
     with pytest.raises(RuntimeError, match="has been closed"):
         lock.acquire_write(timeout=1)
+
+
+@pytest.mark.parametrize("blocked", [pytest.param(True, id="while-blocked"), pytest.param(False, id="as-granted")])
+def test_close_during_acquire_leaves_no_hold(lock_file: str, mocker: MockerFixture, *, blocked: bool) -> None:
+    # A close() that lands while an acquire polls, or between the grant and publishing the hold, must not leave a
+    # heartbeat holding the slot on an instance nobody can release through any more.
+    blocker = _make_lock(lock_file)
+    if blocked:
+        blocker.acquire_write(timeout=2)
+    victim = _make_lock(lock_file)
+    real_advance = Participant.advance
+
+    def close_during(participant: Participant) -> bool:
+        granted = real_advance(participant)
+        victim.close()
+        return granted
+
+    mocker.patch.object(Participant, "advance", autospec=True, side_effect=close_during)
+    try:
+        with pytest.raises(RuntimeError, match="has been closed"):
+            victim.acquire_write(timeout=2)
+    finally:
+        blocker.close()
+    assert victim.generation is None
+    assert _state(lock_file).members == frozenset()
+    assert _holders(lock_file) == []
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC

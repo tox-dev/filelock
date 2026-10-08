@@ -361,13 +361,16 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         Release any held lock and mark the instance closed.
 
         Idempotent. After calling this method the instance can no longer acquire locks — subsequent acquires raise
-        :class:`RuntimeError`. A fork-invalidated instance is closed without raising.
+        :class:`RuntimeError`, and so does an acquire another thread is still waiting in, which gives up its claim
+        instead of taking the lock. A fork-invalidated instance is closed without raising.
         """
         if self._creator_pid != os.getpid():  # pragma: forked child
             return
-        self.release(force=True)
+        # Closed first, under the lock an acquire publishes its hold under: an acquire still waiting then sees the flag
+        # and leaves instead of publishing, and one that published before it is released below.
         with self._locks.internal:
             self._closed = True
+        self.release(force=True)
 
     def release(self, *, force: bool = False) -> None:
         """
@@ -436,8 +439,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         with self._locks.internal:
             if self._closed:
-                msg = f"SoftReadWriteLock on {self.lock_file} has been closed"
-                raise RuntimeError(msg)
+                raise self._closed_error()
             if blocking and not (timeout >= 0 or timeout == -1):  # nan fails both comparisons
                 message: Final[str] = "timeout must be a non-negative number or -1"
                 raise ValueError(message)
@@ -510,20 +512,27 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # Publish the hold and start its heartbeat under one internal-lock section, so a concurrent release() never
         # observes a hold whose thread has not started and joins it. If the OS refuses the thread, clear the hold and
         # leave: left in place, a peer evicts the unrefreshed record and acquires while this instance still believes it
-        # holds the lock.
+        # holds the lock. A close() that landed while this acquire waited gets the same treatment: published, the hold
+        # would keep its heartbeat and its slot on an instance nobody can release through.
         start_error: BaseException | None = None
         with self._locks.internal:
-            self._hold = hold
-            self._compromise = None
-            try:
-                hold.heartbeat_thread.start()
-            except BaseException as error:  # ruff:ignore[blind-except]  # clear the slot below and re-raise
-                self._hold = None
-                start_error = error
+            if self._closed:
+                start_error = self._closed_error()
+            else:
+                self._hold = hold
+                self._compromise = None
+                try:
+                    hold.heartbeat_thread.start()
+                except BaseException as error:  # ruff:ignore[blind-except]  # clear the slot below and re-raise
+                    self._hold = None
+                    start_error = error
         if start_error is not None:
             participant.leave()
             raise start_error
         return AcquireReturnProxy(lock=self)
+
+    def _closed_error(self) -> RuntimeError:
+        return RuntimeError(f"SoftReadWriteLock on {self.lock_file} has been closed")
 
     def _validate_reentrant(self, mode: Mode) -> AcquireReturnProxy:
         hold = self._hold
@@ -553,6 +562,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         blocking: bool,
     ) -> None:
         while not predicate():
+            # The flag is read without the lock here only to stop waiting early; publishing the hold re-checks it.
+            if self._closed:
+                raise self._closed_error()
             now = time.perf_counter()
             if not blocking:
                 raise Timeout(self.lock_file)
