@@ -77,6 +77,40 @@ async def test_hold_canceled_while_waiting_lets_the_predecessor_free_the_ticket(
     assert entered.is_set()
 
 
+class _Interrupt(BaseException):
+    """Stands in for a KeyboardInterrupt delivered while a waiter is parked, without pytest treating it as one."""
+
+
+@pytest.mark.asyncio
+async def test_hold_interrupted_while_waiting_lets_the_predecessor_free_the_ticket() -> None:
+    gate = _AsyncTransitionGate()
+    first_holding = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def first() -> None:
+        async with gate.hold():
+            first_holding.set()
+            await release_first.wait()
+
+    first_task = asyncio.create_task(first())
+    await first_holding.wait()
+    parked = gate.hold().__aenter__()  # ruff:ignore[unnecessary-dunder-call]  # step the entry by hand to throw into it
+    parked.send(None)  # runs up to the wait on the predecessor
+    with pytest.raises(_Interrupt):
+        parked.throw(_Interrupt())
+    release_first.set()
+    await first_task
+
+    entered = asyncio.Event()
+
+    async def third() -> None:
+        async with gate.hold():
+            entered.set()
+
+    await asyncio.wait_for(third(), timeout=1)
+    assert entered.is_set()
+
+
 @pytest.mark.asyncio
 @pytest.mark.timeout(5)
 async def test_wait_for_predecessor_returns_immediately_when_already_done() -> None:

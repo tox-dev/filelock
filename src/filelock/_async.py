@@ -16,6 +16,7 @@ from ._error import Timeout
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
+    from concurrent.futures import Executor
 
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
@@ -47,7 +48,7 @@ class _AsyncTransitionGate:
         if predecessor is not None:
             try:
                 await _wait_until_done(asyncio.wrap_future(predecessor))
-            except asyncio.CancelledError:
+            except BaseException:
                 predecessor.add_done_callback(lambda _predecessor: self._leave(ticket))
                 raise
         try:
@@ -289,6 +290,25 @@ def _future_result(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
         raise
 
 
+def _run_in_executor(
+    loop: asyncio.AbstractEventLoop, executor: Executor | None, func: Callable[[], _T]
+) -> asyncio.Future[_BackendOutcome[_T]]:
+    outcome: asyncio.Future[_BackendOutcome[_T]] = loop.create_future()
+
+    def settle(call: asyncio.Future[_BackendOutcome[_T]]) -> None:
+        try:
+            result = call.result()
+        except asyncio.CancelledError:
+            # shutdown(cancel_futures=True) dropped the queued call before it ran. Reporting that as a CancelledError
+            # would mark a task nobody canceled as canceled and hide that the lock state never changed.
+            msg = "the executor shut down before running the lock backend call"
+            result = _BackendOutcome(error=RuntimeError(msg))
+        outcome.set_result(result)
+
+    loop.run_in_executor(executor, _capture_call, func).add_done_callback(settle)
+    return outcome
+
+
 def _capture_call(func: Callable[[], _T]) -> _BackendOutcome[_T]:
     try:
         return _BackendOutcome(value=func())
@@ -324,6 +344,7 @@ __all__ = [
     "_drain_future",
     "_future_result",
     "_raise_cancelled_error",
+    "_run_in_executor",
     "_task_owners_for",
     "_wait_until_done",
 ]
