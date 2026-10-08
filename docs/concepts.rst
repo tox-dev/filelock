@@ -102,6 +102,10 @@ filelock detects this and raises ``RuntimeError`` with a message suggesting ``is
 This detection only applies to blocking acquires (``timeout < 0``) within the same thread. Non-blocking or timed
 acquires raise :class:`Timeout <filelock.Timeout>` as usual.
 
+Async locks scope the check to the asyncio task instead of the thread, so a sync lock and an async lock do not see each
+other's holds. Holding a ``FileLock`` on the event loop thread and then awaiting a blocking ``AsyncFileLock`` acquire of
+the same file polls forever instead of raising; give that acquire a timeout.
+
 ************************
  How file locking works
 ************************

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import time
@@ -67,6 +68,7 @@ _ASYNC_RELEASE_CANCELLATION_ERRORS: Final[str] = "lock release cancellation and 
 _ASYNC_CONTEXT_RELEASE_ERRORS: Final[str] = "context body, release cancellation, and backend release failed"
 _ASYNC_RELEASE_CANCELLATION_MARKER_ATTR: Final[str] = "_filelock_async_release_cancellation"
 _ASYNC_RELEASE_CANCELLATION_MARKER: Final[list[None]] = []
+_FINALIZER_RELEASES: Final[set[asyncio.Task[None] | futures.Future[None]]] = set()
 
 _AT = TypeVar("_AT", bound="BaseAsyncFileLock")
 
@@ -166,7 +168,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask and
             default ACLs, preserving POSIX default ACL inheritance in shared directories.
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set to
-            ``False`` then the lock will be reentrant across threads. When ``True`` (the default), **all fields of the
+            ``False`` (the default) then the lock will be reentrant across threads. When ``True``, **all fields of the
             lock's internal context are per-thread**, including the configuration values ``poll_interval``, ``timeout``,
             ``blocking``, ``mode``, and ``lifetime``. Setting one of these properties from one thread does not change
             the value seen by another thread; threads that did not perform the write continue to see the value supplied
@@ -200,7 +202,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             :meth:`~BaseAsyncFileLock.acquire` returns. With ``run_in_executor=True`` (the default) it runs in the
             backend executor. It must not close or unlock the descriptor; a raise rolls the acquisition back.
             :class:`AsyncSoftFileLock` rejects it.
-        :param loop: The event loop to use. If not specified, the running event loop will be used.
+        :param loop: the event loop a garbage-collected lock schedules its release on when no loop runs in the
+            collecting thread. :meth:`~BaseAsyncFileLock.acquire` and :meth:`~BaseAsyncFileLock.release` always run
+            on the loop that awaits them.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
 
@@ -296,15 +300,15 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         .. code-block:: python
 
             # You can use this method in the context manager (recommended)
-            with lock.acquire():
+            async with await lock.acquire():
                 pass
 
             # Or use an equivalent try-finally construct:
-            lock.acquire()
+            await lock.acquire()
             try:
                 pass
             finally:
-                lock.release()
+                await lock.release()
 
         """
         self._raise_if_inherited()
@@ -347,7 +351,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             poll_interval=poll_interval,
         ):
             # A canceled provisional acquire must finish rollback before another caller can claim its descriptor.
-            canonical = _canonical(self.lock_file)
+            canonical = await self._canonical_lock_file()
             self._context.lock_counter += 1
             self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
             self._context.claim_root = canonical
@@ -367,6 +371,17 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             self._commit_acquire(canonical)
             return AsyncAcquireReturnProxy(lock=self)
 
+    async def _canonical_lock_file(self) -> str:
+        # realpath stats every parent directory, which blocks the loop as long as any filesystem call on a slow mount.
+        # A coroutine backend runs its own calls on the loop, so it never starts an executor thread for this either.
+        if not self.run_in_executor or iscoroutinefunction(self._acquire):
+            return _canonical(self.lock_file)
+        future = _run_in_executor(
+            asyncio.get_running_loop(), self.executor, functools.partial(_canonical, self.lock_file)
+        )
+        await _wait_until_done(future)
+        return _future_result(future)
+
     async def _async_poll_until_acquired(
         self,
         *,
@@ -381,7 +396,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         while True:
             self._raise_if_inherited()
             if not self.is_locked:
-                self._try_break_expired_lock()
                 _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
                 await self._run_acquire_attempt()
                 self._raise_if_inherited()
@@ -405,7 +419,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         acquire_future = self._start_internal_method(
             self._acquire_with_fork_tracking_async
             if iscoroutinefunction(self._acquire)
-            else self._acquire_with_fork_tracking
+            else self._break_expired_and_acquire
         )
         try:
             await _wait_until_done(acquire_future)
@@ -547,7 +561,13 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             else self._release_with_fork_tracking
         )
 
+    def _break_expired_and_acquire(self) -> None:
+        # Runs as one backend call so the lifetime check's lstat and unlink stay off the event loop with the acquire.
+        self._try_break_expired_lock()
+        self._acquire_with_fork_tracking()
+
     async def _acquire_with_fork_tracking_async(self) -> None:
+        self._try_break_expired_lock()
         with _fork_transition(self):
             try:
                 await cast("Callable[[], Awaitable[None]]", self._acquire)()
@@ -701,16 +721,32 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         if vars(self).get("_creator_pid") != os.getpid():
             return  # pragma: forked child
         with contextlib.suppress(Exception):
+            pending: asyncio.Task[None] | futures.Future[None]
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                loop = self._context.loop if self._context.loop and not self._context.loop.is_closed() else None
-            if loop is None:
-                return
-            if not loop.is_running():  # pragma: no cover
-                loop.run_until_complete(self.release(force=True))
+                if (loop := self._context.loop) is None or loop.is_closed():
+                    self._release_without_loop()
+                    return
+                if not loop.is_running():  # pragma: no cover
+                    loop.run_until_complete(self.release(force=True))
+                    return
+                # The stored loop runs in another thread, and only its own thread may create tasks on it.
+                pending = asyncio.run_coroutine_threadsafe(self.release(force=True), loop)
             else:
-                loop.create_task(self.release(force=True))
+                pending = loop.create_task(self.release(force=True))
+            # The loop keeps only a weak reference to a task, so hold one until the release finishes.
+            _FINALIZER_RELEASES.add(pending)
+            pending.add_done_callback(_FINALIZER_RELEASES.discard)
+
+    def _release_without_loop(self) -> None:
+        # Nothing can await a coroutine release here (at interpreter exit the loop is long gone), so call a sync backend
+        # directly, the way BaseFileLock.__del__ does; a coroutine backend has no way to run and keeps its lock.
+        if self.is_locked and not iscoroutinefunction(self._release):
+            try:
+                self._release_with_fork_tracking()
+            finally:
+                self._commit_release_if_released()
 
 
 @dataclass

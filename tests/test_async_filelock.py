@@ -1302,3 +1302,67 @@ def test_async_del_without_any_loop_returns(tmp_path: Path, mocker: MockerFixtur
 
 def test_asyncio_module_dir_lists_only_its_public_api() -> None:
     assert dir(filelock.asyncio) == sorted(filelock.asyncio.__all__)
+
+
+def test_async_del_without_any_loop_releases_a_sync_backend(tmp_path: Path) -> None:
+    lock = AsyncSoftFileLock(str(tmp_path / "a"))
+    asyncio.run(lock.acquire())
+
+    lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+
+    assert (lock.is_locked, lock.lock_counter, (tmp_path / "a").exists()) == (False, 0, False)
+
+
+def test_async_del_schedules_release_on_a_stored_loop_in_another_thread(tmp_path: Path, mocker: MockerFixture) -> None:
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever)
+    runner.start()
+    try:
+        lock = AsyncSoftFileLock(str(tmp_path / "a"), loop=loop)
+        asyncio.run_coroutine_threadsafe(lock.acquire(), loop).result(timeout=5)
+        schedule = mocker.spy(asyncio, "run_coroutine_threadsafe")
+
+        lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+
+        schedule.spy_return.result(timeout=5)
+        assert (lock.is_locked, (tmp_path / "a").exists()) == (False, False)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=5)
+        loop.close()
+
+
+@pytest.mark.asyncio
+async def test_async_del_inside_a_running_loop_schedules_release(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncSoftFileLock(str(tmp_path / "a"))
+    await lock.acquire()
+    schedule = mocker.spy(asyncio.get_running_loop(), "create_task")
+
+    lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+
+    await schedule.spy_return
+    assert (lock.is_locked, (tmp_path / "a").exists()) == (False, False)
+
+
+@pytest.mark.filterwarnings("ignore::filelock.SoftFileLockLifetimeWarning")
+@pytest.mark.asyncio
+async def test_executor_acquire_keeps_filesystem_calls_off_the_loop(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "a"
+    lock_path.touch()
+    os.utime(lock_path, (0, 0))
+    lock = AsyncSoftFileLock(str(lock_path), lifetime=1)
+    real_lstat = os.lstat
+    lstat_threads: set[int] = set()
+
+    def lstat(path: str, *, dir_fd: int | None = None) -> os.stat_result:
+        lstat_threads.add(threading.get_ident())
+        return real_lstat(path, dir_fd=dir_fd)
+
+    mocker.patch("os.lstat", side_effect=lstat)
+    await lock.acquire()
+    mocker.stopall()
+    await lock.release()
+
+    # Breaking the expired marker lstats it on every platform, so an empty set means the spy saw nothing.
+    assert lstat_threads
+    assert threading.get_ident() not in lstat_threads
