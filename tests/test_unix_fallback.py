@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock import SoftFileLock, UnixFileLock
+from filelock import SoftFileLock, Timeout, UnixFileLock
 from filelock._identity import process_start_token
 from tests.capability_marks import NEEDS_FCNTL
 
@@ -139,6 +139,41 @@ def test_fallback_reentrant_locking(tmp_path: Path) -> None:  # pragma: needs fc
             assert lock.is_locked
         assert lock.is_locked
     assert not lock.is_locked
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_removes_placeholder_it_created(tmp_path: Path) -> None:  # pragma: needs fcntl
+    lock = UnixFileLock(tmp_path / "test.lock")
+
+    lock.acquire(timeout=0)
+    assert lock.is_locked
+    lock.release()
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_keeps_peer_soft_marker(tmp_path: Path) -> None:  # pragma: needs fcntl
+    lock_path = tmp_path / "test.lock"
+    holder = UnixFileLock(lock_path)
+    holder.acquire()
+    marker = lock_path.stat().st_ino, lock_path.read_bytes()
+
+    with pytest.raises(Timeout):
+        UnixFileLock(lock_path).acquire(timeout=0)
+    assert (lock_path.stat().st_ino, lock_path.read_bytes()) == marker
+    holder.release()
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_trailing_slash_path_raises_instead_of_retrying(tmp_path: Path) -> None:
+    lock = UnixFileLock(f"{tmp_path / 'missing'}{os.sep}")
+
+    # macOS reports ENOENT for a create through a trailing slash, Linux EISDIR; neither is contention.
+    with pytest.raises((FileNotFoundError, IsADirectoryError)):
+        lock.acquire(timeout=0)
 
 
 @NEEDS_FCNTL
