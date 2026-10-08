@@ -523,7 +523,8 @@ def test_lease_supersedes_a_live_holder_once_its_claim_ages_out(marker: Path, mo
         encoding="utf-8",
     )
 
-    with _lease(marker) as contender:
+    # The stepped clock ages the marker out on the second look; the real timeout only has to outlast two polls.
+    with _lease(marker, timeout=30) as contender:
         assert contender.is_lock_held_by_us
         assert contender.token not in {None, "stalled"}
 
