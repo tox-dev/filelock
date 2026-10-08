@@ -1,0 +1,2 @@
+When the garbage collector finalizes a held :class:`~filelock.BaseAsyncFileLock`, it releases on a ``loop`` running in
+another thread, or in place once no loop is left; the ``lifetime`` check and path resolution now run in the executor.

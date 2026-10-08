@@ -134,18 +134,29 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(tmp_path: P
     executor_started = threading.Event()
     release_executor = threading.Event()
     acquired = threading.Event()
+    second_started = threading.Event()
+    release_second = threading.Event()
     with ThreadPoolExecutor(max_workers=1) as executor:
         blocker = executor.submit(_block_executor, executor_started, release_executor)
         assert executor_started.wait(timeout=5)
         lock = AsyncFileLock(tmp_path / "a", executor=executor, on_acquired=lambda _fd: acquired.set())
         task = asyncio.create_task(lock.acquire())
         await asyncio.sleep(0)
+        # The acquire resolves the lock path on the executor first, so queue a second blocker behind that job to hold
+        # the backend attempt that follows it.
+        second_blocker = executor.submit(_block_executor, second_started, release_second)
+        release_executor.set()
+        assert await asyncio.to_thread(second_started.wait, 5)
+        await asyncio.sleep(
+            0.05
+        )  # the resolved path wakes the task, which queues the attempt behind the second blocker
         assert (lock.lock_counter, acquired.is_set()) == (1, False)
         task.cancel()
-        release_executor.set()
+        release_second.set()
         with pytest.raises(asyncio.CancelledError):
             await task
         blocker.result(timeout=5)
+        second_blocker.result(timeout=5)
 
     assert acquired.is_set()
     assert (lock.is_locked, lock.lock_counter) == (False, 0)

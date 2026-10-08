@@ -337,14 +337,9 @@ By default, async locks run blocking I/O in a thread pool. You can customize thi
     # Or disable executor (only if your filesystem is non-blocking)
     lock = AsyncFileLock("work.lock", run_in_executor=False)
 
-You can also pass a specific event loop:
-
-.. code-block:: python
-
-    import asyncio
-
-    loop = asyncio.new_event_loop()
-    lock = AsyncFileLock("work.lock", loop=loop)
+``acquire`` and ``release`` always run on the event loop that awaits them. The ``loop`` argument only matters when the
+lock is garbage collected while still held: the finalizer schedules the release on that loop if no loop runs in the
+collecting thread. Without any loop, it releases a built-in backend synchronously.
 
 Async locks default to ``thread_local=False`` (unlike sync locks which default to ``True``) because the
 acquiring and releasing threads may differ when using an executor.
