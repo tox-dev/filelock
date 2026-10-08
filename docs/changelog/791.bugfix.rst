@@ -1,0 +1,2 @@
+:class:`~filelock.SoftFileLease` releases a lease dropped while held, at garbage collection or interpreter exit, and
+raises :class:`ValueError` for a ``heartbeat_interval`` above :data:`threading.TIMEOUT_MAX`.

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import secrets
+import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
 from math import isfinite
-from threading import Event, Thread, current_thread, local
+from threading import TIMEOUT_MAX, Event, Thread, current_thread, local
 from typing import TYPE_CHECKING, Final, Literal
+from weakref import WeakMethod
 
 from ._error import LeaseSettingsMismatch
 from ._identity import owner_is_stale
@@ -16,7 +18,6 @@ from ._soft import _read_lock_file
 from ._util import break_lock_file, touch
 
 if TYPE_CHECKING:
-    import sys
     from collections.abc import Callable, Mapping
 
     from ._api import LockOptions, _ExtraValue
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
 #: generation without this holder.
 CompromiseReason = Literal["marker-missing", "owner-changed", "refresh-failed", "evicted"]
 
-_RefreshOutcome = Literal["ok", "lost", "transient"]
+_RefreshOutcome = Literal["ok", "transient", "marker-missing", "owner-changed"]
 _DEFAULT_LEASE_DURATION: Final[float] = 30.0
 
 
@@ -128,7 +129,8 @@ class SoftFileLease(MarkerSoftFileLock):
         :param lease_duration: seconds a contender must see the marker go unrefreshed before it may take the claim.
             Every contender for the path must pass the same value.
         :param heartbeat_interval: seconds between refreshes. Defaults to a third of ``lease_duration``, leaving room
-            for two missed refreshes before a peer may take the claim. Must be shorter than ``lease_duration``.
+            for two missed refreshes before a peer may take the claim. Must be shorter than ``lease_duration`` and at
+            most :data:`threading.TIMEOUT_MAX`.
         :param on_compromise: called from the heartbeat thread with a :class:`LeaseCompromise` when the claim is lost.
         :param kwargs: every other :class:`BaseFileLock <filelock.BaseFileLock>` option, ``timeout`` and ``mode`` among
             them. The metaclass passes them all by keyword, and taking them here lets
@@ -146,6 +148,12 @@ class SoftFileLease(MarkerSoftFileLock):
             heartbeat_interval = lease_duration / 3
         if not 0 < heartbeat_interval < lease_duration:
             msg = f"heartbeat_interval must be positive and below lease_duration, got {heartbeat_interval!r}"
+            raise ValueError(msg)
+        # Event.wait and Thread.join raise OverflowError past this bound, which is only ~49.7 days on Windows.
+        if heartbeat_interval > TIMEOUT_MAX:
+            msg = (
+                f"heartbeat_interval must not exceed threading.TIMEOUT_MAX ({TIMEOUT_MAX}), got {heartbeat_interval!r}"
+            )
             raise ValueError(msg)
         super().__init__(lock_file, **kwargs)
         self._lease_duration = lease_duration
@@ -267,12 +275,20 @@ class SoftFileLease(MarkerSoftFileLock):
         # The thread watches the event it was handed rather than whatever the claim names later: a heartbeat that
         # outlives its join timeout would otherwise adopt the next acquisition's event and never stop.
         stop = Event()
-        thread = Thread(
-            target=self._refresh_until_stopped,
-            args=(claim, fd, identity, token, stop),
-            name=f"filelock-lease-{os.getpid()}",
-            daemon=True,
+        loop = _RefreshLoop(
+            # A strong reference from a running thread would keep a dropped lease alive, so __del__ would never release
+            # it and its marker would outlive the process. The callback stops a heartbeat that __del__ could not reach.
+            report=WeakMethod(self._report_compromise, lambda _: stop.set()),
+            lock_file=self.lock_file,
+            claim=claim,
+            fd=fd,
+            identity=identity,
+            token=token,
+            stop=stop,
+            interval=self._heartbeat_interval,
+            duration=self._lease_duration,
         )
+        thread = Thread(target=loop.run, name=f"filelock-lease-{os.getpid()}", daemon=True)
         # Record the heartbeat before starting the thread so a release racing this acquire on a shared,
         # non-thread-local claim always sees it and sets the stop event; the thread then exits at its first wait
         # instead of outliving the release. A start that raises leaves the unstarted thread for _stop_heartbeat.
@@ -287,57 +303,11 @@ class SoftFileLease(MarkerSoftFileLock):
         claim.heartbeat = None
         # thread.ident is None until start() runs: a heartbeat recorded before its thread started (a start that
         # raised, or a release racing acquire on a shared claim) has nothing to join, and the stop above makes it
-        # exit at once. on_compromise runs on the heartbeat thread and may release the lease, landing back here.
-        if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread():
+        # exit at once. on_compromise runs on the heartbeat thread and may release the lease, landing back here. A lease
+        # dropped at interpreter exit is released during finalization, when daemon threads no longer run: joining one
+        # raises (3.13+) or stalls for the full timeout, and either way the marker would outlive the process.
+        if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread() and not sys.is_finalizing():
             heartbeat.thread.join(timeout=self._heartbeat_interval)
-
-    def _refresh_until_stopped(
-        self,
-        claim: _LeaseClaim,
-        fd: int,
-        identity: tuple[int, int],
-        token: str,
-        stop: Event,
-    ) -> None:
-        # The loop ends at the first loss of the claim, so the holder hears about it once. A transient filesystem
-        # error (ESTALE / EIO on the NFS-style filesystems a lease targets) is not a loss: retry rather than raise a
-        # false compromise. Report the claim unrefreshable only once failures have run long enough that a contender
-        # could take it before the next success would land, a margin before the marker actually ages out, the way
-        # restic declares a lock unrefreshable ahead of its stale time.
-        last_success = time.monotonic()
-        while not stop.wait(self._heartbeat_interval):
-            outcome, error = self._refresh_claim(claim, fd, identity, token)
-            if outcome == "lost":
-                return
-            if outcome == "ok":
-                last_success = time.monotonic()
-            elif time.monotonic() - last_success >= self._lease_duration - self._heartbeat_interval:
-                self._report_compromise(claim, "refresh-failed", error, token)
-                return
-
-    def _refresh_claim(
-        self,
-        claim: _LeaseClaim,
-        fd: int,
-        identity: tuple[int, int],
-        token: str,
-    ) -> tuple[_RefreshOutcome, OSError | None]:
-        try:
-            st = os.lstat(self.lock_file)
-        except FileNotFoundError as error:
-            self._report_compromise(claim, "marker-missing", error, token)
-            return "lost", None
-        except OSError as error:
-            return "transient", error
-        # A peer that took the expired claim replaced the marker, so the pathname now names its inode, not ours.
-        if (st.st_dev, st.st_ino) != identity:
-            self._report_compromise(claim, "owner-changed", None, token)
-            return "lost", None
-        try:
-            touch(self.lock_file, fd=fd)
-        except OSError as error:
-            return "transient", error
-        return "ok", None
 
     def _report_compromise(
         self,
@@ -352,6 +322,60 @@ class SoftFileLease(MarkerSoftFileLock):
         claim.compromise = LeaseCompromise(lock_file=self.lock_file, token=token, reason=reason, error=error)
         if self._on_compromise is not None:
             self._on_compromise(claim.compromise)
+
+
+@dataclass(frozen=True)
+class _RefreshLoop:
+    """What a heartbeat thread needs to refresh one claim, holding the lease itself only weakly."""
+
+    report: WeakMethod[Callable[[_LeaseClaim, CompromiseReason, OSError | None, str], None]]
+    lock_file: str
+    claim: _LeaseClaim
+    fd: int
+    identity: tuple[int, int]
+    token: str
+    stop: Event
+    interval: float
+    duration: float
+
+    def run(self) -> None:
+        # The loop ends at the first loss of the claim, so the holder hears about it once. A transient filesystem
+        # error (ESTALE / EIO on the NFS-style filesystems a lease targets) is not a loss: retry rather than raise a
+        # false compromise. Report the claim unrefreshable only once failures have run long enough that a contender
+        # could take it before the next success would land, a margin before the marker actually ages out, the way
+        # restic declares a lock unrefreshable ahead of its stale time.
+        last_success = time.monotonic()
+        while not self.stop.wait(self.interval):
+            outcome, error = self._refresh()
+            if outcome == "ok":
+                last_success = time.monotonic()
+                continue
+            reason: CompromiseReason
+            if outcome != "transient":
+                reason = outcome
+            elif time.monotonic() - last_success >= self.duration - self.interval:
+                reason = "refresh-failed"
+            else:
+                continue
+            if (report := self.report()) is not None:
+                report(self.claim, reason, error, self.token)
+            return
+
+    def _refresh(self) -> tuple[_RefreshOutcome, OSError | None]:
+        try:
+            st = os.lstat(self.lock_file)
+        except FileNotFoundError as error:
+            return "marker-missing", error
+        except OSError as error:
+            return "transient", error
+        # A peer that took the expired claim replaced the marker, so the pathname now names its inode, not ours.
+        if (st.st_dev, st.st_ino) != self.identity:
+            return "owner-changed", None
+        try:
+            touch(self.lock_file, fd=self.fd)
+        except OSError as error:
+            return "transient", error
+        return "ok", None
 
 
 __all__ = [

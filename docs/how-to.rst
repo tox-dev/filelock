@@ -1057,7 +1057,8 @@ warn and ignore a ``lifetime`` rather than raising. Async callers use ``AsyncStr
 ``AsyncSoftFileLease``.
 
 Tune the refresh with ``heartbeat_interval``, which defaults to ``lease_duration / 3`` and must satisfy
-``0 < heartbeat_interval < lease_duration`` (anything else raises :class:`ValueError`):
+``0 < heartbeat_interval < lease_duration`` and stay within :data:`threading.TIMEOUT_MAX` (anything else raises
+:class:`ValueError`):
 
 .. code-block:: python
 
@@ -1069,7 +1070,9 @@ and the lease reports ``refresh-failed`` only once ``lease_duration - heartbeat_
 success, which is deliberately *before* a peer may legally take the claim. The default leaves room for two missed
 refreshes; an interval close to ``lease_duration`` collapses that margin to nearly nothing, while a small one adds
 metadata traffic on the network filesystem these leases usually live on. ``release()`` also joins the heartbeat thread
-with a timeout of one interval, so a large value lengthens a worst-case release.
+with a timeout of one interval, so a large value lengthens a worst-case release. The heartbeat holds the lease only
+weakly, so a lease dropped while held is released when it is garbage collected or the interpreter exits, as every other
+lock is.
 
 Windows refuses to rename or delete a file another process holds open, so a peer takes an expired claim there only once
 the previous holder's process exits and its handle closes. A holder that keeps running but stops refreshing keeps its

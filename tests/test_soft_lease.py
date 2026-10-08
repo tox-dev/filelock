@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import gc
 import itertools
 import os
 import socket
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter exit finalizes a held lease
+import sys
 import threading
 import time
 from contextlib import suppress
@@ -23,7 +26,7 @@ from filelock import (
     Timeout,
 )
 from filelock._soft import _MALFORMED_LOCK_AGE_THRESHOLD
-from tests.capability_marks import NEEDS_UNLINK_OPEN_FILE
+from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, NEEDS_PROMPT_FINALIZATION, NEEDS_UNLINK_OPEN_FILE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -471,6 +474,16 @@ def test_lease_does_not_expire_a_strict_holder(marker: Path) -> None:  # pragma:
         pytest.param(_DURATION, 0, ValueError, "heartbeat_interval must be positive", id="zero-heartbeat"),
         pytest.param(_DURATION, _DURATION, ValueError, "below lease_duration", id="heartbeat-equals-duration"),
         pytest.param(_DURATION, _DURATION * 2, ValueError, "below lease_duration", id="heartbeat-over-duration"),
+        pytest.param(
+            threading.TIMEOUT_MAX * 4,
+            threading.TIMEOUT_MAX * 2,
+            ValueError,
+            "TIMEOUT_MAX",
+            id="heartbeat-over-timeout-max",
+        ),
+        pytest.param(
+            threading.TIMEOUT_MAX * 4, None, ValueError, "TIMEOUT_MAX", id="default-heartbeat-over-timeout-max"
+        ),
     ],
 )
 def test_lease_rejects_incoherent_settings(
@@ -612,3 +625,93 @@ def test_lease_keeps_a_claim_refreshed_by_a_host_whose_clock_lags(marker: Path, 
         refresher.join()
 
     assert marker.read_text(encoding="utf-8").endswith("token=skewed\nduration=0.9\n")
+
+
+def _lease_heartbeats() -> set[threading.Thread]:
+    return {thread for thread in threading.enumerate() if thread.name.startswith("filelock-lease-")}
+
+
+@NEEDS_COLLECTED_FINALIZATION
+def test_lease_dropped_while_held_releases_its_marker(marker: Path) -> None:
+    lease = _lease(marker)
+    lease.acquire()
+
+    del lease
+    gc.collect()
+
+    assert not marker.exists()
+
+
+@NEEDS_COLLECTED_FINALIZATION
+def test_lease_dropped_where_it_cannot_be_released_stops_its_heartbeat(marker: Path) -> None:
+    # The thread-local context hides the claim from the thread that drops the last reference, so __del__ there cannot
+    # release it; the heartbeat must still stop, letting the unrefreshed claim age out for a peer.
+    before = _lease_heartbeats()
+    leases: list[SoftFileLease] = []
+
+    def acquire() -> None:
+        lease = _lease(marker)
+        lease.acquire()
+        leases.append(lease)
+
+    acquirer = Thread(target=acquire)
+    acquirer.start()
+    acquirer.join()
+    heartbeats = _lease_heartbeats() - before
+    assert heartbeats
+
+    leases.clear()
+    # A tracing collector finalizes the lease on the first pass and runs the weak reference callback on the next.
+    gc.collect()
+    gc.collect()
+
+    for heartbeat in heartbeats:
+        heartbeat.join(timeout=_DURATION * 20)
+    assert not any(heartbeat.is_alive() for heartbeat in heartbeats)
+
+
+# Interpreter exit finalizes module globals by dropping their references, which only a refcounting collector turns into
+# __del__ calls.
+@NEEDS_PROMPT_FINALIZATION
+def test_lease_held_at_interpreter_exit_releases_its_marker(marker: Path) -> None:
+    script = "import sys; from filelock import SoftFileLease; lease = SoftFileLease(sys.argv[1]); lease.acquire()"
+
+    subprocess.run([sys.executable, "-c", script, str(marker)], check=True, timeout=10)
+
+    assert not marker.exists()
+
+
+@NEEDS_COLLECTED_FINALIZATION
+def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
+    marker: Path, mocker: MockerFixture
+) -> None:
+    # The last reference goes while the heartbeat is mid-refresh, past the wait the collection would have stopped, and
+    # the refresh then finds the marker gone. There is no holder left to tell, so the heartbeat just ends.
+    seen: list[LeaseCompromise] = []
+    leases = [
+        SoftFileLease(
+            str(marker),
+            thread_local=False,
+            lease_duration=_DURATION,
+            heartbeat_interval=_HEARTBEAT,
+            on_compromise=seen.append,
+        )
+    ]
+    before = _lease_heartbeats()
+    leases[0].acquire()
+    heartbeats = _lease_heartbeats() - before
+    real_lstat = cast("Callable[..., os.stat_result]", os.lstat)
+
+    def lstat(path: object, *args: object, **kwargs: object) -> object:
+        if leases and str(path).endswith(marker.name):
+            leases.clear()
+            gc.collect()
+            raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
+        return real_lstat(path, *args, **kwargs)
+
+    mocker.patch("filelock._lease.os.lstat", side_effect=lstat)
+    for heartbeat in heartbeats:
+        heartbeat.join(timeout=_DURATION * 20)
+
+    assert (leases, seen) == ([], [])
+    assert not any(heartbeat.is_alive() for heartbeat in heartbeats)
