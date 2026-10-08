@@ -21,7 +21,7 @@ from capabilities import CAPABILITIES
 
 import filelock._strict
 from filelock import SoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock, Timeout
-from filelock._strict import _probe_link_follow_symlinks, _relative_identity
+from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_link_follow_symlinks, _relative_identity
 
 # These cases inject a failure into a directory-fd cleanup step or the reaper race, both of which only run where the
 # protocol uses dir_fd descriptors. Without dir_fd those branches never execute and the injected fault never fires; the
@@ -456,7 +456,44 @@ def test_strict_soft_reaper_does_not_retry_sharing_error(tmp_path: Path, mocker:
     started = time.perf_counter()
     assert StrictSoftFileLock(lock_path).claims == ()
     elapsed = time.perf_counter() - started
-    assert (unlink.call_count, elapsed < 0.1, private_path.exists()) == (1, True, True)
+    reaper_unlinks = [call.args[0] for call in unlink.call_args_list].count(private_path)
+    assert (reaper_unlinks, elapsed < 0.1, private_path.exists()) == (1, True, True)
+
+
+@pytest.mark.parametrize("record", ["claim", "sentinel"])
+def test_strict_soft_reaper_ages_records_by_filesystem_clock(
+    tmp_path: Path, mocker: MockerFixture, record: str
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    if record == "claim":
+        _initialize_protocol(lock_path)
+        private_path = _private_claim_path(lock_path, "0" * 32)
+    else:
+        private_path = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
+    private_path.write_bytes(b"in-flight publication")
+    # A client clock an hour ahead of the filesystem's would read the fresh record as abandoned.
+    mocker.patch("filelock._strict.time.time", return_value=time.time() + 3600)
+
+    with StrictSoftFileLock(lock_path, timeout=0):
+        assert private_path.read_bytes() == b"in-flight publication"
+
+
+def test_strict_soft_reaper_without_filesystem_clock_keeps_records(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    _initialize_protocol(lock_path)
+    private_path = _private_claim_path(lock_path, "0" * 32)
+    private_path.write_bytes(b"abandoned")
+    os.utime(private_path, (0, 0))
+    real_open = os.open
+
+    def deny_clock_probe(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if Path(os.fsdecode(path)).name.startswith(".held-"):
+            raise PermissionError(EACCES, "read-only observer")
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: no cover  # an empty claim scan opens nothing else
+
+    mocker.patch("filelock._strict.os.open", side_effect=deny_clock_probe)
+
+    assert (StrictSoftFileLock(lock_path).claims, private_path.exists()) == ((), True)
 
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd

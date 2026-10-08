@@ -147,7 +147,9 @@ link, and publishes a unique held claim only after it wins the intent order. The
 keeps both its intent and its held claim for the whole hold: the intent has existed unchanged since the winner
 published it, so a contender's directory scan is guaranteed to observe it, whereas a scan racing the freshly linked held
 claim may miss it. That stable witness is what keeps two contenders from both reading themselves as the lowest claim.
-Release removes both claims by name, so it cannot detach or delete a successor at another pathname.
+Release removes both claims by name, so it cannot detach or delete a successor at another pathname. There is no
+queue: whichever contender next finds the claim directory empty wins, so a waiter can be passed over while others
+re-acquire.
 
 .. versionadded:: 3.30.0
 
@@ -600,8 +602,8 @@ visibility to every participating process. The table records where that has been
      - Verified in CI
      - A CI lane exports a loopback NFS share, mounts it twice with ``nosharecache`` so the two mounts are independent
        client caches over one server, then contends several processes across both caches and records every hold
-       interval. The gate enforces :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`, which hands off fairly
-       through its claim queue and finishes every hold with no overlap on both NFSv4 and NFSv3 (retrying the transient
+       interval. The gate enforces :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`, which finishes every
+       hold without overlap, though not in arrival order, on both NFSv4 and NFSv3 (retrying the transient
        ``ESTALE`` that NFSv3 raises under claim churn). Use it on NFS. The other locks are unsafe or unreliable there
        and the lane records why: native ``flock`` does **not** exclude across NFS client caches — the verifier catches
        overlapping holders — and the poll-based :class:`SoftFileLock <filelock.SoftFileLock>` excludes but starves out
