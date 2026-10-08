@@ -1,0 +1,2 @@
+:class:`~filelock.BaseFileLock` rejects a bad ``mode``, ``timeout`` or ``blocking`` at construction and in the setters,
+a singleton cache hit rejects unknown options, and an ``on_acquired`` hook that re-acquires keeps deadlock detection.

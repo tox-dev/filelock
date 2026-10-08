@@ -139,3 +139,25 @@ def test_unset_file_mode_sentinel_value() -> None:
 def test_mode_without_owner_read_write_raises(lock_type: type[BaseFileLock], mode: int, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="must grant the owner read and write"):
         lock_type(tmp_path / "a.lock", mode=mode)
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, AsyncFileLock])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(-2, id="negative"),
+        pytest.param(0o4600, id="setuid"),
+        pytest.param(0o2600, id="setgid"),
+        pytest.param(0o1600, id="sticky"),
+        pytest.param(0o7777, id="all-special-bits"),
+    ],
+)
+def test_mode_outside_permission_bits_raises(lock_type: type[BaseFileLock], mode: int, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"must be within 0o000-0o777"):
+        lock_type(tmp_path / "a.lock", mode=mode)
+
+
+@pytest.mark.parametrize("mode", [pytest.param("0o644", id="str"), pytest.param(True, id="bool")])
+def test_mode_of_wrong_type_raises(mode: object, tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="mode must be an int"):
+        FileLock(tmp_path / "a.lock", mode=mode)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
