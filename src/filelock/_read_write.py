@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
 from math import inf
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeAlias, cast
 from weakref import WeakValueDictionary
@@ -23,6 +24,8 @@ from ._api import (
     _raise_chained_errors,
     _register_fork_class,
     _register_fork_object,
+    _register_owned_descriptor,
+    _unregister_owned_descriptor,
 )
 from ._error import Timeout
 
@@ -151,10 +154,59 @@ class _ForkedDatabaseRegistry:
 _FORKED_DATABASES: Final = _ForkedDatabaseRegistry()
 
 
+@dataclass(slots=True)
+class _InodeProbes:
+    connections: int = 0
+    descriptors: list[tuple[int, int | None]] = field(default_factory=list)
+
+
+# POSIX locks belong to the process and the inode, so closing any descriptor on the inode drops the locks every other
+# connection of this process holds there. SQLite defers its own closes for this reason (section 2.2 of
+# https://www.sqlite.org/howtocorrupt.html); the probes stay open until the last connection on their inode closes.
+class _ProbeDescriptors:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._inodes: dict[_DatabaseIdentity, _InodeProbes] = {}
+
+    def retain(self, fd: int) -> _DatabaseIdentity:  # pragma: win32 no cover
+        stat_result = os.fstat(fd)
+        identity: Final = stat_result.st_dev, stat_result.st_ino
+        token: Final = _register_owned_descriptor(fd, identity)
+        with self._lock:
+            probes = self._inodes.setdefault(identity, _InodeProbes())
+            probes.connections += 1
+            probes.descriptors.append((fd, token))
+        return identity
+
+    def release(self, identity: _DatabaseIdentity) -> None:  # pragma: win32 no cover
+        with self._lock:
+            probes = self._inodes[identity]
+            probes.connections -= 1
+            if probes.connections:
+                return
+            del self._inodes[identity]
+            # Closing under the lock keeps a concurrent connect from taking a lock on this inode before the close.
+            for fd, token in probes.descriptors:
+                if token is not None:  # pragma: needs fork
+                    _unregister_owned_descriptor(token)
+                # The descriptor is gone even when close reports an error, and no lock of this process depends on it.
+                with suppress(OSError):
+                    os.close(fd)
+
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+        # The child holds no POSIX locks, and the owned-descriptor registry closes the inherited probes.
+        self._lock = threading.Lock()
+        self._inodes = {}
+
+
+_PROBE_DESCRIPTORS: Final = _ProbeDescriptors()
+
+
 class _ForkSafeConnection(sqlite3.Connection):
     _creator_pid: int
     _decrement_escrow: Callable[[sqlite3.Connection], None] | None
     _database_directory: pathlib.Path | None
+    _probe_identity: _DatabaseIdentity | None
 
     def __new__(
         cls,
@@ -165,6 +217,7 @@ class _ForkSafeConnection(sqlite3.Connection):
         connection._creator_pid = _GETPID()
         connection._decrement_escrow = None
         connection._database_directory = None
+        connection._probe_identity = None
         return connection
 
     def close(self) -> None:
@@ -176,13 +229,19 @@ class _ForkSafeConnection(sqlite3.Connection):
                 if (directory := self._database_directory) is not None:  # pragma: needs posix-hard-link
                     shutil.rmtree(directory)
                     self._database_directory = None
+                if (identity := self._probe_identity) is not None:  # pragma: win32 no cover
+                    self._probe_identity = None
+                    _PROBE_DESCRIPTORS.release(identity)
                 if (decrement := self._decrement_escrow) is not None:  # pragma: <3.12 cover  # pragma: needs fork
                     self._decrement_escrow = None
                     decrement(self)
 
-    def retain_database_directory(self, directory: pathlib.Path | None) -> None:
-        """Keep the private link until SQLite no longer checks its path."""
+    def retain_until_close(  # pragma: win32 no cover
+        self, directory: pathlib.Path | None, probe_identity: _DatabaseIdentity
+    ) -> None:
+        """Keep the private link and this inode's probe descriptors until SQLite no longer uses them."""
         self._database_directory = directory
+        self._probe_identity = probe_identity
 
     def acquire_escrow(  # pragma: <3.12 cover  # pragma: needs fork
         self,
@@ -766,33 +825,45 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: float) -> _ForkSafeConnection:
     _FORKED_DATABASES.note_sqlite_use()
     # A symlink at the path would make SQLite open, lock, or create its target, so connect through a descriptor that
-    # refuses one. SQLite opens its own descriptor on the file inside connect(), so ours can close after the call.
-    fd: int | None = _open_lock_database(database)
-    target = pathlib.Path(database if sys.platform == "win32" else f"{_FD_DIR}/{fd}")
+    # refuses one.
+    fd: Final = _open_lock_database(database)
+    if sys.platform == "win32":  # pragma: win32 cover
+        # A Windows lock belongs to the handle that took it, so closing this one leaves SQLite's locks in place.
+        try:
+            return sqlite3.connect(
+                database, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+            )
+        finally:
+            os.close(fd)
+    return _connect_through_descriptor(fd, database, factory=factory, timeout=timeout)  # pragma: win32 no cover
+
+
+def _connect_through_descriptor(  # pragma: win32 no cover
+    fd: int, database: str, *, factory: type[_ForkSafeConnection], timeout: float
+) -> _ForkSafeConnection:
+    identity: Final = _PROBE_DESCRIPTORS.retain(fd)
+    target = pathlib.Path(f"{_FD_DIR}/{fd}")
     directory: pathlib.Path | None = None
+    connection: _ForkSafeConnection | None = None
     try:
         # NetBSD's static /dev/fd exposes only descriptors 0-63; a private hard link also pins the validated inode.
-        if sys.platform != "win32" and not os.access(target, os.F_OK):  # pragma: needs posix-hard-link
+        if not os.access(target, os.F_OK):  # pragma: needs posix-hard-link
             directory = pathlib.Path(tempfile.mkdtemp(prefix=".filelock-"))
             target = directory / "lock.db"
             os.link(database, target, follow_symlinks=False)
             linked: Final = target.stat(follow_symlinks=False)
-            opened: Final = os.fstat(fd)
-            if (linked.st_dev, linked.st_ino) != (opened.st_dev, opened.st_ino):
+            if (linked.st_dev, linked.st_ino) != identity:
                 msg = f"lock database changed while opening: {database!r}"
                 raise OSError(msg)
-            # Closing any descriptor on this inode clears the process's POSIX locks; SQLite must open after this close.
-            os.close(fd)
-            fd = None
-        connection: Final = sqlite3.connect(
+        connection = sqlite3.connect(
             os.fspath(target), check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
         )
-        connection.retain_database_directory(directory)
+        connection.retain_until_close(directory, identity)
         directory = None
         return connection
     finally:
-        if fd is not None:  # pragma: needs posix-hard-link
-            os.close(fd)
+        if connection is None:
+            _PROBE_DESCRIPTORS.release(identity)
         if directory is not None:  # pragma: needs posix-hard-link
             shutil.rmtree(directory)
 
@@ -851,6 +922,7 @@ def timeout_for_sqlite(timeout: float, *, blocking: bool, already_waited: float)
 
 _register_fork_object(_CONNECTION_ESCROW)
 _register_fork_object(_FORKED_DATABASES)
+_register_fork_object(_PROBE_DESCRIPTORS)
 _register_fork_class(ReadWriteLock)
 if _IS_PYPY:
     sys.addaudithook(_track_sqlite_use)  # pragma: pypy cover
