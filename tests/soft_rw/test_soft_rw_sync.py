@@ -107,6 +107,54 @@ def _plant_holder(lock_file: str, *, mode: Literal["read", "write"], host: str =
     return token
 
 
+def test_release_interrupted_while_joining_the_heartbeat_still_leaves(lock_file: str, mocker: MockerFixture) -> None:
+    lock = _make_lock(lock_file)
+    lock.acquire_write(timeout=2)
+    mocker.patch.object(threading.Thread, "join", autospec=True, side_effect=KeyboardInterrupt)
+    with pytest.raises(KeyboardInterrupt):
+        lock.release()
+    mocker.stopall()
+    peer = _make_lock(lock_file)
+    with peer.write_lock(blocking=False):
+        assert peer.generation is not None
+    lock.close()
+    peer.close()
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "error", "problem"),
+    [
+        # The heartbeat thread and the acquire loop wait this long; past TIMEOUT_MAX they raise OverflowError mid-hold.
+        pytest.param(
+            "heartbeat_interval",
+            threading.TIMEOUT_MAX * 2,
+            ValueError,
+            "not exceed threading.TIMEOUT_MAX",
+            id="heartbeat-max",
+        ),
+        pytest.param(
+            "poll_interval", threading.TIMEOUT_MAX * 2, ValueError, "not exceed threading.TIMEOUT_MAX", id="poll-max"
+        ),
+        pytest.param("heartbeat_interval", "1", TypeError, "be a number of seconds, not str", id="heartbeat-str"),
+        pytest.param("heartbeat_interval", True, TypeError, "be a number of seconds, not bool", id="heartbeat-bool"),
+        pytest.param("stale_threshold", True, TypeError, "be a number of seconds, not bool", id="stale-bool"),
+        pytest.param("poll_interval", True, TypeError, "be a number of seconds, not bool", id="poll-bool"),
+    ],
+)
+def test_rejects_an_interval_it_cannot_use(
+    tmp_path: Path, name: str, value: float, error: type[Exception], problem: str
+) -> None:
+    settings: Final = {name: value}
+    with pytest.raises(error, match=f"{name} must {problem}"):
+        SoftReadWriteLock(
+            tmp_path / "a.lock",
+            is_singleton=False,
+            heartbeat_interval=settings.get("heartbeat_interval", 30.0),
+            stale_threshold=settings.get("stale_threshold", 90.0),
+            poll_interval=settings.get("poll_interval", 0.25),
+        )
+
+
 @pytest.mark.parametrize(
     "lock_type",
     [pytest.param(SoftReadWriteLock, id="sync"), pytest.param(AsyncSoftReadWriteLock, id="async")],
@@ -118,9 +166,6 @@ def _plant_holder(lock_file: str, *, mode: Literal["read", "write"], host: str =
         pytest.param({name: value}, name, id=f"{name}-{label}")
         for name in ("heartbeat_interval", "stale_threshold", "poll_interval")
         for label, value in (("nan", float("nan")), ("infinity", float("inf")), ("negative-infinity", float("-inf")))
-    ]
-    + [
-        pytest.param({"heartbeat_interval": sys.float_info.max}, "stale_threshold", id="default-overflow"),
     ],
 )
 def test_rejects_invalid_intervals(
@@ -666,8 +711,7 @@ def test_a_raising_on_compromise_still_stops_the_heartbeat(lock_file: str) -> No
         hold = lock._hold
         assert hold is not None
         log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
-        latest = log.latest()
-        assert log.commit(Snapshot(generation=latest.generation + 1, writer=None, readers=frozenset()))
+        assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=None, readers=frozenset()))
         hold.heartbeat_thread.join(timeout=_PROCESS_DEADLINE)
         assert not hold.heartbeat_thread.is_alive()
         assert hold.heartbeat_stop.is_set()
@@ -821,17 +865,28 @@ def test_short_attempts_still_evict_a_dead_holder(lock_file: str) -> None:
 
 
 @NEEDS_SYMLINK
-def test_a_symlinked_lock_path_shares_its_targets_log(tmp_path: Path) -> None:
-    # The singleton cache already maps both spellings to one instance; separate instances must agree on the log too.
-    (alias := tmp_path / "alias.lock").symlink_to(target := tmp_path / "real.lock")
-    first = _make_lock(str(alias))
-    second = _make_lock(str(target))
+def test_a_symlinked_lock_path_keeps_its_log_beside_the_symlink(tmp_path: Path) -> None:
+    # 4.0.12 kept the log next to the path as spelled, so a fleet that mixes releases must find it there.
+    (alias := tmp_path / "alias.lock").symlink_to(tmp_path / "real.lock")
+    lock = _make_lock(str(alias))
     try:
-        with first.write_lock(timeout=2), pytest.raises(Timeout):
-            second.acquire_write(blocking=False)
+        with lock.write_lock(timeout=2):
+            assert sorted(entry.name for entry in tmp_path.iterdir()) == ["alias.lock", "alias.lock.rw"]
     finally:
-        first.close()
-        second.close()
+        lock.close()
+
+
+@NEEDS_SYMLINK
+def test_a_symlink_and_its_target_are_separate_singletons(tmp_path: Path) -> None:
+    # One singleton across two logs would let two non-singleton instances on the two spellings both hold write.
+    (alias := tmp_path / "alias.lock").symlink_to(target := tmp_path / "real.lock")
+    via_alias = SoftReadWriteLock(alias)
+    via_target = SoftReadWriteLock(target)
+    try:
+        assert via_alias is not via_target
+    finally:
+        via_alias.close()
+        via_target.close()
 
 
 def test_singleton_rejects_a_different_on_compromise(lock_file: str) -> None:
@@ -1047,6 +1102,7 @@ def test_temporary_commit_files_are_swept(lock_file: str) -> None:
         lock.close()
 
 
+@pytest.mark.usefixtures("flushes")
 def test_generations_are_compacted(lock_file: str, lock: SoftReadWriteLock) -> None:
     for _ in range(80):
         with lock.write_lock(timeout=2):
@@ -1054,6 +1110,7 @@ def test_generations_are_compacted(lock_file: str, lock: SoftReadWriteLock) -> N
     assert len(_generations(lock_file)) <= 66
 
 
+@pytest.mark.usefixtures("flushes")
 def test_a_participant_behind_a_compacted_generation_rescans(lock_file: str) -> None:
     lock = _make_lock(lock_file)
     peer = _make_lock(lock_file)

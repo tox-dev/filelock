@@ -10,8 +10,6 @@ if TYPE_CHECKING:
 #: The inode the kernel ABI fixes for the initial PID namespace.
 INITIAL_PID_NAMESPACE: Final[int] = 0xEFFFFFFC
 
-_NAMESPACE_FILE: Final[Path] = Path("/proc/self/ns/pid")
-
 
 def pin_pid_namespace(mocker: MockerFixture, namespace: int | OSError) -> None:
     """Answer a stat of ``/proc/self/ns/pid`` with *namespace*, as its inode or as the error the stat raises."""
@@ -23,5 +21,5 @@ def pin_pid_namespace(mocker: MockerFixture, namespace: int | OSError) -> None:
     # A plain function, not an autospec: a test that moves to another namespace pins again over this patch.
     stat: Final = Path.stat
     mocker.patch.object(
-        Path, "stat", new=lambda path, **kwargs: answer() if path == _NAMESPACE_FILE else stat(path, **kwargs)
+        Path, "stat", new=lambda path, **kwargs: answer() if path == Path("/proc/self/ns/pid") else stat(path, **kwargs)
     )

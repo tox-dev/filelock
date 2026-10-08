@@ -13,7 +13,7 @@ import pytest
 
 from filelock import SoftFileLock, Timeout
 from filelock._identity import host_name
-from tests.capability_marks import NEEDS_SYMLINK
+from tests.capability_marks import NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -74,6 +74,31 @@ def test_break_lock_file_restores_a_recreated_marker(  # pragma: needs hard-link
         SoftFileLock(stale_lock).acquire(blocking=False)
 
     assert (stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("test.lock.break.*"))) == ("live", [])
+
+
+@pytest.mark.parametrize(
+    "recreate",
+    [
+        pytest.param(_rewrite_in_place, id="mtime-advanced"),
+        # The peer replaces the marker while the stale read still holds it open.
+        pytest.param(_replace_with_same_mtime, id="inode-changed", marks=NEEDS_UNLINK_OPEN_FILE),
+    ],
+)
+def test_break_lock_file_leaves_a_marker_recreated_since_the_stale_check(
+    stale_lock: Path, mocker: MockerFixture, recreate: Callable[[Path], None]
+) -> None:
+    def read_then_peer_recreates(fd: int, length: int) -> bytes:
+        data: Final = real_read(fd, length)
+        recreate(stale_lock)
+        return data
+
+    real_read: Final = os.read
+    mocker.patch("os.read", autospec=True, side_effect=read_then_peer_recreates)
+    rename: Final = mocker.spy(Path, "rename")
+    with pytest.raises(Timeout):
+        SoftFileLock(stale_lock).acquire(blocking=False)
+    # Moving the live marker aside would empty the path until it is linked back, long enough for a third holder.
+    assert (stale_lock.read_text(encoding="utf-8"), rename.call_count) == ("live", 0)
 
 
 @pytest.mark.requires_hard_links

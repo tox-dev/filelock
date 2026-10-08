@@ -1,2 +1,2 @@
 Import :data:`~filelock.OwnerMode`, :data:`~filelock.CompromiseReason` and :data:`~filelock.has_fcntl` from
-``filelock``. ``filelock.version`` is now the version submodule rather than a string; read ``filelock.__version__``.
+``filelock``.

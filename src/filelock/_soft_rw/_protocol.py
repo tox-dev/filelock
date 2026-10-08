@@ -47,13 +47,11 @@ _MAX_RECORD_SIZE: Final[int] = 1 << 20
 #: keeps a listing served further behind from passing an old generation off as the head.
 _RETAINED_GENERATIONS: Final[int] = 64
 _GENERATIONS_DIRECTORY: Final[str] = "gen"
-#: A random token created once per log, the way restic stamps a repository id into its config and PostgreSQL a system
-#: identifier into pg_control and every WAL page: removing ``gen/`` removes it, so a participant can tell a log that was
-#: wiped and restarted from the one it remembers.
+#: A random token created once per log: removing ``gen/`` removes it, so a participant can tell a log that was wiped and
+#: restarted from the one it remembers.
 _EPOCH_NAME: Final[str] = "epoch"
-#: A copy of the newest snapshot, replaced by rename after every commit. An NFS client may serve a directory listing
-#: from cache for up to ``acdirmax``, but opening a file by name is a close-to-open check against the server, so this is
-#: the one view of the head a stale client cannot miss. It can lag the log, never lead it.
+#: The epoch plus a copy of the newest snapshot, renamed into place after each commit. NFS revalidates a file opened by
+#: name but may serve a listing from cache, so this is the head a stale client cannot miss; it may lag, never lead.
 _HEAD_NAME: Final[str] = "HEAD"
 _HOLDERS_DIRECTORY: Final[str] = "holders"
 _TEMPORARY_PREFIX: Final[str] = ".commit-"
@@ -174,19 +172,14 @@ def encode_holder(token: str, nonce: str, lease: float) -> bytes:
 def holder_lease(record: bytes | None) -> float | None:
     """The ``lease`` a holder record carries, or ``None`` when it has none (an older release) or it is malformed."""
     try:
-        lines = (record or b"").decode("ascii").split("\n")
-    except UnicodeDecodeError:
+        text = next(
+            line for line in (record or b"").decode("ascii").split("\n") if line.startswith("lease=")
+        ).removeprefix("lease=")
+        lease = float(text)
+    except (StopIteration, ValueError):  # UnicodeDecodeError is a ValueError
         return None
-    for line in lines:
-        if line.startswith("lease="):
-            text = line.removeprefix("lease=")
-            # Only the exact spelling repr() writes: float() alone also takes "1_000", " 1", and non-ASCII digits.
-            try:
-                lease = float(text)
-            except ValueError:
-                return None
-            return lease if isfinite(lease) and lease > 0 and repr(lease) == text else None
-    return None
+    # Only the exact spelling repr() writes: float() alone also takes "1_000", " 1", and non-ASCII digits.
+    return lease if isfinite(lease) and lease > 0 and repr(lease) == text else None
 
 
 class Ledger:
@@ -215,8 +208,7 @@ class Ledger:
 
     def retain(self, keys: set[str]) -> None:
         """Drop every key not in *keys*: peers that left would otherwise stay in the ledger for the lock's lifetime."""
-        for key in self._seen.keys() - keys:
-            del self._seen[key]
+        self._seen = {key: seen for key, seen in self._seen.items() if key in keys}
 
 
 class GenerationLog:
@@ -235,15 +227,14 @@ class GenerationLog:
         """
         The newest snapshot.
 
-        Starts from the newest snapshot among ``gen/HEAD`` and the generations the listing or memory names that can be
-        read, then probes forward by name across the retained window. ``HEAD`` is opened by name, which an NFS client
-        checks against the server, so a listing served from a stale cache can never pull the start below the head the
-        last commit published. A generation compacted between the listing and the read, and a hole left by a committer
-        that died before it compacted, are covered by the probe. Memory only says where to look: what it names is read
-        from disk like everything else, and it is dropped when the log's epoch changes, so a log wiped and restarted is
-        never continued from a generation it no longer holds. Only a log that names generations, now or as remembered,
-        of which none can be read is refused, because that is a client so far behind the log that nothing it reads can
-        be trusted.
+        Starts from the newest readable generation among those ``gen/HEAD``, the listing, or memory name, then probes
+        forward by name across the retained window. ``HEAD`` only names a generation, and that generation must still
+        read back: a committer stalled before its rename can leave ``HEAD`` on a generation compacted since. A
+        generation compacted between the listing and the read, and a hole left by a committer that died before it
+        compacted, are covered by the probe. Memory and ``HEAD`` are bound to the log's epoch, so a log wiped and
+        restarted is never continued from a generation it no longer holds. Only a log that names generations, now or as
+        remembered, of which none can be read is refused, because that is a client so far behind the log that nothing
+        it reads can be trusted.
         """
         # When everything the first pass named is gone, peers compacted past it while this client looked, or the log was
         # replaced; one more pass settles whether this client cannot see the head at all.
@@ -259,27 +250,34 @@ class GenerationLog:
         # Generation 0 is the empty log, which has no record to read back.
         if self._latest is not None and self._latest.generation:
             named.add(self._latest.generation)
-        start = head = self._head()
+        if head := self._head_generation():
+            named.add(head)
         for generation in sorted(named, reverse=True):
-            if start is not None and generation <= start.generation:
-                break
-            if (snapshot := self._read(generation)) is not None:
-                start = snapshot
-                break
-        if start is not None:
-            # HEAD current means every generation up to it is published and the next commit replaces it, so the first
-            # missing name is the end; probing the whole window on every poll cost 64 failed opens.
-            return self._probe(start, patience=1 if start is head else _RETAINED_GENERATIONS)
+            if (start := self._read(generation)) is not None:
+                # Compaction keeps the surviving generations contiguous, so the first missing name past a readable HEAD
+                # generation is the end; probing the whole window on every poll cost 64 failed opens.
+                return self._probe(start, patience=1 if generation == head else _RETAINED_GENERATIONS)
         newest = max(named, default=0)
         found = self._probe(Snapshot(generation=newest, writer=None, readers=frozenset()))
         return found if found.generation > newest or not named else None
 
-    def _head(self) -> Snapshot | None:
+    def _head_generation(self) -> int | None:
+        # HEAD is never flushed, so a crash can leave it unreadable; readers verify what it names anyway, so a torn one
+        # only sends them to the window probe.
+        if (record := self._head_record()) is None or (snapshot := parse_snapshot(record)) is None:
+            return None
+        return snapshot.generation
+
+    def _head_record(self) -> bytes | None:
         if (data := self._files.read(self._head_path)) is None:
             return None
-        if (snapshot := parse_snapshot(data)) is None:
-            raise SoftFileLockProtocolError(self._lock_file, _HEAD_NAME, "malformed head record")
-        return snapshot
+        # A HEAD from another epoch landed after its log was removed; a log whose epoch was never written runs without.
+        epoch, newline, record = data.partition(b"\n")
+        return record if self._valid_epoch() == epoch + newline else None
+
+    def _valid_epoch(self) -> bytes | None:
+        epoch = self._epoch
+        return epoch if epoch is not None and is_token(epoch.decode("ascii", "replace").removesuffix("\n")) else None
 
     def _incarnation(self) -> bytes | None:
         if (epoch := self._files.read(self._epoch_path)) is None:
@@ -336,24 +334,45 @@ class GenerationLog:
         one link to ``gen/<N+1>`` can ever succeed. The link's return code is not trusted, because an NFS retry can
         report a link that did land as failed; the file's identity after the call is what decides. A log whose epoch
         changed since the snapshot was read is a different log, so the commit is refused as lost and the caller
-        re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the link.
+        re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the link. A slot
+        compaction freed is refused the same way, before the link and again after it, since a committer can stall in
+        between. A record refused after it landed is removed: it is the oldest survivor by then, and a legitimate one
+        was about to be compacted.
         """
-        if self._files.read(self._epoch_path) != self._epoch:
+        if self._files.read(self._epoch_path) != self._epoch or not self._extends_the_log(successor.generation):
             return False
-        if not self._publish(self._path(successor.generation), data := successor.encode(), self._files.link):
+        if not self._publish(
+            self._path(successor.generation), data := successor.encode(), self._files.link, durable=True
+        ):
+            return False
+        if not self._extends_the_log(successor.generation):
+            self._files.unlink(self._path(successor.generation))
             return False
         self._latest = successor
-        # Renames from two committers can land out of order and leave HEAD a generation behind; it only ever claims a
-        # generation that was committed, so readers take it as a floor and probe past it.
-        self._publish(self._head_path, data, self._files.replace)
+        # Readers verify the generation HEAD names, so a failed rename costs a probe, not the commit. A late one would
+        # move HEAD back past later commits, so HEAD only ever moves forward.
+        with suppress(OSError):
+            if (
+                (epoch := self._valid_epoch()) is not None
+                and self._files.read(self._epoch_path) == epoch
+                and (self._head_generation() or 0) < successor.generation
+            ):
+                self._publish(self._head_path, epoch + data, self._files.replace, durable=False)
         if (expired := successor.generation - _RETAINED_GENERATIONS - 1) > 0:
-            self._files.unlink(self._path(expired))
+            self._compact_through(expired)
         return True
 
-    def _publish(self, target: str, data: bytes, place: Callable[[str, str], bool]) -> bool:
+    def _extends_the_log(self, generation: int) -> bool:
+        # Compaction removes oldest first, so a surviving predecessor proves this slot was never freed. The first
+        # generation has none; a HEAD of this epoch means the log already moved past it.
+        if generation > 1:
+            return self._files.read(self._path(generation - 1)) is not None
+        return self._head_record() is None
+
+    def _publish(self, target: str, data: bytes, place: Callable[[str, str], bool], *, durable: bool) -> bool:
         temporary = str(self._directory / f"{_TEMPORARY_PREFIX}{new_token()}")
         try:
-            self._files.create(temporary, data, durable=True)
+            self._files.create(temporary, data, durable=durable)
         except FileNotFoundError:
             # No gen/: the log was removed, or nobody has prepared it yet. Either way there is nothing to publish into
             # until a participant's prepare() creates it, and the caller re-reads whatever log exists by then.
@@ -362,6 +381,14 @@ class GenerationLog:
             return place(temporary, target)
         finally:
             self._files.unlink(temporary)
+
+    def _compact_through(self, expired: int) -> None:
+        # Oldest first, so survivors stay contiguous: a stalled committer's leftover would otherwise sit below a hole.
+        oldest = expired
+        while oldest > 1 and self._files.read(self._path(oldest - 1)) is not None:
+            oldest -= 1
+        for generation in range(oldest, expired + 1):
+            self._files.unlink(self._path(generation))
 
     def _path(self, generation: int) -> str:
         return str(self._directory / self._name(generation))

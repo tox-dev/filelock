@@ -1,0 +1,2 @@
+A :class:`~filelock.BaseAsyncFileLock` singleton the garbage collector finalizes leaves the singleton cache first, so a
+new lock on the path waits for its release instead of re-entering a hold that release then drops.

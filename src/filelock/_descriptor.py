@@ -7,6 +7,8 @@ import time
 from threading import TIMEOUT_MAX
 from typing import Final
 
+from ._api import _seconds
+
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import _lock_fd_nonblocking, _unlock_fd
 else:  # pragma: win32 no cover
@@ -43,7 +45,7 @@ def lock_descriptor(fd: int, *, blocking: bool = True, poll_interval: float = 0.
     if not blocking:
         return _lock_fd_nonblocking(fd)
     # time.sleep raises OverflowError past TIMEOUT_MAX; nan fails both comparisons.
-    if not 0 < poll_interval <= TIMEOUT_MAX:
+    if not 0 < (poll_interval := _seconds("poll_interval", poll_interval)) <= TIMEOUT_MAX:
         msg: Final[str] = f"poll_interval must be greater than 0 and at most {TIMEOUT_MAX}, got {poll_interval}"
         raise ValueError(msg)
     while not _lock_fd_nonblocking(fd):

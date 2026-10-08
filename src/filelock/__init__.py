@@ -52,10 +52,12 @@ from .asyncio import (
     AsyncWindowsFileLock,
     BaseAsyncFileLock,
 )
-from .version import __version__ as _version
+
+# Keeps ``filelock.version`` the string 4.0.12 exposed rather than the submodule.
+from .version import version
 
 #: version of the project as a string
-__version__: Final[str] = _version
+__version__: Final[str] = version
 
 #: ``True`` when :func:`fcntl.flock` is available. Off Windows, :data:`FileLock` then resolves to
 #: :class:`UnixFileLock`, otherwise to :class:`SoftFileLock`. Always ``False`` on Windows.

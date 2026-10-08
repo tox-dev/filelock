@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Final, Literal, Protocol, TypedDict, cast
 from weakref import ref
 
 import pytest
@@ -54,8 +54,8 @@ def test_narrow_sync_subclass_rejects_unknown_option(tmp_path: Path) -> None:
 
 
 def test_singleton_cache_hit_rejects_unknown_option(tmp_path: Path) -> None:
-    lock_path = str(tmp_path / "lock")
-    first = FileLock(lock_path, is_singleton=True)
+    lock_path: Final = str(tmp_path / "lock")
+    first: Final = FileLock(lock_path, is_singleton=True)
     with pytest.raises(TypeError, match="unknown"):
         cast("_UnknownSingletonConstructor", FileLock)(lock_path, is_singleton=True, unknown=True)
     assert FileLock(lock_path, is_singleton=True) is first

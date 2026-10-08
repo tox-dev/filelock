@@ -8,16 +8,20 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from math import inf, isfinite
-from pathlib import Path
+from math import isfinite
 from typing import TYPE_CHECKING, Final
 from weakref import WeakValueDictionary
 
 from filelock._api import (
     AcquireReturnProxy,
+    _canonical,
+    _check_timeout_max,
     _ensure_current_process,
     _register_fork_class,
     _register_fork_object,
+    _resolve_read_write_timeout,
+    _seconds,
+    _timeout_behavior,
 )
 from filelock._error import Timeout
 from filelock._lease import LeaseCompromise
@@ -32,11 +36,11 @@ if TYPE_CHECKING:
 
 _ALL_INSTANCES: Final[WeakValueDictionary[int, SoftReadWriteLock]] = WeakValueDictionary()
 _ALL_INSTANCES_LOCK: threading.Lock = threading.Lock()
-_SINGLETONS_UNDER_CONSTRUCTION: Final[set[Path]] = set()
+_SINGLETONS_UNDER_CONSTRUCTION: Final[set[str]] = set()
 
 
 class _SoftRWMeta(type):
-    _instances: WeakValueDictionary[Path, SoftReadWriteLock]
+    _instances: WeakValueDictionary[str, SoftReadWriteLock]
     _instances_lock: threading.RLock
 
     def __call__(  # ruff:ignore[too-many-arguments]  # forwards the public constructor's documented parameters
@@ -52,6 +56,7 @@ class _SoftRWMeta(type):
         on_compromise: Callable[[LeaseCompromise], None] | None = None,
     ) -> SoftReadWriteLock:
         _ensure_current_process()
+        timeout = _seconds("timeout", timeout)
         # Passed through only when set, so a subclass that declares its own constructor without it keeps working.
         extra = {} if on_compromise is None else {"on_compromise": on_compromise}
         if not is_singleton:
@@ -66,7 +71,8 @@ class _SoftRWMeta(type):
                 **extra,
             )
 
-        normalized = _resolved(lock_file)
+        # Keyed like the log root, so one instance never spans two logs.
+        normalized = _canonical(lock_file)
         with cls._instances_lock:
             instance = cls._instances.get(normalized)
             if instance is None:
@@ -92,7 +98,11 @@ class _SoftRWMeta(type):
                     msg = "Lock construction cannot continue after fork; construct a new lock in the child"
                     raise RuntimeError(msg)
                 cls._instances[normalized] = instance
-            elif instance.timeout != timeout or instance.blocking != blocking:
+            elif (
+                _timeout_behavior(instance.timeout, any_negative=False)
+                != _timeout_behavior(timeout, any_negative=False)
+                or instance.blocking != blocking
+            ):
                 msg = (
                     f"Singleton lock created with timeout={instance.timeout}, blocking={instance.blocking},"
                     f" cannot be changed to timeout={timeout}, blocking={blocking}"
@@ -132,7 +142,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     fencing token for the protected resource: a store that rejects writes carrying a lower generation than the highest
     it has accepted refuses such a holder.
 
-    Reentrancy, upgrade/downgrade rules, thread pinning, and singleton caching by resolved path match
+    Reentrancy, upgrade/downgrade rules, thread pinning, and singleton caching by canonical path match
     :class:`~filelock.ReadWriteLock`.
 
     Forking invalidates the inherited instance in the child so the child cannot double-own the lock with its parent;
@@ -145,7 +155,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     :param lock_file: path to the lock file; the protocol directory lives next to it as ``<lock_file>.rw``
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately on contention
-    :param is_singleton: if ``True``, reuse existing instances for the same resolved path
+    :param is_singleton: if ``True``, reuse existing instances for the same canonical path
     :param heartbeat_interval: seconds between heartbeat refreshes; default 30 s
     :param stale_threshold: seconds a holder record may stay unchanged before a contender evicts it; defaults to
         ``3 * heartbeat_interval``, matching etcd's ``LeaseKeepAlive`` convention
@@ -161,7 +171,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     """
 
-    _instances: WeakValueDictionary[Path, SoftReadWriteLock] = WeakValueDictionary()
+    _instances: WeakValueDictionary[str, SoftReadWriteLock] = WeakValueDictionary()
     _instances_lock = threading.RLock()
 
     def __init__(  # ruff:ignore[too-many-arguments]  # public constructor: one parameter per documented lock option
@@ -177,7 +187,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         on_compromise: Callable[[LeaseCompromise], None] | None = None,
     ) -> None:
         self._creator_pid = os.getpid()
-        stale_threshold = _validate_intervals(heartbeat_interval, stale_threshold, poll_interval)
+        heartbeat_interval, stale_threshold, poll_interval = _validate_intervals(
+            heartbeat_interval, stale_threshold, poll_interval
+        )
 
         self.lock_file: str = os.fspath(lock_file)
         self.timeout: float = timeout
@@ -186,8 +198,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self.stale_threshold: float = stale_threshold
         self.poll_interval: float = poll_interval
 
-        # Resolved once: a relative lock path must keep naming the same log after the process changes directory.
-        self._root = f"{_resolved(self.lock_file)}.rw"
+        # Resolved once: a relative lock path must keep naming the same log after the process changes directory. The
+        # final component stays unresolved, as in 4.0.12, so every release shares one log on a symlinked lock path.
+        self._root = f"{_canonical(self.lock_file)}.rw"
         self._files = OsFiles(self.lock_file)
         self._ledger = Ledger(time.monotonic)
         self._log = GenerationLog(self._files, self.lock_file, self._root)
@@ -251,6 +264,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         self.acquire_read(timeout, blocking=blocking)
@@ -271,6 +286,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         self.acquire_write(timeout, blocking=blocking)
@@ -299,6 +316,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :raises RuntimeError: if a write lock is already held on this instance, if this instance was invalidated by
             :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
         :raises SoftFileLockProtocolError: if a snapshot cannot be read without risking overlap, or the filesystem
             refuses the no-replace hard links the protocol commits with
 
@@ -328,6 +347,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :raises RuntimeError: if a read lock is already held, if a write lock is held by a different thread, if this
             instance was invalidated by :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
         :raises SoftFileLockProtocolError: if a snapshot cannot be read without risking overlap, or the filesystem
             refuses the no-replace hard links the protocol commits with
 
@@ -420,9 +441,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # report an eviction that was its own release. on_compromise runs on that thread and may be what called here,
         # in which case there is nothing to join.
         hold.heartbeat_stop.set()
-        if hold.heartbeat_thread is not threading.current_thread():
-            hold.heartbeat_thread.join(timeout=self.heartbeat_interval + 1.0)
-        hold.participant.leave()
+        try:
+            if hold.heartbeat_thread is not threading.current_thread():
+                hold.heartbeat_thread.join(timeout=min(self.heartbeat_interval + 1.0, threading.TIMEOUT_MAX))
+        finally:
+            # The hold is already gone from this instance, so a join that raises must not strand its record too.
+            hold.participant.leave()
 
     def _acquire(
         self,
@@ -440,11 +464,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         with self._locks.internal:
             if self._closed:
                 raise self._closed_error()
-            if blocking and not (timeout >= 0 or timeout == -1):  # nan fails both comparisons
-                message: Final[str] = "timeout must be a non-negative number or -1"
-                raise ValueError(message)
-            # threading.Lock rejects an infinite timeout, so route it to the unlimited wait -1 already spells.
-            timeout = -1 if timeout == inf else timeout
+            timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
             if self._hold is not None:
                 return self._validate_reentrant(mode)
 
@@ -462,6 +482,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             return self._do_acquire_inner(mode, timeout, start, blocking=blocking)
         finally:
             self._locks.transaction.release()
+
+    def _closed_error(self) -> RuntimeError:
+        return RuntimeError(f"SoftReadWriteLock on {self.lock_file} has been closed")
 
     def _do_acquire_inner(
         self,
@@ -530,9 +553,6 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             participant.leave()
             raise start_error
         return AcquireReturnProxy(lock=self)
-
-    def _closed_error(self) -> RuntimeError:
-        return RuntimeError(f"SoftReadWriteLock on {self.lock_file} has been closed")
 
     def _validate_reentrant(self, mode: Mode) -> AcquireReturnProxy:
         hold = self._hold
@@ -632,32 +652,33 @@ class _HeartbeatThread(threading.Thread):
             self._stop_event.set()
 
 
-def _resolved(lock_file: str | os.PathLike[str]) -> Path:
-    # The singleton key and the log root share one resolution. Keyed apart, a symlink and its target shared an instance
-    # but not a log, so two non-singleton instances on the two spellings both held the write lock.
-    return Path(lock_file).resolve()
-
-
-def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None, poll_interval: float) -> float:
+def _validate_intervals(
+    heartbeat_interval: float, stale_threshold: float | None, poll_interval: float
+) -> tuple[float, float, float]:
+    heartbeat_interval = _seconds("heartbeat_interval", heartbeat_interval)
     if not isfinite(heartbeat_interval) or heartbeat_interval <= 0:
         msg = f"heartbeat_interval must be positive and finite, got {heartbeat_interval}"
         raise ValueError(msg)
-    if stale_threshold is None:
-        stale_threshold = heartbeat_interval * 3
+    # The heartbeat thread waits this long between refreshes, and Event.wait overflows past TIMEOUT_MAX.
+    _check_timeout_max("heartbeat_interval", heartbeat_interval)
+    stale_threshold = (
+        heartbeat_interval * 3 if stale_threshold is None else _seconds("stale_threshold", stale_threshold)
+    )
     if not isfinite(stale_threshold) or stale_threshold <= heartbeat_interval:
         msg = (
             f"stale_threshold must exceed heartbeat_interval ({heartbeat_interval}) "
             f"and be finite, got {stale_threshold}"
         )
         raise ValueError(msg)
-    if not isfinite(poll_interval) or poll_interval <= 0:
+    if not isfinite(poll_interval := _seconds("poll_interval", poll_interval)) or poll_interval <= 0:
         msg = f"poll_interval must be positive and finite, got {poll_interval}"
         raise ValueError(msg)
+    _check_timeout_max("poll_interval", poll_interval)
     # A waiting writer refreshes its record once per poll, so a poll slower than the threshold reads as dead.
     if poll_interval >= stale_threshold:
         msg = f"poll_interval must be below stale_threshold ({stale_threshold}), got {poll_interval}"
         raise ValueError(msg)
-    return stale_threshold
+    return heartbeat_interval, stale_threshold, poll_interval
 
 
 @dataclass

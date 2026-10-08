@@ -15,16 +15,21 @@ import signal
 import socket
 import sys
 import tempfile
+import time
 import weakref
 from asyncio import CancelledError
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from importlib import import_module
 from importlib.util import find_spec
+from itertools import count
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
+    from types import FrameType
+
+    from _typeshed import Unused
 
 
 def _supports_symlink() -> bool:
@@ -107,7 +112,7 @@ def _collects_classes() -> bool:
 def _preserves_context_thrown_into_a_generator() -> bool:
     # GraalPy resets __context__ when contextlib throws into the suspended generator, losing the chained cause.
     @contextmanager
-    def probe() -> Generator[None, None, None]:
+    def probe() -> Generator[None]:
         yield
 
     error = KeyError("thrown")
@@ -131,7 +136,7 @@ def _propagates_a_cancellation_thrown_into_a_coroutine() -> bool:
     # Driven by hand so the probe needs no event loop: GraalPy answers athrow with RuntimeError instead of the
     # CancelledError, so every cancellation crossing an async context manager surfaces as the wrong exception.
     @asynccontextmanager
-    async def gate() -> AsyncGenerator[None, None]:
+    async def gate() -> AsyncGenerator[None]:
         await _Suspend()
         yield
 
@@ -148,6 +153,54 @@ def _propagates_a_cancellation_thrown_into_a_coroutine() -> bool:
     except BaseException:  # ruff:ignore[blind-except]  # whatever else a runtime substitutes counts as the deviation
         return False
     return False  # pragma: no cover  # throwing into the suspended coroutine always raises
+
+
+def _finishes_a_generator_a_profile_hook_interrupts_on_resume() -> bool:
+    # CPython before 3.11, PyPy and GraalPy end the generator without running its finally, so a test that injects an
+    # interrupt there would leak whatever that finally releases.
+    finished: Final[list[bool]] = []
+
+    def probe() -> Generator[None]:
+        try:
+            yield
+        finally:
+            finished.append(True)
+
+    entries: Final = count()
+
+    def interrupt(frame: FrameType, event: str, _arg: Unused) -> None:
+        # The first entry starts the generator; every later one resumes it.
+        if event == "call" and frame.f_code is probe.__code__ and next(entries):
+            raise KeyboardInterrupt
+
+    previous: Final = sys.getprofile()
+    sys.setprofile(interrupt)
+    try:
+        with suppress(KeyboardInterrupt), contextmanager(probe)():
+            pass
+    finally:
+        sys.setprofile(previous)
+    return bool(finished)
+
+
+def _runs_a_raised_signal_handler_at_once() -> bool:
+    # GraalPy runs the handler some time after raise_signal returns, so the code the signal should interrupt has already
+    # moved on, and the late signal lands in whatever runs next.
+    delivered: Final[list[bool]] = []
+    try:
+        previous: Final = signal.signal(signal.SIGINT, lambda _signum, _frame: delivered.append(True))
+    except ValueError:  # only the main thread may install a handler
+        return False
+    try:
+        signal.raise_signal(signal.SIGINT)
+        at_once: Final = bool(delivered)
+        # Restoring the previous handler while the signal is still pending would hand it a KeyboardInterrupt.
+        deadline: Final = time.monotonic() + 5
+        while not delivered and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    return at_once
 
 
 _AUDIT_PROBE_EVENT: Final[str] = "filelock.capability-probe"
@@ -230,7 +283,7 @@ def _enforces_file_permissions() -> bool:
 
 
 @contextmanager
-def _unreadable_file() -> Generator[Path, None, None]:
+def _unreadable_file() -> Generator[Path]:
     with tempfile.TemporaryDirectory() as directory:
         probe: Final[Path] = Path(directory, "probe")
         probe.touch()
@@ -239,6 +292,19 @@ def _unreadable_file() -> Generator[Path, None, None]:
             yield probe
         finally:
             probe.chmod(0o600)
+
+
+def _fd_directory_names_the_file() -> bool:
+    # Mirrors the view ReadWriteLock connects through. SQLite reuses a descriptor it deferred closing only when stat of
+    # the name it opened reports the file itself; macOS's /dev/fd reports devfs instead.
+    view: Final = Path("/proc/self/fd" if sys.platform == "linux" else "/dev/fd")
+    if not view.is_dir():
+        return False
+    with tempfile.TemporaryFile() as handle:
+        try:
+            return os.path.samestat((view / str(handle.fileno())).stat(), os.fstat(handle.fileno()))
+        except OSError:  # a static /dev/fd, like NetBSD's or FreeBSD's without fdescfs, lists only low numbers
+            return False
 
 
 _LINK_FOLLOW_SYMLINKS: Final[bool] = _honors_link_follow_symlinks()
@@ -258,6 +324,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "fcntl": find_spec("fcntl") is not None,
     "unlink-open-file": _supports_unlinking_an_open_file(),
     "posix-signals": hasattr(signal, "SIGKILL"),
+    "prompt-signal-delivery": _runs_a_raised_signal_handler_at_once(),
     "file-mode": _supports_file_mode(),
     "file-permissions": _enforces_file_permissions(),
     "prompt-finalization": _finalizes_on_last_reference(),
@@ -267,7 +334,9 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "coroutine-cancellation": _propagates_a_cancellation_thrown_into_a_coroutine(),
     "audit-events": _delivers_audit_events(),
     "settrace-safe-audit-hooks": _survives_settrace_inside_audit_hook(),
+    "profile-interrupted-generator-finishes": _finishes_a_generator_a_profile_hook_interrupts_on_resume(),
     "fd-directory": any(Path(view).is_dir() for view in ("/dev/fd", "/proc/self/fd")),
+    "fd-directory-names-file": _fd_directory_names_the_file(),
     "fifo": hasattr(os, "mkfifo"),
     "af-unix": hasattr(socket, "AF_UNIX"),
     # Distinct from "symlink": a runtime can create them yet still not refuse to follow one.

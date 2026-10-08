@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +13,7 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from tests.capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT
-from tests.read_write_helpers import ACQUIRE_SETTINGS
+from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS
 
 pytest.importorskip("sqlite3")
 
@@ -32,6 +34,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
     from pytest_mock import MockerFixture
+
+    from filelock import AcquireReturnProxy
 
 
 @pytest.fixture(autouse=True)
@@ -95,6 +99,27 @@ def test_singleton_rejects_different_timeout(lock_file: str) -> None:
     with pytest.raises(ValueError, match="Singleton lock created with"):
         ReadWriteLock(lock_file, timeout=2.0)
     del lock
+
+
+@pytest.mark.parametrize(
+    ("first", "second"), [pytest.param(-1, math.inf, id="inf"), pytest.param(math.nan, math.nan, id="nan")]
+)
+def test_singleton_accepts_a_timeout_that_waits_the_same(
+    lock_type: type[ReadWriteLock | SoftReadWriteLock], first: float, second: float, lock_file: str
+) -> None:
+    assert lock_type(lock_file, timeout=first) is lock_type(lock_file, timeout=second)
+
+
+@pytest.mark.parametrize("timeout", [pytest.param(True, id="bool"), pytest.param("1", id="str")])
+def test_constructor_rejects_a_timeout_that_is_not_a_number(
+    lock_type: type[ReadWriteLock | SoftReadWriteLock], timeout: bool | str, lock_file: str
+) -> None:
+    with pytest.raises(TypeError, match="timeout must be a number of seconds"):
+        lock_type(
+            lock_file,
+            timeout=timeout,  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+            is_singleton=False,
+        )
 
 
 def test_singleton_rejects_different_blocking(lock_file: str) -> None:
@@ -307,47 +332,41 @@ def test_write_lock_release_from_different_thread_prohibited(lock_file: str) -> 
             contender.acquire_write(blocking=False)
 
 
-def test_read_lock_release_from_a_thread_without_a_read_hold_prohibited(lock_file: str) -> None:
-    with (
-        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
-        closing(ReadWriteLock(lock_file, is_singleton=False)) as contender,
-        ThreadPoolExecutor(max_workers=1) as other_thread,
-    ):
-        lock.acquire_read()
-        with pytest.raises(RuntimeError, match="which does not hold it"):
-            other_thread.submit(lock.release).result()
-        with pytest.raises(Timeout):
-            contender.acquire_write(blocking=False)
-
-
-def test_read_lock_release_past_a_threads_own_depth_prohibited(lock_file: str) -> None:
-    with (
-        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
-        closing(ReadWriteLock(lock_file, is_singleton=False)) as contender,
-        ThreadPoolExecutor(max_workers=1) as other_thread,
-    ):
-        lock.acquire_read()
-        lock.acquire_read()
-        other_thread.submit(lock.acquire_read).result()
+def test_read_lock_release_from_a_thread_without_a_read_hold_prohibited(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock], other_thread: ThreadPoolExecutor
+) -> None:
+    lock, contender = sync_locks
+    lock.acquire_read()
+    with pytest.raises(RuntimeError, match="which does not hold it"):
         other_thread.submit(lock.release).result()
-        with pytest.raises(RuntimeError, match="which does not hold it"):
-            other_thread.submit(lock.release).result()
-        with pytest.raises(Timeout):
-            contender.acquire_write(blocking=False)
+    with pytest.raises(Timeout):
+        contender.acquire_write(blocking=False)
 
 
-def test_read_lock_shared_by_threads_ends_with_the_last_reader(lock_file: str) -> None:
-    with (
-        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
-        closing(ReadWriteLock(lock_file, is_singleton=False)) as contender,
-        ThreadPoolExecutor(max_workers=1) as other_thread,
-    ):
-        lock.acquire_read()
-        other_thread.submit(lock.acquire_read).result()
-        lock.release()
+def test_read_lock_release_past_a_threads_own_depth_prohibited(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock], other_thread: ThreadPoolExecutor
+) -> None:
+    lock, contender = sync_locks
+    lock.acquire_read()
+    lock.acquire_read()
+    other_thread.submit(lock.acquire_read).result()
+    other_thread.submit(lock.release).result()
+    with pytest.raises(RuntimeError, match="which does not hold it"):
         other_thread.submit(lock.release).result()
-        with contender.write_lock(blocking=False):
-            pass
+    with pytest.raises(Timeout):
+        contender.acquire_write(blocking=False)
+
+
+def test_read_lock_shared_by_threads_ends_with_the_last_reader(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock], other_thread: ThreadPoolExecutor
+) -> None:
+    lock, contender = sync_locks
+    lock.acquire_read()
+    other_thread.submit(lock.acquire_read).result()
+    lock.release()
+    other_thread.submit(lock.release).result()
+    with contender.write_lock(blocking=False):
+        pass
 
 
 @pytest.mark.parametrize(
@@ -358,25 +377,29 @@ def test_read_lock_shared_by_threads_ends_with_the_last_reader(lock_file: str) -
     ],
 )
 def test_opposite_mode_from_another_thread_names_the_per_thread_instance_fix(
-    lock_file: str,
-    held: Callable[[ReadWriteLock], object],
-    requested: Callable[[ReadWriteLock], object],
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock],
+    other_thread: ThreadPoolExecutor,
+    held: Callable[[ReadWriteLock], AcquireReturnProxy],
+    requested: Callable[[ReadWriteLock], AcquireReturnProxy],
 ) -> None:
-    with closing(ReadWriteLock(lock_file, is_singleton=False)) as lock, ThreadPoolExecutor(max_workers=1) as other:
-        held(lock)
-        with pytest.raises(RuntimeError, match="give each thread its own instance"):
-            other.submit(requested, lock).result()
+    held(sync_locks[0])
+    with pytest.raises(RuntimeError, match="give each thread its own instance"):
+        other_thread.submit(requested, sync_locks[0]).result()
 
 
-def test_thread_with_its_own_instance_contends_instead_of_raising(lock_file: str) -> None:
-    with (
-        closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
-        closing(ReadWriteLock(lock_file, is_singleton=False)) as own,
-        ThreadPoolExecutor(max_workers=1) as other_thread,
-    ):
-        lock.acquire_read()
-        with pytest.raises(Timeout):
-            other_thread.submit(partial(own.acquire_write, blocking=False)).result()
+def test_thread_with_its_own_instance_contends_instead_of_raising(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock], other_thread: ThreadPoolExecutor
+) -> None:
+    lock, own = sync_locks
+    lock.acquire_read()
+    with pytest.raises(Timeout):
+        other_thread.submit(partial(own.acquire_write, blocking=False)).result()
+
+
+@pytest.fixture
+def other_thread() -> Generator[ThreadPoolExecutor]:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        yield executor
 
 
 @pytest.mark.parametrize(
@@ -838,20 +861,13 @@ def sync_locks(tmp_path: Path) -> Generator[tuple[ReadWriteLock, ReadWriteLock]]
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
-@pytest.mark.parametrize(
-    "timeout",
-    [
-        pytest.param(-2, id="integer"),
-        pytest.param(-0.5, id="fraction"),
-        pytest.param(float("-inf"), id="negative-infinite"),
-        pytest.param(float("nan"), id="nan"),
-    ],
-)
+@INVALID_TIMEOUTS
 @pytest.mark.parametrize("reentrant", [pytest.param(True, id="reentrant"), pytest.param(False, id="first")])
 def test_acquire_rejects_invalid_timeout(
     timeout_locks: tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock],
     mode: Literal["read", "write"],
     timeout: float,
+    message: str,
     *,
     reentrant: bool,
 ) -> None:
@@ -860,7 +876,7 @@ def test_acquire_rejects_invalid_timeout(
     with ExitStack() as stack:
         if reentrant:
             stack.enter_context(acquire())
-        with pytest.raises(ValueError, match=r"^timeout must be a non-negative number or -1$"):
+        with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
             stack.enter_context(acquire(timeout=timeout))
     with timeout_locks[1].acquire_write(blocking=False), pytest.raises(Timeout):
         holder.acquire_write(blocking=False)
@@ -877,6 +893,7 @@ def test_acquire_rejects_invalid_timeout(
         pytest.param(float("nan"), False, id="nonblocking-nan"),
         pytest.param(-1, True, id="unlimited"),
         pytest.param(float("inf"), True, id="infinite"),
+        pytest.param(threading.TIMEOUT_MAX * 2, True, id="above-lock-limit"),
         pytest.param(0, True, id="immediate"),
     ],
 )
@@ -899,15 +916,15 @@ def test_acquire_valid_timeout_preserves_nested_hold(
         holder.acquire_write(blocking=False)
 
 
-@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
-def test_acquire_accepts_timeout_above_lock_limit(
-    timeout_locks: tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock],
-    mode: Literal["read", "write"],
-) -> None:
-    holder: Final = timeout_locks[0]
-    acquire: Final = holder.acquire_read if mode == "read" else holder.acquire_write
-    with acquire(timeout=threading.TIMEOUT_MAX * 2), pytest.raises(Timeout):
-        timeout_locks[1].acquire_write(blocking=False)
+@pytest.fixture
+def timeout_locks(
+    tmp_path: Path, lock_type: type[ReadWriteLock | SoftReadWriteLock]
+) -> Generator[tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock]]:
+    with (
+        closing(lock_type(tmp_path / "a", is_singleton=False)) as holder,
+        closing(lock_type(tmp_path / "a", is_singleton=False)) as contender,
+    ):
+        yield holder, contender
 
 
 @pytest.fixture(
@@ -916,12 +933,5 @@ def test_acquire_accepts_timeout_above_lock_limit(
         pytest.param(SoftReadWriteLock, id="soft", marks=pytest.mark.requires_hard_links),
     ]
 )
-def timeout_locks(
-    tmp_path: Path, request: pytest.FixtureRequest
-) -> Generator[tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock]]:
-    lock_type: Final[type[ReadWriteLock | SoftReadWriteLock]] = request.param
-    with (
-        closing(lock_type(tmp_path / "a", is_singleton=False)) as holder,
-        closing(lock_type(tmp_path / "a", is_singleton=False)) as contender,
-    ):
-        yield holder, contender
+def lock_type(request: pytest.FixtureRequest) -> type[ReadWriteLock | SoftReadWriteLock]:
+    return request.param

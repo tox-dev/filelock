@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import CloseErrorPolicy, SoftFileLock, Timeout
+from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
-from filelock._soft import _MALFORMED_LOCK_AGE_THRESHOLD, _MAX_LOCK_FILE_SIZE
+from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.pid_namespace_helpers import pin_pid_namespace
 
@@ -27,8 +27,10 @@ else:  # pragma: no cover (<py311)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+    from types import FrameType
     from unittest.mock import MagicMock
 
+    from _typeshed import TraceFunction
     from pytest_mock import MockerFixture
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
@@ -83,6 +85,30 @@ def test_stale_lock_not_broken_different_hostname(lock_path: Path) -> None:
     _assert_times_out(lock_path)
 
 
+@pytest.mark.parametrize(
+    ("lock_type", "record"),
+    [
+        pytest.param(SoftFileLock, _holder(_DEAD_PID, host="other-host.example.com"), id="soft"),
+        pytest.param(MarkerSoftFileLock, _holder(_DEAD_PID, host="other-host.example.com"), id="marker-v1"),
+        pytest.param(
+            MarkerSoftFileLock,
+            f"filelock/2\npid={_DEAD_PID}\nhost=other-host.example.com\nmode=exclusive\n",
+            id="marker-v2",
+        ),
+    ],
+)
+def test_timeout_names_a_holder_on_another_host(lock_path: Path, lock_type: type[SoftFileLock], record: str) -> None:
+    lock_path.write_text(record, encoding="utf-8")
+    with pytest.raises(Timeout, match=f"held by pid {_DEAD_PID} on other-host.example.com, which this host cannot"):
+        lock_type(lock_path, timeout=0).acquire()
+
+
+def test_timeout_leaves_out_a_holder_on_this_host(lock_path: Path) -> None:
+    with SoftFileLock(lock_path), pytest.raises(Timeout) as caught:
+        SoftFileLock(lock_path, timeout=0).acquire()
+    assert str(caught.value) == f"The file lock '{lock_path}' could not be acquired."
+
+
 _REQUIRES_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     process_start_token(os.getpid()) is None, reason="platform exposes no proven process start time"
 )
@@ -106,7 +132,7 @@ def test_recycled_pid_marker_self_heals(lock_path: Path) -> None:
 def test_recycled_pid_marker_self_heals_only_in_its_pid_namespace(
     lock_path: Path, mocker: MockerFixture, contender_namespace: int, *, reclaimed: bool
 ) -> None:
-    token = process_start_token(os.getpid())
+    token: Final = process_start_token(os.getpid())
     assert token is not None
     pin_pid_namespace(mocker, 0xF0000001)
     lock_path.write_text(_holder(os.getpid(), host=host_name(), start=token + 1), encoding="utf-8")
@@ -414,7 +440,7 @@ def test_is_lock_held_by_us(lock_path: Path, content: str | None, expected: bool
 )
 def test_is_lock_held_by_us_checks_start_token(lock_path: Path, offset: int, *, expected: bool) -> None:
     # Acquisition breaks a marker with our PID but another start token as stale, so it must not read as ours either.
-    token = process_start_token(os.getpid())
+    token: Final = process_start_token(os.getpid())
     assert token is not None
     lock_path.write_text(_holder(os.getpid(), start=token + offset), encoding="utf-8")
     assert SoftFileLock(lock_path).is_lock_held_by_us is expected
@@ -510,6 +536,15 @@ def test_failed_acquire_cleanup_spares_a_replacement(lock_path: Path, mocker: Mo
     with pytest.raises(OSError, match="No space left on device"):
         lock.acquire()
     assert lock_path.exists()
+
+
+def test_publication_without_identity_leaves_the_marker(lock_path: Path, mocker: MockerFixture) -> None:
+    # The rollback cannot prove the path still names the file it created, so it leaves the marker to stale handling.
+    mocker.patch("filelock._soft.os.fstat", autospec=True, side_effect=OSError(ENODEV, "no identity"))
+    lock: Final = SoftFileLock(lock_path)
+    with pytest.raises(OSError, match="no identity"):
+        lock.acquire()
+    assert (lock.is_locked, lock_path.exists()) == (False, True)
 
 
 def test_release_without_identity_skips_unlink(lock_path: Path, mocker: MockerFixture) -> None:
@@ -665,11 +700,53 @@ def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixt
     assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
 
 
-def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows closes the descriptor before it can unlink the marker")
+def test_marker_cleanup_failure_keeps_the_lock_held_for_a_retry(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    lock: Final = SoftFileLock(lock_path)
+    lock.acquire()
+    cleanup_error: Final = RuntimeError("cleanup failed")
+    unlink: Final = mocker.patch("filelock._soft.Path.unlink", autospec=True, side_effect=cleanup_error)
+    with pytest.raises(RuntimeError) as info:
+        lock.release()
+    held: Final = (lock.is_locked, lock_path.exists())
+    mocker.stop(unlink)
+
+    lock.release()
+
+    assert (info.value, held, lock.is_locked, lock_path.exists()) == (cleanup_error, (True, True), False, False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows always unlinks the marker after the close")
+def test_marker_unlink_refused_while_open_is_retried_after_the_close(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    lock: Final = SoftFileLock(lock_path)
+    lock.acquire()
+    real_unlink: Final = Path.unlink
+    attempts: Final[list[Path]] = []
+
+    def refuse_while_open(path: Path, missing_ok: bool = False) -> None:
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise PermissionError(EACCES, "file in use")
+        real_unlink(path, missing_ok=missing_ok)
+
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=refuse_while_open)
+    lock.release()
+
+    assert (lock.is_locked, lock_path.exists(), len(attempts)) == (False, False, 2)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="POSIX unlinks the marker before the close, so both cannot fail")
+def test_close_and_marker_cleanup_failures_are_grouped(  # pragma: win32 cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
     lock = SoftFileLock(lock_path)
     lock.acquire()
     cleanup_error = RuntimeError("cleanup failed")
-    unlink_mock = mocker.patch("filelock._soft.Path.unlink", side_effect=cleanup_error)
+    unlink_mock: Final = mocker.patch("filelock._soft.os.unlink", autospec=True, side_effect=cleanup_error)
     with _close_after_commit(mocker, lock) as (close_error, _attempts), pytest.raises(ExceptionGroup) as info:
         lock.release()
     mocker.stop(unlink_mock)
@@ -688,24 +765,23 @@ def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: 
     )
 
 
-def test_publication_rollback_removes_marker_when_close_fails(lock_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.parametrize(
+    "replaced",
+    [pytest.param(False, id="own-marker-removed"), pytest.param(True, id="replacement-spared")],
+)
+def test_publication_rollback_close_failure_unlinks_only_its_marker(
+    lock_path: Path, mocker: MockerFixture, *, replaced: bool
+) -> None:
     mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
-    lock = SoftFileLock(lock_path)
+    if replaced:
+        _hold_reports_foreign_identity(mocker)
+    lock: Final = SoftFileLock(lock_path)
     with (
         _close_after_commit(mocker, lock) as (close_error, attempts),
         pytest.raises(OSError, match="close failed") as info,
     ):
         lock.acquire(timeout=0)
-    assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, False)
-
-
-def test_publication_rollback_close_failure_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
-    _hold_reports_foreign_identity(mocker)
-    lock = SoftFileLock(lock_path)
-    with _close_after_commit(mocker, lock), pytest.raises(OSError, match="close failed"):
-        lock.acquire(timeout=0)
-    assert lock_path.exists()
+    assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, replaced)
 
 
 def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: MockerFixture) -> None:
@@ -734,7 +810,7 @@ def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: M
 
 
 @contextmanager
-def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[tuple[OSError, list[int]], None, None]:
+def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[tuple[OSError, list[int]]]:
     real_close = os.close
     close_error = OSError(EINTR, "close failed")
     attempts: list[int] = []
@@ -746,7 +822,7 @@ def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[
     real_mark_released = lock._mark_descriptor_released
 
     def mark_released() -> None:
-        context = lock._context
+        context: Final = lock._context
         released.append(context.pending_lock_file_fd if context.lock_file_fd is None else context.lock_file_fd)
         real_mark_released()
 
@@ -765,6 +841,53 @@ def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[
         mocker.stop(close_mock)
 
 
+@pytest.mark.skipif(sys.version_info >= (3, 11), reason="later versions run signal handlers only at calls")
+def test_soft_windows_marker_close_keeps_an_open_descriptor_recorded(tmp_path: Path) -> None:  # pragma: <3.11 cover
+    # 3.10 can run a signal handler before any bytecode, so interrupt at each one, far past the method's length: the
+    # descriptor must stay recorded for the retry to close, or already be closed.
+    outcomes: Final = list(
+        itertools.takewhile(
+            lambda outcome: outcome is not None, (_close_interrupted_at(tmp_path, n) for n in range(1, 200))
+        )
+    )
+    assert (len(outcomes) > 1, any(outcomes)) == (True, False)
+
+
+def _close_interrupted_at(tmp_path: Path, target: int) -> bool | None:  # pragma: no cover  # runs under its own tracer
+    lock: Final = SoftFileLock(tmp_path / f"{target}.lock")
+    fd: Final = os.open(tmp_path / f"{target}.marker", os.O_CREAT | os.O_WRONLY)
+    lock._marker_fds = [fd]
+    code: Final = SoftFileLock._close_marker_fd.__code__
+    opcodes: Final = itertools.count(1)
+
+    def at_opcode(_frame: FrameType, event: str, _arg: object) -> TraceFunction:
+        if event == "opcode" and next(opcodes) == target:
+            raise KeyboardInterrupt
+        return at_opcode
+
+    def trace(frame: FrameType, _event: str, _arg: object) -> TraceFunction | None:
+        if frame.f_code is not code:
+            return None
+        frame.f_trace_opcodes = True
+        return at_opcode
+
+    previous: Final = sys.gettrace()
+    sys.settrace(trace)
+    interrupted = False
+    try:
+        lock._close_marker_fd()
+    except KeyboardInterrupt:
+        interrupted = True
+    finally:
+        sys.settrace(previous)
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False if interrupted else None
+    os.close(fd)
+    return fd not in lock._marker_fds
+
+
 def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Path, mocker: MockerFixture) -> None:
     # Windows can still hold a handle just after close, so the marker unlink retries on EACCES. Deny every attempt to
     # prove the retry runs and then stops, and that the denial never escapes to the caller.
@@ -774,18 +897,24 @@ def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Pa
     marker.write_text("x", encoding="utf-8")
     lock = SoftFileLock(marker)
     mocker.patch("filelock._soft.time.sleep")
-    mocker.patch("filelock._soft.Path.unlink", side_effect=PermissionError(EACCES, "handle still open"))
+    unlink: Final = mocker.patch(
+        "filelock._soft.os.unlink", autospec=True, side_effect=PermissionError(EACCES, "handle still open")
+    )
 
     lock._windows_unlink_if_ours(_file_identity(os.lstat(marker)))
+    denied: Final = marker.exists()
+    mocker.stop(unlink)
 
-    assert marker.exists()
+    # The marker is still ours, so the next acquire finishes the cleanup instead of waiting on it.
+    with lock.acquire(timeout=0):
+        assert denied
 
 
 @pytest.fixture
 def unchanged_past_grace(mocker: MockerFixture) -> None:
     # Each look at the marker lands a full grace window after the previous one on the observer's clock, so an unchanged
     # malformed marker ages out on the second look without the test sleeping through the window.
-    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=_MALFORMED_LOCK_AGE_THRESHOLD))
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
 
 
 def test_unparseable_lock_with_an_ancient_mtime_not_evicted_on_first_sight(lock_path: Path) -> None:

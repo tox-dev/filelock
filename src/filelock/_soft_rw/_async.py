@@ -133,6 +133,8 @@ class AsyncSoftReadWriteLock:
 
         :raises RuntimeError: if the calling task already holds the write lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         await self.acquire_read(timeout, blocking=blocking)
@@ -151,6 +153,8 @@ class AsyncSoftReadWriteLock:
 
         :raises RuntimeError: if the calling task already holds the read lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         await self.acquire_write(timeout, blocking=blocking)
@@ -176,6 +180,8 @@ class AsyncSoftReadWriteLock:
         :raises RuntimeError: if the calling task already holds the write lock, if this instance was invalidated by
             :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         self._raise_if_inherited()
@@ -199,6 +205,8 @@ class AsyncSoftReadWriteLock:
         :raises RuntimeError: if the calling task already holds the read lock, if this instance was invalidated by
             :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         self._raise_if_inherited()

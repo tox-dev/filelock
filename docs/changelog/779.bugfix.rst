@@ -1,2 +1,2 @@
 :class:`~filelock.ReadWriteLock`, :class:`~filelock.SoftReadWriteLock` and their async wrappers treat a
-:data:`math.inf` timeout like ``-1`` and raise :class:`ValueError` for ``nan``.
+:data:`math.inf` timeout like ``-1`` and raise :class:`ValueError` for a blocking ``nan`` one.

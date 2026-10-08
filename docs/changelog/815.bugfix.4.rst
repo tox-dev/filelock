@@ -1,0 +1,2 @@
+Setting :attr:`BaseFileLock.timeout <filelock.BaseFileLock.timeout>` from a string emits a :class:`DeprecationWarning`
+and from a ``bool`` raises :class:`TypeError`; pass the number of seconds instead.

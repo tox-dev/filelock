@@ -4,6 +4,7 @@ import asyncio
 import gc
 import logging
 import os
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter exit finalizes a held lock
 import sys
 import threading
 import time
@@ -11,10 +12,12 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import EINTR, EIO, ENOSYS
+from itertools import count
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
 
 import pytest
+import pytest_asyncio
 
 import filelock.asyncio
 from filelock import (
@@ -26,7 +29,7 @@ from filelock import (
     ContextErrorPolicy,
     Timeout,
 )
-from tests.capability_marks import NEEDS_FCNTL, NEEDS_PARENT_SYMLINK_COLLAPSE
+from tests.capability_marks import NEEDS_FCNTL, NEEDS_PARENT_SYMLINK_COLLAPSE, NEEDS_PROMPT_FINALIZATION
 
 if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
     from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
@@ -36,7 +39,7 @@ else:  # pragma: no cover (<py311)
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 
 # Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
@@ -45,6 +48,7 @@ if TYPE_CHECKING:
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("path_type", [str, PurePath, Path])
 @pytest.mark.parametrize("filename", ["a", "new/b", "new2/new3/c"])
+@pytest.mark.parametrize("via_acquire", [pytest.param(False, id="context"), pytest.param(True, id="acquire")])
 @pytest.mark.asyncio
 async def test_simple(
     lock_type: type[BaseAsyncFileLock],
@@ -52,55 +56,25 @@ async def test_simple(
     filename: str,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
+    *,
+    via_acquire: bool,
 ) -> None:
     caplog.set_level(logging.DEBUG)
 
     lock_path = tmp_path / filename
     lock = lock_type(path_type(lock_path))
-    async with lock as locked:
+    async with await lock.acquire() if via_acquire else lock as locked:
         assert lock.is_locked
         assert lock is locked
     assert not lock.is_locked
 
-    assert caplog.messages == [
-        f"Attempting to acquire lock {id(lock)} on {lock_path}",
-        f"Lock {id(lock)} acquired on {lock_path}",
-        f"Attempting to release lock {id(lock)} on {lock_path}",
-        f"Lock {id(lock)} released on {lock_path}",
+    # A runtime with a lazy collector may finalize, mid-test, a lock an earlier test dropped.
+    assert [(r.name, r.levelno, r.getMessage()) for r in caplog.records if str(lock_path) in r.getMessage()] == [
+        ("filelock", logging.DEBUG, f"Attempting to acquire lock {id(lock)} on {lock_path}"),
+        ("filelock", logging.DEBUG, f"Lock {id(lock)} acquired on {lock_path}"),
+        ("filelock", logging.DEBUG, f"Attempting to release lock {id(lock)} on {lock_path}"),
+        ("filelock", logging.DEBUG, f"Lock {id(lock)} released on {lock_path}"),
     ]
-    assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.DEBUG]
-    assert [r.name for r in caplog.records] == ["filelock", "filelock", "filelock", "filelock"]
-    assert logging.getLogger("filelock").level == logging.NOTSET
-
-
-@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
-@pytest.mark.parametrize("path_type", [str, PurePath, Path])
-@pytest.mark.parametrize("filename", ["a", "new/b", "new2/new3/c"])
-@pytest.mark.asyncio
-async def test_acquire(
-    lock_type: type[BaseAsyncFileLock],
-    path_type: type[str | Path],
-    filename: str,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.DEBUG)
-
-    lock_path = tmp_path / filename
-    lock = lock_type(path_type(lock_path))
-    async with await lock.acquire() as locked:
-        assert lock.is_locked
-        assert lock is locked
-    assert not lock.is_locked
-
-    assert caplog.messages == [
-        f"Attempting to acquire lock {id(lock)} on {lock_path}",
-        f"Lock {id(lock)} acquired on {lock_path}",
-        f"Attempting to release lock {id(lock)} on {lock_path}",
-        f"Lock {id(lock)} released on {lock_path}",
-    ]
-    assert [r.levelno for r in caplog.records] == [logging.DEBUG, logging.DEBUG, logging.DEBUG, logging.DEBUG]
-    assert [r.name for r in caplog.records] == ["filelock", "filelock", "filelock", "filelock"]
     assert logging.getLogger("filelock").level == logging.NOTSET
 
 
@@ -440,12 +414,15 @@ def test_del_after_loop_close_does_not_raise(lock_type: type[BaseAsyncFileLock],
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("timeout", [pytest.param(-1, id="unlimited"), pytest.param(float("inf"), id="infinite")])
 @pytest.mark.asyncio
-async def test_same_task_different_instances_raises(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
+async def test_same_task_different_instances_raises(
+    tmp_path: Path, lock_type: type[BaseAsyncFileLock], timeout: float
+) -> None:
     lock_path = tmp_path / "test.lock"
     lock1 = lock_type(lock_path)
     async with lock1:
-        lock2 = lock_type(lock_path)
+        lock2 = lock_type(lock_path, timeout=timeout)
         with pytest.raises(RuntimeError, match="Deadlock"):
             await lock2.acquire()
 
@@ -459,16 +436,6 @@ async def test_finite_timeout_gives_timeout_not_deadlock(tmp_path: Path, lock_ty
         lock2 = lock_type(lock_path, timeout=0.1)
         with pytest.raises(Timeout):
             await lock2.acquire()
-
-
-@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
-@pytest.mark.asyncio
-async def test_infinite_timeout_gives_deadlock_not_hang(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
-    lock_path = tmp_path / "test.lock"
-    async with lock_type(lock_path):
-        lock = lock_type(lock_path, timeout=float("inf"))
-        with pytest.raises(RuntimeError, match="Deadlock"):
-            await lock.acquire()
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -546,6 +513,20 @@ async def test_same_instance_reentrant_works(tmp_path: Path, lock_type: type[Bas
             assert lock.is_locked
         assert lock.is_locked
     assert not lock.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_same_instance_reentrant_acquire_skips_the_executor(
+    tmp_path: Path, lock_type: type[BaseAsyncFileLock], mocker: MockerFixture
+) -> None:
+    executor: Final = ThreadPoolExecutor(max_workers=1)
+    lock: Final = lock_type(tmp_path / "test.lock", executor=executor)
+    async with lock:
+        submit: Final = mocker.spy(executor, "submit")
+        async with lock:
+            assert (lock.lock_counter, submit.call_count) == (2, 0)
+    executor.shutdown()
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -898,9 +879,7 @@ async def test_soft_second_release_does_not_close_reused_descriptor(
 
 
 @contextmanager
-def _close_after_commit(
-    mocker: MockerFixture, lock: AsyncSoftFileLock
-) -> Generator[tuple[OSError, list[int]], None, None]:
+def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Generator[tuple[OSError, list[int]]]:
     real_close = os.close
     close_error = OSError(EINTR, "close failed")
     attempts: list[int] = []
@@ -1333,15 +1312,119 @@ def test_async_del_schedules_release_on_a_stored_loop_in_another_thread(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_async_del_inside_a_running_loop_schedules_release(tmp_path: Path, mocker: MockerFixture) -> None:
+async def test_async_del_inside_a_running_loop_schedules_release(tmp_path: Path, schedule: MockType) -> None:
     lock = AsyncSoftFileLock(str(tmp_path / "a"))
     await lock.acquire()
-    schedule = mocker.spy(asyncio.get_running_loop(), "create_task")
 
     lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
 
     await schedule.spy_return
     assert (lock.is_locked, (tmp_path / "a").exists()) == (False, False)
+
+
+@pytest.mark.parametrize("cancel", [pytest.param(False, id="release-fails"), pytest.param(True, id="release-canceled")])
+@pytest.mark.asyncio
+async def test_async_del_inside_a_running_loop_falls_back_when_the_release_does_not_finish(
+    tmp_path: Path, schedule: MockType, *, cancel: bool
+) -> None:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        lock: Final = AsyncSoftFileLock(str(tmp_path / "a"), executor=executor)
+        await lock.acquire()
+
+        lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+
+        # A loop shutting down cancels the release before it runs; a shut-down executor fails it.
+        if cancel:
+            schedule.spy_return.cancel()
+        else:
+            executor.shutdown()
+        await asyncio.wait([schedule.spy_return])
+        await asyncio.sleep(0)  # the done callbacks run on the next loop iteration
+    assert (lock.is_locked, (tmp_path / "a").exists()) == (False, False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_async_del_never_waits_on_the_singleton_cache_lock(tmp_path: Path, schedule: MockType) -> None:
+    # A constructor holds the cache lock while it takes the fork locks, inside which the collector can finalize a lock.
+    class StallingLock(AsyncSoftFileLock):
+        def __init__(self, lock_file: Path, *, is_singleton: bool) -> None:
+            super().__init__(lock_file, is_singleton=is_singleton)
+            if next(constructions):
+                inside.set()
+                leave.wait()
+
+    constructions: Final = count()
+    inside: Final = threading.Event()
+    leave: Final = threading.Event()
+    lock: Final = StallingLock(tmp_path / "a", is_singleton=True)
+    await lock.acquire()
+    holder: Final = threading.Thread(target=StallingLock, args=(tmp_path / "b",), kwargs={"is_singleton": True})
+    holder.start()
+    inside.wait()
+    try:
+        lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+    finally:
+        leave.set()
+        holder.join()
+    await asyncio.wait([schedule.spy_return])
+
+    assert not lock.is_locked
+
+
+@pytest.mark.asyncio
+async def test_async_thread_local_del_inside_a_running_loop_releases_another_threads_hold(tmp_path: Path) -> None:
+    lock_path: Final = tmp_path / "a"
+    lock: Final = AsyncSoftFileLock(lock_path, thread_local=True, run_in_executor=False)
+    holder: Final = threading.Thread(target=asyncio.run, args=(lock.acquire(),))
+    holder.start()
+    holder.join()
+
+    lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+    await asyncio.sleep(0)  # a release the finalizer scheduled on this loop would run here
+
+    assert not lock_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_async_del_hands_the_singleton_slot_to_a_new_lock(tmp_path: Path, schedule: MockType) -> None:
+    lock_path: Final = tmp_path / "a"
+    dying: Final = AsyncSoftFileLock(lock_path, is_singleton=True)
+    await dying.acquire()
+
+    # The scheduled release keeps the lock alive past its finalizer, as CPython runs it before clearing weak references.
+    dying.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+    successor: Final = AsyncSoftFileLock(lock_path, is_singleton=True)
+    await successor.acquire()
+    await asyncio.wait([schedule.spy_return])
+
+    assert (successor.is_locked, lock_path.exists()) == (True, True)
+    await successor.release()
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def schedule(mocker: MockerFixture) -> MockType:  # ruff:ignore[unused-async]  # runs on the test's loop
+    return mocker.spy(asyncio.get_running_loop(), "create_task")
+
+
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("thread_local", [pytest.param(False, id="shared"), pytest.param(True, id="thread-local")])
+def test_async_lock_on_a_daemon_loop_thread_held_at_interpreter_exit_releases_its_marker(
+    tmp_path: Path, thread_local: bool
+) -> None:
+    script: Final = (
+        "import asyncio, sys, threading\n"
+        "from filelock import AsyncSoftFileLock\n"
+        "loop = asyncio.new_event_loop()\n"
+        "threading.Thread(target=loop.run_forever, daemon=True).start()\n"
+        f"lock = AsyncSoftFileLock(sys.argv[1], loop=loop, thread_local={thread_local}, "
+        f"run_in_executor={not thread_local})\n"
+        "asyncio.run_coroutine_threadsafe(lock.acquire(), loop).result()\n"
+    )
+
+    subprocess.run([sys.executable, "-c", script, str(tmp_path / "a")], check=True, timeout=10)
+
+    assert not (tmp_path / "a").exists()
 
 
 @pytest.mark.filterwarnings("ignore::filelock.SoftFileLockLifetimeWarning")
@@ -1364,5 +1447,4 @@ async def test_executor_acquire_keeps_filesystem_calls_off_the_loop(tmp_path: Pa
     await lock.release()
 
     # Breaking the expired marker lstats it on every platform, so an empty set means the spy saw nothing.
-    assert lstat_threads
-    assert threading.get_ident() not in lstat_threads
+    assert (bool(lstat_threads), threading.get_ident() in lstat_threads) == (True, False)

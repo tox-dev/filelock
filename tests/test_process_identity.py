@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from errno import EACCES, ENODEV, EPERM
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -18,6 +19,9 @@ _POSIX_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform == "w
 #: NetBSD and other POSIX platforms without a proven start-time source expose no token, so an owner carries none there.
 _NEEDS_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     process_start_token(os.getpid()) is None, reason="this platform exposes no process start-time source"
+)
+_LINUX_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform not in {"linux", "android"}, reason="PID namespaces exist only on Linux"
 )
 
 
@@ -126,15 +130,58 @@ def test_owner_is_stale_live_process_matching_token_held() -> None:
 
 @_NEEDS_START_TOKEN
 def test_owner_is_stale_live_process_mismatched_token_reclaimed() -> None:
-    token = process_start_token(os.getpid())
+    token: Final = process_start_token(os.getpid())
     assert token is not None
-    assert owner_is_stale(os.getpid(), host_name(), token + 1) is True
+    # Far enough ahead that no task on this kernel started then.
+    assert owner_is_stale(os.getpid(), host_name(), token + 10**9) is True
+
+
+@_LINUX_ONLY
+def test_owner_is_stale_owner_running_in_another_namespace_held(mocker: MockerFixture) -> None:  # pragma: linux cover
+    # An older release in a container recorded its in-container PID; this process stands in for it, its innermost PID
+    # being the recorded one.
+    pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
+    own_status: Final = Path(f"/proc/{os.getpid()}/status")
+    read_text: Final = Path.read_text
+    mocker.patch.object(
+        Path,
+        "read_text",
+        autospec=True,
+        side_effect=lambda path, **kwargs: (
+            f"NSpid:\t{os.getpid()}\t{_DEAD_PID}\n" if path == own_status else read_text(path, **kwargs)
+        ),
+    )
+    assert owner_is_stale(_DEAD_PID, host_name(), process_start_token(os.getpid())) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize(
+    ("boot_flip", "scans"),
+    [
+        # Workers forked together share a start token; a dead one's marker must not wait on its live siblings.
+        pytest.param(0, 1, id="same-tick"),
+        pytest.param(1 << 64, 0, id="another-boot"),
+    ],
+)
+def test_owner_is_stale_dead_owner_by_start_token_reclaimed(boot_flip: int, scans: int, mocker: MockerFixture) -> None:
+    pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
+    scandir: Final = mocker.patch("filelock._identity.os.scandir", autospec=True, side_effect=os.scandir)
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    assert (owner_is_stale(_DEAD_PID, host_name(), token ^ boot_flip), scandir.call_count) == (True, scans)
+
+
+@_LINUX_ONLY
+def test_owner_is_stale_without_a_readable_proc_reclaimed(mocker: MockerFixture) -> None:  # pragma: linux cover
+    pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
+    mocker.patch("filelock._identity.os.scandir", autospec=True, side_effect=PermissionError(EACCES, "hidepid"))
+    assert owner_is_stale(_DEAD_PID, host_name(), process_start_token(os.getpid())) is True
 
 
 @_NEEDS_START_TOKEN
 def test_owner_is_stale_sibling_pid_namespace_never_reclaimed(mocker: MockerFixture) -> None:
     # Two containers in one pod share the hostname; the same PID in the holder's namespace is another process.
-    token = process_start_token(os.getpid())
+    token: Final = process_start_token(os.getpid())
     assert token is not None
     pin_pid_namespace(mocker, 0xF0000001)
     holder_host: Final[str] = host_name()
