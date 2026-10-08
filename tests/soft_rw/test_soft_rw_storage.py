@@ -108,6 +108,23 @@ def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFix
         OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
+def test_replace_renames_over_the_target(tmp_path: Path) -> None:
+    (source := tmp_path / "source").write_bytes(b"new")
+    (target := tmp_path / "target").write_bytes(b"old")
+    assert OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
+    assert target.read_bytes() == b"new"
+    assert not source.exists()
+
+
+def test_replace_refused_leaves_the_target(tmp_path: Path, mocker: MockerFixture) -> None:
+    # Windows refuses to rename over a file a reader holds open; the caller keeps the older target.
+    (source := tmp_path / "source").write_bytes(b"new")
+    (target := tmp_path / "target").write_bytes(b"old")
+    mocker.patch.object(storage_mod.Path, "replace", side_effect=PermissionError("in use"))
+    assert not OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
+    assert target.read_bytes() == b"old"
+
+
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch.object(Path, "unlink", side_effect=PermissionError("held open"))
     OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))

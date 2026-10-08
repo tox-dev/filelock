@@ -196,6 +196,8 @@ def test_rescan_skips_a_generation_removed_after_listing(
     log = GenerationLog(files, lock_file, root)
     assert log.commit(Snapshot(generation=1, writer=None, readers=frozenset()))
     assert log.commit(Snapshot(generation=2, writer=_FIRST, readers=frozenset()))
+    # A log an older release wrote has no HEAD to stand in either.
+    Path(root, "gen", "HEAD").unlink()
     real_read = OsFiles.read
     latest_path = str(Path(root, "gen", f"{2:020d}"))
     mocker.patch.object(OsFiles, "read", side_effect=lambda path: None if path == latest_path else real_read(path))
@@ -410,8 +412,8 @@ def test_a_wiped_log_nobody_restarted_reads_as_empty(lock_file: str, files: OsFi
 def test_a_remembered_head_gone_from_the_same_log_fails_closed(lock_file: str, files: OsFiles, root: str) -> None:
     # The epoch still names the log this client remembers, so an empty view is this client failing to see the head.
     old = _committed(files, lock_file, root, [None, _FIRST])
-    for generation in (1, 2):
-        Path(root, "gen", f"{generation:020d}").unlink()
+    for name in (f"{1:020d}", f"{2:020d}", "HEAD"):
+        Path(root, "gen", name).unlink()
     with pytest.raises(SoftFileLockProtocolError, match="names no readable snapshot"):
         old.latest()
 
@@ -444,6 +446,35 @@ def test_commit_into_a_log_replaced_since_the_read_is_refused(lock_file: str, fi
     _committed(files, lock_file, root, [_SECOND])
     assert not old.commit(successor)
     assert not Path(root, "gen", f"{successor.generation:020d}").exists()
+
+
+@pytest.mark.requires_hard_links
+def test_a_fresh_client_served_an_empty_listing_starts_from_head(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # Compaction has removed everything the probe from generation 0 would try, and this client remembers nothing; a
+    # cached empty listing would make the log look new and the next commit would link gen/1 beside the real head.
+    _committed(files, lock_file, root, [None] * 140 + [_FIRST])
+    mocker.patch.object(OsFiles, "listdir", return_value=[])
+    latest = GenerationLog(files, lock_file, root).latest()
+    assert latest == Snapshot(generation=141, writer=_FIRST, readers=frozenset())
+
+
+@pytest.mark.requires_hard_links
+def test_a_head_record_left_behind_is_probed_past(lock_file: str, files: OsFiles, root: str) -> None:
+    # Two committers' renames can land out of order; HEAD then names an older generation, which is only a floor.
+    _committed(files, lock_file, root, [None, None, _FIRST])
+    Path(root, "gen", "HEAD").write_bytes(Snapshot(generation=1, writer=None, readers=frozenset()).encode())
+    assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
+
+
+@pytest.mark.requires_hard_links
+def test_a_malformed_head_record_fails_closed(lock_file: str, files: OsFiles, root: str) -> None:
+    _committed(files, lock_file, root, [_FIRST])
+    Path(root, "gen", "HEAD").write_bytes(b"garbage\n")
+    with pytest.raises(SoftFileLockProtocolError, match="malformed head record") as caught:
+        GenerationLog(files, lock_file, root).latest()
+    assert caught.value.claim_name == "HEAD"
 
 
 @pytest.mark.requires_hard_links
@@ -593,6 +624,12 @@ class _MemoryFiles:
         if _key(target) in self.files or _key(source) not in self.files:
             return False
         self.files[_key(target)] = self.files[_key(source)]
+        self._record()
+        return True
+
+    def replace(self, source: str, target: str) -> bool:
+        self._scheduler.yield_turn()
+        self.files[_key(target)] = self.files.pop(_key(source))
         self._record()
         return True
 

@@ -82,6 +82,16 @@ class OsFiles:
         return False
 
     @staticmethod
+    def replace(source: str, target: str) -> bool:
+        try:
+            Path(source).replace(target)
+        except PermissionError:
+            # Windows refuses to rename over a file another process has open without sharing delete access; a reader
+            # holds it for one read, and a target left one rename behind is what the caller already tolerates.
+            return False
+        return True
+
+    @staticmethod
     def overwrite(path: str, data: bytes) -> bool:
         if (fd := _open(path, os.O_WRONLY | _O_NOFOLLOW | _O_BINARY)) is None:
             return False

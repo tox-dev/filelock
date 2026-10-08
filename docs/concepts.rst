@@ -724,6 +724,8 @@ Deploy it on a shared filesystem only after verifying its required operations an
   generation ``N``. Names are zero-padded so the newest sorts last.
 - ``<path>.rw/gen/epoch`` is a random token the first participant creates, naming this incarnation of the log the way
   restic's repository id and PostgreSQL's system identifier name theirs. Removing the directory removes it.
+- ``<path>.rw/gen/HEAD`` is a copy of the newest snapshot, replaced by rename after every commit. A crash between the
+  link and the rename, or two committers' renames landing out of order, leaves it behind the head, never ahead.
 - ``<path>.rw/holders/<token>`` is one record per participant, carrying its token, pid, hostname, and a nonce the
   heartbeat rewrites in place.
 
@@ -734,14 +736,17 @@ re-reads and tries again, and the record is complete before the name exists. The
 critical section for a crash on any host to leave half done. A dead process leaves behind either a snapshot that still
 names it, which a contender evicts, or an orphaned record, which a sweep collects.
 
-A participant finds the latest generation by listing the directory on each poll, which makes an NFS client revalidate
-what it has cached about the names inside, then probing forward by name from the newest readable generation the listing
-or its memory names, across a window of sixty-four generations. Compaction removes snapshots more than that window
-behind the latest, so the probe bridges a listing served stale, a generation removed between the listing and the read,
-and a hole left by a committer that died before it compacted. Memory only says where to look: the snapshot it names is
-read from disk like any other, and it is forgotten once the epoch changes, so an instance never continues a removed
-log's numbering into its replacement. A listing or memory that names generations of which none can be read marks a
-client too far behind the log to trust anything it reads; the acquire then raises :class:`SoftFileLockProtocolError
+A participant finds the latest generation by starting from the newest snapshot it can read among ``gen/HEAD`` and the
+generations its listing of the directory or its memory names, then probing forward by name across a window of sixty-four
+generations. The probe bridges a generation removed between the listing and the read, a hole left by a committer that
+died before it compacted, and the commits since ``HEAD`` was last replaced. It is not a bound on how stale a listing may
+be: an NFS client may serve a directory listing and negative lookups from its cache for up to ``acdirmax`` (60 seconds
+by default), long enough for peers to compact far past the window. ``HEAD`` covers that case, because opening a file by
+name makes the client check it against the server (close-to-open consistency), so a stale listing can never pull the
+start below the head the last commit published. Memory only says where to look: the snapshot it names is read from disk
+like any other, and it is forgotten once the epoch changes, so an instance never continues a removed log's numbering
+into its replacement. A listing or memory that names generations of which none can be read marks a client too far behind
+the log to trust anything it reads; the acquire then raises :class:`SoftFileLockProtocolError
 <filelock.SoftFileLockProtocolError>` rather than restart the sequence. A commit also re-reads the epoch and counts as
 lost if it changed, so the participant re-reads the new log instead of linking into it.
 
