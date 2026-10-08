@@ -14,7 +14,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Callable, Hashable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from itertools import count, starmap
+from itertools import count, pairwise, starmap
 from threading import TIMEOUT_MAX, Condition, RLock, get_ident, local
 from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
@@ -99,17 +99,24 @@ class LockOptions(TypedDict, total=False):
     on_acquired: Callable[[int], None] | None
 
 
-def _exception_group_cls() -> type[BaseException]:
+def _exception_group_cls() -> type[BaseException] | None:
     # BaseExceptionGroup is a builtin on 3.11+; on 3.10 it needs the exceptiongroup backport. filelock keeps zero
-    # runtime dependencies, so the backport is imported lazily rather than required, and only group mode needs it.
+    # runtime dependencies, so the backport is imported lazily rather than required. Without it, every place that would
+    # build a group chains the errors instead, and only an explicit context_error_policy="group" is refused.
     if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
         return BaseExceptionGroup  # ruff:ignore[undefined-name]  # builtin on 3.11+
-    # Alias the import so BaseExceptionGroup above stays the builtin rather than an unbound local of this function.
-    from exceptiongroup import (  # ruff:ignore[import-outside-top-level]  # pragma: no cover (<py311)
-        BaseExceptionGroup as _Backport,
-    )
+    try:  # pragma: <3.11 cover
+        # Alias the import so BaseExceptionGroup above stays the builtin rather than an unbound local of this function.
+        from exceptiongroup import (  # ruff:ignore[import-outside-top-level]  # optional backport
+            BaseExceptionGroup as _Backport,
+        )
+    except ImportError:  # pragma: <3.11 cover
+        return None
+    return _Backport  # pragma: <3.11 cover
 
-    return _Backport  # pragma: no cover (<py311)
+
+def _is_exception_group(error: BaseException) -> bool:
+    return (group_cls := _exception_group_cls()) is not None and isinstance(error, group_cls)
 
 
 def _raise_grouped_errors(
@@ -120,8 +127,13 @@ def _raise_grouped_errors(
     marker: tuple[str, _MarkerValue] | None = None,
 ) -> NoReturn:
     errors = (first_error, second_error, *additional_errors)
+    if (group_cls := _exception_group_cls()) is None:  # pragma: <3.11 cover
+        # Chain them the way nested handlers would: the last error propagates with the earlier ones as its context.
+        for earlier, later in pairwise(errors):
+            _append_exception_context(later, earlier)
+        _raise_chained_errors(errors[-1])
     _detach_grouped_contexts(errors)
-    group = _exception_group_cls()(message, errors)
+    group = group_cls(message, errors)
     if marker is not None:
         setattr(group, marker[0], marker[1])
     raise group from None
@@ -145,7 +157,7 @@ def _detach_grouped_contexts(errors: tuple[BaseException, ...]) -> None:
             pending.append(context)
         if error.__cause__ is not None:
             pending.append(error.__cause__)
-        if isinstance(error, _exception_group_cls()):
+        if _is_exception_group(error):
             pending.extend(cast("_ExceptionGroupProtocol", error).exceptions)
 
 
@@ -161,8 +173,8 @@ def _same_exception_tree(first: BaseException, second: BaseException) -> bool:
         seen.add(pair)
         if (
             type(first_error) is not type(second_error)
-            or not isinstance(first_error, _exception_group_cls())
-            or not isinstance(second_error, _exception_group_cls())
+            or not _is_exception_group(first_error)
+            or not _is_exception_group(second_error)
         ):
             return False
         first_group = cast("_ExceptionGroupProtocol", first_error)
@@ -174,7 +186,7 @@ def _same_exception_tree(first: BaseException, second: BaseException) -> bool:
 
 
 def _contains_exception(error: BaseException, target: BaseException | None) -> bool:
-    if target is None or not isinstance(error, _exception_group_cls()):
+    if target is None or not _is_exception_group(error):
         return False
     pending = list(cast("_ExceptionGroupProtocol", error).exceptions)
     seen: set[int] = set()
@@ -185,7 +197,7 @@ def _contains_exception(error: BaseException, target: BaseException | None) -> b
         if id(child) in seen:
             continue
         seen.add(id(child))
-        if isinstance(child, _exception_group_cls()):
+        if _is_exception_group(child):
             pending.extend(cast("_ExceptionGroupProtocol", child).exceptions)
     return False
 
@@ -220,7 +232,7 @@ def _exception_graph_contains(error: BaseException, target: BaseException) -> bo
             pending.append(current.__cause__)
         if current.__context__ is not None:
             pending.append(current.__context__)
-        if isinstance(current, _exception_group_cls()):
+        if _is_exception_group(current):
             pending.extend(cast("_ExceptionGroupProtocol", current).exceptions)
     return False
 
@@ -228,7 +240,7 @@ def _exception_graph_contains(error: BaseException, target: BaseException) -> bo
 def _grouped_errors(
     error: BaseException, message: str, marker: tuple[str, _MarkerValue]
 ) -> tuple[BaseException, ...] | None:
-    if not isinstance(error, _exception_group_cls()):
+    if not _is_exception_group(error):
         return None
     group = cast("_ExceptionGroupProtocol", error)
     return group.exceptions if group.message == message and getattr(group, marker[0], None) is marker[1] else None
@@ -282,7 +294,7 @@ def _detach_exception_context(error: BaseException, target: BaseException) -> No
             pending.append(current.__context__)
         if current.__cause__ is not None:
             pending.append(current.__cause__)
-        if isinstance(current, _exception_group_cls()):
+        if _is_exception_group(current):
             pending.extend(cast("_ExceptionGroupProtocol", current).exceptions)
 
 
@@ -572,12 +584,10 @@ def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
     if policy not in _CONTEXT_ERROR_POLICIES:
         msg = f"context_error_policy must be 'chain' or 'group', got {policy!r}"
         raise ValueError(msg)
-    if policy == "group":  # fail fast at construction rather than only when a dual failure happens to occur
-        try:
-            _exception_group_cls()
-        except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
-            msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
-            raise ValueError(msg) from exc
+    # Fail fast at construction rather than only when a dual failure happens to occur.
+    if policy == "group" and _exception_group_cls() is None:  # pragma: <3.11 cover
+        msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
+        raise ValueError(msg)
     return cast("ContextErrorPolicy", policy)
 
 
@@ -607,13 +617,6 @@ def _resolve_on_acquired(
     if not supported:
         msg = f"on_acquired is not supported by {cls_name}: only native locks expose the lock descriptor"
         raise ValueError(msg)
-    # A hook that fails and then also fails to release surfaces both errors as a BaseExceptionGroup. Require that class
-    # at construction rather than at the rare moment both fail, matching how context_error_policy='group' validates.
-    try:
-        _exception_group_cls()
-    except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
-        msg = "on_acquired requires Python 3.11+ or the 'exceptiongroup' backport for its rollback error path"
-        raise ValueError(msg) from exc
     return on_acquired
 
 

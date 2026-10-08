@@ -1,0 +1,2 @@
+On Python 3.10 without the ``exceptiongroup`` backport, a release failure under the default ``context_error_policy`` no
+longer turns into :exc:`ModuleNotFoundError`; cleanup failures chain instead of grouping, and ``on_acquired`` is allowed.

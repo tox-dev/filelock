@@ -1304,6 +1304,10 @@ both as siblings of a :class:`BaseExceptionGroup`, body first, release second:
 When both errors subclass :class:`Exception`, the group is a plain :class:`ExceptionGroup`, so ``except*`` and
 ``except Exception`` still catch it. The default ``"chain"`` keeps Python's behavior.
 
+filelock also groups the failures of its own cleanup, such as an ``on_acquired`` hook that raises and a rollback
+release that fails after it. filelock does not depend on the backport, so on Python 3.10 without it those failures
+chain instead: the last one propagates and the earlier ones sit in its ``__context__``.
+
 *****************************************
  Handle a close failure after unlock
 *****************************************
