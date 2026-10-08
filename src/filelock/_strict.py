@@ -108,6 +108,10 @@ class StrictSoftFileLock(BaseFileLock):
     _poll_backoff_cap: float = 0.05
 
     def _acquire(self) -> None:
+        # A doorway whose claim cleanup failed is pending, not held: finish removing its claims before publishing new
+        # ones, so this owner never contends against its own leftovers and a repeated failure raises again.
+        if self._context.owner_claim_paths:
+            self._discard_doorway()
         # Resolve once per acquisition, not per poll: a waiter on a relative path must keep publishing into the
         # directory it started waiting in even when another thread changes the working directory mid-wait.
         if (claim_root := self._context.claim_root) is None:
@@ -130,34 +134,40 @@ class StrictSoftFileLock(BaseFileLock):
             raise
         self._mark_descriptor_pending(sentinel_fd, sentinel_identity)
         try:
-            self._attempt_doorway(claim_directory, sentinel_fd, sentinel_identity)
+            won = self._attempt_doorway(claim_directory)
         except BaseException:
-            if self._context.pending_lock_file_fd == sentinel_fd:
-                self._discard_doorway(sentinel_fd, sentinel_identity)
+            self._discard_doorway()
             raise
+        if won:
+            self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
+        else:
+            self._discard_doorway()
 
-    def _attempt_doorway(self, claim_directory: Path, sentinel_fd: int, sentinel_identity: tuple[int, int]) -> None:
+    def _attempt_doorway(self, claim_directory: Path) -> bool:
         if _read_existing_claims(self.lock_file, claim_directory):
-            self._discard_doorway(sentinel_fd, sentinel_identity)
-            return
+            return False
 
         token = secrets.token_hex(_TOKEN_HEX_LENGTH // 2)
         intent_name = _claim_name("intent", token)
         intent_path = str(claim_directory / intent_name)
+        # Record each claim before its link runs: once the link may have committed, every later failure (a lost NFS
+        # reply, the identity check, the private-record cleanup, a directory close, an interrupt) must leave the name
+        # where _discard_doorway removes it. The token makes the name this owner's alone, so removing it by name when
+        # the link never happened is a no-op.
+        self._context.owner_claim_paths = (intent_path,)
         try:
             publication_cleanup_error = _publish_record(intent_path, _claim_record(token), self._open_mode())
         except _PrivateRecordReclaimedError:
-            self._discard_doorway(sentinel_fd, sentinel_identity)
-            return
+            return False
         except (NotImplementedError, OSError) as error:
             _raise_if_hard_links_unsupported(self.lock_file, error)
             if isinstance(error, OSError) and error.errno == EEXIST:
-                self._discard_doorway(sentinel_fd, sentinel_identity)
-                return
+                # Another file holds the name, so it is not this owner's to remove.
+                self._context.owner_claim_paths = ()
+                return False
             raise
         if publication_cleanup_error is not None:  # pragma: needs dir-fd
             raise publication_cleanup_error
-        self._context.owner_claim_paths = (intent_path,)
 
         claims = _read_existing_claims(self.lock_file, claim_directory)
         if (
@@ -165,35 +175,31 @@ class StrictSoftFileLock(BaseFileLock):
             or any(claim.state == "held" for claim in claims)
             or min(claim.name for claim in claims) != intent_name
         ):
-            self._discard_doorway(sentinel_fd, sentinel_identity)
-            return
+            return False
 
         held_name = _claim_name("held", token)
         held_path = str(claim_directory / held_name)
+        self._context.owner_claim_paths = (held_path, intent_path)
         try:
             link_cleanup_error = _link_no_replace(claim_directory, intent_name, held_name)
         except (NotImplementedError, OSError) as error:
             _raise_if_hard_links_unsupported(self.lock_file, error)
+            if isinstance(error, OSError) and error.errno == EEXIST:
+                self._context.owner_claim_paths = (intent_path,)
             raise
-        self._context.owner_claim_paths = (held_path, intent_path)
         if link_cleanup_error is not None:  # pragma: needs dir-fd
-            self._context.owner_claim_paths = ()
             raise link_cleanup_error
 
         claims = _read_existing_claims(self.lock_file, claim_directory)
-        if (
-            not {intent_name, held_name}.issubset(claim.name for claim in claims)
-            or min(_claim_token_key(claim.name) for claim in claims) != f"v1-{token}.claim"
-        ):
-            self._discard_doorway(sentinel_fd, sentinel_identity)
-            return
         # Keep the intent claim for the whole hold rather than unlinking it now. The intent has existed, unchanged,
         # since this owner published it, so a contender's os.scandir is guaranteed to return it (POSIX only leaves the
         # visibility of entries created or removed *during* a scan unspecified). The freshly linked held claim carries
         # no such guarantee: a scan that races its creation can miss it. Were the intent removed here, that scan could
         # observe neither claim and let a larger-token contender win over this owner. The stable intent is the witness
         # that keeps the phase-five min-token decision computed over the true set. Release unlinks both.
-        self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
+        return {intent_name, held_name}.issubset(claim.name for claim in claims) and min(
+            _claim_token_key(claim.name) for claim in claims
+        ) == f"v1-{token}.claim"
 
     @property
     def claims(self) -> tuple[StrictSoftFileClaim, ...]:
@@ -209,19 +215,20 @@ class StrictSoftFileLock(BaseFileLock):
         ) is not None:  # pragma: needs dir-fd
             raise cleanup_error
 
-    def _rollback_failed_acquire(self, acquisition_error: BaseException) -> None:
-        # _acquire already reconciles a failed doorway through _discard_doorway: it either closes the pending
-        # descriptor or, when a held claim cannot be removed, commits it as owned so a later release retries and
-        # raises the cleanup errors. A base rollback would release that owned descriptor again and report each
-        # failure a second time, so leave the reconciled state alone.
-        if self.is_locked:
-            return
-        super()._rollback_failed_acquire(acquisition_error)
+    def __del__(self) -> None:
+        super().__del__()
+        if vars(self).get("_creator_pid") != os.getpid():
+            return  # pragma: forked child
+        # release() leaves a doorway whose cleanup failed alone, since it is not a hold; retry the cleanup here so a
+        # dropped instance does not strand its claims. A finalizer must not raise, as in the base class.
+        with contextlib.suppress(Exception):
+            # GraalPy defers finalizers to the host collector, so its tests cannot drive this cleanup.
+            if self._context.owner_claim_paths and not self.is_locked:  # pragma: needs collected-finalization
+                self._discard_doorway()
 
     def _reconcile_failed_acquire(self, canonical: str) -> None:
         # The acquisition is over, so the next one resolves the working directory again rather than reuse this one's.
-        if not self.is_locked:
-            self._context.claim_root = None
+        self._context.claim_root = None
         super()._reconcile_failed_acquire(canonical)
 
     def _release(self) -> None:
@@ -239,12 +246,14 @@ class StrictSoftFileLock(BaseFileLock):
         if errors:
             _raise_recorded_errors("strict release cleanup failed", errors)
 
-    def _discard_doorway(self, fd: int, identity: tuple[int, int]) -> None:
+    def _discard_doorway(self) -> None:
         remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
         self._context.owner_claim_paths = tuple(remaining)
         if remaining:
-            self._mark_descriptor_owned(fd, identity)
+            # Stay pending rather than owned: is_locked must only report a held claim that passed the final rescan.
+            # The next acquire retries this cleanup before it publishes anything.
             _raise_recorded_errors("strict doorway claim cleanup failed", errors)
+        fd = cast("int", self._context.pending_lock_file_fd)
         self._mark_descriptor_released()
         try:
             self._close_released_fd(fd, default_suppresses=False)
@@ -475,7 +484,7 @@ def _publish_record(
     if directory_fd is not None:  # pragma: needs dir-fd
         try:
             os.close(directory_fd)
-        except BaseException as close_error:  # ruff:ignore[blind-except]  # caller records the published path before raising
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # a claim's caller recorded its path before publishing
             return close_error
     return None
 
@@ -550,7 +559,7 @@ def _link_private_record(
     private_identity: tuple[int, int],
 ) -> None:
     try:
-        _link_relative(directory_ref, *names)
+        _link_or_find_committed(directory_ref, *names)
     except FileNotFoundError as error:
         if _relative_identity(directory_ref, names[0]) is not None:
             raise
@@ -697,6 +706,19 @@ def _link_relative(directory_ref: tuple[str, int | None], source_name: str, dest
     _link_no_follow(Path(directory, source_name), Path(directory, destination_name))  # pragma: win32 cover
 
 
+def _link_or_find_committed(directory_ref: tuple[str, int | None], source_name: str, destination_name: str) -> None:
+    try:
+        _link_relative(directory_ref, source_name, destination_name)
+    except FileExistsError:
+        # NFS retransmits a LINK whose reply was lost, and the retry reports EEXIST for the link that already
+        # committed. The open(2) NOTES and liblockfile settle it the same way: the link succeeded when the destination
+        # now names the source file.
+        if (identity := _relative_identity(directory_ref, destination_name)) is None or identity != _relative_identity(
+            directory_ref, source_name
+        ):
+            raise
+
+
 def _link_no_follow(
     source: str | Path,
     destination: str | Path,
@@ -732,7 +754,7 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
     if _LINK_SUPPORTS_DIR_FD:  # pragma: needs dir-fd
         directory_fd = _open_directory(str(directory))
         try:
-            _link_no_follow(source_name, destination_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            _link_or_find_committed((str(directory), directory_fd), source_name, destination_name)
         except BaseException as link_error:  # preserve link and directory cleanup errors
             try:
                 os.close(directory_fd)
@@ -741,10 +763,10 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
             raise
         try:
             os.close(directory_fd)
-        except BaseException as close_error:  # ruff:ignore[blind-except]  # caller records the held path before raising
+        except BaseException as close_error:  # ruff:ignore[blind-except]  # the caller recorded the held path before linking
             return close_error
         return None
-    _link_no_follow(directory / source_name, directory / destination_name)  # pragma: win32 cover
+    _link_or_find_committed((str(directory), None), source_name, destination_name)  # pragma: win32 cover
     return None  # pragma: win32 cover
 
 

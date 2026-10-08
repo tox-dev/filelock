@@ -833,6 +833,11 @@ uses directory-relative deletion on platforms that support it. Unknown record ve
 and unreadable claims raise :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>`; the exception's
 ``claim_name`` identifies the entry that needs inspection.
 
+An acquisition that fails after publishing a claim removes that claim before it raises, so a failed attempt does not
+block other contenders. If removing it fails too, :attr:`is_locked <filelock.BaseFileLock.is_locked>` stays ``False``
+and the next ``acquire()`` on the same instance retries the removal before publishing again, raising until it succeeds.
+Garbage collecting the instance retries it as well.
+
 Each publication attempt uses a fresh random private-record name. A private record with another hard link is removed
 immediately; an unpublished record abandoned by a crash is removed after a two-second grace period. If a live publisher
 is paused past that grace period, it backs off and retries instead of entering without a public claim. A directory,
