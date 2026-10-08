@@ -62,6 +62,11 @@ _DB_OPEN_FLAGS: Final[int] = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 
 # name, so it reopens the inode already validated, and journal_mode=MEMORY keeps it from deriving an on-disk journal
 # name from the synthetic path.
 _FD_DIR: Final[str] = "/proc/self/fd" if sys.platform == "linux" else "/dev/fd"
+# Header bytes 18 and 19 hold the file format versions, 2 in WAL mode: https://www.sqlite.org/fileformat.html
+_SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
+_FORMAT_VERSIONS: Final[slice] = slice(18, 20)
+_HEADER_SIZE: Final[int] = 20
+_WAL_FORMAT_VERSION: Final[int] = 2
 
 
 class _SQLiteTransitionContext(threading.local):
@@ -338,7 +343,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. The path is handed to :func:`sqlite3.connect` as given, so a ``.db`` extension is a convention rather
-    than a requirement; the filesystem must be one the active SQLite VFS supports.
+    than a requirement; the filesystem must be one the active SQLite VFS supports. Give the lock a file of its own: a
+    WAL-mode database raises :class:`ValueError`.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
@@ -830,6 +836,7 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
     if sys.platform == "win32":  # pragma: win32 cover
         # A Windows lock belongs to the handle that took it, so closing this one leaves SQLite's locks in place.
         try:
+            _raise_if_wal(fd, database)
             return sqlite3.connect(
                 database, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
             )
@@ -846,9 +853,11 @@ def _connect_through_descriptor(  # pragma: win32 no cover
     directory: pathlib.Path | None = None
     connection: _ForkSafeConnection | None = None
     try:
-        # NetBSD's static /dev/fd exposes only descriptors 0-63; a private hard link also pins the validated inode.
+        _raise_if_wal(fd, database)
+        # NetBSD's static /dev/fd exposes only descriptors 0-63; a private hard link also pins the validated inode. It
+        # sits beside the database because a link cannot cross filesystems, and TMPDIR is often on another one.
         if not os.access(target, os.F_OK):  # pragma: needs posix-hard-link
-            directory = pathlib.Path(tempfile.mkdtemp(prefix=".filelock-"))
+            directory = pathlib.Path(tempfile.mkdtemp(prefix=".filelock-", dir=pathlib.Path(database).parent))
             target = directory / "lock.db"
             os.link(database, target, follow_symlinks=False)
             linked: Final = target.stat(follow_symlinks=False)
@@ -859,13 +868,12 @@ def _connect_through_descriptor(  # pragma: win32 no cover
             os.fspath(target), check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
         )
         connection.retain_until_close(directory, identity)
-        directory = None
         return connection
     finally:
         if connection is None:
             _PROBE_DESCRIPTORS.release(identity)
-        if directory is not None:  # pragma: needs posix-hard-link
-            shutil.rmtree(directory)
+            if directory is not None:  # pragma: needs posix-hard-link
+                shutil.rmtree(directory)
 
 
 def _open_lock_database(database: str) -> int:
@@ -881,6 +889,15 @@ def _open_lock_database(database: str) -> int:
         msg = f"refusing a non-regular lock database: {database!r}"
         raise OSError(msg)
     return fd  # pragma: win32 no cover
+
+
+def _raise_if_wal(fd: int, database: str) -> None:
+    # SQLite derives the -wal name from the path it connects through, a descriptor name on POSIX, and WAL never blocks
+    # readers behind a writer, so the lock cannot work on such a database.
+    header: Final = os.read(fd, _HEADER_SIZE)
+    if header.startswith(_SQLITE_MAGIC) and _WAL_FORMAT_VERSION in header[_FORMAT_VERSIONS]:
+        msg = f"refusing a WAL-mode lock database: {database!r}; give ReadWriteLock a file of its own"
+        raise ValueError(msg)
 
 
 @contextmanager
