@@ -40,6 +40,7 @@ from ._async import (
     _capture_call,
     _drain_future,
     _future_result,
+    _run_in_executor,
     _wait_until_done,
 )
 from ._error import Timeout
@@ -534,7 +535,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         loop = asyncio.get_running_loop()
         sync_method = cast("Callable[[], None]", method)
         if self.run_in_executor:
-            return loop.run_in_executor(self.executor, _capture_call, sync_method)
+            return _run_in_executor(loop, self.executor, sync_method)
         future: asyncio.Future[_BackendOutcome[None]] = loop.create_future()
         future.set_result(_capture_call(sync_method))
         return future

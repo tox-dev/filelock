@@ -152,6 +152,32 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(tmp_path: P
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
+@pytest.mark.parametrize("held", [pytest.param(False, id="acquire"), pytest.param(True, id="release")])
+@pytest.mark.asyncio
+async def test_executor_shutdown_drops_queued_call_with_runtime_error(tmp_path: Path, *, held: bool) -> None:
+    executor_started = threading.Event()
+    release_executor = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+    lock = AsyncFileLock(tmp_path / "a", executor=executor)
+    if held:
+        await lock.acquire()
+    blocker = executor.submit(_block_executor, executor_started, release_executor)
+    assert executor_started.wait(timeout=5)
+    task = asyncio.create_task(lock.release() if held else lock.acquire())
+    await asyncio.sleep(0)
+    executor.shutdown(wait=False, cancel_futures=True)
+    release_executor.set()
+    blocker.result(timeout=5)
+
+    with pytest.raises(RuntimeError, match="executor shut down before running"):
+        await task
+    assert (lock.is_locked, lock.lock_counter) == (held, int(held))
+    assert_file_lock_state(str(tmp_path / "a"), available=not held)
+    lock.executor = None
+    await lock.release()
+    assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
 @NEEDS_FCNTL
 @pytest.mark.asyncio
 async def test_acquire_cancellation_does_not_release_later_claim(tmp_path: Path) -> None:  # pragma: needs fcntl
