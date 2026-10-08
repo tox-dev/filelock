@@ -237,7 +237,7 @@ class AsyncSoftReadWriteLock:
             await self._owners.release(
                 force=force,
                 lock_file=self.lock_file,
-                leave=functools.partial(self._run, self._lock.release, force=True),
+                leave=functools.partial(self._submit, self._lock.release, force=True),
             )
 
     async def close(self) -> None:

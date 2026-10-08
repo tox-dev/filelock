@@ -233,7 +233,7 @@ class AsyncReadWriteLock:
         # The task table owns the nesting, so the backend is always one level deep here, and a caller-supplied executor
         # can run this on another worker than the acquire: force=True is the backend's cross-thread release.
         await self._owners.release(
-            force=force, lock_file=self.lock_file, leave=functools.partial(self._run, self._lock.release, force=True)
+            force=force, lock_file=self.lock_file, leave=functools.partial(self._submit, self._lock.release, force=True)
         )
 
     async def close(self) -> None:
@@ -283,18 +283,6 @@ class AsyncReadWriteLock:
                 _raise_cancelled_error(cancellation, error)
             raise
         _future_result(acquire_future)
-
-    async def _run(self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs) -> _R:
-        future = self._submit(func, *args, **kwargs)
-        try:
-            await _wait_until_done(future)
-        except asyncio.CancelledError as cancellation:
-            try:
-                await _drain_future(future)
-            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                _raise_cancelled_error(cancellation, error)
-            raise
-        return _future_result(future)
 
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
