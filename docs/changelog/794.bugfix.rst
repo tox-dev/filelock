@@ -1,0 +1,2 @@
+Constructing or closing a second :class:`~filelock.ReadWriteLock` on a held database no longer drops the holder's lock,
+so other processes stay excluded.

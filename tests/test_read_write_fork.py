@@ -69,7 +69,7 @@ def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) 
 
 
 @_NEEDS_FD_DIRECTORY
-def test_read_write_lock_holds_one_descriptor_on_its_database(tmp_path: Path) -> None:  # pragma: needs fd-directory
+def test_read_write_lock_keeps_its_probe_descriptor_while_held(tmp_path: Path) -> None:  # pragma: needs fd-directory
     lock_path: Final[Path] = tmp_path / "held.db"
     with ReadWriteLock(lock_path, is_singleton=False).read_lock():
         database: Final[os.stat_result] = lock_path.stat()
@@ -80,8 +80,9 @@ def test_read_write_lock_holds_one_descriptor_on_its_database(tmp_path: Path) ->
                 descriptor: Final[os.stat_result] = os.fstat(int(entry.name))
                 held += (descriptor.st_dev, descriptor.st_ino) == (database.st_dev, database.st_ino)
 
-    # SQLite keeps its own descriptor, so the one that refused a symlink must not outlive connect().
-    assert held == 1
+    # SQLite keeps its own descriptor, and the one that refused a symlink stays open with it: closing it would drop
+    # this process's locks on the inode.
+    assert held == 2
 
 
 @NEEDS_FORK  # pragma: needs fork
