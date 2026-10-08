@@ -693,6 +693,8 @@ Deploy it on a shared filesystem only after verifying its required operations an
 
 - ``<path>.rw/gen/<N>`` is an immutable snapshot: the writer token, if any, and the reader tokens holding the lock at
   generation ``N``. Names are zero-padded so the newest sorts last.
+- ``<path>.rw/gen/epoch`` is a random token the first participant creates, naming this incarnation of the log the way
+  restic's repository id and PostgreSQL's system identifier name theirs. Removing the directory removes it.
 - ``<path>.rw/holders/<token>`` is one record per participant, carrying its token, pid, hostname, and a nonce the
   heartbeat rewrites in place.
 
@@ -707,9 +709,12 @@ A participant finds the latest generation by listing the directory on each poll,
 what it has cached about the names inside, then probing forward by name from the newest readable generation the listing
 or its memory names, across a window of sixty-four generations. Compaction removes snapshots more than that window
 behind the latest, so the probe bridges a listing served stale, a generation removed between the listing and the read,
-and a hole left by a committer that died before it compacted. A listing that names generations of which none can be
-read marks a client too far behind the log to trust anything it reads; the acquire then raises
-:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` rather than restart the sequence.
+and a hole left by a committer that died before it compacted. Memory only says where to look: the snapshot it names is
+read from disk like any other, and it is forgotten once the epoch changes, so an instance never continues a removed
+log's numbering into its replacement. A listing or memory that names generations of which none can be read marks a
+client too far behind the log to trust anything it reads; the acquire then raises :class:`SoftFileLockProtocolError
+<filelock.SoftFileLockProtocolError>` rather than restart the sequence. A commit also re-reads the epoch and counts as
+lost if it changed, so the participant re-reads the new log instead of linking into it.
 
 Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
 new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers
@@ -854,9 +859,10 @@ that nonce has sat unchanged for a full ``stale_threshold``. The writer's token 
         Note over B: granted at generation 10, the crashed writer's holder record collected
 
 The generation a hold was granted at is :attr:`generation <filelock.SoftReadWriteLock.generation>`, a monotonic fencing
-token: a resource that rejects writes carrying a lower generation than the highest it has accepted refuses a holder that
-paused past ``stale_threshold``, was evicted, and resumed. The lock itself cannot stop that holder, so
-``stale_threshold`` must still exceed any realistic pause a holder might hit (GC, syscall delay, filesystem delay).
+token within one incarnation of the log: a resource that rejects writes carrying a lower generation than the highest it
+has accepted refuses a holder that paused past ``stale_threshold``, was evicted, and resumed. The lock itself cannot
+stop that holder, so ``stale_threshold`` must still exceed any realistic pause a holder might hit (GC, syscall delay,
+filesystem delay).
 
 The protocol needs atomic no-replace hard links, exclusive creation, and a coherent read of a file opened by name. NFSv3
 and later provide all three, and Amazon EFS is NFSv4.1. Where the filesystem refuses hard links the lock raises

@@ -12,9 +12,10 @@ heartbeat. A contender records the bytes it read there and the moment it read th
 member whose bytes have not changed for ``stale_threshold`` is evicted by committing a snapshot without it. Two hosts
 never compare clocks, so a skewed file server or a suspended virtual machine cannot make a live holder look dead.
 
-The generation number is monotonic and unique to one transition, so the generation at which a hold was granted fences
-it: a resource that rejects anything carrying a lower generation than the highest it has accepted refuses a holder
-that paused past its expiry and resumed.
+The generation number is monotonic and unique to one transition within one incarnation of the log, so the generation at
+which a hold was granted fences it: a resource that rejects anything carrying a lower generation than the highest it has
+accepted refuses a holder that paused past its expiry and resumed. A random epoch file names the incarnation, so a
+participant that outlives a removal of the log reads the new one instead of continuing the old numbering into it.
 """
 
 from __future__ import annotations
@@ -45,6 +46,10 @@ _MAX_RECORD_SIZE: Final[int] = 1 << 20
 #: listing may be before a participant could mistake an old generation for the head.
 _RETAINED_GENERATIONS: Final[int] = 64
 _GENERATIONS_DIRECTORY: Final[str] = "gen"
+#: A random token created once per log, the way restic stamps a repository id into its config and PostgreSQL a system
+#: identifier into pg_control and every WAL page: removing ``gen/`` removes it, so a participant can tell a log that was
+#: wiped and restarted from the one it remembers.
+_EPOCH_NAME: Final[str] = "epoch"
 _HOLDERS_DIRECTORY: Final[str] = "holders"
 _TEMPORARY_PREFIX: Final[str] = ".commit-"
 
@@ -55,8 +60,13 @@ class Files(Protocol):
     def read(self, path: str) -> bytes | None:
         """The file's bytes, ``None`` when it does not exist, or ``b""`` when it is not a regular file."""
 
-    def create(self, path: str, data: bytes) -> None:
-        """Create the file exclusively with the whole record written; raise ``FileExistsError`` when it exists."""
+    def create(self, path: str, data: bytes, *, durable: bool = False) -> None:
+        """
+        Create the file exclusively with the whole record written; raise ``FileExistsError`` when it exists.
+
+        *durable* flushes it to stable storage first, for a record that outlives the host that wrote it: a generation a
+        crash left empty would wedge every other participant. A holder record dies with its writer, so it skips that.
+        """
 
     def link(self, source: str, target: str) -> bool:
         """Hard-link *source* to *target* without replacing; ``True`` when *target* names *source*'s file afterwards."""
@@ -174,6 +184,8 @@ class GenerationLog:
         self._files = files
         self._lock_file = lock_file
         self._directory = Path(root, _GENERATIONS_DIRECTORY)
+        self._epoch_path = str(self._directory / _EPOCH_NAME)
+        self._epoch: bytes | None = None
         self._latest: Snapshot | None = None
 
     def latest(self) -> Snapshot:
@@ -181,33 +193,51 @@ class GenerationLog:
         The newest snapshot.
 
         Lists the directory on every call, since opening it is what makes an NFS client revalidate what it has cached
-        about the names inside, then starts from the newest readable generation the listing or memory names and probes
-        forward by name across the retained window. A listing served stale, a generation compacted between the listing
-        and the read, and a hole left by a committer that died before it compacted are all covered by the probe; only a
-        listing that names generations of which none can be read is refused, because that is a client so far behind
-        the log that nothing it reads can be trusted.
+        about the names inside, then starts from the newest generation the listing or memory names that can be read and
+        probes forward by name across the retained window. A listing served stale, a generation compacted between the
+        listing and the read, and a hole left by a committer that died before it compacted are all covered by the probe.
+        Memory only says where to look: what it names is read from disk like everything else, and it is dropped when the
+        log's epoch changes, so a log wiped and restarted is never continued from a generation it no longer holds. Only
+        a log that names generations, now or as remembered, of which none can be read is refused, because that is a
+        client so far behind the log that nothing it reads can be trusted.
         """
-        listed = self._list()
-        if (start := self._start(listed)) is None:
-            # Everything the listing named is gone: peers compacted past it while this client looked. One more listing
-            # settles whether the directory is genuinely empty or this client cannot see the head at all.
-            listed = self._list()
-            if (start := self._start(listed)) is None:
-                if listed:
-                    raise SoftFileLockProtocolError(self._lock_file, None, "generation log names no readable snapshot")
-                start = Snapshot(generation=0, writer=None, readers=frozenset())
-        latest = start
-        generation = start.generation
-        gap = 0
-        while gap < _RETAINED_GENERATIONS:
-            generation += 1
-            if (snapshot := self._read(generation)) is None:
-                gap += 1
-                continue
-            latest = snapshot
-            gap = 0
+        # When everything the first pass named is gone, peers compacted past it while this client looked, or the log was
+        # replaced; one more pass settles whether this client cannot see the head at all.
+        if (latest := self._find()) is None and (latest := self._find()) is None:
+            raise SoftFileLockProtocolError(self._lock_file, None, "generation log names no readable snapshot")
         self._latest = latest
         return latest
+
+    def _find(self) -> Snapshot | None:
+        if (epoch := self._incarnation()) != self._epoch:
+            self._epoch, self._latest = epoch, None
+        named = set(self._list())
+        # Generation 0 is the empty log, which has no record to read back.
+        if self._latest is not None and self._latest.generation:
+            named.add(self._latest.generation)
+        if not named:
+            return self._probe(Snapshot(generation=0, writer=None, readers=frozenset()))
+        newest = max(named)
+        for generation in sorted(named, reverse=True):
+            if (snapshot := self._read(generation)) is not None:
+                return self._probe(snapshot)
+        found = self._probe(Snapshot(generation=newest, writer=None, readers=frozenset()))
+        return None if found.generation == newest else found
+
+    def _incarnation(self) -> bytes | None:
+        if (epoch := self._files.read(self._epoch_path)) is None:
+            # Exclusive creation, not a link: reading the log must keep working where os.link does not exist. A peer
+            # that reads the file before its token is written takes the empty value for the epoch, and its next commit
+            # sees the change and re-reads, so a partial read costs one retry.
+            try:
+                self._files.create(self._epoch_path, f"{new_token()}\n".encode("ascii"), durable=True)
+            except FileExistsError:
+                pass
+            except FileNotFoundError:
+                # No gen/ yet: there is no log to tell apart, and the first participant's prepare() creates it.
+                return None
+            epoch = self._files.read(self._epoch_path)
+        return epoch
 
     def _list(self) -> list[int]:
         # isdigit() alone admits Unicode digits: superscripts int() rejects, fullwidth ones it parses to another number.
@@ -220,14 +250,18 @@ class GenerationLog:
             self._files.unlink(self._path(generation))
         return listed[-_RETAINED_GENERATIONS:]
 
-    def _start(self, listed: list[int]) -> Snapshot | None:
-        remembered = self._latest
-        for generation in reversed(listed):
-            if remembered is not None and remembered.generation >= generation:
-                return remembered
-            if (snapshot := self._read(generation)) is not None:
-                return snapshot
-        return remembered
+    def _probe(self, start: Snapshot) -> Snapshot:
+        latest = start
+        generation = start.generation
+        gap = 0
+        while gap < _RETAINED_GENERATIONS:
+            generation += 1
+            if (snapshot := self._read(generation)) is None:
+                gap += 1
+                continue
+            latest = snapshot
+            gap = 0
+        return latest
 
     def _read(self, generation: int) -> Snapshot | None:
         if (data := self._files.read(self._path(generation))) is None:
@@ -243,19 +277,30 @@ class GenerationLog:
 
         The record is complete before it gets its public name, and a no-replace hard link is the compare-and-swap: only
         one link to ``gen/<N+1>`` can ever succeed. The link's return code is not trusted, because an NFS retry can
-        report a link that did land as failed; the file's identity after the call is what decides.
+        report a link that did land as failed; the file's identity after the call is what decides. A log whose epoch
+        changed since the snapshot was read is a different log, so the commit is refused as lost and the caller
+        re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the link.
         """
-        temporary = str(self._directory / f"{_TEMPORARY_PREFIX}{new_token()}")
-        self._files.create(temporary, successor.encode())
-        try:
-            linked = self._files.link(temporary, self._path(successor.generation))
-        finally:
-            self._files.unlink(temporary)
-        if not linked:
+        if self._files.read(self._epoch_path) != self._epoch:
+            return False
+        if not self._publish(self._path(successor.generation), successor.encode()):
             return False
         self._latest = successor
         self._files.unlink(self._path(successor.generation - _RETAINED_GENERATIONS - 1))
         return True
+
+    def _publish(self, target: str, data: bytes) -> bool:
+        temporary = str(self._directory / f"{_TEMPORARY_PREFIX}{new_token()}")
+        try:
+            self._files.create(temporary, data, durable=True)
+        except FileNotFoundError:
+            # No gen/: the log was removed, or nobody has prepared it yet. Either way there is nothing to publish into
+            # until a participant's prepare() creates it, and the caller re-reads whatever log exists by then.
+            return False
+        try:
+            return self._files.link(temporary, target)
+        finally:
+            self._files.unlink(temporary)
 
     def _path(self, generation: int) -> str:
         return str(self._directory / self._name(generation))
@@ -344,9 +389,11 @@ class Participant:
         # The snapshot is the truth about membership: a commit the filesystem reported lost may have landed, and a peer
         # may have evicted this participant while it waited to drain, so both directions are taken from it. A wait can
         # outlast the stale threshold, so the nonce changes on every poll; a peer then never reads a patient contender
-        # as a corpse. A record that has gone missing was taken by an evictor or a sweeper that did.
+        # as a corpse. A record that has gone missing was taken by an evictor or a sweeper that did, or by a removal of
+        # the whole log, which takes the directories with it.
         self._entered = self.token in latest.members
         if not self._refresh_nonce():
+            self._files.prepare(self._root)
             with suppress(FileExistsError):
                 self._files.create(self._holder, encode_holder(self.token, new_token()))
 

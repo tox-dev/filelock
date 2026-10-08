@@ -631,6 +631,15 @@ out of the snapshot, so its own timeout does not leave readers blocked. The next
 a holder that died on another host once ``stale_threshold`` has passed. Filesystem calls on an unresponsive
 network mount can still outlast the acquisition timeout.
 
+Every snapshot is flushed to stable storage before it is linked into place, so a crash cannot leave one empty. A
+snapshot that still fails to parse (a write from outside filelock, a corrupted disk) makes every acquire raise
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming it, because guessing past it could admit
+two writers. To recover, rename the whole ``<path>.rw`` directory aside, then delete it; the rename takes it away in one
+step, where a recursive delete would let a participant read it half removed and fail. Every participant, including
+instances that stay alive, sees a new log and starts over from generation 1. A holder at that moment loses the lock: its
+next heartbeat reports it through ``on_compromise``, so remove the directory while nobody holds if you can. Generations
+restart too, so reset the high-water mark of any resource you fence with ``generation``.
+
 .. warning::
 
    ``SoftReadWriteLock`` and ``ReadWriteLock`` are singletons by default. A second construction for the same path

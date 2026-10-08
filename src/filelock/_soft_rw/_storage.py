@@ -50,10 +50,12 @@ class OsFiles:
             os.close(fd)
 
     @classmethod
-    def create(cls, path: str, data: bytes) -> None:
+    def create(cls, path: str, data: bytes, *, durable: bool = False) -> None:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, 0o600)
         try:
             write_all(fd, data)
+            if durable:
+                os.fsync(fd)
         except BaseException:
             os.close(fd)
             # The name is unique to this call, so removing it cannot take a record from anyone else.

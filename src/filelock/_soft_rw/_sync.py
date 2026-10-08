@@ -217,7 +217,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         Generations are monotonic across all participants and hosts, so this is a fencing token: pass it to the
         protected resource and have the resource reject any operation carrying a lower generation than the highest it
-        has accepted. That refuses a holder that paused past ``stale_threshold``, was evicted, and resumed.
+        has accepted. That refuses a holder that paused past ``stale_threshold``, was evicted, and resumed. Removing the
+        ``<lock_file>.rw`` directory starts a new log whose generations begin again at 1.
 
         .. versionadded:: 3.33.0
 
