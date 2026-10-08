@@ -1,0 +1,2 @@
+:meth:`SoftReadWriteLock.close() <filelock.SoftReadWriteLock.close>` makes an acquire still waiting in another thread
+raise :class:`RuntimeError`, where it used to take the lock on the closed instance and hold it until the process exited.
