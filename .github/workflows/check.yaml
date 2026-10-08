@@ -1,6 +1,8 @@
 name: "🛠️ check"
 on:
   workflow_dispatch:
+  # release.yaml calls this on a tag push, so publishing waits for the same jobs main runs.
+  workflow_call:
   push:
     branches: ["main"]
     tags-ignore: ["**"]
@@ -16,6 +18,9 @@ jobs:
   test:
     name: "🧪 Test ${{ matrix.py }} - ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash # read matrix values from env the same way on Windows
     strategy:
       fail-fast: false
       matrix:
@@ -52,23 +57,26 @@ jobs:
       - name: "🧪 Install tox"
         run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
       - name: "🐍 Install Python"
-        run: uv python install --python-preference only-managed ${{ matrix.py }}
-      - name: "⚙️ Setup test suite"
-        run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.py }}
+        run: uv python install --python-preference only-managed "$PY"
         env:
+          PY: ${{ matrix.py }}
+      - name: "⚙️ Setup test suite"
+        run: tox run -vv --notest --skip-missing-interpreters false -e "$PY"
+        env:
+          PY: ${{ matrix.py }}
           UV_PYTHON_PREFERENCE: only-managed
       # PyPy runs unmeasured: coverage has no JIT path there, so the suite takes 12m rather than 2m and roughly 60 of
       # its lock, heartbeat and poll deadlines lapse under the added latency, though they pass measured in isolation.
       # GraalPy runs unmeasured for the same reason, and neither is a coverage source: the 100% gate stays CPython's.
       - name: "✅ Run test suite"
         run: |
-          if [[ "${{ matrix.py }}" == pypy* || "${{ matrix.py }}" == graalpy* ]]; then
-            tox run --skip-pkg-install -e ${{ matrix.py }} --
+          if [[ "$PY" == pypy* || "$PY" == graalpy* ]]; then
+            tox run --skip-pkg-install -e "$PY" --
           else
-            tox run --skip-pkg-install -e ${{ matrix.py }}
+            tox run --skip-pkg-install -e "$PY"
           fi
-        shell: bash
         env:
+          PY: ${{ matrix.py }}
           PYTEST_ADDOPTS: "-vv --durations=20"
           UV_PYTHON_PREFERENCE: only-managed
           DIFF_AGAINST: HEAD
@@ -76,8 +84,11 @@ jobs:
         if: ${{ !startsWith(matrix.py, 'pypy') && !startsWith(matrix.py, 'graalpy') }}
         run: |
           import os; import sys
-          os.rename(f".tox/.coverage.${{ matrix.py }}", f".tox/.coverage.${{ matrix.py }}-{sys.platform}")
+          py = os.environ["PY"]
+          os.rename(f".tox/.coverage.{py}", f".tox/.coverage.{py}-{sys.platform}")
         shell: python
+        env:
+          PY: ${{ matrix.py }}
       - name: "📦 Upload coverage data"
         if: ${{ !startsWith(matrix.py, 'pypy') && !startsWith(matrix.py, 'graalpy') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -128,6 +139,9 @@ jobs:
   check:
     name: "🔎 ${{ matrix.tox_env }} - ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash # read matrix values from env the same way on Windows
     strategy:
       fail-fast: false
       matrix:
@@ -153,12 +167,14 @@ jobs:
       - name: "🧪 Install tox"
         run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
       - name: "⚙️ Setup test suite"
-        run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.tox_env }}
+        run: tox run -vv --notest --skip-missing-interpreters false -e "$TOX_ENV"
         env:
+          TOX_ENV: ${{ matrix.tox_env }}
           UV_PYTHON_PREFERENCE: only-managed
       - name: "✅ Run test suite"
-        run: tox run --skip-pkg-install -e ${{ matrix.tox_env }}
+        run: tox run --skip-pkg-install -e "$TOX_ENV"
         env:
+          TOX_ENV: ${{ matrix.tox_env }}
           UV_PYTHON_PREFERENCE: only-managed
   nfs:
     name: "🗄️ NFS mutual exclusion"
@@ -303,8 +319,10 @@ jobs:
       # Clearing only the registry value left the runner's privilege intact and both variants probed identical.
       - name: "🔗 Set Developer Mode to ${{ matrix.developer_mode }}"
         run: >
-          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d ${{ matrix.developer_mode }}
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d $env:DEVELOPER_MODE
 
+        env:
+          DEVELOPER_MODE: ${{ matrix.developer_mode }}
       - name: "⚙️ Setup test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e 3.14
       - name: "🔎 Report the probed capability"

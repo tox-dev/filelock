@@ -10,6 +10,9 @@ on:
         options: [auto, major, minor, patch]
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 jobs:
   prepare-release:
     name: 📝 build changelog and tag
@@ -18,7 +21,7 @@ jobs:
     environment:
       name: release
     permissions:
-      contents: write
+      contents: write # push the release commit and tag
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
