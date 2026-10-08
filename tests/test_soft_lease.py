@@ -217,7 +217,8 @@ def test_lease_tolerates_a_transient_refresh_error(marker: Path, mocker: MockerF
 
     mocker.patch(f"filelock._lease.{target}", side_effect=flaky)
     seen: list[LeaseCompromise] = []
-    lease = _lease(marker, on_compromise=seen.append)
+    # A long lease keeps a slow runner's two failed ticks inside the window; the deadline has its own test above.
+    lease = _lease(marker, lease_duration=30, on_compromise=seen.append)
     with lease:
         time.sleep(_HEARTBEAT * 6)  # several ticks: the first two fail, the rest recover
         assert seen == []
