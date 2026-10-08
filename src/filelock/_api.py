@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count, pairwise, starmap
 from threading import TIMEOUT_MAX, Condition, RLock, get_ident, local
-from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypedDict, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
 from ._error import SoftFileLockLifetimeWarning, Timeout
@@ -25,6 +25,9 @@ from ._util import break_lock_file
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
 _UNSET_FILE_MODE: Final[int] = -1
+
+#: The rwx bits for owner, group and others; ``mode`` may not reach past them into setuid, setgid or sticky.
+_PERMISSION_BITS: Final[int] = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
 
 #: Ceiling on the retry counter used as a power of two, so a long contended wait cannot overflow the backoff multiply.
 _MAX_BACKOFF_EXPONENT: Final[int] = 20
@@ -348,6 +351,7 @@ _registry: Final[_ThreadLocalRegistry] = _ThreadLocalRegistry()
 
 
 _T = TypeVar("_T", bound="BaseFileLock")
+_LockT = TypeVar("_LockT", bound="BaseFileLock | ReadWriteLock | SoftReadWriteLock")
 
 
 class FileLockMeta(ABCMeta):
@@ -378,32 +382,34 @@ class FileLockMeta(ABCMeta):
         poll_interval = _resolve_poll_interval(poll_interval)
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
         # __del__ then trips over the missing context.
-        # A lock reopens, reads, or deletes the files it creates, so a mode that denies the owner read or write fails
-        # later and for good.
-        if mode != _UNSET_FILE_MODE and ~mode & (stat.S_IRUSR | stat.S_IWUSR):
-            msg = f"mode={mode:#o} must grant the owner read and write for {cls.__name__}"
-            raise ValueError(msg)
+        _check_blocking(blocking)
+        _check_timeout(timeout)
+        _check_mode(mode, cls.__name__)
         context_error_policy = _resolve_context_error_policy(context_error_policy)
         close_error_policy = _resolve_close_error_policy(close_error_policy)
         preserve_lock_file = _resolve_preserve_lock_file(
             preserve=preserve_lock_file, supported=cls._preserve_lock_file_supported, cls_name=cls.__name__
         )
         on_acquired = _resolve_on_acquired(on_acquired, supported=cls._on_acquired_supported, cls_name=cls.__name__)
-        params: dict[str, _LockInitValue | _ExtraValue] = {
-            "timeout": timeout,
-            "mode": mode,
-            "thread_local": thread_local,
-            "blocking": blocking,
-            "is_singleton": is_singleton,
-            "poll_interval": poll_interval,
-            "lifetime": lifetime,
-            "context_error_policy": context_error_policy,
-            "close_error_policy": close_error_policy,
-            "fallback_to_soft": fallback_to_soft,
-            "preserve_lock_file": preserve_lock_file,
-            "on_acquired": on_acquired,
-            **kwargs,
-        }
+        # Checked before the singleton lookup so a cache hit rejects a misspelled option just like a fresh build does.
+        params = _supported_init_params(
+            cls,
+            {
+                "timeout": timeout,
+                "mode": mode,
+                "thread_local": thread_local,
+                "blocking": blocking,
+                "is_singleton": is_singleton,
+                "poll_interval": poll_interval,
+                "lifetime": lifetime,
+                "context_error_policy": context_error_policy,
+                "close_error_policy": close_error_policy,
+                "fallback_to_soft": fallback_to_soft,
+                "preserve_lock_file": preserve_lock_file,
+                "on_acquired": on_acquired,
+                **kwargs,
+            },
+        )
         if not is_singleton:
             return cls._create_instance(lock_file, params)
 
@@ -469,24 +475,24 @@ class FileLockMeta(ABCMeta):
     def _create_instance(
         cls: type[_T], lock_file: str | os.PathLike[str], params: dict[str, _LockInitValue | _ExtraValue]
     ) -> _T:
-        model = _init_parameter_model(cls)
-        if model.accepts_kwargs:
-            return super().__call__(lock_file, **params)
+        return super().__call__(lock_file, **params)
 
-        unsupported = sorted(
-            name
-            for name, value in params.items()
-            if name not in model.accepted_params
-            and ((parameter := model.default_params.get(name)) is None or value != parameter.default)
-        )
-        if unsupported:
-            msg = f"{cls.__name__} does not support non-default lock options: {', '.join(unsupported)}"
-            raise TypeError(msg)
-        # virtualenv narrows a BaseFileLock descendant's signature; omit base defaults it does not accept (#340).
-        return super().__call__(
-            lock_file,
-            **{name: value for name, value in params.items() if name in model.accepted_params},
-        )
+
+def _supported_init_params(
+    cls: type[BaseFileLock], params: dict[str, _LockInitValue | _ExtraValue]
+) -> dict[str, _LockInitValue | _ExtraValue]:
+    if (model := _init_parameter_model(cls)).accepts_kwargs:
+        return params
+    if unsupported := sorted(
+        name
+        for name, value in params.items()
+        if name not in model.accepted_params
+        and ((parameter := model.default_params.get(name)) is None or value != parameter.default)
+    ):
+        msg = f"{cls.__name__} does not support non-default lock options: {', '.join(unsupported)}"
+        raise TypeError(msg)
+    # virtualenv narrows a BaseFileLock descendant's signature; omit base defaults it does not accept (#340).
+    return {name: value for name, value in params.items() if name in model.accepted_params}
 
 
 _INIT_PARAMETER_MODELS: Final[WeakKeyDictionary[type[BaseFileLock], _InitParameterModel]] = WeakKeyDictionary()
@@ -573,11 +579,42 @@ def _resolve_poll_interval(poll_interval: float) -> float:
 
 def _resolve_timeout(timeout: float, *, blocking: bool) -> float:
     """Validate an acquire ``timeout``; every negative value waits without a limit."""
+    _check_timeout(timeout)
     if blocking and math.isnan(timeout):
         msg = "timeout must be a number of seconds, not nan"
         raise ValueError(msg)
     # The fail-fast deadlock check only sees a negative timeout as unlimited, so spell inf that way.
     return -1 if timeout == math.inf else timeout
+
+
+def _check_timeout(timeout: float) -> None:
+    # nan is left to acquire, which knows whether the call blocks; a non-blocking call ignores the timeout.
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        msg = f"timeout must be a number of seconds, not {type(timeout).__name__}"
+        raise TypeError(msg)
+
+
+def _check_blocking(blocking: bool) -> None:  # ruff:ignore[boolean-type-hint-positional-argument]  # validates the option's own value
+    if not isinstance(blocking, bool):
+        msg = f"blocking must be a bool, not {type(blocking).__name__}"
+        raise TypeError(msg)
+
+
+def _check_mode(mode: int, cls_name: str) -> None:
+    if mode == _UNSET_FILE_MODE:
+        return
+    if isinstance(mode, bool) or not isinstance(mode, int):
+        msg = f"mode must be an int, not {type(mode).__name__}"
+        raise TypeError(msg)
+    # A lock file is never executed, so setuid, setgid and sticky have no meaning on it and only widen its permissions.
+    if not 0 <= mode <= _PERMISSION_BITS:
+        msg = f"mode={mode:#o} must be within 0o000-0o777 for {cls_name}"
+        raise ValueError(msg)
+    # A lock reopens, reads, or deletes the files it creates, so a mode that denies the owner read or write fails later
+    # and for good.
+    if ~mode & (stat.S_IRUSR | stat.S_IWUSR):
+        msg = f"mode={mode:#o} must grant the owner read and write for {cls_name}"
+        raise ValueError(msg)
 
 
 def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
@@ -873,13 +910,16 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         return self._context.timeout
 
     @timeout.setter
-    def timeout(self, value: float | str) -> None:
+    def timeout(self, value: float) -> None:
         """
         Change the default timeout value.
 
         :param value: the new value, in seconds
 
+        :raises TypeError: if *value* is not a real number
+
         """
+        _check_timeout(value)
         self._context.timeout = float(value)
 
     @property
@@ -899,7 +939,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         :param value: the new value as bool
 
+        :raises TypeError: if *value* is not a bool
+
         """
+        _check_blocking(value)
         self._context.blocking = value
 
     @property
@@ -953,7 +996,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     @property
     def mode(self) -> int:
-        """The file permissions for the lockfile."""
+        """
+        The file permissions requested for the lock file.
+
+        Without an explicit ``mode`` this reports ``0o644`` for backwards compatibility, but the file is created with
+        ``0o666`` filtered through the umask and default ACLs, so with a ``002`` umask it ends up ``0o664``. Check
+        :attr:`has_explicit_mode` before relying on the value, or ``os.stat`` the file for its actual permissions.
+
+        """
         return 0o644 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
 
     @property
@@ -1031,7 +1081,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         poll_intervall: float | None = None,
         blocking: bool | None = None,
         cancel_check: Callable[[], bool] | None = None,
-    ) -> AcquireReturnProxy:
+    ) -> AcquireReturnProxy[Self]:
         """
         Try to acquire the file lock.
 
@@ -1423,7 +1473,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _commit_acquire(self, canonical: str) -> None:
         """Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock."""
-        if self._context.lock_counter == 1:
+        # Keyed on the registry rather than the counter: an on_acquired hook that acquires again bumps the counter
+        # past 1 before this first commit runs, and must not leave the hold unregistered.
+        if self._context.lock_file_registry is None:
             key = self._registry_key(canonical)
             # The holder scope is resolved once at commit so a later release from another flow drops the right entry.
             self._context.lock_file_key = key
@@ -1491,13 +1543,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
 # acquire() returns this wrapper instead of self so entering the with-statement does not call __enter__ a second
 # time; returning self would re-acquire the lock in BaseFileLock.__enter__ without a matching release (issue #37).
-class AcquireReturnProxy:
+class AcquireReturnProxy(Generic[_LockT]):
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock) -> None:
-        self.lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock = lock
+    def __init__(self, lock: _LockT) -> None:
+        self.lock: _LockT = lock
 
-    def __enter__(self) -> BaseFileLock | ReadWriteLock | SoftReadWriteLock:
+    def __enter__(self) -> _LockT:
         return self.lock
 
     def __exit__(
@@ -1506,10 +1558,12 @@ class AcquireReturnProxy:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if isinstance(self.lock, BaseFileLock):
-            self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # forwards __exit__ to the owned lock's context release
+        # Widen to the bound: ty narrows the else branch to the type variable minus BaseFileLock, not to the union rest.
+        lock = cast("BaseFileLock | ReadWriteLock | SoftReadWriteLock", self.lock)
+        if isinstance(lock, BaseFileLock):
+            lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # forwards __exit__ to the owned lock's context release
         else:  # a reader/writer lock does not carry a context_error_policy
-            self.lock.release()
+            lock.release()
 
 
 @dataclass

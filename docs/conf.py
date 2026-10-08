@@ -80,6 +80,8 @@ autosectionlabel_prefix_document = True
 
 intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
 nitpicky = True
+# show-inheritance renders AcquireReturnProxy's Generic[_LockT] base; the type variable is private and undocumented.
+nitpick_ignore = [("py:obj", "filelock._api._LockT")]
 # Towncrier news fragments are rST snippets folded into changelog.rst at release; they are not standalone pages.
 exclude_patterns = ["changelog/*"]
 extlinks = {

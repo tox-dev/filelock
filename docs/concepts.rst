@@ -106,6 +106,11 @@ Async locks scope the check to the asyncio task instead of the thread, so a sync
 other's holds. Holding a ``FileLock`` on the event loop thread and then awaiting a blocking ``AsyncFileLock`` acquire of
 the same file polls forever instead of raising; give that acquire a timeout.
 
+Detection compares path spellings after resolving the parent directory, not the files they name. Two spellings that one
+filesystem maps to the same file, such as ``Work.lock`` and ``work.lock`` on a case-insensitive volume (APFS and NTFS
+by default) or the NFC and NFD forms of an accented name on APFS, count as different locks: the second acquire waits
+forever instead of raising. ``is_singleton=True`` keys on the same spelling, so spell each lock path one way.
+
 ************************
  How file locking works
 ************************

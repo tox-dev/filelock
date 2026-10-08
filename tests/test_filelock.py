@@ -1523,6 +1523,49 @@ def test_blocking_acquire_rejects_nan_timeout(
     assert not lock.is_locked
 
 
+@pytest.mark.parametrize(
+    "timeout",
+    [
+        pytest.param("5", id="str"),
+        pytest.param(None, id="none"),
+        pytest.param([1], id="list"),
+        pytest.param(True, id="bool"),
+    ],
+)
+def test_constructor_rejects_non_number_timeout(timeout: object, tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="timeout must be a number of seconds"):
+        FileLock(tmp_path / "a", timeout=timeout)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+
+
+@pytest.mark.parametrize(
+    "blocking", [pytest.param("no", id="str"), pytest.param(0, id="int"), pytest.param(None, id="none")]
+)
+def test_constructor_rejects_non_bool_blocking(blocking: object, tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="blocking must be a bool"):
+        FileLock(tmp_path / "a", blocking=blocking)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+
+
+@pytest.mark.parametrize("timeout", [pytest.param("inf", id="str"), pytest.param(None, id="none")])
+def test_timeout_setter_rejects_non_number(timeout: object, tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "a", timeout=3)
+    with pytest.raises(TypeError, match="timeout must be a number of seconds"):
+        lock.timeout = timeout  # ty: ignore[invalid-assignment]  # the rejected type is the contract
+    assert lock.timeout == 3
+
+
+def test_timeout_setter_stores_a_float(tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "a")
+    lock.timeout = 2
+    assert (lock.timeout, type(lock.timeout)) == (2.0, float)
+
+
+def test_blocking_setter_rejects_non_bool(tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "a")
+    with pytest.raises(TypeError, match="blocking must be a bool"):
+        lock.blocking = "no"  # ty: ignore[invalid-assignment]  # the rejected type is the contract
+    assert lock.blocking is True
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_non_blocking_acquire_ignores_nan_timeout(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock = lock_type(tmp_path / "a")
@@ -3075,3 +3118,25 @@ def test_has_fcntl_matches_native_unix_alias() -> None:
 )
 def test_public_literal_aliases_list_their_values(alias: object, values: tuple[str, ...]) -> None:
     assert get_args(alias) == values
+
+
+def test_on_acquired_reentrant_acquire_still_registers_holder(tmp_path: Path) -> None:
+    lock_path = tmp_path / "a.lock"
+
+    def reacquire(_fd: int) -> None:
+        lock.acquire()
+
+    lock = FileLock(lock_path, on_acquired=reacquire)
+    with lock:
+        other = FileLock(lock_path)
+        # Without the registry entry the deadlock check stays silent and only the cancel check ends the wait.
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            other.acquire(cancel_check=lambda: True)
+        lock.release()
+
+
+def test_acquire_proxy_enters_as_the_lock_type(tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / "a.lock")
+    # The attribute access type-checks only while the proxy keeps the lock's own type, not the union of lock kinds.
+    with lock.acquire() as held:
+        assert (held, held.lock_counter) == (lock, 1)

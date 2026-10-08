@@ -359,8 +359,8 @@ Available async lock classes:
  Use locks with multiple threads
 *********************************
 
-By default, locks are thread-local. Each thread maintains its own lock state, so nested acquisitions from the same
-thread don't block:
+By default, locks are thread-local. Each thread keeps its own lock state, so nested acquisitions from the same thread
+don't block, while two threads exclude each other just as two processes do:
 
 .. code-block:: python
 
@@ -375,11 +375,12 @@ thread don't block:
             print(f"{threading.current_thread().name} has the lock")
 
 
-    # Each thread can acquire the same lock without blocking
+    # The worker thread and the main thread take turns: each waits while the other holds the lock
     threading.Thread(target=worker).start()
     worker()  # Main thread
 
-If you need one lock instance shared across threads (and reentrant per thread), set ``thread_local=False``:
+If you need one hold shared by every thread, set ``thread_local=False``. A second thread then enters without waiting
+and only bumps the shared counter, so the lock no longer keeps threads apart:
 
 .. code-block:: python
 

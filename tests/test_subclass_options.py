@@ -8,7 +8,7 @@ from weakref import ref
 
 import pytest
 
-from filelock import BaseAsyncFileLock, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy
+from filelock import BaseAsyncFileLock, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy, FileLock
 from tests.capability_marks import NEEDS_CLASS_COLLECTION
 
 if TYPE_CHECKING:
@@ -51,6 +51,14 @@ def test_narrow_sync_subclass_rejects_non_default_option(
 def test_narrow_sync_subclass_rejects_unknown_option(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="unknown"):
         _unknown_constructor()(str(tmp_path / "lock"), unknown=True)
+
+
+def test_singleton_cache_hit_rejects_unknown_option(tmp_path: Path) -> None:
+    lock_path = str(tmp_path / "lock")
+    first = FileLock(lock_path, is_singleton=True)
+    with pytest.raises(TypeError, match="unknown"):
+        cast("_UnknownSingletonConstructor", FileLock)(lock_path, is_singleton=True, unknown=True)
+    assert FileLock(lock_path, is_singleton=True) is first
 
 
 @pytest.mark.parametrize(
@@ -404,3 +412,7 @@ class _AsyncFileLockOptions(_FileLockOptions, total=False):
 
 class _UnknownFileLockConstructor(Protocol):
     def __call__(self, lock_file: str, *, unknown: bool) -> BaseFileLock: ...
+
+
+class _UnknownSingletonConstructor(Protocol):
+    def __call__(self, lock_file: str, *, is_singleton: bool, unknown: bool) -> BaseFileLock: ...
