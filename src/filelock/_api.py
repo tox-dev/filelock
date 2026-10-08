@@ -1130,10 +1130,15 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         if self._is_thread_local:
             yield
             return
-        while not self._transition_lock.acquire(timeout=poll_interval if blocking else 0):
+        deadline = None if timeout < 0 else start_time + timeout
+        wait = poll_interval if blocking else 0.0
+        # wait leads the min() so a non-blocking call, whose nan timeout goes unchecked, waits 0 rather than nan.
+        while not self._transition_lock.acquire(
+            timeout=wait if deadline is None else min(wait, max(deadline - time.perf_counter(), 0.0))
+        ):
             if not blocking or (cancel_check is not None and cancel_check()):
                 raise Timeout(self.lock_file)
-            if timeout >= 0 and time.perf_counter() - start_time >= timeout:
+            if deadline is not None and time.perf_counter() >= deadline:
                 raise Timeout(self.lock_file)
         try:
             yield
@@ -1278,6 +1283,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 raise Timeout(lock_filename)
             attempt += 1
             delay = self._poll_delay(poll_interval, attempt)
+            if timeout >= 0:
+                delay = min(delay, max(start_time + timeout - time.perf_counter(), 0.0))
             msg = "Lock %s not acquired on %s, waiting %s seconds ..."
             _LOGGER.debug(msg, lock_id, lock_filename, delay)
             time.sleep(delay)

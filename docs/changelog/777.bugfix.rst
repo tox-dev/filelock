@@ -1,0 +1,2 @@
+:meth:`~filelock.BaseFileLock.acquire` and :meth:`~filelock.BaseAsyncFileLock.acquire` no longer wait past ``timeout``
+when ``poll_interval`` is longer than the time left.
