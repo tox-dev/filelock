@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import pickle  # ruff:ignore[suspicious-pickle-import]  # round-trip uses bytes produced in this test
 import socket
@@ -22,6 +23,7 @@ from capabilities import CAPABILITIES
 import filelock._strict
 from filelock import SoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock, Timeout
 from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_link_follow_symlinks, _relative_identity
+from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION
 
 # These cases inject a failure into a directory-fd cleanup step or the reaper race, both of which only run where the
 # protocol uses dir_fd descriptors. Without dir_fd those branches never execute and the injected fault never fires; the
@@ -122,6 +124,8 @@ def test_strict_soft_held_publication_failure_rolls_back_intent(tmp_path: Path, 
 def test_strict_soft_held_collision_does_not_delete_foreign_claim(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
+    token = "f" * 32
+    claims_directory = Path(f"{lock_path}.filelock") / "claims"
     real_link = os.link
 
     def publish_foreign_held(
@@ -132,6 +136,9 @@ def test_strict_soft_held_collision_does_not_delete_foreign_claim(tmp_path: Path
         dst_dir_fd: int | None = None,
         follow_symlinks: bool = True,
     ) -> None:
+        if Path(os.fsdecode(destination)).name.startswith("held-"):
+            _write_foreign_claim(claims_directory, token)
+            raise FileExistsError(EEXIST, "foreign claim won")
         real_link(
             source,
             destination,
@@ -139,15 +146,48 @@ def test_strict_soft_held_collision_does_not_delete_foreign_claim(tmp_path: Path
             dst_dir_fd=dst_dir_fd,
             follow_symlinks=follow_symlinks,
         )
-        if Path(os.fsdecode(destination)).name.startswith("held-"):
-            raise FileExistsError(EEXIST, "foreign claim won")
 
+    mocker.patch("filelock._strict.secrets.token_hex", return_value=token)
     mocker.patch("filelock._strict.os.link", side_effect=publish_foreign_held)
+    lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(FileExistsError, match="foreign claim won"):
-        StrictSoftFileLock(lock_path).acquire()
-    claims = StrictSoftFileLock(lock_path).claims
-    assert (len(claims), claims[0].state) == (1, "held")
+        lock.acquire()
+    assert ([(claim.state, claim.start) for claim in lock.claims], lock.is_locked) == ([("held", 4242)], False)
+
+
+@pytest.mark.parametrize("state", ["intent", "held"])
+def test_strict_soft_lost_link_reply_counts_as_committed(tmp_path: Path, mocker: MockerFixture, state: str) -> None:
+    lock_path = tmp_path / "resource.lock"
+    _initialize_protocol(lock_path)
+    real_link = os.link
+
+    def link_then_report_exists(
+        source: _PathValue,
+        destination: _PathValue,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        # An NFS retransmit of a LINK whose reply was lost: the first request committed, the retry sees the name.
+        real_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+        if Path(os.fsdecode(destination)).name.startswith(f"{state}-"):
+            raise FileExistsError(EEXIST, "retransmitted link")
+
+    mocker.patch("filelock._strict.os.link", side_effect=link_then_report_exists)
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+
+    lock.acquire()
+    assert (lock.is_locked, sorted(claim.state for claim in lock.claims)) == (True, ["held", "intent"])
+    lock.release()
+    assert lock.claims == ()
 
 
 @pytest.mark.parametrize("scan_to_empty", [pytest.param(2, id="intent"), pytest.param(3, id="held")])
@@ -277,14 +317,15 @@ def test_strict_soft_reaper_replacement_only_aborts_publisher(tmp_path: Path, mo
     real_unlink = Path.unlink
     replaced = False
 
-    def replace_before_unlink(path: Path, *, missing_ok: bool = False) -> None:
+    def replace_instead_of_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        # The reaper's clock probe is the other Path.unlink caller; let it through.
         nonlocal replaced
-        if path == private_path and not replaced:
-            replaced = True
-            path.replace(displaced_path)
-            path.write_bytes(b"replacement publisher")
+        if path != private_path:
+            real_unlink(path, missing_ok=missing_ok)
             return
-        real_unlink(path, missing_ok=missing_ok)
+        replaced = True
+        path.replace(displaced_path)
+        path.write_bytes(b"replacement publisher")
 
     def reap_before_link(
         source: _PathValue,
@@ -308,30 +349,30 @@ def test_strict_soft_reaper_replacement_only_aborts_publisher(tmp_path: Path, mo
 
     mocker.patch("filelock._strict.secrets.token_hex", return_value=token)
     mocker.patch("filelock._strict.os.link", side_effect=reap_before_link)
-    mocker.patch.object(Path, "unlink", autospec=True, side_effect=replace_before_unlink)
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=replace_instead_of_unlink)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(Timeout):
         lock.acquire()
-    with pytest.raises(SoftFileLockProtocolError, match="malformed claim record"):
-        _ = lock.claims
     public_path = private_path.parent / f"intent-v1-{token}.claim"
     assert (
         replaced,
         lock.is_locked,
-        private_path.exists(),
-        public_path.read_bytes(),
+        lock.claims,
+        public_path.exists(),
+        private_path.read_bytes(),
         displaced_path.exists(),
     ) == (
         True,
         False,
+        (),
         False,
         b"replacement publisher",
         True,
     )
 
 
-def test_strict_soft_private_close_failure_leaves_public_claim(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_strict_soft_private_close_failure_removes_public_claim(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     real_close = os.close
@@ -357,7 +398,7 @@ def test_strict_soft_private_close_failure_leaves_public_claim(tmp_path: Path, m
 
     with pytest.raises(OSError, match="private close failed"):
         lock.acquire()
-    assert ([claim.state for claim in lock.claims], lock.is_locked) == (["intent"], False)
+    assert (lock.claims, lock.is_locked) == ((), False)
 
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
@@ -391,7 +432,7 @@ def test_strict_soft_link_and_directory_close_failures_preserve_both(tmp_path: P
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
 @_NEEDS_LINK_DIR_FD  # pragma: needs link-dir-fd
-def test_strict_soft_held_directory_close_failure_leaves_both_claims(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_strict_soft_held_directory_close_failure_removes_both_claims(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     real_close = os.close
@@ -412,7 +453,7 @@ def test_strict_soft_held_directory_close_failure_leaves_both_claims(tmp_path: P
 
     with pytest.raises(OSError, match="held directory close failed"):
         lock.acquire()
-    assert ([claim.state for claim in lock.claims], lock.is_locked) == (["held", "intent"], False)
+    assert (lock.claims, lock.is_locked) == ((), False)
 
 
 @pytest.mark.parametrize(
@@ -659,10 +700,12 @@ def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path,
             "[Errno 5] intent directory close failed",
         ],
         [competitor_name, f"held-v1-{owner_token}.claim"],
-        True,
+        False,
     )
-    lock.release(force=True)
     lock.force_break(competitor_name)
+    lock.acquire()
+    assert (lock.is_locked, len(lock.claims)) == (True, 2)
+    lock.release()
 
 
 @pytest.mark.parametrize(
@@ -1296,7 +1339,7 @@ def test_strict_soft_release_claim_unlink_failures_group(tmp_path: Path, mocker:
     assert (lock.is_locked, lock.claims) == (False, ())
 
 
-def test_strict_soft_doorway_claim_unlink_failure_commits_owned(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_strict_soft_doorway_claim_unlink_failure_stays_pending(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     owner_token = "f" * 32
@@ -1336,14 +1379,49 @@ def test_strict_soft_doorway_claim_unlink_failure_commits_owned(tmp_path: Path, 
     with pytest.raises(PermissionError, match="intent unlink denied"):
         lock.acquire()
     assert (lock.is_locked, sorted(claim.name for claim in lock.claims)) == (
-        True,
+        False,
         [competitor_name, f"intent-v1-{owner_token}.claim"],
     )
-
+    # The leftover intent is a pending cleanup, not a hold: retrying acquires nothing while the competitor holds.
+    with pytest.raises(PermissionError, match="intent unlink denied"):
+        lock.acquire(timeout=0)
     mocker.stop(scandir_mock)
     mocker.stop(unlink_mock)
-    lock.release(force=True)
+    with pytest.raises(Timeout):
+        lock.acquire(timeout=0)
+    assert ([claim.name for claim in lock.claims], lock.is_locked) == ([competitor_name], False)
     lock.force_break(competitor_name)
+
+
+@NEEDS_COLLECTED_FINALIZATION
+def test_strict_soft_dropped_instance_removes_pending_claims(  # pragma: needs collected-finalization
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    _initialize_protocol(lock_path)
+    real_unlink_in_directory = filelock._strict._unlink_in_directory
+
+    def deny_intent_unlink(directory: Path, name: str) -> BaseException | None:
+        if name.startswith("intent-"):
+            raise PermissionError(EACCES, "intent unlink denied")
+        return real_unlink_in_directory(directory, name)
+
+    def fail_held_link(_directory: Path, _source: str, _destination: str) -> None:
+        # Raise a fresh error each call: a shared side_effect instance would keep its traceback, and with it the lock.
+        raise OSError(EIO, "held link failed")
+
+    mocker.patch("filelock._strict._link_no_replace", side_effect=fail_held_link)
+    unlink_mock = mocker.patch("filelock._strict._unlink_in_directory", side_effect=deny_intent_unlink)
+    lock = StrictSoftFileLock(lock_path)
+    with pytest.raises(PermissionError, match="intent unlink denied"):
+        lock.acquire()
+    assert [claim.state for claim in lock.claims] == ["intent"]
+    mocker.stop(unlink_mock)
+
+    del lock
+    gc.collect()
+
+    assert StrictSoftFileLock(lock_path).claims == ()
 
 
 @pytest.mark.parametrize("vanished", [pytest.param(True, id="removed"), pytest.param(False, id="still-listed")])

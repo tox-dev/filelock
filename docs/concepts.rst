@@ -166,6 +166,10 @@ mount and server combination passes the protocol tests. Linux documents the hard
 <https://man7.org/linux/man-pages/man2/open.2.html>`_; Microsoft documents NTFS hard links in `Hard Links and Junctions
 <https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions>`_.
 
+A ``link()`` that fails with ``EEXIST`` still counts as published when the claim name now resolves to the contender's
+own record. NFS retransmits a request whose reply was lost, and the retry reports ``EEXIST`` for the link the first
+request made; ``open(2)`` and liblockfile check the same way.
+
 Strict locks do not infer that an owner died. An orphaned, damaged, or newer-version claim blocks entry. filelock
 therefore avoids overlapping a paused holder at the cost of operator recovery after a crash. See
 :ref:`how-to:Use fail-closed soft locks` for inspection and recovery.

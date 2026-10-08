@@ -1,0 +1,2 @@
+:class:`~filelock.StrictSoftFileLock` removes every claim a failed acquire published, counts an ``EEXIST`` link that
+landed as published, and no longer reports ``is_locked`` after a failed claim cleanup.
