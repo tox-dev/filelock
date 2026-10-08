@@ -1,0 +1,2 @@
+:class:`~filelock.ReadWriteLock` raises :class:`ValueError` for a WAL-mode database instead of ``disk I/O error``, and
+its ``/dev/fd`` fallback links beside the database, so a lock off the TMPDIR filesystem no longer fails with ``EXDEV``.

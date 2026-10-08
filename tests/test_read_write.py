@@ -487,6 +487,30 @@ def test_read_write_lock_refuses_a_non_regular_path(tmp_path: Path) -> None:
         ReadWriteLock(lock_path, is_singleton=False)
 
 
+def test_read_write_lock_refuses_a_wal_database(lock_file: str) -> None:
+    _convert_to_wal(lock_file)
+    with pytest.raises(ValueError, match="WAL-mode"):
+        ReadWriteLock(lock_file, is_singleton=False)
+
+
+def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(lock_file: str) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    _convert_to_wal(lock_file)
+    with pytest.raises(ValueError, match="WAL-mode"):
+        lock.acquire_read()
+    lock.close()
+
+
+def _convert_to_wal(path: str) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA journal_mode=WAL").close()
+        connection.execute("CREATE TABLE application (value)").close()
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def test_read_write_lock_refuses_a_database_held_without_sharing(tmp_path: Path) -> None:
     if sys.platform != "win32":  # pragma: win32 no cover
         pytest.skip("share modes exist only on Windows")  # the platform arm also narrows so ty resolves ctypes.WinDLL

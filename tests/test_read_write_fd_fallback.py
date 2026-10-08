@@ -51,6 +51,12 @@ def test_missing_descriptor_path_removes_alias_after_release(database: Path, cre
     assert [directory.exists() for directory in created_directories] == [False, False]
 
 
+def test_missing_descriptor_path_links_beside_the_database(database: Path, created_directories: list[Path]) -> None:
+    # A hard link cannot cross filesystems, so an alias in TMPDIR fails for a database stored anywhere else.
+    ReadWriteLock(database, is_singleton=False).close()
+    assert [directory.parent for directory in created_directories] == [database.parent]
+
+
 @pytest.mark.parametrize(
     "boundary",
     [pytest.param("os.link", id="link"), pytest.param("sqlite3.connect", id="connect")],
@@ -98,8 +104,8 @@ def created_directories(mocker: MockerFixture) -> list[Path]:
     directories: Final[list[Path]] = []
     mkdtemp: Final = tempfile.mkdtemp
 
-    def create_directory(*, prefix: str) -> str:
-        directory: Final = mkdtemp(prefix=prefix)
+    def create_directory(*, prefix: str, dir: Path) -> str:  # ruff:ignore[builtin-argument-shadowing]  # mirrors tempfile.mkdtemp
+        directory: Final = mkdtemp(prefix=prefix, dir=dir)
         directories.append(Path(directory))
         return directory
 

@@ -429,8 +429,9 @@ Parameters are frozen when the singleton is first created. Requesting the same p
 
 When you have many readers and occasional writers, use :class:`ReadWriteLock <filelock.ReadWriteLock>` to allow readers
 to proceed concurrently. ``ReadWriteLock`` is backed by SQLite and hands the path straight to :func:`sqlite3.connect`,
-so a ``.db`` extension is the convention rather than a requirement. The real constraint is a local filesystem the active
-SQLite VFS supports:
+so a ``.db`` extension is the convention rather than a requirement. The real constraints are a local filesystem the
+active SQLite VFS supports and a database file of its own. A WAL-mode database raises :class:`ValueError`, because WAL
+never blocks readers behind a writer.
 
 .. code-block:: python
 
