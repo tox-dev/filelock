@@ -45,6 +45,17 @@ if TYPE_CHECKING:
         pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=5\nstart=later\n", id="start-nan"),
         pytest.param("filelock/2\npid=1\nhost=h\nmode=exclu", id="truncated-mode"),
         pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=1", id="truncated-duration"),
+        pytest.param("filelock/2\npid=1_000\nhost=h\nmode=exclusive\n", id="pid-underscore"),
+        pytest.param("filelock/2\npid=\u0661\u0662\u0663\nhost=h\nmode=exclusive\n", id="pid-arabic-indic-digits"),
+        pytest.param("filelock/2\npid= 1\nhost=h\nmode=exclusive\n", id="pid-whitespace"),
+        pytest.param("filelock/2\npid=+1\nhost=h\nmode=exclusive\n", id="pid-sign"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=exclusive\nstart=1_0\n", id="start-underscore"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration= 1\n", id="duration-whitespace"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=1_0\n", id="duration-underscore"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=\u0665\n", id="duration-non-ascii"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=-1.0\n", id="duration-negative"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=1e400\n", id="duration-overflow"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=\nduration=1\n", id="lease-empty-token"),
     ],
 )
 def test_unreadable_record_names_no_owner(tmp_path: Path, record: str) -> None:
@@ -61,6 +72,18 @@ def test_encode_marker_omits_absent_lease_fields() -> None:
     assert rendered == b"filelock/2\npid=7\nhost=h\nmode=unknown\n"
     assert b"token=" not in rendered
     assert b"duration=" not in rendered
+
+
+@pytest.mark.parametrize("duration", [0.9, 30, 30.0, 1e-05, 1.5e20])
+def test_record_duration_reads_back(tmp_path: Path, duration: float) -> None:
+    marker = tmp_path / "a.lock"
+    # The duration line as encode_marker renders a published lease_duration.
+    marker.write_text(f"filelock/2\npid=4242\nhost=h\nmode=lease\ntoken=t\nduration={duration!r}\n", encoding="utf-8")
+
+    owner = SoftFileLease(str(marker), lease_duration=1).owner
+
+    assert owner is not None
+    assert owner.lease_duration == duration
 
 
 def test_record_start_token_reads_back(tmp_path: Path) -> None:

@@ -663,7 +663,7 @@ def test_lock_mode_soft(tmp_path: Path) -> None:
         lock.acquire()
         assert lock.is_locked
 
-        assert filemode(lock_path.stat().st_mode) == ("-rw-rw-rw-" if sys.platform == "win32" else "-rw-r--r--")
+        assert filemode(lock_path.stat().st_mode) == "-rw-rw-rw-"
     finally:
         os.umask(initial_umask)
 

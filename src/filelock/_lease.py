@@ -202,7 +202,12 @@ class SoftFileLease(MarkerSoftFileLock):
         """
         The loss of claim the heartbeat observed.
 
-        :returns: the :class:`LeaseCompromise`, or ``None`` while the claim still holds
+        The value outlives ``release()``, so a holder can check after leaving the ``with`` block whether its work may
+        have overlapped a successor; the next acquisition resets it, as :attr:`SoftReadWriteLock.compromise
+        <filelock.SoftReadWriteLock.compromise>` does.
+
+        :returns: the :class:`LeaseCompromise` of the latest claim, or ``None`` while that claim holds or held to its
+            release
 
         """
         return self._claim.compromise

@@ -1150,7 +1150,9 @@ ago. ``SoftFileLease`` compares no clocks across hosts.
         pass
 
 Constructing or assigning a non-``None`` value emits
-:class:`SoftFileLockLifetimeWarning <filelock.SoftFileLockLifetimeWarning>`. Migrate to ``SoftFileLease`` when expiry
+:class:`SoftFileLockLifetimeWarning <filelock.SoftFileLockLifetimeWarning>`, a :class:`FutureWarning` that Python shows
+by default; silence it with ``-W ignore::filelock.SoftFileLockLifetimeWarning`` once you have accepted the overlap.
+Migrate to ``SoftFileLease`` when expiry
 is required or ``StrictSoftFileLock`` when unknown and stale claims must fail closed. Async callers use
 ``AsyncSoftFileLease`` or ``AsyncStrictSoftFileLock``. ``lifetime=None`` disables age-based removal; same-host dead-PID
 and malformed-record recovery still apply.

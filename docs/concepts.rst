@@ -644,7 +644,7 @@ two holders. If you relied on timed breaking to recover from crashes while belie
 of the explicit contracts: :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` for real exclusion with an operator
 break for crash recovery, or :class:`SoftFileLease <filelock.SoftFileLease>` when overlap is acceptable and you fence the
 protected resource. The age-based ``lifetime`` on :class:`SoftFileLock <filelock.SoftFileLock>` remains for backward
-compatibility and warns at construction.
+compatibility and warns at construction with a :class:`FutureWarning`, which Python shows by default.
 
 *******************
  Design trade-offs
@@ -920,8 +920,9 @@ By default, filelock does not set explicit permissions on the lock file (``mode=
 permissions through umask and default ACLs. In shared directories with POSIX default ACLs, this preserves ACL
 inheritance so the lock file gets the directory's default permissions rather than the creating user's umask.
 
-When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock uses that value directly via ``os.open``. This
-overrides any default ACLs on the directory.
+When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock creates the file with it. On Unix,
+:class:`UnixFileLock <filelock.UnixFileLock>` and :class:`SoftFileLock <filelock.SoftFileLock>` then apply it with
+``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory.
 
 An explicit ``mode`` must grant the owner read and write, or construction raises :class:`ValueError`. A lock reopens,
 reads, and deletes the files it creates, so without those bits it fails later and stays broken: a native lock on its

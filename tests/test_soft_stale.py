@@ -795,3 +795,19 @@ def test_unparseable_lock_with_an_ancient_mtime_not_evicted_on_first_sight(lock_
     os.utime(lock_path, (0, 0))
 
     _assert_times_out(lock_path)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("1_000\nhost\n", id="pid-underscore"),
+        pytest.param("\u0661\u0662\u0663\nhost\n", id="pid-arabic-indic-digits"),
+        pytest.param("+1000\nhost\n", id="pid-sign"),
+        pytest.param("1000\nhost\n1_0\n", id="start-underscore"),
+    ],
+)
+def test_lock_with_a_non_decimal_number_names_no_holder(lock_path: Path, content: str) -> None:
+    # int() reads each of these as a number, but no filelock writes them, so they spell a malformed lock, not a PID.
+    lock_path.write_text(content, encoding="utf-8")
+
+    assert SoftFileLock(lock_path).pid is None

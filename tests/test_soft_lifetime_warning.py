@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only a fresh interpreter has the default filters
 import sys
 import warnings
 from typing import TYPE_CHECKING, Literal
@@ -226,3 +228,24 @@ def _set_invalid_lifetime(
     else:
         lock = lock_type(lock_path)
         lock.lifetime = -1
+
+
+def test_soft_lifetime_warning_shows_under_default_filters(tmp_path: Path) -> None:
+    # Python hides a DeprecationWarning raised outside __main__ by default, so configure the lock from a library module.
+    (tmp_path / "library.py").write_text(
+        "from filelock import SoftFileLock\n\ndef configure(path):\n    return SoftFileLock(path, lifetime=5)\n",
+        encoding="utf-8",
+    )
+    script = "import sys; sys.path.insert(0, sys.argv[1]); import library; library.configure(sys.argv[2])"
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONWARNINGS", "PYTHONDEVMODE"}}
+
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), str(tmp_path / "test.lock")],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+
+    assert "SoftFileLockLifetimeWarning" in result.stderr

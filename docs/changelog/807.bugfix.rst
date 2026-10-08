@@ -1,0 +1,2 @@
+:class:`~filelock.SoftFileLock` applies an explicit ``mode`` past the umask as :class:`~filelock.UnixFileLock` does, and
+reads a marker number spelled other than in ASCII digits, or a lease with an empty token, as malformed.
