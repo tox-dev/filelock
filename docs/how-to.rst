@@ -766,7 +766,8 @@ a reused PID can also keep a dead owner's marker in place.
 
 Every platform stores a process start token in the marker to guard against PID recycling: Linux uses the
 ``/proc/<pid>/stat`` start time folded with the boot id, macOS reads it through ``sysctl``, and Windows uses the
-``GetProcessTimes`` creation time. Malformed records follow a different rule: a waiter may evict them after two seconds.
+``GetProcessTimes`` creation time. Malformed records follow a different rule: a waiter may evict them once it has seen
+them unchanged for two seconds.
 That recovery path is not fail closed.
 
 ********************************
@@ -1017,7 +1018,9 @@ still be alive. A crashed holder leaves a marker no contender removes; clear it 
 running.
 
 :class:`SoftFileLease <filelock.SoftFileLease>` trades exclusion for progress. The holder refreshes its claim, and a
-peer takes the marker once it is ``lease_duration`` seconds stale. The expired holder keeps running and keeps using
+peer takes the marker once it has watched it go ``lease_duration`` seconds without a refresh, timed on the peer's own
+monotonic clock so clock skew between hosts cannot expire a live claim. A peer reclaims a same-host lease or
+``MarkerSoftFileLock`` owner that is provably dead at once. The expired holder keeps running and keeps using
 whatever the lock protects, so a lease says who *should* be working, not who alone is. ``on_compromise`` fires when the
 claim is lost. :attr:`token <filelock.SoftFileLease.token>` names a claim but does not fence one: to reject a superseded
 holder, the protected resource must be linearizable and fence on a monotonic generation it controls.
@@ -1088,7 +1091,10 @@ blocks rather than breaking in. Only these combinations hold:
 ***********************************
 
 Only :class:`SoftFileLock <filelock.SoftFileLock>` honors ``lifetime``. The value sets the marker age that permits
-removal. A waiter may enter after that age even while the previous holder continues its protected operation:
+removal. A waiter may enter after that age even while the previous holder continues its protected operation. The age is
+the waiter's wall clock minus the marker's modification time, which the writer's or the file server's clock stamped, so
+every host must keep its clock in sync: a waiter whose clock runs ``lifetime`` ahead removes a marker written a moment
+ago. ``SoftFileLease`` compares no clocks across hosts.
 
 .. code-block:: python
 

@@ -80,9 +80,10 @@ class SoftFileLease(MarkerSoftFileLock):
     Existence lock whose claim expires, so a peer may take it while the previous holder still runs.
 
     A lease trades mutual exclusion for progress. The holder publishes a claim and refreshes it every
-    ``heartbeat_interval`` seconds; a contender takes the marker once it is ``lease_duration`` seconds stale. Nothing
-    stops the expired holder: it keeps running, and it keeps using whatever the lock protects. Treat the lease as a hint
-    about who *should* be working, not as a guarantee that only one worker is.
+    ``heartbeat_interval`` seconds; a contender takes the marker once it has seen no refresh for ``lease_duration``
+    seconds of its own monotonic clock, so clock skew between hosts cannot expire a live claim. Nothing stops the
+    expired holder: it keeps running, and it keeps using whatever the lock protects. Treat the lease as a hint about
+    who *should* be working, not as a guarantee that only one worker is.
 
     To make a protected resource reject a superseded holder, that resource must be linearizable and must fence on a
     monotonic generation it controls. :attr:`token` names a claim; it does not fence one. Where overlap is unacceptable,
@@ -124,8 +125,8 @@ class SoftFileLease(MarkerSoftFileLock):
         """
         Create a lease.
 
-        :param lease_duration: seconds of marker staleness after which a contender may take the claim. Every contender
-            for the path must pass the same value.
+        :param lease_duration: seconds a contender must see the marker go unrefreshed before it may take the claim.
+            Every contender for the path must pass the same value.
         :param heartbeat_interval: seconds between refreshes. Defaults to a third of ``lease_duration``, leaving room
             for two missed refreshes before a peer may take the claim. Must be shorter than ``lease_duration``.
         :param on_compromise: called from the heartbeat thread with a :class:`LeaseCompromise` when the claim is lost.
@@ -235,11 +236,10 @@ class SoftFileLease(MarkerSoftFileLock):
             super()._try_break_stale_lock()
             return
         owner, mtime, ino = peer
-        # Only a peer that published a lease agreed to be superseded by one, so a record stating any other contract is
-        # never reclaimed by age. Raise the mismatch outside the read so the suppression cannot swallow it.
-        if owner.mode != "lease":
-            return
-        if owner.lease_duration != self._lease_duration:
+        # Only a peer that published a lease agreed to be superseded by age; an exclusive owner is reclaimed only once
+        # it is provably dead, and a contract this version does not know never is. Raise the mismatch outside the read
+        # so the suppression cannot swallow it.
+        if owner.mode == "lease" and owner.lease_duration != self._lease_duration:
             msg = (
                 f"{self.lock_file} holds a lease of {owner.lease_duration!r}s but this contender configured "
                 f"{self._lease_duration!r}s; every contender for a path must agree on lease_duration"
@@ -248,12 +248,12 @@ class SoftFileLease(MarkerSoftFileLock):
         # A break can fail for reasons a contender must ride out rather than raise on: a peer broke the marker first,
         # or Windows refuses to rename a file whose holder still has it open. Poll again instead.
         with suppress(OSError):
-            # A dead or recycled owner is reclaimed at once; a live owner past its lease duration is superseded on the
-            # schedule every contender agreed to.
-            if owner_is_stale(owner.pid, owner.hostname, owner.start):
+            # A dead or recycled owner is reclaimed at once, whether it held a lease or an exclusive marker; a live
+            # lease owner whose marker stops being refreshed is superseded on the schedule every contender agreed to.
+            if owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
                 break_lock_file(self.lock_file, mtime, ino)
                 return
-            if time.time() - mtime >= self._lease_duration:
+            if owner.mode == "lease" and self._marker_unchanged_for(mtime, ino) >= self._lease_duration:
                 break_lock_file(self.lock_file, mtime, ino)
 
     def _read_peer(self) -> tuple[OwnerRecord, float, int] | None:

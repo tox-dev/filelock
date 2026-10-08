@@ -48,6 +48,9 @@ class SoftFileLock(BaseFileLock):
     #: An existence lock keeps protocol state in its marker, so it cannot lend the descriptor to an on_acquired hook.
     _on_acquired_supported: bool = False
 
+    #: The marker's (mtime, inode) when this instance last saw it change, and when that was on its monotonic clock.
+    _marker_seen: tuple[tuple[float, int], float] | None = None
+
     def _acquire(self) -> None:
         raise_on_not_writable_file(self.lock_file)
         ensure_directory_exists(self.lock_file)
@@ -96,12 +99,22 @@ class SoftFileLock(BaseFileLock):
                 # Unparsable: wrong line count, a non-integer PID or start token, empty, oversized or not UTF-8.
                 # Self-heal only once the file is clearly not a half-written fresh lock (a peer between O_EXCL and
                 # _write_lock_info), so the brief create-then-write window is never mistaken for a stale lock.
-                if time.time() - mtime >= _MALFORMED_LOCK_AGE_THRESHOLD:
+                if self._marker_unchanged_for(mtime, ino) >= _MALFORMED_LOCK_AGE_THRESHOLD:
                     break_lock_file(self.lock_file, mtime, ino)
                 return
 
             if owner_is_stale(*holder):
                 break_lock_file(self.lock_file, mtime, ino)
+
+    def _marker_unchanged_for(self, mtime: float, ino: int) -> float:
+        # The mtime carries the writer's or the file server's clock, so reading it against time.time() lets a contender
+        # whose clock runs ahead expire a marker refreshed a moment ago. Only test it for change, and time how long it
+        # stays the same on this process's monotonic clock, so no two clocks are ever compared.
+        now = time.monotonic()
+        if (seen := self._marker_seen) is None or seen[0] != (mtime, ino):
+            self._marker_seen = (mtime, ino), now
+            return 0.0
+        return now - seen[1]
 
     @staticmethod
     def _write_lock_info(fd: int) -> None:
