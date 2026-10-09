@@ -317,7 +317,7 @@ jobs:
         if: matrix.developer_mode == '1'
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
-          uvx --python 3.15 --with coverage uv run --no-project --python 3.15 python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
+          uv run --no-project --python 3.15 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
       - name: "✅ Run test suite with symlinks granted"
         if: matrix.developer_mode == '1'
         run: tox run --skip-pkg-install -e 3.15 --
@@ -327,7 +327,7 @@ jobs:
         if: matrix.developer_mode == '0'
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
-          uv run --no-project --python 3.15 python tasks\deny_symlink.py uvx --python 3.15 --with coverage uv run --no-project --python 3.15 python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
+          uv run --no-project --python 3.15 python tasks\deny_symlink.py uv run --no-project --python 3.15 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
       - name: "✅ Run test suite with symlinks denied"
         if: matrix.developer_mode == '0'
         run: uv run --no-project --python 3.15 python tasks\deny_symlink.py tox run --skip-pkg-install -e 3.15 --
