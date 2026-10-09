@@ -31,11 +31,6 @@ from filelock import (
 )
 from tests.capability_marks import NEEDS_FCNTL, NEEDS_PARENT_SYMLINK_COLLAPSE, NEEDS_PROMPT_FINALIZATION
 
-if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-    from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
-else:  # pragma: no cover (<py311)
-    from exceptiongroup import BaseExceptionGroup, ExceptionGroup
-
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
 
@@ -970,9 +965,6 @@ async def test_context_group_detaches_release_context(
     ) == ((body_error, release_error), None, None, body_cause, release_cause, True, True)
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11"
-)  # pragma: >=3.11 cover
 @pytest.mark.parametrize(
     "use_proxy",
     [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],

@@ -15,7 +15,7 @@ from collections.abc import Callable, Hashable
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from decimal import Decimal
-from itertools import count, pairwise, starmap
+from itertools import count, starmap
 from numbers import Real
 from threading import TIMEOUT_MAX, Condition, RLock, Thread, current_thread, get_ident, local
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
@@ -72,10 +72,7 @@ if TYPE_CHECKING:
             after_in_child: Callable[[], None] | None = None,
         ) -> None: ...
 
-    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-        from typing import Self
-    else:  # pragma: no cover (<py311)
-        from typing_extensions import Self
+    from typing import Self
 
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 _REGISTER_AT_FORK: Final[_RegisterAtFork | None] = cast("_RegisterAtFork | None", getattr(os, "register_at_fork", None))
@@ -104,23 +101,8 @@ class LockOptions(TypedDict, total=False):
     on_acquired: Callable[[int], None] | None
 
 
-def _exception_group_cls() -> type[BaseException] | None:
-    # filelock has no runtime dependencies, so the 3.10 exceptiongroup backport is optional: without it grouped errors
-    # chain instead, and only context_error_policy="group" is refused.
-    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-        return BaseExceptionGroup  # ruff:ignore[undefined-name]  # builtin on 3.11+
-    try:  # pragma: <3.11 cover
-        # Alias the import so BaseExceptionGroup above stays the builtin rather than an unbound local of this function.
-        from exceptiongroup import (  # ruff:ignore[import-outside-top-level]  # optional backport
-            BaseExceptionGroup as _Backport,
-        )
-    except ImportError:  # pragma: <3.11 cover
-        return None
-    return _Backport  # pragma: <3.11 cover
-
-
 def _is_exception_group(error: BaseException) -> bool:
-    return (group_cls := _exception_group_cls()) is not None and isinstance(error, group_cls)
+    return isinstance(error, BaseExceptionGroup)
 
 
 def _raise_grouped_errors(
@@ -131,13 +113,8 @@ def _raise_grouped_errors(
     marker: tuple[str, _MarkerValue] | None = None,
 ) -> NoReturn:
     errors = (first_error, second_error, *additional_errors)
-    if (group_cls := _exception_group_cls()) is None:  # pragma: <3.11 cover
-        # Chain them the way nested handlers would: the last error propagates with the earlier ones as its context.
-        for earlier, later in pairwise(errors):
-            _append_exception_context(later, earlier)
-        _raise_chained_errors(errors[-1])
     _detach_grouped_contexts(errors)
-    group: Final = group_cls(message, errors)
+    group: Final = BaseExceptionGroup(message, errors)
     if marker is not None:
         setattr(group, marker[0], marker[1])
     raise group from None
@@ -566,10 +543,6 @@ def _check_mode(mode: int, cls_name: str) -> None:
 def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
     if policy not in _CONTEXT_ERROR_POLICIES:
         msg = f"context_error_policy must be 'chain' or 'group', got {policy!r}"
-        raise ValueError(msg)
-    # Fail fast at construction rather than only when a dual failure happens to occur.
-    if policy == "group" and _exception_group_cls() is None:  # pragma: <3.11 cover
-        msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
         raise ValueError(msg)
     return cast("ContextErrorPolicy", policy)
 

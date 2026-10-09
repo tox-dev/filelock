@@ -58,11 +58,7 @@ from ._windows import WindowsFileLock
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Hashable, Mapping
     from types import TracebackType
-
-    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-        from typing import Self
-    else:  # pragma: no cover (<py311)
-        from typing_extensions import Self
+    from typing import Self
 
 
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")

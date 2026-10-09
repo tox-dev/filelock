@@ -31,7 +31,6 @@ from capabilities import CAPABILITIES
 import filelock
 import filelock.version
 from filelock import (
-    AsyncFileLock,
     BaseFileLock,
     ContextErrorPolicy,
     FileLock,
@@ -54,11 +53,6 @@ from tests.capability_marks import (
     NEEDS_PROMPT_FINALIZATION,
     NEEDS_SYMLINK,
 )
-
-if sys.version_info >= (3, 11):  # pragma: >=3.11 cover
-    from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
-else:  # pragma: <3.11 cover
-    from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -1442,8 +1436,7 @@ def test_release_interrupted_at_any_call_leaves_the_lock_usable(
     for target in count(1):  # pragma: no branch  # count() never runs out; the release that finishes ends the loop
         lock = lock_type(lock_path, thread_local=thread_local, timeout=_SHARED_WAIT)
         lock.acquire()
-        # CPython 3.10 skips the tracer's return event for a call the hook interrupts, so coverage loses this arc there.
-        if not _release_interrupted_at_call(lock, target):  # pragma: no branch
+        if not _release_interrupted_at_call(lock, target):
             break
         lock.release()
         # Bounded first, so a lock the interrupt leaked fails here instead of hanging the blocking acquire below.
@@ -1473,7 +1466,7 @@ def _release_interrupted_at_call(lock: BaseFileLock, target: int) -> bool:
     sys.setprofile(interrupt)
     try:
         lock.release()
-    except KeyboardInterrupt:  # pragma: >=3.11 cover  # 3.10 skips the tracer's return event for the interrupted call
+    except KeyboardInterrupt:
         return True
     finally:
         sys.setprofile(None)
@@ -2348,9 +2341,6 @@ def test_context_group_preserves_distinct_shared_exception_dag(
     )
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="standard exception-group rendering requires Python 3.11"
-)  # pragma: >=3.11 cover
 @pytest.mark.parametrize(
     "use_proxy",
     [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
@@ -2371,10 +2361,10 @@ def test_context_group_renders_independent_leaves(
     group_rendering = "".join(traceback.format_exception(info.value))
     release_rendering = "".join(traceback.format_exception(release_error))
     assert (
-        group_rendering.count("ValueError: body failed"),
-        release_rendering.count("ValueError: body failed"),
-        release_rendering.count("RuntimeError: release cause"),
-        release_rendering.count("OSError: release failed"),
+        sum(line.endswith("ValueError: body failed") for line in group_rendering.splitlines()),
+        sum(line.endswith("ValueError: body failed") for line in release_rendering.splitlines()),
+        sum(line.endswith("RuntimeError: release cause") for line in release_rendering.splitlines()),
+        sum(line.endswith("OSError: release failed") for line in release_rendering.splitlines()),
     ) == (1, 0, 0, 1)
 
 
@@ -2450,57 +2440,6 @@ def test_context_group_base_exception_leaf_is_base_group(
 def test_invalid_context_error_policy_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="context_error_policy must be"):
         SoftFileLock(str(tmp_path / "a"), context_error_policy="explode")  # ty: ignore[invalid-argument-type]
-
-
-@pytest.fixture
-def without_exceptiongroup(mocker: MockerFixture) -> None:  # pragma: <3.11 cover
-    # A bare `pip install filelock` on 3.10 has no backport, so its import fails.
-    mocker.patch.dict(sys.modules, {"exceptiongroup": None})
-
-
-_NEEDS_MISSING_EXCEPTION_GROUP: Final = pytest.mark.skipif(
-    sys.version_info >= (3, 11), reason="BaseExceptionGroup is a builtin on 3.11+"
-)
-
-
-@_NEEDS_MISSING_EXCEPTION_GROUP
-@pytest.mark.usefixtures("without_exceptiongroup")
-def test_without_exceptiongroup_rejects_group_policy(tmp_path: Path) -> None:  # pragma: <3.11 cover
-    with pytest.raises(ValueError, match="requires Python"):
-        FileLock(str(tmp_path / "a"), context_error_policy="group")
-
-
-@_NEEDS_MISSING_EXCEPTION_GROUP
-@pytest.mark.usefixtures("without_exceptiongroup")
-def test_without_exceptiongroup_chains_hook_and_release_failure(  # pragma: <3.11 cover
-    tmp_path: Path, close_failure: tuple[Callable[[int], None], OSError, RuntimeError]
-) -> None:
-    capture, release_error, _ = close_failure
-    hook_error: Final = ValueError("hook failed")
-
-    def hook(fd: int) -> None:
-        capture(fd)
-        raise hook_error
-
-    lock: Final = FileLock(str(tmp_path / "a"), close_error_policy="raise", on_acquired=hook)
-    with pytest.raises(OSError, match="release failed") as info:
-        lock.acquire()
-    assert (info.value, release_error.__context__) == (release_error, hook_error)
-
-
-@_NEEDS_MISSING_EXCEPTION_GROUP
-@pytest.mark.usefixtures("without_exceptiongroup")
-@pytest.mark.asyncio
-async def test_without_exceptiongroup_async_chains_body_and_release_failure(  # pragma: <3.11 cover
-    tmp_path: Path, close_failure: tuple[Callable[[int], None], OSError, RuntimeError]
-) -> None:
-    capture, release_error, _ = close_failure
-    body_error: Final = ValueError("body failed")
-    lock: Final = AsyncFileLock(str(tmp_path / "a"), close_error_policy="raise", on_acquired=capture)
-    with pytest.raises(OSError, match="release failed") as info:
-        async with lock:
-            raise body_error
-    assert (info.value, release_error.__context__) == (release_error, body_error)
 
 
 def test_singleton_rejects_different_context_policy(tmp_path: Path) -> None:

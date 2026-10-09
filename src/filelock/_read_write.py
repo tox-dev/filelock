@@ -40,13 +40,9 @@ if sys.platform == "win32":  # pragma: win32 cover
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
+    from typing import Self
 
     from _typeshed import Unused
-
-    if sys.version_info >= (3, 11):
-        from typing import Self
-    else:
-        from typing_extensions import Self
 
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 _GETPID: Final[Callable[[], int]] = os.getpid

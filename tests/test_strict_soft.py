@@ -3,21 +3,12 @@ from __future__ import annotations
 import errno
 import os
 import socket
-import sys
 import time
 from errno import EBADF, ENOSYS, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
-
-from tests.capability_marks import NEEDS_FILE_PERMISSIONS
-
-if sys.version_info >= (3, 11):
-    from builtins import ExceptionGroup  # pragma: >=3.11 cover
-else:  # pragma: <3.11 cover
-    from exceptiongroup import ExceptionGroup
-
 from capabilities import CAPABILITIES
 
 import filelock._strict
@@ -32,6 +23,7 @@ from filelock import (
 )
 from filelock._identity import host_name, process_start_token
 from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_hard_link_unsupported_errnos
+from tests.capability_marks import NEEDS_FILE_PERMISSIONS
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture

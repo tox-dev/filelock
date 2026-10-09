@@ -20,7 +20,7 @@ license = "MIT"
 maintainers = [
   { name = "Bernát Gábor", email = "gaborjbernat@gmail.com" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
@@ -28,7 +28,6 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -59,7 +58,6 @@ dev = [
 test = [
   "covdefaults>=2.3",
   "diff-cover>=10.2",
-  "exceptiongroup>=1.2; python_version<'3.11'",
   "pytest>=9.0.3",
   "pytest-asyncio>=1.3",
   "pytest-cov>=7.1",
@@ -124,6 +122,7 @@ lint.select = [
   "ALL",
 ]
 lint.ignore = [
+  "async-function-with-timeout",               # lock acquisition timeouts support polling; cancellation would change the public API
   "CPY",                                       # No copyright statements
   "DOC",                                       # no support yet
   "escape-sequence-in-docstring",              # Use `r"""` if any backslashes in a docstring
@@ -183,7 +182,7 @@ environment.extra-paths = [
   ".",
   "tasks",
 ]
-environment.python-version = "3.14"
+environment.python-version = "3.15"
 
 [tool.pytest]
 ini_options.testpaths = [

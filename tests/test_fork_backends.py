@@ -13,11 +13,6 @@ from filelock import BaseAsyncFileLock, BaseFileLock
 from tests.capability_marks import NEEDS_FORK, NEEDS_GENERATOR_EXCEPTION_CONTEXT
 from tests.fork_helpers import exit_child, fork_process
 
-if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
-else:  # pragma: <3.11 cover
-    from exceptiongroup import BaseExceptionGroup
-
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
@@ -210,10 +205,6 @@ from __future__ import annotations
 import os
 import sys
 
-if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup  # pragma: >=3.11 cover
-else:
-    from exceptiongroup import BaseExceptionGroup
 
 descriptor = -1
 replacement_descriptor = -1

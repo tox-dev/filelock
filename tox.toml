@@ -1,23 +1,10 @@
-requires = [ "tox>=4.52" ]
-env_list = [
-  "3.15",
-  "3.14",
-  "3.13",
-  "3.12",
-  "3.11",
-  "3.10",
-  "3.14t",
-  "3.15t",
-  "coverage",
-  "docs",
-  "fix",
-  "pkg_meta",
-  "type"
-]
+requires = [ "tox>=4.64.7" ]
+env_list = [ "3.15", "3.14", "3.13", "3.12", "3.11", "3.14t", "3.15t", "coverage", "docs", "fix", "pkg_meta", "type" ]
 skip_missing_interpreters = true
 
 [env_run_base]
 description = "run the tests with pytest under {env_name}"
+default_base_python = [ "3.15" ]
 package = "wheel"
 wheel_build_env = ".pkg"
 dependency_groups = [ "test" ]
@@ -63,9 +50,12 @@ commands = [
   ], extend = true },
 ]
 
-[env."3.14"]
+[env_pkg_base]
+default_base_python = [ "3.15" ]
+
+[env."3.15"]
 # Set COVERAGE_FILE again: overriding set_env here drops the value inherited from env_run_base, and without it
-# coverage writes .coverage in the repo root instead of {work_dir}/.coverage.3.14, so the CI rename cannot find it.
+# coverage writes .coverage in the repo root instead of {work_dir}/.coverage.3.15, so the CI rename cannot find it.
 set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage.{env_name}" }
 set_env.FILELOCK_OLD_CLIENT_PATH = "{env_tmp_dir}{/}filelock-3.20.0"
 set_env.PYTHONPATH = "{tox_root}{/}tasks"
@@ -81,6 +71,7 @@ commands_pre = [
     "filelock==3.20.0",
   ],
 ]
+allowlist_externals = [ "uv" ]
 
 [env.coverage]
 description = "combine coverage files and generate diff (against DIFF_AGAINST defaulting to origin/main)"
@@ -109,7 +100,7 @@ commands = [
     "{env_tmp_dir}{/}coverage.xml",
   ],
 ]
-depends = [ "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t" ]
+depends = [ "3.11", "3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t" ]
 
 [env.docs]
 description = "build documentation"

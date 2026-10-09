@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from sphinx.environment import BuildEnvironment
 
 name, company = "filelock", "tox-dev"
-now = datetime.now(tz=timezone.utc)
+now = datetime.now(tz=UTC)
 version, release = ".".join(__version__.split(".")[:2]), __version__
 copyright = f"2014-{now.date().year}, {company}"  # ruff:ignore[builtin-variable-shadowing]
 extensions = [
