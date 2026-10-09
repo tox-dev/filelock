@@ -1,2 +1,0 @@
-:class:`~filelock.BaseFileLock` rejects a ``bool`` or string timeout, an out-of-range ``mode`` and a non-``bool``
-``blocking`` set at any time, rejects unknown options on a singleton cache hit, and tracks an ``on_acquired`` reacquire.

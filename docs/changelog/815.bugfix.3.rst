@@ -1,2 +1,0 @@
-Every option given in seconds takes a :class:`~decimal.Decimal` or :class:`~fractions.Fraction`, as a file lock's
-``timeout`` already did, and a read-write lock or lease refuses a ``bool`` or string one.

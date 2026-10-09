@@ -1,1 +1,0 @@
-The source distribution now includes ``docs/``, so ``tox -e docs`` builds the documentation from an unpacked sdist.

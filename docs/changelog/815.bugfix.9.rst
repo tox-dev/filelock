@@ -1,2 +1,0 @@
-:class:`~filelock.SoftFileLock` and its marker and lease variants no longer leave their marker behind when a signal
-handler interrupts a release; the retried release, or the next acquire on Windows, removes it.

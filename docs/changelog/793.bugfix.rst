@@ -1,2 +1,0 @@
-:class:`~filelock.BaseAsyncFileLock` raises :class:`RuntimeError` instead of :class:`asyncio.CancelledError` when its
-executor shuts down with the call still queued, and a waiter interrupted by anything else no longer wedges later calls.

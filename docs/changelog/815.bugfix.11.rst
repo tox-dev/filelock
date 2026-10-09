@@ -1,1 +1,0 @@
-A lock finalized at interpreter exit no longer hangs when a daemon thread stopped inside filelock's fork bookkeeping.

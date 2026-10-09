@@ -1,2 +1,0 @@
-:class:`~filelock.SoftFileLease` reclaims a dead :class:`~filelock.MarkerSoftFileLock` owner, and expires a lease or a
-malformed soft marker after it stays unchanged on the contender's own monotonic clock, so clock skew cannot break it.

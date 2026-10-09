@@ -1,2 +1,0 @@
-Import :data:`~filelock.OwnerMode`, :data:`~filelock.CompromiseReason` and :data:`~filelock.has_fcntl` from
-``filelock``.

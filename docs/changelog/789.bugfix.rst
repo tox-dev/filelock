@@ -1,2 +1,0 @@
-:class:`~filelock.AsyncReadWriteLock` and :class:`~filelock.AsyncSoftReadWriteLock` drop a task's hold when a caller
-cancels it during a release that still completes, instead of blocking every later writer.

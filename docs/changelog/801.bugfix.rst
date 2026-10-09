@@ -1,2 +1,0 @@
-:class:`~filelock.SoftReadWriteLock` waits out a holder's own ``stale_threshold`` before evicting it, keys its singleton
-on the path its log sits beside, and no longer leaks ledger entries or the holder record of a failed acquire.

@@ -1,2 +1,0 @@
-:class:`~filelock.SoftReadWriteLock` reads the head from ``gen/HEAD``, so a client whose cached directory listing is
-more than 64 generations stale no longer takes an old generation for the head and forks the log.

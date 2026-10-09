@@ -1,2 +1,0 @@
-:meth:`~filelock.BaseFileLock.acquire` raises :class:`ValueError` for a blocking ``nan`` timeout or a ``poll_interval``
-above :data:`threading.TIMEOUT_MAX`, and treats a :data:`math.inf` timeout like ``-1``.

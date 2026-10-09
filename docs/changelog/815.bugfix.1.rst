@@ -1,2 +1,0 @@
-:class:`~filelock.SoftFileLock` and :class:`~filelock.SoftFileLease` re-check a stale marker right before breaking it,
-so a marker recreated since the check is no longer moved aside for a third contender to take the path.

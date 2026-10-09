@@ -1,2 +1,0 @@
-On macOS, :class:`~filelock.ReadWriteLock` connects through a private hard link, so cycling a lock beside a holder no
-longer adds an open descriptor per connection.

@@ -1,2 +1,0 @@
-:class:`~filelock.UnixFileLock` no longer deletes another process's live marker when it falls back to a soft lock on
-``ENOSYS``, and on macOS a lock path ending in a separator raises :class:`FileNotFoundError` instead of retrying.

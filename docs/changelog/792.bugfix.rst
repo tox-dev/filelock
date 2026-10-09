@@ -1,2 +1,0 @@
-:class:`~filelock.StrictSoftFileLock` judges an abandoned private record's age by the filesystem's clock, so a client
-clock ahead of an NFS server no longer aborts live publications.

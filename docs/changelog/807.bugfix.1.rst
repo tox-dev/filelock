@@ -1,2 +1,0 @@
-:class:`~filelock.SoftFileLockLifetimeWarning` derives from :class:`FutureWarning` instead of
-:class:`DeprecationWarning`, so Python shows it by default outside ``__main__``.

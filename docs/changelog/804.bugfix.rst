@@ -1,2 +1,0 @@
-:class:`~filelock.StrictSoftFileLock` raises :class:`~filelock.SoftFileLockProtocolError` naming a directory, symlink
-or exited soft-lock owner's marker at the lock path, and ``lock_path_occupant`` shows what blocks it.

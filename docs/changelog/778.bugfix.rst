@@ -1,2 +1,0 @@
-:class:`~filelock.SoftReadWriteLock` ignores a generation-log entry whose name is not 20 ASCII digits, which used to
-stop its heartbeat thread or delete real generations.

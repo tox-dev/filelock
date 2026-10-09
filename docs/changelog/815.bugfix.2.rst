@@ -1,2 +1,0 @@
-:class:`~filelock.SoftReadWriteLock` raises :class:`ValueError` for a ``heartbeat_interval`` above
-:data:`threading.TIMEOUT_MAX`, which killed its heartbeat thread, and an interrupted release still removes its record.

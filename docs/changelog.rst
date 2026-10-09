@@ -6,6 +6,115 @@
 
 .. towncrier release notes start
 
+*******************
+ 4.1.0 (2026-10-09)
+*******************
+
+- Import :data:`~filelock.OwnerMode`, :data:`~filelock.CompromiseReason` and :data:`~filelock.has_fcntl` from
+  ``filelock``. :pr:`790`
+- :class:`~filelock.AcquireReturnProxy` is generic in the lock type, so ``with lock.acquire() as held:`` types ``held`` as
+  the lock's own class. :pr:`803`
+- A :class:`~filelock.Timeout` from a soft lock names a holder on another host or in another PID namespace, which no
+  contender ever reclaims. :pr:`815`
+- :attr:`~filelock.SoftFileLock.is_lock_held_by_us` and :attr:`~filelock.MarkerSoftFileLock.is_lock_held_by_us` return
+  ``False`` for a marker an earlier process with the same PID left behind. :pr:`774`
+- :class:`~filelock.SoftFileLock` removes its marker when writing it fails and closing the descriptor fails too, so the
+  lock path no longer stays blocked. :pr:`775`
+- :meth:`~filelock.BaseFileLock.acquire` and :meth:`~filelock.BaseAsyncFileLock.acquire` no longer wait past ``timeout``
+  when ``poll_interval`` is longer than the time left. :pr:`777`
+- :class:`~filelock.SoftReadWriteLock` ignores a generation-log entry whose name is not 20 ASCII digits, which used to
+  stop its heartbeat thread or delete real generations. :pr:`778`
+- :class:`~filelock.ReadWriteLock`, :class:`~filelock.SoftReadWriteLock` and their async wrappers treat a
+  :data:`math.inf` timeout like ``-1`` and raise :class:`ValueError` for a blocking ``nan`` one. :pr:`779`
+- :class:`~filelock.ReadWriteLock` and :class:`~filelock.SoftReadWriteLock` accept a timeout above
+  :data:`threading.TIMEOUT_MAX` instead of raising :class:`OverflowError`. :pr:`780`
+- :meth:`~filelock.BaseFileLock.acquire` raises :class:`ValueError` for a blocking ``nan`` timeout or a ``poll_interval``
+  above :data:`threading.TIMEOUT_MAX`, and treats a :data:`math.inf` timeout like ``-1``. :pr:`781`
+- :class:`~filelock.SoftFileLock` and :class:`~filelock.MarkerSoftFileLock` treat a marker cut before its final newline as
+  malformed, so a crash-truncated record self-heals and a read mid-write no longer breaks a live lock. :pr:`782`
+- :class:`~filelock.UnixFileLock` no longer deletes another process's live marker when it falls back to a soft lock on
+  ``ENOSYS``, and on macOS a lock path ending in a separator raises :class:`FileNotFoundError` instead of retrying. :pr:`785`
+- :class:`~filelock.SoftFileLock` and :class:`~filelock.SoftFileLease` put back a live successor's marker that a racing
+  stale break moved aside, so a third contender no longer acquires beside the successor. :pr:`786`
+- :class:`~filelock.StrictSoftFileLock` removes every claim a failed acquire published, counts an ``EEXIST`` link that
+  landed as published, and no longer reports ``is_locked`` after a failed claim cleanup. :pr:`787`
+- On Python 3.10 without the ``exceptiongroup`` backport, a release failure under the default ``context_error_policy`` no
+  longer turns into :exc:`ModuleNotFoundError`; cleanup failures chain instead of grouping, and ``on_acquired`` is allowed. :pr:`788`
+- :class:`~filelock.AsyncReadWriteLock` and :class:`~filelock.AsyncSoftReadWriteLock` drop a task's hold when a caller
+  cancels it during a release that still completes, instead of blocking every later writer. :pr:`789`
+- :class:`~filelock.SoftFileLease` releases a lease dropped while held, at garbage collection or interpreter exit, and
+  raises :class:`ValueError` for a ``heartbeat_interval`` above :data:`threading.TIMEOUT_MAX`. :pr:`791`
+- :class:`~filelock.StrictSoftFileLock` judges an abandoned private record's age by the filesystem's clock, so a client
+  clock ahead of an NFS server no longer aborts live publications. :pr:`792`
+- :class:`~filelock.BaseAsyncFileLock` raises :class:`RuntimeError` instead of :class:`asyncio.CancelledError` when its
+  executor shuts down with the call still queued, and a waiter interrupted by anything else no longer wedges later calls. :pr:`793`
+- Constructing or closing a second :class:`~filelock.ReadWriteLock` on a held database no longer drops the holder's lock,
+  so other processes stay excluded. :pr:`794`
+- :class:`~filelock.SoftReadWriteLock` no longer admits a second writer after ``<path>.rw`` is removed under a live
+  instance, and flushes each snapshot before publishing it so a crash cannot leave an empty one that wedges every peer. :pr:`795`
+- :class:`~filelock.SoftFileLease` reclaims a dead :class:`~filelock.MarkerSoftFileLock` owner, and expires a lease or a
+  malformed soft marker after it stays unchanged on the contender's own monotonic clock, so clock skew cannot break it. :pr:`796`
+- A soft lock marker written in a Linux container records its PID namespace with the hostname, so a sibling container
+  that shares the hostname and volume no longer breaks a live lock. :pr:`797`
+- :meth:`SoftReadWriteLock.close() <filelock.SoftReadWriteLock.close>` makes an acquire still waiting in another thread
+  raise :class:`RuntimeError`, where it used to take the lock on the closed instance and hold it until the process exited. :pr:`798`
+- :class:`~filelock.SoftReadWriteLock` reads the head from ``gen/HEAD``, so a client whose cached directory listing is
+  more than 64 generations stale no longer takes an old generation for the head and forks the log. :pr:`799`
+- When the garbage collector finalizes a held :class:`~filelock.BaseAsyncFileLock`, it releases on a ``loop`` running in
+  another thread, or in place once no loop is left; the ``lifetime`` check and path resolution now run in the executor. :pr:`800`
+- :class:`~filelock.SoftReadWriteLock` waits out a holder's own ``stale_threshold`` before evicting it, keys its singleton
+  on the path its log sits beside, and no longer leaks ledger entries or the holder record of a failed acquire. :pr:`801`
+- :func:`~filelock.lock_descriptor` raises :class:`ValueError` for a blocking ``poll_interval`` above
+  :data:`threading.TIMEOUT_MAX` up front, instead of :class:`OverflowError` once the descriptor is contended. :pr:`802`
+- :class:`~filelock.BaseFileLock` rejects a ``bool`` or string timeout, an out-of-range ``mode`` and a non-``bool``
+  ``blocking`` set at any time, rejects unknown options on a singleton cache hit, and tracks an ``on_acquired`` reacquire. :pr:`803`
+- :class:`~filelock.StrictSoftFileLock` raises :class:`~filelock.SoftFileLockProtocolError` naming a directory, symlink
+  or exited soft-lock owner's marker at the lock path, and ``lock_path_occupant`` shows what blocks it. :pr:`804`
+- :class:`~filelock.ReadWriteLock` raises :class:`ValueError` for a WAL-mode database instead of ``disk I/O error``, and
+  its ``/dev/fd`` fallback links beside the database, so a lock off the TMPDIR filesystem no longer fails with ``EXDEV``. :pr:`805`
+- :meth:`ReadWriteLock.release() <filelock.ReadWriteLock.release>` from a thread that holds no read level raises
+  :class:`RuntimeError` instead of ending another thread's read lock and letting a writer in. :pr:`806`
+- :class:`~filelock.SoftFileLockLifetimeWarning` derives from :class:`FutureWarning` instead of
+  :class:`DeprecationWarning`, so Python shows it by default outside ``__main__``. :pr:`807`
+- :class:`~filelock.SoftFileLock` applies an explicit ``mode`` past the umask as :class:`~filelock.UnixFileLock` does, and
+  reads a marker number spelled other than in ASCII digits, or a lease with an empty token, as malformed. :pr:`807`
+- :class:`~filelock.ReadWriteLock` raises :class:`OSError` when its database is unlinked or replaced while an acquisition
+  waits, instead of taking a lock that no later opener sees. :pr:`808`
+- On a thread-local synchronous lock, :meth:`~filelock.BaseFileLock.release` with ``force=True`` and garbage collection
+  release holds exited threads left, and a ``release()`` re-entered from a signal handler closes the descriptor once. :pr:`810`
+- :class:`~filelock.SoftFileLease` records a ``lease_duration`` given as a :class:`float` subclass, such as NumPy's, in a
+  form every contender parses, so a live lease is no longer evicted as malformed. :pr:`815`
+- :class:`~filelock.StrictSoftFileLock` raises :class:`~filelock.SoftFileLockProtocolError` for a file at the lock path it
+  cannot parse once it stays unchanged for two seconds, instead of waiting on it forever. :pr:`815`
+- A lock finalized at interpreter exit no longer hangs when a daemon thread stopped inside filelock's fork bookkeeping. :pr:`815`
+- Setting :attr:`BaseFileLock.timeout <filelock.BaseFileLock.timeout>` from a string emits a :class:`DeprecationWarning`
+  and from a ``bool`` raises :class:`TypeError`; pass the number of seconds instead. :pr:`815`
+- Every lock raises :class:`ValueError` for a timeout too large for a :class:`float`, and a singleton accepts a timeout
+  that waits as long as the cached one, such as ``inf`` for ``-1``. :pr:`815`
+- Every option given in seconds takes a :class:`~decimal.Decimal` or :class:`~fractions.Fraction`, as a file lock's
+  ``timeout`` already did, and a read-write lock or lease refuses a ``bool`` or string one. :pr:`815`
+- On macOS, :class:`~filelock.ReadWriteLock` connects through a private hard link, so cycling a lock beside a holder no
+  longer adds an open descriptor per connection. :pr:`815`
+- :class:`~filelock.SoftFileLock` and :class:`~filelock.SoftFileLease` re-check a stale marker right before breaking it,
+  so a marker recreated since the check is no longer moved aside for a third contender to take the path. :pr:`815`
+- An acquire a signal handler starts while its thread is still acquiring the same lock raises :class:`RuntimeError`,
+  where it used to hang that thread or leave the lock held after the outer release. :pr:`815`
+- A :class:`~filelock.BaseAsyncFileLock` singleton the garbage collector finalizes leaves the singleton cache first, so a
+  new lock on the path waits for its release instead of re-entering a hold that release then drops. :pr:`815`
+- A finalized thread-local :class:`~filelock.BaseAsyncFileLock` releases every thread's hold, including one on a daemon
+  thread's event loop at interpreter exit, instead of leaving it held. :pr:`815`
+- A soft lock in the host's PID namespace no longer breaks a live marker written from a container sharing the hostname
+  while the kernel shows its owner running in another namespace under the recorded PID and start time. :pr:`815`
+- :class:`~filelock.SoftFileLock` and its marker and lease variants no longer leave their marker behind when a signal
+  handler interrupts a release; the retried release, or the next acquire on Windows, removes it. :pr:`815`
+- :class:`~filelock.SoftReadWriteLock` raises :class:`ValueError` for a ``heartbeat_interval`` above
+  :data:`threading.TIMEOUT_MAX`, which killed its heartbeat thread, and an interrupted release still removes its record. :pr:`815`
+- :class:`~filelock.AsyncReadWriteLock` releases only its own hold on a singleton it shares with synchronous users, where
+  it used to end their read transaction too. :pr:`815`
+- The documentation's canonical link, ``og:url`` and sitemap entries point at the versioned page on Read the Docs instead
+  of a domain-root URL that returns 404. :pr:`813`
+- The source distribution now includes ``docs/``, so ``tox -e docs`` builds the documentation from an unpacked sdist. :pr:`812`
+
 ********************
  4.0.12 (2026-10-05)
 ********************

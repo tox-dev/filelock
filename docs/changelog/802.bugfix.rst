@@ -1,2 +1,0 @@
-:func:`~filelock.lock_descriptor` raises :class:`ValueError` for a blocking ``poll_interval`` above
-:data:`threading.TIMEOUT_MAX` up front, instead of :class:`OverflowError` once the descriptor is contended.

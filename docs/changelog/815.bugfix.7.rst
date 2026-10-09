@@ -1,2 +1,0 @@
-:class:`~filelock.AsyncReadWriteLock` releases only its own hold on a singleton it shares with synchronous users, where
-it used to end their read transaction too.

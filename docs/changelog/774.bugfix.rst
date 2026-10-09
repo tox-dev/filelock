@@ -1,2 +1,0 @@
-:attr:`~filelock.SoftFileLock.is_lock_held_by_us` and :attr:`~filelock.MarkerSoftFileLock.is_lock_held_by_us` return
-``False`` for a marker an earlier process with the same PID left behind.

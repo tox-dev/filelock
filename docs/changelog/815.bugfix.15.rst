@@ -1,2 +1,0 @@
-An acquire a signal handler starts while its thread is still acquiring the same lock raises :class:`RuntimeError`,
-where it used to hang that thread or leave the lock held after the outer release.

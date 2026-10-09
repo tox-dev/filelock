@@ -1,2 +1,0 @@
-:class:`~filelock.SoftFileLock` and :class:`~filelock.MarkerSoftFileLock` treat a marker cut before its final newline as
-malformed, so a crash-truncated record self-heals and a read mid-write no longer breaks a live lock.

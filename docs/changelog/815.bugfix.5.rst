@@ -1,2 +1,0 @@
-:class:`~filelock.SoftFileLease` records a ``lease_duration`` given as a :class:`float` subclass, such as NumPy's, in a
-form every contender parses, so a live lease is no longer evicted as malformed.
