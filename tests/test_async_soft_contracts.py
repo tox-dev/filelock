@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import pytest
@@ -61,12 +62,22 @@ async def test_async_lease_heartbeat_keeps_a_live_claim(marker: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None:  # pragma: win32 no cover
     seen: list[LeaseCompromise] = []
+    reported = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def report(compromise: LeaseCompromise) -> None:
+        # The heartbeat thread reports, so the event is set on the loop's own thread.
+        seen.append(compromise)
+        loop.call_soon_threadsafe(reported.set)
+
     lease = AsyncSoftFileLease(
-        str(marker), lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT, on_compromise=seen.append
+        str(marker), lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT, on_compromise=report
     )
 
     async with lease:  # pragma: win32 no cover
         await asyncio.to_thread(marker.unlink)
-        await asyncio.sleep(_HEARTBEAT * 5)
+        # The first miss may be a peer's break in flight, so the report comes a refresh later; bounded, it fails below.
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(reported.wait(), _DURATION * 20)
 
     assert [c.reason for c in seen] == ["marker-missing"]

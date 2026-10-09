@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import contextlib
+import errno
+import gc
 import os
 import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolates process-global audit hooks and fork exits
 import sys
 import textwrap
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Final, Literal, NoReturn
 
 import pytest
 from capabilities import CAPABILITIES
 
+import filelock._read_write
 from filelock import ReadWriteLock
 from tests.capability_marks import (
     NEEDS_AUDIT_EVENTS,
@@ -22,9 +26,17 @@ from tests.capability_marks import (
 
 if TYPE_CHECKING:
     from _typeshed import StrOrBytesPath
+    from pytest_mock import MockerFixture
 
 _NEEDS_FD_DIRECTORY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["fd-directory"], reason="counting open descriptors needs a /dev/fd or /proc/self/fd view"
+)
+_NEEDS_PROBE_DESCRIPTORS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows connects without probe descriptors"
+)
+_LINKS_BEFORE_THE_DESCRIPTOR: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["fd-directory"] or CAPABILITIES["fd-directory-names-file"],
+    reason="only a descriptor path that misreports the file sends a connect through a hard link first",
 )
 
 
@@ -41,9 +53,11 @@ def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
         if event != "sqlite3.connect":
             return
         database = args[0]
-        # The lock connects through /dev/fd or /proc/self/fd, or by its own path on Windows.
+        # The lock connects through /dev/fd, /proc/self/fd or a private hard link, or by its own path on Windows.
         if isinstance(database, (str, bytes)) and (
-            (path := os.fsdecode(database)) == str(lock_path) or path.startswith(("/dev/fd/", "/proc/self/fd/"))
+            (path := os.fsdecode(database)) == str(lock_path)
+            or path.startswith(("/dev/fd/", "/proc/self/fd/"))
+            or Path(path).parent.name.startswith(".filelock-")
         ):
             connection_events += 1
 
@@ -72,17 +86,187 @@ def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) 
 def test_read_write_lock_keeps_its_probe_descriptor_while_held(tmp_path: Path) -> None:  # pragma: needs fd-directory
     lock_path: Final[Path] = tmp_path / "held.db"
     with ReadWriteLock(lock_path, is_singleton=False).read_lock():
-        database: Final[os.stat_result] = lock_path.stat()
-        held = 0
-        for entry in (Path("/dev/fd") if Path("/dev/fd").is_dir() else Path("/proc/self/fd")).iterdir():
-            # The descriptor that listed the directory is gone by the time we stat it.
-            with contextlib.suppress(OSError):
-                descriptor: Final[os.stat_result] = os.fstat(int(entry.name))
-                held += (descriptor.st_dev, descriptor.st_ino) == (database.st_dev, database.st_ino)
+        # SQLite keeps its own descriptor, and the one that refused a symlink stays open with it: closing it would drop
+        # this process's locks on the inode.
+        assert _descriptors_on(lock_path) == 2
 
-    # SQLite keeps its own descriptor, and the one that refused a symlink stays open with it: closing it would drop
-    # this process's locks on the inode.
-    assert held == 2
+
+@_NEEDS_FD_DIRECTORY  # pragma: needs fd-directory
+def test_read_write_lock_cycling_beside_a_holder_keeps_descriptors_flat(tmp_path: Path) -> None:
+    lock_path: Final[Path] = tmp_path / "held.db"
+    cycler: Final = ReadWriteLock(lock_path, is_singleton=False)
+    with ReadWriteLock(lock_path, is_singleton=False).read_lock():
+        with cycler.read_lock():
+            pass
+        before: Final = _descriptors_on(lock_path)
+        for _ in range(20):
+            with cycler.read_lock():
+                pass
+        assert _descriptors_on(lock_path) == before
+
+
+@_LINKS_BEFORE_THE_DESCRIPTOR  # pragma: needs fd-directory  # pragma: lacks fd-directory-names-file
+@pytest.mark.parametrize(
+    "failing", [pytest.param("tempfile.mkdtemp", id="mkdtemp"), pytest.param("os.link", id="link")]
+)
+def test_read_write_lock_connects_through_the_descriptor_when_linking_fails(
+    tmp_path: Path, mocker: MockerFixture, failing: str
+) -> None:
+    lock_path: Final[Path] = tmp_path / "held.db"
+    # Only a connect beside a live peer links: that is when SQLite defers its closes.
+    peer: Final = ReadWriteLock(lock_path, is_singleton=False)
+    peer.acquire_read()
+    mocker.patch(failing, autospec=True, side_effect=PermissionError(errno.EACCES, "read-only directory"))
+    lock: Final = ReadWriteLock(lock_path, is_singleton=False)
+    lock.acquire_read()
+    peer.release()
+    contender: Final = _run_fork_script(_TRY_WRITE_SCRIPT, [str(lock_path)], timeout=30)
+    lock.release()
+
+    assert (contender, sorted(path.name for path in tmp_path.iterdir())) == ((0, "Timeout\n", ""), ["held.db"])
+
+
+@_NEEDS_FD_DIRECTORY
+def test_read_write_locks_held_together_each_keep_their_own_probe(tmp_path: Path) -> None:  # pragma: needs fd-directory
+    # macOS SQLite fails, now and then, to open two live connections through one /dev/fd name.
+    lock_path: Final[Path] = tmp_path / "shared.db"
+    with (
+        ReadWriteLock(lock_path, is_singleton=False).read_lock(),
+        ReadWriteLock(lock_path, is_singleton=False).read_lock(),
+    ):
+        assert _descriptors_on(lock_path) == 4
+
+
+@_NEEDS_FD_DIRECTORY
+@pytest.mark.parametrize(
+    "newer_releases_last", [pytest.param(True, id="newer-last"), pytest.param(False, id="older-last")]
+)
+@pytest.mark.parametrize("next_database", [pytest.param("shared.db", id="same"), pytest.param("other.db", id="other")])
+def test_read_write_lock_close_interrupted_among_its_probes_closes_the_rest_later(  # pragma: needs fd-directory
+    tmp_path: Path, mocker: MockerFixture, newer_releases_last: bool, next_database: str
+) -> None:
+    lock_path: Final[Path] = tmp_path / "shared.db"
+    older: Final = ReadWriteLock(lock_path, is_singleton=False)
+    newer: Final = ReadWriteLock(lock_path, is_singleton=False)
+    older.acquire_read()
+    newer.acquire_read()
+    first, last = (older, newer) if newer_releases_last else (newer, older)
+    first.release()
+    database: Final = lock_path.stat()
+    real_close: Final = os.close
+
+    def close_then_interrupt(fd: int) -> None:
+        same_inode: Final = os.path.samestat(os.fstat(fd), database)
+        real_close(fd)
+        # Removing a private hard link's directory closes descriptors of its own.
+        if not same_inode:  # pragma: lacks fd-directory-names-file
+            return
+        # A signal handler runs once the first probe's close returns, before the second one closes.
+        mocker.stopall()
+        raise KeyboardInterrupt
+
+    mocker.patch("os.close", autospec=True, side_effect=close_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        last.release()
+    # The next connect must not adopt the probe the interrupted close already shut, and any connect finishes the close.
+    with ReadWriteLock(tmp_path / next_database, is_singleton=False).read_lock():
+        pass
+
+    assert _descriptors_on(lock_path) == 0
+
+
+@_NEEDS_PROBE_DESCRIPTORS  # pragma: win32 no cover
+@pytest.mark.parametrize(
+    ("contender_output", "beside_a_peer"),
+    [pytest.param("", False, id="alone"), pytest.param("Timeout\n", True, id="beside-a-peer")],
+)
+def test_read_write_lock_release_interrupted_once_its_probe_release_applies(
+    tmp_path: Path, mocker: MockerFixture, contender_output: str, *, beside_a_peer: bool
+) -> None:
+    lock_path: Final[Path] = tmp_path / "held.db"
+    lock: Final = ReadWriteLock(lock_path, is_singleton=False)
+    peer: Final = ReadWriteLock(lock_path, is_singleton=False)
+    lock.acquire_read()
+    if beside_a_peer:
+        peer.acquire_read()
+    release_locked: Final = filelock._read_write._ProbeDescriptors._release_locked
+
+    # A signal handler runs once the release returns, before the drain dequeues it.
+    def apply_then_interrupt(
+        descriptors: filelock._read_write._ProbeDescriptors, probe: filelock._read_write._Probe
+    ) -> NoReturn:
+        release_locked(descriptors, probe)
+        raise KeyboardInterrupt
+
+    mocker.patch.object(
+        filelock._read_write._ProbeDescriptors, "_release_locked", autospec=True, side_effect=apply_then_interrupt
+    )
+    with pytest.raises(KeyboardInterrupt):
+        lock.release()
+    mocker.stopall()
+    # Any connect drains the release the interrupt left queued, applying it again.
+    with ReadWriteLock(tmp_path / "other.db", is_singleton=False).read_lock():
+        pass
+
+    # Closing any descriptor on the inode would drop the read lock the peer holds for this process.
+    assert _run_fork_script(_TRY_WRITE_SCRIPT, [str(lock_path)], timeout=30) == (0, contender_output, "")
+
+
+@_NEEDS_FD_DIRECTORY
+@pytest.mark.parametrize("taking", [pytest.param("retain", id="new-probe"), pytest.param("adopt", id="idle-probe")])
+def test_read_write_lock_connect_interrupted_once_it_leases_a_probe_releases_it(  # pragma: needs fd-directory
+    tmp_path: Path, mocker: MockerFixture, taking: Literal["retain", "adopt"]
+) -> None:
+    lock_path: Final[Path] = tmp_path / "held.db"
+    holder: Final = ReadWriteLock(lock_path, is_singleton=False)
+    holder.acquire_read()
+    if taking == "adopt":
+        # A connection that closes beside a live one leaves its probe idle for the next connect to adopt.
+        with ReadWriteLock(lock_path, is_singleton=False).read_lock():
+            pass
+    real: Final = getattr(filelock._read_write._ProbeDescriptors, taking)
+
+    def lease_then_interrupt(
+        descriptors: filelock._read_write._ProbeDescriptors,
+        fd_or_database: int | str,
+        claimed: list[filelock._read_write._Probe],
+    ) -> NoReturn:
+        real(descriptors, fd_or_database, claimed)
+        raise KeyboardInterrupt
+
+    mocker.patch.object(filelock._read_write._ProbeDescriptors, taking, autospec=True, side_effect=lease_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        ReadWriteLock(lock_path, is_singleton=False).acquire_read()
+    mocker.stopall()
+    holder.release()
+
+    assert _descriptors_on(lock_path) == 0
+
+
+@NEEDS_COLLECTED_FINALIZATION
+@_NEEDS_PROBE_DESCRIPTORS
+def test_read_write_lock_finalized_while_probes_are_recorded_does_not_deadlock(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    # The collector runs on whichever allocation trips it, here the one made while the probe table is locked.
+    real_probes: Final = filelock._read_write._InodeProbes
+
+    def collect_then_build() -> filelock._read_write._InodeProbes:
+        gc.collect()
+        return real_probes()
+
+    gc.disable()
+    try:
+        cycle = SimpleNamespace(lock=ReadWriteLock(tmp_path / "dropped.db", is_singleton=False))
+        cycle.lock.acquire_read()
+        cycle.itself = cycle
+        del cycle
+        mocker.patch("filelock._read_write._InodeProbes", autospec=True, side_effect=collect_then_build)
+        ReadWriteLock(tmp_path / "other.db", is_singleton=False).close()
+    finally:
+        gc.enable()
+    with ReadWriteLock(tmp_path / "dropped.db", is_singleton=False).write_lock(blocking=False):
+        pass
 
 
 @NEEDS_FORK  # pragma: needs fork
@@ -372,6 +556,29 @@ def _dropped_instances_script() -> str:  # pragma: needs fd-directory
             pass
         """
     )
+
+
+def _descriptors_on(path: Path) -> int:  # pragma: needs fd-directory
+    database: Final[os.stat_result] = path.stat()
+    count = 0
+    for entry in (Path("/dev/fd") if Path("/dev/fd").is_dir() else Path("/proc/self/fd")).iterdir():
+        # The descriptor that listed the directory is already closed.
+        with contextlib.suppress(OSError):
+            descriptor: Final[os.stat_result] = os.fstat(int(entry.name))
+            count += (descriptor.st_dev, descriptor.st_ino) == (database.st_dev, database.st_ino)
+    return count
+
+
+_TRY_WRITE_SCRIPT: Final = textwrap.dedent(
+    """
+    import sys
+    from filelock import ReadWriteLock, Timeout
+    try:
+        ReadWriteLock(sys.argv[1], is_singleton=False).acquire_write(timeout=0)
+    except Timeout:
+        print("Timeout")
+    """
+)
 
 
 def _reentrant_finalizer_script() -> str:  # pragma: needs fork
@@ -728,9 +935,10 @@ def _fork_during_sqlite_script() -> str:  # pragma: needs fork
             if not armed or event != "sqlite3.connect":
                 return
             database = args[0]
-            if (
-                isinstance(database, (str, bytes))
-                and ((path := os.fsdecode(database)) == lock_path or path.startswith(("/dev/fd/", "/proc/self/fd/")))
+            if isinstance(database, (str, bytes)) and (
+                (path := os.fsdecode(database)) == lock_path
+                or path.startswith(("/dev/fd/", "/proc/self/fd/"))
+                or os.path.basename(os.path.dirname(path)).startswith(".filelock-")
             ):
                 waiter_inside_connect.set()
                 assert continue_connect.wait(5)

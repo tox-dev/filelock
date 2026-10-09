@@ -1,2 +1,2 @@
-On Linux, soft lock markers record the PID namespace with the hostname, so a container no longer breaks a live lock
-held by a sibling container that shares its hostname and volume.
+A soft lock marker written in a Linux container records its PID namespace with the hostname, so a sibling container
+that shares the hostname and volume no longer breaks a live lock.

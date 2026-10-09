@@ -1,0 +1,2 @@
+:class:`~filelock.AcquireReturnProxy` is generic in the lock type, so ``with lock.acquire() as held:`` types ``held`` as
+the lock's own class.

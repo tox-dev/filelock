@@ -4,6 +4,7 @@ import os
 import secrets
 import stat
 import sys
+from contextlib import suppress
 from errno import EACCES, EIO, EISDIR
 from pathlib import Path
 from typing import Final
@@ -84,17 +85,18 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
     """
     Remove the lock file a caller found stale with modification time *mtime_before* and inode *ino_before*.
 
-    We rename before unlinking so that, of several processes racing to break the same lock, one takes the file and the
-    rest get ``OSError``. If we find a newer modification time or another inode on the renamed file, a peer recreated
-    the lock after we judged it stale, so we hard-link it back to the lock path and drop the break name. ``link`` never
-    replaces an existing name, so a marker a third process created after our rename wins and the live one stays under
-    the break name. That leaves a window of two syscalls in which a third process can acquire beside the live holder.
-    Without ``os.link``, or on a filesystem that refuses hard links, the live marker stays under the break name.
-    StrictSoftFileLock has no such race. Its sole way to remove another process's claim is an operator's
-    ``force_break``. We compare inodes as well as modification times because NFS and FAT store modification times at
-    coarse granularity, and a peer that recreates the lock within that granularity leaves the old mtime on it. We call
-    ``lstat`` to avoid following a symlink a peer swaps in after our stale check, and put back only a regular file
-    because ``link`` would follow a symlink to its target.
+    Right before renaming we ``lstat`` the lock again and leave it alone if a peer recreated it since the caller judged
+    it stale, as Mercurial re-reads a lock under its break lock. We rename before unlinking so that, of several
+    processes racing to break the same lock, one takes the file and the rest get ``OSError``. A newer modification time
+    or another inode on the renamed file means a peer recreated the lock between that ``lstat`` and the rename, so we
+    hard-link it back and drop the break name. ``link`` never replaces a name, so a marker a third process created after
+    our rename wins and the live one stays under the break name. In the two syscalls between rename and link a third
+    process can acquire beside the live holder, a soft lock by creating its marker or a StrictSoftFileLock by
+    publishing its sentinel at the empty path. Without ``os.link``, or on a filesystem that refuses hard links, the live
+    marker stays under the break name. We compare inodes as well as modification times because NFS and FAT store
+    coarse modification times, and a peer that recreates the lock within that granularity leaves the old mtime on it.
+    We call ``lstat`` to avoid following a symlink a peer swaps in after our stale check, and put back only a regular
+    file because ``link`` would follow a symlink to its target.
 
     We add a random token to the break name so other processes cannot guess it and two breakers in one process do not
     share ``<lock>.break.<pid>``. With a shared name, the second breaker could rename a recreated live lock onto that
@@ -108,20 +110,16 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
         user owns it in a sticky directory.
 
     """
+    if (current := os.lstat(lock_file)).st_mtime > mtime_before or current.st_ino != ino_before:
+        return
     break_path: Final[str] = f"{lock_file}.break.{os.getpid()}.{secrets.token_hex(16)}"
     Path(lock_file).rename(break_path)
     if (st_after := os.lstat(break_path)).st_mtime <= mtime_before and st_after.st_ino == ino_before:
         Path(break_path).unlink()
     elif stat.S_ISREG(st_after.st_mode) and _HAS_LINK:  # pragma: needs hard-link
-        _restore_live_marker(break_path, lock_file)
-
-
-def _restore_live_marker(break_path: str, lock_file: str) -> None:  # pragma: needs hard-link
-    try:
-        os.link(break_path, lock_file)
-    except FileExistsError:
-        return
-    Path(break_path).unlink()
+        with suppress(FileExistsError):
+            os.link(break_path, lock_file)
+            Path(break_path).unlink()
 
 
 def touch(name: str, *, fd: int) -> None:

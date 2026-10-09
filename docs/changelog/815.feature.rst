@@ -1,0 +1,2 @@
+A :class:`~filelock.Timeout` from a soft lock names a holder on another host or in another PID namespace, which no
+contender ever reclaims.

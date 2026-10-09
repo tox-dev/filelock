@@ -131,6 +131,10 @@ You can also pass ``timeout`` directly to ``acquire()``:
     except Timeout:
         print("Timeout after 5 seconds")
 
+A negative ``timeout`` or ``math.inf`` waits without a limit, and a blocking acquire raises :class:`ValueError` for
+``nan``. A ``timeout`` may be any real number, including :class:`~decimal.Decimal` and :class:`~fractions.Fraction`; a
+:class:`bool` raises :class:`TypeError`.
+
 ************************
  Use non-blocking locks
 ************************
@@ -526,8 +530,9 @@ instance:
     finally:
         rw.close()
 
-A ``timeout`` of ``-1`` waits up to SQLite's busy-timeout cap of about 23 days, then raises
-:class:`~filelock.Timeout`.
+A ``timeout`` of ``-1`` or ``math.inf`` waits up to SQLite's busy-timeout cap of about 23 days, then raises
+:class:`~filelock.Timeout`. A blocking acquire raises :class:`ValueError` for ``nan`` or any other negative ``timeout``,
+on :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` too.
 
 Leave the database file in place while any process may hold the lock. The lock lives on the file, not on its name, so
 after an unlink or a replace the next opener creates a fresh file and acquires at once while the old holder keeps its
@@ -647,8 +652,8 @@ out of the snapshot, so its own timeout does not leave readers blocked. The next
 a holder that died on another host once ``stale_threshold`` has passed. Filesystem calls on an unresponsive
 network mount can still outlast the acquisition timeout.
 
-Every snapshot is flushed to stable storage before it is linked into place, so a crash cannot leave one empty. A
-snapshot that still fails to parse (a write from outside filelock, a corrupted disk) makes every acquire raise
+Every generation snapshot is flushed to stable storage before it is linked into place, so a crash cannot leave one
+empty. A snapshot that still fails to parse (a write from outside filelock, a corrupted disk) makes every acquire raise
 :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming it, because guessing past it could admit
 two writers. To recover, rename the whole ``<path>.rw`` directory aside, then delete it; the rename takes it away in one
 step, where a recursive delete would let a participant read it half removed and fail. Every participant, including
@@ -800,8 +805,8 @@ Every platform stores a process start token in the marker to guard against PID r
 them unchanged for two seconds.
 That recovery path is not fail closed.
 
-Two contenders that break the same stale marker can admit a third holder in a window of two syscalls; see
-:ref:`concepts:How does stale lock detection work across platforms?` for the details.
+A contender breaking a stale marker while a peer recreates it can admit a third holder, soft or strict, in a window of
+two syscalls; see :ref:`concepts:How does stale lock detection work across platforms?` for the details.
 
 ********************************
  Use fail-closed soft locks
@@ -835,14 +840,16 @@ strict holds. Age expiry, ``break_lock()``, or manual sentinel deletion voids th
 release <https://github.com/tox-dev/filelock/releases/tag/3.20.0>`_ for the oldest migration client tested by filelock.
 
 A soft-lock owner's marker at ``work.lock`` (from ``SoftFileLock``, ``MarkerSoftFileLock`` or ``SoftFileLease``) blocks
-strict acquisition like any holder, without appearing in ``lock.claims``;
-:attr:`lock_path_occupant <filelock.StrictSoftFileLock.lock_path_occupant>` describes it, with its PID and host when the
-marker records them. A file strict cannot read or parse blocks the same way, because filelock before 3.22 wrote an
-empty marker and Windows refuses to read a marker its holder keeps open. A marker whose owner on this host has exited
-raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming that owner, and a directory,
-symlink, or other node no lock writes raises the same error after half a second. Strict mode never removes what it
-found. A crashed owner on another host, or one that left no PID, cannot be told apart from a live one, so its marker
-blocks until an operator who has confirmed that owner is gone deletes ``work.lock``.
+strict acquisition like any holder, without appearing in ``lock.claims``; :attr:`lock_path_occupant
+<filelock.StrictSoftFileLock.lock_path_occupant>` describes it, with its PID and host when the marker records them. A
+file strict cannot read blocks the same way, because Windows refuses to read a marker its holder keeps open. A file it
+reads but cannot parse, such as the empty marker filelock before 3.22 wrote or a path a ``UnixFileLock`` truncated,
+blocks while it changes and raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` once it stays
+unchanged for two seconds, the grace a soft contender waits before evicting it. A marker whose owner on this host has
+exited raises the same error naming that owner, and a directory, symlink, or other node no lock writes raises it after
+half a second. Strict mode never removes what it found. A crashed owner on another host, or one that left no PID, cannot
+be told apart from a live one, so its marker blocks until an operator who has confirmed that owner is gone deletes
+``work.lock``.
 
 A crash can leave an intent, a held claim, or both claims for one token. Strict mode treats each claim as live because
 PID and clock checks cannot prove that another host or a recycled process has stopped using the resource. Inspect the
@@ -1278,8 +1285,9 @@ regardless of the counter, pass ``force=True``:
     lock.release(force=True)
     print(lock.is_locked)  # False, fully released
 
-On a thread-local lock (the default), ``force=True`` also releases holds left by threads that exited without releasing.
-Holds of threads still running stay theirs. Dropping the last reference to the lock releases every thread's hold.
+On a thread-local synchronous lock (the default), ``force=True`` also releases holds left by threads that exited
+without releasing. Holds of threads still running stay theirs. Dropping the last reference to the lock releases every
+thread's hold. A thread-local async lock releases only the calling thread's hold.
 
 Do not release from a signal handler. Python runs the handler on the main thread between two bytecodes of whatever it
 was doing, which can be the middle of a ``release()`` of the same lock. Raise from the handler instead, and let the
@@ -1302,7 +1310,9 @@ was doing, which can be the middle of a ``release()`` of the same lock. Raise fr
         ...  # SIGTERM unwinds through here and the with block releases the lock
 
 A ``release()`` that does run inside a handler while the interrupted code was already releasing that lock on the same
-thread returns without doing anything, and the interrupted release finishes the job.
+thread returns without doing anything, and the interrupted release finishes the job. An ``acquire()`` inside a handler
+while the interrupted code is still acquiring that lock raises :class:`RuntimeError`: the interrupted acquire cannot go
+on until the handler returns.
 
 *******************************
  Check your own lock state

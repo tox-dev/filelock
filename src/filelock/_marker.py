@@ -17,8 +17,8 @@ _PROTOCOL: Final[str] = "filelock/2"
 
 _MAX_PID: Final[int] = 2**31 - 1
 
-#: The forms ``repr`` gives a positive finite float or int, so whitespace, underscores and non-ASCII digits, which
-#: ``float()`` would accept, read as malformed.
+#: The forms ``repr`` gives a non-negative finite float or int; ``float()`` would also accept whitespace, underscores
+#: and non-ASCII digits.
 _DURATION: Final[re.Pattern[str]] = re.compile(r"[0-9]+(?:\.[0-9]+)?(?:e[+-][0-9]+)?", re.ASCII)
 
 #: Preserve unknown contracts so contenders cannot mistake them for malformed, reclaimable markers.
@@ -80,6 +80,12 @@ class MarkerSoftFileLock(SoftFileLock):
             elif owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
                 break_lock_file(self.lock_file, *snapshot[1:])
 
+    @classmethod
+    def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
+        if (owner := parse_marker(content)) is not None:
+            return owner.pid, owner.hostname
+        return super()._recorded_holder(content)
+
     def _read_owner(self) -> OwnerRecord | None:
         with suppress(OSError, ValueError):
             return parse_marker(_read_lock_file(self.lock_file)[0])
@@ -122,14 +128,8 @@ def encode_marker(record: OwnerRecord) -> bytes:
 
 def parse_marker(content: str | None) -> OwnerRecord | None:
     """Return the owner a protocol 2 marker names, or ``None`` when the record is malformed or protocol 1."""
-    # A record cut before its final newline may end in a prefix such as "mode=exclu", an unknown contract no contender
-    # reclaims; read as malformed, it ages out after the grace window instead.
-    if (
-        not content
-        or not content.endswith("\n")
-        or not (lines := content.strip().splitlines())
-        or lines[0] != _PROTOCOL
-    ):
+    # A torn write may end in a prefix like "mode=exclu", an unknown contract nobody reclaims; malformed, it ages out.
+    if not content or content[-1] != "\n" or not (lines := content.strip().splitlines()) or lines[0] != _PROTOCOL:
         return None
     fields: dict[str, str] = {}
     for line in lines[1:]:
@@ -149,30 +149,22 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
         return None
     mode: Final[OwnerMode] = published if published in {"lease", "exclusive"} else "unknown"
     hostname = fields.get("host")
-    if not hostname or "pid" not in fields:
+    if not hostname or "pid" not in fields or ("duration" in fields and not _DURATION.fullmatch(fields["duration"])):
         return None
     try:
         pid = parse_decimal(fields["pid"])
-        duration = _parse_duration(fields["duration"]) if "duration" in fields else None
+        duration = float(fields["duration"]) if "duration" in fields else None
         start = parse_decimal(fields["start"]) if "start" in fields else None
     except ValueError:
         return None
     if not 1 <= pid <= _MAX_PID:
         return None
     token = fields.get("token")
-    # The grammar already refuses "nan" and "inf", but "1e400" overflows to inf, which mismatches every configured
-    # duration and so wedges reclaim, where a malformed marker ages out through the grace window. An empty token names
-    # no claim.
+    # "1e400" passes the grammar but overflows to inf, which mismatches every configured duration and so wedges reclaim,
+    # where a malformed marker ages out.
     if mode == "lease" and (not token or duration is None or not (math.isfinite(duration) and duration > 0)):
         return None
     return OwnerRecord(pid=pid, hostname=hostname, mode=mode, token=token, lease_duration=duration, start=start)
-
-
-def _parse_duration(text: str) -> float:
-    if not _DURATION.fullmatch(text):
-        msg = f"not a lease duration: {text!r}"
-        raise ValueError(msg)
-    return float(text)
 
 
 __all__ = [

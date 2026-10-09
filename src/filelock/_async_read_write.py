@@ -6,9 +6,10 @@ import asyncio
 import functools
 import os
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar, cast
 
 from ._api import (
     _append_exception_context,
@@ -32,7 +33,6 @@ if TYPE_CHECKING:
     from concurrent import futures
     from types import TracebackType
 
-    from ._api import AcquireReturnProxy
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -179,6 +179,8 @@ class AsyncReadWriteLock:
 
         :raises RuntimeError: if the calling task already holds the write lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         self._raise_if_unusable()
@@ -202,6 +204,8 @@ class AsyncReadWriteLock:
 
         :raises RuntimeError: if the calling task already holds the read lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         self._raise_if_unusable()
@@ -213,8 +217,12 @@ class AsyncReadWriteLock:
         blocking = self.blocking if blocking is None else blocking
         sync_acquire = self._lock.acquire_read if mode == "read" else self._lock.acquire_write
 
+        def enter_backend(remaining: float) -> None:
+            sync_acquire(remaining, blocking=blocking)
+            self._owners.backend_thread = threading.get_ident()
+
         async def enter(remaining: float) -> None:
-            await self._run_acquire(functools.partial(sync_acquire, remaining, blocking=blocking))
+            await self._run_acquire(functools.partial(enter_backend, remaining))
 
         await self._owners.acquire(mode, timeout=timeout, blocking=blocking, lock_file=self.lock_file, enter=enter)
 
@@ -232,10 +240,8 @@ class AsyncReadWriteLock:
         _ensure_current_process()
         if self._inherited:  # pragma: needs fork
             return
-        # The task table owns the nesting, so the backend is always one level deep here, and a caller-supplied executor
-        # can run this on another worker than the acquire: force=True is the backend's cross-thread release.
         await self._owners.release(
-            force=force, lock_file=self.lock_file, leave=functools.partial(self._submit, self._lock.release, force=True)
+            force=force, lock_file=self.lock_file, leave=functools.partial(self._submit, self._leave_backend)
         )
 
     async def close(self) -> None:
@@ -270,7 +276,7 @@ class AsyncReadWriteLock:
         if self._owns_executor:
             await asyncio.to_thread(functools.partial(self._executor.shutdown, wait=True))
 
-    async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
+    async def _run_acquire(self, acquire: Callable[[], None]) -> None:
         acquire_future = self._submit(acquire)
         try:
             await _wait_until_done(acquire_future)
@@ -280,11 +286,17 @@ class AsyncReadWriteLock:
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             try:
-                await _drain_future(self._submit(self._lock.release, force=True))
+                await _drain_future(self._submit(self._leave_backend))
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             raise
         _future_result(acquire_future)
+
+    def _leave_backend(self) -> None:
+        # Only the entering worker's level: a sync user of the same singleton keeps its own.
+        self._lock._release_level_of(  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+            cast("int", self._owners.backend_thread)
+        )
 
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs

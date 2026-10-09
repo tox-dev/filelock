@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+from typing import Final
+
 
 class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # public exception name; renaming breaks the API
     """Raised when the lock could not be acquired in *timeout* seconds."""
 
-    def __init__(self, lock_file: str) -> None:
+    def __init__(self, lock_file: str, holder: str | None = None) -> None:
         super().__init__()
         self._lock_file = lock_file
+        self._holder = holder
 
     def __reduce__(self) -> tuple[type[Timeout], tuple[str], dict[str, object]]:
-        # __init__ needs lock_file, so pickle must restore it as a constructor arg
+        # holder rides in the state so a subclass taking only lock_file, and a 4.0.12 reader, can still unpickle it.
         return self.__class__, (self._lock_file,), self.__dict__
 
     def __str__(self) -> str:  # pragma: needs hard-link
-        return f"The file lock '{self._lock_file}' could not be acquired."
+        message: Final = f"The file lock '{self._lock_file}' could not be acquired."
+        if self._holder is None:
+            return message
+        return f"{message} It is held by {self._holder}, which this host cannot probe."
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.lock_file!r})"
@@ -28,8 +34,8 @@ class SoftFileLockLifetimeWarning(FutureWarning):
     """
     The configured soft-lock lifetime permits overlapping live holders after expiry.
 
-    It derives from :class:`FutureWarning`, which Python shows by default wherever the lock is configured; a
-    :class:`DeprecationWarning` would only show in ``__main__``.
+    A :class:`FutureWarning` shows by default wherever the lock is configured; a :class:`DeprecationWarning` shows only
+    in ``__main__``.
 
     """
 

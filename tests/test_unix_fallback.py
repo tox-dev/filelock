@@ -168,11 +168,9 @@ def test_fallback_keeps_peer_soft_marker(tmp_path: Path) -> None:  # pragma: nee
 
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_trailing_slash_path_raises_instead_of_retrying(tmp_path: Path) -> None:
-    lock = UnixFileLock(f"{tmp_path / 'missing'}{os.sep}")
-
     # macOS reports ENOENT for a create through a trailing slash, Linux EISDIR; neither is contention.
     with pytest.raises((FileNotFoundError, IsADirectoryError)):
-        lock.acquire(timeout=0)
+        UnixFileLock(f"{tmp_path / 'missing'}{os.sep}").acquire(timeout=0)
 
 
 @NEEDS_FCNTL

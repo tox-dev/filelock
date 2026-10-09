@@ -87,8 +87,7 @@ class OsFiles:
         try:
             Path(source).replace(target)
         except PermissionError:
-            # Windows refuses to rename over a file another process has open without sharing delete access; a reader
-            # holds it for one read, and a target left one rename behind is what the caller already tolerates.
+            # Windows refuses to rename over a file a reader holds open; callers tolerate a target one rename behind.
             return False
         return True
 

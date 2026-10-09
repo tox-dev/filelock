@@ -93,11 +93,9 @@ else:  # pragma: win32 no cover
             return None
 
         def _open_lock_file(self) -> tuple[int, bool] | None:
-            # Open without O_TRUNC and defer truncation and fchmod until after flock succeeds: a contender that loses
-            # the lock must not truncate the holder's file (erasing caller diagnostics) or change its mode. The winner
-            # truncates and normalizes mode once it owns the lock (#591). Create with O_EXCL so the caller knows
-            # whether this attempt made the inode: the ENOSYS fallback may remove only its own placeholder, never a
-            # peer's soft marker or StrictSoftFileLock sentinel already at the path.
+            # No O_TRUNC: a contender that loses the flock must not truncate the holder's file or change its mode; the
+            # winner does both once it owns the lock (#591). O_EXCL tells the ENOSYS fallback whether this attempt made
+            # the inode, so it removes only its own placeholder, never a peer's marker.
             open_flags = os.O_RDWR
             if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
                 open_flags |= o_nofollow
@@ -107,16 +105,14 @@ else:  # pragma: win32 no cover
             except FileExistsError:
                 pass
             except FileNotFoundError:
-                # On FUSE/NFS, os.open(O_CREAT) is not atomic; a split LOOKUP + CREATE lets a concurrent unlink()
-                # delete the file between them. For a valid path, treat ENOENT as transient contention. An empty
-                # path or one ending in a separator names no file, and macOS reports ENOENT for it on every attempt, so
-                # re-raise to avoid an infinite retry loop. Path() would strip the trailing separator, so test the str.
+                # On FUSE/NFS a split LOOKUP + CREATE lets a concurrent unlink() race the create, so ENOENT is transient
+                # contention. An empty or separator-terminated path (Path() strips the separator) fails this way on
+                # every attempt on macOS, so re-raise rather than retry forever.
                 if self.lock_file and not self.lock_file.endswith(os.sep) and Path(self.lock_file).parent.exists():
                     return None
                 raise
             except PermissionError:
-                # Sticky-bit dirs (e.g. /tmp): O_CREAT fails if the file is owned by another user (#317).
-                # Fall back to opening the existing file without O_CREAT.
+                # Sticky-bit dirs (e.g. /tmp): O_CREAT fails if another user owns the file (#317).
                 if not Path(self.lock_file).exists():
                     raise
             try:
@@ -136,8 +132,7 @@ else:  # pragma: win32 no cover
                 # Fail closed: the caller opted out of existence-lock semantics (#603), asked to preserve the pathname
                 # (#605), or set an on_acquired hook (#607), none of which a soft lock can honor.
                 raise missing_flock
-            # A file this attempt did not create may be a peer's live marker; leave it to the soft lock, which waits
-            # on a holder and ages out an unparsable empty file.
+            # A file this attempt did not create may be a peer's live marker; the soft lock ages out a stale empty one.
             if created:
                 with suppress(OSError):
                     current = os.lstat(self.lock_file)

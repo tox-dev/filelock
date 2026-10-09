@@ -1,0 +1,2 @@
+:class:`~filelock.StrictSoftFileLock` raises :class:`~filelock.SoftFileLockProtocolError` for a file at the lock path it
+cannot parse once it stays unchanged for two seconds, instead of waiting on it forever.

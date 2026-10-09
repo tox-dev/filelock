@@ -1,0 +1,2 @@
+Every lock raises :class:`ValueError` for a timeout too large for a :class:`float`, and a singleton accepts a timeout
+that waits as long as the cached one, such as ``inf`` for ``-1``.

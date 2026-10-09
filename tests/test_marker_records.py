@@ -4,22 +4,24 @@ import itertools
 import os
 import time
 from multiprocessing import get_context
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
 from filelock import MarkerSoftFileLock, OwnerRecord, SoftFileLease, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._marker import encode_marker
-from filelock._soft import _MALFORMED_LOCK_AGE_THRESHOLD
+from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD
 from tests.process_helpers import cleanup_processes
 
 if TYPE_CHECKING:
     from multiprocessing.process import BaseProcess
     from pathlib import Path
-    from typing import Final
 
     from pytest_mock import MockerFixture
+
+#: A spawned GraalPy interpreter alone can take seconds to start on a loaded runner.
+_PROCESS_DEADLINE: Final[int] = 30
 
 
 @pytest.mark.parametrize(
@@ -75,15 +77,11 @@ def test_encode_marker_omits_absent_lease_fields() -> None:
 
 
 @pytest.mark.parametrize("duration", [0.9, 30, 30.0, 1e-05, 1.5e20])
-def test_record_duration_reads_back(tmp_path: Path, duration: float) -> None:
-    marker = tmp_path / "a.lock"
-    # The duration line as encode_marker renders a published lease_duration.
-    marker.write_text(f"filelock/2\npid=4242\nhost=h\nmode=lease\ntoken=t\nduration={duration!r}\n", encoding="utf-8")
+def test_record_duration_reads_back(marker: Path, duration: float) -> None:
+    record = OwnerRecord(4242, "h", "lease", "t", duration)
+    marker.write_bytes(encode_marker(record))
 
-    owner = SoftFileLease(str(marker), lease_duration=1).owner
-
-    assert owner is not None
-    assert owner.lease_duration == duration
+    assert SoftFileLease(str(marker), lease_duration=1).owner == record
 
 
 def test_record_start_token_reads_back(tmp_path: Path) -> None:
@@ -165,7 +163,7 @@ def test_lease_never_ages_out_an_unknown_contract(tmp_path: Path) -> None:
 
 def test_lease_ages_out_a_malformed_record(tmp_path: Path, mocker: MockerFixture) -> None:
     # The self-heal still applies to a record that states no contract at all, so corruption cannot wedge contenders.
-    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=_MALFORMED_LOCK_AGE_THRESHOLD))
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
     marker = tmp_path / "a.lock"
     marker.write_text("filelock/2\nnot-a-record\n", encoding="utf-8")
 
@@ -242,11 +240,12 @@ def test_marker_lock_preserves_live_records(marker: Path, mode: str) -> None:
         MarkerSoftFileLock(marker, timeout=0.1).acquire()
 
 
+@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
     process: Final[BaseProcess] = get_context("spawn").Process(target=_leave_marker, args=(marker,))
     with cleanup_processes([process]):
         process.start()
-        process.join(timeout=5)
+        process.join(timeout=_PROCESS_DEADLINE)
         assert process.exitcode == 0
     with MarkerSoftFileLock(marker, timeout=1) as lock:
         assert lock.pid == os.getpid()
@@ -260,7 +259,7 @@ def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
     ],
 )
 def test_marker_lock_reclaims_malformed_record(marker: Path, record: str, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=_MALFORMED_LOCK_AGE_THRESHOLD))
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
     marker.write_text(record, encoding="utf-8")
     with MarkerSoftFileLock(marker, timeout=1) as lock:
         assert lock.pid == os.getpid()

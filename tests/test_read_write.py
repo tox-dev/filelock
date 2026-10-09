@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+from contextlib import closing
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
@@ -395,12 +396,6 @@ class _SubclassedReadWriteLock(ReadWriteLock):
     pass
 
 
-def _hard_link(path: Path) -> Path:  # pragma: needs hard-link
-    alias = path.with_name("alias.db")
-    os.link(path, alias)
-    return alias
-
-
 @pytest.mark.usefixtures("connect_route")
 @pytest.mark.parametrize("held_mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.parametrize(
@@ -428,6 +423,12 @@ def test_another_instance_on_the_database_keeps_the_held_lock(
     holder.close()
 
 
+def _hard_link(path: Path) -> Path:  # pragma: needs hard-link
+    alias = path.with_name("alias.db")
+    os.link(path, alias)
+    return alias
+
+
 @pytest.mark.usefixtures("connect_route")
 def test_closing_every_instance_closes_its_descriptors(lock_file: str) -> None:
     if sys.platform == "win32":  # pragma: win32 cover
@@ -436,8 +437,7 @@ def test_closing_every_instance_closes_its_descriptors(lock_file: str) -> None:
     before = len(list(descriptor_directory.iterdir()))  # pragma: win32 no cover
     holder = ReadWriteLock(lock_file, is_singleton=False)  # pragma: win32 no cover
     holder.acquire_read()  # pragma: win32 no cover
-    other = ReadWriteLock(lock_file, is_singleton=False)  # pragma: win32 no cover
-    other.close()  # pragma: win32 no cover
+    ReadWriteLock(lock_file, is_singleton=False).close()  # pragma: win32 no cover
     holder.close()  # pragma: win32 no cover
     assert len(list(descriptor_directory.iterdir())) == before  # pragma: win32 no cover
 
@@ -502,13 +502,8 @@ def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(
 
 
 def _convert_to_wal(path: str) -> None:
-    connection = sqlite3.connect(path)
-    try:
-        connection.execute("PRAGMA journal_mode=WAL").close()
-        connection.execute("CREATE TABLE application (value)").close()
-        connection.commit()
-    finally:
-        connection.close()
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executescript("PRAGMA journal_mode=WAL; CREATE TABLE application (value);").close()
 
 
 @pytest.mark.parametrize("replace", [pytest.param(False, id="unlinked"), pytest.param(True, id="replaced")])

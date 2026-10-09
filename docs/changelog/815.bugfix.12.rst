@@ -1,0 +1,2 @@
+A finalized thread-local :class:`~filelock.BaseAsyncFileLock` releases every thread's hold, including one on a daemon
+thread's event loop at interpreter exit, instead of leaving it held.

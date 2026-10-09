@@ -11,7 +11,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypeVar, cast
 from weakref import WeakKeyDictionary
 
-from ._api import _append_exception_context, _fork_transition, _raise_chained_errors
+from ._api import _append_exception_context, _fork_transition, _raise_chained_errors, _resolve_read_write_timeout
 from ._error import Timeout
 
 if TYPE_CHECKING:
@@ -40,7 +40,7 @@ class _AsyncTransitionGate:
         self._tail: ConcurrentFuture[None] | None = None
 
     @contextlib.asynccontextmanager
-    async def hold(self) -> AsyncGenerator[None, None]:
+    async def hold(self) -> AsyncGenerator[None]:
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
         with self._tail_lock:
             predecessor = self._tail
@@ -64,7 +64,7 @@ class _AsyncTransitionGate:
         cancel_check: Callable[[], bool] | None,
         deadline: float | None,
         poll_interval: float,
-    ) -> AsyncGenerator[None, None]:
+    ) -> AsyncGenerator[None]:
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
         with self._tail_lock:
             predecessor = self._tail
@@ -132,6 +132,8 @@ class _TaskOwners:
         self._transitioning = False
         self._waiting_writers = 0
         self._changed: ConcurrentFuture[None] = ConcurrentFuture()
+        #: The executor thread that took the sync lock's level for every task, which may leave on another worker.
+        self.backend_thread: int | None = None
 
     async def acquire(
         self,
@@ -143,10 +145,8 @@ class _TaskOwners:
         enter: Callable[[float], Awaitable[None]],
     ) -> None:
         task = _current_task()
-        if blocking and not (timeout >= 0 or timeout == -1):  # nan fails both comparisons
-            msg: Final = "timeout must be a non-negative number or -1"
-            raise ValueError(msg)
-        deadline = None if timeout < 0 else time.perf_counter() + timeout
+        timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
+        deadline = None if not blocking or timeout < 0 else time.perf_counter() + timeout
         waiting_writer = False
         try:
             while isinstance(
@@ -229,7 +229,7 @@ class _TaskOwners:
             raise
         self._finish_transition(mode=None)
         if cancellation is not None:
-            # The drained release succeeded: restoring the hold here would leave a phantom no backend call can clear.
+            # The release succeeded, so a restored hold would be a phantom no backend call can clear.
             raise cancellation
 
     def reset(self) -> None:
@@ -271,16 +271,8 @@ def _current_task() -> asyncio.Task[object]:
     return task
 
 
-async def _drain_future(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
-    while not future.done():
-        with contextlib.suppress(asyncio.CancelledError):
-            await _wait_until_done(future)
-    return _future_result(future)
-
-
 async def _drain_cancellation(future: asyncio.Future[_BackendOutcome[None]]) -> asyncio.CancelledError | None:
-    # Hand a caller cancellation back instead of raising it, so the caller can tell a call that completed under it from
-    # one that failed.
+    # Returned, not raised, so the caller can tell a call that completed under cancellation from one that failed.
     try:
         await _wait_until_done(future)
     except asyncio.CancelledError as cancellation:
@@ -291,6 +283,13 @@ async def _drain_cancellation(future: asyncio.Future[_BackendOutcome[None]]) -> 
         return cancellation
     _future_result(future)
     return None
+
+
+async def _drain_future(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
+    while not future.done():
+        with contextlib.suppress(asyncio.CancelledError):
+            await _wait_until_done(future)
+    return _future_result(future)
 
 
 async def _wait_until_done(future: asyncio.Future[_T]) -> None:
@@ -319,8 +318,8 @@ def _run_in_executor(
         try:
             result = call.result()
         except asyncio.CancelledError:
-            # shutdown(cancel_futures=True) dropped the queued call before it ran. Reporting that as a CancelledError
-            # would mark a task nobody canceled as canceled and hide that the lock state never changed.
+            # shutdown(cancel_futures=True) dropped the call unrun: a CancelledError would cancel a task nobody canceled
+            # and hide that the lock state never changed.
             msg = "the executor shut down before running the lock backend call"
             result = _BackendOutcome(error=RuntimeError(msg))
         outcome.set_result(result)

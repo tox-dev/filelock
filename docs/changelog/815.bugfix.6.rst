@@ -1,0 +1,2 @@
+A soft lock in the host's PID namespace no longer breaks a live marker written from a container sharing the hostname
+while the kernel shows its owner running in another namespace under the recorded PID and start time.

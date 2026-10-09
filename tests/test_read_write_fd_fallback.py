@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # runs this test's own interpreter
+import sys
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -11,9 +14,12 @@ from capabilities import CAPABILITIES
 pytest.importorskip("sqlite3")
 
 from filelock import AsyncReadWriteLock, ReadWriteLock
+from tests.capability_marks import NEEDS_FILE_PERMISSIONS
 from tests.read_write_helpers import assert_read_write_lock_state
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from pytest_mock import MockerFixture
 
 pytestmark: Final = [
@@ -57,6 +63,18 @@ def test_missing_descriptor_path_links_beside_the_database(database: Path, creat
     assert [directory.parent for directory in created_directories] == [database.parent]
 
 
+def test_missing_descriptor_path_release_survives_a_removed_alias(
+    database: Path, created_directories: list[Path]
+) -> None:
+    lock: Final = ReadWriteLock(database, is_singleton=False)
+    lock.acquire_read()
+    shutil.rmtree(created_directories[-1])
+    lock.release()
+
+    with ReadWriteLock(database, is_singleton=False).write_lock(blocking=False):
+        assert_read_write_lock_state(str(database), "write", available=False)
+
+
 @pytest.mark.parametrize(
     "boundary",
     [pytest.param("os.link", id="link"), pytest.param("sqlite3.connect", id="connect")],
@@ -92,6 +110,72 @@ def test_missing_descriptor_path_rejects_replaced_database(
         [False],
         False,
     )
+
+
+def test_missing_descriptor_path_sweeps_the_link_of_a_killed_holder(
+    database: Path, holder: subprocess.Popen[str]
+) -> None:
+    holder.kill()
+    holder.wait(timeout=_PROCESS_DEADLINE)
+    left: Final = _link_directories(database)
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        pass
+
+    assert (len(left), _link_directories(database), database.stat().st_nlink) == (1, [], 1)
+
+
+@pytest.mark.usefixtures("holder")
+def test_missing_descriptor_path_keeps_the_link_of_a_live_holder(database: Path) -> None:
+    held: Final = _link_directories(database)
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        pass
+    assert (len(held), _link_directories(database)) == (1, held)
+
+
+def test_missing_descriptor_path_keeps_a_directory_it_did_not_name(database: Path) -> None:
+    foreign: Final = database.parent / ".filelock-not-ours"
+    foreign.mkdir()
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        pass
+    assert foreign.is_dir()
+
+
+@NEEDS_FILE_PERMISSIONS  # pragma: needs file-permissions
+def test_missing_descriptor_path_links_in_a_directory_it_cannot_list(database: Path) -> None:
+    database.parent.chmod(0o300)
+    try:
+        with ReadWriteLock(database, is_singleton=False).read_lock():
+            assert_read_write_lock_state(str(database), "write", available=False)
+    finally:
+        database.parent.chmod(0o700)
+
+
+_PROCESS_DEADLINE: Final = 30
+
+
+@pytest.fixture
+def holder(database: Path) -> Generator[subprocess.Popen[str]]:
+    script: Final = (
+        "import os, sys, time\n"
+        "os.access = lambda *args, **kwargs: False\n"
+        "from filelock import ReadWriteLock\n"
+        "lock = ReadWriteLock(sys.argv[1], is_singleton=False)\n"
+        "lock.acquire_read()\n"
+        "print('held', flush=True)\n"
+        "time.sleep(600)\n"
+    )
+    with subprocess.Popen([sys.executable, "-c", script, str(database)], stdout=subprocess.PIPE, text=True) as holder:
+        try:
+            assert holder.stdout is not None
+            assert holder.stdout.readline() == "held\n"
+            yield holder
+        finally:
+            holder.kill()
+            holder.wait(timeout=_PROCESS_DEADLINE)
+
+
+def _link_directories(database: Path) -> list[Path]:
+    return sorted(path for path in database.parent.iterdir() if path.name.startswith(".filelock-"))
 
 
 @pytest.fixture
