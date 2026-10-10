@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # runs this test's own interpreter
@@ -61,6 +62,22 @@ def test_missing_descriptor_path_preserves_contention(database: Path, mode: Lite
     lock: Final = ReadWriteLock(database, is_singleton=False)
     with (lock.read_lock if mode == "read" else lock.write_lock)():
         assert_read_write_lock_state(str(database), "write", available=False)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS must reject a failed alias")
+@pytest.mark.usefixtures("macos_descriptor_guard")
+@pytest.mark.parametrize(
+    "boundary", [pytest.param("tempfile.mkdtemp", id="mkdtemp"), pytest.param("os.link", id="link")]
+)
+def test_macos_failed_alias_preserves_a_peer_lock(
+    database: Path, mocker: MockerFixture, boundary: str
+) -> None:  # pragma: darwin cover
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        mocker.patch(boundary, autospec=True, side_effect=PermissionError(errno.EACCES, "read-only directory"))
+        with pytest.raises(PermissionError, match="read-only directory"):
+            ReadWriteLock(database, is_singleton=False)
+        assert_read_write_lock_state(str(database), "write", available=False)
+    assert list(database.parent.glob(".filelock-*")) == []
 
 
 @pytest.mark.asyncio
