@@ -136,12 +136,12 @@ def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) 
 
 
 def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture) -> None:
-    # A partial write or a foreign file leaves a marker the lease parser cannot read. Rather than block every
-    # contender until timeout, the base self-heal evicts it once it ages past the malformed grace window.
-    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
+    # The pytest timeout bounds recovery while the mocked clock controls marker expiry.
+    clock: Final = mocker.patch("filelock._soft.time", autospec=True)
+    clock.monotonic.side_effect = itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD)
     marker.write_text("not a protocol 2 record\n", encoding="utf-8")
 
-    with _lease(marker) as lease:
+    with _lease(marker, timeout=-1) as lease:
         assert lease.is_lock_held_by_us
 
 

@@ -147,47 +147,48 @@ _INVALID_DESCRIPTOR_POLL_INTERVALS: Final = (
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize(
-    ("expected_error", "match", "bad_lock_file"),
+    ("expected_error", "expected_errno", "bad_lock_file"),
     [
-        # WindowsFileLock raises the real Win32 error the NTSTATUS maps to, so accept its wording alongside os.open's.
+        # Win32 error messages depend on the system locale.
         pytest.param(
             OSError,
-            "No such file or directory:|cannot find the (path|file)|syntax is incorrect|Access is denied",
+            (errno.ENOENT, errno.EINVAL, errno.EACCES),
             "",
             id="blank_filename",
         ),
-        pytest.param(ValueError, "embedded null (byte|character)", "\0", id="null_byte"),
-        # Should be PermissionError on Windows
         (
-            pytest.param(PermissionError, "Permission denied:", ".", id="current_directory")
+            pytest.param(PermissionError, (errno.EACCES,), ".", id="current_directory")
             if sys.platform == "win32"
-            # Should be IsADirectoryError on MacOS and Linux
             else (
-                pytest.param(IsADirectoryError, "Is a directory", ".", id="current_directory")
+                pytest.param(IsADirectoryError, (errno.EISDIR,), ".", id="current_directory")
                 if sys.platform in {"darwin", "linux"}
-                # Should be some type of OSError at least on other operating systems
                 else pytest.param(OSError, None, ".", id="current_directory")
             )
         ),
     ]
-    + [
-        pytest.param(OSError, "Invalid argument|syntax is incorrect", i, id=f"invalid_{i}", marks=_WINDOWS_ONLY)
-        for i in '<>:"|?*\a'
-    ]
-    + [
-        pytest.param(PermissionError, "Permission denied:", i, id=f"permission_{i}", marks=_WINDOWS_ONLY) for i in "/\\"
-    ],
+    + [pytest.param(OSError, (errno.EINVAL,), i, id=f"invalid_{i}", marks=_WINDOWS_ONLY) for i in '<>:"|?*\a']
+    + [pytest.param(PermissionError, (errno.EACCES,), i, id=f"permission_{i}", marks=_WINDOWS_ONLY) for i in "/\\"],
 )
 @pytest.mark.timeout(5)  # timeout in case of infinite loop
 def test_bad_lock_file(
     lock_type: type[BaseFileLock],
-    expected_error: type[Exception],
-    match: str,
+    expected_error: type[OSError],
+    expected_errno: tuple[int, ...] | None,
     bad_lock_file: str,
 ) -> None:
-    lock = lock_type(bad_lock_file)
+    lock: Final = lock_type(bad_lock_file)
 
-    with pytest.raises(expected_error, match=match):
+    with pytest.raises(expected_error) as raised:
+        lock.acquire()
+    assert expected_errno is None or raised.value.errno in expected_errno
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.timeout(5)
+def test_bad_lock_file_null_byte(lock_type: type[BaseFileLock]) -> None:
+    lock: Final = lock_type("\0")
+
+    with pytest.raises(ValueError, match=r"embedded null (byte|character)"):
         lock.acquire()
 
 
@@ -1041,6 +1042,7 @@ def paused_in_transition(tmp_path: Path) -> Generator[FileLock]:
     yield lock
     resume.set()
     holder.join(_SHARED_WAIT)
+    assert not holder.is_alive()
     lock.release(force=True)
 
 
