@@ -84,7 +84,7 @@ NEEDS_COLLECTED_FINALIZATION: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 
 NEEDS_CLASS_COLLECTION: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["class-collection"],
-    reason="gc.collect() does not reclaim classes on this runtime",
+    reason="gc.collect() does not reclaim classes instantiated through a custom metaclass",
 )
 
 NEEDS_GENERATOR_EXCEPTION_CONTEXT: Final[pytest.MarkDecorator] = pytest.mark.skipif(

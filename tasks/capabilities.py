@@ -97,14 +97,19 @@ def _finalizes_on_collection() -> bool:
 
 
 def _collects_classes() -> bool:
-    # A dynamically built lock subclass must not outlive its last reference, or the registries keyed on it leak.
+    # GraalPy can collect a plain class while retaining one instantiated through a custom metaclass.
+    class ProbeMeta(type):
+        def __call__(cls) -> object:
+            return super().__call__()
+
     def build() -> type:
-        class Probe:
+        class Probe(metaclass=ProbeMeta):
             pass
 
+        Probe()
         return Probe
 
-    reference = weakref.ref(build())
+    reference: Final = weakref.ref(build())
     gc.collect()
     return reference() is None
 

@@ -433,10 +433,13 @@ Parameters are frozen when the singleton is first created. Requesting the same p
 *****************************************
 
 When you have many readers and occasional writers, use :class:`ReadWriteLock <filelock.ReadWriteLock>` to allow readers
-to proceed concurrently. ``ReadWriteLock`` is backed by SQLite and hands the path straight to :func:`sqlite3.connect`,
-so a ``.db`` extension is the convention rather than a requirement. The real constraints are a local filesystem the
-active SQLite VFS supports and a database file of its own. A WAL-mode database raises :class:`ValueError`, because WAL
-never blocks readers behind a writer.
+to proceed concurrently. ``ReadWriteLock`` is backed by SQLite; a ``.db`` extension is a convention rather than a
+requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. A WAL-mode database
+raises :class:`ValueError`, because WAL never blocks readers behind a writer.
+
+On macOS, the database directory must be writable and the filesystem must support hard links. filelock opens SQLite
+through a private alias of the validated database to avoid the ``/dev/fd`` lookup implicated in the kernel panic in
+`issue #818 <https://github.com/tox-dev/filelock/issues/818>`_. Alias creation failure raises :class:`OSError`.
 
 .. code-block:: python
 

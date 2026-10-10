@@ -28,7 +28,9 @@ jobs:
           - "3.12"
           - "3.11"
           - "pypy3.11"
-          - "graalpy3.11"
+          # GraalPy 25.4.4 fixes errno loss during event-loop creation:
+          # https://github.com/oracle/graalpython/commit/3fd5d5fe5f4a3bde3bca10ce3d87adaf13ffb03b
+          - "graalpy3.13"
         os:
           - ubuntu-24.04
           - windows-2025
@@ -37,8 +39,8 @@ jobs:
           - {os: windows-2025, py: pypy3.11}
           # GraalPy validates the capability probes the suite gates on, which is a per-OS answer, not a per-arch one.
           # One Linux job settles it; the Windows and macOS builds only repeat it at triple the runtime.
-          - {os: windows-2025, py: graalpy3.11}
-          - {os: macos-15, py: graalpy3.11}
+          - {os: windows-2025, py: graalpy3.13}
+          - {os: macos-15, py: graalpy3.13}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
