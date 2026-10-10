@@ -187,6 +187,10 @@ commands = [ [ "uv", "pip", "list", "--format=columns" ], [ "python", "-c", 'pri
 # 100% gate remains CPython's. Its job is to keep the capability probes the suite gates on honest on a second runtime.
 [env."graalpy3.13"]
 description = "run the tests with pytest under {env_name}, unmeasured"
+# GraalPy can run a queued SIGALRM callback after pytest-timeout cancels its timer, interrupting a later test.
+set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage.{env_name}" }
+set_env.PYTHONPATH = "{tox_root}{/}tasks"
+set_env.PYTEST_ADDOPTS = "{env:PYTEST_ADDOPTS:} --timeout-method=thread"
 
 [env.release]
 description = "build the changelog from the news fragments for the given version, e.g. tox r -e release -- 3.30.0"

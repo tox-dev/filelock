@@ -1042,6 +1042,7 @@ def paused_in_transition(tmp_path: Path) -> Generator[FileLock]:
     yield lock
     resume.set()
     holder.join(_SHARED_WAIT)
+    assert not holder.is_alive()
     lock.release(force=True)
 
 
