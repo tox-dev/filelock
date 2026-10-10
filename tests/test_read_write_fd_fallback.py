@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import errno
 import os
 import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # runs this test's own interpreter
@@ -13,6 +15,8 @@ from capabilities import CAPABILITIES
 
 pytest.importorskip("sqlite3")
 
+import sqlite3
+
 from filelock import AsyncReadWriteLock, ReadWriteLock
 from tests.capability_marks import NEEDS_FILE_PERMISSIONS
 from tests.read_write_helpers import assert_read_write_lock_state
@@ -20,7 +24,7 @@ from tests.read_write_helpers import assert_read_write_lock_state
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 pytestmark: Final = [
     pytest.mark.requires_hard_links,
@@ -31,11 +35,49 @@ pytestmark: Final = [
 ]
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS must avoid /dev/fd lookups")
+@pytest.mark.usefixtures("macos_descriptor_guard")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+async def test_macos_connects_through_the_validated_inode(
+    database: Path, mocker: MockerFixture, mode: Literal["read", "write"]
+) -> None:  # pragma: darwin cover
+    connect: Final = mocker.spy(sqlite3, "connect")
+    lock: Final = AsyncReadWriteLock(database, is_singleton=False)
+    try:
+        async with (lock.read_lock if mode == "read" else lock.write_lock)():
+            opened: Final = Path(connect.call_args.args[0])
+            assert (opened.name, opened.parent.parent, await asyncio.to_thread(opened.samefile, database)) == (
+                "lock.db",
+                database.parent,
+                True,
+            )
+            await asyncio.to_thread(assert_read_write_lock_state, str(database), "write", available=False)
+    finally:
+        await lock.close()
+
+
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 def test_missing_descriptor_path_preserves_contention(database: Path, mode: Literal["read", "write"]) -> None:
     lock: Final = ReadWriteLock(database, is_singleton=False)
     with (lock.read_lock if mode == "read" else lock.write_lock)():
         assert_read_write_lock_state(str(database), "write", available=False)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS must reject a failed alias")
+@pytest.mark.usefixtures("macos_descriptor_guard")
+@pytest.mark.parametrize(
+    "boundary", [pytest.param("tempfile.mkdtemp", id="mkdtemp"), pytest.param("os.link", id="link")]
+)
+def test_macos_failed_alias_preserves_a_peer_lock(
+    database: Path, mocker: MockerFixture, boundary: str
+) -> None:  # pragma: darwin cover
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        mocker.patch(boundary, autospec=True, side_effect=PermissionError(errno.EACCES, "read-only directory"))
+        with pytest.raises(PermissionError, match="read-only directory"):
+            ReadWriteLock(database, is_singleton=False)
+        assert_read_write_lock_state(str(database), "write", available=False)
+    assert list(database.parent.glob(".filelock-*")) == []
 
 
 @pytest.mark.asyncio
@@ -198,5 +240,10 @@ def created_directories(mocker: MockerFixture) -> list[Path]:
 
 
 @pytest.fixture(autouse=True)
-def missing_descriptor_path(mocker: MockerFixture) -> None:
-    mocker.patch("os.access", autospec=True, return_value=False)
+def missing_descriptor_path(mocker: MockerFixture) -> MockType:
+    return mocker.patch("os.access", autospec=True, return_value=False)
+
+
+@pytest.fixture
+def macos_descriptor_guard(missing_descriptor_path: MockType) -> None:  # pragma: darwin cover
+    missing_descriptor_path.side_effect = AssertionError("macOS must not look up descriptor paths")

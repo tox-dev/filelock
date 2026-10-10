@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import multiprocessing
-import sys
 import threading
 from typing import TYPE_CHECKING, cast
 
@@ -21,8 +20,7 @@ if TYPE_CHECKING:
 
 
 def assert_cancellation_message(error: asyncio.CancelledError, message: str) -> None:
-    # Task.cancel() did not propagate its message to code awaiting the task until Python 3.11.
-    assert error.args == ((message,) if sys.version_info >= (3, 11) else ())
+    assert error.args == (message,)
 
 
 def get_fcntl() -> FcntlModule:  # pragma: win32 no cover

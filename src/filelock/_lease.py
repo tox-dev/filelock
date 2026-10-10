@@ -20,13 +20,9 @@ from ._util import break_lock_file, touch
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from typing import Unpack
 
     from ._api import LockOptions, _ExtraValue
-
-    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-        from typing import Unpack
-    else:  # pragma: no cover (<py311)
-        from typing_extensions import Unpack
 
 #: ``evicted`` is a :class:`~filelock.SoftReadWriteLock` loss: a peer waited out the stale threshold and committed a
 #: generation without this holder.

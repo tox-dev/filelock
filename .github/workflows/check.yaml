@@ -27,9 +27,10 @@ jobs:
           - "3.13"
           - "3.12"
           - "3.11"
-          - "3.10"
           - "pypy3.11"
-          - "graalpy3.11"
+          # GraalPy 25.4.4 fixes errno loss during event-loop creation:
+          # https://github.com/oracle/graalpython/commit/3fd5d5fe5f4a3bde3bca10ce3d87adaf13ffb03b
+          - "graalpy3.13"
         os:
           - ubuntu-24.04
           - windows-2025
@@ -38,8 +39,8 @@ jobs:
           - {os: windows-2025, py: pypy3.11}
           # GraalPy validates the capability probes the suite gates on, which is a per-OS answer, not a per-arch one.
           # One Linux job settles it; the Windows and macOS builds only repeat it at triple the runtime.
-          - {os: windows-2025, py: graalpy3.11}
-          - {os: macos-15, py: graalpy3.11}
+          - {os: windows-2025, py: graalpy3.13}
+          - {os: macos-15, py: graalpy3.13}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,9 +49,10 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          python-version: "3.15"
           enable-cache: false
       - name: "🧪 Install tox"
-        run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
+        run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
       - name: "🐍 Install Python"
         run: uv python install --python-preference only-managed ${{ matrix.py }}
       - name: "⚙️ Setup test suite"
@@ -98,7 +100,7 @@ jobs:
       - name: "⬇️ Download coverage data"
         id: coverage-data
         background: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: .tox
           pattern: .coverage.*
@@ -106,11 +108,12 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          python-version: "3.15"
           enable-cache: false
       - name: "🧪 Install tox"
-        run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
+        run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
       - name: "📦 Build package to generate version"
-        run: uv build --python 3.14 --python-preference only-managed --wheel . --out-dir dist
+        run: uv build --python 3.15 --python-preference only-managed --wheel . --out-dir dist
       - name: "⚙️ Setup coverage tool"
         run: tox -e coverage --notest
         env:
@@ -149,9 +152,10 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          python-version: "3.15"
           enable-cache: false
       - name: "🧪 Install tox"
-        run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
+        run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
       - name: "⚙️ Setup test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.tox_env }}
         env:
@@ -170,6 +174,7 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          python-version: "3.15"
           enable-cache: false
       - name: "🗄️ Export and mount loopback NFS shares"
         run: |
@@ -221,6 +226,7 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          python-version: "3.15"
           enable-cache: false
       - name: "🗄️ Export and mount a loopback SMB share"
         run: |
@@ -271,6 +277,7 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          python-version: "3.15"
           enable-cache: false
       - name: "🧩 Verify the fallback without ${{ matrix.block }}"
         env:
@@ -295,9 +302,10 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          python-version: "3.15"
           enable-cache: false
       - name: "🧪 Install tox"
-        run: uv tool install --python-preference only-managed --python 3.14 tox --with tox-uv
+        run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
       # Windows grants symlink creation two ways, so both have to be closed to deny it: Developer Mode lets an
       # unprivileged process create them, and SeCreateSymbolicLinkPrivilege lets any holder create them regardless.
       # Clearing only the registry value left the runner's privilege intact and both variants probed identical.
@@ -306,25 +314,25 @@ jobs:
           reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d ${{ matrix.developer_mode }}
 
       - name: "⚙️ Setup test suite"
-        run: tox run -vv --notest --skip-missing-interpreters false -e 3.14
+        run: tox run -vv --notest --skip-missing-interpreters false -e 3.15
       - name: "🔎 Report the probed capability"
         if: matrix.developer_mode == '1'
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
-          uvx --python 3.14 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
+          uv run --no-project --python 3.15 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
       - name: "✅ Run test suite with symlinks granted"
         if: matrix.developer_mode == '1'
-        run: tox run --skip-pkg-install -e 3.14 --
+        run: tox run --skip-pkg-install -e 3.15 --
       # deny_symlink reports the token privilege, the Developer Mode value, and whether a symlink still succeeds in
       # this process and in a child, so the log says which mechanism actually governs rather than assuming either.
       - name: "🔎 Report the probed capability"
         if: matrix.developer_mode == '0'
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
-          python tasks\deny_symlink.py uvx --python 3.14 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
+          uv run --no-project --python 3.15 python tasks\deny_symlink.py uv run --no-project --python 3.15 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
       - name: "✅ Run test suite with symlinks denied"
         if: matrix.developer_mode == '0'
-        run: python tasks\deny_symlink.py tox run --skip-pkg-install -e 3.14 --
+        run: uv run --no-project --python 3.15 python tasks\deny_symlink.py tox run --skip-pkg-install -e 3.15 --
   termux:
     name: "🤖 Termux (Android)"
     runs-on: ubuntu-24.04-arm
@@ -350,6 +358,7 @@ jobs:
       - name: "🔄 Install the latest version of uv"
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          python-version: "3.15"
           enable-cache: false
       - name: "📝 Require a news fragment"
         run: uvx towncrier check --compare-with "origin/${GITHUB_BASE_REF}"

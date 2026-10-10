@@ -46,8 +46,7 @@ def test_exception_serialization_preserves_diagnostics(
     error: Timeout | SoftFileLockProtocolError,
     clone: Callable[[Timeout | SoftFileLockProtocolError], Timeout | SoftFileLockProtocolError],
 ) -> None:
-    # Python 3.10 supports the notes attribute but has no add_note().
-    error.__notes__ = ["while acquiring the build cache"]
+    error.add_note("while acquiring the build cache")
     vars(error)["request_id"] = "request-1"
     restored: Final = clone(error)
     assert (

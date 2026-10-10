@@ -20,17 +20,10 @@ from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.pid_namespace_helpers import pin_pid_namespace
 
-if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-    from builtins import ExceptionGroup  # pragma: >=3.11 cover
-else:  # pragma: no cover (<py311)
-    from exceptiongroup import ExceptionGroup
-
 if TYPE_CHECKING:
     from collections.abc import Generator
-    from types import FrameType
     from unittest.mock import MagicMock
 
-    from _typeshed import TraceFunction
     from pytest_mock import MockerFixture
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
@@ -839,53 +832,6 @@ def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[
         yield close_error, attempts
     finally:
         mocker.stop(close_mock)
-
-
-@pytest.mark.skipif(sys.version_info >= (3, 11), reason="later versions run signal handlers only at calls")
-def test_soft_windows_marker_close_keeps_an_open_descriptor_recorded(tmp_path: Path) -> None:  # pragma: <3.11 cover
-    # 3.10 can run a signal handler before any bytecode, so interrupt at each one, far past the method's length: the
-    # descriptor must stay recorded for the retry to close, or already be closed.
-    outcomes: Final = list(
-        itertools.takewhile(
-            lambda outcome: outcome is not None, (_close_interrupted_at(tmp_path, n) for n in range(1, 200))
-        )
-    )
-    assert (len(outcomes) > 1, any(outcomes)) == (True, False)
-
-
-def _close_interrupted_at(tmp_path: Path, target: int) -> bool | None:  # pragma: no cover  # runs under its own tracer
-    lock: Final = SoftFileLock(tmp_path / f"{target}.lock")
-    fd: Final = os.open(tmp_path / f"{target}.marker", os.O_CREAT | os.O_WRONLY)
-    lock._marker_fds = [fd]
-    code: Final = SoftFileLock._close_marker_fd.__code__
-    opcodes: Final = itertools.count(1)
-
-    def at_opcode(_frame: FrameType, event: str, _arg: object) -> TraceFunction:
-        if event == "opcode" and next(opcodes) == target:
-            raise KeyboardInterrupt
-        return at_opcode
-
-    def trace(frame: FrameType, _event: str, _arg: object) -> TraceFunction | None:
-        if frame.f_code is not code:
-            return None
-        frame.f_trace_opcodes = True
-        return at_opcode
-
-    previous: Final = sys.gettrace()
-    sys.settrace(trace)
-    interrupted = False
-    try:
-        lock._close_marker_fd()
-    except KeyboardInterrupt:
-        interrupted = True
-    finally:
-        sys.settrace(previous)
-    try:
-        os.fstat(fd)
-    except OSError:
-        return False if interrupted else None
-    os.close(fd)
-    return fd not in lock._marker_fds
 
 
 def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Path, mocker: MockerFixture) -> None:

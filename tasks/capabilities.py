@@ -97,14 +97,19 @@ def _finalizes_on_collection() -> bool:
 
 
 def _collects_classes() -> bool:
-    # A dynamically built lock subclass must not outlive its last reference, or the registries keyed on it leak.
+    # GraalPy can collect a plain class while retaining one instantiated through a custom metaclass.
+    class ProbeMeta(type):
+        def __call__(cls) -> object:
+            return super().__call__()
+
     def build() -> type:
-        class Probe:
+        class Probe(metaclass=ProbeMeta):
             pass
 
+        Probe()
         return Probe
 
-    reference = weakref.ref(build())
+    reference: Final = weakref.ref(build())
     gc.collect()
     return reference() is None
 
@@ -156,8 +161,7 @@ def _propagates_a_cancellation_thrown_into_a_coroutine() -> bool:
 
 
 def _finishes_a_generator_a_profile_hook_interrupts_on_resume() -> bool:
-    # CPython before 3.11, PyPy and GraalPy end the generator without running its finally, so a test that injects an
-    # interrupt there would leak whatever that finally releases.
+    # PyPy and GraalPy can end the generator without its finally, leaking resources when a test injects an interrupt.
     finished: Final[list[bool]] = []
 
     def probe() -> Generator[None]:
