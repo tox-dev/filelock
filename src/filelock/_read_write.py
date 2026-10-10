@@ -60,9 +60,7 @@ _MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
 _UNSAFE_FORK_EXIT_STATUS: Final[int] = 70
 # O_NONBLOCK keeps an open from blocking on a FIFO planted at the path; the regular-file check then rejects it.
 _DB_OPEN_FLAGS: Final[int] = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-# Linux names an open descriptor under /proc/self/fd, macOS and the BSDs under /dev/fd. SQLite connects through that
-# name, so it reopens the inode already validated, and journal_mode=MEMORY keeps it from deriving an on-disk journal
-# name from the synthetic path.
+# Descriptor paths reopen the validated inode; journal_mode=MEMORY avoids an on-disk journal at the synthetic path.
 _FD_DIR: Final[str] = "/proc/self/fd" if sys.platform == "linux" else "/dev/fd"
 # Header bytes 18 and 19 hold the file format versions, 2 in WAL mode: https://www.sqlite.org/fileformat.html
 _SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
@@ -412,9 +410,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     instance (``is_singleton=False``).
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
-    instance. The path is handed to :func:`sqlite3.connect` as given, so a ``.db`` extension is a convention rather
-    than a requirement; the filesystem must be one the active SQLite VFS supports. Give the lock a file of its own: a
-    WAL-mode database raises :class:`ValueError`.
+    instance. A ``.db`` extension is a convention rather than a requirement; the filesystem must be one the active
+    SQLite VFS supports. On macOS, the database directory must be writable and support hard links. Give the lock a file
+    of its own: a WAL-mode database raises :class:`ValueError`.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
@@ -981,18 +979,19 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         _PROBE_DESCRIPTORS.drain()
         _raise_if_wal(fd, database)
         target = pathlib.Path(f"{_FD_DIR}/{fd}")
-        reachable: Final = os.access(target, os.F_OK)
+        # macOS /dev/fd lookup can panic the kernel: https://github.com/tox-dev/filelock/issues/818
+        descriptor_usable: Final = sys.platform != "darwin" and os.access(target, os.F_OK)
         # SQLite reuses a descriptor it deferred closing for a peer's locks only when stat of the name it opened reports
         # the file, which macOS's /dev/fd does not, so every connect beside a holder would keep one more open. NetBSD's
         # static /dev/fd exposes only descriptors 0-63. A private hard link names the file and pins the validated inode.
-        if not reachable or (  # pragma: needs posix-hard-link
+        if not descriptor_usable or (  # pragma: needs posix-hard-link
             _PROBE_DESCRIPTORS.shared(probe) and ((named := target.stat()).st_dev, named.st_ino) != identity
         ):
             try:
                 directory = _link_beside(database, identity)
             except OSError:
-                # The descriptor path still pins the validated inode; only the deferred descriptors pile up.
-                if not reachable:
+                # A usable descriptor path still pins the inode; macOS must not fall back to /dev/fd.
+                if not descriptor_usable:
                     raise
             else:
                 target = directory / "lock.db"

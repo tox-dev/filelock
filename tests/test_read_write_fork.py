@@ -109,19 +109,24 @@ def test_read_write_lock_cycling_beside_a_holder_keeps_descriptors_flat(tmp_path
 @pytest.mark.parametrize(
     "failing", [pytest.param("tempfile.mkdtemp", id="mkdtemp"), pytest.param("os.link", id="link")]
 )
-def test_read_write_lock_connects_through_the_descriptor_when_linking_fails(
+def test_read_write_lock_preserves_contention_when_linking_fails(
     tmp_path: Path, mocker: MockerFixture, failing: str
 ) -> None:
     lock_path: Final[Path] = tmp_path / "held.db"
-    # Only a connect beside a live peer links: that is when SQLite defers its closes.
     peer: Final = ReadWriteLock(lock_path, is_singleton=False)
     peer.acquire_read()
     mocker.patch(failing, autospec=True, side_effect=PermissionError(errno.EACCES, "read-only directory"))
-    lock: Final = ReadWriteLock(lock_path, is_singleton=False)
-    lock.acquire_read()
-    peer.release()
+    if sys.platform == "darwin":  # pragma: darwin cover
+        with pytest.raises(PermissionError, match="read-only directory"):
+            ReadWriteLock(lock_path, is_singleton=False)
+    else:  # pragma: darwin no cover
+        lock: Final = ReadWriteLock(lock_path, is_singleton=False)
+        lock.acquire_read()
+        peer.release()
     contender: Final = _run_fork_script(_TRY_WRITE_SCRIPT, [str(lock_path)], timeout=30)
-    lock.release()
+    if sys.platform != "darwin":  # pragma: darwin no cover
+        lock.release()
+    peer.release()
 
     assert (contender, sorted(path.name for path in tmp_path.iterdir())) == ((0, "Timeout\n", ""), ["held.db"])
 
