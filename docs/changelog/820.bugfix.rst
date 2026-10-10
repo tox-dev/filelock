@@ -1,0 +1,2 @@
+Avoid the macOS ``/dev/fd`` lookup implicated in a kernel panic by opening SQLite through a validated hard link.
+The database directory must be writable and support hard links; alias creation failure raises ``OSError``.
