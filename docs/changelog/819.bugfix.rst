@@ -1,0 +1,1 @@
+Bound the shared-lock contention test by worker progress so slow CI machines can finish the workload.
