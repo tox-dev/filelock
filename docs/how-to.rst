@@ -559,12 +559,12 @@ happened in the parent.
 If a connection was active, filelock rejects every lock for the same path or database inode in the child. In the normal
 path, an outer acquisition owns this connection; failed cleanup can also retain one. The child must call ``exec()`` or
 exit before using that database. filelock abandons each inherited active handle until OS process exit, consuming one
-descriptor and its SQLite memory per active lock. CPython 3.10 and 3.11 need an extra raw reference to stop their base
+descriptor and its SQLite memory per active lock. CPython 3.11 need an extra raw reference to stop their base
 deallocator from closing the handle; later versions suppress finalization through the connection subclass. Both paths
 avoid the ``sqlite3_close()`` call that SQLite forbids after a fork.
 
 filelock normally rejects ``fork()`` from a callback that runs during a SQLite operation. The guard is an audit hook,
-and CPython 3.10 and 3.11 fail a concurrent ``sys.settrace`` call while any Python audit hook runs, which coverage and
+and CPython 3.11 fail a concurrent ``sys.settrace`` call while any Python audit hook runs, which coverage and
 debuggers make on every thread start, so filelock skips it there. Without the guard, whether skipped or blocked by
 another audit hook, a child created at this boundary exits with status 70 before it can touch the inherited connection;
 the parent operation continues.
@@ -717,7 +717,7 @@ that acquires again nests into its hold. Only the task that acquired may release
 
 .. warning::
 
-    On Python 3.10 and 3.11, ``asyncio.wait_for(rw.acquire_write(), 5)`` runs the acquire in a child task, which then
+    On Python 3.11, ``asyncio.wait_for(rw.acquire_write(), 5)`` runs the acquire in a child task, which then
     owns the hold, so releasing it from the caller raises. Bound the wait with the lock's own ``timeout`` or with
     ``asyncio.timeout()`` instead.
 
@@ -1021,14 +1021,9 @@ Every keyword filelock's metaclass forwards to a lock is declared in :class:`Loc
 
 .. code-block:: python
 
-    import sys
+    from typing import Unpack
 
     from filelock import FileLock, LockOptions
-
-    if sys.version_info >= (3, 11):
-        from typing import Unpack
-    else:
-        from typing_extensions import Unpack
 
 
     class CountedFileLock(FileLock):
@@ -1364,13 +1359,11 @@ both as siblings of a :class:`BaseExceptionGroup`, body first, release second:
         raise RuntimeError("body failed")
     # if release() then also fails, both surface as a BaseExceptionGroup
 
-``"group"`` needs Python 3.11+ or the ``exceptiongroup`` backport; filelock checks this when you construct the lock.
 When both errors subclass :class:`Exception`, the group is a plain :class:`ExceptionGroup`, so ``except*`` and
 ``except Exception`` still catch it. The default ``"chain"`` keeps Python's behavior.
 
 filelock also groups the failures of its own cleanup, such as an ``on_acquired`` hook that raises and a rollback
-release that fails after it. filelock does not depend on the backport, so on Python 3.10 without it those failures
-chain instead: the last one propagates and the earlier ones sit in its ``__context__``.
+release that fails after it. These failures raise a :class:`BaseExceptionGroup`.
 
 *****************************************
  Handle a close failure after unlock

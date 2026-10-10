@@ -156,8 +156,7 @@ def _propagates_a_cancellation_thrown_into_a_coroutine() -> bool:
 
 
 def _finishes_a_generator_a_profile_hook_interrupts_on_resume() -> bool:
-    # CPython before 3.11, PyPy and GraalPy end the generator without running its finally, so a test that injects an
-    # interrupt there would leak whatever that finally releases.
+    # PyPy and GraalPy can end the generator without its finally, leaking resources when a test injects an interrupt.
     finished: Final[list[bool]] = []
 
     def probe() -> Generator[None]:
