@@ -19,6 +19,7 @@ from fractions import Fraction
 from inspect import getframeinfo, stack
 from itertools import count
 from pathlib import Path, PurePath
+from queue import Queue
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import FrameType, TracebackType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast, get_args
@@ -933,19 +934,31 @@ def _run_shared_threads(target: Callable[[int], None]) -> None:
         pytest.param(StrictSoftFileLock, id="strict", marks=pytest.mark.requires_hard_links),
     ],
 )
+@pytest.mark.timeout(0)  # Progress and join waits bound stalls; batch runtime is not a lock guarantee.
 def test_shared_instance_concurrent_acquire_release_leaves_lock_free(
     tmp_path: Path, lock_type: type[BaseFileLock]
 ) -> None:
-    lock = lock_type(tmp_path / "a.lock", thread_local=False)
-    barrier = threading.Barrier(_SHARED_THREADS, timeout=_SHARED_WAIT)
+    lock: Final = lock_type(tmp_path / "a.lock", thread_local=False)
+    barrier: Final = threading.Barrier(_SHARED_THREADS, timeout=_SHARED_WAIT)
+    progress: Final[Queue[None]] = Queue()
 
-    def work(_: int) -> None:
+    def work() -> None:
         barrier.wait()
         for _ in range(500):
             lock.acquire(timeout=_SHARED_WAIT)
+            assert lock.is_locked
             lock.release()
+            progress.put(None)
 
-    _run_shared_threads(work)
+    threads: Final = [threading.Thread(target=work, daemon=True) for _ in range(_SHARED_THREADS)]
+    for thread in threads:
+        thread.start()
+    # Require progress without timing all 500 iterations against one thread-join deadline.
+    for _ in range(_SHARED_THREADS * 500):
+        progress.get(timeout=_SHARED_WAIT)
+    for thread in threads:
+        thread.join(_SHARED_WAIT)
+    assert not [thread for thread in threads if thread.is_alive()]
 
     assert (lock.lock_counter, lock.is_locked) == (0, False)
     with lock_type(tmp_path / "a.lock", timeout=0):
