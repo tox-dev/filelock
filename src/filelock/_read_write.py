@@ -197,7 +197,8 @@ class _ProbeDescriptors:
             probes.leases.add(retained.lease)
         return retained
 
-    def shared(self, probe: _Probe) -> bool:  # pragma: win32 no cover
+    # macOS opens through a hard link, so only descriptor-path connections need this check.
+    def shared(self, probe: _Probe) -> bool:  # pragma: win32 no cover  # pragma: darwin no cover
         with self._lock:
             return len(self._inodes[probe.identity].leases) > 1
 
