@@ -1,0 +1,2 @@
+Raise ``IsADirectoryError`` (or ``PermissionError`` on Windows) for a directory lock path regardless of its write
+permissions.

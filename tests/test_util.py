@@ -13,7 +13,7 @@ import pytest
 
 from filelock import SoftFileLock, Timeout
 from filelock._identity import host_name
-from tests.capability_marks import NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.capability_marks import NEEDS_FILE_PERMISSIONS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -200,12 +200,23 @@ def test_writability_check_does_not_follow_symlink_to_readonly(tmp_path: Path) -
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a real directory raises PermissionError on Windows")
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(0o755, id="writable"),
+        pytest.param(0o555, id="readonly", marks=NEEDS_FILE_PERMISSIONS),
+    ],
+)
 @pytest.mark.parametrize("mtime", [pytest.param(0, id="mtime-zero"), pytest.param(2_000_000_000, id="mtime-future")])
-def test_writability_check_rejects_a_directory(tmp_path: Path, mtime: int) -> None:  # pragma: win32 no cover
+def test_writability_check_rejects_a_directory(tmp_path: Path, mode: int, mtime: int) -> None:  # pragma: win32 no cover
     (path := tmp_path / "a_dir").mkdir()
     os.utime(path, (mtime, mtime))
-    with pytest.raises(IsADirectoryError):
-        SoftFileLock(path).acquire(blocking=False)
+    path.chmod(mode)
+    try:
+        with pytest.raises(IsADirectoryError):
+            SoftFileLock(path).acquire(blocking=False)
+    finally:
+        path.chmod(0o755)
 
 
 @_SKIP_AS_ROOT
