@@ -1,2 +1,0 @@
-Ignore non-ASCII PID or start-time fields and out-of-range PIDs in ``ReadWriteLock`` hard-link directory names so forged
-owners cannot abort acquisition.

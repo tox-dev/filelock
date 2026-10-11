@@ -7,6 +7,17 @@
 .. towncrier release notes start
 
 *******************
+ 4.1.1 (2026-10-11)
+*******************
+
+- Bound the shared-lock contention test by worker progress so slow CI machines can finish the workload. :pr:`819`
+- Avoid the macOS ``/dev/fd`` lookup implicated in a kernel panic by opening SQLite through a validated hard link.
+  The database directory must be writable and support hard links; alias creation failure raises ``OSError``. :pr:`820`
+- Ignore non-ASCII PID or start-time fields and out-of-range PIDs in ``ReadWriteLock`` hard-link directory names so forged
+  owners cannot abort acquisition. :pr:`821`
+- Use Python 3.15 for development and automation. :pr:`816`
+
+*******************
  4.1.0 (2026-10-09)
 *******************
 
