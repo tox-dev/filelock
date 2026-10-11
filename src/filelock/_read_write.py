@@ -1052,11 +1052,15 @@ def _sweep_links_of_the_dead(parent: pathlib.Path) -> None:  # pragma: needs pos
 
 
 def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
-    # Fails closed like a soft lock's marker: a name it cannot read, or an owner on another host, stays.
+    # A peer can plant a malformed name; leave it untouched rather than probing a forged PID during acquisition.
     match name.removeprefix(_LINK_PREFIX).split("-"):
-        case [pid, start, digest, _] if pid.isdigit() and (start.isdigit() or not start):
+        case [pid, start, digest, _] if (
+            pid.isascii() and pid.isdigit() and (not start or (start.isascii() and start.isdigit()))
+        ):
+            if not 1 <= (owner_pid := int(pid)) <= 2**31 - 1:
+                return False
             host: Final = host_name()
-            return digest == _host_digest(host) and owner_is_stale(int(pid), host, int(start) if start else None)
+            return digest == _host_digest(host) and owner_is_stale(owner_pid, host, int(start) if start else None)
         case _:
             return False
 
