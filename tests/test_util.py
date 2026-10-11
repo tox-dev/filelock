@@ -208,6 +208,17 @@ def test_writability_check_rejects_a_directory(tmp_path: Path, mtime: int) -> No
         SoftFileLock(path).acquire(blocking=False)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a real directory raises PermissionError on Windows")
+def test_writability_check_rejects_a_readonly_directory(tmp_path: Path) -> None:  # pragma: win32 no cover
+    (path := tmp_path / "ro_dir").mkdir()
+    path.chmod(0o555)
+    try:
+        with pytest.raises(IsADirectoryError):
+            SoftFileLock(path).acquire(blocking=False)
+    finally:
+        path.chmod(0o755)
+
+
 @_SKIP_AS_ROOT
 @pytest.mark.parametrize("mtime", [pytest.param(0, id="mtime-zero"), pytest.param(2_000_000_000, id="mtime-future")])
 def test_writability_check_rejects_a_readonly_file(tmp_path: Path, mtime: int) -> None:
