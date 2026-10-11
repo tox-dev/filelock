@@ -160,8 +160,6 @@ _FORKED_DATABASES: Final = _ForkedDatabaseRegistry()
 
 _LINK_PREFIX: Final[str] = ".filelock-"
 _SWEPT_DIRECTORIES: Final[set[str]] = set()
-# The same window every holder parser bounds a pid to, so an out-of-range value never reaches os.kill.
-_MAX_PID: Final[int] = 2**31 - 1
 
 
 # POSIX locks belong to the process and the inode, so closing any descriptor on the inode drops the locks every other
@@ -1054,17 +1052,12 @@ def _sweep_links_of_the_dead(parent: pathlib.Path) -> None:  # pragma: needs pos
 
 
 def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
-    # Fails closed like a soft lock's marker: a name it cannot read, or an owner on another host, stays. A same-UID peer
-    # can write this directory, so the pid and start-time fields are held to ASCII decimal digits and the pid to the
-    # 1..2**31-1 range, as parse_decimal, GenerationLog._list and _parse_claim already hold theirs. str.isdigit() also
-    # admits non-ASCII digits that int() then rejects (a superscript raises ValueError) or silently reads as another
-    # number, and an unbounded pid reaches os.kill as 0 (the caller's own process group) or overflows a C int; the sweep
-    # that calls this runs on the connect path with no guard around it, so either escapes and wedges acquisition.
+    # A peer can plant a malformed name; leave it untouched rather than probing a forged PID during acquisition.
     match name.removeprefix(_LINK_PREFIX).split("-"):
         case [pid, start, digest, _] if (
             pid.isascii() and pid.isdigit() and (not start or (start.isascii() and start.isdigit()))
         ):
-            if not 1 <= (owner_pid := int(pid)) <= _MAX_PID:
+            if not 1 <= (owner_pid := int(pid)) <= 2**31 - 1:
                 return False
             host: Final = host_name()
             return digest == _host_digest(host) and owner_is_stale(owner_pid, host, int(start) if start else None)

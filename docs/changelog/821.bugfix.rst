@@ -1,3 +1,2 @@
-Hold the pid and start-time fields in a ``ReadWriteLock`` hard-link directory name to ASCII decimal digits and the pid
-to ``1..2**31-1``, so a same-host peer planting a name with a non-ASCII digit or an out-of-range pid can no longer raise
-``ValueError`` or ``OverflowError`` out of the connect-time sweep.
+Ignore non-ASCII PID or start-time fields and out-of-range PIDs in ``ReadWriteLock`` hard-link directory names so forged
+owners cannot abort acquisition.
