@@ -1,1 +1,2 @@
-Raise ``IsADirectoryError`` (or ``PermissionError`` on Windows) consistently when checking writability of a directory, even if the directory has no write permissions.
+Raise ``IsADirectoryError`` (or ``PermissionError`` on Windows) for a directory lock path regardless of its write
+permissions.
