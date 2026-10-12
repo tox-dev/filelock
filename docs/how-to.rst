@@ -14,8 +14,9 @@ cache guard depends on: whether the file exists yet. On Windows an open handle a
 about to perform. The convention is ``<resource>.lock`` beside the resource, or a parallel lock tree. ``huggingface_hub``
 keeps its cache under ``<cache>/models/...`` and its locks under ``<cache>/.locks/...``.
 
-Keep the name within the filesystem's limit. A single path component caps at 255 bytes on ext4 and on Windows, and a
-cache key pasted into a lock name blows past that:
+Keep the name within the filesystem's limit. A path component caps at 255 bytes on ext4 and 255 Unicode characters on
+`NTFS <https://learn.microsoft.com/en-us/windows/win32/fileio/filesystem-functionality-comparison>`_. A cache key pasted
+into a lock name can exceed either limit:
 
 .. code-block:: python
 
@@ -25,19 +26,16 @@ cache key pasted into a lock name blows past that:
     from filelock import FileLock
 
 
-    def name_limit(directory: str) -> int:
-        statvfs = getattr(os, "statvfs", None)  # Unix only; Windows caps a component at 255
-        return min(statvfs(directory).f_namemax, 255) if statvfs is not None else 255
-
-
     def lock_for(cache_dir: str, key: str) -> FileLock:
-        name = f"{key}.lock"
-        if len(name.encode()) > name_limit(cache_dir):
-            name = f"{hashlib.sha256(key.encode()).hexdigest()}.lock"
+        name = f"{hashlib.sha256(key.encode('utf-8', 'surrogatepass')).hexdigest()}.lock"
         return FileLock(os.path.join(cache_dir, name))
 
 ``datasets`` hashes over-long lock names against ``os.statvfs(path).f_namemax`` for exactly this reason. A hash also
-sidesteps the separators, spaces, and non-portable characters a natural key tends to carry.
+sidesteps the separators, spaces, and non-portable characters a natural key tends to carry. Hash short keys too: an
+absolute key would otherwise discard ``cache_dir`` when joined, and a short key can still contain characters Windows
+does not permit in filenames. The SHA-256 name above is 69 ASCII bytes including ``.lock`` and does not require the
+cache directory to exist before constructing the lock. The explicit encoding also accepts surrogate escapes from Unix
+filenames with undecodable bytes.
 
 Two more constraints worth designing around:
 
