@@ -5,9 +5,11 @@ import inspect
 import logging
 import math
 import os
+import runpy
 import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed-argument, no-shell run below
 import sys
+import textwrap
 import threading
 import time
 import traceback
@@ -89,6 +91,21 @@ def test_simple(
         ("filelock", logging.DEBUG, f"Lock {id(lock)} released on {lock_path}"),
     ]
     assert logging.getLogger("filelock").level == logging.NOTSET
+
+
+@pytest.mark.parametrize(
+    "key", [pytest.param("/short-key", id="absolute"), pytest.param("\udcff", id="undecodable-filename")]
+)
+def test_documented_cache_lock_name(tmp_path: Path, key: str) -> None:
+    source: Final = (Path(__file__).parents[1] / "docs" / "how-to.rst").read_text(encoding="utf-8")
+    snippet: Final = source.split(".. code-block:: python\n", 1)[1].split("\n``datasets``", 1)[0]
+    recipe: Final = tmp_path / "cache_recipe.py"
+    recipe.write_text(textwrap.dedent(snippet), encoding="utf-8")
+    lock_for: Final = cast("Callable[[str, str], FileLock]", runpy.run_path(str(recipe))["lock_for"])
+    cache_dir: Final = tmp_path / "cache"
+    with (lock := lock_for(str(cache_dir), key)):
+        lock_path: Final = Path(lock.lock_file)
+        assert (lock_path.parent, len(lock_path.name), lock_path.name.isascii()) == (cache_dir, 69, True)
 
 
 @contextmanager
