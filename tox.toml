@@ -188,9 +188,10 @@ commands = [ [ "uv", "pip", "list", "--format=columns" ], [ "python", "-c", 'pri
 [env."graalpy3.13"]
 description = "run the tests with pytest under {env_name}, unmeasured"
 # GraalPy can run a queued SIGALRM callback after pytest-timeout cancels its timer, interrupting a later test.
+# GraalPy exceeded the default timeout while creating tmp_path late in the full suite.
 set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage.{env_name}" }
 set_env.PYTHONPATH = "{tox_root}{/}tasks"
-set_env.PYTEST_ADDOPTS = "{env:PYTEST_ADDOPTS:} --timeout-method=thread"
+set_env.PYTEST_ADDOPTS = "{env:PYTEST_ADDOPTS:} --timeout-method=thread --timeout=60"
 
 [env.release]
 description = "build the changelog from the news fragments for the given version, e.g. tox r -e release -- 3.30.0"
