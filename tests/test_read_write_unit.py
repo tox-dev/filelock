@@ -700,13 +700,12 @@ def test_read_lock_uses_sqlite_master_for_schema_probe(lock_file: str, mocker: M
     original_executescript = _ForkSafeConnection.executescript
 
     def old_sqlite_executescript(self: _ForkSafeConnection, sql: str) -> sqlite3.Cursor:
-        if "sqlite_schema" in sql:
-            msg = "no such table: sqlite_schema"
-            raise sqlite3.OperationalError(msg)
+        if "sqlite_master" in sql:
+            raise sqlite3.OperationalError("no such table: sqlite_schema")
         return original_executescript(self, sql)
 
     mocker.patch.object(_ForkSafeConnection, "executescript", old_sqlite_executescript)
-    lock.acquire_read()
+    proxy = lock.acquire_read()
     assert lock._lock_level == 1
     assert lock._current_mode == "read"
     lock.release()
