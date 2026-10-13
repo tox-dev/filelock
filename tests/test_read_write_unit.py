@@ -692,25 +692,35 @@ def test_finish_connection_skips_rollback_when_already_released(lock_file: str) 
         con.execute("SELECT 1")
 
 
-def test_read_lock_uses_sqlite_master_for_schema_probe(lock_file: str, mocker: MockerFixture) -> None:
-    """Read lock must work on SQLite < 3.33.0 where sqlite_schema does not exist."""
-    from filelock._read_write import _ForkSafeConnection
+def test_read_lock_avoids_sqlite_schema_alias(lock_file: str, mocker: MockerFixture) -> None:
+    # SQLite before 3.33.0 has no sqlite_schema alias, so a read lock issuing it fails with "no such table".
+    real_connect = sqlite3.connect
+    statements: list[str] = []
 
-    lock = ReadWriteLock(lock_file, is_singleton=False)
-    original_executescript = _ForkSafeConnection.executescript
+    def connect(
+        database: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        connection = real_connect(
+            database,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+        connection.set_trace_callback(statements.append)
+        return connection
 
-    def old_sqlite_executescript(self: _ForkSafeConnection, sql: str) -> sqlite3.Cursor:
-        if "sqlite_master" in sql:
-            msg = "no such table: sqlite_schema"
-            raise sqlite3.OperationalError(msg)
-        return original_executescript(self, sql)
+    mocker.patch("sqlite3.connect", side_effect=connect)
+    with ReadWriteLock(lock_file, is_singleton=False).read_lock():
+        pass
 
-    mocker.patch.object(_ForkSafeConnection, "executescript", old_sqlite_executescript)
-    lock.acquire_read()
-    assert lock._lock_level == 1
-    assert lock._current_mode == "read"
-    lock.release()
-    assert lock._lock_level == 0
+    assert statements
+    assert not [statement for statement in statements if "sqlite_schema" in statement]
 
 
 def test_dropping_a_lock_closes_its_connection(lock_file: str) -> None:
