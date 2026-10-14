@@ -222,7 +222,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self._thread_holds = {}
         self._thread_pending = {}
 
-        self._context: AsyncFileLockContext = (AsyncThreadLocalFileContext if thread_local else AsyncFileLockContext)(
+        self._async_context: Final[AsyncFileLockContext] = (
+            AsyncThreadLocalFileContext if thread_local else AsyncFileLockContext
+        )(
             lock_file=os.fspath(lock_file),
             timeout=timeout,
             mode=mode,
@@ -233,6 +235,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             run_in_executor=run_in_executor,
             executor=executor,
         )
+        # BaseFileLock declares _context as FileLockContext; narrowing that writable attribute here is unsound.
+        self._context = self._async_context
         _register_fork_object(self)
 
     def _singleton_extra_mismatches(self, kwargs: Mapping[str, _ExtraValue], /) -> dict[str, tuple[str, str]]:
@@ -250,12 +254,12 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     @property
     def run_in_executor(self) -> bool:
         """Whether run in executor."""
-        return self._context.run_in_executor
+        return self._async_context.run_in_executor
 
     @property
     def executor(self) -> futures.Executor | None:
         """The executor."""
-        return self._context.executor
+        return self._async_context.executor
 
     @executor.setter
     def executor(self, value: futures.Executor | None) -> None:  # pragma: no cover
@@ -265,12 +269,12 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param futures.Executor | None value: the new executor or ``None``
 
         """
-        self._context.executor = value
+        self._async_context.executor = value
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
         """The event loop."""
-        return self._context.loop
+        return self._async_context.loop
 
     async def acquire(  # ty: ignore[invalid-method-override]
         self,
@@ -733,7 +737,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 # At interpreter exit daemon threads no longer run, so a loop running in one never runs the release.
-                if (loop := self._context.loop) is None or loop.is_closed() or sys.is_finalizing():
+                if (loop := self._async_context.loop) is None or loop.is_closed() or sys.is_finalizing():
                     self._release_without_loop()
                     return
                 if not loop.is_running():  # pragma: no cover
