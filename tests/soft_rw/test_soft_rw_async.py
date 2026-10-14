@@ -252,20 +252,28 @@ async def test_async_leaked_singleton_is_closed_on_teardown(tmp_path: Path) -> N
     assert len(_members(tmp_path, "singleton.lock")) == 2
 
 
+@pytest.mark.timeout(0)  # The per-handoff wait bounds stalls; batch runtime is not a lock guarantee.
 @pytest.mark.asyncio
 async def test_async_tasks_sharing_a_lock_take_the_write_lock_one_at_a_time(tmp_path: Path) -> None:
-    lock = _make(tmp_path)
+    lock: Final = _make(tmp_path)
+    progress: Final[asyncio.Queue[None]] = asyncio.Queue()
     inside = peak = 0
 
     async def write() -> None:
         nonlocal inside, peak
-        async with lock.write_lock(timeout=10):
+        async with lock.write_lock():
             inside += 1
             peak = max(peak, inside)
             await asyncio.sleep(0.001)
             inside -= 1
+        progress.put_nowait(None)
 
-    await asyncio.gather(*(write() for _ in range(10)))
+    writers: Final = [asyncio.create_task(write()) for _ in range(10)]
+    # Each handoff waits on fsync and link, which stall for seconds on Windows CI disks; ten queued writers then
+    # overrun one shared deadline without any writer being stuck.
+    for _ in writers:
+        await asyncio.wait_for(progress.get(), 10)
+    await asyncio.gather(*writers)
     await lock.close()
 
     assert peak == 1
