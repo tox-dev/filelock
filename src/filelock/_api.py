@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+__lazy_modules__ = [
+    "atexit",
+    "decimal",
+    "filelock._error",
+    "filelock._util",
+    "inspect",
+    "math",
+    "numbers",
+    "secrets",
+    "types",
+    "warnings",
+]
+
+import atexit
 import contextlib
 import inspect
 import logging
@@ -9,20 +23,22 @@ import secrets
 import stat
 import sys
 import time
+import types
 import warnings
 from abc import ABCMeta, abstractmethod
 from collections.abc import Callable, Hashable
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from decimal import Decimal
+from functools import cache
 from itertools import count, starmap
 from numbers import Real
 from threading import TIMEOUT_MAX, Condition, RLock, Thread, current_thread, get_ident, local
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
-from ._error import SoftFileLockLifetimeWarning, Timeout
-from ._util import break_lock_file
+from filelock._error import SoftFileLockLifetimeWarning, Timeout
+from filelock._util import break_lock_file
 
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
@@ -48,9 +64,9 @@ if TYPE_CHECKING:
 
     from _typeshed import Unused
 
-    from ._lease import _LeaseClaim
-    from ._read_write import ReadWriteLock
-    from ._soft_rw import SoftReadWriteLock
+    from filelock._lease import _LeaseClaim
+    from filelock._read_write import ReadWriteLock
+    from filelock._soft_rw import SoftReadWriteLock
 
     class _ForkResettable(Protocol):
         def _reset_after_fork_in_child(self) -> None: ...
@@ -356,6 +372,7 @@ class FileLockMeta(ABCMeta):
         **kwargs: _ExtraValue,
     ) -> _T:
         _ensure_current_process()
+        _resolve_lazy_imports_before_shutdown()
         lifetime = _resolve_lifetime(lifetime, cls, stacklevel=cls._constructor_lifetime_warning_stacklevel)
         poll_interval = _resolve_poll_interval(poll_interval)
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
@@ -1816,6 +1833,22 @@ _FORK_AUDIT_EVENTS: Final[frozenset[str]] = frozenset({"os.fork", "os.forkpty"})
 # CPython before 3.12 guards sys.settrace with one process-wide flag that stays set while audit hooks run, so a thread
 # switch inside a Python hook makes a concurrent settrace raise. Coverage and debuggers call it on every thread start.
 _SETTRACE_SURVIVES_AUDIT_HOOKS: Final[bool] = sys.implementation.name != "cpython" or sys.version_info >= (3, 12)
+
+
+@cache
+def _resolve_lazy_imports_before_shutdown() -> None:
+    if sys.version_info >= (3, 15):  # pragma: >=3.15 cover
+        atexit.register(_resolve_lazy_imports)
+
+
+def _resolve_lazy_imports() -> None:  # pragma: >=3.15 cover
+    # Interpreter shutdown clears sys.modules and sys.meta_path before it finalizes a lock still alive at exit, so a
+    # lazy import (PEP 810) that the release path in __del__ reaches first can no longer load. Load them while it can.
+    for name, module in list(sys.modules.items()):
+        if name == "filelock" or name.startswith("filelock."):
+            for attribute, value in list(vars(module).items()):
+                if type(value) is types.LazyImportType:
+                    getattr(module, attribute)
 
 
 def _register_fork_hooks() -> None:

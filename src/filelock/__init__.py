@@ -12,49 +12,41 @@ A platform independent file lock that supports the with-statement.
 
 from __future__ import annotations
 
+__lazy_modules__ = ["filelock._descriptor", "filelock._error", "importlib"]
+
 import sys
 import warnings
+from importlib import import_module
 from typing import TYPE_CHECKING, Final
 
-from ._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy, LockOptions
-from ._descriptor import lock_descriptor, unlock_descriptor
-from ._error import LeaseSettingsMismatch, SoftFileLockLifetimeWarning, SoftFileLockProtocolError, Timeout
-from ._lease import CompromiseReason, LeaseCompromise, SoftFileLease
-from ._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord
-
-if TYPE_CHECKING:
-    from ._async_read_write import (
-        AsyncAcquireReadWriteReturnProxy,
-        AsyncReadWriteLock,
-    )
-    from ._read_write import ReadWriteLock
-else:
-    try:
-        from ._async_read_write import AsyncAcquireReadWriteReturnProxy, AsyncReadWriteLock
-        from ._read_write import ReadWriteLock
-    except ImportError:  # pragma: lacks sqlite3
-        AsyncAcquireReadWriteReturnProxy = None
-        AsyncReadWriteLock = None
-        ReadWriteLock = None
-
-from ._soft import SoftFileLock
-from ._soft_rw import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
-from ._strict import StrictSoftFileClaim, StrictSoftFileClaimState, StrictSoftFileLock
-from ._unix import UnixFileLock
-from ._unix import has_fcntl as _has_fcntl
-from ._windows import WindowsFileLock
-from .asyncio import (
-    AsyncAcquireReturnProxy,
-    AsyncSoftFileLease,
-    AsyncSoftFileLock,
-    AsyncStrictSoftFileLock,
-    AsyncUnixFileLock,
-    AsyncWindowsFileLock,
-    BaseAsyncFileLock,
-)
+from filelock._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy, LockOptions
+from filelock._descriptor import lock_descriptor, unlock_descriptor
+from filelock._error import LeaseSettingsMismatch, SoftFileLockLifetimeWarning, SoftFileLockProtocolError, Timeout
+from filelock._unix import UnixFileLock
+from filelock._unix import has_fcntl as _has_fcntl
+from filelock._windows import WindowsFileLock
 
 # Keeps ``filelock.version`` the string 4.0.12 exposed rather than the submodule.
-from .version import version
+from filelock.version import version
+
+if TYPE_CHECKING:
+    from filelock import asyncio
+    from filelock._async_read_write import AsyncAcquireReadWriteReturnProxy, AsyncReadWriteLock
+    from filelock._lease import CompromiseReason, LeaseCompromise, SoftFileLease
+    from filelock._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord
+    from filelock._read_write import ReadWriteLock
+    from filelock._soft import SoftFileLock
+    from filelock._soft_rw import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
+    from filelock._strict import StrictSoftFileClaim, StrictSoftFileClaimState, StrictSoftFileLock
+    from filelock.asyncio import (
+        AsyncAcquireReturnProxy,
+        AsyncSoftFileLease,
+        AsyncSoftFileLock,
+        AsyncStrictSoftFileLock,
+        AsyncUnixFileLock,
+        AsyncWindowsFileLock,
+        BaseAsyncFileLock,
+    )
 
 #: version of the project as a string
 __version__: Final[str] = version
@@ -68,14 +60,13 @@ has_fcntl: Final[bool] = _has_fcntl
 
 if sys.platform == "win32":  # pragma: win32 cover
     _FileLock: type[BaseFileLock] = WindowsFileLock
-    _AsyncFileLock: type[BaseAsyncFileLock] = AsyncWindowsFileLock
 else:  # pragma: win32 no cover # ruff:ignore[collapsible-else-if]  # the else carries the win32 no-cover pragma
     if has_fcntl:
         _FileLock: type[BaseFileLock] = UnixFileLock
-        _AsyncFileLock: type[BaseAsyncFileLock] = AsyncUnixFileLock
     else:
+        from filelock._soft import SoftFileLock
+
         _FileLock = SoftFileLock
-        _AsyncFileLock = AsyncSoftFileLock
         warnings.warn("only soft file lock is available", stacklevel=2)
 
 if TYPE_CHECKING:
@@ -84,7 +75,58 @@ if TYPE_CHECKING:
 else:
     #: Alias for the lock, which should be used for the current platform.
     FileLock = _FileLock
-    AsyncFileLock = _AsyncFileLock
+
+# Importing asyncio and sqlite3 costs more than the rest of the package, so names that need them load on first access.
+_LAZY_ATTRIBUTES: Final[dict[str, str]] = {
+    "AsyncAcquireReadWriteReturnProxy": "._async_read_write",
+    "AsyncAcquireReturnProxy": ".asyncio",
+    "AsyncAcquireSoftReadWriteReturnProxy": "._soft_rw",
+    "AsyncFileLock": ".asyncio",
+    "AsyncReadWriteLock": "._async_read_write",
+    "AsyncSoftFileLease": ".asyncio",
+    "AsyncSoftFileLock": ".asyncio",
+    "AsyncSoftReadWriteLock": "._soft_rw",
+    "AsyncStrictSoftFileLock": ".asyncio",
+    "AsyncUnixFileLock": ".asyncio",
+    "AsyncWindowsFileLock": ".asyncio",
+    "BaseAsyncFileLock": ".asyncio",
+    "CompromiseReason": "._lease",
+    "LeaseCompromise": "._lease",
+    "MarkerSoftFileLock": "._marker",
+    "OwnerMode": "._marker",
+    "OwnerRecord": "._marker",
+    "ReadWriteLock": "._read_write",
+    "SoftFileLease": "._lease",
+    "SoftFileLock": "._soft",
+    "SoftReadWriteLock": "._soft_rw",
+    "StrictSoftFileClaim": "._strict",
+    "StrictSoftFileClaimState": "._strict",
+    "StrictSoftFileLock": "._strict",
+    "asyncio": ".asyncio",
+}
+
+
+def __getattr__(name: str) -> object:
+    if (module_name := _LAZY_ATTRIBUTES.get(name)) is None:
+        msg = f"module {__name__!r} has no attribute {name!r}"
+        raise AttributeError(msg)
+    try:
+        module = import_module(module_name, __name__)
+    except ImportError:  # pragma: lacks sqlite3
+        if module_name not in {"._read_write", "._async_read_write"}:
+            raise
+        value = None
+    else:
+        if name == "asyncio":
+            value = module
+        else:
+            value = getattr(module, f"Async{_FileLock.__name__}" if name == "AsyncFileLock" else name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_LAZY_ATTRIBUTES})
 
 
 __all__ = [
@@ -125,6 +167,7 @@ __all__ = [
     "UnixFileLock",
     "WindowsFileLock",
     "__version__",
+    "asyncio",
     "has_fcntl",
     "lock_descriptor",
     "unlock_descriptor",

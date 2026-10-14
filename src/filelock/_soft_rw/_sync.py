@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+__lazy_modules__ = [
+    "filelock._error",
+    "filelock._lease",
+    "filelock._soft_rw._protocol",
+    "filelock._soft_rw._storage",
+    "math",
+]
+
 import atexit
 import os
 import threading
@@ -25,9 +33,8 @@ from filelock._api import (
 )
 from filelock._error import Timeout
 from filelock._lease import LeaseCompromise
-
-from ._protocol import GenerationLog, Ledger, Mode, Participant
-from ._storage import OsFiles
+from filelock._soft_rw._protocol import GenerationLog, Ledger, Mode, Participant
+from filelock._soft_rw._storage import OsFiles
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator

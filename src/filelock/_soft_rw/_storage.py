@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+__lazy_modules__ = [
+    "contextlib",
+    "filelock._soft_rw._protocol",
+    "filelock._strict",
+    "filelock._util",
+    "pathlib",
+    "typing",
+]
+
 import os
 import stat
 import sys
@@ -11,10 +20,9 @@ from errno import ENOENT, ESTALE
 from pathlib import Path
 from typing import Final
 
+from filelock._soft_rw._protocol import _GENERATIONS_DIRECTORY, _HOLDERS_DIRECTORY, _MAX_RECORD_SIZE
 from filelock._strict import _link_no_follow, _raise_if_hard_links_unsupported
 from filelock._util import ensure_directory_exists, write_all
-
-from ._protocol import _GENERATIONS_DIRECTORY, _HOLDERS_DIRECTORY, _MAX_RECORD_SIZE
 
 _O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
 #: Windows opens descriptors in text mode by default, which rewrites newlines; every record here is exact bytes.

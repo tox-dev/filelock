@@ -257,3 +257,17 @@ type = [
   { directory = "doc", name = "Improved documentation", showcontent = true },
   { directory = "packaging", name = "Packaging updates", showcontent = true },
 ]
+
+[tool.flake8-lazy]
+standalone.line-length = 120
+standalone.lazy-exclude-modules = [
+  # installs the fork-safety audit hook and register_at_fork callbacks at import
+  "filelock._api",
+  # installs its sqlite audit hook and fork handler at import, and must fail at import without sqlite3 so the package
+  # __getattr__ resolves ReadWriteLock and AsyncReadWriteLock to None
+  "filelock._read_write",
+  # registers its atexit cleanup at import
+  "filelock._soft_rw._sync",
+  # a Python built without it must fail at import, as for filelock._read_write
+  "sqlite3",
+]
