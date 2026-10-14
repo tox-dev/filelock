@@ -1716,18 +1716,17 @@ def _fail_the_doorway(mocker: MockerFixture) -> None:
 def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: MockerFixture, *, vanished: bool) -> None:
     lock_path: Final = tmp_path / "resource.lock"
     claim: Final = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
-    mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=[0, 1])
-    mocker.patch("filelock._strict.time.sleep", autospec=True)
-    attempts = 0
+    clock: Final = iter([0, 1])
 
-    def deny_open(_path: _PathValue, _flags: int) -> int:
-        nonlocal attempts
-        attempts += 1
-        if vanished and attempts == 2:
+    def tick() -> int:
+        # Remove the claim as the grace runs out, after the last denied open, so only the listing recheck sees it go.
+        if (now := next(clock)) and vanished:
             claim.unlink()
-        raise PermissionError(EACCES, "sharing violation")
+        return now
 
-    mocker.patch("filelock._strict.os.open", autospec=True, side_effect=deny_open)
+    mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=tick)
+    mocker.patch("filelock._strict.time.sleep", autospec=True)
+    mocker.patch("filelock._strict.os.open", autospec=True, side_effect=PermissionError(EACCES, "sharing violation"))
 
     if vanished:
         assert StrictSoftFileLock(lock_path).claims == ()
