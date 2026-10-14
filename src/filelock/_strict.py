@@ -22,6 +22,9 @@ from ._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
 from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from ._util import ensure_directory_exists, write_all
 
+if sys.platform == "win32":  # pragma: win32 cover
+    from ._windows import _is_unlinked
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
@@ -441,12 +444,13 @@ def _list_claim_names(lock_file: str, directory: Path, *, probe_clock: bool) -> 
 
 def _read_claim_record(lock_file: str, directory: Path, name: str, *, probe_clock: bool) -> bytes | None:
     # A contended scan can list a claim that is not yet cleanly readable, in two ways that both resolve on a brief
-    # retry. Windows holds a claim mid-unlink in a delete-pending state that fails an open with EACCES until the unlink
-    # completes. On NFS, a peer that unlinks its own claim leaves this client's cached filehandle stale, so the next
-    # open returns ESTALE rather than a clean ENOENT until the lookup revalidates against the server. Retrying re-runs
-    # the path lookup, which turns the vanished claim into ENOENT (skip) or reads it if it still exists. A genuinely
-    # unreadable record (a locked-down file, an EIO fault) still fails closed. The grace starts at the first pending
-    # result rather than before the first attempt, so a slow first read cannot use up the window and leave no retry.
+    # retry. Windows fails an open with EACCES while a peer's unlink holds the claim; once the deletion is pending,
+    # _attempt_claim_read skips the claim outright, as another process's handle can keep the name listed for seconds.
+    # On NFS, a peer that unlinks its own claim leaves this client's cached filehandle stale, so the next open returns
+    # ESTALE rather than a clean ENOENT until the lookup revalidates against the server. Retrying re-runs the path
+    # lookup, which turns the vanished claim into ENOENT (skip) or reads it if it still exists. A genuinely unreadable
+    # record (a locked-down file, an EIO fault) still fails closed. The grace starts at the first pending result rather
+    # than before the first attempt, so a slow first read cannot use up the window and leave no retry.
     deadline: float | None = None
     while True:
         record, pending = _attempt_claim_read(lock_file, directory, name)
@@ -470,13 +474,15 @@ def _read_claim_record(lock_file: str, directory: Path, name: str, *, probe_cloc
 
 def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[bytes | None, OSError | None]:
     # Return the record, or (None, None) when the claim has already gone, or (None, error) for an open the caller may
-    # retry: a Windows delete-pending EACCES that resolves to a clean removal, or an NFS ESTALE from a peer unlinking
-    # its own claim out from under this client's cached filehandle. Any other OSError is a real fault and fails closed.
+    # retry: a Windows EACCES while a peer's unlink holds the claim, or an NFS ESTALE from a peer unlinking its own
+    # claim out from under this client's cached filehandle. Any other OSError is a real fault and fails closed.
     try:
         return _read_record(directory / name, _CLAIM_RECORD_LIMIT), None
     except FileNotFoundError:
         return None, None
     except PermissionError as error:
+        if sys.platform == "win32" and _is_unlinked(str(directory / name)):  # pragma: win32 cover
+            return None, None
         return None, error
     except OSError as error:
         if error.errno == ESTALE:

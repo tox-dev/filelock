@@ -22,7 +22,11 @@ if sys.platform == "win32":  # pragma: win32 cover
     _FILE_SHARE_READ_WRITE: Final[int] = (
         0x00000001 | 0x00000002
     )  # read | write; matches os.open (_SH_DENYNO), no delete
+    _FILE_OPEN: Final[int] = 1  # open the file only if it exists; the NtCreateFile OPEN_EXISTING
     _FILE_OPEN_IF: Final[int] = 3  # open the file if it exists, create it otherwise; the NtCreateFile OPEN_ALWAYS
+    # Attribute-only access skips share-mode checks, so the probe sees a name's deletion state rather than a reader.
+    _FILE_READ_ATTRIBUTES: Final[int] = 0x00000080
+    _FILE_SHARE_ALL: Final[int] = 0x00000001 | 0x00000002 | 0x00000004  # read | write | delete
     _FILE_ATTRIBUTE_READONLY: Final[int] = 0x00000001
     _FILE_ATTRIBUTE_NORMAL: Final[int] = 0x00000080
     _FILE_ATTRIBUTE_REPARSE_POINT: Final[int] = 0x00000400
@@ -49,6 +53,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     # transient and worth a retry, a real access denial is not.
     _STATUS_SUCCESS: Final[int] = 0x00000000
     _STATUS_ACCESS_DENIED: Final[int] = 0xC0000022
+    _STATUS_OBJECT_NAME_NOT_FOUND: Final[int] = 0xC0000034
     _STATUS_SHARING_VIOLATION: Final[int] = 0xC0000043
     _STATUS_DELETE_PENDING: Final[int] = 0xC0000056
     #: How long an open waits out a STATUS_ACCESS_DENIED before treating it as a real denial: NTFS answers it for a
@@ -280,7 +285,25 @@ if sys.platform == "win32":  # pragma: win32 cover
             _kernel32.CloseHandle(handle)
             raise
 
+    def _is_unlinked(path: str) -> bool:
+        """
+        Report whether *path* is gone or pending deletion, which ``os.open`` reports as the same EACCES as a denial.
+
+        NTFS keeps an unlinked name listed, refusing every open with ``STATUS_DELETE_PENDING``, until the last handle
+        to the file closes. Another process holding such a handle, such as an antivirus scan, can keep it that way for
+        longer than any retry grace, yet the name's owner has already removed it.
+        """
+        handle, status = _nt_create(path, _FILE_READ_ATTRIBUTES | _SYNCHRONIZE, 0, _FILE_SHARE_ALL, _FILE_OPEN)
+        if handle:
+            _kernel32.CloseHandle(handle)
+        return status in {_STATUS_OBJECT_NAME_NOT_FOUND, _STATUS_DELETE_PENDING}
+
     def _nt_open(path: str, *, read_only: bool) -> tuple[int, int]:
+        """Open or create *path* for locking through ``NtCreateFile`` and return ``(handle, status)``."""
+        attributes = _FILE_ATTRIBUTE_READONLY if read_only else _FILE_ATTRIBUTE_NORMAL
+        return _nt_create(path, _DESIRED_ACCESS, attributes, _FILE_SHARE_READ_WRITE, _FILE_OPEN_IF)
+
+    def _nt_create(path: str, access: int, attributes: int, share: int, disposition: int) -> tuple[int, int]:
         """
         Open *path* through ``NtCreateFile`` and return ``(handle, status)``.
 
@@ -293,22 +316,22 @@ if sys.platform == "win32":  # pragma: win32 cover
         if status != _STATUS_SUCCESS:
             return 0, status
         try:
-            attributes = _OBJECT_ATTRIBUTES()
-            attributes.Length = ctypes.sizeof(_OBJECT_ATTRIBUTES)
-            attributes.ObjectName = ctypes.pointer(nt_name)
-            attributes.Attributes = _OBJ_CASE_INSENSITIVE
+            object_attributes = _OBJECT_ATTRIBUTES()
+            object_attributes.Length = ctypes.sizeof(_OBJECT_ATTRIBUTES)
+            object_attributes.ObjectName = ctypes.pointer(nt_name)
+            object_attributes.Attributes = _OBJ_CASE_INSENSITIVE
             handle = wintypes.HANDLE()
             io_status = _IO_STATUS_BLOCK()
             status = (
                 _ntdll.NtCreateFile(
                     ctypes.byref(handle),
-                    _DESIRED_ACCESS,
-                    ctypes.byref(attributes),
+                    access,
+                    ctypes.byref(object_attributes),
                     ctypes.byref(io_status),
                     None,
-                    _FILE_ATTRIBUTE_READONLY if read_only else _FILE_ATTRIBUTE_NORMAL,
-                    _FILE_SHARE_READ_WRITE,
-                    _FILE_OPEN_IF,
+                    attributes,
+                    share,
+                    disposition,
                     _CREATE_OPTIONS,
                     None,
                     0,
@@ -335,5 +358,6 @@ else:  # pragma: win32 no cover
 
 __all__ = [
     "WindowsFileLock",
+    "_is_unlinked",
     "_open_non_reparse_fd",
 ]
