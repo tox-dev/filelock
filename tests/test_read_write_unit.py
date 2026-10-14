@@ -787,6 +787,37 @@ def test_finish_connection_skips_rollback_when_already_released(lock_file: str) 
         con.execute("SELECT 1")
 
 
+def test_read_lock_avoids_sqlite_schema_alias(lock_file: str, mocker: MockerFixture) -> None:
+    # SQLite before 3.33.0 has no sqlite_schema alias, so a read lock issuing it fails with "no such table".
+    real_connect = sqlite3.connect
+    statements: list[str] = []
+
+    def connect(
+        database: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        connection = real_connect(
+            database,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    mocker.patch("sqlite3.connect", side_effect=connect)
+    with ReadWriteLock(lock_file, is_singleton=False).read_lock():
+        pass
+
+    assert statements
+    assert not [statement for statement in statements if "sqlite_schema" in statement]
+
+
 def test_dropping_a_lock_closes_its_connection(lock_file: str) -> None:
     # Nothing else closes a lock dropped while still holding one, so the connection would outlive it.
     lock = ReadWriteLock(lock_file, is_singleton=False)
