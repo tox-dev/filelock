@@ -42,6 +42,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     _LOCKFILE_FAIL_IMMEDIATELY: Final[int] = 0x00000001
     _LOCKFILE_EXCLUSIVE_LOCK: Final[int] = 0x00000002
     _ERROR_LOCK_VIOLATION: Final[int] = 33  # another handle holds the byte range
+    _ERROR_NOT_LOCKED: Final[int] = 158  # the byte range is not locked
 
     # NtCreateFile returns the raw NTSTATUS as its value, where CreateFileW collapses several of these into one
     # ERROR_ACCESS_DENIED. Telling them apart is the point (#604): a name pending deletion or a share conflict is
@@ -168,9 +169,11 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     def _unlock_fd(fd: int) -> None:
         overlapped = _OVERLAPPED()  # the same offset 0 and one-byte length the lock used
-        # Unlocking the exact range we hold does not fail.
-        if not _kernel32.UnlockFileEx(msvcrt.get_osfhandle(fd), 0, 1, 0, ctypes.byref(overlapped)):  # pragma: no cover
-            raise ctypes.WinError(ctypes.get_last_error())
+        if (  # pragma: no cover  # only an interrupted earlier release leaves our own range unlocked
+            not _kernel32.UnlockFileEx(msvcrt.get_osfhandle(fd), 0, 1, 0, ctypes.byref(overlapped))
+            and (err := ctypes.get_last_error()) != _ERROR_NOT_LOCKED
+        ):
+            raise ctypes.WinError(err)
 
     class WindowsFileLock(BaseFileLock):
         """

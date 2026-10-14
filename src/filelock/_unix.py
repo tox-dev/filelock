@@ -67,38 +67,15 @@ else:  # pragma: win32 no cover
         """
 
         def _acquire(self) -> None:
-            missing_flock = self._acquire_native()
-            if missing_flock is not None:
-                self._switch_to_soft_lock(*missing_flock)
+            if (missing_flock := self._acquire_native()) is not None:
+                fd, exception, created = missing_flock
+                self._switch_to_soft_lock(fd, exception, created=created)
 
-        def _acquire_native(self) -> tuple[int, OSError] | None:
+        def _acquire_native(self) -> tuple[int, OSError, bool] | None:
             ensure_directory_exists(self.lock_file)
-            # Open without O_TRUNC and defer truncation and fchmod until after flock succeeds: a contender that loses
-            # the lock must not truncate the holder's file (erasing caller diagnostics) or change its mode. The winner
-            # truncates and normalizes mode once it owns the lock (#591).
-            open_flags = os.O_RDWR
-            if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
-                open_flags |= o_nofollow
-            open_flags |= os.O_CREAT
-            open_mode = self._open_mode()
-            try:
-                fd = os.open(self.lock_file, open_flags, open_mode)
-            except FileNotFoundError:
-                # On FUSE/NFS, os.open(O_CREAT) is not atomic; a split LOOKUP + CREATE lets a concurrent unlink()
-                # delete the file between them. For a valid path, treat ENOENT as transient contention. For an
-                # invalid path (e.g. empty string), re-raise to avoid an infinite retry loop.
-                if self.lock_file and Path(self.lock_file).parent.exists():
-                    return None
-                raise
-            except PermissionError:
-                # Sticky-bit dirs (e.g. /tmp): O_CREAT fails if the file is owned by another user (#317).
-                # Fall back to opening the existing file without O_CREAT.
-                if not Path(self.lock_file).exists():
-                    raise
-                try:
-                    fd = os.open(self.lock_file, open_flags & ~os.O_CREAT, open_mode)
-                except FileNotFoundError:
-                    return None
+            if (opened := self._open_lock_file()) is None:
+                return None
+            fd, created = opened
             self._mark_descriptor_pending(fd)
             try:
                 locked = _lock_fd_nonblocking(fd)
@@ -107,7 +84,7 @@ else:  # pragma: win32 no cover
                     self._mark_descriptor_released()
                     os.close(fd)
                     raise  # contention returns False from _lock_fd_nonblocking, so any raise here is a real failure
-                return fd, exception
+                return fd, exception, created
             if locked:
                 self._finalize_locked_fd(fd)
             else:
@@ -115,7 +92,35 @@ else:  # pragma: win32 no cover
                 os.close(fd)  # contention; let the retry loop try again
             return None
 
-        def _switch_to_soft_lock(self, fd: int, missing_flock: OSError) -> None:
+        def _open_lock_file(self) -> tuple[int, bool] | None:
+            # No O_TRUNC: a contender that loses the flock must not truncate the holder's file or change its mode; the
+            # winner does both once it owns the lock (#591). O_EXCL tells the ENOSYS fallback whether this attempt made
+            # the inode, so it removes only its own placeholder, never a peer's marker.
+            open_flags = os.O_RDWR
+            if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
+                open_flags |= o_nofollow
+            open_mode = self._open_mode()
+            try:
+                return os.open(self.lock_file, open_flags | os.O_CREAT | os.O_EXCL, open_mode), True
+            except FileExistsError:
+                pass
+            except FileNotFoundError:
+                # On FUSE/NFS a split LOOKUP + CREATE lets a concurrent unlink() race the create, so ENOENT is transient
+                # contention. An empty or separator-terminated path (Path() strips the separator) fails this way on
+                # every attempt on macOS, so re-raise rather than retry forever.
+                if self.lock_file and not self.lock_file.endswith(os.sep) and Path(self.lock_file).parent.exists():
+                    return None
+                raise
+            except PermissionError:
+                # Sticky-bit dirs (e.g. /tmp): O_CREAT fails if another user owns the file (#317).
+                if not Path(self.lock_file).exists():
+                    raise
+            try:
+                return os.open(self.lock_file, open_flags, open_mode), False
+            except FileNotFoundError:
+                return None  # unlinked since the create attempt; let the retry loop start over
+
+        def _switch_to_soft_lock(self, fd: int, missing_flock: OSError, *, created: bool) -> None:
             # The filesystem does not implement flock. Capture the opened file's identity before closing so the cleanup
             # below removes only this attempt's placeholder, not a peer's replacement.
             identity: tuple[int, int] | None = None
@@ -127,10 +132,12 @@ else:  # pragma: win32 no cover
                 # Fail closed: the caller opted out of existence-lock semantics (#603), asked to preserve the pathname
                 # (#605), or set an on_acquired hook (#607), none of which a soft lock can honor.
                 raise missing_flock
-            with suppress(OSError):
-                current = os.lstat(self.lock_file)
-                if identity == (current.st_dev, current.st_ino):
-                    Path(self.lock_file).unlink()
+            # A file this attempt did not create may be a peer's live marker; the soft lock ages out a stale empty one.
+            if created:
+                with suppress(OSError):
+                    current = os.lstat(self.lock_file)
+                    if identity == (current.st_dev, current.st_ino):
+                        Path(self.lock_file).unlink()
             self._fallback_to_soft_lock()
             self._acquire()
 

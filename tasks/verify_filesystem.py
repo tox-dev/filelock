@@ -154,10 +154,8 @@ def _attempt(action: Callable[[], object]) -> BaseException | None:
 
 
 def _has_transient(error: BaseException) -> bool:
-    # An ExceptionGroup (the strict claim wraps its cleanup failures in one) exposes leaves via ``exceptions``; recurse
-    # rather than name BaseExceptionGroup, which is not a builtin on the 3.10 floor this script is linted against.
-    if (leaves := getattr(error, "exceptions", None)) is not None:
-        return any(_has_transient(leaf) for leaf in leaves)
+    if isinstance(error, BaseExceptionGroup):
+        return any(_has_transient(leaf) for leaf in error.exceptions)
     return isinstance(error, OSError) and not isinstance(error, TimeoutError) and error.errno in _TRANSIENT_ERRNOS
 
 

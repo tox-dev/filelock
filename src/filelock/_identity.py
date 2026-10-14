@@ -14,6 +14,10 @@ _HOST_NAME_LIMIT: Final[int] = 253
 _HOST_NAME_VERBATIM: Final[frozenset[int]] = frozenset(range(0x21, 0x7F)) - {ord("?")}
 #: The characters at the end of an over-long name that carry a digest of the part cut off.
 _HOST_NAME_DIGEST_LEN: Final[int] = 8
+#: The kernel ABI fixes the initial PID namespace's inode (``PID_NS_INIT_INO`` in ``linux/nsfs.h``); every namespace
+#: created later draws one from ``0xF0000000`` up, so this value names the host's own namespace.
+_INITIAL_PID_NAMESPACE: Final[int] = 0xEFFFFFFC
+_NAMESPACE_MARK: Final[str] = "?pidns-"
 
 
 def host_name() -> str:
@@ -27,18 +31,34 @@ def host_name() -> str:
     out-of-grammar byte as ``?<hex>`` leaves a real name untouched and still keeps two hosts apart, which
     :func:`owner_is_stale` relies on to refuse to probe a foreign PID.
 
+    Linux appends the PID namespace, as Mercurial's lock prefix does. Two containers in one pod share the hostname and
+    the boot id but not the PID namespace, so a PID recorded in one names another process, or none, in the other. The
+    suffix starts with a ``?`` no escape can produce, so ``a`` in a namespace never reads as a host literally named
+    ``a?pidns-...``. The initial namespace adds nothing, which keeps a host's name what older releases recorded.
+
     An over-long name ends in a digest of the part cut to fit the limit. A bare cut gives every name that shares the
     kept prefix one identity, and :func:`owner_is_stale` would then probe a local PID for another host's holder.
     """
-    name = "".join(
-        chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
-        for byte in socket.gethostname().encode("utf-8", "surrogateescape")
+    name = (
+        "".join(
+            chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
+            for byte in socket.gethostname().encode("utf-8", "surrogateescape")
+        )
+        + _pid_namespace_suffix()
     )
     if len(name) > _HOST_NAME_LIMIT:
         keep = _HOST_NAME_LIMIT - _HOST_NAME_DIGEST_LEN - 1
         name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
     # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
     return name or "?"
+
+
+def _pid_namespace_suffix() -> str:
+    try:
+        namespace: Final = Path("/proc/self/ns/pid").stat().st_ino
+    except OSError:  # only Linux 3.8+ has the file, and a sandbox may hide it; nothing else tells namespaces apart
+        return ""
+    return "" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}"
 
 
 def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
@@ -53,12 +73,23 @@ def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
     """
     if hostname != host_name():
         return False
-    if not process_alive(pid):
-        return True
-    if start_token is None:
+    if process_alive(pid) and (start_token is None or process_start_token(pid) in {None, start_token}):
         return False
-    current = process_start_token(pid)
-    return current is not None and current != start_token
+    # Only a bare hostname can be an older release's, written from a container that shares this host's name.
+    return _NAMESPACE_MARK in hostname or not _owner_runs_elsewhere(pid, start_token)
+
+
+def owner_is_current_process(pid: int, hostname: str, start_token: int | None) -> bool:
+    """
+    Whether the recorded owner is this process, so a marker a recycled PID left behind never reads as ours.
+
+    Fail closed: a recorded start token must match this process's. One that differs was written by an earlier process
+    that reused this PID, and when this process cannot read its own token nothing proves the marker is ours. A marker
+    without a token falls back to the PID and hostname.
+    """
+    if pid != os.getpid() or hostname != host_name():
+        return False
+    return start_token is None or start_token == process_start_token(pid)
 
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -162,6 +193,39 @@ else:  # pragma: win32 no cover
                 return None
             return (_BOOT_ID << 64) | starttime
 
+        def _owner_runs_elsewhere(pid: int, start_token: int | None) -> bool:
+            """
+            Whether the owner runs in another PID namespace as *pid*.
+
+            An older release in a container sharing this hostname recorded its in-container PID, which means nothing
+            here. starttime and the boot id are kernel-wide, so a task with that start token whose innermost PID is
+            *pid* is the owner; one that merely started in the same tick is not.
+            """
+            if start_token is None or start_token >> 64 != _BOOT_ID:
+                return False
+            try:
+                with os.scandir("/proc") as entries:
+                    return any(
+                        entry.name.isdigit()
+                        and (task := int(entry.name)) != pid
+                        and process_start_token(task) == start_token
+                        and _innermost_pid(task) == pid
+                        for entry in entries
+                    )
+            except OSError:
+                # A /proc this process cannot list proves nothing either way, which leaves 4.0.12's verdict.
+                return False
+
+        def _innermost_pid(task: int) -> int | None:
+            try:
+                status: Final = Path(f"/proc/{task}/status").read_text(encoding="ascii", errors="replace")
+            except OSError:  # pragma: no cover  # the task exited between the stat read and this one
+                return None
+            return next(
+                (int(line.split()[-1]) for line in status.splitlines() if line.startswith("NSpid:")),
+                None,  # kernels before 4.1 record no namespace PIDs
+            )
+
     elif sys.platform == "darwin":  # pragma: darwin cover
         import ctypes
         import struct
@@ -197,8 +261,17 @@ else:  # pragma: win32 no cover
             return None
 
 
+if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
+
+    def _owner_runs_elsewhere(pid: int, start_token: int | None) -> bool:
+        """Without Linux PID namespaces, a PID that is gone or recycled leaves its owner nowhere else to run."""
+        del pid, start_token
+        return False
+
+
 __all__ = [
     "host_name",
+    "owner_is_current_process",
     "owner_is_stale",
     "process_alive",
     "process_start_token",

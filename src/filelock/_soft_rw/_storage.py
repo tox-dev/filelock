@@ -31,6 +31,7 @@ class OsFiles:
 
     def __init__(self, lock_file: str) -> None:
         self._lock_file = lock_file
+        self._prepared = False
 
     @staticmethod
     def read(path: str) -> bytes | None:
@@ -50,10 +51,12 @@ class OsFiles:
             os.close(fd)
 
     @classmethod
-    def create(cls, path: str, data: bytes) -> None:
+    def create(cls, path: str, data: bytes, *, durable: bool = False) -> None:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, 0o600)
         try:
             write_all(fd, data)
+            if durable:
+                os.fsync(fd)
         except BaseException:
             os.close(fd)
             # The name is unique to this call, so removing it cannot take a record from anyone else.
@@ -78,6 +81,15 @@ class OsFiles:
         if failure is not None:
             raise failure
         return False
+
+    @staticmethod
+    def replace(source: str, target: str) -> bool:
+        try:
+            Path(source).replace(target)
+        except PermissionError:
+            # Windows refuses to rename over a file a reader holds open; callers tolerate a target one rename behind.
+            return False
+        return True
 
     @staticmethod
     def overwrite(path: str, data: bytes) -> bool:
@@ -106,8 +118,9 @@ class OsFiles:
         except FileNotFoundError:
             return []
 
-    @staticmethod
-    def prepare(root: str) -> None:
+    def prepare(self, root: str, *, force: bool = False) -> None:
+        if self._prepared and not force:
+            return
         ensure_directory_exists(root)
         for directory in (Path(root), Path(root, _GENERATIONS_DIRECTORY), Path(root, _HOLDERS_DIRECTORY)):
             with suppress(FileExistsError):
@@ -117,6 +130,7 @@ class OsFiles:
             if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
                 msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
                 raise RuntimeError(msg)
+        self._prepared = True
 
 
 def _open(path: str, flags: int) -> int | None:

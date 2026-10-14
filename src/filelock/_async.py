@@ -11,11 +11,12 @@ from threading import Lock
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypeVar, cast
 from weakref import WeakKeyDictionary
 
-from ._api import _append_exception_context, _fork_transition, _raise_chained_errors
+from ._api import _append_exception_context, _fork_transition, _raise_chained_errors, _resolve_read_write_timeout
 from ._error import Timeout
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable
+    from concurrent.futures import Executor
 
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
@@ -39,7 +40,7 @@ class _AsyncTransitionGate:
         self._tail: ConcurrentFuture[None] | None = None
 
     @contextlib.asynccontextmanager
-    async def hold(self) -> AsyncIterator[None]:
+    async def hold(self) -> AsyncGenerator[None]:
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
         with self._tail_lock:
             predecessor = self._tail
@@ -47,7 +48,7 @@ class _AsyncTransitionGate:
         if predecessor is not None:
             try:
                 await _wait_until_done(asyncio.wrap_future(predecessor))
-            except asyncio.CancelledError:
+            except BaseException:
                 predecessor.add_done_callback(lambda _predecessor: self._leave(ticket))
                 raise
         try:
@@ -63,7 +64,7 @@ class _AsyncTransitionGate:
         cancel_check: Callable[[], bool] | None,
         deadline: float | None,
         poll_interval: float,
-    ) -> AsyncIterator[None]:
+    ) -> AsyncGenerator[None]:
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
         with self._tail_lock:
             predecessor = self._tail
@@ -131,6 +132,8 @@ class _TaskOwners:
         self._transitioning = False
         self._waiting_writers = 0
         self._changed: ConcurrentFuture[None] = ConcurrentFuture()
+        #: The executor thread that took the sync lock's level for every task, which may leave on another worker.
+        self.backend_thread: int | None = None
 
     async def acquire(
         self,
@@ -142,10 +145,8 @@ class _TaskOwners:
         enter: Callable[[float], Awaitable[None]],
     ) -> None:
         task = _current_task()
-        if blocking and timeout < 0 and timeout != -1:
-            msg: Final = "timeout must be a non-negative number or -1"
-            raise ValueError(msg)
-        deadline = None if timeout < 0 else time.perf_counter() + timeout
+        timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
+        deadline = None if not blocking or timeout < 0 else time.perf_counter() + timeout
         waiting_writer = False
         try:
             while isinstance(
@@ -202,7 +203,9 @@ class _TaskOwners:
                     return "enter"
             return self._changed
 
-    async def release(self, *, force: bool, lock_file: str, leave: Callable[[], Awaitable[None]]) -> None:
+    async def release(
+        self, *, force: bool, lock_file: str, leave: Callable[[], asyncio.Future[_BackendOutcome[None]]]
+    ) -> None:
         task = _current_task()
         with self._lock:
             if (depth := self._depths.get(task)) is None:
@@ -219,12 +222,15 @@ class _TaskOwners:
             self._transitioning = True
             mode = self._mode
         try:
-            await leave()
+            cancellation = await _drain_cancellation(leave())
         except BaseException:
             # The sync lock may still hold the transaction, so keep the hold for a retried release to find.
             self._finish_transition(mode=mode, holder=task)
             raise
         self._finish_transition(mode=None)
+        if cancellation is not None:
+            # The release succeeded, so a restored hold would be a phantom no backend call can clear.
+            raise cancellation
 
     def reset(self) -> None:
         with self._lock:
@@ -265,6 +271,20 @@ def _current_task() -> asyncio.Task[object]:
     return task
 
 
+async def _drain_cancellation(future: asyncio.Future[_BackendOutcome[None]]) -> asyncio.CancelledError | None:
+    # Returned, not raised, so the caller can tell a call that completed under cancellation from one that failed.
+    try:
+        await _wait_until_done(future)
+    except asyncio.CancelledError as cancellation:
+        try:
+            await _drain_future(future)
+        except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
+            _raise_cancelled_error(cancellation, error)
+        return cancellation
+    _future_result(future)
+    return None
+
+
 async def _drain_future(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
     while not future.done():
         with contextlib.suppress(asyncio.CancelledError):
@@ -287,6 +307,25 @@ def _future_result(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
     except BaseException:
         error.__context__ = context
         raise
+
+
+def _run_in_executor(
+    loop: asyncio.AbstractEventLoop, executor: Executor | None, func: Callable[[], _T]
+) -> asyncio.Future[_BackendOutcome[_T]]:
+    outcome: asyncio.Future[_BackendOutcome[_T]] = loop.create_future()
+
+    def settle(call: asyncio.Future[_BackendOutcome[_T]]) -> None:
+        try:
+            result = call.result()
+        except asyncio.CancelledError:
+            # shutdown(cancel_futures=True) dropped the call unrun: a CancelledError would cancel a task nobody canceled
+            # and hide that the lock state never changed.
+            msg = "the executor shut down before running the lock backend call"
+            result = _BackendOutcome(error=RuntimeError(msg))
+        outcome.set_result(result)
+
+    loop.run_in_executor(executor, _capture_call, func).add_done_callback(settle)
+    return outcome
 
 
 def _capture_call(func: Callable[[], _T]) -> _BackendOutcome[_T]:
@@ -324,6 +363,7 @@ __all__ = [
     "_drain_future",
     "_future_result",
     "_raise_cancelled_error",
+    "_run_in_executor",
     "_task_owners_for",
     "_wait_until_done",
 ]

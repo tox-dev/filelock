@@ -63,6 +63,15 @@ def test_create_rolls_back_a_failed_write(tmp_path: Path, mocker: MockerFixture)
     assert not (tmp_path / "record").exists()
 
 
+@pytest.mark.parametrize("durable", [pytest.param(True, id="durable"), pytest.param(False, id="holder")])
+def test_create_flushes_only_a_durable_record(tmp_path: Path, mocker: MockerFixture, *, durable: bool) -> None:
+    # A generation linked into place outlives its writer's host; unflushed, a crash would leave it empty for everyone.
+    fsync = mocker.spy(storage_mod.os, "fsync")
+    OsFiles(str(tmp_path / "x.lock")).create(str(tmp_path / "record"), b"data", durable=durable)
+    assert fsync.call_count == durable
+    assert (tmp_path / "record").read_bytes() == b"data"
+
+
 def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixture) -> None:
     # An NFS retransmit can report a link that landed as failed; the target naming the source's file is what counts.
     real_link = storage_mod._link_no_follow
@@ -99,6 +108,17 @@ def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFix
         OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
+@pytest.mark.parametrize("refused", [pytest.param(False, id="renamed"), pytest.param(True, id="refused")])
+def test_replace_renames_unless_refused(tmp_path: Path, mocker: MockerFixture, *, refused: bool) -> None:
+    # Windows refuses to rename over a file a reader holds open; the caller keeps the older target.
+    (source := tmp_path / "source").write_bytes(b"new")
+    (target := tmp_path / "target").write_bytes(b"old")
+    if refused:
+        mocker.patch.object(storage_mod.Path, "replace", autospec=True, side_effect=PermissionError("in use"))
+    replaced = OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
+    assert (replaced, target.read_bytes(), source.exists()) == (not refused, b"old" if refused else b"new", refused)
+
+
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch.object(Path, "unlink", side_effect=PermissionError("held open"))
     OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
@@ -127,6 +147,16 @@ def test_read_refused_on_windows_is_missing_after_the_grace(
     started = time.monotonic()
     assert OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "record")) is None
     assert time.monotonic() - started >= storage_mod._WINDOWS_OPEN_GRACE - 0.05
+
+
+def test_prepare_checks_the_directories_once_unless_forced(tmp_path: Path, mocker: MockerFixture) -> None:
+    files = OsFiles(str(tmp_path / "x.lock"))
+    ensure = mocker.spy(storage_mod, "ensure_directory_exists")
+    files.prepare(root := str(tmp_path / "x.lock.rw"))
+    files.prepare(root)
+    assert ensure.call_count == 1
+    files.prepare(root, force=True)
+    assert ensure.call_count == 2
 
 
 def test_prepare_creates_missing_parents(tmp_path: Path) -> None:

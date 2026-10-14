@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import pathlib
+import shutil
 import sqlite3
 import stat
 import sys
+import tempfile
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager, suppress
-from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeAlias, cast
+from dataclasses import dataclass, field
+from itertools import count
+from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
 from weakref import WeakValueDictionary
 
 from ._api import (
@@ -20,21 +26,23 @@ from ._api import (
     _raise_chained_errors,
     _register_fork_class,
     _register_fork_object,
+    _register_owned_descriptor,
+    _resolve_read_write_timeout,
+    _seconds,
+    _timeout_behavior,
+    _unregister_owned_descriptor,
 )
 from ._error import Timeout
+from ._identity import host_name, owner_is_stale, process_start_token
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import _open_non_reparse_fd
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
+    from typing import Self
 
     from _typeshed import Unused
-
-    if sys.version_info >= (3, 11):
-        from typing import Self
-    else:
-        from typing_extensions import Self
 
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 _GETPID: Final[Callable[[], int]] = os.getpid
@@ -52,10 +60,13 @@ _MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
 _UNSAFE_FORK_EXIT_STATUS: Final[int] = 70
 # O_NONBLOCK keeps an open from blocking on a FIFO planted at the path; the regular-file check then rejects it.
 _DB_OPEN_FLAGS: Final[int] = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-# Linux names an open descriptor under /proc/self/fd, macOS and the BSDs under /dev/fd. SQLite connects through that
-# name, so it reopens the inode already validated, and journal_mode=MEMORY keeps it from deriving an on-disk journal
-# name from the synthetic path.
+# Descriptor paths reopen the validated inode; journal_mode=MEMORY avoids an on-disk journal at the synthetic path.
 _FD_DIR: Final[str] = "/proc/self/fd" if sys.platform == "linux" else "/dev/fd"
+# Header bytes 18 and 19 hold the file format versions, 2 in WAL mode: https://www.sqlite.org/fileformat.html
+_SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
+_FORMAT_VERSIONS: Final[slice] = slice(18, 20)
+_HEADER_SIZE: Final[int] = 20
+_WAL_FORMAT_VERSION: Final[int] = 2
 
 
 class _SQLiteTransitionContext(threading.local):
@@ -147,10 +158,118 @@ class _ForkedDatabaseRegistry:
 
 _FORKED_DATABASES: Final = _ForkedDatabaseRegistry()
 
+_LINK_PREFIX: Final[str] = ".filelock-"
+_SWEPT_DIRECTORIES: Final[set[str]] = set()
+
+
+# POSIX locks belong to the process and the inode, so closing any descriptor on the inode drops the locks every other
+# connection of this process holds there. SQLite defers its own closes for this reason (section 2.2 of
+# https://www.sqlite.org/howtocorrupt.html); the probes stay open until the last connection on their inode closes.
+class _ProbeDescriptors:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._inodes: dict[_DatabaseIdentity, _InodeProbes] = {}
+        self._releases: deque[_Probe] = deque()
+        self._leases = count()
+
+    def adopt(self, database: str, claimed: list[_Probe]) -> _Probe | None:  # pragma: win32 no cover
+        # Reuse a probe no live connection holds: each connect would otherwise keep another descriptor open until the
+        # inode's last close, and two live connections through one /dev/fd name make macOS SQLite fail to open.
+        try:
+            stat_result: Final = os.lstat(database)
+        except OSError:
+            return None
+        identity: Final = stat_result.st_dev, stat_result.st_ino
+        with self._lock:
+            if not stat.S_ISREG(stat_result.st_mode) or not (probes := self._inodes.get(identity)) or not probes.idle:
+                return None
+            claimed.append(adopted := _Probe(identity, probes.idle.pop(), next(self._leases)))
+            probes.leases.add(adopted.lease)
+        return adopted
+
+    def retain(self, fd: int, claimed: list[_Probe]) -> _Probe:  # pragma: win32 no cover
+        stat_result: Final = os.fstat(fd)
+        identity: Final = stat_result.st_dev, stat_result.st_ino
+        token: Final = _register_owned_descriptor(fd, identity)
+        with self._lock:
+            (probes := self._inodes.setdefault(identity, _InodeProbes())).descriptors.append((fd, token))
+            claimed.append(retained := _Probe(identity, fd, next(self._leases)))
+            probes.leases.add(retained.lease)
+        return retained
+
+    # macOS opens through a hard link, so only descriptor-path connections need this check.
+    def shared(self, probe: _Probe) -> bool:  # pragma: win32 no cover  # pragma: darwin no cover
+        with self._lock:
+            return len(self._inodes[probe.identity].leases) > 1
+
+    def release(self, probe: _Probe) -> None:  # pragma: win32 no cover
+        # A finalizer may run this on a thread already inside the lock, so it never waits; the lock holder drains.
+        self._releases.append(probe)
+        self.drain()
+
+    def drain(self) -> None:  # pragma: win32 no cover
+        while self._releases and self._lock.acquire(blocking=False):
+            try:
+                # Dequeued only once applied, so an exception leaves the rest of the release for the next drain.
+                while self._releases:
+                    self._release_locked(self._releases[0])
+                    self._releases.popleft()
+            finally:
+                self._lock.release()
+
+    def _release_locked(self, probe: _Probe) -> None:  # pragma: win32 no cover
+        if (probes := self._inodes.get(probe.identity)) is None:
+            return
+        if probe.lease in probes.leases:
+            probes.leases.remove(probe.lease)
+            if probes.leases:
+                probes.idle.append(probe.fd)
+        if probes.leases:
+            return
+        # No connect may adopt a probe about to close, even one an interrupt leaves listed.
+        probes.idle.clear()
+        # Closing under the lock keeps a concurrent connect from taking a lock on this inode before the close.
+        while probes.descriptors:
+            fd, token = probes.descriptors[-1]
+            if token is not None:  # pragma: needs fork
+                _unregister_owned_descriptor(token)
+            # Forgotten before the close: after an interrupt, a leaked descriptor beats closing a reused number.
+            probes.descriptors.pop()
+            # The descriptor is gone even when close reports an error, and no lock of this process depends on it.
+            with suppress(OSError):
+                os.close(fd)
+        del self._inodes[probe.identity]
+
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+        # The child holds no POSIX locks, and the owned-descriptor registry closes the inherited probes.
+        self._lock = threading.Lock()
+        self._inodes = {}
+        self._releases = deque()
+
+
+class _Probe(NamedTuple):
+    identity: _DatabaseIdentity
+    fd: int
+    # One per connection, so a release applied again after an interrupt kept it queued counts once.
+    lease: int
+
+
+@dataclass(slots=True)
+class _InodeProbes:
+    leases: set[int] = field(default_factory=set)
+    descriptors: list[tuple[int, int | None]] = field(default_factory=list)
+    idle: list[int] = field(default_factory=list)
+
+
+_PROBE_DESCRIPTORS: Final = _ProbeDescriptors()
+
 
 class _ForkSafeConnection(sqlite3.Connection):
     _creator_pid: int
     _decrement_escrow: Callable[[sqlite3.Connection], None] | None
+    _database_directory: pathlib.Path | None
+    database_identity: _DatabaseIdentity | None = None
+    _probe: _Probe | None = None
 
     def __new__(
         cls,
@@ -160,6 +279,7 @@ class _ForkSafeConnection(sqlite3.Connection):
         connection = super().__new__(cls)
         connection._creator_pid = _GETPID()
         connection._decrement_escrow = None
+        connection._database_directory = None
         return connection
 
     def close(self) -> None:
@@ -168,9 +288,25 @@ class _ForkSafeConnection(sqlite3.Connection):
                 return
             with _fork_transition():
                 sqlite3.Connection.close(self)
+                try:
+                    if (directory := self._database_directory) is not None:  # pragma: needs posix-hard-link
+                        self._database_directory = None
+                        # Leftover private links are plain directories someone may already have removed.
+                        with suppress(FileNotFoundError):
+                            shutil.rmtree(directory)
+                finally:
+                    if (probe := self._probe) is not None:  # pragma: win32 no cover
+                        self._probe = self.database_identity = None
+                        _PROBE_DESCRIPTORS.release(probe)
                 if (decrement := self._decrement_escrow) is not None:  # pragma: <3.12 cover  # pragma: needs fork
                     self._decrement_escrow = None
                     decrement(self)
+
+    def retain_until_close(self, directory: pathlib.Path | None, probe: _Probe) -> None:  # pragma: win32 no cover
+        """Keep the private link and this connection's probe descriptor until SQLite no longer uses them."""
+        self._database_directory = directory
+        self._probe = probe
+        self.database_identity = probe.identity
 
     def acquire_escrow(  # pragma: <3.12 cover  # pragma: needs fork
         self,
@@ -183,7 +319,7 @@ class _ForkSafeConnection(sqlite3.Connection):
             self._decrement_escrow = decrement
 
     def __del__(self) -> None:
-        with suppress(sqlite3.Error, RuntimeError):
+        with suppress(sqlite3.Error, RuntimeError, OSError):
             self.close()
 
 
@@ -210,6 +346,7 @@ class _ReadWriteLockMeta(type):
         is_singleton: bool = True,
     ) -> ReadWriteLock:
         _ensure_current_process()
+        timeout = _seconds("timeout", timeout)
         if cls._instances_pid != _GETPID():
             cls._reset_class_after_fork()
         construction_pid = _GETPID()
@@ -241,7 +378,11 @@ class _ReadWriteLockMeta(type):
             else:
                 instance = cls._instances[normalized]
 
-            if instance.timeout != timeout or instance.blocking != blocking:
+            if (
+                _timeout_behavior(instance.timeout, any_negative=False)
+                != _timeout_behavior(timeout, any_negative=False)
+                or instance.blocking != blocking
+            ):
                 msg = (
                     f"Singleton lock created with timeout={instance.timeout}, blocking={instance.blocking},"
                     f" cannot be changed to timeout={timeout}, blocking={blocking}"
@@ -263,14 +404,19 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     Allows concurrent shared readers or a single exclusive writer. The lock is reentrant within the same mode (multiple
     ``acquire_read`` calls nest, as do multiple ``acquire_write`` calls from the same thread), but upgrading from read
     to write or downgrading from write to read raises :class:`RuntimeError`. Write locks are pinned to the thread that
-    acquired them.
+    acquired them, and each thread sharing a read lock can release only the levels it acquired.
+
+    An instance coordinates processes, not threads: a thread asking for the opposite mode of another thread's hold
+    raises :class:`RuntimeError` instead of waiting. Threads that must wait for each other each need their own
+    instance (``is_singleton=False``).
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
-    instance. The path is handed to :func:`sqlite3.connect` as given, so a ``.db`` extension is a convention rather
-    than a requirement; the filesystem must be one the active SQLite VFS supports.
+    instance. A ``.db`` extension is a convention rather than a requirement; the filesystem must be one the active
+    SQLite VFS supports. On macOS, the database directory must be writable and support hard links. Give the lock a file
+    of its own: a WAL-mode database raises :class:`ValueError`.
 
     :param lock_file: path to the SQLite database file used as the lock
-    :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
+    :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
     :param is_singleton: if ``True``, reuse existing instances for the same resolved path
 
@@ -299,7 +445,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Return the singleton :class:`ReadWriteLock` for *lock_file*.
 
         :param lock_file: path to the SQLite database file used as the lock
-        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
+        :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
 
         :returns: the singleton lock instance
@@ -327,6 +473,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._lock_level = 0
         self._current_mode: Literal["read", "write"] | None = None
         self._write_thread_id: int | None = None
+        self._read_depths: dict[int, int] = {}
         self._acquisition_thread_ids: set[int] = set()
         self._con: _ForkSafeConnection | None = None
         self._connection_transaction_released = True
@@ -346,7 +493,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         If this instance already holds a read lock, the lock level is incremented (reentrant). Attempting to acquire a
         read lock while holding a write lock raises :class:`RuntimeError` (downgrade not allowed).
 
-        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
+            busy-timeout cap of about 23 days
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
             ``None`` uses the instance setting
 
@@ -354,6 +502,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         return self._acquire(
@@ -371,7 +521,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
         :class:`RuntimeError`.
 
-        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits without a limit
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
+            busy-timeout cap of about 23 days
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
             ``None`` uses the instance setting
 
@@ -379,6 +530,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
         return self._acquire(
@@ -429,8 +582,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :param force: if ``True``, release the lock completely regardless of the current lock level
 
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if a write lock is held by
-            another thread and *force* is ``False``
+        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if the calling thread holds
+            no level of the current lock and *force* is ``False``
 
         """
         with _fork_transition():
@@ -444,7 +597,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         """
         Release the lock (if held) and close the underlying SQLite connection.
 
-        After calling this method, the lock instance is no longer usable.
+        After calling this method, the lock instance is no longer usable. Unlike :meth:`release`, it ends every
+        thread's hold on this instance, whichever thread calls it.
 
         """
         with _fork_transition():
@@ -454,16 +608,17 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._raise_if_acquiring("close")
             self._release(force=True, close=True)
 
-    def _release(self, *, force: bool, close: bool) -> None:
+    def _release_level_of(self, thread_id: int) -> None:
+        with _fork_transition():
+            _ensure_current_process()
+            self._raise_if_acquiring("release")
+            self._release(force=False, close=False, thread_id=thread_id)
+
+    def _release(self, *, force: bool, close: bool, thread_id: int | None = None) -> None:
+        thread_id = threading.get_ident() if thread_id is None else thread_id
         with self._transaction_lock, self._internal_lock:
-            # The connection runs with check_same_thread=False, so a release from another thread would end the owner's
-            # transaction under it and let a second writer in.
-            if not force and self._current_mode == "write" and (cur := threading.get_ident()) != self._write_thread_id:
-                msg = (
-                    f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
-                    f"from thread {cur} while it is held by thread {self._write_thread_id}"
-                )
-                raise RuntimeError(msg)
+            if not force:
+                self._raise_if_not_holder(thread_id)
             if self._lock_level == 0:
                 if force and self._con is None:
                     if close:
@@ -473,7 +628,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
                     raise RuntimeError(msg)
             if not force and self._lock_level > 1:
-                self._lock_level -= 1
+                self._leave_one_level(thread_id)
                 return
             try:
                 self._finish_connection()
@@ -485,10 +640,33 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if close:
                 self._closed = True
 
+    def _raise_if_not_holder(self, thread_id: int) -> None:
+        # The connection runs with check_same_thread=False, so a release from another thread would end the owner's
+        # transaction under it and let a second writer in.
+        if self._current_mode == "write" and thread_id != self._write_thread_id:
+            msg = (
+                f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id} while it is held by thread {self._write_thread_id}"
+            )
+            raise RuntimeError(msg)
+        # Readers share that one transaction too, so a thread that holds no read level would end another's hold.
+        if self._current_mode == "read" and thread_id not in self._read_depths:
+            msg = (
+                f"Cannot release read lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id}, which does not hold it"
+            )
+            raise RuntimeError(msg)
+
+    def _leave_one_level(self, thread_id: int) -> None:
+        self._lock_level -= 1
+        if self._current_mode == "read" and (depth := self._read_depths.pop(thread_id) - 1):
+            self._read_depths[thread_id] = depth
+
     def _clear_lock_state(self) -> None:
         self._lock_level = 0
         self._current_mode = None
         self._write_thread_id = None
+        self._read_depths = {}
 
     def __del__(self) -> None:
         if _GETPID() == getattr(self, "_creator_pid", None) and (connection := getattr(self, "_con", None)) is not None:
@@ -523,9 +701,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
         with _fork_transition():
             self._raise_if_unusable()
-            if blocking and timeout < 0 and timeout != -1:
-                message: Final[str] = "timeout must be a non-negative number or -1"
-                raise ValueError(message)
+            timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
             operation_pid = _GETPID()
             thread_id = threading.get_ident()
             with self._internal_lock:
@@ -601,6 +777,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._lock_level = 1
             if mode == "write":
                 self._write_thread_id = threading.get_ident()
+            else:
+                self._read_depths = {threading.get_ident(): 1}
         return AcquireReturnProxy(lock=self)
 
     def _open_for_acquisition(self, timeout: float, *, blocking: bool, operation_pid: int, start_time: float) -> None:
@@ -653,6 +831,20 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 # sqlite_schema is an alias added in SQLite 3.33.0; sqlite_master works on every version.
                 statements += " SELECT name FROM sqlite_master LIMIT 1;"
             connection.executescript(statements).close()
+            self._raise_if_database_replaced(connection)
+
+    def _raise_if_database_replaced(self, connection: _ForkSafeConnection) -> None:
+        # Windows pins the name: SQLite opens the database without delete sharing, so it cannot be unlinked or renamed.
+        if (identity := connection.database_identity) is None:  # pragma: win32 cover
+            return
+        try:  # pragma: win32 no cover
+            current = self._canonical_path.stat(follow_symlinks=False)
+        except FileNotFoundError:  # pragma: win32 no cover
+            current = None
+        # The lock lives on the inode, so one taken after the path moved on excludes no later opener.
+        if current is None or (current.st_dev, current.st_ino) != identity:  # pragma: win32 no cover
+            msg = f"lock database {self.lock_file!r} was unlinked or replaced while acquiring; leave it in place"
+            raise OSError(msg)
 
     def _open_connection(self, *, sqlite_timeout: float) -> _ForkSafeConnection:
         with _sqlite_transition():
@@ -708,20 +900,27 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 raise rollback_error
 
     def _validate_reentrant(self, mode: Literal["read", "write"]) -> AcquireReturnProxy:
+        cur = threading.get_ident()
         if self._current_mode != mode:
             opposite = "write" if mode == "read" else "read"
-            direction = "downgrade" if mode == "read" else "upgrade"
-            msg = (
-                f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): "
-                f"already holding a {opposite} lock ({direction} not allowed)"
-            )
+            if cur == self._write_thread_id or cur in self._read_depths:
+                direction = "downgrade" if mode == "read" else "upgrade"
+                reason = f"already holding a {opposite} lock ({direction} not allowed)"
+            else:
+                reason = (
+                    f"another thread holds a {opposite} lock on this instance, which coordinates processes rather "
+                    "than threads; give each thread its own instance with is_singleton=False"
+                )
+            msg = f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): {reason}"
             raise RuntimeError(msg)
-        if mode == "write" and (cur := threading.get_ident()) != self._write_thread_id:
+        if mode == "write" and cur != self._write_thread_id:
             msg = (
                 f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
                 f"from thread {cur} while it is held by thread {self._write_thread_id}"
             )
             raise RuntimeError(msg)
+        if mode == "read":
+            self._read_depths[cur] = self._read_depths.get(cur, 0) + 1
         self._lock_level += 1
         return AcquireReturnProxy(lock=self)
 
@@ -731,7 +930,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         elif timeout == -1:
             acquired = self._transaction_lock.acquire(blocking=True)
         else:
-            acquired = self._transaction_lock.acquire(blocking=True, timeout=timeout)
+            # Lock.acquire raises OverflowError past TIMEOUT_MAX, which is 49.7 days on Windows.
+            acquired = self._transaction_lock.acquire(blocking=True, timeout=min(timeout, threading.TIMEOUT_MAX))
         if not acquired:
             raise Timeout(self.lock_file) from None
 
@@ -751,13 +951,129 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: float) -> _ForkSafeConnection:
     _FORKED_DATABASES.note_sqlite_use()
     # A symlink at the path would make SQLite open, lock, or create its target, so connect through a descriptor that
-    # refuses one. SQLite opens its own descriptor on the file inside connect(), so ours can close after the call.
-    fd: Final[int] = _open_lock_database(database)
-    target: Final[str] = database if sys.platform == "win32" else f"{_FD_DIR}/{fd}"
+    # refuses one.
+    if sys.platform == "win32":  # pragma: win32 cover
+        fd: Final = _open_lock_database(database)
+        # A Windows lock belongs to the handle that took it, so closing this one leaves SQLite's locks in place.
+        try:
+            _raise_if_wal(fd, database)
+            return sqlite3.connect(
+                database, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+            )
+        finally:
+            os.close(fd)
+    return _connect_through_descriptor(database, factory=factory, timeout=timeout)  # pragma: win32 no cover
+
+
+def _connect_through_descriptor(  # pragma: win32 no cover
+    database: str, *, factory: type[_ForkSafeConnection], timeout: float
+) -> _ForkSafeConnection:
+    # Listed before its lease is taken and cleared once a connection owns it, so any exception between, an interrupt
+    # included, releases the lease instead of pinning the inode's probes.
+    claimed: Final[list[_Probe]] = []
+    directory: pathlib.Path | None = None
     try:
-        return sqlite3.connect(target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout)
+        if (probe := _PROBE_DESCRIPTORS.adopt(database, claimed)) is None:
+            probe = _PROBE_DESCRIPTORS.retain(_open_lock_database(database), claimed)
+        identity, fd, _ = probe
+        # Releases a finalizer queued while the table was locked.
+        _PROBE_DESCRIPTORS.drain()
+        _raise_if_wal(fd, database)
+        target = pathlib.Path(f"{_FD_DIR}/{fd}")
+        # macOS /dev/fd lookup can panic the kernel: https://github.com/tox-dev/filelock/issues/818
+        descriptor_usable: Final = sys.platform != "darwin" and os.access(target, os.F_OK)
+        # SQLite reuses a descriptor it deferred closing for a peer's locks only when stat of the name it opened reports
+        # the file, which macOS's /dev/fd does not, so every connect beside a holder would keep one more open. NetBSD's
+        # static /dev/fd exposes only descriptors 0-63. A private hard link names the file and pins the validated inode.
+        if not descriptor_usable or (  # pragma: needs posix-hard-link
+            _PROBE_DESCRIPTORS.shared(probe) and ((named := target.stat()).st_dev, named.st_ino) != identity
+        ):
+            try:
+                directory = _link_beside(database, identity)
+            except OSError:
+                # A usable descriptor path still pins the inode; macOS must not fall back to /dev/fd.
+                if not descriptor_usable:
+                    raise
+            else:
+                target = directory / "lock.db"
+        connection = sqlite3.connect(
+            os.fspath(target), check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+        )
+        connection.retain_until_close(directory, probe)
+        claimed.clear()
+        return connection
     finally:
-        os.close(fd)
+        for unowned in claimed:
+            _PROBE_DESCRIPTORS.release(unowned)
+        if claimed and directory is not None:  # pragma: needs posix-hard-link
+            # A connection that already took the link removes it too when it closes.
+            with suppress(FileNotFoundError):
+                shutil.rmtree(directory)
+
+
+def _link_beside(database: str, identity: _DatabaseIdentity) -> pathlib.Path:  # pragma: needs posix-hard-link
+    # Beside the database because a link cannot cross filesystems, and TMPDIR is often on another one.
+    parent: Final = pathlib.Path(database).parent
+    _sweep_links_of_the_dead(parent)
+    directory: Final = pathlib.Path(tempfile.mkdtemp(prefix=_link_prefix(), dir=parent))
+    try:
+        os.link(database, link := directory / "lock.db", follow_symlinks=False)
+        linked: Final = link.stat(follow_symlinks=False)
+    except BaseException:
+        shutil.rmtree(directory)
+        raise
+    if (linked.st_dev, linked.st_ino) != identity:
+        shutil.rmtree(directory)
+        msg = f"lock database changed while opening: {database!r}"
+        raise OSError(msg)
+    return directory
+
+
+def _sweep_links_of_the_dead(parent: pathlib.Path) -> None:  # pragma: needs posix-hard-link
+    # A process killed while it held a link leaves the directory, and an extra link to the database, behind for good.
+    # Two threads sweeping at once only both try the same removals, which a lock would cost a fork-safety reset for.
+    if (key := os.fspath(parent)) in _SWEPT_DIRECTORIES:
+        return
+    _SWEPT_DIRECTORIES.add(key)
+    try:
+        with os.scandir(parent) as entries:
+            directories: Final = [
+                pathlib.Path(entry.path)
+                for entry in entries
+                if entry.name.startswith(_LINK_PREFIX) and entry.is_dir(follow_symlinks=False)
+            ]
+    except OSError:
+        return
+    for directory in directories:
+        if _owner_is_gone(directory.name):
+            # A peer sweeping alongside, or a directory this user cannot remove, must not fail the connect.
+            with suppress(OSError):
+                shutil.rmtree(directory)
+
+
+def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
+    # A peer can plant a malformed name; leave it untouched rather than probing a forged PID during acquisition.
+    match name.removeprefix(_LINK_PREFIX).split("-"):
+        case [pid, start, digest, _] if (
+            pid.isascii() and pid.isdigit() and (not start or (start.isascii() and start.isdigit()))
+        ):
+            if not 1 <= (owner_pid := int(pid)) <= 2**31 - 1:
+                return False
+            host: Final = host_name()
+            return digest == _host_digest(host) and owner_is_stale(owner_pid, host, int(start) if start else None)
+        case _:
+            return False
+
+
+def _link_prefix() -> str:  # pragma: needs posix-hard-link
+    # The owner rides in the name, which mkdtemp creates in one step, so no directory ever exists without it.
+    start: Final = process_start_token(pid := os.getpid())
+    return f"{_LINK_PREFIX}{pid}-{'' if start is None else start}-{_host_digest(host_name())}-"
+
+
+def _host_digest(host: str) -> str:  # pragma: needs posix-hard-link
+    # SHA-256 as host_name does: some runtimes, GraalPy's among them, have no BLAKE2 with a custom digest size.
+    return hashlib.sha256(host.encode()).hexdigest()[:16]
 
 
 def _open_lock_database(database: str) -> int:
@@ -773,6 +1089,16 @@ def _open_lock_database(database: str) -> int:
         msg = f"refusing a non-regular lock database: {database!r}"
         raise OSError(msg)
     return fd  # pragma: win32 no cover
+
+
+def _raise_if_wal(fd: int, database: str) -> None:
+    # SQLite derives the -wal name from the path it connects through, a descriptor name on POSIX, and WAL never blocks
+    # readers behind a writer, so the lock cannot work on such a database.
+    # pread: an adopted probe is shared, so its file offset is not this connect's to move.
+    header: Final = os.pread(fd, _HEADER_SIZE, 0) if hasattr(os, "pread") else os.read(fd, _HEADER_SIZE)
+    if header.startswith(_SQLITE_MAGIC) and _WAL_FORMAT_VERSION in header[_FORMAT_VERSIONS]:
+        msg = f"refusing a WAL-mode lock database: {database!r}; give ReadWriteLock a file of its own"
+        raise ValueError(msg)
 
 
 @contextmanager
@@ -814,6 +1140,7 @@ def timeout_for_sqlite(timeout: float, *, blocking: bool, already_waited: float)
 
 _register_fork_object(_CONNECTION_ESCROW)
 _register_fork_object(_FORKED_DATABASES)
+_register_fork_object(_PROBE_DESCRIPTORS)
 _register_fork_class(ReadWriteLock)
 if _IS_PYPY:
     sys.addaudithook(_track_sqlite_use)  # pragma: pypy cover

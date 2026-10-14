@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import threading
 from errno import EIO
 from typing import TYPE_CHECKING
@@ -17,11 +16,6 @@ from tests.async_filelock_cancellation_helpers import (
     start_file_lock_holder,
 )
 from tests.capability_marks import NEEDS_FCNTL, XFAIL_WITHOUT_COROUTINE_CANCELLATION
-
-if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-    from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
-else:  # pragma: no cover (<py311)
-    from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
 if TYPE_CHECKING:
     from pathlib import Path

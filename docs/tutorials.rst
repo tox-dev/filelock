@@ -39,9 +39,9 @@ Two details of that path are deliberate, and both come from real deployments:
 
 - The lock lives beside the cache entry, not on it. Locking the target file itself would mean creating the very file
   whose absence you are testing for.
-- The lock file name is derived from a hash. Cache keys can be long, and a filesystem caps a single name component
-  (255 bytes on ext4 and on Windows). `datasets <https://github.com/huggingface/datasets>`_ hashes lock names against
-  ``os.statvfs(path).f_namemax`` for exactly this reason. Hash long keys instead of pasting them into the name.
+- The lock file name comes from a hash. `datasets <https://github.com/huggingface/datasets>`_ hashes long names against
+  ``os.statvfs(path).f_namemax``; ext4 limits one component to 255 bytes, while NTFS allows 255 Unicode characters. Even
+  a short key can contain a path separator, so hash every key before using it as a lock filename.
 
 ************************
  Protecting shared data
@@ -334,7 +334,7 @@ the lock file and can detect stale locks.
     lock = PIDLockFile("/tmp/myapp.lock")
     lock.acquire()
     print(lock.read_pid())
-    print(lock.is_lock_held_by_us())
+    print(lock.i_am_locking())
     lock.release()
 
     # After (filelock):
@@ -349,7 +349,7 @@ the lock file and can detect stale locks.
 Key differences from ``PIDLockFile``:
 
 - ``read_pid()`` is now a property: ``lock.pid``
-- ``is_lock_held_by_us()`` is now a property: ``lock.is_lock_held_by_us``
+- ``i_am_locking()`` is now the ``lock.is_lock_held_by_us`` property
 - ``break_lock()`` is now ``lock.break_lock()`` (same name)
 - Stale lock detection happens automatically on acquire (all platforms)
 - Supports context managers, reentrant locking, timeouts, and all other filelock features

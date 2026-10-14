@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock import AsyncStrictSoftFileLock, StrictSoftFileLock, Timeout
+from filelock import AsyncStrictSoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock
 from tests.capability_marks import NEEDS_PARENT_SYMLINK_COLLAPSE, NEEDS_SYMLINK
 
 if TYPE_CHECKING:
@@ -149,7 +149,7 @@ def test_strict_soft_final_symlink_fails_closed_without_touching_target(tmp_path
     lock_path.symlink_to(target)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
-    with pytest.raises(Timeout):
+    with pytest.raises(SoftFileLockProtocolError, match="found a symlink"):
         lock.acquire()
 
     assert (target.read_bytes(), lock_path.is_symlink(), lock.claims) == (_STRICT_SENTINEL, True, ())

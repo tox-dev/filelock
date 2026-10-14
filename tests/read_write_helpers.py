@@ -30,6 +30,16 @@ ACQUIRE_SETTINGS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
     ],
 )
 
+INVALID_TIMEOUTS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
+    ("timeout", "message"),
+    [
+        pytest.param(-2, "timeout must be a non-negative number or -1, not -2.0", id="integer"),
+        pytest.param(-0.5, "timeout must be a non-negative number or -1, not -0.5", id="fraction"),
+        pytest.param(float("-inf"), "timeout must be a non-negative number or -1, not -inf", id="negative-infinite"),
+        pytest.param(float("nan"), "timeout must be a number of seconds, not nan", id="nan"),
+    ],
+)
+
 
 def assert_read_write_lock_state(lock_file: str, mode: Literal["read", "write"], *, available: bool) -> None:
     context: Final = multiprocessing.get_context("spawn")
@@ -74,4 +84,4 @@ def _probe_read_write_lock(lock_file: str, mode: Literal["read", "write"], sendi
             sending.send_bytes(bytes([acquired]))
 
 
-__all__ = ["ACQUIRE_SETTINGS", "assert_read_write_lock_state"]
+__all__ = ["ACQUIRE_SETTINGS", "INVALID_TIMEOUTS", "assert_read_write_lock_state"]

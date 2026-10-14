@@ -25,12 +25,28 @@ def test_timeout_attribute(extract: Callable[[Timeout], str], expected: str) -> 
     assert extract(Timeout("/path/to/lock")) == expected
 
 
+def test_timeout_names_a_holder_it_cannot_probe() -> None:
+    assert str(Timeout("/path/to/lock", "pid 7 on build-host")) == (
+        "The file lock '/path/to/lock' could not be acquired. It is held by pid 7 on build-host, which this host cannot"
+        " probe."
+    )
+
+
+def test_timeout_subclass_taking_only_the_lock_file_pickles() -> None:
+    restored: Final = _pickle_round_trip(_LockFileOnlyTimeout("/path/to/lock"), protocol=pickle.DEFAULT_PROTOCOL)
+    assert (type(restored), restored.lock_file) == (_LockFileOnlyTimeout, "/path/to/lock")
+
+
+class _LockFileOnlyTimeout(Timeout):
+    def __init__(self, lock_file: str) -> None:
+        super().__init__(lock_file)
+
+
 def test_exception_serialization_preserves_diagnostics(
     error: Timeout | SoftFileLockProtocolError,
     clone: Callable[[Timeout | SoftFileLockProtocolError], Timeout | SoftFileLockProtocolError],
 ) -> None:
-    # Python 3.10 supports the notes attribute but has no add_note().
-    error.__notes__ = ["while acquiring the build cache"]
+    error.add_note("while acquiring the build cache")
     vars(error)["request_id"] = "request-1"
     restored: Final = clone(error)
     assert (
@@ -99,11 +115,18 @@ def test_protocol_error_serialization_preserves_claim(
 
 
 @pytest.fixture(
-    params=[pytest.param("timeout", id="timeout"), pytest.param("claim", id="claim"), pytest.param(None, id="no-claim")]
+    params=[
+        pytest.param("timeout", id="timeout"),
+        pytest.param("holder", id="timeout-holder"),
+        pytest.param("claim", id="claim"),
+        pytest.param(None, id="no-claim"),
+    ]
 )
 def error(request: pytest.FixtureRequest) -> Timeout | SoftFileLockProtocolError:
     if request.param == "timeout":
         return Timeout("/path/to/lock")
+    if request.param == "holder":
+        return Timeout("/path/to/lock", "pid 7 on build-host")
     return SoftFileLockProtocolError("/path/to/lock", request.param, "invalid marker")
 
 

@@ -4,7 +4,6 @@ import asyncio
 import functools
 import multiprocessing
 import sqlite3
-import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Final, Literal, cast
@@ -251,6 +250,35 @@ async def test_close_cancellation_shuts_down_only_an_owned_executor(
             executor.submit(int)
 
 
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_release_cancellation_hands_the_lock_to_the_next_task(
+    lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
+) -> None:
+    rollback_started = asyncio.Event()
+    finish_rollback = threading.Event()
+    _patch_async_rollback(mocker, asyncio.get_running_loop(), rollback_started, finish_rollback)
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+
+    async def acquire_then_release() -> None:
+        await (lock.acquire_read if mode == "read" else lock.acquire_write)()
+        await lock.release()
+
+    task = asyncio.create_task(acquire_then_release())
+    await rollback_started.wait()
+    task.cancel("cancel release")
+    finish_rollback.set()
+    with pytest.raises(asyncio.CancelledError) as info:
+        await task
+    assert_cancellation_message(info.value, "cancel release")
+
+    await lock.acquire_write(timeout=2)
+    assert_read_write_lock_state(lock_file, "read", available=False)
+    await lock.release()
+    await lock.close()
+
+
 @pytest.mark.parametrize("operation", [pytest.param("release", id="release"), pytest.param("close", id="close")])
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
@@ -368,7 +396,7 @@ def _cancel_queued_read_write_acquire(lock_file: str, cancel_caller: bool, cance
             await task
         except asyncio.CancelledError as error:
             context = error.__context__
-            if cancel_caller and sys.version_info >= (3, 11):  # pragma: >=3.11 cover
+            if cancel_caller:
                 canceled.value = isinstance(context, asyncio.CancelledError) and context.args == ("caller canceled",)
             else:
                 canceled.value = True
@@ -490,7 +518,12 @@ def _patch_async_connection(
             configuration["executescript.side_effect"] = functools.partial(executescript, real_connection)
         if rollback is not None:
             configuration["rollback.side_effect"] = functools.partial(rollback, real_connection)
-        connection = mocker.MagicMock(spec_set=type(real_connection), wraps=real_connection, **configuration)
+        connection = mocker.MagicMock(
+            spec_set=type(real_connection),
+            wraps=real_connection,
+            database_identity=None,
+            **configuration,
+        )
         mocker.patch.object(
             type(connection),
             "in_transaction",

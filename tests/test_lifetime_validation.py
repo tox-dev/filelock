@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+from fractions import Fraction
 from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pytest
@@ -34,6 +36,13 @@ pytestmark: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings("ignore::fi
         pytest.param(float("nan"), ValueError, "finite and non-negative", id="nan"),
         pytest.param(float("inf"), ValueError, "finite and non-negative", id="positive-infinity"),
         pytest.param(float("-inf"), ValueError, "finite and non-negative", id="negative-infinity"),
+        pytest.param(Decimal(-1), ValueError, "finite and non-negative", id="negative-decimal"),
+        pytest.param(Decimal("NaN"), ValueError, "finite and non-negative", id="decimal-nan"),
+        pytest.param(Decimal("sNaN"), ValueError, "finite and non-negative", id="decimal-signaling-nan"),
+        pytest.param(Decimal("Infinity"), ValueError, "finite and non-negative", id="decimal-infinity"),
+        pytest.param(Fraction(10**400), ValueError, "too large", id="fraction-past-float"),
+        pytest.param(Decimal("-1E-400"), ValueError, "finite and non-negative", id="decimal-below-float-negative"),
+        pytest.param(Fraction(-1, 10**400), ValueError, "finite and non-negative", id="fraction-below-float-negative"),
         pytest.param(True, TypeError, "lifetime must be", id="true"),
         pytest.param(False, TypeError, "lifetime must be", id="false"),
         pytest.param("5", TypeError, "lifetime must be", id="string"),
@@ -46,7 +55,7 @@ pytestmark: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings("ignore::fi
 def test_lifetime_rejects_invalid_value(
     lock_type: type[FileLock | AsyncFileLock],
     entry_point: Literal["constructor", "setter"],
-    bad_value: str | bytes | list[int] | dict[int, int] | complex,
+    bad_value: str | bytes | list[int] | dict[int, int] | complex | Decimal | Fraction,
     error_type: type[ValueError | TypeError],
     message: str,
     tmp_path: Path,
@@ -74,6 +83,8 @@ def test_lifetime_rejects_invalid_value(
         pytest.param(0.0, id="zero-float"),
         pytest.param(2.5, id="positive-float"),
         pytest.param(10**1000, id="large-int"),
+        pytest.param(Decimal("2.5"), id="decimal"),
+        pytest.param(Fraction(5, 2), id="fraction"),
     ],
 )
 def test_lifetime_accepts_supported_value(

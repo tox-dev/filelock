@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 import secrets
+import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
 from math import isfinite
-from threading import Event, Thread, current_thread, local
-from typing import TYPE_CHECKING, Final, Literal
+from threading import Event, Thread, current_thread
+from typing import TYPE_CHECKING, Final, Literal, cast
+from weakref import WeakMethod
 
+from ._api import _check_timeout_max, _seconds
 from ._error import LeaseSettingsMismatch
 from ._identity import owner_is_stale
 from ._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord, parse_marker
@@ -16,21 +19,16 @@ from ._soft import _read_lock_file
 from ._util import break_lock_file, touch
 
 if TYPE_CHECKING:
-    import sys
     from collections.abc import Callable, Mapping
+    from typing import Unpack
 
     from ._api import LockOptions, _ExtraValue
-
-    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-        from typing import Unpack
-    else:  # pragma: no cover (<py311)
-        from typing_extensions import Unpack
 
 #: ``evicted`` is a :class:`~filelock.SoftReadWriteLock` loss: a peer waited out the stale threshold and committed a
 #: generation without this holder.
 CompromiseReason = Literal["marker-missing", "owner-changed", "refresh-failed", "evicted"]
 
-_RefreshOutcome = Literal["ok", "lost", "transient"]
+_RefreshOutcome = Literal["ok", "transient", "marker-missing", "owner-changed"]
 _DEFAULT_LEASE_DURATION: Final[float] = 30.0
 
 
@@ -61,28 +59,15 @@ class _LeaseClaim:
     heartbeat: _Heartbeat | None = None
 
 
-class _LeaseClaimHolder:
-    """Holds the claim its owning context acquired."""
-
-    # Only the holder is thread-local, mirroring FileLockContext: the claim stays an ordinary object, so the heartbeat
-    # thread records a compromise where the thread that acquired the lease reads it.
-
-    def __init__(self) -> None:
-        self.claim = _LeaseClaim()
-
-
-class _ThreadLocalLeaseClaimHolder(_LeaseClaimHolder, local):
-    """A thread local version of the ``_LeaseClaimHolder`` class."""
-
-
 class SoftFileLease(MarkerSoftFileLock):
     """
     Existence lock whose claim expires, so a peer may take it while the previous holder still runs.
 
     A lease trades mutual exclusion for progress. The holder publishes a claim and refreshes it every
-    ``heartbeat_interval`` seconds; a contender takes the marker once it is ``lease_duration`` seconds stale. Nothing
-    stops the expired holder: it keeps running, and it keeps using whatever the lock protects. Treat the lease as a hint
-    about who *should* be working, not as a guarantee that only one worker is.
+    ``heartbeat_interval`` seconds; a contender takes the marker once it has seen no refresh for ``lease_duration``
+    seconds of its own monotonic clock, so clock skew between hosts cannot expire a live claim. Nothing stops the
+    expired holder: it keeps running, and it keeps using whatever the lock protects. Treat the lease as a hint about
+    who *should* be working, not as a guarantee that only one worker is.
 
     To make a protected resource reject a superseded holder, that resource must be linearizable and must fence on a
     monotonic generation it controls. :attr:`token` names a claim; it does not fence one. Where overlap is unacceptable,
@@ -124,10 +109,11 @@ class SoftFileLease(MarkerSoftFileLock):
         """
         Create a lease.
 
-        :param lease_duration: seconds of marker staleness after which a contender may take the claim. Every contender
-            for the path must pass the same value.
+        :param lease_duration: seconds a contender must see the marker go unrefreshed before it may take the claim.
+            Every contender for the path must pass the same value.
         :param heartbeat_interval: seconds between refreshes. Defaults to a third of ``lease_duration``, leaving room
-            for two missed refreshes before a peer may take the claim. Must be shorter than ``lease_duration``.
+            for two missed refreshes before a peer may take the claim. Must be shorter than ``lease_duration`` and at
+            most :data:`threading.TIMEOUT_MAX`.
         :param on_compromise: called from the heartbeat thread with a :class:`LeaseCompromise` when the claim is lost.
         :param kwargs: every other :class:`BaseFileLock <filelock.BaseFileLock>` option, ``timeout`` and ``mode`` among
             them. The metaclass passes them all by keyword, and taking them here lets
@@ -135,35 +121,40 @@ class SoftFileLease(MarkerSoftFileLock):
             hide.
 
         """
-        if isinstance(lease_duration, bool) or not isinstance(lease_duration, (int, float)):
-            msg = f"lease_duration must be a finite positive number, not {type(lease_duration).__name__}"
-            raise TypeError(msg)
-        if not isfinite(lease_duration) or lease_duration <= 0:
+        # A plain float: the marker records its repr, which NumPy's float64 spells in a form no parser reads.
+        if not isfinite(lease_duration := _seconds("lease_duration", lease_duration)) or lease_duration <= 0:
             msg = f"lease_duration must be positive and finite, got {lease_duration!r}"
             raise ValueError(msg)
-        if heartbeat_interval is None:
-            heartbeat_interval = lease_duration / 3
+        heartbeat_interval = (
+            lease_duration / 3 if heartbeat_interval is None else _seconds("heartbeat_interval", heartbeat_interval)
+        )
         if not 0 < heartbeat_interval < lease_duration:
             msg = f"heartbeat_interval must be positive and below lease_duration, got {heartbeat_interval!r}"
             raise ValueError(msg)
+        _check_timeout_max("heartbeat_interval", heartbeat_interval)
         super().__init__(lock_file, **kwargs)
         self._lease_duration = lease_duration
         self._heartbeat_interval = heartbeat_interval
         self._on_compromise = on_compromise
-        # Sharing one claim across a thread-local lock lets a second thread's failed acquisition stop the heartbeat of
-        # the thread holding the lease, leaving its marker unrefreshed until a peer reclaims it.
-        self._claims: _LeaseClaimHolder = (
-            _ThreadLocalLeaseClaimHolder if self.is_thread_local() else _LeaseClaimHolder
-        )()
+        # Two threads lazily creating a shared claim could each get one, and release() would miss the heartbeat's.
+        if not self.is_thread_local():
+            self._context.lease_claim = _LeaseClaim()
 
     def _singleton_extra_mismatches(self, kwargs: Mapping[str, _ExtraValue], /) -> dict[str, tuple[str, str]]:
         mismatches = super()._singleton_extra_mismatches(kwargs)
-        if (lease_duration := kwargs.get("lease_duration", _DEFAULT_LEASE_DURATION)) != self._lease_duration:
+        lease_duration: Final = _seconds(
+            "lease_duration", cast("float", kwargs.get("lease_duration", _DEFAULT_LEASE_DURATION))
+        )
+        if lease_duration != self._lease_duration:
             mismatches["lease_duration"] = (str(lease_duration), str(self._lease_duration))
         # An omitted heartbeat_interval resolves as in __init__; a differing duration is already reported above.
-        heartbeat_interval = kwargs.get("heartbeat_interval")
-        if (self._lease_duration / 3 if heartbeat_interval is None else heartbeat_interval) != self._heartbeat_interval:
-            mismatches["heartbeat_interval"] = (str(heartbeat_interval), str(self._heartbeat_interval))
+        heartbeat_interval: Final = (
+            self._lease_duration / 3
+            if (passed := kwargs.get("heartbeat_interval")) is None
+            else _seconds("heartbeat_interval", cast("float", passed))
+        )
+        if heartbeat_interval != self._heartbeat_interval:
+            mismatches["heartbeat_interval"] = (str(passed), str(self._heartbeat_interval))
         # A callback compares by identity, as on_acquired does: two equal callables can close over different state.
         if (on_compromise := kwargs.get("on_compromise")) is not self._on_compromise:
             mismatches["on_compromise"] = (str(on_compromise), str(self._on_compromise))
@@ -171,7 +162,11 @@ class SoftFileLease(MarkerSoftFileLock):
 
     @property
     def _claim(self) -> _LeaseClaim:
-        return self._claims.claim
+        # Per hold, so another thread's failed acquire cannot stop the holder's heartbeat.
+        state: Final = self._hold_state()
+        if (claim := state.lease_claim) is None:
+            claim = state.lease_claim = _LeaseClaim()
+        return claim
 
     @property
     def lease_duration(self) -> float:
@@ -193,7 +188,12 @@ class SoftFileLease(MarkerSoftFileLock):
         """
         The loss of claim the heartbeat observed.
 
-        :returns: the :class:`LeaseCompromise`, or ``None`` while the claim still holds
+        The value outlives ``release()``, so a holder can check after leaving the ``with`` block whether its work may
+        have overlapped a successor; the next acquisition resets it, as :attr:`SoftReadWriteLock.compromise
+        <filelock.SoftReadWriteLock.compromise>` does.
+
+        :returns: the :class:`LeaseCompromise` of the latest claim, or ``None`` while that claim holds or held to its
+            release
 
         """
         return self._claim.compromise
@@ -235,11 +235,10 @@ class SoftFileLease(MarkerSoftFileLock):
             super()._try_break_stale_lock()
             return
         owner, mtime, ino = peer
-        # Only a peer that published a lease agreed to be superseded by one, so a record stating any other contract is
-        # never reclaimed by age. Raise the mismatch outside the read so the suppression cannot swallow it.
-        if owner.mode != "lease":
-            return
-        if owner.lease_duration != self._lease_duration:
+        # Only a peer that published a lease agreed to be superseded by age; an exclusive owner is reclaimed only once
+        # it is provably dead, and a contract this version does not know never is. Raise the mismatch outside the read
+        # so the suppression cannot swallow it.
+        if owner.mode == "lease" and owner.lease_duration != self._lease_duration:
             msg = (
                 f"{self.lock_file} holds a lease of {owner.lease_duration!r}s but this contender configured "
                 f"{self._lease_duration!r}s; every contender for a path must agree on lease_duration"
@@ -248,12 +247,12 @@ class SoftFileLease(MarkerSoftFileLock):
         # A break can fail for reasons a contender must ride out rather than raise on: a peer broke the marker first,
         # or Windows refuses to rename a file whose holder still has it open. Poll again instead.
         with suppress(OSError):
-            # A dead or recycled owner is reclaimed at once; a live owner past its lease duration is superseded on the
-            # schedule every contender agreed to.
-            if owner_is_stale(owner.pid, owner.hostname, owner.start):
+            # A dead or recycled owner is reclaimed at once, whether it held a lease or an exclusive marker; a live
+            # lease owner whose marker stops being refreshed is superseded on the schedule every contender agreed to.
+            if owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
                 break_lock_file(self.lock_file, mtime, ino)
                 return
-            if time.time() - mtime >= self._lease_duration:
+            if owner.mode == "lease" and self._marker_unchanged_for(mtime, ino) >= self._lease_duration:
                 break_lock_file(self.lock_file, mtime, ino)
 
     def _read_peer(self) -> tuple[OwnerRecord, float, int] | None:
@@ -266,13 +265,21 @@ class SoftFileLease(MarkerSoftFileLock):
     def _start_heartbeat(self, claim: _LeaseClaim, fd: int, identity: tuple[int, int], token: str) -> None:
         # The thread watches the event it was handed rather than whatever the claim names later: a heartbeat that
         # outlives its join timeout would otherwise adopt the next acquisition's event and never stop.
-        stop = Event()
-        thread = Thread(
-            target=self._refresh_until_stopped,
-            args=(claim, fd, identity, token, stop),
-            name=f"filelock-lease-{os.getpid()}",
-            daemon=True,
+        stop: Final = Event()
+        loop: Final = _RefreshLoop(
+            # A strong reference from a running thread would keep a dropped lease alive, so __del__ would never release
+            # it and its marker would outlive the process. The callback stops a heartbeat that __del__ could not reach.
+            report=WeakMethod(self._report_compromise, lambda _: stop.set()),
+            lock_file=self.lock_file,
+            claim=claim,
+            fd=fd,
+            identity=identity,
+            token=token,
+            stop=stop,
+            interval=self._heartbeat_interval,
+            duration=self._lease_duration,
         )
+        thread: Final = Thread(target=loop.run, name=f"filelock-lease-{os.getpid()}", daemon=True)
         # Record the heartbeat before starting the thread so a release racing this acquire on a shared,
         # non-thread-local claim always sees it and sets the stop event; the thread then exits at its first wait
         # instead of outliving the release. A start that raises leaves the unstarted thread for _stop_heartbeat.
@@ -285,59 +292,10 @@ class SoftFileLease(MarkerSoftFileLock):
             return
         heartbeat.stop.set()
         claim.heartbeat = None
-        # thread.ident is None until start() runs: a heartbeat recorded before its thread started (a start that
-        # raised, or a release racing acquire on a shared claim) has nothing to join, and the stop above makes it
-        # exit at once. on_compromise runs on the heartbeat thread and may release the lease, landing back here.
-        if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread():
+        # An unstarted thread has nothing to join, on_compromise may release from the heartbeat thread itself, and
+        # during finalization a daemon thread is frozen, so joining it raises PythonFinalizationError (3.14+).
+        if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread() and not sys.is_finalizing():
             heartbeat.thread.join(timeout=self._heartbeat_interval)
-
-    def _refresh_until_stopped(
-        self,
-        claim: _LeaseClaim,
-        fd: int,
-        identity: tuple[int, int],
-        token: str,
-        stop: Event,
-    ) -> None:
-        # The loop ends at the first loss of the claim, so the holder hears about it once. A transient filesystem
-        # error (ESTALE / EIO on the NFS-style filesystems a lease targets) is not a loss: retry rather than raise a
-        # false compromise. Report the claim unrefreshable only once failures have run long enough that a contender
-        # could take it before the next success would land, a margin before the marker actually ages out, the way
-        # restic declares a lock unrefreshable ahead of its stale time.
-        last_success = time.monotonic()
-        while not stop.wait(self._heartbeat_interval):
-            outcome, error = self._refresh_claim(claim, fd, identity, token)
-            if outcome == "lost":
-                return
-            if outcome == "ok":
-                last_success = time.monotonic()
-            elif time.monotonic() - last_success >= self._lease_duration - self._heartbeat_interval:
-                self._report_compromise(claim, "refresh-failed", error, token)
-                return
-
-    def _refresh_claim(
-        self,
-        claim: _LeaseClaim,
-        fd: int,
-        identity: tuple[int, int],
-        token: str,
-    ) -> tuple[_RefreshOutcome, OSError | None]:
-        try:
-            st = os.lstat(self.lock_file)
-        except FileNotFoundError as error:
-            self._report_compromise(claim, "marker-missing", error, token)
-            return "lost", None
-        except OSError as error:
-            return "transient", error
-        # A peer that took the expired claim replaced the marker, so the pathname now names its inode, not ours.
-        if (st.st_dev, st.st_ino) != identity:
-            self._report_compromise(claim, "owner-changed", None, token)
-            return "lost", None
-        try:
-            touch(self.lock_file, fd=fd)
-        except OSError as error:
-            return "transient", error
-        return "ok", None
 
     def _report_compromise(
         self,
@@ -354,8 +312,59 @@ class SoftFileLease(MarkerSoftFileLock):
             self._on_compromise(claim.compromise)
 
 
+@dataclass(frozen=True)
+class _RefreshLoop:
+    """What a heartbeat thread needs to refresh one claim, holding the lease itself only weakly."""
+
+    report: WeakMethod[Callable[[_LeaseClaim, CompromiseReason, OSError | None, str], None]]
+    lock_file: str
+    claim: _LeaseClaim
+    fd: int
+    identity: tuple[int, int]
+    token: str
+    stop: Event
+    interval: float
+    duration: float
+
+    def run(self) -> None:
+        # A transient error (ESTALE / EIO on the NFS-style filesystems a lease targets) is not a loss. Like restic, call
+        # the claim unrefreshable once failures run long enough that a contender could take it before the next success.
+        last_success, missing = time.monotonic(), False
+        while not self.stop.wait(self.interval):
+            outcome, error = self._refresh()
+            if outcome == "ok":
+                last_success, missing = time.monotonic(), False
+                continue
+            # A peer's stale break moves a live marker aside for two syscalls, so only a second miss in a row is a loss.
+            if outcome == "marker-missing" and not missing:
+                missing = True
+                continue
+            if outcome == "transient" and time.monotonic() - last_success < self.duration - self.interval:
+                continue
+            if (report := self.report()) is not None:
+                report(self.claim, "refresh-failed" if outcome == "transient" else outcome, error, self.token)
+            return
+
+    def _refresh(self) -> tuple[_RefreshOutcome, OSError | None]:
+        try:
+            st = os.lstat(self.lock_file)
+        except FileNotFoundError as error:
+            return "marker-missing", error
+        except OSError as error:
+            return "transient", error
+        # A peer that took the expired claim replaced the marker, so the pathname now names its inode, not ours.
+        if (st.st_dev, st.st_ino) != self.identity:
+            return "owner-changed", None
+        try:
+            touch(self.lock_file, fd=self.fd)
+        except OSError as error:
+            return "transient", error
+        return "ok", None
+
+
 __all__ = [
     "CompromiseReason",
     "LeaseCompromise",
     "SoftFileLease",
+    "_LeaseClaim",
 ]

@@ -1,23 +1,27 @@
 from __future__ import annotations
 
+import itertools
 import os
 import time
 from multiprocessing import get_context
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
 from filelock import MarkerSoftFileLock, OwnerRecord, SoftFileLease, Timeout
-from filelock._identity import process_start_token
+from filelock._identity import host_name, process_start_token
 from filelock._marker import encode_marker
+from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD
 from tests.process_helpers import cleanup_processes
 
 if TYPE_CHECKING:
     from multiprocessing.process import BaseProcess
     from pathlib import Path
-    from typing import Final
 
     from pytest_mock import MockerFixture
+
+#: A spawned GraalPy interpreter alone can take seconds to start on a loaded runner.
+_PROCESS_DEADLINE: Final[int] = 30
 
 
 @pytest.mark.parametrize(
@@ -41,6 +45,19 @@ if TYPE_CHECKING:
         pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=nan\n", id="lease-duration-nan"),
         pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=inf\n", id="lease-duration-inf"),
         pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=5\nstart=later\n", id="start-nan"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=exclu", id="truncated-mode"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=1", id="truncated-duration"),
+        pytest.param("filelock/2\npid=1_000\nhost=h\nmode=exclusive\n", id="pid-underscore"),
+        pytest.param("filelock/2\npid=\u0661\u0662\u0663\nhost=h\nmode=exclusive\n", id="pid-arabic-indic-digits"),
+        pytest.param("filelock/2\npid= 1\nhost=h\nmode=exclusive\n", id="pid-whitespace"),
+        pytest.param("filelock/2\npid=+1\nhost=h\nmode=exclusive\n", id="pid-sign"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=exclusive\nstart=1_0\n", id="start-underscore"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration= 1\n", id="duration-whitespace"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=1_0\n", id="duration-underscore"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=\u0665\n", id="duration-non-ascii"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=-1.0\n", id="duration-negative"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=t\nduration=1e400\n", id="duration-overflow"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=lease\ntoken=\nduration=1\n", id="lease-empty-token"),
     ],
 )
 def test_unreadable_record_names_no_owner(tmp_path: Path, record: str) -> None:
@@ -57,6 +74,14 @@ def test_encode_marker_omits_absent_lease_fields() -> None:
     assert rendered == b"filelock/2\npid=7\nhost=h\nmode=unknown\n"
     assert b"token=" not in rendered
     assert b"duration=" not in rendered
+
+
+@pytest.mark.parametrize("duration", [0.9, 30, 30.0, 1e-05, 1.5e20])
+def test_record_duration_reads_back(marker: Path, duration: float) -> None:
+    record = OwnerRecord(4242, "h", "lease", "t", duration)
+    marker.write_bytes(encode_marker(record))
+
+    assert SoftFileLease(str(marker), lease_duration=1).owner == record
 
 
 def test_record_start_token_reads_back(tmp_path: Path) -> None:
@@ -136,12 +161,11 @@ def test_lease_never_ages_out_an_unknown_contract(tmp_path: Path) -> None:
     assert marker.exists()
 
 
-def test_lease_ages_out_a_malformed_record(tmp_path: Path) -> None:
+def test_lease_ages_out_a_malformed_record(tmp_path: Path, mocker: MockerFixture) -> None:
     # The self-heal still applies to a record that states no contract at all, so corruption cannot wedge contenders.
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
     marker = tmp_path / "a.lock"
     marker.write_text("filelock/2\nnot-a-record\n", encoding="utf-8")
-    stale = time.time() - 3600
-    os.utime(marker, (stale, stale))
 
     with SoftFileLease(str(marker), lease_duration=5, timeout=1) as lease:
         assert lease.is_lock_held_by_us
@@ -150,6 +174,20 @@ def test_lease_ages_out_a_malformed_record(tmp_path: Path) -> None:
 def test_marker_pid_and_owner_are_none_without_marker(tmp_path: Path) -> None:
     lease = SoftFileLease(tmp_path / "a")
     assert (lease.pid, lease.owner, lease.is_lock_held_by_us) == (None, None, False)
+
+
+@pytest.mark.skipif(process_start_token(os.getpid()) is None, reason="platform exposes no proven process start time")
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    [pytest.param(0, True, id="matching-start"), pytest.param(1, False, id="recycled-pid")],
+)
+def test_marker_is_lock_held_by_us_checks_start(marker: Path, offset: int, *, expected: bool) -> None:
+    # Same PID and host as ours; a different start token means an earlier process reused this PID.
+    start = process_start_token(os.getpid())
+    assert start is not None
+    record = OwnerRecord(pid=os.getpid(), hostname=host_name(), mode="exclusive", start=start + offset)
+    marker.write_bytes(encode_marker(record))
+    assert MarkerSoftFileLock(marker).is_lock_held_by_us is expected
 
 
 def test_marker_force_break_removes_the_marker(tmp_path: Path) -> None:
@@ -202,19 +240,27 @@ def test_marker_lock_preserves_live_records(marker: Path, mode: str) -> None:
         MarkerSoftFileLock(marker, timeout=0.1).acquire()
 
 
+@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
     process: Final[BaseProcess] = get_context("spawn").Process(target=_leave_marker, args=(marker,))
     with cleanup_processes([process]):
         process.start()
-        process.join(timeout=5)
+        process.join(timeout=_PROCESS_DEADLINE)
         assert process.exitcode == 0
     with MarkerSoftFileLock(marker, timeout=1) as lock:
         assert lock.pid == os.getpid()
 
 
-def test_marker_lock_reclaims_malformed_record(marker: Path) -> None:
-    marker.write_text("broken", encoding="utf-8")
-    os.utime(marker, (0, 0))
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param("broken", id="broken"),
+        pytest.param("filelock/2\npid=1\nhost=h\nmode=exclu", id="truncated-mode"),
+    ],
+)
+def test_marker_lock_reclaims_malformed_record(marker: Path, record: str, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
+    marker.write_text(record, encoding="utf-8")
     with MarkerSoftFileLock(marker, timeout=1) as lock:
         assert lock.pid == os.getpid()
 

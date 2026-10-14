@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from errno import EIO
@@ -17,11 +16,6 @@ from filelock import (
 )
 from tests.async_filelock_cancellation_helpers import assert_cancellation_message, assert_file_lock_state
 from tests.capability_marks import NEEDS_FCNTL, XFAIL_WITHOUT_COROUTINE_CANCELLATION
-
-if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-    from builtins import BaseExceptionGroup, ExceptionGroup  # pragma: >=3.11 cover
-else:  # pragma: no cover (<py311)
-    from exceptiongroup import BaseExceptionGroup, ExceptionGroup
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -140,15 +134,51 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(tmp_path: P
         lock = AsyncFileLock(tmp_path / "a", executor=executor, on_acquired=lambda _fd: acquired.set())
         task = asyncio.create_task(lock.acquire())
         await asyncio.sleep(0)
+        # The acquire resolves the lock path on the executor first, so queue a second blocker behind that job to hold
+        # the backend attempt that follows it.
+        second_started = threading.Event()
+        release_second = threading.Event()
+        second_blocker = executor.submit(_block_executor, second_started, release_second)
+        release_executor.set()
+        assert await asyncio.to_thread(second_started.wait, 5)
+        # The resolved path wakes the task, which queues the attempt behind the second blocker.
+        await asyncio.sleep(0.05)
         assert (lock.lock_counter, acquired.is_set()) == (1, False)
         task.cancel()
-        release_executor.set()
+        release_second.set()
         with pytest.raises(asyncio.CancelledError):
             await task
         blocker.result(timeout=5)
+        second_blocker.result(timeout=5)
 
     assert acquired.is_set()
     assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
+@pytest.mark.parametrize("held", [pytest.param(False, id="acquire"), pytest.param(True, id="release")])
+@pytest.mark.asyncio
+async def test_executor_shutdown_drops_queued_call_with_runtime_error(tmp_path: Path, *, held: bool) -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    lock = AsyncFileLock(tmp_path / "a", executor=executor)
+    if held:
+        await lock.acquire()
+    executor_started = threading.Event()
+    release_executor = threading.Event()
+    blocker = executor.submit(_block_executor, executor_started, release_executor)
+    assert executor_started.wait(timeout=5)
+    task = asyncio.create_task(lock.release() if held else lock.acquire())
+    await asyncio.sleep(0)
+    executor.shutdown(wait=False, cancel_futures=True)
+    release_executor.set()
+    blocker.result(timeout=5)
+
+    with pytest.raises(RuntimeError, match="executor shut down before running"):
+        await task
+    assert (lock.is_locked, lock.lock_counter) == (held, int(held))
+    assert_file_lock_state(str(tmp_path / "a"), available=not held)
+    lock.executor = None
+    await lock.release()
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 

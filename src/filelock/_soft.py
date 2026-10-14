@@ -6,15 +6,16 @@ import sys
 import time
 from contextlib import suppress
 from errno import EACCES, EEXIST, EPERM
+from itertools import islice
 from pathlib import Path
 from typing import Final
 
 from ._api import BaseFileLock, _raise_grouped_errors
-from ._identity import host_name, owner_is_stale, process_start_token
+from ._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
 from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from ._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file, write_all
 
-_MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
+MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
 _UNLINK_MAX_RETRIES: Final[int] = 10
 _MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
@@ -48,7 +49,17 @@ class SoftFileLock(BaseFileLock):
     #: An existence lock keeps protocol state in its marker, so it cannot lend the descriptor to an on_acquired hook.
     _on_acquired_supported: bool = False
 
+    #: The marker's (mtime, inode) when this instance last saw it change, and when that was on its monotonic clock.
+    _marker_seen: tuple[tuple[float, int], float] | None = None
+
+    #: The identity of a marker a Windows release relinquished but has not unlinked yet.
+    _marker_cleanup: tuple[int, int] | None = None
+
+    #: The descriptor of that marker while its close has not run yet, as a list so one C call can take it.
+    _marker_fds: list[int]
+
     def _acquire(self) -> None:
+        self._finish_marker_cleanup()
         raise_on_not_writable_file(self.lock_file)
         ensure_directory_exists(self.lock_file)
         # O_CREAT | O_EXCL makes the create fail with EEXIST when the file already exists, so a successful open
@@ -75,15 +86,23 @@ class SoftFileLock(BaseFileLock):
         identity: tuple[int, int] | None = None
         try:
             identity = _file_identity(os.fstat(fd))
+            self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
         except BaseException:
             self._mark_descriptor_released()
-            os.close(fd)
-            with suppress(OSError):
-                if identity is not None and _file_identity(os.lstat(self.lock_file)) == identity:
-                    Path(self.lock_file).unlink()
+            try:
+                os.close(fd)
+            finally:
+                self._unlink_held_marker(identity)
             raise
         self._mark_descriptor_owned(fd, identity)
+
+    def _apply_explicit_mode(self, fd: int) -> None:
+        # os.open filters the mode through the umask, so an explicit mode lands as given only through fchmod, the way
+        # UnixFileLock applies it. Windows maps the mode to a read-only bit that os.open already set.
+        if self.has_explicit_mode and sys.platform != "win32":  # pragma: win32 no cover
+            with suppress(PermissionError):
+                os.fchmod(fd, self._context.mode)
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
@@ -96,12 +115,32 @@ class SoftFileLock(BaseFileLock):
                 # Unparsable: wrong line count, a non-integer PID or start token, empty, oversized or not UTF-8.
                 # Self-heal only once the file is clearly not a half-written fresh lock (a peer between O_EXCL and
                 # _write_lock_info), so the brief create-then-write window is never mistaken for a stale lock.
-                if time.time() - mtime >= _MALFORMED_LOCK_AGE_THRESHOLD:
+                if self._marker_unchanged_for(mtime, ino) >= MALFORMED_LOCK_AGE_THRESHOLD:
                     break_lock_file(self.lock_file, mtime, ino)
                 return
 
             if owner_is_stale(*holder):
                 break_lock_file(self.lock_file, mtime, ino)
+
+    def _marker_unchanged_for(self, mtime: float, ino: int) -> float:
+        # The mtime is the writer's or file server's clock, so against time.time() a contender whose clock runs ahead
+        # would expire a fresh marker. Only watch it for change, timed on this process's monotonic clock.
+        now: Final = time.monotonic()
+        if (seen := self._marker_seen) is None or seen[0] != (mtime, ino):
+            self._marker_seen = (mtime, ino), now
+            return 0.0
+        return now - seen[1]
+
+    def _unprobeable_holder(self) -> str | None:
+        # This host cannot prove such a holder dead, so whoever decides whether it is gone needs its name.
+        with suppress(OSError, ValueError):
+            if (holder := self._recorded_holder(_read_lock_file(self.lock_file)[0])) and holder[1] != host_name():
+                return f"pid {holder[0]} on {holder[1]}"
+        return None
+
+    @classmethod
+    def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
+        return None if (holder := _parse_lock_holder(content)) is None else holder[:2]
 
     @staticmethod
     def _write_lock_info(fd: int) -> None:
@@ -132,20 +171,23 @@ class SoftFileLock(BaseFileLock):
         """
         Whether this lock is held by the current process.
 
-        :returns: ``True`` if the lock file exists and names the current process's PID and hostname
+        :returns: ``True`` if the lock file exists and names the current process's PID, hostname and, when recorded,
+            start token
 
         """
         with suppress(OSError, ValueError):
-            holder = _parse_lock_holder(_read_lock_file(self.lock_file)[0])
-            if holder is not None:
-                pid, hostname, _ = holder
-                return pid == os.getpid() and hostname == host_name()
+            if (holder := _parse_lock_holder(_read_lock_file(self.lock_file)[0])) is not None:
+                return owner_is_current_process(*holder)
         return False
 
     def break_lock(self) -> None:
         """Forcibly break the lock by removing the lock file, regardless of who holds it."""
         with suppress(OSError):
             Path(self.lock_file).unlink()
+
+    def _release_current(self, *, force: bool) -> None:
+        super()._release_current(force=force)
+        self._finish_marker_cleanup()
 
     def _release(self) -> None:
         fd = self._context.lock_file_fd
@@ -156,23 +198,76 @@ class SoftFileLock(BaseFileLock):
         identity: tuple[int, int] | None = None
         with suppress(OSError):
             identity = _file_identity(os.fstat(fd))
-        # A failed close may already have released and recycled the descriptor number. Relinquish it before the one
-        # close attempt so no later release can close an unrelated descriptor that reused the same integer.
-        self._mark_descriptor_released()
-        try:
-            self._close_released_fd(fd, default_suppresses=False)
-        # Marker cleanup must also run for control-flow exceptions, and both failures must remain observable.
-        except BaseException as close_error:
+        if sys.platform == "win32":  # pragma: win32 cover
+            self._release_then_unlink(fd, identity)
+        else:  # pragma: win32 no cover
+            # Our open descriptor keeps the inode allocated, so its number cannot name a successor's marker yet, and an
+            # interrupt before the unlink lands leaves the lock held for the retried release to finish.
+            unlinked: Final = self._unlink_open_marker(identity)
+            # A failed close may already have released and recycled the descriptor number. Relinquish it before the
+            # one close attempt so no later release can close an unrelated descriptor that reused the same integer.
+            self._mark_descriptor_released()
             try:
-                self._unlink_held_marker(identity)
-            except BaseException as cleanup_error:  # ruff:ignore[blind-except]  # preserve control-flow cleanup failures
-                _raise_grouped_errors(
-                    "lock descriptor close and marker cleanup both failed",
-                    close_error,
-                    cleanup_error,
-                )
-            raise
-        self._unlink_held_marker(identity)
+                self._close_released_fd(fd, default_suppresses=False)
+            finally:
+                # A share that refuses to delete an open file gets the unlink after the close; the marker still exists
+                # until then, so its inode cannot be reused either.
+                if not unlinked:
+                    self._unlink_held_marker(identity)
+
+    def _release_then_unlink(self, fd: int, identity: tuple[int, int] | None) -> None:  # pragma: win32 cover
+        # Windows cannot unlink an open file, so the unlink outlives the hold until it lands, here or on a later acquire
+        # or release. Only the gate's holder touches the pending record, so two threads never overwrite each other's.
+        with self._transition_lock:
+            self._marker_fds = [fd]
+            self._marker_cleanup = identity
+            self._mark_descriptor_released()
+            try:
+                self._close_marker_fd()
+            # Marker cleanup must also run for control-flow exceptions, and both failures must remain observable.
+            except BaseException as close_error:
+                try:
+                    self._finish_marker_cleanup()
+                except BaseException as cleanup_error:  # ruff:ignore[blind-except]  # keep control-flow failures
+                    _raise_grouped_errors(
+                        "lock descriptor close and marker cleanup both failed",
+                        close_error,
+                        cleanup_error,
+                    )
+                raise
+            self._finish_marker_cleanup()
+
+    def _unlink_open_marker(self, identity: tuple[int, int] | None) -> bool:  # pragma: win32 no cover
+        try:
+            with suppress(FileNotFoundError):
+                if identity is not None and _file_identity(os.lstat(self.lock_file)) == identity:
+                    Path(self.lock_file).unlink()
+        except OSError:
+            return False
+        return True
+
+    def _finish_marker_cleanup(self) -> None:
+        # Never waits: whoever holds the gate is acquiring or releasing this lock and finishes the cleanup itself.
+        if self._marker_cleanup is not None and self._transition_lock.acquire(blocking=False):  # pragma: win32 cover
+            try:
+                # A close error here belongs to the release an interrupt cut short, not to this caller.
+                with suppress(OSError):
+                    self._close_marker_fd()
+                if (identity := self._marker_cleanup) is not None:  # pragma: no branch  # the gate's holder clears it
+                    self._windows_unlink_if_ours(identity)
+            finally:
+                self._transition_lock.release()
+
+    def _close_marker_fd(self) -> None:  # pragma: win32 cover
+        # Popping and closing is one chain of C calls that no signal handler can split, so a retried release closes the
+        # descriptor at most once; a second close could hit an unrelated file that reused the number.
+        try:
+            list(map(os.close, islice(iter(vars(self).setdefault("_marker_fds", []).pop, None), 1)))
+        except IndexError:
+            return
+        except OSError:
+            if not self._suppresses_close_error(default_suppresses=False):
+                raise
 
     def _unlink_held_marker(self, identity: tuple[int, int] | None) -> None:
         if identity is None:
@@ -185,22 +280,27 @@ class SoftFileLock(BaseFileLock):
                     Path(self.lock_file).unlink()
 
     def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:  # pragma: win32 cover
+        path: Final = self.lock_file
         retry_delay = 0.001
         for attempt in range(_UNLINK_MAX_RETRIES):
             # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck
             # identity each attempt: a failed unlink leaves a window for a successor to replace the marker at this path.
             try:
-                if _file_identity(os.lstat(self.lock_file)) != identity:
-                    return
-                Path(self.lock_file).unlink()
-            except OSError as exc:  # ruff:ignore[try-except-in-loop]  # each attempt's errno drives the retry choice
-                if exc.errno not in {EACCES, EPERM}:
-                    return
-                if attempt < _UNLINK_MAX_RETRIES - 1:
-                    time.sleep(retry_delay)
-                    retry_delay *= 2
-            else:
-                return
+                if _file_identity(os.lstat(path)) == identity:
+                    # Forgotten before the unlink: Windows does not promise unique file IDs, so no retry may reach a
+                    # successor that reused ours.
+                    self._marker_cleanup = None
+                    os.unlink(path)  # ruff:ignore[os-unlink]  # Path.unlink runs Python code a handler can interrupt
+            except OSError as exc:
+                if exc.errno in {EACCES, EPERM}:
+                    # The file is still ours, so the next acquire or release tries again if these attempts run out.
+                    self._marker_cleanup = identity
+                    if attempt < _UNLINK_MAX_RETRIES - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    continue
+            self._marker_cleanup = None
+            return
 
 
 def _file_identity(st: os.stat_result) -> tuple[int, int]:
@@ -239,11 +339,13 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
     # holder's process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now).
     # Anything else (wrong line count, a non-integer PID or start token, empty or unreadable content) is unparsable;
     # returning None lets the caller treat it as a malformed lock to self-heal rather than a holder.
-    if not content or len(lines := content.strip().splitlines()) not in {2, 3}:
+    # Every writer since 3.22 ends each line with "\n", so a record without one was cut by a crash or read mid-write. As
+    # a holder it would name a foreign host no one reclaims, or a start token that lets a contender break a live lock.
+    if not content or not content.endswith("\n") or len(lines := content.strip().splitlines()) not in {2, 3}:
         return None
     try:
-        pid = int(lines[0])
-        start_token = int(lines[2]) if len(lines) == _MARKER_WITH_START_TOKEN_LINE_COUNT else None
+        pid = parse_decimal(lines[0])
+        start_token = parse_decimal(lines[2]) if len(lines) == _MARKER_WITH_START_TOKEN_LINE_COUNT else None
     except ValueError:
         return None
     # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid
@@ -255,6 +357,22 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
     return pid, lines[1], start_token
 
 
+def parse_decimal(text: str) -> int:
+    """
+    Read a PID or start token as a writer formats it: ASCII digits only.
+
+    :raises ValueError: for anything else ``int()`` would accept, such as ``1_000``, surrounding whitespace, a sign or
+        non-ASCII digits; no filelock writes those
+
+    """
+    if not (text.isascii() and text.isdigit()):
+        msg = f"not a decimal integer: {text!r}"
+        raise ValueError(msg)
+    return int(text)
+
+
 __all__ = [
+    "MALFORMED_LOCK_AGE_THRESHOLD",
     "SoftFileLock",
+    "parse_decimal",
 ]

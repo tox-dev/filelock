@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import sys
 import time
+from contextlib import closing
 from multiprocessing import Event, Process, Value, set_start_method
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pytest
@@ -35,9 +38,9 @@ if sys.implementation.name == "pypy":
     )  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from multiprocessing.sharedctypes import Synchronized
     from multiprocessing.synchronize import Event as EventType
-    from pathlib import Path
 
     from pytest_mock import MockerFixture
 
@@ -389,6 +392,77 @@ def test_read_write_lock_keeps_constructed_database(tmp_path: Path, monkeypatch:
     lock.close()
 
 
+class _SubclassedReadWriteLock(ReadWriteLock):
+    pass
+
+
+@pytest.mark.usefixtures("connect_route")
+@pytest.mark.parametrize("held_mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    "open_other",
+    [
+        pytest.param(lambda path: ReadWriteLock(path, is_singleton=False), id="non-singleton"),
+        pytest.param(_SubclassedReadWriteLock, id="subclass-singleton"),
+        pytest.param(
+            lambda path: ReadWriteLock(_hard_link(path), is_singleton=False),
+            id="hard-link-alias",
+            marks=pytest.mark.requires_hard_links,
+        ),
+    ],
+)
+def test_another_instance_on_the_database_keeps_the_held_lock(
+    tmp_path: Path, held_mode: Literal["read", "write"], open_other: Callable[[Path], ReadWriteLock]
+) -> None:
+    # POSIX locks belong to the process, so closing any descriptor on the inode drops every lock it holds there; only a
+    # peer process can see that the holder kept its lock.
+    lock_file = tmp_path / "lock.db"
+    holder = ReadWriteLock(lock_file, is_singleton=False)
+    (holder.acquire_read if held_mode == "read" else holder.acquire_write)()
+    open_other(lock_file).close()
+    assert_read_write_lock_state(str(lock_file), "write", available=False)
+    holder.close()
+
+
+def _hard_link(path: Path) -> Path:  # pragma: needs hard-link
+    alias = path.with_name("alias.db")
+    os.link(path, alias)
+    return alias
+
+
+@pytest.mark.usefixtures("connect_route")
+def test_closing_every_instance_closes_its_descriptors(lock_file: str) -> None:
+    if sys.platform == "win32":  # pragma: win32 cover
+        pytest.skip("the descriptor table is not listable on Windows")
+    descriptor_directory = Path("/proc/self/fd" if sys.platform == "linux" else "/dev/fd")  # pragma: win32 no cover
+    before = len(list(descriptor_directory.iterdir()))  # pragma: win32 no cover
+    holder = ReadWriteLock(lock_file, is_singleton=False)  # pragma: win32 no cover
+    holder.acquire_read()  # pragma: win32 no cover
+    ReadWriteLock(lock_file, is_singleton=False).close()  # pragma: win32 no cover
+    holder.close()  # pragma: win32 no cover
+    assert len(list(descriptor_directory.iterdir())) == before  # pragma: win32 no cover
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(True, id="descriptor-path"),
+        pytest.param(
+            False,
+            id="hard-link-fallback",
+            marks=[
+                pytest.mark.requires_hard_links,
+                pytest.mark.skipif(
+                    not CAPABILITIES["posix-hard-link"],
+                    reason="private database aliases need POSIX hard links without following symlinks",
+                ),
+            ],
+        ),
+    ]
+)
+def connect_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
+    if not request.param:  # pragma: needs posix-hard-link
+        mocker.patch("os.access", autospec=True, return_value=False)
+
+
 def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:
     # Following it would let anyone who can create names in the lock directory make the victim create the target.
     target = tmp_path / "target.db"
@@ -398,7 +472,7 @@ def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:
     except OSError as error:  # pragma: no cover - platform policy can deny symlink creation
         pytest.skip(str(error))
     # Construction opens a connection, so the refusal lands there; acquiring reopens and refuses the same way.
-    with pytest.raises(OSError, match=r"symbolic link|symlink"):
+    with pytest.raises(OSError, match=re.escape(str(link))):
         ReadWriteLock(link, is_singleton=False).acquire_read()
     assert not target.exists()
 
@@ -411,6 +485,64 @@ def test_read_write_lock_refuses_a_non_regular_path(tmp_path: Path) -> None:
     os.mkfifo(lock_path)  # pragma: win32 no cover
     with pytest.raises(OSError, match="non-regular"):  # pragma: win32 no cover
         ReadWriteLock(lock_path, is_singleton=False)
+
+
+def test_read_write_lock_refuses_a_wal_database(lock_file: str) -> None:
+    _convert_to_wal(lock_file)
+    with pytest.raises(ValueError, match="WAL-mode"):
+        ReadWriteLock(lock_file, is_singleton=False)
+
+
+def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(lock_file: str) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    _convert_to_wal(lock_file)
+    with pytest.raises(ValueError, match="WAL-mode"):
+        lock.acquire_read()
+    lock.close()
+
+
+def _convert_to_wal(path: str) -> None:
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executescript("PRAGMA journal_mode=WAL; CREATE TABLE application (value);").close()
+
+
+@pytest.mark.parametrize("replace", [pytest.param(False, id="unlinked"), pytest.param(True, id="replaced")])
+def test_read_write_lock_refuses_a_database_moved_after_connect(
+    tmp_path: Path, mocker: MockerFixture, *, replace: bool
+) -> None:
+    if sys.platform == "win32":  # pragma: win32 cover
+        pytest.skip("SQLite holds the database open without delete sharing, so its name cannot move")
+    # A waiter connects, then the path moves on before its BEGIN lands; the lock it takes then excludes no later opener.
+    lock_path = tmp_path / "lock.db"  # pragma: win32 no cover
+    lock = ReadWriteLock(lock_path, is_singleton=False)  # pragma: win32 no cover
+    real_connect = sqlite3.connect  # pragma: win32 no cover
+
+    def connect_then_move(  # pragma: win32 no cover
+        database: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        connection = real_connect(
+            database,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+        if replace:
+            (replacement := tmp_path / "replacement.db").touch()
+            replacement.replace(lock_path)
+        else:
+            lock_path.unlink()
+        return connection
+
+    mocker.patch("sqlite3.connect", side_effect=connect_then_move)  # pragma: win32 no cover
+    with pytest.raises(OSError, match="unlinked or replaced"):  # pragma: win32 no cover
+        lock.acquire_write()
+    lock.close()  # pragma: win32 no cover
 
 
 def test_read_write_lock_refuses_a_database_held_without_sharing(tmp_path: Path) -> None:
@@ -507,6 +639,7 @@ def _patch_rollback_failure(mocker: MockerFixture, *, after_rollback: bool) -> s
         connection = mocker.MagicMock(
             spec_set=type(real_connection),
             wraps=real_connection,
+            database_identity=None,
             **{"rollback.side_effect": rollback},
         )
         mocker.patch.object(

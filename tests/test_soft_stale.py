@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import gc
+import itertools
 import os
 import socket
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from errno import EACCES, EINTR, ENODEV, ENOSPC, EPERM
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -13,25 +14,21 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import CloseErrorPolicy, SoftFileLock
-from filelock._identity import process_start_token
-from filelock._soft import _MAX_LOCK_FILE_SIZE
+from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLock, Timeout
+from filelock._identity import host_name, process_start_token
+from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
-
-if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-    from builtins import ExceptionGroup  # pragma: >=3.11 cover
-else:  # pragma: no cover (<py311)
-    from exceptiongroup import ExceptionGroup
+from tests.pid_namespace_helpers import pin_pid_namespace
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from unittest.mock import MagicMock
 
     from pytest_mock import MockerFixture
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
 
-_HOST: Final[str] = socket.gethostname()
+_HOST: Final[str] = host_name()
 _DEAD_PID: Final[int] = 2**22 + 1
 _WIN_ERROR_ACCESS_DENIED: Final[int] = 5
 _WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
@@ -81,6 +78,30 @@ def test_stale_lock_not_broken_different_hostname(lock_path: Path) -> None:
     _assert_times_out(lock_path)
 
 
+@pytest.mark.parametrize(
+    ("lock_type", "record"),
+    [
+        pytest.param(SoftFileLock, _holder(_DEAD_PID, host="other-host.example.com"), id="soft"),
+        pytest.param(MarkerSoftFileLock, _holder(_DEAD_PID, host="other-host.example.com"), id="marker-v1"),
+        pytest.param(
+            MarkerSoftFileLock,
+            f"filelock/2\npid={_DEAD_PID}\nhost=other-host.example.com\nmode=exclusive\n",
+            id="marker-v2",
+        ),
+    ],
+)
+def test_timeout_names_a_holder_on_another_host(lock_path: Path, lock_type: type[SoftFileLock], record: str) -> None:
+    lock_path.write_text(record, encoding="utf-8")
+    with pytest.raises(Timeout, match=f"held by pid {_DEAD_PID} on other-host.example.com, which this host cannot"):
+        lock_type(lock_path, timeout=0).acquire()
+
+
+def test_timeout_leaves_out_a_holder_on_this_host(lock_path: Path) -> None:
+    with SoftFileLock(lock_path), pytest.raises(Timeout) as caught:
+        SoftFileLock(lock_path, timeout=0).acquire()
+    assert str(caught.value) == f"The file lock '{lock_path}' could not be acquired."
+
+
 _REQUIRES_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     process_start_token(os.getpid()) is None, reason="platform exposes no proven process start time"
 )
@@ -94,6 +115,27 @@ def test_recycled_pid_marker_self_heals(lock_path: Path) -> None:
     assert token is not None
     lock_path.write_text(_holder(os.getpid(), start=token + 1), encoding="utf-8")
     _assert_self_heals(lock_path)
+
+
+@_REQUIRES_START_TOKEN
+@pytest.mark.parametrize(
+    ("contender_namespace", "reclaimed"),
+    [pytest.param(0xF0000001, True, id="same-namespace"), pytest.param(0xF0000002, False, id="sibling-namespace")],
+)
+def test_recycled_pid_marker_self_heals_only_in_its_pid_namespace(
+    lock_path: Path, mocker: MockerFixture, contender_namespace: int, *, reclaimed: bool
+) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    pin_pid_namespace(mocker, 0xF0000001)
+    lock_path.write_text(_holder(os.getpid(), host=host_name(), start=token + 1), encoding="utf-8")
+    pin_pid_namespace(mocker, contender_namespace)
+
+    lock: Final[SoftFileLock] = SoftFileLock(lock_path, timeout=0.1)
+    with suppress(Timeout):
+        lock.acquire()
+    assert lock.is_locked is reclaimed
+    lock.release()
 
 
 @_REQUIRES_START_TOKEN
@@ -128,11 +170,12 @@ def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixt
         pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), id="oversized"),
         pytest.param(b"not-a-pid\nhostname\n", id="two_line_bad_pid"),
         pytest.param(f"{_DEAD_PID}\nhostname\nnot-a-token\n".encode(), id="three_line_bad_start_token"),
+        pytest.param(f"{_DEAD_PID}\nother-ho".encode(), id="truncated_hostname"),
     ],
 )
+@pytest.mark.usefixtures("unchanged_past_grace")
 def test_unparseable_lock_evicted_when_old(lock_path: Path, content: bytes) -> None:
     lock_path.write_bytes(content)
-    os.utime(lock_path, (0, 0))
     # An unreadable lock (bad line count, non-integer pid/start token, empty, or oversized) must self-heal
     # instead of staying stuck; a matching line count alone does not make a file well-formed.
     _assert_self_heals(lock_path)
@@ -151,6 +194,13 @@ def test_unparseable_lock_not_evicted_when_fresh(lock_path: Path, content: bytes
     _assert_times_out(lock_path)
 
 
+@_REQUIRES_START_TOKEN
+def test_fresh_marker_with_truncated_start_token_not_evicted(lock_path: Path) -> None:
+    # A reader racing our own write sees a cut start token, which must not pass for a recycled PID and break our lock.
+    lock_path.write_text(f"{os.getpid()}\n{_HOST}\n{process_start_token(os.getpid())}"[:-1], encoding="utf-8")
+    _assert_times_out(lock_path)
+
+
 @pytest.mark.parametrize(
     "pid",
     [
@@ -159,9 +209,9 @@ def test_unparseable_lock_not_evicted_when_fresh(lock_path: Path, content: bytes
         pytest.param(2**31, id="oversized"),
     ],
 )
+@pytest.mark.usefixtures("unchanged_past_grace")
 def test_out_of_range_pid_self_heals_when_old(lock_path: Path, pid: int) -> None:
     lock_path.write_text(_holder(pid), encoding="utf-8")
-    os.utime(lock_path, (0, 0))
     # pid 0 or -1 makes os.kill probe the caller's own process group (reads as alive), so the lock is never
     # reclaimed; an oversized pid raises OverflowError out of stale detection. Both are malformed and must
     # self-heal, matching what _parse_marker_bytes rejects.
@@ -180,6 +230,27 @@ def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._identity.process_alive", return_value=False)
     mocker.patch.object(Path, "rename", side_effect=FileNotFoundError("already gone"))
     _assert_times_out(lock_path)
+
+
+@pytest.mark.requires_hard_links
+def test_stale_break_racing_a_successor_admits_no_third_holder(  # pragma: needs hard-link
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    successor: Final[SoftFileLock] = SoftFileLock(lock_path, timeout=0)
+    rename: Final = Path.rename
+
+    def successor_breaks_and_acquires_first(source: Path, target: str) -> Path:
+        source.unlink()
+        successor.acquire()
+        return rename(source, target)
+
+    mocker.patch.object(Path, "rename", autospec=True, side_effect=successor_breaks_and_acquires_first)
+    _assert_times_out(lock_path)
+    mocker.stopall()
+
+    _assert_times_out(lock_path)
+    successor.release()
 
 
 @NEEDS_SYMLINK
@@ -201,6 +272,7 @@ def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
     assert SoftFileLock(lock_path).pid is None  # pragma: win32 no cover
 
 
+@pytest.mark.usefixtures("unchanged_past_grace")
 def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None:
     if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
         pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
@@ -210,13 +282,13 @@ def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None
     reader = os.open(lock_path, os.O_RDONLY | os.O_NONBLOCK)  # pragma: win32 no cover
     writer = os.open(lock_path, os.O_WRONLY | os.O_NONBLOCK)  # pragma: win32 no cover
     try:  # pragma: win32 no cover
-        os.utime(lock_path, (0, 0))
         _assert_self_heals(lock_path)
     finally:
         os.close(reader)  # pragma: win32 no cover
         os.close(writer)  # pragma: win32 no cover
 
 
+@pytest.mark.usefixtures("unchanged_past_grace")
 def test_socket_lock_file_self_heals(lock_path: Path) -> None:
     if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("AF_UNIX sockets are unix-only")
@@ -229,7 +301,6 @@ def test_socket_lock_file_self_heals(lock_path: Path) -> None:
     # A Unix-domain socket cannot be os.open()ed as a file. Before the lstat guard the failed open was swallowed by
     # stale detection so acquisition wedged; an aged socket now self-heals like any other non-regular node.
     try:  # pragma: linux cover
-        os.utime(lock_path, (0, 0))
         _assert_self_heals(lock_path)
     finally:
         sock.close()  # pragma: linux cover
@@ -323,6 +394,7 @@ def test_windows_process_probe_closes_handles(lock_path: Path) -> None:  # pragm
         pytest.param(b"\xff\xfe\n", None, id="non_utf8"),
         pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), None, id="oversized"),
         pytest.param(b"42\n", None, id="single_line"),
+        pytest.param(f"{os.getpid()}\n{_HOST}".encode(), None, id="truncated"),
         pytest.param(_holder(0).encode(), None, id="out_of_range_pid"),
         pytest.param(_holder(os.getpid()).encode(), os.getpid(), id="valid"),
     ],
@@ -352,6 +424,25 @@ def test_is_lock_held_by_us(lock_path: Path, content: str | None, expected: bool
     if content is not None:
         lock_path.write_text(content, encoding="utf-8")
     assert SoftFileLock(lock_path).is_lock_held_by_us is expected
+
+
+@_REQUIRES_START_TOKEN
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    [pytest.param(0, True, id="matching_start_token"), pytest.param(1, False, id="recycled_pid")],
+)
+def test_is_lock_held_by_us_checks_start_token(lock_path: Path, offset: int, *, expected: bool) -> None:
+    # Acquisition breaks a marker with our PID but another start token as stale, so it must not read as ours either.
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    lock_path.write_text(_holder(os.getpid(), start=token + offset), encoding="utf-8")
+    assert SoftFileLock(lock_path).is_lock_held_by_us is expected
+
+
+def test_is_lock_held_by_us_fails_closed_without_own_start_token(lock_path: Path, mocker: MockerFixture) -> None:
+    lock_path.write_text(_holder(os.getpid(), start=1), encoding="utf-8")
+    mocker.patch("filelock._identity.process_start_token", return_value=None)
+    assert SoftFileLock(lock_path).is_lock_held_by_us is False
 
 
 @pytest.mark.parametrize(
@@ -438,6 +529,15 @@ def test_failed_acquire_cleanup_spares_a_replacement(lock_path: Path, mocker: Mo
     with pytest.raises(OSError, match="No space left on device"):
         lock.acquire()
     assert lock_path.exists()
+
+
+def test_publication_without_identity_leaves_the_marker(lock_path: Path, mocker: MockerFixture) -> None:
+    # The rollback cannot prove the path still names the file it created, so it leaves the marker to stale handling.
+    mocker.patch("filelock._soft.os.fstat", autospec=True, side_effect=OSError(ENODEV, "no identity"))
+    lock: Final = SoftFileLock(lock_path)
+    with pytest.raises(OSError, match="no identity"):
+        lock.acquire()
+    assert (lock.is_locked, lock_path.exists()) == (False, True)
 
 
 def test_release_without_identity_skips_unlink(lock_path: Path, mocker: MockerFixture) -> None:
@@ -593,11 +693,53 @@ def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixt
     assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
 
 
-def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows closes the descriptor before it can unlink the marker")
+def test_marker_cleanup_failure_keeps_the_lock_held_for_a_retry(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    lock: Final = SoftFileLock(lock_path)
+    lock.acquire()
+    cleanup_error: Final = RuntimeError("cleanup failed")
+    unlink: Final = mocker.patch("filelock._soft.Path.unlink", autospec=True, side_effect=cleanup_error)
+    with pytest.raises(RuntimeError) as info:
+        lock.release()
+    held: Final = (lock.is_locked, lock_path.exists())
+    mocker.stop(unlink)
+
+    lock.release()
+
+    assert (info.value, held, lock.is_locked, lock_path.exists()) == (cleanup_error, (True, True), False, False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows always unlinks the marker after the close")
+def test_marker_unlink_refused_while_open_is_retried_after_the_close(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    lock: Final = SoftFileLock(lock_path)
+    lock.acquire()
+    real_unlink: Final = Path.unlink
+    attempts: Final[list[Path]] = []
+
+    def refuse_while_open(path: Path, missing_ok: bool = False) -> None:
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise PermissionError(EACCES, "file in use")
+        real_unlink(path, missing_ok=missing_ok)
+
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=refuse_while_open)
+    lock.release()
+
+    assert (lock.is_locked, lock_path.exists(), len(attempts)) == (False, False, 2)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="POSIX unlinks the marker before the close, so both cannot fail")
+def test_close_and_marker_cleanup_failures_are_grouped(  # pragma: win32 cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
     lock = SoftFileLock(lock_path)
     lock.acquire()
     cleanup_error = RuntimeError("cleanup failed")
-    unlink_mock = mocker.patch("filelock._soft.Path.unlink", side_effect=cleanup_error)
+    unlink_mock: Final = mocker.patch("filelock._soft.os.unlink", autospec=True, side_effect=cleanup_error)
     with _close_after_commit(mocker, lock) as (close_error, _attempts), pytest.raises(ExceptionGroup) as info:
         lock.release()
     mocker.stop(unlink_mock)
@@ -614,6 +756,25 @@ def test_close_and_marker_cleanup_failures_are_grouped(lock_path: Path, mocker: 
         None,
         False,
     )
+
+
+@pytest.mark.parametrize(
+    "replaced",
+    [pytest.param(False, id="own-marker-removed"), pytest.param(True, id="replacement-spared")],
+)
+def test_publication_rollback_close_failure_unlinks_only_its_marker(
+    lock_path: Path, mocker: MockerFixture, *, replaced: bool
+) -> None:
+    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
+    if replaced:
+        _hold_reports_foreign_identity(mocker)
+    lock: Final = SoftFileLock(lock_path)
+    with (
+        _close_after_commit(mocker, lock) as (close_error, attempts),
+        pytest.raises(OSError, match="close failed") as info,
+    ):
+        lock.acquire(timeout=0)
+    assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, replaced)
 
 
 def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: MockerFixture) -> None:
@@ -642,7 +803,7 @@ def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: M
 
 
 @contextmanager
-def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Iterator[tuple[OSError, list[int]]]:
+def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[tuple[OSError, list[int]]]:
     real_close = os.close
     close_error = OSError(EINTR, "close failed")
     attempts: list[int] = []
@@ -654,7 +815,8 @@ def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Iterator[t
     real_mark_released = lock._mark_descriptor_released
 
     def mark_released() -> None:
-        released.append(lock._context.lock_file_fd)
+        context: Final = lock._context
+        released.append(context.pending_lock_file_fd if context.lock_file_fd is None else context.lock_file_fd)
         real_mark_released()
 
     def close(fd: int) -> None:
@@ -681,8 +843,46 @@ def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Pa
     marker.write_text("x", encoding="utf-8")
     lock = SoftFileLock(marker)
     mocker.patch("filelock._soft.time.sleep")
-    mocker.patch("filelock._soft.Path.unlink", side_effect=PermissionError(EACCES, "handle still open"))
+    unlink: Final = mocker.patch(
+        "filelock._soft.os.unlink", autospec=True, side_effect=PermissionError(EACCES, "handle still open")
+    )
 
     lock._windows_unlink_if_ours(_file_identity(os.lstat(marker)))
+    denied: Final = marker.exists()
+    mocker.stop(unlink)
 
-    assert marker.exists()
+    # The marker is still ours, so the next acquire finishes the cleanup instead of waiting on it.
+    with lock.acquire(timeout=0):
+        assert denied
+
+
+@pytest.fixture
+def unchanged_past_grace(mocker: MockerFixture) -> None:
+    # Each look at the marker lands a full grace window after the previous one on the observer's clock, so an unchanged
+    # malformed marker ages out on the second look without the test sleeping through the window.
+    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
+
+
+def test_unparseable_lock_with_an_ancient_mtime_not_evicted_on_first_sight(lock_path: Path) -> None:
+    # The mtime carries the writer's or the file server's clock, so an ancient one may be a marker written a moment ago
+    # by a host whose clock runs behind; only time watched on this process's own clock ages it out.
+    lock_path.write_bytes(b"not-a-pid\n")
+    os.utime(lock_path, (0, 0))
+
+    _assert_times_out(lock_path)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("1_000\nhost\n", id="pid-underscore"),
+        pytest.param("\u0661\u0662\u0663\nhost\n", id="pid-arabic-indic-digits"),
+        pytest.param("+1000\nhost\n", id="pid-sign"),
+        pytest.param("1000\nhost\n1_0\n", id="start-underscore"),
+    ],
+)
+def test_lock_with_a_non_decimal_number_names_no_holder(lock_path: Path, content: str) -> None:
+    # int() reads each of these as a number, but no filelock writes them, so they spell a malformed lock, not a PID.
+    lock_path.write_text(content, encoding="utf-8")
+
+    assert SoftFileLock(lock_path).pid is None

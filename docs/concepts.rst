@@ -99,8 +99,17 @@ same thread:
 This would deadlock forever because ``lock_b`` waits for a lock that ``lock_a`` holds in the same thread.
 filelock detects this and raises ``RuntimeError`` with a message suggesting ``is_singleton=True`` as the fix.
 
-This detection only applies to blocking acquires (``timeout < 0``) within the same thread. Non-blocking or timed
-acquires raise :class:`Timeout <filelock.Timeout>` as usual.
+This detection only applies to blocking acquires without a limit (a negative or infinite ``timeout``) within the same
+thread. Non-blocking or timed acquires raise :class:`Timeout <filelock.Timeout>` as usual.
+
+Async locks scope the check to the asyncio task instead of the thread, so a sync lock and an async lock do not see each
+other's holds. Holding a ``FileLock`` on the event loop thread and then awaiting a blocking ``AsyncFileLock`` acquire of
+the same file polls forever instead of raising; give that acquire a timeout.
+
+Detection compares path spellings after resolving the parent directory, not the files they name. Two spellings that one
+filesystem maps to the same file, such as ``Work.lock`` and ``work.lock`` on a case-insensitive volume (APFS and NTFS
+by default) or the NFC and NFD forms of an accented name on APFS, count as different locks: the second acquire waits
+forever instead of raising. ``is_singleton=True`` keys on the same spelling, so spell each lock path one way.
 
 ************************
  How file locking works
@@ -147,7 +156,9 @@ link, and publishes a unique held claim only after it wins the intent order. The
 keeps both its intent and its held claim for the whole hold: the intent has existed unchanged since the winner
 published it, so a contender's directory scan is guaranteed to observe it, whereas a scan racing the freshly linked held
 claim may miss it. That stable witness is what keeps two contenders from both reading themselves as the lowest claim.
-Release removes both claims by name, so it cannot detach or delete a successor at another pathname.
+Release removes both claims by name, so it cannot detach or delete a successor at another pathname. There is no
+queue: whichever contender next finds the claim directory empty wins, so a waiter can be passed over while others
+re-acquire.
 
 .. versionadded:: 3.30.0
 
@@ -164,9 +175,16 @@ mount and server combination passes the protocol tests. Linux documents the hard
 <https://man7.org/linux/man-pages/man2/open.2.html>`_; Microsoft documents NTFS hard links in `Hard Links and Junctions
 <https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions>`_.
 
+A ``link()`` that fails with ``EEXIST`` still counts as published when the claim name now resolves to the contender's
+own record. NFS retransmits a request whose reply was lost, and the retry reports ``EEXIST`` for the link the first
+request made; ``open(2)`` and liblockfile check the same way.
+
 Strict locks do not infer that an owner died. An orphaned, damaged, or newer-version claim blocks entry. filelock
-therefore avoids overlapping a paused holder at the cost of operator recovery after a crash. See
-:ref:`how-to:Use fail-closed soft locks` for inspection and recovery.
+therefore avoids overlapping a paused holder at the cost of operator recovery after a crash. A strict lock also removes
+nothing it finds at the lock path in place of its sentinel. A soft-lock marker whose owner on this host has exited, a
+directory or symlink, or a file it cannot parse that stays unchanged for two seconds makes acquisition raise
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming it. See :ref:`how-to:Use fail-closed soft
+locks` for inspection and recovery.
 
 Private publication records are not ownership claims. Each attempt uses a fresh random name. Linked private names are
 discarded immediately, while unlinked records left by a crash receive a two-second grace period before reclamation.
@@ -210,6 +228,12 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     Lock file cleanup: the native lock file remains after release. A persistent empty file does not indicate ownership.
     Keeping one pathname prevents contenders from coordinating through different inodes, which would break mutual
     exclusion; remove the file only after the complete lock protocol has stopped using it.
+
+    Filesystems without ``flock``: when ``flock`` fails with ``ENOSYS``, the lock switches to :class:`SoftFileLock
+    <filelock.SoftFileLock>` and emits a warning, unless constructed with ``fallback_to_soft=False``. Before switching it
+    removes the empty file only if this acquire created it. A file that already existed may be another process's soft
+    marker, so it stays: the soft lock waits on a live holder and reclaims an empty leftover once it has stayed
+    unchanged for two seconds.
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,
@@ -393,6 +417,8 @@ For example, this code has a TOCTOU vulnerability:
 
 .. code-block:: python
 
+    import os
+
     if os.path.exists("sensitive.txt"):  # Check
         data = open("sensitive.txt").read()  # Use (race window here!)
 
@@ -401,12 +427,17 @@ different file.
 
 How filelock mitigates this:
 
-:class:`SoftFileLock <filelock.SoftFileLock>` on systems without ``O_NOFOLLOW`` support may be vulnerable. But on most
-modern platforms (Linux, macOS, Windows), ``O_NOFOLLOW`` is supported, and filelock uses it to refuse following
-symlinks.
+The defense differs by platform:
 
-On older platforms without ``O_NOFOLLOW``, prefer :class:`UnixFileLock <filelock.UnixFileLock>` or
-:class:`WindowsFileLock <filelock.WindowsFileLock>` for security-sensitive applications.
+- On Unix, filelock opens lock files with ``O_NOFOLLOW``, so a symlink planted at the lock path makes the open fail
+  instead of reaching its target.
+- Windows has no ``O_NOFOLLOW``. :class:`WindowsFileLock <filelock.WindowsFileLock>` opens the file without following
+  reparse points and rejects a symlink or junction by inspecting the handle it locks, so a swap between check and use
+  cannot redirect it. Only the last path component is guarded; the lock directory must not be writable by untrusted
+  users.
+- :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL``, which fails on any
+  existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
+  file as malformed, then checks the opened handle again with ``fstat``.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path and keeps SQLite on the file it
 checked, so a link planted in a shared directory cannot point the lock at another file.
@@ -553,14 +584,22 @@ linearizable and must reject any operation carrying a fencing generation lower t
 Chubby's lock sequence number and ZooKeeper's ``zxid`` are checked by the resource, not the client. A token names a
 claim; only a generation the resource validates can fence one.
 
+A lease expires on the contender's own clock. The holder's heartbeat rewrites the marker's modification time, and a
+contender times how long that time stays the same on its ``time.monotonic()``, the rule :class:`SoftReadWriteLock
+<filelock.SoftReadWriteLock>` applies to its nonce. The marker's ``mtime`` carries the writer's or the file server's
+clock, so the contender only compares it with its own earlier reading, never with its wall clock: skew between hosts
+cannot expire a live claim. In exchange a contender that first sees a long-abandoned marker still waits a full
+``lease_duration`` before taking it, and the filesystem must store modification times finer than ``lease_duration``.
+
 Malformed and legacy markers
 ============================
 
 A soft lock treats a record it cannot parse as malformed, not as a holder. A plain :class:`SoftFileLock
-<filelock.SoftFileLock>` self-heals a malformed marker once it ages past a short grace window, which absorbs the brief
-gap between creating a marker and writing its record. A strict lock never age-breaks, so it fails closed on an
-unreadable claim. A marker written by an older filelock stays readable: the process start token is an integer, so a 3.29
-reader parses a newer marker as well-formed and stays conservative rather than evicting a live holder.
+<filelock.SoftFileLock>` self-heals a malformed marker once it has watched it stay unchanged for a short grace window on
+its own monotonic clock, which absorbs the brief gap between creating a marker and writing its record. A strict lock
+never age-breaks, so it fails closed on an unreadable claim. A marker written by an older filelock stays readable: the
+process start token is an integer, so a 3.29 reader parses a newer marker as well-formed and stays conservative rather
+than evicting a live holder.
 
 Filesystem support matrix
 =========================
@@ -588,8 +627,8 @@ visibility to every participating process. The table records where that has been
      - Verified in CI
      - A CI lane exports a loopback NFS share, mounts it twice with ``nosharecache`` so the two mounts are independent
        client caches over one server, then contends several processes across both caches and records every hold
-       interval. The gate enforces :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`, which hands off fairly
-       through its claim queue and finishes every hold with no overlap on both NFSv4 and NFSv3 (retrying the transient
+       interval. The gate enforces :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`, which finishes every
+       hold without overlap, though not in arrival order, on both NFSv4 and NFSv3 (retrying the transient
        ``ESTALE`` that NFSv3 raises under claim churn). Use it on NFS. The other locks are unsafe or unreliable there
        and the lane records why: native ``flock`` does **not** exclude across NFS client caches — the verifier catches
        overlapping holders — and the poll-based :class:`SoftFileLock <filelock.SoftFileLock>` excludes but starves out
@@ -615,7 +654,7 @@ two holders. If you relied on timed breaking to recover from crashes while belie
 of the explicit contracts: :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` for real exclusion with an operator
 break for crash recovery, or :class:`SoftFileLease <filelock.SoftFileLease>` when overlap is acceptable and you fence the
 protected resource. The age-based ``lifetime`` on :class:`SoftFileLock <filelock.SoftFileLock>` remains for backward
-compatibility and warns at construction.
+compatibility and warns at construction with a :class:`FutureWarning`, which Python shows by default.
 
 *******************
  Design trade-offs
@@ -642,8 +681,41 @@ is a recycled PID, so the process that wrote the marker is gone; a live PID whos
 cannot be read, and a marker from another host all read as held. The start token is ``kill(pid, 0)`` plus the
 ``starttime`` from ``/proc/<pid>/stat`` folded with the boot id on Linux, ``sysctl`` process start time on macOS, and the
 ``GetProcessTimes`` creation time on Windows. A malformed or unparsable record follows a separate rule: a waiter may
-remove it after two seconds, so a half-written marker never wedges acquisition. This is the rule PostgreSQL, Qt
-``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
+remove it once it has seen it unchanged for two seconds, so a half-written marker never wedges acquisition. This is the
+rule PostgreSQL, Qt ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
+
+Breaking a marker leaves a short window. Right before breaking it the contender reads the marker's inode and
+modification time again and leaves it alone if they moved since the stale check, the way Mercurial re-reads a lock under
+its break lock before removing it. It then renames the marker to a private ``<lock>.break.*`` name, so only one of
+several breakers takes it, and checks the renamed file's inode and modification time once more. A mismatch means a peer
+recreated the marker between that last read and the rename, so the contender hard-links that live marker back to the
+lock path and drops the break name. A third process that takes the empty path in the two syscalls between the rename
+and the link keeps it, whether a soft lock creating its marker or a :class:`StrictSoftFileLock
+<filelock.StrictSoftFileLock>` publishing its sentinel, and the live marker stays under the break name. Both then hold
+the lock. Mercurial
+closes this window by serializing breakers on a separate ``<lock>.break`` lock; filelock does not, because a breaker that
+crashes would leave that lock needing stale detection of its own and a 3.29 peer never takes it. Where ``os.link`` is
+missing or the filesystem refuses hard links, the live marker stays under the break name. The same applies to the
+``lifetime`` and :class:`SoftFileLease <filelock.SoftFileLease>` expiry breaks.
+
+A PID means something only inside its PID namespace, and two containers in one pod share the hostname and the boot id
+without sharing one. On Linux the recorded hostname therefore names the namespace too, as ``<host>?pidns-<inode>`` with
+the inode of ``/proc/self/ns/pid`` in hex, the way Mercurial's lock prefix does. A contender in a sibling container
+reads the marker as foreign and waits instead of probing a PID that names another process there. A process in the
+host's initial namespace records the bare hostname, as earlier releases did. The namespace cannot be folded into the
+start token instead: a 3.30 reader compares the whole token and would read any new one as a recycled PID.
+
+A release before the namespace was recorded wrote the bare hostname from inside a container too, so a contender in the
+host's namespace reads such a marker from a container that shares the hostname (host networking) as local, where its PID
+names another process or none. Before it calls that owner dead it looks for a task in another namespace whose innermost
+PID (``NSpid`` in ``/proc/<pid>/status``) and start token match the record, since ``starttime`` and the boot id are
+kernel-wide, and keeps the marker if one exists. Three limits remain. A marker without a start token, a kernel before
+4.1 without ``NSpid``, or a ``/proc`` this process cannot list leaves the check nothing to find. Where
+``/proc/self/ns/pid`` cannot be read, the bare hostname is all that separates namespaces. And a contender never reclaims
+a marker from another namespace: a container that crashes and is replaced comes back in a new namespace. A
+:class:`~filelock.Timeout` names such a holder. Containers that can crash while holding a soft lock should use
+:class:`SoftFileLease <filelock.SoftFileLease>`, set ``lifetime``, or call ``break_lock()`` at entrypoint once nothing
+else can hold the path.
 
 Why is ReadWriteLock backed by SQLite?
 ======================================
@@ -672,8 +744,17 @@ Deploy it on a shared filesystem only after verifying its required operations an
 
 - ``<path>.rw/gen/<N>`` is an immutable snapshot: the writer token, if any, and the reader tokens holding the lock at
   generation ``N``. Names are zero-padded so the newest sorts last.
-- ``<path>.rw/holders/<token>`` is one record per participant, carrying its token, pid, hostname, and a nonce the
-  heartbeat rewrites in place.
+- ``<path>.rw/gen/epoch`` is a random token the first participant creates, naming this incarnation of the log the way
+  restic's repository id and PostgreSQL's system identifier name theirs. Removing the directory removes it.
+- ``<path>.rw/gen/HEAD`` is the epoch followed by a copy of the newest snapshot, replaced by rename after every commit.
+  Within one epoch a crash between the link and the rename, or two committers' renames landing out of order, leaves it
+  behind the head, never ahead. A rename that lands after the log was removed carries the old epoch, and readers ignore
+  it. Unlike a snapshot it is not flushed to stable storage, so a crash can leave it unreadable; readers then start
+  from the listing and the probe.
+- ``<path>.rw/holders/<token>`` is one record per participant, carrying its token, pid, hostname, its
+  ``stale_threshold`` as a lease, and a nonce the heartbeat rewrites in place. A peer evicts the participant only once
+  the record has stayed unchanged for the longer of its own threshold and that lease, as the `DynamoDB lock client
+  <https://github.com/awslabs/amazon-dynamodb-lock-client>`_ waits out the lease the holder recorded.
 
 Every transition (a reader entering, a writer entering, anyone leaving, a stale member being evicted) is one commit: the
 participant reads the latest snapshot, writes the successor it wants to a private temporary file, and hard-links that
@@ -682,13 +763,22 @@ re-reads and tries again, and the record is complete before the name exists. The
 critical section for a crash on any host to leave half done. A dead process leaves behind either a snapshot that still
 names it, which a contender evicts, or an orphaned record, which a sweep collects.
 
-A participant finds the latest generation by listing the directory on each poll, which makes an NFS client revalidate
-what it has cached about the names inside, then probing forward by name from the newest readable generation the listing
-or its memory names, across a window of sixty-four generations. Compaction removes snapshots more than that window
-behind the latest, so the probe bridges a listing served stale, a generation removed between the listing and the read,
-and a hole left by a committer that died before it compacted. A listing that names generations of which none can be
-read marks a client too far behind the log to trust anything it reads; the acquire then raises
-:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` rather than restart the sequence.
+A participant finds the latest generation by reading the newest generation that ``gen/HEAD``, its listing of the
+directory, or its memory names, then probing forward by name across a window of sixty-four generations. The probe
+bridges a generation removed between the listing and the read and a hole left by a committer that died before it
+compacted. It is not a bound on how stale a listing may be: an NFS client may serve a directory listing and negative
+lookups from its cache for up to ``acdirmax`` (60 seconds by default), long enough for peers to compact far past the
+window. ``HEAD`` covers that case, because opening a file by name makes the client check it against the server
+(close-to-open consistency), so a stale listing can never pull the start below the head the last commit published.
+``HEAD`` and memory only say where to look. The participant reads the generation they name from disk like any other,
+because a committer stalled between its link and its rename can put ``HEAD`` back on a generation peers have compacted
+since. When the generation ``HEAD`` names does read back, the window past it has no holes, so the probe stops at the
+first missing name. Both are bound to the epoch, so an instance never continues a removed log's numbering into its
+replacement. A listing, ``HEAD`` or memory that names generations of which none can be read marks a client too far
+behind the log to trust anything it reads; the acquire then raises :class:`SoftFileLockProtocolError
+<filelock.SoftFileLockProtocolError>` rather than restart the sequence. A commit also re-reads the epoch and checks that
+the generation it extends still exists, and counts as lost otherwise, so the participant re-reads the log instead of
+linking into a new one or into a slot compaction freed.
 
 Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
 new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers
@@ -833,9 +923,10 @@ that nonce has sat unchanged for a full ``stale_threshold``. The writer's token 
         Note over B: granted at generation 10, the crashed writer's holder record collected
 
 The generation a hold was granted at is :attr:`generation <filelock.SoftReadWriteLock.generation>`, a monotonic fencing
-token: a resource that rejects writes carrying a lower generation than the highest it has accepted refuses a holder that
-paused past ``stale_threshold``, was evicted, and resumed. The lock itself cannot stop that holder, so
-``stale_threshold`` must still exceed any realistic pause a holder might hit (GC, syscall delay, filesystem delay).
+token within one incarnation of the log: a resource that rejects writes carrying a lower generation than the highest it
+has accepted refuses a holder that paused past ``stale_threshold``, was evicted, and resumed. The lock itself cannot
+stop that holder, so ``stale_threshold`` must still exceed any realistic pause a holder might hit (GC, syscall delay,
+filesystem delay).
 
 The protocol needs atomic no-replace hard links, exclusive creation, and a coherent read of a file opened by name. NFSv3
 and later provide all three, and Amazon EFS is NFSv4.1. Where the filesystem refuses hard links the lock raises
@@ -864,13 +955,15 @@ By default, filelock does not set explicit permissions on the lock file (``mode=
 permissions through umask and default ACLs. In shared directories with POSIX default ACLs, this preserves ACL
 inheritance so the lock file gets the directory's default permissions rather than the creating user's umask.
 
-When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock uses that value directly via ``os.open``. This
-overrides any default ACLs on the directory.
+When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock creates the file with it. On Unix,
+:class:`UnixFileLock <filelock.UnixFileLock>` and :class:`SoftFileLock <filelock.SoftFileLock>` then apply it with
+``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory.
 
-An explicit ``mode`` must grant the owner read and write, or construction raises :class:`ValueError`. A lock reopens,
-reads, and deletes the files it creates, so without those bits it fails later and stays broken: a native lock on its
-second acquire, a :class:`~filelock.StrictSoftFileLock` on its first, and a :class:`~filelock.SoftFileLock` when it
-tries to reclaim a crashed holder's marker.
+An explicit ``mode`` must be an :class:`int` within ``0o000``-``0o777`` that grants the owner read and write;
+construction raises :class:`TypeError` for another type and :class:`ValueError` otherwise. A lock reopens, reads, and
+deletes the files it creates, so without those bits it fails later and stays broken: a native lock on its second
+acquire, a :class:`~filelock.StrictSoftFileLock` on its first, and a :class:`~filelock.SoftFileLock` when it tries to
+reclaim a crashed holder's marker.
 
 *****************************
  Thread-local vs shared state
@@ -891,6 +984,9 @@ each thread gets its own context via ``threading.local``. This means:
   thread accesses the context.
 - ``mode`` is the one exception: it has no setter, so construction is the only
   place it is ever set and ``lock.mode = ...`` raises ``AttributeError``.
+- The instance still keeps track of every thread's hold. ``release(force=True)``
+  also releases holds left by threads that exited, and garbage collecting the
+  lock releases every thread's hold.
 
 When ``thread_local=False``, all threads share the same context, including
 configuration values. This is useful for objects passed between threads or

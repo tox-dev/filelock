@@ -4,13 +4,21 @@ import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolated interpreters control at-fork registration order
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 from capabilities import CAPABILITIES
 
 from filelock import BaseFileLock, Timeout, has_fcntl
-from tests.capability_marks import NEEDS_AUDIT_EVENTS, NEEDS_FORK, NEEDS_FORK1
+from filelock._api import _fork_transition
+from tests.capability_marks import (
+    NEEDS_AUDIT_EVENTS,
+    NEEDS_FORK,
+    NEEDS_FORK1,
+    NEEDS_PROMPT_FINALIZATION,
+    NEEDS_REGISTER_AT_FORK,
+)
 from tests.fork_helpers import exit_child, fork_process
 
 if TYPE_CHECKING:
@@ -168,6 +176,41 @@ if second_status != 0 or owner.is_alive() or statuses.get(timeout=1) != 0:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@NEEDS_REGISTER_AT_FORK  # pragma: needs register-at-fork
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("held", [pytest.param("gate", id="gate"), pytest.param("registry_lock", id="registry-lock")])
+def test_lock_finalized_at_exit_skips_fork_bookkeeping_a_frozen_daemon_thread_holds(tmp_path: Path, held: str) -> None:
+    # Daemon threads stop wherever they are at exit; one stopped inside the fork bookkeeping keeps its lock forever.
+    # The lock lives in a module of its own: the daemon thread's function keeps __main__'s globals alive past exit.
+    script: Final = """
+import sys, threading, types
+from filelock import FileLock
+from filelock._api import _FORK_STATE
+
+inside = threading.Event()
+
+def stop_inside_fork_bookkeeping():
+    with getattr(_FORK_STATE, sys.argv[2]):
+        inside.set()
+        threading.Event().wait()
+
+holder = sys.modules["holder"] = types.ModuleType("holder")
+holder.lock = FileLock(sys.argv[1])
+holder.lock.acquire()
+threading.Thread(target=stop_inside_fork_bookkeeping, daemon=True).start()
+inside.wait()
+"""
+    result: Final = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "a"), held],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert (result.returncode, result.stderr) == (0, "")
 
 
 @NEEDS_FORK  # pragma: needs fork
@@ -1204,3 +1247,12 @@ def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) 
     worker.join(timeout=5)
 
     assert (os.waitstatus_to_exitcode(status), worker.is_alive()) == (0, False)
+
+
+@NEEDS_FORK
+def test_fork_transition_finished_on_another_thread_releases_the_entering_thread() -> None:  # pragma: needs fork
+    # A generator suspended inside a transition can be finalized on any thread.
+    transition: Final = _fork_transition()
+    transition.__enter__()  # ruff:ignore[unnecessary-dunder-call]  # entered and left on different threads
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(transition.__exit__, None, None, None).result()

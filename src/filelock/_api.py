@@ -13,10 +13,12 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from collections.abc import Callable, Hashable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from decimal import Decimal
 from itertools import count, starmap
-from threading import Condition, RLock, get_ident, local
-from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypedDict, TypeVar, cast
+from numbers import Real
+from threading import TIMEOUT_MAX, Condition, RLock, Thread, current_thread, get_ident, local
+from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
 from ._error import SoftFileLockLifetimeWarning, Timeout
@@ -25,6 +27,8 @@ from ._util import break_lock_file
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
 _UNSET_FILE_MODE: Final[int] = -1
+
+_PERMISSION_BITS: Final[int] = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
 
 #: Ceiling on the retry counter used as a power of two, so a long contended wait cannot overflow the backoff multiply.
 _MAX_BACKOFF_EXPONENT: Final[int] = 20
@@ -39,11 +43,12 @@ _CLOSE_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"default", "raise", "s
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping
-    from types import TracebackType
+    from types import FrameType, TracebackType
     from typing import Protocol
 
     from _typeshed import Unused
 
+    from ._lease import _LeaseClaim
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
 
@@ -67,10 +72,7 @@ if TYPE_CHECKING:
             after_in_child: Callable[[], None] | None = None,
         ) -> None: ...
 
-    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-        from typing import Self
-    else:  # pragma: no cover (<py311)
-        from typing_extensions import Self
+    from typing import Self
 
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 _REGISTER_AT_FORK: Final[_RegisterAtFork | None] = cast("_RegisterAtFork | None", getattr(os, "register_at_fork", None))
@@ -99,17 +101,8 @@ class LockOptions(TypedDict, total=False):
     on_acquired: Callable[[int], None] | None
 
 
-def _exception_group_cls() -> type[BaseException]:
-    # BaseExceptionGroup is a builtin on 3.11+; on 3.10 it needs the exceptiongroup backport. filelock keeps zero
-    # runtime dependencies, so the backport is imported lazily rather than required, and only group mode needs it.
-    if sys.version_info >= (3, 11):  # pragma: no cover (py311+)
-        return BaseExceptionGroup  # ruff:ignore[undefined-name]  # builtin on 3.11+
-    # Alias the import so BaseExceptionGroup above stays the builtin rather than an unbound local of this function.
-    from exceptiongroup import (  # ruff:ignore[import-outside-top-level]  # pragma: no cover (<py311)
-        BaseExceptionGroup as _Backport,
-    )
-
-    return _Backport  # pragma: no cover (<py311)
+def _is_exception_group(error: BaseException) -> bool:
+    return isinstance(error, BaseExceptionGroup)
 
 
 def _raise_grouped_errors(
@@ -121,7 +114,7 @@ def _raise_grouped_errors(
 ) -> NoReturn:
     errors = (first_error, second_error, *additional_errors)
     _detach_grouped_contexts(errors)
-    group = _exception_group_cls()(message, errors)
+    group: Final = BaseExceptionGroup(message, errors)
     if marker is not None:
         setattr(group, marker[0], marker[1])
     raise group from None
@@ -145,7 +138,7 @@ def _detach_grouped_contexts(errors: tuple[BaseException, ...]) -> None:
             pending.append(context)
         if error.__cause__ is not None:
             pending.append(error.__cause__)
-        if isinstance(error, _exception_group_cls()):
+        if _is_exception_group(error):
             pending.extend(cast("_ExceptionGroupProtocol", error).exceptions)
 
 
@@ -161,8 +154,8 @@ def _same_exception_tree(first: BaseException, second: BaseException) -> bool:
         seen.add(pair)
         if (
             type(first_error) is not type(second_error)
-            or not isinstance(first_error, _exception_group_cls())
-            or not isinstance(second_error, _exception_group_cls())
+            or not _is_exception_group(first_error)
+            or not _is_exception_group(second_error)
         ):
             return False
         first_group = cast("_ExceptionGroupProtocol", first_error)
@@ -174,7 +167,7 @@ def _same_exception_tree(first: BaseException, second: BaseException) -> bool:
 
 
 def _contains_exception(error: BaseException, target: BaseException | None) -> bool:
-    if target is None or not isinstance(error, _exception_group_cls()):
+    if target is None or not _is_exception_group(error):
         return False
     pending = list(cast("_ExceptionGroupProtocol", error).exceptions)
     seen: set[int] = set()
@@ -185,7 +178,7 @@ def _contains_exception(error: BaseException, target: BaseException | None) -> b
         if id(child) in seen:
             continue
         seen.add(id(child))
-        if isinstance(child, _exception_group_cls()):
+        if _is_exception_group(child):
             pending.extend(cast("_ExceptionGroupProtocol", child).exceptions)
     return False
 
@@ -220,7 +213,7 @@ def _exception_graph_contains(error: BaseException, target: BaseException) -> bo
             pending.append(current.__cause__)
         if current.__context__ is not None:
             pending.append(current.__context__)
-        if isinstance(current, _exception_group_cls()):
+        if _is_exception_group(current):
             pending.extend(cast("_ExceptionGroupProtocol", current).exceptions)
     return False
 
@@ -228,7 +221,7 @@ def _exception_graph_contains(error: BaseException, target: BaseException) -> bo
 def _grouped_errors(
     error: BaseException, message: str, marker: tuple[str, _MarkerValue]
 ) -> tuple[BaseException, ...] | None:
-    if not isinstance(error, _exception_group_cls()):
+    if not _is_exception_group(error):
         return None
     group = cast("_ExceptionGroupProtocol", error)
     return group.exceptions if group.message == message and getattr(group, marker[0], None) is marker[1] else None
@@ -282,7 +275,7 @@ def _detach_exception_context(error: BaseException, target: BaseException) -> No
             pending.append(current.__context__)
         if current.__cause__ is not None:
             pending.append(current.__cause__)
-        if isinstance(current, _exception_group_cls()):
+        if _is_exception_group(current):
             pending.extend(cast("_ExceptionGroupProtocol", current).exceptions)
 
 
@@ -336,6 +329,7 @@ _registry: Final[_ThreadLocalRegistry] = _ThreadLocalRegistry()
 
 
 _T = TypeVar("_T", bound="BaseFileLock")
+_LockT = TypeVar("_LockT", bound="BaseFileLock | ReadWriteLock | SoftReadWriteLock")
 
 
 class FileLockMeta(ABCMeta):
@@ -366,34 +360,37 @@ class FileLockMeta(ABCMeta):
         poll_interval = _resolve_poll_interval(poll_interval)
         # Validate before building the instance: a raise inside __init__ would leave a half-constructed object whose
         # __del__ then trips over the missing context.
-        # A lock reopens, reads, or deletes the files it creates, so a mode that denies the owner read or write fails
-        # later and for good.
-        if mode != _UNSET_FILE_MODE and ~mode & (stat.S_IRUSR | stat.S_IWUSR):
-            msg = f"mode={mode:#o} must grant the owner read and write for {cls.__name__}"
-            raise ValueError(msg)
+        _check_blocking(blocking)
+        # nan is left to acquire, which knows whether the call blocks; a non-blocking call ignores the timeout.
+        timeout = _seconds("timeout", timeout)
+        _check_mode(mode, cls.__name__)
         context_error_policy = _resolve_context_error_policy(context_error_policy)
         close_error_policy = _resolve_close_error_policy(close_error_policy)
         preserve_lock_file = _resolve_preserve_lock_file(
             preserve=preserve_lock_file, supported=cls._preserve_lock_file_supported, cls_name=cls.__name__
         )
         on_acquired = _resolve_on_acquired(on_acquired, supported=cls._on_acquired_supported, cls_name=cls.__name__)
-        params: dict[str, _LockInitValue | _ExtraValue] = {
-            "timeout": timeout,
-            "mode": mode,
-            "thread_local": thread_local,
-            "blocking": blocking,
-            "is_singleton": is_singleton,
-            "poll_interval": poll_interval,
-            "lifetime": lifetime,
-            "context_error_policy": context_error_policy,
-            "close_error_policy": close_error_policy,
-            "fallback_to_soft": fallback_to_soft,
-            "preserve_lock_file": preserve_lock_file,
-            "on_acquired": on_acquired,
-            **kwargs,
-        }
+        # Checked before the singleton lookup so a cache hit rejects a misspelled option just like a fresh build does.
+        params: Final = _supported_init_params(
+            cls,
+            {
+                "timeout": timeout,
+                "mode": mode,
+                "thread_local": thread_local,
+                "blocking": blocking,
+                "is_singleton": is_singleton,
+                "poll_interval": poll_interval,
+                "lifetime": lifetime,
+                "context_error_policy": context_error_policy,
+                "close_error_policy": close_error_policy,
+                "fallback_to_soft": fallback_to_soft,
+                "preserve_lock_file": preserve_lock_file,
+                "on_acquired": on_acquired,
+                **kwargs,
+            },
+        )
         if not is_singleton:
-            return cls._create_instance(lock_file, params)
+            return super().__call__(lock_file, **params)
 
         # Look up, build and store under one lock. Without it two threads racing the first construction for a
         # path both miss the cache and each build their own instance, so callers relying on is_singleton for
@@ -412,7 +409,7 @@ class FileLockMeta(ABCMeta):
                 construction_pid = os.getpid()
                 construction_registry.add(singleton_key)
                 try:
-                    instance = cls._create_instance(lock_file, params)
+                    instance = super().__call__(lock_file, **params)
                 finally:
                     construction_registry.discard(singleton_key)
                 if os.getpid() != construction_pid:  # pragma: needs fork
@@ -421,21 +418,24 @@ class FileLockMeta(ABCMeta):
                 cls._instances[singleton_key] = instance
                 return instance
 
-        params_to_check = {
-            "thread_local": (thread_local, instance.is_thread_local()),
-            "timeout": (timeout, instance.timeout),
-            "mode": (mode, instance._context.mode),  # ruff:ignore[private-member-access]  # compares against the managed instance's own context
-            "blocking": (blocking, instance.blocking),
-            "poll_interval": (poll_interval, instance.poll_interval),
-            "lifetime": (lifetime, instance.lifetime),
-            "context_error_policy": (context_error_policy, instance.context_error_policy),
-            "close_error_policy": (close_error_policy, instance.close_error_policy),
-            "fallback_to_soft": (fallback_to_soft, instance.fallback_to_soft),
-            "preserve_lock_file": (preserve_lock_file, instance.preserve_lock_file),
-        }
         non_matching_params = {
             name: (str(passed_param), str(set_param))
-            for name, (passed_param, set_param) in params_to_check.items()
+            for name, (passed_param, set_param) in {
+                "thread_local": (thread_local, instance.is_thread_local()),
+                # Compare the wait, not the value: nan never equals itself, and -1, -5 and inf all mean no limit.
+                "timeout": (
+                    _timeout_behavior(timeout, any_negative=True),
+                    _timeout_behavior(instance.timeout, any_negative=True),
+                ),
+                "mode": (mode, instance._context.mode),  # ruff:ignore[private-member-access]  # compares against the managed instance's own context
+                "blocking": (blocking, instance.blocking),
+                "poll_interval": (poll_interval, instance.poll_interval),
+                "lifetime": (lifetime, instance.lifetime),
+                "context_error_policy": (context_error_policy, instance.context_error_policy),
+                "close_error_policy": (close_error_policy, instance.close_error_policy),
+                "fallback_to_soft": (fallback_to_soft, instance.fallback_to_soft),
+                "preserve_lock_file": (preserve_lock_file, instance.preserve_lock_file),
+            }.items()
             if passed_param != set_param
         }
         # The metaclass owns the instance it returns, so reading the subclass hook stays inside this module's contract.
@@ -454,27 +454,157 @@ class FileLockMeta(ABCMeta):
             msg += f"\n\ton_acquired (existing lock has {instance.on_acquired} but {on_acquired} was passed)"
         raise ValueError(msg)
 
-    def _create_instance(
-        cls: type[_T], lock_file: str | os.PathLike[str], params: dict[str, _LockInitValue | _ExtraValue]
-    ) -> _T:
-        model = _init_parameter_model(cls)
-        if model.accepts_kwargs:
-            return super().__call__(lock_file, **params)
 
-        unsupported = sorted(
-            name
-            for name, value in params.items()
-            if name not in model.accepted_params
-            and ((parameter := model.default_params.get(name)) is None or value != parameter.default)
+def _resolve_lifetime(lifetime: float | None, cls: type[BaseFileLock], *, stacklevel: int) -> float | None:
+    """
+    Validate ``lifetime`` and drop a value the backend cannot honor.
+
+    ``lifetime`` is a deliberate age-based lease: a lock file older than ``lifetime`` is broken even while its holder is
+    still alive. Existence locks (:class:`SoftFileLock`) implement that behavior by unlinking a reclaimable pathname,
+    which can overlap a live holder. A native OS lock lives on the inode, so unlinking the pathname by age cannot revoke
+    the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590). Ignore the request with a
+    warning rather than accept a setting that breaks mutual exclusion.
+    """
+    if lifetime is None:
+        return None
+    # An int stays exact: no float holds every int 4.0.12 accepted here.
+    if isinstance(lifetime, bool) or not isinstance(lifetime, int):
+        lifetime = _seconds("lifetime", lifetime)
+    if lifetime < 0 or (isinstance(lifetime, float) and not math.isfinite(lifetime)):
+        msg = f"lifetime must be finite and non-negative, not {lifetime!r}"
+        raise ValueError(msg)
+    if not cls._lifetime_supported:
+        warnings.warn(
+            f"lifetime is ignored for {cls.__name__}: {cls._lifetime_unsupported_reason}; "
+            f"only SoftFileLock supports lifetime-based expiry",
+            stacklevel=stacklevel,
         )
-        if unsupported:
-            msg = f"{cls.__name__} does not support non-default lock options: {', '.join(unsupported)}"
-            raise TypeError(msg)
-        # virtualenv narrows a BaseFileLock descendant's signature; omit base defaults it does not accept (#340).
-        return super().__call__(
-            lock_file,
-            **{name: value for name, value in params.items() if name in model.accepted_params},
+        return None
+    if cls._lifetime_replacements is not None:
+        strict_lock, lease = cls._lifetime_replacements
+        warnings.warn(
+            f"{cls.__name__}(lifetime=...) uses age-based expiry and can overlap a live holder; "
+            f"use {lease} for expiry or {strict_lock} for fail-closed locking",
+            SoftFileLockLifetimeWarning,
+            stacklevel=stacklevel,
         )
+    return lifetime
+
+
+def _resolve_poll_interval(poll_interval: float) -> float:
+    """Validate ``poll_interval`` used for ``time.sleep`` / ``asyncio.sleep`` retries."""
+    if (poll_interval := _seconds("poll_interval", poll_interval)) < 0 or not math.isfinite(poll_interval):
+        msg = f"poll_interval must be finite and non-negative, not {poll_interval!r}"
+        raise ValueError(msg)
+    _check_timeout_max("poll_interval", poll_interval)
+    return poll_interval
+
+
+def _check_blocking(blocking: bool) -> None:  # ruff:ignore[boolean-type-hint-positional-argument]  # validates the option's own value
+    if not isinstance(blocking, bool):
+        msg = f"blocking must be a bool, not {type(blocking).__name__}"
+        raise TypeError(msg)
+
+
+def _seconds(name: str, value: float) -> float:
+    # 4.0.12 accepted Decimal and Fraction; a bool is a typo, and a string would only fail later.
+    if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
+        msg = f"{name} must be a number of seconds, not {type(value).__name__}"
+        raise TypeError(msg)
+    # float() refuses a signaling NaN, which means no number of seconds just as a quiet one does.
+    if isinstance(value, Decimal) and value.is_snan():
+        return math.nan
+    try:
+        seconds: Final = float(value)
+    except OverflowError:
+        msg = f"{name} is too large to be a number of seconds: {value!r}"
+        raise ValueError(msg) from None
+    # float() rounds a tiny negative to -0.0, which compares as zero, yet timeout and lifetime checks read the sign.
+    return -math.ulp(0.0) if seconds == 0 and value < 0 else seconds
+
+
+def _check_mode(mode: int, cls_name: str) -> None:
+    if mode == _UNSET_FILE_MODE:
+        return
+    if isinstance(mode, bool) or not isinstance(mode, int):
+        msg = f"mode must be an int, not {type(mode).__name__}"
+        raise TypeError(msg)
+    # A lock file is never executed, so setuid, setgid and sticky have no meaning on it and only widen its permissions.
+    if not 0 <= mode <= _PERMISSION_BITS:
+        msg = f"mode={mode:#o} must be within 0o000-0o777 for {cls_name}"
+        raise ValueError(msg)
+    # A lock reopens, reads, or deletes the files it creates, so a mode that denies the owner read or write fails later
+    # and for good.
+    if ~mode & (stat.S_IRUSR | stat.S_IWUSR):
+        msg = f"mode={mode:#o} must grant the owner read and write for {cls_name}"
+        raise ValueError(msg)
+
+
+def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
+    if policy not in _CONTEXT_ERROR_POLICIES:
+        msg = f"context_error_policy must be 'chain' or 'group', got {policy!r}"
+        raise ValueError(msg)
+    return cast("ContextErrorPolicy", policy)
+
+
+def _resolve_close_error_policy(policy: str) -> CloseErrorPolicy:
+    if policy not in _CLOSE_ERROR_POLICIES:
+        msg = f"close_error_policy must be 'default', 'raise', or 'suppress', got {policy!r}"
+        raise ValueError(msg)
+    return cast("CloseErrorPolicy", policy)
+
+
+def _resolve_preserve_lock_file(*, preserve: bool, supported: bool, cls_name: str) -> bool:
+    # An existence lock unlinks its marker to release, so preserving the pathname would defeat unlocking. Reject the
+    # request rather than silently ignore it, since a caller asking for a stable identity must know it cannot be kept.
+    if preserve and not supported:
+        msg = f"preserve_lock_file=True is not supported by {cls_name}: unlinking its marker is how it releases"
+        raise ValueError(msg)
+    return preserve
+
+
+def _resolve_on_acquired(
+    on_acquired: Callable[[int], None] | None, *, supported: bool, cls_name: str
+) -> Callable[[int], None] | None:
+    if on_acquired is None:
+        return None
+    # An existence lock stores protocol state in its marker, so a caller writing through the descriptor would corrupt
+    # stale detection and ownership metadata; only native locks lend out the descriptor.
+    if not supported:
+        msg = f"on_acquired is not supported by {cls_name}: only native locks expose the lock descriptor"
+        raise ValueError(msg)
+    return on_acquired
+
+
+def _supported_init_params(
+    cls: type[BaseFileLock], params: dict[str, _LockInitValue | _ExtraValue]
+) -> dict[str, _LockInitValue | _ExtraValue]:
+    if (model := _init_parameter_model(cls)).accepts_kwargs:
+        return params
+    if unsupported := sorted(
+        name
+        for name, value in params.items()
+        if name not in model.accepted_params
+        and ((parameter := model.default_params.get(name)) is None or value != parameter.default)
+    ):
+        msg = f"{cls.__name__} does not support non-default lock options: {', '.join(unsupported)}"
+        raise TypeError(msg)
+    # virtualenv narrows a BaseFileLock descendant's signature; omit base defaults it does not accept (#340).
+    return {name: value for name, value in params.items() if name in model.accepted_params}
+
+
+def _timeout_behavior(timeout: float, *, any_negative: bool) -> float | str:
+    # inf, and for a BaseFileLock any negative value, wait without a limit like -1.
+    if math.isnan(timeout):
+        return "nan"
+    return -1.0 if timeout == math.inf or (any_negative and timeout < 0) else timeout
+
+
+def _check_timeout_max(name: str, value: float) -> None:
+    # Lock.acquire, Event.wait and time.sleep raise OverflowError past this bound, which is only ~49.7 days on Windows.
+    if value > TIMEOUT_MAX:
+        msg = f"{name} must not exceed threading.TIMEOUT_MAX ({TIMEOUT_MAX}), got {value!r}"
+        raise ValueError(msg)
 
 
 _INIT_PARAMETER_MODELS: Final[WeakKeyDictionary[type[BaseFileLock], _InitParameterModel]] = WeakKeyDictionary()
@@ -507,101 +637,6 @@ class _InitParameterModel:
     accepted_params: frozenset[str]
     accepts_kwargs: bool
     default_params: dict[str, inspect.Parameter]
-
-
-def _resolve_lifetime(lifetime: float | None, cls: type[BaseFileLock], *, stacklevel: int) -> float | None:
-    """
-    Validate ``lifetime`` and drop a value the backend cannot honor.
-
-    ``lifetime`` is a deliberate age-based lease: a lock file older than ``lifetime`` is broken even while its holder is
-    still alive. Existence locks (:class:`SoftFileLock`) implement that behavior by unlinking a reclaimable pathname,
-    which can overlap a live holder. A native OS lock lives on the inode, so unlinking the pathname by age cannot revoke
-    the kernel lock; a contender would lock a fresh inode and overlap the live holder (#590). Ignore the request with a
-    warning rather than accept a setting that breaks mutual exclusion.
-    """
-    if lifetime is not None:
-        if isinstance(lifetime, bool) or not isinstance(lifetime, (int, float)):
-            msg = f"lifetime must be a finite non-negative number or None, not {type(lifetime).__name__}"
-            raise TypeError(msg)
-        if lifetime < 0 or (isinstance(lifetime, float) and not math.isfinite(lifetime)):
-            msg = f"lifetime must be finite and non-negative, not {lifetime!r}"
-            raise ValueError(msg)
-    if lifetime is not None and not cls._lifetime_supported:
-        warnings.warn(
-            f"lifetime is ignored for {cls.__name__}: {cls._lifetime_unsupported_reason}; "
-            f"only SoftFileLock supports lifetime-based expiry",
-            stacklevel=stacklevel,
-        )
-        return None
-    if lifetime is not None and cls._lifetime_replacements is not None:
-        strict_lock, lease = cls._lifetime_replacements
-        warnings.warn(
-            f"{cls.__name__}(lifetime=...) uses age-based expiry and can overlap a live holder; "
-            f"use {lease} for expiry or {strict_lock} for fail-closed locking",
-            SoftFileLockLifetimeWarning,
-            stacklevel=stacklevel,
-        )
-    return lifetime
-
-
-def _resolve_poll_interval(poll_interval: float) -> float:
-    """Validate ``poll_interval`` used for ``time.sleep`` / ``asyncio.sleep`` retries."""
-    if isinstance(poll_interval, bool) or not isinstance(poll_interval, (int, float)):
-        msg = f"poll_interval must be a finite non-negative number, not {type(poll_interval).__name__}"
-        raise TypeError(msg)
-    if poll_interval < 0 or (isinstance(poll_interval, float) and not math.isfinite(poll_interval)):
-        msg = f"poll_interval must be finite and non-negative, not {poll_interval!r}"
-        raise ValueError(msg)
-    return float(poll_interval)
-
-
-def _resolve_context_error_policy(policy: str) -> ContextErrorPolicy:
-    if policy not in _CONTEXT_ERROR_POLICIES:
-        msg = f"context_error_policy must be 'chain' or 'group', got {policy!r}"
-        raise ValueError(msg)
-    if policy == "group":  # fail fast at construction rather than only when a dual failure happens to occur
-        try:
-            _exception_group_cls()
-        except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
-            msg = "context_error_policy='group' requires Python 3.11+ or the 'exceptiongroup' backport installed"
-            raise ValueError(msg) from exc
-    return cast("ContextErrorPolicy", policy)
-
-
-def _resolve_close_error_policy(policy: str) -> CloseErrorPolicy:
-    if policy not in _CLOSE_ERROR_POLICIES:
-        msg = f"close_error_policy must be 'default', 'raise', or 'suppress', got {policy!r}"
-        raise ValueError(msg)
-    return cast("CloseErrorPolicy", policy)
-
-
-def _resolve_preserve_lock_file(*, preserve: bool, supported: bool, cls_name: str) -> bool:
-    # An existence lock unlinks its marker to release, so preserving the pathname would defeat unlocking. Reject the
-    # request rather than silently ignore it, since a caller asking for a stable identity must know it cannot be kept.
-    if preserve and not supported:
-        msg = f"preserve_lock_file=True is not supported by {cls_name}: unlinking its marker is how it releases"
-        raise ValueError(msg)
-    return preserve
-
-
-def _resolve_on_acquired(
-    on_acquired: Callable[[int], None] | None, *, supported: bool, cls_name: str
-) -> Callable[[int], None] | None:
-    if on_acquired is None:
-        return None
-    # An existence lock stores protocol state in its marker, so a caller writing through the descriptor would corrupt
-    # stale detection and ownership metadata; only native locks lend out the descriptor.
-    if not supported:
-        msg = f"on_acquired is not supported by {cls_name}: only native locks expose the lock descriptor"
-        raise ValueError(msg)
-    # A hook that fails and then also fails to release surfaces both errors as a BaseExceptionGroup. Require that class
-    # at construction rather than at the rare moment both fail, matching how context_error_policy='group' validates.
-    try:
-        _exception_group_cls()
-    except ImportError as exc:  # pragma: no cover  # only on 3.10 without the exceptiongroup backport
-        msg = "on_acquired requires Python 3.11+ or the 'exceptiongroup' backport for its rollback error path"
-        raise ValueError(msg) from exc
-    return on_acquired
 
 
 class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff:ignore[too-many-public-methods]  # public config properties
@@ -683,7 +718,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         :param lock_file: path to the file
         :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in the
             acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it to a
-            negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
+            negative value or ``inf``. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
         :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask and
             default ACLs, preserving POSIX default ACL inheritance in shared directories. Construction raises
             :class:`ValueError` unless it grants the owner read and write, which the lock needs for its own files.
@@ -730,6 +765,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             or take ownership of it, and filelock does not fsync its writes. If it raises, filelock releases the lock
             and re-raises. :class:`SoftFileLock` rejects the hook.
 
+        :raises TypeError: if *timeout* or *poll_interval* is a :class:`bool` or not a real number, *blocking* is not a
+            :class:`bool`, or *mode* is not an :class:`int`
+        :raises ValueError: if *poll_interval* is negative, not finite, or above :data:`threading.TIMEOUT_MAX`, if
+            *timeout* is too large to convert to :class:`float`, or if *mode* falls outside ``0o000``-``0o777`` or
+            denies the owner read and write
+
         """
         self._creator_pid = os.getpid()
         self._transition_lock = RLock()
@@ -749,6 +790,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             poll_interval=poll_interval,
             lifetime=lifetime,
         )
+        #: Each thread's committed hold on a thread-local lock, so another thread can release it.
+        self._thread_holds: dict[int, tuple[FileLockContext, Thread]] = {}
+        #: Each thread's uncommitted acquisition, so a backend can finish it for an exited thread.
+        self._thread_pending: dict[int, tuple[FileLockContext, Thread]] = {}
         _register_fork_object(self)
 
     def _singleton_extra_mismatches(  # ruff:ignore[no-self-use]  # the base class adds no options of its own
@@ -798,9 +843,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         try:
             os.close(fd)
         except OSError:
-            if self._close_error_policy == "suppress" or (self._close_error_policy == "default" and default_suppresses):
-                return
-            raise
+            if not self._suppresses_close_error(default_suppresses=default_suppresses):
+                raise
+
+    def _suppresses_close_error(self, *, default_suppresses: bool) -> bool:
+        return self._close_error_policy == "suppress" or (self._close_error_policy == "default" and default_suppresses)
 
     @property
     def fallback_to_soft(self) -> bool:
@@ -857,14 +904,28 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         return self._context.timeout
 
     @timeout.setter
-    def timeout(self, value: float | str) -> None:
+    def timeout(self, value: float | str | bytes | bytearray) -> None:
         """
         Change the default timeout value.
 
-        :param value: the new value, in seconds
+        :param value: the new value, in seconds; a negative value or ``inf`` waits without a limit
+
+        :raises TypeError: if *value* is a :class:`bool` or not a real number
+        :raises ValueError: if *value* is too large to convert to :class:`float`
+
+        .. deprecated:: 4.0.13
+
+            Passing a numeric string; pass the number instead.
 
         """
-        self._context.timeout = float(value)
+        if isinstance(value, (str, bytes, bytearray)):
+            warnings.warn(
+                "setting timeout from a string is deprecated and will be removed; pass a number",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            value = float(value)
+        self._context.timeout = _seconds("timeout", value)
 
     @property
     def blocking(self) -> bool:
@@ -883,7 +944,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         :param value: the new value as bool
 
+        :raises TypeError: if *value* is not a bool
+
         """
+        _check_blocking(value)
         self._context.blocking = value
 
     @property
@@ -903,8 +967,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         :param value: the new value, in seconds
 
-        :raises ValueError: if *value* is negative or not finite
-        :raises TypeError: if *value* is not a real number
+        :raises ValueError: if *value* is negative, not finite, or above :data:`threading.TIMEOUT_MAX`
+        :raises TypeError: if *value* is a :class:`bool` or not a real number
 
         """
         self._context.poll_interval = _resolve_poll_interval(value)
@@ -937,7 +1001,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     @property
     def mode(self) -> int:
-        """The file permissions for the lockfile."""
+        """
+        The file permissions requested for the lock file.
+
+        Without an explicit ``mode`` this reports ``0o644`` for backwards compatibility, but the file is created with
+        ``0o666`` filtered through the umask and default ACLs, so with a ``002`` umask it ends up ``0o664``. Check
+        :attr:`has_explicit_mode` before relying on the value, or ``os.stat`` the file for its actual permissions.
+
+        """
         return 0o644 if self._context.mode == _UNSET_FILE_MODE else self._context.mode
 
     @property
@@ -998,7 +1069,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             _raise_body_and_release(body_error, release_error)
 
     def __del__(self) -> None:
-        """Force-release so a dropped reference never leaks a held lock."""
+        """Force-release so a dropped reference never leaks a held lock, including every thread's hold."""
         if vars(self).get("_creator_pid") != os.getpid():
             return  # pragma: forked child
         # A finalizer must not raise. A release error during garbage collection would otherwise surface as an
@@ -1006,6 +1077,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         # best-effort cleanup; an explicit release() reports the same error to a caller who can act on it.
         with contextlib.suppress(Exception):
             self.release(force=True)
+        # Nothing references the lock any more, so no thread can still be inside it through this instance.
+        with contextlib.suppress(Exception):
+            self._release_thread_holds(exited_only=False)
 
     def acquire(
         self,
@@ -1015,7 +1089,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         poll_intervall: float | None = None,
         blocking: bool | None = None,
         cancel_check: Callable[[], bool] | None = None,
-    ) -> AcquireReturnProxy:
+    ) -> AcquireReturnProxy[Self]:
         """
         Try to acquire the file lock.
 
@@ -1032,6 +1106,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         :returns: a context object that will unlock the file when the context is exited
 
         :raises Timeout: if fails to acquire lock within the timeout period
+        :raises ValueError: if a blocking call gets a ``nan`` timeout, or *poll_interval* exceeds
+            :data:`threading.TIMEOUT_MAX`
 
         .. code-block:: python
 
@@ -1066,6 +1142,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         poll_interval = poll_interval if poll_interval is not None else self._context.poll_interval
         poll_interval = _resolve_poll_interval(poll_interval)
+        timeout = _resolve_timeout(timeout, blocking=blocking)
 
         start_time = time.perf_counter()
         # Wait for admission before touching any state: a caller refused entry must leave the counter, the registry and
@@ -1077,6 +1154,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             poll_interval=poll_interval,
             start_time=start_time,
         ):
+            # The interrupted acquire cannot run until the handler returns, so a second one here would wait on it
+            # forever or take the lock out from under it. Once the lock is held, as in an on_acquired hook, it nests.
+            if not self.is_locked and _on_this_stack(self._context.acquiring):
+                msg = f"Deadlock: lock '{self.lock_file}' is acquired again while this thread's acquire of it waits"
+                raise RuntimeError(msg)
             # Bump the counter up front; _undo_acquire rolls it back if acquisition fails.
             self._context.lock_counter += 1
 
@@ -1114,10 +1196,15 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         if self._is_thread_local:
             yield
             return
-        while not self._transition_lock.acquire(timeout=poll_interval if blocking else 0):
+        deadline: Final = None if timeout < 0 else start_time + timeout
+        wait: Final = poll_interval if blocking else 0.0
+        # wait leads the min() so a non-blocking call, whose nan timeout goes unchecked, waits 0 rather than nan.
+        while not self._transition_lock.acquire(
+            timeout=wait if deadline is None else min(wait, max(deadline - time.perf_counter(), 0.0))
+        ):
             if not blocking or (cancel_check is not None and cancel_check()):
                 raise Timeout(self.lock_file)
-            if timeout >= 0 and time.perf_counter() - start_time >= timeout:
+            if deadline is not None and time.perf_counter() >= deadline:
                 raise Timeout(self.lock_file)
         try:
             yield
@@ -1129,34 +1216,75 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
         itself may be deleted automatically, the behavior is platform-specific.
 
-        :param force: If true, the lock counter is ignored and the lock is released in every case.
+        :param force: If true, the lock counter is ignored and the lock is released in every case. On a thread-local
+            lock it also releases the holds of threads that exited without releasing; a hold of a thread still running
+            stays with that thread. Dropping the last reference to the lock releases every thread's hold.
 
         """
+        self._release_current(force=force)
+        if force:
+            self._release_thread_holds(exited_only=True)
+
+    def _release_current(self, *, force: bool) -> None:
         # A shared instance releases under the same gate its acquisition ran through, so a thread entering the lock
         # never observes a partially torn-down owner. Only an acquirer that found the lock free holds the gate for
         # long, so an unheld lock returns without waiting behind it.
         if self._context.lock_file_fd is None:
+            # Only a committed hold registers, so an entry without a descriptor is a release a signal handler stopped
+            # after the unlock; left alone it refuses every other instance on this path in this thread.
+            if self._context.lock_file_registry is not None:
+                self._finish_interrupted_release()
             return
         with contextlib.nullcontext() if self._is_thread_local else self._transition_lock:
-            if self._creator_pid != os.getpid() or not self.is_locked:
+            state: Final = self._hold_state()
+            # A signal handler can land between the backend's unlock and its clearing of the descriptor, where a second
+            # release would close the number twice, maybe hitting a file that reused it. The flag holds the releasing
+            # frame, so only a release still on this stack stops it, and a flag a cut-short frame left set does not.
+            if self._creator_pid != os.getpid() or state.lock_file_fd is None or _on_this_stack(state.releasing):
                 return
-            if not force and self._context.lock_counter > 1:
-                self._context.lock_counter -= 1
+            if not force and state.lock_counter > 1:
+                state.lock_counter -= 1
                 return
-
-            lock_id, lock_filename = id(self), self.lock_file
-            _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
+            state.releasing = inspect.currentframe()
             try:
+                _LOGGER.debug("Attempting to release lock %s on %s", id(self), self.lock_file)
                 self._release_with_fork_tracking()
-            except BaseException:
+            finally:
                 # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
                 # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
                 # A failure that left the lock held keeps the counter so a later release can retry the OS unlock.
-                if not self.is_locked:
+                if state.lock_file_fd is None:  # pragma: no branch  # a release that returns cleared the descriptor
                     self._commit_release()
-                raise
-            self._commit_release()
-            _LOGGER.debug("Lock %s released on %s", lock_id, lock_filename)
+                state.releasing = None
+            _LOGGER.debug("Lock %s released on %s", id(self), self.lock_file)
+
+    def _finish_interrupted_release(self) -> None:
+        # An unheld lock never waits behind an acquirer, whose own commit takes the entry over anyway.
+        if not self._transition_lock.acquire(blocking=False):
+            return  # pragma: no cover  # only a concurrent acquire of a shared instance holds the gate
+        try:
+            if self._context.lock_file_fd is None:  # pragma: no branch  # only a racing acquire fills it
+                self._commit_release()
+        finally:
+            self._transition_lock.release()
+
+    def _hold_state(self) -> FileLockContext:
+        return self._context.current if isinstance(self._context, ThreadLocalFileContext) else self._context
+
+    def _release_thread_holds(self, *, exited_only: bool) -> None:
+        if not isinstance(context := self._context, ThreadLocalFileContext):
+            return
+        # Serialized, or two threads would both close an exited thread's descriptor; copy() is atomic free-threaded.
+        with self._transition_lock:
+            own: Final = context.current
+            for held, thread in self._thread_holds.copy().values():
+                if exited_only and thread.is_alive():
+                    continue
+                context.current = held
+                try:
+                    self._release_current(force=True)
+                finally:
+                    context.current = own
 
     def _raise_if_inherited(self) -> None:
         if self._creator_pid != os.getpid():  # pragma: forked child
@@ -1164,24 +1292,38 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             raise RuntimeError(msg)
 
     def _mark_descriptor_owned(self, fd: int, identity: tuple[int, int] | None = None) -> None:
-        self._context.pending_lock_file_fd = None
-        self._context.pending_lock_file_fd_identity = None
-        self._context.lock_file_fd = fd
-        self._context.lock_file_fd_identity = identity
+        state: Final = self._hold_state()
+        state.pending_lock_file_fd = None
+        state.pending_lock_file_fd_identity = None
+        state.lock_file_fd = fd
+        state.lock_file_fd_identity = identity
+        if isinstance(self._context, ThreadLocalFileContext):
+            self._thread_pending.pop(id(state), None)
+            self._thread_holds[id(state)] = state, current_thread()
 
     def _mark_descriptor_pending(self, fd: int, identity: tuple[int, int] | None = None) -> None:
-        self._context.pending_lock_file_fd = fd
-        self._context.pending_lock_file_fd_identity = identity
+        state: Final = self._hold_state()
+        state.pending_lock_file_fd = fd
+        state.pending_lock_file_fd_identity = identity
+        if isinstance(self._context, ThreadLocalFileContext):
+            self._thread_pending[id(state)] = state, current_thread()
 
     def _mark_descriptor_released(self) -> None:
-        self._context.pending_lock_file_fd = None
-        self._context.pending_lock_file_fd_identity = None
-        self._context.lock_file_fd = None
-        self._context.lock_file_fd_identity = None
+        state: Final = self._hold_state()
+        state.pending_lock_file_fd = None
+        state.pending_lock_file_fd_identity = None
+        state.lock_file_fd = None
+        state.lock_file_fd_identity = None
+        if isinstance(self._context, ThreadLocalFileContext):
+            self._thread_pending.pop(id(state), None)
+            self._thread_holds.pop(id(state), None)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         # fork copies the lock in whatever state the parent's threads left it, so give the child an unheld one.
         self._transition_lock = RLock()
+        if isinstance(self._context, ThreadLocalFileContext):
+            self._thread_holds.clear()
+            self._thread_pending.clear()
         self._context.owner_claim_paths = ()
         self._context.claim_root = None
         self._context.lock_file_fd = None
@@ -1190,6 +1332,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.pending_lock_file_fd = None
         self._context.pending_lock_file_fd_identity = None
         self._context.lock_counter = 0
+        self._context.releasing = None
+        self._context.acquiring = None
         self._context.lock_file_key = None
         self._context.lock_file_registry = None
 
@@ -1243,28 +1387,34 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         lock_id = id(self)
         lock_filename = self.lock_file
         attempt = 0
-        while True:
-            self._raise_if_inherited()
-            if not self.is_locked:
-                self._try_break_expired_lock()
-                _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                self._acquire_with_fork_tracking()
+        self._context.acquiring = inspect.currentframe()
+        try:
+            while True:
                 self._raise_if_inherited()
-            if self.is_locked:
-                _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
-                return
-            if self._check_give_up(
-                blocking=blocking,
-                cancel_check=cancel_check,
-                timeout=timeout,
-                start_time=start_time,
-            ):
-                raise Timeout(lock_filename)
-            attempt += 1
-            delay = self._poll_delay(poll_interval, attempt)
-            msg = "Lock %s not acquired on %s, waiting %s seconds ..."
-            _LOGGER.debug(msg, lock_id, lock_filename, delay)
-            time.sleep(delay)
+                if not self.is_locked:
+                    self._try_break_expired_lock()
+                    _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
+                    self._acquire_with_fork_tracking()
+                    self._raise_if_inherited()
+                if self.is_locked:
+                    _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
+                    return
+                if self._check_give_up(
+                    blocking=blocking,
+                    cancel_check=cancel_check,
+                    timeout=timeout,
+                    start_time=start_time,
+                ):
+                    raise Timeout(lock_filename, self._unprobeable_holder())
+                attempt += 1
+                delay = self._poll_delay(poll_interval, attempt)
+                if timeout >= 0:
+                    delay = min(delay, max(start_time + timeout - time.perf_counter(), 0.0))
+                msg = "Lock %s not acquired on %s, waiting %s seconds ..."
+                _LOGGER.debug(msg, lock_id, lock_filename, delay)
+                time.sleep(delay)
+        finally:
+            self._context.acquiring = None
 
     def _poll_delay(self, poll_interval: float, attempt: int) -> float:
         # A single-file lock retries on a fixed cadence. A backend that publishes several files per acquisition sets a
@@ -1397,7 +1547,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _commit_acquire(self, canonical: str) -> None:
         """Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock."""
-        if self._context.lock_counter == 1:
+        # Keyed on the registry rather than the counter: an on_acquired hook that acquires again bumps the counter
+        # past 1 before this first commit runs, and must not leave the hold unregistered.
+        if self._context.lock_file_registry is None:
             key = self._registry_key(canonical)
             # The holder scope is resolved once at commit so a later release from another flow drops the right entry.
             self._context.lock_file_key = key
@@ -1408,10 +1560,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _drop_registry_entry(self) -> None:
         """Forget the key owned by this hold without resolving a mutable path again."""
+        # Ordered so a run an interrupt cuts short repeats safely: the entry goes only while it is still ours, and the
+        # key outlives the registry it indexes, so a later commit sees no registry and records the hold afresh.
         key, registry = self._context.lock_file_key, self._context.lock_file_registry
-        self._context.lock_file_key = self._context.lock_file_registry = None
-        if registry is not None:
-            registry.pop(key, None)
+        if registry is not None and registry.get(key) == id(self):
+            del registry[key]
+        self._context.lock_file_registry = None
+        self._context.lock_file_key = None
 
     def _commit_release(self) -> None:
         """Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry."""
@@ -1452,6 +1607,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             return True
         return False
 
+    def _unprobeable_holder(self) -> str | None:  # ruff:ignore[no-self-use]  # existence locks override it
+        return None
+
     @abstractmethod
     def _acquire(self) -> None:
         """If the file lock could be acquired, self._context.lock_file_fd holds the file descriptor of the lock file."""
@@ -1463,15 +1621,41 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         raise NotImplementedError
 
 
+def _resolve_read_write_timeout(timeout: float, *, blocking: bool) -> float:
+    """Validate a read-write lock's acquire ``timeout``: ``-1`` or a non-negative number, ``inf`` meaning ``-1``."""
+    if (timeout := _resolve_timeout(timeout, blocking=blocking)) < 0 and timeout != -1 and blocking:
+        msg = f"timeout must be a non-negative number or -1, not {timeout!r}"
+        raise ValueError(msg)
+    return timeout
+
+
+def _resolve_timeout(timeout: float, *, blocking: bool) -> float:
+    """Validate an acquire ``timeout``; every negative value waits without a limit."""
+    if math.isnan(timeout := _seconds("timeout", timeout)) and blocking:
+        msg = "timeout must be a number of seconds, not nan"
+        raise ValueError(msg)
+    # The fail-fast deadlock check only sees a negative timeout as unlimited, so spell inf that way.
+    return -1 if timeout == math.inf else timeout
+
+
+def _on_this_stack(frame: FrameType | None) -> bool:
+    if frame is None:
+        return False
+    caller = inspect.currentframe()
+    while caller is not None and caller is not frame:
+        caller = caller.f_back
+    return caller is not None
+
+
 # acquire() returns this wrapper instead of self so entering the with-statement does not call __enter__ a second
 # time; returning self would re-acquire the lock in BaseFileLock.__enter__ without a matching release (issue #37).
-class AcquireReturnProxy:
+class AcquireReturnProxy(Generic[_LockT]):
     """A context-aware object that will release the lock file when exiting."""
 
-    def __init__(self, lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock) -> None:
-        self.lock: BaseFileLock | ReadWriteLock | SoftReadWriteLock = lock
+    def __init__(self, lock: _LockT) -> None:
+        self.lock: _LockT = lock
 
-    def __enter__(self) -> BaseFileLock | ReadWriteLock | SoftReadWriteLock:
+    def __enter__(self) -> _LockT:
         return self.lock
 
     def __exit__(
@@ -1480,10 +1664,12 @@ class AcquireReturnProxy:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if isinstance(self.lock, BaseFileLock):
-            self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # forwards __exit__ to the owned lock's context release
+        # Widen to the bound: ty narrows the else branch to the type variable minus BaseFileLock, not to the union rest.
+        lock: Final = cast("BaseFileLock | ReadWriteLock | SoftReadWriteLock", self.lock)
+        if isinstance(lock, BaseFileLock):
+            lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # forwards __exit__ to the owned lock's context release
         else:  # a reader/writer lock does not carry a context_error_policy
-            self.lock.release()
+            lock.release()
 
 
 @dataclass
@@ -1528,13 +1714,61 @@ class FileLockContext:
     #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
     owner_claim_paths: tuple[str, ...] = ()
 
+    #: The frame of the :meth:`BaseFileLock.release` tearing this hold down, so a re-entrant call from a signal handler
+    #: on the same thread returns instead of closing the descriptor a second time.
+    releasing: FrameType | None = None
+
+    #: The frame of an acquire still polling for this hold, so one a signal handler starts on this thread fails fast.
+    acquiring: FrameType | None = None
+
     #: Canonical lock path resolved when an acquisition starts. A waiter polling a relative path must keep publishing
     #: into the directory it started in, even when another thread changes the working directory mid-wait.
     claim_root: str | None = None
 
+    #: The lease claim of this hold, kept with it so a cross-thread release stops the right heartbeat.
+    lease_claim: _LeaseClaim | None = None
+
 
 class ThreadLocalFileContext(FileLockContext, local):
-    """A thread local version of the ``FileLockContext`` class."""
+    """
+    A thread local version of the ``FileLockContext`` class.
+
+    Each thread's state lives in an ordinary :class:`FileLockContext` at :attr:`current`, which the lock also keeps, so
+    ``release(force=True)`` and the finalizer can unlock a hold whose thread exited.
+    """
+
+    current: FileLockContext
+
+    # threading.local runs __init__ again with these arguments the first time each thread touches the context.
+    def __init__(  # ruff:ignore[too-many-arguments]  # mirrors the FileLockContext fields set at construction
+        self,
+        *,
+        lock_file: str,
+        timeout: float,
+        mode: int,
+        blocking: bool,
+        poll_interval: float,
+        lifetime: float | None = None,
+    ) -> None:
+        self.current = FileLockContext(
+            lock_file=lock_file,
+            timeout=timeout,
+            mode=mode,
+            blocking=blocking,
+            poll_interval=poll_interval,
+            lifetime=lifetime,
+        )
+
+
+def _delegate_to_current(name: str) -> property:
+    return property(
+        lambda context: getattr(context.current, name),
+        lambda context, value: setattr(context.current, name, value),
+    )
+
+
+for _field in fields(FileLockContext):
+    setattr(ThreadLocalFileContext, _field.name, _delegate_to_current(_field.name))
 
 
 @dataclass(frozen=True)
@@ -1545,16 +1779,11 @@ class _OwnedDescriptor:
     inode: int | None
 
 
-class _ForkTransitionContext(local):
-    depth: int = 0
-
-
 class _ForkState:
     def __init__(self) -> None:
         self.gate = Condition(RLock())
         self.registry_lock = RLock()
         self.parameter_models_lock = RLock()
-        self.transition_context = _ForkTransitionContext()
         self.transitions: dict[int, dict[int, _ForkDescriptorOwner | None]] = {}
         self.active_transitions = 0
         self.admission_closed = False
@@ -1568,7 +1797,6 @@ class _ForkState:
         self.gate = Condition(RLock())
         self.registry_lock = RLock()
         self.parameter_models_lock = RLock()
-        self.transition_context = _ForkTransitionContext()
         self.transitions = {}
         self.active_transitions = 0
         self.admission_closed = False
@@ -1604,17 +1832,20 @@ def _register_fork_hooks() -> None:
 
 @contextmanager
 def _fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Generator[None]:
-    if not _HAS_REGISTER_AT_FORK:
+    # No fork follows exit, and a daemon thread stopped inside this bookkeeping holds its lock forever.
+    if not _HAS_REGISTER_AT_FORK or sys.is_finalizing():
         yield  # pragma: lacks fork
         return  # pragma: lacks fork
     _ensure_current_process()  # pragma: needs fork
     creator_pid = os.getpid()  # pragma: needs fork
-    token = _enter_fork_transition(descriptor_owner)  # pragma: needs fork
+    # A generator holding this transition can be finalized on another thread, which must close the entering thread's.
+    thread_id: Final = get_ident()  # pragma: needs fork
+    token: Final = _enter_fork_transition(descriptor_owner, thread_id)  # pragma: needs fork
     try:  # pragma: needs fork
         yield
     finally:
         if os.getpid() == creator_pid:  # pragma: needs fork
-            _leave_fork_transition(token)
+            _leave_fork_transition(token, thread_id)
 
 
 def _register_fork_object(instance: _ForkResettable) -> None:
@@ -1663,6 +1894,9 @@ def _record_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int: 
 
 
 def _unregister_owned_descriptor(token: int) -> None:  # pragma: needs fork
+    # No fork follows exit, and a daemon thread stopped inside this bookkeeping holds its lock forever.
+    if sys.is_finalizing():  # pragma: no cover  # only exit reaches it, after coverage stops measuring
+        return
     with _fork_transition(), _FORK_STATE.registry_lock:
         _OWNED_DESCRIPTORS.pop(token, None)
 
@@ -1730,8 +1964,7 @@ def _reset_child_after_fork() -> None:  # pragma: forked child
     _detach_child_state(descriptors, pinned_objects, pinned_classes)
 
 
-def _enter_fork_transition(descriptor_owner: _ForkDescriptorOwner | None) -> int:  # pragma: needs fork
-    thread_id = get_ident()
+def _enter_fork_transition(descriptor_owner: _ForkDescriptorOwner | None, thread_id: int) -> int:  # pragma: needs fork
     with _FORK_STATE.gate:
         while (
             _FORK_STATE.admission_closed
@@ -1742,16 +1975,14 @@ def _enter_fork_transition(descriptor_owner: _ForkDescriptorOwner | None) -> int
         token = next(_TRANSITION_TOKENS)
         _FORK_STATE.transitions.setdefault(thread_id, {})[token] = descriptor_owner
         _FORK_STATE.active_transitions += 1
-    _FORK_STATE.transition_context.depth += 1
     return token
 
 
-def _leave_fork_transition(token: int) -> None:  # pragma: needs fork
-    _FORK_STATE.transition_context.depth -= 1
+def _leave_fork_transition(token: int, thread_id: int) -> None:  # pragma: needs fork
     with _FORK_STATE.gate:
-        thread_id = get_ident()
-        del _FORK_STATE.transitions[thread_id][token]
-        if not _FORK_STATE.transitions[thread_id]:
+        owned: Final = _FORK_STATE.transitions[thread_id]
+        del owned[token]
+        if not owned:
             del _FORK_STATE.transitions[thread_id]
         _FORK_STATE.active_transitions -= 1
         _FORK_STATE.gate.notify_all()
@@ -1829,12 +2060,13 @@ def _audit_fork_safety(  # pragma: no cover - CPython disables tracing while Pyt
     *,
     _fork_events: frozenset[str] = _FORK_AUDIT_EVENTS,
     _state: _ForkState = _FORK_STATE,
+    _get_ident: Callable[[], int] = get_ident,
 ) -> None:
     if event in _fork_events:
-        if _state.transition_context.depth or _state.fork_owner_depths:
+        if _get_ident() in _state.transitions or _state.fork_owner_depths:
             msg = f"{event} is unsafe while filelock is changing descriptor ownership"
             raise RuntimeError(msg)
-    elif event == "_posixsubprocess.fork_exec" and _state.transition_context.depth:
+    elif event == "_posixsubprocess.fork_exec" and _get_ident() in _state.transitions:
         msg = "fork_exec is unsafe while filelock is changing descriptor ownership"
         raise RuntimeError(msg)
 
@@ -1851,8 +2083,11 @@ __all__ = [
     "FileLockContext",
     "FileLockMeta",
     "LockOptions",
+    "ThreadLocalFileContext",
     "_append_exception_context",
     "_canonical",
+    "_check_timeout_max",
+    "_delegate_to_current",
     "_ensure_current_process",
     "_fork_transition",
     "_grouped_errors",
@@ -1863,5 +2098,10 @@ __all__ = [
     "_register_fork_class",
     "_register_fork_object",
     "_register_owned_descriptor",
+    "_resolve_poll_interval",
+    "_resolve_read_write_timeout",
+    "_resolve_timeout",
+    "_seconds",
+    "_timeout_behavior",
     "_unregister_owned_descriptor",
 ]

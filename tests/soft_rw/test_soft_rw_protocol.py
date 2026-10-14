@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import random
+import shutil
 import threading
 from dataclasses import dataclass, field
 from errno import EIO
@@ -23,16 +24,27 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import SoftFileLockProtocolError
-from filelock._soft_rw._protocol import GenerationLog, Ledger, Participant, Snapshot, encode_holder, parse_snapshot
+from filelock._soft_rw._protocol import (
+    GenerationLog,
+    Ledger,
+    Participant,
+    Snapshot,
+    encode_holder,
+    holder_lease,
+    parse_snapshot,
+)
 from filelock._soft_rw._storage import OsFiles
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from unittest.mock import MagicMock
 
     from pytest_mock import MockerFixture
 
 _FIRST = "0123456789abcdef0123456789abcdef"
 _SECOND = "fedcba9876543210fedcba9876543210"
+
+pytestmark = pytest.mark.usefixtures("flushes")
 
 
 def _participant(
@@ -106,11 +118,36 @@ def test_malformed_snapshots_parse_to_none(data: bytes) -> None:
 
 
 def test_holder_record_keeps_its_length_across_nonces() -> None:
-    first = encode_holder(_FIRST, _SECOND)
-    second = encode_holder(_FIRST, _FIRST)
+    first = encode_holder(_FIRST, _SECOND, 90.0)
+    second = encode_holder(_FIRST, _FIRST, 90.0)
     assert len(first) == len(second)
     assert first != second
     assert f"pid={os.getpid()}".encode() in first
+
+
+@pytest.mark.parametrize(
+    "lease", [pytest.param(90.0, id="default"), pytest.param(1e-05, id="exponent"), pytest.param(10, id="integer")]
+)
+def test_holder_record_carries_its_lease(lease: float) -> None:
+    assert holder_lease(encode_holder(_FIRST, _SECOND, lease)) == lease
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param(b"filelock-rw/1\nnonce=x\n", id="older-release"),
+        pytest.param(b"\xff", id="non-ascii"),
+        pytest.param(b"lease=abc\n", id="not-a-number"),
+        pytest.param(b"lease=1_000.0\n", id="underscore"),
+        pytest.param(b"lease= 1.0\n", id="padded"),
+        pytest.param(b"lease=inf\n", id="infinite"),
+        pytest.param(b"lease=0.0\n", id="zero"),
+        pytest.param(b"lease=-1.0\n", id="negative"),
+    ],
+)
+def test_holder_lease_ignores_what_it_cannot_trust(record: bytes | None) -> None:
+    assert holder_lease(record) is None
 
 
 def test_ledger_measures_how_long_a_value_stays_unchanged() -> None:
@@ -128,9 +165,58 @@ def test_ledger_measures_how_long_a_value_stays_unchanged() -> None:
     assert ledger.observe("a", None) == pytest.approx(0.0)
 
 
+def test_ledger_retain_forgets_everything_else() -> None:
+    clock = [0.0]
+    ledger = Ledger(lambda: clock[0])
+    ledger.observe("kept", b"1")
+    ledger.observe("gone", b"1")
+    clock[0] = 5.0
+    ledger.retain({"kept"})
+    assert ledger.observe("kept", b"1") == pytest.approx(5.0)
+    assert ledger.observe("gone", b"1") == pytest.approx(0.0)
+
+
 def test_log_starts_empty(lock_file: str, files: OsFiles, root: str) -> None:
     log = GenerationLog(files, lock_file, root)
     assert log.latest() == Snapshot(generation=0, writer=None, readers=frozenset())
+
+
+def test_a_commit_into_a_log_without_its_directory_is_lost(lock_file: str, files: OsFiles, root: str) -> None:
+    # The log was removed and nobody has prepared it again; the caller re-reads instead of failing on the missing gen/.
+    assert not GenerationLog(files, lock_file, root).commit(Snapshot(generation=1, writer=_FIRST, readers=frozenset()))
+
+
+@pytest.mark.requires_hard_links
+def test_an_epoch_a_peer_created_first_is_adopted(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # Between this client's read and its exclusive create, a peer can create the epoch; the peer's token then wins.
+    files.prepare(root)
+    epoch = Path(root, "gen", "epoch")
+    epoch.write_bytes(b"peer\n")
+    real_read = OsFiles.read
+    missed = []
+
+    def miss_the_epoch_once(path: str) -> bytes | None:
+        if path == str(epoch) and not missed:
+            missed.append(path)
+            return None
+        return real_read(path)
+
+    mocker.patch.object(OsFiles, "read", autospec=True, side_effect=miss_the_epoch_once)
+    log = GenerationLog(files, lock_file, root)
+    assert log.latest() == Snapshot(generation=0, writer=None, readers=frozenset())
+    assert missed
+    assert epoch.read_bytes() == b"peer\n"
+    assert log.commit(Snapshot(generation=1, writer=_FIRST, readers=frozenset()))
+
+
+def test_an_empty_log_reads_as_empty_again(lock_file: str, files: OsFiles, root: str) -> None:
+    # A commit that did not land leaves the log empty; remembering the empty snapshot must not turn into a demand to
+    # read a gen/0 that never exists.
+    files.prepare(root)
+    log = GenerationLog(files, lock_file, root)
+    assert log.latest() == log.latest() == Snapshot(generation=0, writer=None, readers=frozenset())
 
 
 @pytest.mark.requires_hard_links
@@ -143,7 +229,7 @@ def test_commit_refuses_a_generation_that_exists(lock_file: str, files: OsFiles,
     assert first.commit(Snapshot(generation=1, writer=_FIRST, readers=frozenset()))
     assert not second.commit(Snapshot(generation=1, writer=_SECOND, readers=frozenset()))
     assert second.latest().writer == _FIRST
-    assert sorted(entry.name for entry in Path(root, "gen").iterdir()) == [f"{1:020d}"]
+    assert sorted(entry.name for entry in Path(root, "gen").iterdir() if entry.name.isdigit()) == [f"{1:020d}"]
 
 
 @pytest.mark.requires_hard_links
@@ -151,10 +237,9 @@ def test_rescan_skips_a_generation_removed_after_listing(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:
     # A listing can name a generation a peer compacts before it is read; the next older one still stands in.
-    files.prepare(root)
-    log = GenerationLog(files, lock_file, root)
-    assert log.commit(Snapshot(generation=1, writer=None, readers=frozenset()))
-    assert log.commit(Snapshot(generation=2, writer=_FIRST, readers=frozenset()))
+    _committed(files, lock_file, root, [None, _FIRST])
+    # A log an older release wrote has no HEAD to stand in either.
+    Path(root, "gen", "HEAD").unlink()
     real_read = OsFiles.read
     latest_path = str(Path(root, "gen", f"{2:020d}"))
     mocker.patch.object(OsFiles, "read", side_effect=lambda path: None if path == latest_path else real_read(path))
@@ -169,6 +254,13 @@ def test_malformed_generation_raises(lock_file: str, files: OsFiles, root: str) 
     with pytest.raises(SoftFileLockProtocolError, match="malformed generation record") as caught:
         log.latest()
     assert caught.value.claim_name == f"{1:020d}"
+
+
+def test_non_ascii_digit_generation_name_is_ignored(lock_file: str, files: OsFiles, root: str) -> None:
+    files.prepare(root)
+    Path(root, "gen", f"{1:020d}").write_bytes(Snapshot(generation=1, writer=_FIRST, readers=frozenset()).encode())
+    Path(root, "gen", "²" * 20).write_bytes(b"not a generation")
+    assert GenerationLog(files, lock_file, root).latest() == Snapshot(generation=1, writer=_FIRST, readers=frozenset())
 
 
 def test_leave_without_entering_only_drops_the_record(lock_file: str, files: OsFiles) -> None:
@@ -193,7 +285,7 @@ def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root:
     def commit_after_a_peer(log: GenerationLog, successor: Snapshot) -> bool:
         if not lost:
             lost.append(successor)
-            peer = GenerationLog(files, lock_file, root)
+            (peer := GenerationLog(files, lock_file, root)).latest()
             still_reading = successor.readers | {reader.token}
             assert real_commit(peer, Snapshot(generation=successor.generation, writer=None, readers=still_reading))
         return real_commit(log, successor)
@@ -253,6 +345,18 @@ def test_blocked_contender_still_evicts_stale_readers(lock_file: str, files: OsF
     assert latest.readers == frozenset()
 
 
+def test_advance_hands_back_the_poll_after_losing_every_race(
+    lock_file: str, files: OsFiles, mocker: MockerFixture
+) -> None:
+    # Peers winning every commit is contention, not a fault: the caller sleeps its poll interval and tries again.
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    commit = mocker.patch.object(GenerationLog, "commit", autospec=True, return_value=False)
+    assert not writer.advance()
+    assert commit.call_count == 4
+    assert writer.generation is None
+
+
 @pytest.mark.requires_hard_links
 def test_writer_admission_after_the_last_reader_leaves_is_a_commit(lock_file: str, files: OsFiles, root: str) -> None:
     # The final grant must publish a generation of its own: a grant read off a snapshot a peer is about to supersede
@@ -281,7 +385,7 @@ def test_a_commit_reported_lost_that_landed_is_recognized(
 
     def link_then_deny(self: OsFiles, source: str, target: str) -> bool:
         landed = real_link(self, source, target)
-        if landed and not denied:
+        if landed and not denied and Path(target).name.isdigit():
             denied.append(target)
             return False
         return landed
@@ -329,6 +433,338 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(
     listings = iter([[f"{generation:020d}" for generation in (4, 5)]])
     mocker.patch.object(OsFiles, "listdir", side_effect=lambda path: next(listings, None) or real_listdir(path))
     assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
+
+
+def _committed(files: OsFiles, lock_file: str, root: str, writers: list[str | None]) -> GenerationLog:
+    # One log that read the head before each commit, as a participant does, and so remembers the last one.
+    files.prepare(root)
+    log = GenerationLog(files, lock_file, root)
+    for writer in writers:
+        assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=writer, readers=frozenset()))
+    return log
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.parametrize(
+    ("writers", "expected"),
+    [
+        pytest.param([], Snapshot(generation=0, writer=None, readers=frozenset()), id="empty"),
+        pytest.param([_SECOND], Snapshot(generation=1, writer=_SECOND, readers=frozenset()), id="restarted"),
+    ],
+)
+def test_a_wiped_log_is_read_from_disk_not_memory(
+    lock_file: str, files: OsFiles, root: str, writers: list[str | None], expected: Snapshot
+) -> None:
+    # An instance that remembers generation 2 of a log someone removed must see the new log's head, not continue its
+    # own numbering into it beside the new holder.
+    old = _committed(files, lock_file, root, [None, _FIRST])
+    shutil.rmtree(root)
+    _committed(OsFiles(lock_file), lock_file, root, writers)
+    assert old.latest() == expected
+
+
+@pytest.mark.requires_hard_links
+def test_a_remembered_head_gone_from_the_same_log_fails_closed(lock_file: str, files: OsFiles, root: str) -> None:
+    # The epoch still names the log this client remembers, so an empty view is this client failing to see the head.
+    old = _committed(files, lock_file, root, [None, _FIRST])
+    for name in (f"{1:020d}", f"{2:020d}", "HEAD"):
+        Path(root, "gen", name).unlink()
+    with pytest.raises(SoftFileLockProtocolError, match="names no readable snapshot"):
+        old.latest()
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.parametrize("remembered", [pytest.param(True, id="memory"), pytest.param(False, id="head")])
+def test_an_empty_listing_past_compaction_still_finds_the_head(
+    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture, *, remembered: bool
+) -> None:
+    # Compaction leaves nothing within the probe window of generation 0, so only the head this client remembers or
+    # gen/HEAD names, read by name, finds the log; a cached empty listing would make it look new and fork it at gen/1.
+    log = _committed(files, lock_file, root, [None] * 140 + [_FIRST])
+    if remembered:
+        head.unlink()
+    mocker.patch.object(OsFiles, "listdir", autospec=True, return_value=[])
+    reader = log if remembered else GenerationLog(files, lock_file, root)
+    assert reader.latest() == Snapshot(generation=141, writer=_FIRST, readers=frozenset())
+
+
+@pytest.mark.requires_hard_links
+def test_a_listing_naming_a_compacted_generation_probes_past_it(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    _committed(files, lock_file, root, [None, None, _FIRST])
+    mocker.patch.object(OsFiles, "listdir", autospec=True, return_value=[f"{0:020d}"])
+    assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
+
+
+@pytest.mark.requires_hard_links
+def test_commit_into_a_log_replaced_since_the_read_is_refused(lock_file: str, files: OsFiles, root: str) -> None:
+    old = _committed(files, lock_file, root, [None, _FIRST])
+    successor = Snapshot(generation=old.latest().generation + 1, writer=None, readers=frozenset())
+    shutil.rmtree(root)
+    _committed(OsFiles(lock_file), lock_file, root, [_SECOND])
+    assert not old.commit(successor)
+    assert not Path(root, "gen", f"{successor.generation:020d}").exists()
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.parametrize(
+    ("writers", "record"),
+    [
+        # Two committers' renames can land out of order; HEAD then names an older generation, which is only a floor.
+        pytest.param(
+            [None, None, _FIRST], Snapshot(generation=1, writer=None, readers=frozenset()).encode(), id="left-behind"
+        ),
+        # HEAD is not flushed, so a crash can leave it unreadable.
+        pytest.param([None, _FIRST], b"garbage\n", id="torn"),
+    ],
+)
+def test_a_head_record_only_says_where_to_look(
+    lock_file: str, files: OsFiles, root: str, head: Path, writers: list[str | None], record: bytes
+) -> None:
+    _committed(files, lock_file, root, writers)
+    head.write_bytes(Path(root, "gen", "epoch").read_bytes() + record)
+    assert GenerationLog(files, lock_file, root).latest() == Snapshot(
+        generation=len(writers), writer=_FIRST, readers=frozenset()
+    )
+
+
+@pytest.mark.requires_hard_links
+def test_a_head_left_on_a_compacted_generation_fails_closed(
+    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture
+) -> None:
+    # A committer stalled before its HEAD rename puts HEAD on long-compacted generation 2; a cached listing must not
+    # resume there.
+    _committed(files, lock_file, root, [None] * 200)
+    head.write_bytes(
+        Path(root, "gen", "epoch").read_bytes() + Snapshot(generation=2, writer=None, readers=frozenset()).encode()
+    )
+    mocker.patch.object(OsFiles, "listdir", autospec=True, return_value=[f"{1:020d}", f"{2:020d}"])
+    with pytest.raises(SoftFileLockProtocolError, match="names no readable snapshot"):
+        GenerationLog(files, lock_file, root).latest()
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.parametrize("generation", [pytest.param(1, id="first"), pytest.param(3, id="compacted")])
+def test_commit_into_a_slot_the_log_moved_past_is_refused(
+    lock_file: str, files: OsFiles, root: str, generation: int
+) -> None:
+    log = _committed(files, lock_file, root, [None] * 70)
+    assert (
+        log.commit(Snapshot(generation=generation, writer=_FIRST, readers=frozenset())),
+        Path(root, "gen", f"{generation:020d}").exists(),
+    ) == (False, False)
+
+
+@pytest.mark.requires_hard_links
+def test_a_head_from_a_wiped_log_names_nothing_in_the_new_one(
+    lock_file: str, files: OsFiles, root: str, head: Path
+) -> None:
+    _committed(files, lock_file, root, [None, None, _FIRST])
+    stray = head.read_bytes()
+    shutil.rmtree(root)
+    _committed(OsFiles(lock_file), lock_file, root, [_SECOND])
+    head.write_bytes(stray)
+    assert GenerationLog(files, lock_file, root).latest() == Snapshot(generation=1, writer=_SECOND, readers=frozenset())
+
+
+@pytest.mark.requires_hard_links
+def test_a_commit_overtaken_by_a_wipe_leaves_the_new_heads_alone(
+    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture
+) -> None:
+    old = _committed(files, lock_file, root, [None, _FIRST])
+    real_link = files.link
+
+    def link_then_wipe(source: str, target: str) -> bool:
+        landed = real_link(source, target)
+        shutil.rmtree(root)
+        _committed(OsFiles(lock_file), lock_file, root, [_SECOND, None])
+        return landed
+
+    mocker.patch.object(files, "link", autospec=True, side_effect=link_then_wipe)
+    assert (old.commit(Snapshot(generation=3, writer=None, readers=frozenset())), _published(head)) == (
+        True,
+        Snapshot(generation=2, writer=None, readers=frozenset()),
+    )
+
+
+@pytest.mark.requires_hard_links
+def test_a_commit_that_lands_in_a_compacted_slot_counts_as_lost(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # The committer passed the predecessor check and stalled; peers then compacted past its slot before the link.
+    log = _committed(files, lock_file, root, [None] * 3)
+    real_link = files.link
+
+    def peers_compact_then_link(source: str, target: str) -> bool:
+        _committed(OsFiles(lock_file), lock_file, root, [None] * 70)
+        return real_link(source, target)
+
+    mocker.patch.object(files, "link", autospec=True, side_effect=peers_compact_then_link)
+    assert (
+        log.commit(Snapshot(generation=4, writer=_FIRST, readers=frozenset())),
+        Path(root, "gen", f"{4:020d}").exists(),
+    ) == (False, False)
+
+
+@pytest.mark.requires_hard_links
+def test_a_late_head_rename_never_moves_head_back(
+    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture
+) -> None:
+    log = _committed(files, lock_file, root, [None])
+    real_link = files.link
+
+    def link_then_peers_commit(source: str, target: str) -> bool:
+        landed = real_link(source, target)
+        _committed(OsFiles(lock_file), lock_file, root, [None] * 3)
+        return landed
+
+    mocker.patch.object(files, "link", autospec=True, side_effect=link_then_peers_commit)
+    assert (log.commit(Snapshot(generation=2, writer=_FIRST, readers=frozenset())), _published(head)) == (
+        True,
+        Snapshot(generation=5, writer=None, readers=frozenset()),
+    )
+
+
+@pytest.mark.requires_hard_links
+def test_a_failed_head_rename_keeps_the_commit(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    log = _committed(files, lock_file, root, [None])
+    mocker.patch.object(files, "replace", autospec=True, side_effect=OSError(EIO, "rename failed"))
+    assert (
+        log.commit(Snapshot(generation=2, writer=_FIRST, readers=frozenset())),
+        GenerationLog(OsFiles(lock_file), lock_file, root).latest().writer,
+    ) == (True, _FIRST)
+
+
+@pytest.mark.requires_hard_links
+def test_a_log_whose_epoch_was_never_written_runs_without_head(
+    lock_file: str, files: OsFiles, root: str, head: Path
+) -> None:
+    # The epoch's creator died between creating the file and writing its token.
+    files.prepare(root)
+    Path(root, "gen", "epoch").write_bytes(b"")
+    log = _committed(files, lock_file, root, [None, _FIRST])
+    assert (head.exists(), log.latest().writer) == (False, _FIRST)
+
+
+@pytest.mark.requires_hard_links
+def test_compaction_removes_a_stalled_survivor_before_the_window_edge(
+    lock_file: str, files: OsFiles, root: str
+) -> None:
+    # A committer that stalled before its unlink left gen/5 behind; removing gen/6 alone would leave a hole above it.
+    log = _committed(files, lock_file, root, [None] * 70)
+    Path(root, "gen", f"{5:020d}").write_bytes(Snapshot(generation=5, writer=None, readers=frozenset()).encode())
+    assert (
+        log.commit(Snapshot(generation=71, writer=None, readers=frozenset())),
+        min(int(entry.name) for entry in Path(root, "gen").iterdir() if entry.name.isdigit()),
+    ) == (True, 7)
+
+
+@pytest.mark.requires_hard_links
+def test_a_commit_flushes_only_its_generation_record(
+    lock_file: str, files: OsFiles, root: str, flushes: MagicMock
+) -> None:
+    log = _committed(files, lock_file, root, [None])
+    flushes.reset_mock()
+    assert (log.commit(Snapshot(generation=2, writer=_FIRST, readers=frozenset())), flushes.call_count) == (True, 1)
+
+
+@pytest.mark.requires_hard_links
+def test_a_torn_head_still_refuses_a_first_generation(lock_file: str, files: OsFiles, root: str, head: Path) -> None:
+    # Its epoch line still says this log moved past its first generation, whatever follows it.
+    log = _committed(files, lock_file, root, [None, None, _FIRST])
+    for generation in (1, 2, 3):
+        Path(root, "gen", f"{generation:020d}").unlink()
+    head.write_bytes(Path(root, "gen", "epoch").read_bytes() + b"garbage\n")
+    assert not log.commit(Snapshot(generation=1, writer=_SECOND, readers=frozenset()))
+
+
+@pytest.fixture
+def head(root: str) -> Path:
+    return Path(root, "gen", "HEAD")
+
+
+def _published(head: Path) -> Snapshot | None:
+    return parse_snapshot(head.read_bytes().partition(b"\n")[2])
+
+
+@pytest.mark.requires_hard_links
+def test_a_tighter_peer_waits_out_the_holders_own_lease(lock_file: str, files: OsFiles) -> None:
+    # The holder heartbeats on its own slower schedule; a peer configured for a shorter threshold must not take a gap
+    # between those beats for death.
+    clock = [0.0]
+    holder = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
+    holder.publish()
+    assert holder.advance()
+    peer = _participant(files, lock_file, "write", stale_threshold=1, clock=lambda: clock[0])
+    peer.publish()
+    assert not peer.advance()
+    clock[0] = 5.0
+    assert not peer.advance()
+    clock[0] = 11.0
+    assert peer.advance()
+
+
+@pytest.mark.requires_hard_links
+def test_the_sweep_forgets_peers_that_left(lock_file: str, files: OsFiles, root: str) -> None:
+    clock = [0.0]
+    ledger = Ledger(lambda: clock[0])
+
+    def waiter() -> Participant:
+        log = GenerationLog(files, lock_file, root)
+        return Participant(files, root, "read", stale_threshold=10, clock=lambda: clock[0], ledger=ledger, log=log)
+
+    writer = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
+    writer.publish()
+    assert writer.advance()
+    record = Path(root, "holders", writer.token).read_bytes()
+    (first := waiter()).publish()
+    assert not first.advance()
+    first.leave()
+    writer.leave()
+    clock[0] = 6.0
+    (second := waiter()).publish()
+    assert second.advance()
+    second.leave()
+    # Had the writer's entry survived the sweep, the same bytes six seconds later would read as six seconds unchanged.
+    assert ledger.observe(writer.token, record) == pytest.approx(0.0)
+
+
+@pytest.mark.requires_hard_links
+def test_leave_drops_the_record_when_the_log_cannot_be_read(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    reader = _participant(files, lock_file, "read")
+    reader.publish()
+    mocker.patch.object(GenerationLog, "latest", autospec=True, side_effect=OSError(EIO, "Input/output error"))
+    with pytest.raises(OSError, match="Input/output error"):
+        reader.leave()
+    assert not Path(root, "holders", reader.token).exists()
+
+
+@pytest.mark.requires_hard_links
+def test_early_commits_unlink_no_negative_generation(lock_file: str, files: OsFiles, mocker: MockerFixture) -> None:
+    unlink = mocker.spy(OsFiles, "unlink")
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    assert writer.advance()
+    writer.leave()
+    assert [call for call in unlink.call_args_list if Path(call.args[-1]).name.startswith("-")] == []
+
+
+@pytest.mark.requires_hard_links
+def test_latest_on_a_current_head_reads_it_then_probes_one_name(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    log = _committed(files, lock_file, root, [None, _FIRST])
+    read = mocker.spy(OsFiles, "read")
+    assert log.latest().generation == 2
+    assert [name for call in read.call_args_list if (name := Path(call.args[-1]).name).isdigit()] == [
+        f"{2:020d}",
+        f"{3:020d}",
+    ]
 
 
 @pytest.mark.requires_hard_links
@@ -466,7 +902,7 @@ class _MemoryFiles:
         self._scheduler.yield_turn()
         return self.files.get(_key(path))
 
-    def create(self, path: str, data: bytes) -> None:
+    def create(self, path: str, data: bytes, *, durable: bool = False) -> None:  # ruff:ignore[unused-method-argument]  # memory has no storage to flush
         self._scheduler.yield_turn()
         if _key(path) in self.files:  # pragma: no cover  # every name created here is a fresh token
             raise FileExistsError(path)
@@ -478,6 +914,12 @@ class _MemoryFiles:
         if _key(target) in self.files or _key(source) not in self.files:
             return False
         self.files[_key(target)] = self.files[_key(source)]
+        self._record()
+        return True
+
+    def replace(self, source: str, target: str) -> bool:
+        self._scheduler.yield_turn()
+        self.files[_key(target)] = self.files.pop(_key(source))
         self._record()
         return True
 
@@ -503,7 +945,7 @@ class _MemoryFiles:
         )
         return [PurePosixPath(name).name for name in names if str(PurePosixPath(name).parent) == _key(path)]
 
-    def prepare(self, root: str) -> None:  # ruff:ignore[unused-method-argument]  # nothing to create in memory
+    def prepare(self, root: str, *, force: bool = False) -> None:  # ruff:ignore[unused-method-argument]  # nothing to create in memory
         self._scheduler.yield_turn()
 
 
@@ -527,6 +969,7 @@ class _Model:
         self.files = _MemoryFiles(scheduler, stale_listings=stale_listings)
         self.holding: dict[str, Literal["read", "write"]] = {}
         self.last_granted = 0
+        self.last_writer = 0
         self.outcomes: list[_Outcome] = []
         self.threads: list[threading.Thread] = []
         self.violations: list[str] = []
@@ -578,12 +1021,14 @@ class _Model:
     def _enter(self, token: str, mode: Literal["read", "write"], granted_at: int | None) -> None:
         # Recorded from the participant's thread while it holds the turn, so the check sees a consistent set.
         writers = [held for held in self.holding.values() if held == "write"]
-        if (
-            granted_at is None or granted_at <= self.last_granted
-        ):  # pragma: no cover  # a forked log, reported by the assertion
-            self.violations.append(f"grant at generation {granted_at} after generation {self.last_granted}")
+        # Fencing orders writers against every grant; concurrent readers may enter out of commit order.
+        floor = self.last_granted if mode == "write" else self.last_writer
+        if granted_at is None or granted_at <= floor:  # pragma: no cover  # a forked log, reported by the assertion
+            self.violations.append(f"{mode} granted at generation {granted_at} after generation {floor}")
         else:
-            self.last_granted = granted_at
+            self.last_granted = max(self.last_granted, granted_at)
+            if mode == "write":
+                self.last_writer = granted_at
         if mode == "write" and self.holding:  # pragma: no cover  # an exclusion regression, reported by the assertion
             self.violations.append(
                 f"writer granted at {self.scheduler.clock:.2f} while {sorted(self.holding.values())}"
@@ -654,7 +1099,7 @@ def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
     assert janitor.outcomes[0].granted_at is not None
 
     remaining = sorted(model.files.files)
-    generations = [name for name in remaining if name.startswith(f"{_ROOT}/gen/") and "/.commit-" not in name]
+    generations = [name for name in remaining if name.startswith(f"{_ROOT}/gen/") and name.rpartition("/")[2].isdigit()]
     assert generations, "the log must keep its latest generation"
     assert not [name for name in remaining if name.startswith(f"{_ROOT}/holders/")]
     latest = model.files.files[generations[-1]]
