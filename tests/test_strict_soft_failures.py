@@ -1733,6 +1733,32 @@ def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: Moc
             _ = StrictSoftFileLock(lock_path).claims
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="only NTFS refuses opens of a name whose deletion is pending")
+def test_strict_soft_claim_pending_deletion_is_skipped(tmp_path: Path) -> None:
+    # A peer's unlink sets the claim's delete disposition, then closes its handle. Until that close, every open fails
+    # with EACCES, and a peer stalled in between can hold that past the read grace, yet the claim is already withdrawn.
+    # The marker skips the run; the guard only narrows ctypes.WinDLL for ty, so it goes one way.
+    if sys.platform == "win32":  # pragma: no branch
+        import ctypes
+
+        lock_path = tmp_path / "resource.lock"
+        claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+        kernel32 = ctypes.WinDLL("kernel32")  # a private instance, so the restype below stays local
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        delete_access, share_all, open_existing, file_disposition_info = 0x10000, 0x1 | 0x2 | 0x4, 3, 4
+        handle = ctypes.c_void_p(
+            kernel32.CreateFileW(str(claim), delete_access, share_all, None, open_existing, 0, None)
+        )
+        delete_file = ctypes.c_bool(True)  # the FILE_DISPOSITION_INFO BOOLEAN
+        try:
+            assert kernel32.SetFileInformationByHandle(
+                handle, file_disposition_info, ctypes.byref(delete_file), ctypes.sizeof(delete_file)
+            )
+            assert StrictSoftFileLock(lock_path).claims == ()
+        finally:
+            kernel32.CloseHandle(handle)
+
+
 def test_strict_soft_claims_recheck_after_a_denied_claim_creates_no_file(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path: Final = tmp_path / "resource.lock"
     _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
