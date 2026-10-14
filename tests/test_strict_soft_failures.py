@@ -39,6 +39,9 @@ _NEEDS_LINK_DIR_FD: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     reason="counts the directory the dir_fd link path opens, which a runtime without link dir_fd never opens",
 )
 
+# Only NTFS refuses every open of a name whose deletion is pending while the deleting handle stays open.
+_WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
@@ -1733,7 +1736,7 @@ def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: Moc
             _ = StrictSoftFileLock(lock_path).claims
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="only NTFS refuses opens of a name whose deletion is pending")
+@_WINDOWS_ONLY  # pragma: win32 cover
 def test_strict_soft_claim_pending_deletion_is_skipped(tmp_path: Path) -> None:
     # A peer's unlink sets the claim's delete disposition, then closes its handle. Until that close, every open fails
     # with EACCES, and a peer stalled in between can hold that past the read grace, yet the claim is already withdrawn.
