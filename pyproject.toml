@@ -260,8 +260,14 @@ type = [
 
 [tool.flake8-lazy]
 standalone.line-length = 120
-# _api installs the fork-safety audit hook and register_at_fork callbacks, _read_write its sqlite audit hook and fork
-# handler, and _soft_rw._sync its atexit cleanup: each must run when the module is imported, not on first use.
-# sqlite3 and _read_write stay eager so a Python built without sqlite3 fails at import, which the package __getattr__
-# turns into ReadWriteLock and AsyncReadWriteLock resolving to None.
-standalone.lazy-exclude-modules = [ "filelock._api", "filelock._read_write", "filelock._soft_rw._sync", "sqlite3" ]
+standalone.lazy-exclude-modules = [
+  # installs the fork-safety audit hook and register_at_fork callbacks at import
+  "filelock._api",
+  # installs its sqlite audit hook and fork handler at import, and must fail at import without sqlite3 so the package
+  # __getattr__ resolves ReadWriteLock and AsyncReadWriteLock to None
+  "filelock._read_write",
+  # registers its atexit cleanup at import
+  "filelock._soft_rw._sync",
+  # a Python built without it must fail at import, as for filelock._read_write
+  "sqlite3",
+]

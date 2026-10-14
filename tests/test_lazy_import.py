@@ -98,55 +98,67 @@ _DAEMON_LOOP: Final = (
     ],
 )
 @pytest.mark.parametrize(
-    ("hold", "left_behind"),
+    "hold",
     [
-        pytest.param("lock = filelock.FileLock('a'); lock.acquire()", ["a"], id="FileLock"),
-        pytest.param("lock = filelock.SoftFileLock('a'); lock.acquire()", [], id="SoftFileLock"),
-        pytest.param("lock = filelock.StrictSoftFileLock('a'); lock.acquire()", ["a", "a.filelock"], id="Strict"),
-        pytest.param("lock = filelock.ReadWriteLock('a'); lock.acquire_write()", ["a"], id="ReadWriteLock"),
+        pytest.param("lock = filelock.FileLock('a'); lock.acquire()", id="FileLock"),
+        pytest.param("lock = filelock.SoftFileLock('a'); lock.acquire()", id="SoftFileLock"),
+        pytest.param("lock = filelock.StrictSoftFileLock('a'); lock.acquire()", id="Strict"),
+        pytest.param("lock = filelock.ReadWriteLock('a'); lock.acquire_write()", id="ReadWriteLock"),
         pytest.param(
             "loop = asyncio.new_event_loop(); lock = filelock.AsyncFileLock('a', loop=loop)\n"
             "loop.run_until_complete(lock.acquire())",
-            ["a"],
             id="AsyncFileLock",
         ),
         pytest.param(
             "loop = asyncio.new_event_loop(); lock = filelock.AsyncSoftFileLock('a', loop=loop)\n"
             "loop.run_until_complete(lock.acquire())",
-            ["a"],
             id="AsyncSoftFileLock",
         ),
         pytest.param(
             f"{_DAEMON_LOOP}lock = filelock.AsyncSoftFileLock('a', loop=loop, thread_local=False, "
             "run_in_executor=True)\nasyncio.run_coroutine_threadsafe(lock.acquire(), loop).result()",
-            [],
             id="AsyncSoftFileLock-daemon-loop-shared",
         ),
         pytest.param(
             f"{_DAEMON_LOOP}lock = filelock.AsyncSoftFileLock('a', loop=loop, thread_local=True, "
             "run_in_executor=False)\nasyncio.run_coroutine_threadsafe(lock.acquire(), loop).result()",
-            [],
             id="AsyncSoftFileLock-daemon-loop-thread-local",
         ),
         pytest.param(
             "loop = asyncio.new_event_loop(); lock = filelock.AsyncReadWriteLock('a')\n"
             "loop.run_until_complete(lock.acquire_write())",
-            ["a"],
             id="AsyncReadWriteLock",
         ),
     ],
 )
 def test_lazy_import_lock_held_at_exit_releases_as_eager(
-    tmp_path: Path, hold: str, left_behind: list[str], lazy_imports: str
+    tmp_path: Path, hold: str, lazy_imports: str
 ) -> None:  # pragma: needs lazy-imports
-    script = f"import sys\nsys.set_lazy_imports({lazy_imports!r})\nimport asyncio, threading, filelock\n{hold}"
-    stderr = subprocess.run(
-        [sys.executable, "-W", "ignore", "-c", script],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    ).stderr
+    def held_at_exit(name: str, before_exit: str) -> tuple[list[str], list[str]]:
+        (folder := tmp_path / name).mkdir()
+        script = (
+            f"import sys, types\nsys.set_lazy_imports({lazy_imports!r})\nimport asyncio, threading, filelock\n{hold}"
+        )
+        stderr = subprocess.run(
+            [sys.executable, "-W", "ignore", "-c", f"{script}\n{before_exit}"],
+            cwd=folder,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stderr
+        # Under "all" the standard library's own finalizers (asyncio's proactor loop on Windows) can fail at shutdown
+        # the same way; only frames from this package count against it.
+        frames = [line for line in stderr.splitlines() if f"{os.sep}filelock{os.sep}" in line]
+        return sorted(entry.name for entry in folder.iterdir()), frames
 
-    assert (sorted(entry.name for entry in tmp_path.iterdir()), stderr) == (left_behind, "")
+    # Resolving every lazy filelock binding before exit gives the eager behavior on this platform to compare against;
+    # a filter that forces imports eager is no baseline, as installing one changes what a held lock does at exit.
+    eager = held_at_exit(
+        "eager",
+        "for module in [m for n, m in list(sys.modules.items()) if n.partition('.')[0] == 'filelock']:\n"
+        "    for attribute, value in list(vars(module).items()):\n"
+        "        if type(value) is types.LazyImportType: getattr(module, attribute)",
+    )
+
+    assert held_at_exit("lazy", "") == (eager[0], [])
