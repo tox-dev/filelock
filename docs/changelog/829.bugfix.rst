@@ -1,0 +1,2 @@
+Fix :class:`~filelock.StrictSoftFileLock` raising :class:`~filelock.SoftFileLockProtocolError` on Windows when a
+contender read a claim whose owner was still finishing its unlink.
