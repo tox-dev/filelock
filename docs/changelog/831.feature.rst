@@ -1,3 +1,4 @@
 ``import filelock`` no longer imports :mod:`asyncio`, :mod:`sqlite3` or the soft, strict, lease and read-write lock
 modules. Each loads on first access to a name that needs it, which roughly halves the import time of a program that
-only uses :class:`~filelock.FileLock`.
+only uses :class:`~filelock.FileLock`. On Python 3.15 and later, :pep:`810` lazy imports also defer the standard library
+and internal modules that a lock only needs once it is used, cutting another 3 ms from ``import filelock``.

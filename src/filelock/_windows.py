@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+__lazy_modules__ = ["contextlib", "filelock._util", "msvcrt", "pathlib", "typing"]
+
 import os
 import sys
 import time
@@ -7,8 +9,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Final, cast
 
-from ._api import BaseFileLock
-from ._util import ensure_directory_exists, raise_on_not_writable_file
+from filelock._api import BaseFileLock
+from filelock._util import ensure_directory_exists, raise_on_not_writable_file
 
 if sys.platform == "win32":  # pragma: win32 cover
     import ctypes

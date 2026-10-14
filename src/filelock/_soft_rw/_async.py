@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__lazy_modules__ = ["asyncio", "filelock._async", "functools"]
+
 import asyncio
 import functools
 import os
@@ -17,8 +19,7 @@ from filelock._async import (
     _task_owners_for,
     _wait_until_done,
 )
-
-from ._sync import SoftReadWriteLock
+from filelock._soft_rw._sync import SoftReadWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable

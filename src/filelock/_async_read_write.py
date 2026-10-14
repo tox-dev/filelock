@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._async", "functools", "threading"]
+
 import asyncio
 import functools
 import os
@@ -12,13 +14,13 @@ from concurrent.futures import thread as executor_threads
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar, cast
 
-from ._api import (
+from filelock._api import (
     _append_exception_context,
     _ensure_current_process,
     _fork_transition,
     _register_fork_object,
 )
-from ._async import (
+from filelock._async import (
     _BackendOutcome,
     _capture_call,
     _drain_future,
@@ -27,7 +29,7 @@ from ._async import (
     _task_owners_for,
     _wait_until_done,
 )
-from ._read_write import ReadWriteLock
+from filelock._read_write import ReadWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, MutableMapping

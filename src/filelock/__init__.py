@@ -12,31 +12,33 @@ A platform independent file lock that supports the with-statement.
 
 from __future__ import annotations
 
+__lazy_modules__ = ["filelock._descriptor", "filelock._error", "importlib"]
+
 import sys
 import warnings
 from importlib import import_module
 from typing import TYPE_CHECKING, Final
 
-from ._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy, LockOptions
-from ._descriptor import lock_descriptor, unlock_descriptor
-from ._error import LeaseSettingsMismatch, SoftFileLockLifetimeWarning, SoftFileLockProtocolError, Timeout
-from ._unix import UnixFileLock
-from ._unix import has_fcntl as _has_fcntl
-from ._windows import WindowsFileLock
+from filelock._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy, LockOptions
+from filelock._descriptor import lock_descriptor, unlock_descriptor
+from filelock._error import LeaseSettingsMismatch, SoftFileLockLifetimeWarning, SoftFileLockProtocolError, Timeout
+from filelock._unix import UnixFileLock
+from filelock._unix import has_fcntl as _has_fcntl
+from filelock._windows import WindowsFileLock
 
 # Keeps ``filelock.version`` the string 4.0.12 exposed rather than the submodule.
-from .version import version
+from filelock.version import version
 
 if TYPE_CHECKING:
-    from . import asyncio
-    from ._async_read_write import AsyncAcquireReadWriteReturnProxy, AsyncReadWriteLock
-    from ._lease import CompromiseReason, LeaseCompromise, SoftFileLease
-    from ._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord
-    from ._read_write import ReadWriteLock
-    from ._soft import SoftFileLock
-    from ._soft_rw import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
-    from ._strict import StrictSoftFileClaim, StrictSoftFileClaimState, StrictSoftFileLock
-    from .asyncio import (
+    from filelock import asyncio
+    from filelock._async_read_write import AsyncAcquireReadWriteReturnProxy, AsyncReadWriteLock
+    from filelock._lease import CompromiseReason, LeaseCompromise, SoftFileLease
+    from filelock._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord
+    from filelock._read_write import ReadWriteLock
+    from filelock._soft import SoftFileLock
+    from filelock._soft_rw import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
+    from filelock._strict import StrictSoftFileClaim, StrictSoftFileClaimState, StrictSoftFileLock
+    from filelock.asyncio import (
         AsyncAcquireReturnProxy,
         AsyncSoftFileLease,
         AsyncSoftFileLock,
@@ -62,7 +64,7 @@ else:  # pragma: win32 no cover # ruff:ignore[collapsible-else-if]  # the else c
     if has_fcntl:
         _FileLock: type[BaseFileLock] = UnixFileLock
     else:
-        from ._soft import SoftFileLock
+        from filelock._soft import SoftFileLock
 
         _FileLock = SoftFileLock
         warnings.warn("only soft file lock is available", stacklevel=2)

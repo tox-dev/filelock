@@ -20,6 +20,8 @@ participant that outlives a removal of the log reads the new one instead of cont
 
 from __future__ import annotations
 
+__lazy_modules__ = ["contextlib", "filelock._error", "filelock._identity", "math", "pathlib", "secrets"]
+
 import os
 import secrets
 from contextlib import suppress

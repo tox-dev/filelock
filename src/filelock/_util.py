@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+__lazy_modules__ = ["contextlib", "pathlib", "secrets", "typing"]
+
 import os
 import secrets
 import stat

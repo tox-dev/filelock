@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._error"]
+
 import asyncio
 import contextlib
 import time
@@ -11,15 +13,20 @@ from threading import Lock
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypeVar, cast
 from weakref import WeakKeyDictionary
 
-from ._api import _append_exception_context, _fork_transition, _raise_chained_errors, _resolve_read_write_timeout
-from ._error import Timeout
+from filelock._api import (
+    _append_exception_context,
+    _fork_transition,
+    _raise_chained_errors,
+    _resolve_read_write_timeout,
+)
+from filelock._error import Timeout
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
     from concurrent.futures import Executor
 
-    from ._read_write import ReadWriteLock
-    from ._soft_rw import SoftReadWriteLock
+    from filelock._read_write import ReadWriteLock
+    from filelock._soft_rw import SoftReadWriteLock
 
 _T = TypeVar("_T")
 

@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+__lazy_modules__ = [
+    "collections",
+    "filelock._error",
+    "filelock._identity",
+    "filelock._windows",
+    "hashlib",
+    "itertools",
+    "pathlib",
+    "shutil",
+    "tempfile",
+]
+
 import hashlib
 import logging
 import os
@@ -18,7 +30,7 @@ from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
 from weakref import WeakValueDictionary
 
-from ._api import (
+from filelock._api import (
     AcquireReturnProxy,
     _canonical,
     _ensure_current_process,
@@ -27,16 +39,17 @@ from ._api import (
     _register_fork_class,
     _register_fork_object,
     _register_owned_descriptor,
+    _resolve_lazy_imports_before_shutdown,
     _resolve_read_write_timeout,
     _seconds,
     _timeout_behavior,
     _unregister_owned_descriptor,
 )
-from ._error import Timeout
-from ._identity import host_name, owner_is_stale, process_start_token
+from filelock._error import Timeout
+from filelock._identity import host_name, owner_is_stale, process_start_token
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from ._windows import _open_non_reparse_fd
+    from filelock._windows import _open_non_reparse_fd
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -346,6 +359,7 @@ class _ReadWriteLockMeta(type):
         is_singleton: bool = True,
     ) -> ReadWriteLock:
         _ensure_current_process()
+        _resolve_lazy_imports_before_shutdown()
         timeout = _seconds("timeout", timeout)
         if cls._instances_pid != _GETPID():
             cls._reset_class_after_fork()

@@ -348,6 +348,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "utime-nofollow": os.utime in os.supports_follow_symlinks,
     "utime-fd": os.utime in os.supports_fd,
     "sqlite3": find_spec("sqlite3") is not None,
+    "lazy-imports": hasattr(sys, "set_lazy_imports"),
     # A source consumer may run the suite unmeasured, and a forked child then has nothing to flush.
     "coverage": find_spec("coverage") is not None,
     "link-follow-symlinks": _LINK_FOLLOW_SYMLINKS,

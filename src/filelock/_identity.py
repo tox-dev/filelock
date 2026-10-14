@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+__lazy_modules__ = ["hashlib", "pathlib", "socket", "typing"]
+
 import hashlib
 import os
 import socket
