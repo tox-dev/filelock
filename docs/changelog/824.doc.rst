@@ -1,2 +1,0 @@
-Hash all cache keys in the lock filename recipe so short path-like keys stay in the chosen directory. The example also
-accepts path-derived surrogate escapes and works before the cache directory exists.

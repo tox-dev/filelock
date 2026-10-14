@@ -1,2 +1,0 @@
-Fix a forked child hanging at exit on PyPy when the parent forked while an
-:class:`~filelock.AsyncReadWriteLock` worker thread was between two operations.

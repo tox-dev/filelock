@@ -7,6 +7,18 @@
 .. towncrier release notes start
 
 *******************
+ 4.1.2 (2026-10-14)
+*******************
+
+- Fix read-lock acquisition on SQLite versions older than 3.33.0 by using ``sqlite_master`` for the schema probe. :pr:`770`
+- Raise ``IsADirectoryError`` (or ``PermissionError`` on Windows) for a directory lock path regardless of its write
+  permissions. :pr:`822`
+- Fix a forked child hanging at exit on PyPy when the parent forked while an
+  :class:`~filelock.AsyncReadWriteLock` worker thread was between two operations. :pr:`828`
+- Hash all cache keys in the lock filename recipe so short path-like keys stay in the chosen directory. The example also
+  accepts path-derived surrogate escapes and works before the cache directory exists. :pr:`824`
+
+*******************
  4.1.1 (2026-10-11)
 *******************
 
