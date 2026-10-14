@@ -7,6 +7,14 @@
 .. towncrier release notes start
 
 *******************
+ 4.2.0 (2026-10-14)
+*******************
+
+- ``import filelock`` is about twice as fast: lock types other than :class:`~filelock.FileLock` load on first use. :pr:`831`
+- Fix :class:`~filelock.StrictSoftFileLock` raising :class:`~filelock.SoftFileLockProtocolError` on Windows when a
+  contender read a claim whose owner was still finishing its unlink. :pr:`829`
+
+*******************
  4.1.2 (2026-10-14)
 *******************
 

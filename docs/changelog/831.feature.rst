@@ -1,1 +1,0 @@
-``import filelock`` is about twice as fast: lock types other than :class:`~filelock.FileLock` load on first use.
