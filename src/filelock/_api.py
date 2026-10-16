@@ -418,10 +418,11 @@ class FileLockMeta(ABCMeta):
         # deadlock-registry key acquire() uses.
         singleton_key = _canonical(lock_file)
         with cls._instances_lock:
-            # A cached lock resolves its relative path at each acquisition. After a chdir, or once a parent symlink
-            # points elsewhere, it may name another file than this key, so it is no match.
+            # A cached lock resolves its relative path at each acquisition and pins it for the hold. After a chdir, or
+            # once a parent symlink points elsewhere, an unheld lock may name another file than this key; a held one
+            # names the file it pinned.
             if (instance := cls._instances.get(singleton_key)) is None or _canonical(
-                instance.lock_file
+                instance._lock_path  # ruff:ignore[private-member-access]  # the metaclass owns the instance it returns
             ) != singleton_key:
                 if singleton_key in cls._instances_under_construction:  # pragma: needs fork
                     msg = f"Singleton lock construction is already active for {lock_file!s}"

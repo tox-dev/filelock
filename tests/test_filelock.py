@@ -2913,6 +2913,19 @@ def test_singleton_after_chdir_locks_the_requested_file(
     del relative
 
 
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_singleton_held_before_chdir_re_enters_by_absolute_path(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    held = lock_type("resource.lock", is_singleton=True)
+    held.acquire()
+    os.chdir(second)
+    with lock_type(first / "resource.lock", is_singleton=True) as again:
+        assert (again is held, held.lock_counter) == (True, 2)
+    held.release(force=True)
+
+
 @NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_singleton_after_parent_link_moves_locks_the_requested_file(

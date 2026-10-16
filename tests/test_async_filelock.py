@@ -677,6 +677,20 @@ async def test_async_relative_release_uses_acquisition_directory(working_directo
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
+async def test_async_singleton_held_before_chdir_re_enters_by_absolute_path(
+    lock_type: type[BaseAsyncFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    held = lock_type("resource.lock", is_singleton=True)
+    await held.acquire()
+    os.chdir(second)
+    async with lock_type(first / "resource.lock", is_singleton=True) as again:
+        assert (again is held, held.lock_counter) == (True, 2)
+    await held.release(force=True)
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
 async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
     # The registry is per-thread, so a second acquire from a different task must not look like a reentrant deadlock.
     lock_path = tmp_path / "test.lock"

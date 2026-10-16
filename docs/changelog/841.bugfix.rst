@@ -1,4 +1,4 @@
 Fix a lock on a relative path locking a file in the directory the process changed to while the lock waited, and leaving
 its marker behind on release after such a change. The path resolved when an acquisition starts now names the file until
 the hold ends. An ``is_singleton=True`` lookup no longer returns a cached lock whose relative path now resolves to
-another file.
+another file; a held lock still matches the file it holds.
