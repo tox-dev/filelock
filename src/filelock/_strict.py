@@ -34,7 +34,7 @@ from filelock._identity import host_name, owner_is_stale, process_start_token
 from filelock._marker import parse_marker
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import ensure_directory_exists, write_all
+from filelock._util import write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._windows import _is_unlinked
@@ -136,7 +136,6 @@ class StrictSoftFileLock(BaseFileLock):
         lock_path = Path(self._lock_path)
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
-        ensure_directory_exists(os.fspath(lock_path))
         _ensure_protocol_directory(self.lock_file, coordination_directory)
         _ensure_protocol_directory(self.lock_file, claim_directory)
         if (

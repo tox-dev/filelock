@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._util", "pathlib", "typing", "warnings"]
+__lazy_modules__ = ["contextlib", "pathlib", "typing", "warnings"]
 
 import os
 import sys
@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Final, cast
 
 from filelock._api import BaseFileLock
-from filelock._util import ensure_directory_exists
 
 has_fcntl = False
 if sys.platform == "win32":  # pragma: win32 cover
@@ -74,7 +73,6 @@ else:  # pragma: win32 no cover
                 self._switch_to_soft_lock(fd, exception, created=created)
 
         def _acquire_native(self) -> tuple[int, OSError, bool] | None:
-            ensure_directory_exists(self._lock_path)
             if (opened := self._open_lock_file()) is None:
                 return None
             fd, created = opened

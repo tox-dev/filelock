@@ -134,22 +134,30 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(tmp_path: P
         lock = AsyncFileLock(tmp_path / "a", executor=executor, on_acquired=lambda _fd: acquired.set())
         task = asyncio.create_task(lock.acquire())
         await asyncio.sleep(0)
-        # The acquire resolves the lock path on the executor first, so queue a second blocker behind that job to hold
-        # the backend attempt that follows it.
+        # The acquire resolves the lock path on the executor first, then creates the directory there, so queue a second
+        # blocker behind the first job and a third behind the directory job to hold the backend attempt after them.
         second_started = threading.Event()
         release_second = threading.Event()
         second_blocker = executor.submit(_block_executor, second_started, release_second)
         release_executor.set()
         assert await asyncio.to_thread(second_started.wait, 5)
-        # The resolved path wakes the task, which queues the attempt behind the second blocker.
+        # The resolved path wakes the task, which queues the directory job behind the second blocker.
+        await asyncio.sleep(0.05)
+        third_started = threading.Event()
+        release_third = threading.Event()
+        third_blocker = executor.submit(_block_executor, third_started, release_third)
+        release_second.set()
+        assert await asyncio.to_thread(third_started.wait, 5)
+        # The created directory wakes the task, which queues the attempt behind the third blocker.
         await asyncio.sleep(0.05)
         assert (lock.lock_counter, acquired.is_set()) == (1, False)
         task.cancel()
-        release_second.set()
+        release_third.set()
         with pytest.raises(asyncio.CancelledError):
             await task
         blocker.result(timeout=5)
         second_blocker.result(timeout=5)
+        third_blocker.result(timeout=5)
 
     assert acquired.is_set()
     assert (lock.is_locked, lock.lock_counter) == (False, 0)

@@ -361,12 +361,26 @@ class _RefreshLoop:
         try:
             st = os.lstat(self.lock_file)
         except FileNotFoundError as error:
-            return "marker-missing", error
+            return self._refresh_unnamed(error)
         except OSError as error:
             return "transient", error
         # A peer that took the expired claim replaced the marker, so the pathname now names its inode, not ours.
         if (st.st_dev, st.st_ino) != self.identity:
             return "owner-changed", None
+        return self._touch()
+
+    def _refresh_unnamed(self, name_error: FileNotFoundError) -> tuple[_RefreshOutcome, OSError | None]:
+        # A renamed directory takes the marker with it; the name is gone but the inode behind the descriptor keeps its
+        # link.
+        try:
+            linked = os.fstat(self.fd).st_nlink > 0
+        except OSError as error:
+            return "transient", error
+        if not linked:
+            return "marker-missing", name_error
+        return self._touch()
+
+    def _touch(self) -> tuple[_RefreshOutcome, OSError | None]:
         try:
             touch(self.lock_file, fd=self.fd)
         except OSError as error:

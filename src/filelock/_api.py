@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, 
 from weakref import WeakKeyDictionary, WeakValueDictionary, ref
 
 from filelock._error import SoftFileLockLifetimeWarning, Timeout
-from filelock._util import break_lock_file
+from filelock._util import break_lock_file, ensure_directory_exists
 
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
@@ -1462,6 +1462,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         attempt = 0
         self._context.acquiring = inspect.currentframe()
         try:
+            # Created once, so a directory that disappears while the acquisition waits fails it, not builds a second
+            # lock file beside the holder's.
+            ensure_directory_exists(self._lock_path)
             while True:
                 self._raise_if_inherited()
                 if not self.is_locked:

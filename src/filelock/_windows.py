@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from filelock._api import BaseFileLock
-from filelock._util import ensure_directory_exists, raise_on_not_writable_file
+from filelock._util import raise_on_not_writable_file
 
 if sys.platform == "win32":  # pragma: win32 cover
     import ctypes
@@ -193,7 +193,6 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         def _acquire(self) -> None:
             raise_on_not_writable_file(self._lock_path)
-            ensure_directory_exists(self._lock_path)
 
             # The reparse test is bound to the opened handle, so a symlink or junction swapped in cannot defeat it
             # through a check-then-open TOCTOU race.

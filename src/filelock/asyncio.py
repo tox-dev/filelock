@@ -8,6 +8,7 @@ __lazy_modules__ = [
     "contextlib",
     "filelock._async",
     "filelock._error",
+    "filelock._util",
     "functools",
     "inspect",
     "threading",
@@ -65,6 +66,7 @@ from filelock._lease import SoftFileLease
 from filelock._soft import SoftFileLock
 from filelock._strict import StrictSoftFileLock
 from filelock._unix import UnixFileLock
+from filelock._util import ensure_directory_exists
 from filelock._windows import WindowsFileLock
 
 if TYPE_CHECKING:
@@ -412,6 +414,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     ) -> None:
         lock_id = id(self)
         lock_filename = self.lock_file
+        await self._off_loop(functools.partial(ensure_directory_exists, self._lock_path))
         while True:
             self._raise_if_inherited()
             _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)

@@ -2862,8 +2862,10 @@ def test_relative_waiter_keeps_acquisition_directory(
     assert not (second / "resource.lock").exists()
 
 
-def _acquire_relative_lock(lock_type: type[BaseFileLock], polling: threading.Event) -> None:
-    lock_type("resource.lock", timeout=0.2, poll_interval=0.001).acquire(cancel_check=partial(_signal_poll, polling))
+def _acquire_relative_lock(lock_type: type[BaseFileLock], polling: threading.Event, timeout: float = 0.2) -> None:
+    lock_type("resource.lock", timeout=timeout, poll_interval=0.001).acquire(
+        cancel_check=partial(_signal_poll, polling)
+    )
 
 
 def _signal_poll(polling: threading.Event) -> bool:
@@ -2885,6 +2887,48 @@ def test_relative_release_uses_acquisition_directory(
     lock.release()
 
     assert not (first / "resource.lock").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows refuses to rename a directory holding an open file"
+)  # pragma: win32 no cover
+@pytest.mark.parametrize("lock_type", [SoftFileLock, MarkerSoftFileLock, SoftFileLease])
+def test_relative_release_after_directory_rename_removes_marker(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, _ = working_directories
+    lock = lock_type("resource.lock")
+    lock.acquire()
+    renamed = first.parent / "renamed"
+    Path(first).rename(renamed)
+
+    lock.release()
+
+    assert not (renamed / "resource.lock").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows refuses to rename a directory holding an open file"
+)  # pragma: win32 no cover
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_waiter_after_directory_rename_does_not_lock_a_new_file(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, _ = working_directories
+    holder = lock_type(first / "resource.lock")
+    holder.acquire()
+    polling = threading.Event()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_acquire_relative_lock, lock_type, polling, 2)
+            assert polling.wait(timeout=2)
+            Path(first).rename(first.parent / "renamed")
+            with pytest.raises(FileNotFoundError):
+                future.result(timeout=5)
+        assert not (first / "resource.lock").exists()
+        assert holder.is_locked
+    finally:
+        holder.release(force=True)
 
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)

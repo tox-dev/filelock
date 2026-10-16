@@ -23,7 +23,7 @@ from typing import Final
 from filelock._api import BaseFileLock, _raise_grouped_errors
 from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import break_lock_file, ensure_directory_exists, raise_on_not_writable_file, write_all
+from filelock._util import break_lock_file, raise_on_not_writable_file, write_all
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
@@ -71,7 +71,6 @@ class SoftFileLock(BaseFileLock):
     def _acquire(self) -> None:
         self._finish_marker_cleanup()
         raise_on_not_writable_file(self._lock_path)
-        ensure_directory_exists(self._lock_path)
         # O_CREAT | O_EXCL makes the create fail with EEXIST when the file already exists, so a successful open
         # means this process now holds the lock.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
@@ -248,11 +247,20 @@ class SoftFileLock(BaseFileLock):
                 raise
             self._finish_marker_cleanup()
 
+    def _marker_names(self) -> tuple[str, ...]:
+        # After a rename of the lock's directory only the caller's spelling, resolved through the working directory,
+        # still reaches the marker this hold opened.
+        return tuple(dict.fromkeys((self._lock_path, self.lock_file)))
+
     def _unlink_open_marker(self, identity: tuple[int, int] | None) -> bool:  # pragma: win32 no cover
+        if identity is None:
+            return True
         try:
-            with suppress(FileNotFoundError):
-                if identity is not None and _file_identity(os.lstat(self._lock_path)) == identity:
-                    Path(self._lock_path).unlink()
+            for name in self._marker_names():
+                with suppress(FileNotFoundError):
+                    if _file_identity(os.lstat(name)) == identity:
+                        Path(name).unlink()
+                        return True
         except OSError:
             return False
         return True
@@ -286,22 +294,26 @@ class SoftFileLock(BaseFileLock):
         if sys.platform == "win32":  # pragma: win32 cover
             self._windows_unlink_if_ours(identity)
         else:  # pragma: win32 no cover
-            with suppress(OSError):
-                if _file_identity(os.lstat(self._lock_path)) == identity:
-                    Path(self._lock_path).unlink()
+            for name in self._marker_names():
+                with suppress(OSError):
+                    if _file_identity(os.lstat(name)) == identity:
+                        Path(name).unlink()
+                        return
 
     def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:  # pragma: win32 cover
-        path: Final = self._lock_path
         retry_delay = 0.001
         for attempt in range(_UNLINK_MAX_RETRIES):
             # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck
             # identity each attempt: a failed unlink leaves a window for a successor to replace the marker at this path.
             try:
-                if _file_identity(os.lstat(path)) == identity:
-                    # Forgotten before the unlink: Windows does not promise unique file IDs, so no retry may reach a
-                    # successor that reused ours.
-                    self._marker_cleanup = None
-                    os.unlink(path)  # ruff:ignore[os-unlink]  # Path.unlink runs Python code a handler can interrupt
+                for name in self._marker_names():
+                    with suppress(FileNotFoundError):
+                        if _file_identity(os.lstat(name)) == identity:
+                            # Forgotten before the unlink: Windows does not promise unique file IDs, so no retry may
+                            # reach a successor that reused ours.
+                            self._marker_cleanup = None
+                            os.unlink(name)  # ruff:ignore[os-unlink]  # Path.unlink runs Python code a handler can interrupt
+                            break
             except OSError as exc:
                 if exc.errno in {EACCES, EPERM}:
                     # The file is still ours, so the next acquire or release tries again if these attempts run out.
