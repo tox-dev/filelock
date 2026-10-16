@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import functools
 import os
 import re
@@ -703,3 +704,75 @@ def _make_sync(tmp_path: Path) -> SoftReadWriteLock:
 async def _read_and_probe(lock: AsyncSoftReadWriteLock) -> bool:
     async with lock.read_lock(timeout=_TASK_WAIT):
         return await asyncio.to_thread(_writer_gets_in, Path(lock.lock_file).parent)
+
+
+@pytest.mark.usefixtures("failing_release")
+@pytest.mark.asyncio
+async def test_async_soft_read_after_a_failed_release_waits_for_another_writer(tmp_path: Path) -> None:
+    lock: Final = _make(tmp_path)
+    await lock.acquire_read(timeout=5)
+    with pytest.raises(OSError, match="No space left"):
+        await lock.release()
+    writer: Final = _make_sync(tmp_path)
+    await asyncio.to_thread(writer.acquire_write, 5)
+
+    with pytest.raises(Timeout):
+        await asyncio.create_task(lock.acquire_read(blocking=False))
+    writer.close()
+    await lock.close()
+
+
+@pytest.mark.usefixtures("failing_release")
+@pytest.mark.asyncio
+async def test_async_soft_release_retried_after_the_hold_was_dropped_raises(tmp_path: Path) -> None:
+    lock: Final = _make(tmp_path)
+    await lock.acquire_write(timeout=5)
+    with pytest.raises(OSError, match="No space left"):
+        await lock.release()
+
+    with pytest.raises(RuntimeError, match="not held by this task"):
+        await lock.release()
+    await lock.close()
+
+
+@pytest.fixture
+def failing_release(mocker: MockerFixture) -> None:
+    # The sync lock drops its hold before the filesystem step that fails, as a full disk does.
+    real_release = SoftReadWriteLock.release
+    pending = True
+
+    def release(lock: SoftReadWriteLock, *, force: bool = False) -> None:
+        nonlocal pending
+        real_release(lock, force=force)
+        if pending:
+            pending = False
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    mocker.patch.object(SoftReadWriteLock, "release", autospec=True, side_effect=release)
+
+
+@pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_async_soft_close_cancellation_refuses_later_acquires(tmp_path: Path) -> None:
+    started, resume = threading.Event(), threading.Event()
+
+    def park() -> None:
+        started.set()
+        resume.wait(5)
+
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        lock: Final = _make(tmp_path, executor=worker)
+        await lock.acquire_read(timeout=5)
+        # Parking the only worker keeps close() waiting for its backend call when the cancellation lands.
+        parked = asyncio.get_running_loop().run_in_executor(worker, park)
+        await asyncio.to_thread(started.wait, 5)
+        closing = asyncio.create_task(lock.close())
+        await asyncio.sleep(0)
+        closing.cancel()
+        resume.set()
+        await parked
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+
+        with pytest.raises(RuntimeError, match="has been closed"):
+            await asyncio.create_task(lock.acquire_read(timeout=5))

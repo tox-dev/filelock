@@ -851,3 +851,31 @@ def _writer_gets_in(lock_file: str) -> bool:
 async def _read_and_probe(lock: AsyncReadWriteLock) -> bool:
     async with lock.read_lock(timeout=_TASK_WAIT):
         return _writer_gets_in(lock.lock_file)
+
+
+@pytest.mark.asyncio
+async def test_async_reads_giving_up_behind_a_writer_leave_nothing_behind(lock_file: str) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
+    await lock.acquire_write()
+    await asyncio.create_task(_give_up_reading(lock))
+    before: Final = _live_asyncio_futures()
+    give_ups: Final = 200
+
+    for _ in range(give_ups):
+        await asyncio.create_task(_give_up_reading(lock))
+
+    # The interpreter and the test session keep a handful of futures that come and go. A leak keeps one per give-up,
+    # so it shows as growth near give_ups, far past that noise.
+    assert _live_asyncio_futures() - before < give_ups // 4
+    await lock.release()
+    await lock.close()
+
+
+async def _give_up_reading(lock: AsyncReadWriteLock) -> None:
+    with pytest.raises(Timeout):
+        await lock.acquire_read(timeout=0.001)
+
+
+def _live_asyncio_futures() -> int:
+    gc.collect()
+    return sum(isinstance(candidate, asyncio.Future) for candidate in gc.get_objects())
