@@ -7,6 +7,7 @@ import secrets
 import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed-argument, no-shell run below
 import sys
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed-argument, no-shell run below
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, TypeVar
