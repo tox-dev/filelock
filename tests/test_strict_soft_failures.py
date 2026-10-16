@@ -1369,6 +1369,17 @@ def test_strict_soft_refuses_coordination_directory_of_another_uid(  # pragma: n
     assert list(coordination.iterdir()) == []
 
 
+def test_strict_soft_coordination_directory_replaced_in_a_writable_parent_splits_holders(tmp_path: Path) -> None:
+    # The documented directory boundary: whoever can rename entries in a non-sticky parent can move even this UID's own
+    # protocol directory aside and start a fresh one, which no check inside the lock can tell from a first use.
+    lock_path: Final = tmp_path / "resource.lock"
+    (first := StrictSoftFileLock(lock_path)).acquire()
+    Path(f"{lock_path}.filelock").rename(tmp_path / "aside")
+    (second := StrictSoftFileLock(lock_path, timeout=0)).acquire()
+
+    assert (first.is_locked, second.is_locked) == (True, True)
+
+
 @pytest.fixture
 def lock_path(tmp_path: Path) -> Path:
     _initialize_protocol(path := tmp_path / "resource.lock")
