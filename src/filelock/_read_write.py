@@ -1038,7 +1038,7 @@ def _link_beside(  # pragma: needs posix-hard-link
 ) -> _LinkDirectory:
     # Beside the database because a link cannot cross filesystems, and TMPDIR is often on another one.
     parent: Final = pathlib.Path(database).parent
-    _sweep_links_of_the_dead(parent, identity)
+    _sweep_links_of_the_dead(parent, identity, owner)
     path: Final = pathlib.Path(tempfile.mkdtemp(prefix=_link_prefix(), dir=parent))
     fd: Final = os.open(path, _DIRECTORY_FLAGS)
     try:
@@ -1065,7 +1065,7 @@ def _link_beside(  # pragma: needs posix-hard-link
 
 
 def _sweep_links_of_the_dead(
-    parent: pathlib.Path, identity: _DatabaseIdentity
+    parent: pathlib.Path, identity: _DatabaseIdentity, owner: int
 ) -> None:  # pragma: needs posix-hard-link
     # A process killed while it held a link leaves the directory, and an extra link to the database, behind for good.
     # Two threads sweeping at once only both try the same removals, which a lock would cost a fork-safety reset for.
@@ -1082,40 +1082,55 @@ def _sweep_links_of_the_dead(
     except OSError:
         return
     for name in names:
-        if _owner_is_gone(name):
-            # A peer sweeping alongside, or a directory this user cannot remove, must not fail the connect.
-            with suppress(OSError):
-                _remove_dead_links(parent / name, identity)
+        # A peer sweeping alongside, or a directory this user cannot remove, must not fail the connect.
+        with suppress(OSError):
+            _remove_dead_links(parent / name, identity, owner)
 
 
-def _remove_dead_links(path: pathlib.Path, identity: _DatabaseIdentity) -> None:  # pragma: needs posix-hard-link
+def _remove_dead_links(
+    path: pathlib.Path, identity: _DatabaseIdentity, owner: int
+) -> None:  # pragma: needs posix-hard-link
     # Any directory can carry a dead holder's name after a rename in the parent, so only hard links to this database
     # go, and the directory only once that leaves it empty.
     fd: Final = os.open(path, _DIRECTORY_FLAGS)
     try:
+        # Only a directory this account made carries a holder of its own; a name another account chose is never
+        # parsed, so no PID is probed on its behalf.
+        if os.fstat(fd).st_uid != owner or not _owner_is_gone(path.name):
+            return
         with os.scandir(fd) as entries:
             names: Final = [entry.name for entry in entries]
-        removed = False
         for entry in names:
             # Releases up to 4.2.0 linked the database right inside the directory.
-            relative = entry if entry == _LINK_NAME else f"{entry}/{_LINK_NAME}"
+            if entry == _LINK_NAME:
+                _unlink_link_to(identity, fd)
+                continue
             try:
-                linked = os.stat(relative, dir_fd=fd, follow_symlinks=False)
+                nested = os.open(entry, _DIRECTORY_FLAGS, dir_fd=fd)
             except OSError:
                 continue
-            if (linked.st_dev, linked.st_ino) == identity:
-                os.unlink(relative, dir_fd=fd)
-                if relative != entry:
-                    os.rmdir(entry, dir_fd=fd)
-                removed = True
+            try:
+                _unlink_link_to(identity, nested)
+            finally:
+                os.close(nested)
+            with suppress(OSError):
+                os.rmdir(entry, dir_fd=fd)
     finally:
         os.close(fd)
-    if removed:
+    with suppress(OSError):
         path.rmdir()
 
 
+def _unlink_link_to(identity: _DatabaseIdentity, dir_fd: int) -> None:  # pragma: needs posix-hard-link
+    try:
+        linked: Final = os.stat(_LINK_NAME, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return
+    if (linked.st_dev, linked.st_ino) == identity:
+        os.unlink(_LINK_NAME, dir_fd=dir_fd)
+
+
 def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
-    # A peer can plant a malformed name; leave it untouched rather than probing a forged PID during acquisition.
     match name.removeprefix(_LINK_PREFIX).split("-"):
         case [pid, start, digest, _] if (
             pid.isascii() and pid.isdigit() and (not start or (start.isascii() and start.isdigit()))
