@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 
 from filelock._async import (
+    _TASKS_THREAD_ID,
     _BackendOutcome,
     _capture_call,
     _drain_future,
@@ -220,12 +221,19 @@ class AsyncSoftReadWriteLock:
 
     async def _acquire(self, mode: Literal["read", "write"], timeout: float | None, *, blocking: bool | None) -> None:
         blocking = self._lock.blocking if blocking is None else blocking
-        sync_acquire = self._lock.acquire_read if mode == "read" else self._lock.acquire_write
 
         async def enter(remaining: float) -> None:
             # A close() may have landed while this task waited for the table.
             self._raise_if_unusable()
-            await self._run_acquire(functools.partial(sync_acquire, remaining, blocking=blocking))
+            await self._run_acquire(
+                functools.partial(
+                    self._lock._acquire_level_of,  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+                    _TASKS_THREAD_ID,
+                    mode,
+                    remaining,
+                    blocking=blocking,
+                )
+            )
 
         def joinable() -> bool:
             self._raise_if_unusable()
@@ -254,13 +262,11 @@ class AsyncSoftReadWriteLock:
 
         """
         if self._creator_pid == os.getpid():
-            # The task table owns the nesting, so the backend is always one level deep here, and the executor can run
-            # this on another worker than the acquire: force=True is the backend's cross-thread release.
             await self._owners.release(
                 force=force,
                 lock_file=self.lock_file,
                 via=self._via,
-                leave=functools.partial(self._submit, self._lock.release, force=True),
+                leave=functools.partial(self._submit, self._leave_backend),
                 still_held=self._backend_holds,
             )
 
@@ -282,10 +288,7 @@ class AsyncSoftReadWriteLock:
         try:
             await self._owners.retire(
                 None if self._owns_backend else self._via,
-                leave=functools.partial(
-                    self._submit,
-                    self._lock.close if self._owns_backend else functools.partial(self._lock.release, force=True),
-                ),
+                leave=functools.partial(self._submit, self._lock.close if self._owns_backend else self._leave_backend),
                 still_held=self._backend_holds,
             )
         except BaseException as error:
@@ -304,7 +307,11 @@ class AsyncSoftReadWriteLock:
 
     def _backend_holds(self) -> bool:
         # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
-        return self._lock._hold is not None  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+        return self._lock._holds_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+
+    def _leave_backend(self) -> None:
+        # Only the tasks' level: a sync user of the same singleton keeps its own.
+        self._lock._release_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
         # run_in_executor cannot recall work the pool already started, so canceling the caller does not stop the sync
@@ -320,7 +327,7 @@ class AsyncSoftReadWriteLock:
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             try:
-                await _drain_future(self._submit(self._lock.release, force=True))
+                await _drain_future(self._submit(self._leave_backend))
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             raise

@@ -366,7 +366,7 @@ async def test_async_writer_times_out_behind_reader(tmp_path: Path) -> None:
 async def test_async_acquire_cancellation_hands_the_claim_back(
     tmp_path: Path, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
-    gate = _Gate(mocker, f"acquire_{mode}")
+    gate = _Gate(mocker, "_acquire_level_of")
     lock = _make(tmp_path)
     acquire = lock.acquire_read if mode == "read" else lock.acquire_write
     task = asyncio.create_task(acquire(timeout=5))
@@ -392,7 +392,7 @@ async def test_async_acquire_cancellation_hands_the_claim_back(
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_acquire_cancellation_surfaces_a_failed_acquire(tmp_path: Path, mocker: MockerFixture) -> None:
     acquire_error = Timeout(str(tmp_path / "foo.lock"))
-    gate = _Gate(mocker, "acquire_write", fail_with=acquire_error)
+    gate = _Gate(mocker, "_acquire_level_of", fail_with=acquire_error)
     lock = _make(tmp_path)
     task = asyncio.create_task(lock.acquire_write(timeout=5))
     await gate.started.wait()
@@ -411,9 +411,9 @@ async def test_async_acquire_cancellation_surfaces_a_failed_acquire(tmp_path: Pa
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_acquire_cancellation_surfaces_a_failed_release(tmp_path: Path, mocker: MockerFixture) -> None:
-    gate = _Gate(mocker, "acquire_write")
+    gate = _Gate(mocker, "_acquire_level_of")
     release_error = RuntimeError("release failed")
-    mocker.patch.object(SoftReadWriteLock, "release", side_effect=release_error)
+    mocker.patch.object(SoftReadWriteLock, "_release_level_of", side_effect=release_error)
     lock = _make(tmp_path)
     task = asyncio.create_task(lock.acquire_write(timeout=5))
     await gate.started.wait()
@@ -432,7 +432,7 @@ async def test_async_acquire_cancellation_surfaces_a_failed_release(tmp_path: Pa
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_release_cancellation_drains_the_release(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _make(tmp_path)
-    gate = _Gate(mocker, "release")
+    gate = _Gate(mocker, "_release_level_of")
     task = asyncio.create_task(_acquire_then_release(lock, "write"))
     await gate.started.wait()
     task.cancel("cancel release")
@@ -455,7 +455,7 @@ async def test_async_release_cancellation_hands_the_lock_to_the_next_task(
     tmp_path: Path, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
     lock = _make(tmp_path)
-    gate = _Gate(mocker, "release")
+    gate = _Gate(mocker, "_release_level_of")
     task = asyncio.create_task(_acquire_then_release(lock, mode))
     await gate.started.wait()
     task.cancel("cancel release")
@@ -503,7 +503,7 @@ async def test_async_close_cancellation_drains_the_close(tmp_path: Path, mocker:
 async def test_async_release_cancellation_surfaces_a_failed_release(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _make(tmp_path)
     release_error = RuntimeError("release failed")
-    gate = _Gate(mocker, "release", fail_with=release_error)
+    gate = _Gate(mocker, "_release_level_of", fail_with=release_error)
     task = asyncio.create_task(_acquire_then_release(lock, "write"))
     await gate.started.wait()
     task.cancel("cancel release")
@@ -738,17 +738,13 @@ async def test_async_soft_release_retried_after_the_hold_was_dropped_raises(tmp_
 @pytest.fixture
 def failing_release(mocker: MockerFixture) -> None:
     # The sync lock drops its hold before the filesystem step that fails, as a full disk does.
-    real_release = SoftReadWriteLock.release
-    pending = True
+    real_release = SoftReadWriteLock._release_level_of
 
-    def release(lock: SoftReadWriteLock, *, force: bool = False) -> None:
-        nonlocal pending
-        real_release(lock, force=force)
-        if pending:
-            pending = False
-            raise OSError(errno.ENOSPC, "No space left on device")
+    def release(lock: SoftReadWriteLock, holder: int) -> None:
+        real_release(lock, holder)
+        raise OSError(errno.ENOSPC, "No space left on device")
 
-    mocker.patch.object(SoftReadWriteLock, "release", autospec=True, side_effect=release)
+    mocker.patch.object(SoftReadWriteLock, "_release_level_of", autospec=True, side_effect=release)
 
 
 @pytest.mark.asyncio

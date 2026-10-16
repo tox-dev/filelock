@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._async", "functools", "threading"]
+__lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._async", "functools"]
 
 import asyncio
 import functools
 import os
 import sqlite3
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import thread as executor_threads
 from contextlib import asynccontextmanager
@@ -21,6 +20,7 @@ from filelock._api import (
     _register_fork_object,
 )
 from filelock._async import (
+    _TASKS_THREAD_ID,
     _BackendOutcome,
     _capture_call,
     _drain_future,
@@ -32,9 +32,12 @@ from filelock._async import (
 from filelock._read_write import ReadWriteLock
 
 if TYPE_CHECKING:
+    import threading
     from collections.abc import AsyncGenerator, Callable, MutableMapping
     from concurrent import futures
     from types import TracebackType
+
+    from filelock._api import AcquireReturnProxy
 
 
 _P = ParamSpec("_P")
@@ -221,16 +224,19 @@ class AsyncReadWriteLock:
     async def _acquire(self, mode: Literal["read", "write"], timeout: float | None, *, blocking: bool | None) -> None:
         timeout = self.timeout if timeout is None else timeout
         blocking = self.blocking if blocking is None else blocking
-        sync_acquire = self._lock.acquire_read if mode == "read" else self._lock.acquire_write
-
-        def enter_backend(remaining: float) -> None:
-            sync_acquire(remaining, blocking=blocking)
-            self._owners.backend_thread = threading.get_ident()
 
         async def enter(remaining: float) -> None:
             # A close() may have landed while this task waited for the table.
             self._raise_if_unusable()
-            await self._run_acquire(functools.partial(enter_backend, remaining))
+            await self._run_acquire(
+                functools.partial(
+                    self._lock._acquire_level_of,  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+                    _TASKS_THREAD_ID,
+                    mode,
+                    remaining,
+                    blocking=blocking,
+                )
+            )
 
         def joinable() -> bool:
             self._raise_if_unusable()
@@ -305,7 +311,7 @@ class AsyncReadWriteLock:
         if self._owns_executor:
             await asyncio.to_thread(functools.partial(self._executor.shutdown, wait=True))
 
-    async def _run_acquire(self, acquire: Callable[[], None]) -> None:
+    async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
         acquire_future = self._submit(acquire)
         try:
             await _wait_until_done(acquire_future)
@@ -323,15 +329,11 @@ class AsyncReadWriteLock:
 
     def _backend_holds(self) -> bool:
         # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
-        if (thread := self._owners.backend_thread) is None:
-            return False
-        return self._lock._holds_level_of(thread)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+        return self._lock._holds_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     def _leave_backend(self) -> None:
-        # Only the entering worker's level: a sync user of the same singleton keeps its own.
-        self._lock._release_level_of(  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
-            cast("int", self._owners.backend_thread)
-        )
+        # Only the tasks' level: a sync user of the same singleton keeps its own.
+        self._lock._release_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs

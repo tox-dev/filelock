@@ -31,6 +31,10 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
+#: The holder an async wrapper records its backend level under. No thread has this identifier, so a sync caller that
+#: lands on the executor thread that took the level cannot re-enter or release it as if it were that holder.
+_TASKS_THREAD_ID: Final[int] = 0
+
 
 class _AsyncTransitionUnavailableError(Exception):
     pass
@@ -169,8 +173,6 @@ class _TaskOwners:
         #: One ticket per waiting call, settled on the next state change. A call that stops waiting takes its own out,
         #: so one that times out or is canceled leaves nothing behind.
         self._waiters: dict[ConcurrentFuture[None], None] = {}
-        #: The executor thread that took the sync lock's level for every task, which may leave on another worker.
-        self.backend_thread: int | None = None
 
     async def acquire(  # ruff:ignore[too-many-arguments]  # one keyword per piece of wrapper state the table consults
         self,
@@ -490,6 +492,7 @@ async def _capture_awaitable(awaitable: Awaitable[_T]) -> _BackendOutcome[_T]:
 
 
 __all__ = [
+    "_TASKS_THREAD_ID",
     "_AsyncTransitionGate",
     "_AsyncTransitionUnavailableError",
     "_BackendOutcome",

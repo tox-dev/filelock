@@ -417,6 +417,22 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         """
         if self._creator_pid != os.getpid():  # pragma: forked child
             return
+        self._release(threading.get_ident(), force=force)
+
+    def _acquire_level_of(self, holder: int, mode: Mode, timeout: float, *, blocking: bool) -> AcquireReturnProxy:
+        # Records the level under *holder* instead of the calling thread, for an async wrapper whose executor thread
+        # does not identify the tasks it holds for.
+        return self._acquire(mode, timeout, blocking=blocking, holder=holder)
+
+    def _release_level_of(self, holder: int) -> None:
+        self._release(holder, force=False)
+
+    def _holds_level_of(self, holder: int) -> bool:
+        # Read without the internal lock: an async wrapper asks from its event loop, which must not wait out a release
+        # running on another thread.
+        return (hold := self._hold) is not None and (holder == hold.write_thread_id or holder in hold.read_depths)
+
+    def _release(self, thread_id: int, *, force: bool) -> None:
         with self._locks.internal:
             hold = self._hold
             if hold is None:
@@ -427,8 +443,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             if force:
                 hold.level = 0
             else:
-                self._raise_if_not_holder(hold, cur := threading.get_ident())
-                hold.leave_one_level(cur)
+                self._raise_if_not_holder(hold, thread_id)
+                hold.leave_one_level(thread_id)
             if hold.level > 0:
                 return
             self._hold = None
@@ -469,19 +485,21 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         timeout: float | None,
         *,
         blocking: bool | None,
+        holder: int | None = None,
     ) -> AcquireReturnProxy:
         if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"SoftReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
             raise RuntimeError(msg)
         timeout = self.timeout if timeout is None else timeout
         blocking = self.blocking if blocking is None else blocking
+        holder = threading.get_ident() if holder is None else holder
 
         with self._locks.internal:
             if self._closed:
                 raise self._closed_error()
             timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
             if self._hold is not None:
-                return self._validate_reentrant(mode)
+                return self._validate_reentrant(mode, holder)
 
         start = time.perf_counter()
         if not blocking:
@@ -494,7 +512,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         if not acquired:
             raise Timeout(self.lock_file) from None
         try:
-            return self._do_acquire_inner(mode, timeout, start, blocking=blocking)
+            return self._do_acquire_inner(mode, timeout, start, holder, blocking=blocking)
         finally:
             self._locks.transaction.release()
 
@@ -506,12 +524,13 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         mode: Mode,
         effective_timeout: float,
         start: float,
+        holder: int,
         *,
         blocking: bool,
     ) -> AcquireReturnProxy:
         with self._locks.internal:
             if self._hold is not None:
-                return self._validate_reentrant(mode)
+                return self._validate_reentrant(mode, holder)
         deadline = None if effective_timeout == -1 else start + effective_timeout
         participant = Participant(
             self._files,
@@ -536,8 +555,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         hold = _Hold(
             level=1,
             mode=mode,
-            write_thread_id=threading.get_ident() if mode == "write" else None,
-            read_depths={threading.get_ident(): 1} if mode == "read" else {},
+            write_thread_id=holder if mode == "write" else None,
+            read_depths={holder: 1} if mode == "read" else {},
             participant=participant,
             heartbeat_thread=_HeartbeatThread(
                 refresh=lambda: self._refresh(participant, hold),
@@ -570,7 +589,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             raise start_error
         return AcquireReturnProxy(lock=self)
 
-    def _validate_reentrant(self, mode: Mode) -> AcquireReturnProxy:
+    def _validate_reentrant(self, mode: Mode, holder: int) -> AcquireReturnProxy:
         hold = self._hold
         assert hold is not None  # ruff:ignore[assert]  # callers dispatch here only inside the self._hold is not None branch
         if hold.mode != mode:
@@ -581,15 +600,14 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 f"already holding a {opposite} lock ({direction} not allowed)"
             )
             raise RuntimeError(msg)
-        if mode == "write" and (cur := threading.get_ident()) != hold.write_thread_id:
+        if mode == "write" and holder != hold.write_thread_id:
             msg = (
                 f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {cur} while it is held by thread {hold.write_thread_id}"
+                f"from thread {holder} while it is held by thread {hold.write_thread_id}"
             )
             raise RuntimeError(msg)
         if mode == "read":
-            cur = threading.get_ident()
-            hold.read_depths[cur] = hold.read_depths.get(cur, 0) + 1
+            hold.read_depths[holder] = hold.read_depths.get(holder, 0) + 1
         hold.level += 1
         return AcquireReturnProxy(lock=self)
 
