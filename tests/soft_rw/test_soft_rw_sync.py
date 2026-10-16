@@ -1143,14 +1143,14 @@ def test_symlinked_protocol_directory_is_refused(
 
 
 @NEEDS_FOREIGN_STICKY_TMP
-@pytest.mark.usefixtures("directories_of_another_uid")
-def test_protocol_directory_of_another_uid_is_refused(  # pragma: needs foreign-sticky-tmp
+@pytest.mark.usefixtures("directories_of_another_account")
+def test_protocol_directory_of_another_account_is_refused(  # pragma: needs foreign-sticky-tmp
     lock_path_in_shared_tmp: Path,
 ) -> None:
     (root := Path(f"{lock_path_in_shared_tmp}.rw")).mkdir()
     lock = SoftReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
     try:
-        with pytest.raises(RuntimeError, match="who can remove the records in it"):
+        with pytest.raises(RuntimeError, match="not to this process's account"):
             lock.acquire_write(timeout=0)
     finally:
         lock.close()

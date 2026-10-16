@@ -523,9 +523,10 @@ access, such as a privilege boundary or a broker process.
 The directory boundary
 ======================
 
-Every protection filelock gives against other local UIDs holds only while no other UID can replace the lock's directory
-or any directory above it: each must belong to the lock's own UID or to root, and must either not be writable by others
-or be sticky. A UID that can rename entries in a non-sticky ancestor can move the lock file or protocol directory aside,
+Every protection filelock gives against processes of other accounts holds only while none of them can replace the
+lock's directory or any of its ancestors: each must belong to the account the lock runs as or to root, and must either
+not be writable by others or be sticky. A process that can rename entries in a non-sticky ancestor can move the lock
+file or protocol directory aside,
 even one it cannot read, and put its own in its place. Holders that already reached the old one keep using it while new
 contenders use the replacement, so two of them hold the lock at once and neither is told. No check inside the lock can
 rule that out, because that UID owns every name in such a directory. Keep locks in a directory only the lock's users can
@@ -967,7 +968,7 @@ fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMo
 
 **Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
 permissions can exclude another UID. Under a sticky parent such as ``/tmp``, acquisition raises :class:`RuntimeError`
-when a different UID created ``<path>.rw``, ``gen`` or ``holders`` first, unless that UID owns the parent too. A process
+when ``<path>.rw``, ``gen`` or ``holders`` belongs to another account that does not own the parent either. A process
 with the same effective UID can alter the records. A filesystem that
 delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a holder remains active.
 

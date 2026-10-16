@@ -1358,20 +1358,20 @@ def test_strict_soft_symlinked_protocol_directory_is_neither_listed_nor_broken(t
 
 
 @NEEDS_FOREIGN_STICKY_TMP
-@pytest.mark.usefixtures("directories_of_another_uid")
-def test_strict_soft_refuses_coordination_directory_of_another_uid(  # pragma: needs foreign-sticky-tmp
+@pytest.mark.usefixtures("directories_of_another_account")
+def test_strict_soft_refuses_coordination_directory_of_another_account(  # pragma: needs foreign-sticky-tmp
     lock_path_in_shared_tmp: Path,
 ) -> None:
     (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()
 
-    with pytest.raises(SoftFileLockProtocolError, match="who can remove the claims published in it"):
+    with pytest.raises(SoftFileLockProtocolError, match="not to this process's account"):
         StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0).acquire()
     assert list(coordination.iterdir()) == []
 
 
 def test_strict_soft_coordination_directory_replaced_in_a_writable_parent_splits_holders(tmp_path: Path) -> None:
-    # The documented directory boundary: whoever can rename entries in a non-sticky parent can move even this UID's own
-    # protocol directory aside and start a fresh one, which no check inside the lock can tell from a first use.
+    # The documented directory boundary: a process that can rename entries in a non-sticky parent can move even this
+    # account's own protocol directory aside and start a fresh one, which the lock cannot tell from a first use.
     lock_path: Final = tmp_path / "resource.lock"
     (first := StrictSoftFileLock(lock_path)).acquire()
     Path(f"{lock_path}.filelock").rename(tmp_path / "aside")

@@ -300,7 +300,7 @@ def _unreadable_file() -> Generator[Path]:
 
 
 def _has_a_sticky_tmp_of_another_user() -> bool:
-    # A lock refuses a protocol directory a different UID owns only under a sticky parent whose owner is not this UID.
+    # A lock refuses a protocol directory of another account only under a sticky parent this account does not own.
     # /tmp is that parent on Linux and macOS, unless the suite runs as the user who owns it.
     if sys.platform == "win32":
         return False

@@ -1178,8 +1178,33 @@ def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, paren
         ):
             raise SoftFileLockProtocolError(lock_file, None, f"{directory} is not a real directory") from None
         if owner is not None:  # pragma: needs foreign-sticky-tmp
-            reason = f"{directory} belongs to UID {owner}, who can remove the claims published in it"
+            reason = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
             raise SoftFileLockProtocolError(lock_file, None, reason) from None
+    _settle_directory_mode(lock_file, directory, mode, parent_fd)
+
+
+def _settle_directory_mode(lock_file: str, directory: Path, mode: int, parent_fd: int | None) -> None:
+    # The umask or a default ACL may have left the directory wider than the mode, now or in an earlier release, so
+    # narrow a directory this account owns to the mode. The sticky bit then keeps a claim removable only by the
+    # account that published it, whatever the mode leaves others. Windows has neither mode bits nor a sticky bit.
+    if sys.platform != "win32":  # pragma: win32 no cover
+        try:
+            fd = os.open(
+                directory.name if parent_fd is not None else os.fspath(directory),
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_fd,
+            )
+        except OSError as error:
+            raise SoftFileLockProtocolError(lock_file, None, f"cannot open {directory}") from error
+        try:
+            found = os.fstat(fd)
+            settled = found.st_mode & 0o7000 | found.st_mode & mode & 0o777 | stat.S_ISVTX
+            if found.st_uid == os.geteuid() and settled != stat.S_IMODE(found.st_mode):
+                os.fchmod(fd, settled)
+        except OSError as error:
+            raise SoftFileLockProtocolError(lock_file, None, f"cannot set the mode of {directory}") from error
+        finally:
+            os.close(fd)
 
 
 def _validate_force_break_name(name: str) -> None:
