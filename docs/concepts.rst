@@ -696,24 +696,22 @@ container runtimes create, keeps the token. A process that cannot read ``/proc/s
 ``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
 whenever either side lacks the boot id.
 
-Breaking a marker leaves a short window. Right before breaking it the contender reads the marker's inode and
-modification time again and leaves it alone if they moved since the stale check, the way Mercurial re-reads a lock under
-its break lock before removing it. It then renames the marker to a private ``<lock>.break.*`` name, so only one of
-several breakers takes it, and checks the renamed file's inode and modification time once more. A mismatch means a peer
-recreated the marker between that last read and the rename, so the contender hard-links that live marker back to the
-lock path, without following a symlink found under the break name, and drops the break name. Outside Windows the
-contender holds the marker open from before it reads the record until the break ends: ext4 gives a freed inode number to
-the next file created, so a successor's marker could otherwise carry the number of the marker judged stale. A failed
-acquire removes its own marker the same way, before it closes it. A third process that takes the empty path in the two
-syscalls between the rename
-and the link keeps it, whether a soft lock creating its marker or a :class:`StrictSoftFileLock
-<filelock.StrictSoftFileLock>` publishing its sentinel, and the live marker stays under the break name. Both then hold
-the lock. Mercurial
-closes this window by serializing breakers on a separate ``<lock>.break`` lock; filelock does not, because a breaker that
-crashes would leave that lock needing stale detection of its own and a 3.29 peer never takes it. Where ``os.link`` is
-missing, the filesystem refuses hard links, or the link cannot be told not to follow a symlink, the contender renames
-the live marker back while the lock path is still free instead. The same applies to the ``lifetime`` and
-:class:`SoftFileLease <filelock.SoftFileLease>` expiry breaks.
+A contender never leaves the lock path empty while it breaks a marker. Right before breaking it reads the marker's inode
+and modification time again and leaves it alone if they moved since the stale check, the way Mercurial re-reads a lock
+under its break lock before removing it. On Linux (``renameat2``) and macOS (``renamex_np``) it then writes a complete
+marker of its own under a private ``<lock>.break.*`` name and exchanges the two names in one step, so a contender that
+polls meanwhile finds a marker and waits. If the file it took is the one judged stale it removes that file and holds the
+lock; otherwise a peer recreated the marker, and a second exchange puts the live marker back before its own is removed.
+The contender holds the judged marker open from before it reads the record until the break ends: ext4 gives a freed
+inode number to the next file created, so a successor's marker could otherwise carry the number of the marker judged
+stale.
+
+Windows has no such exchange, but it refuses to rename a marker its live holder keeps open, so there the contender
+renames the marker aside, checks it, and links back a marker it took by mistake; ``link`` never replaces a name.
+Anywhere else without an exchange, including NFS and SMB, which refuse it, a contender does not move a marker at all,
+because the path would stand empty beside a possibly live holder: the marker counts as held until ``timeout``,
+``lifetime`` or ``break_lock()``. The ``lifetime`` and :class:`SoftFileLease <filelock.SoftFileLease>` expiry breaks
+follow the same rules, and a failed acquire removes its own marker by the same exchange before it closes it.
 
 A PID means something only inside its PID namespace, and two containers in one pod share the hostname and the boot id
 without sharing one. On Linux the recorded hostname therefore names the namespace too, as ``<host>?pidns-<inode>`` with

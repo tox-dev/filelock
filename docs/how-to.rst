@@ -812,8 +812,9 @@ Every platform stores a process start token in the marker to guard against PID r
 them unchanged for two seconds.
 That recovery path is not fail closed.
 
-A contender breaking a stale marker while a peer recreates it can admit a third holder, soft or strict, in a window of
-two syscalls; see :ref:`concepts:How does stale lock detection work across platforms?` for the details.
+A contender breaks a stale marker without the lock path ever standing empty, and where it cannot (NFS, SMB, platforms
+without an atomic exchange other than Windows) it leaves the marker in place; see
+:ref:`concepts:How does stale lock detection work across platforms?` for the details.
 
 ********************************
  Use fail-closed soft locks

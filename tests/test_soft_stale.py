@@ -6,8 +6,8 @@ import os
 import socket
 import sys
 import threading
-from contextlib import contextmanager
-from errno import EACCES, EINTR, ENODEV, ENOSPC, EPERM
+from contextlib import contextmanager, suppress
+from errno import EACCES, EINTR, EIO, ENODEV, ENOSPC, EPERM
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -17,6 +17,7 @@ from capabilities import CAPABILITIES
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD
+from tests.break_helpers import on_break_recheck, take_break_route
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.inode_reuse_helpers import reuse_inode
 from tests.pid_namespace_helpers import pin_pid_namespace
@@ -246,24 +247,20 @@ def test_out_of_range_pid_not_evicted_when_fresh(lock_path: Path) -> None:
 def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
     mocker.patch("filelock._identity.process_alive", return_value=False)
+    take_break_route(mocker, "no-exchange")
     mocker.patch.object(Path, "rename", side_effect=FileNotFoundError("already gone"))
     _assert_times_out(lock_path)
 
 
-@pytest.mark.requires_hard_links
-def test_stale_break_racing_a_successor_admits_no_third_holder(  # pragma: needs hard-link
-    lock_path: Path, mocker: MockerFixture
-) -> None:
+def test_stale_break_racing_a_successor_admits_no_third_holder(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
     successor: Final[SoftFileLock] = SoftFileLock(lock_path, timeout=0)
-    rename: Final = Path.rename
 
-    def successor_breaks_and_acquires_first(source: Path, target: str) -> Path:
-        source.unlink()
+    def successor_breaks_and_acquires_first() -> None:
+        lock_path.unlink()
         successor.acquire()
-        return rename(source, target)
 
-    mocker.patch.object(Path, "rename", autospec=True, side_effect=successor_breaks_and_acquires_first)
+    on_break_recheck(mocker, lock_path, successor_breaks_and_acquires_first)
     _assert_times_out(lock_path)
     mocker.stopall()
 
@@ -557,6 +554,30 @@ def test_failed_acquire_spares_a_successor_on_the_freed_inode_number(  # pragma:
     mocker.stopall()
 
     assert lock_path.read_text(encoding="utf-8") == "live"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+def test_failed_acquire_spares_a_file_that_replaced_its_placeholder(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    mocker.patch("filelock._soft.os.fchmod", side_effect=OSError(EIO, "Input/output error"))
+    lstat: Final = os.lstat
+    replaced: list[bool] = []
+
+    def peer_replaces_the_placeholder(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
+        found: Final = lstat(path, dir_fd=dir_fd)
+        if ".break." in os.fspath(path) and not replaced:
+            replaced.append(True)
+            (other := lock_path.with_name("other")).write_text("other", encoding="utf-8")
+            other.replace(lock_path)
+        return found
+
+    mocker.patch.object(os, "lstat", new=peer_replaces_the_placeholder)
+    with pytest.raises(OSError, match="Input/output error"):
+        SoftFileLock(lock_path, mode=0o600).acquire()
+    mocker.stopall()
+
+    assert (lock_path.read_text(encoding="utf-8"), list(lock_path.parent.glob("test.lock.break.*"))) == ("other", [])
 
 
 def test_failed_acquire_cleanup_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:

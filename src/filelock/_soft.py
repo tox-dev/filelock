@@ -7,10 +7,12 @@ __lazy_modules__ = [
     "filelock._util",
     "itertools",
     "pathlib",
+    "secrets",
     "typing",
 ]
 
 import os
+import secrets
 import stat
 import sys
 import time
@@ -23,7 +25,16 @@ from typing import Final
 from filelock._api import BaseFileLock, _raise_grouped_errors
 from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import break_lock_file, ensure_directory_exists, pin_inode, raise_on_not_writable_file, write_all
+from filelock._util import (
+    break_lock_file,
+    ensure_directory_exists,
+    exchange_names,
+    exchange_supported,
+    pin_inode,
+    raise_on_not_writable_file,
+    remove_own_file,
+    write_all,
+)
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
@@ -106,10 +117,9 @@ class SoftFileLock(BaseFileLock):
             try:
                 if sys.platform != "win32":  # pragma: win32 no cover
                     # Before the close: our open descriptor keeps the inode allocated, so a successor's marker cannot
-                    # carry its number, and a break renames rather than unlinks whatever the path names by then.
+                    # carry its number.
                     with suppress(OSError):
-                        written: Final = os.fstat(fd)
-                        break_lock_file(self.lock_file, written.st_mtime, written.st_ino)
+                        remove_own_file(self.lock_file, fd)
             finally:
                 try:
                     os.close(fd)
@@ -139,11 +149,63 @@ class SoftFileLock(BaseFileLock):
                 # Self-heal only once the file is clearly not a half-written fresh lock (a peer between O_EXCL and
                 # _write_lock_info), so the brief create-then-write window is never mistaken for a stale lock.
                 if self._marker_unchanged_for(marker) >= MALFORMED_LOCK_AGE_THRESHOLD:
-                    break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
+                    self._take_over(marker)
                 return
 
             if owner_is_stale(*holder):
-                break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
+                self._take_over(marker)
+
+    def _take_over(self, marker: os.stat_result) -> None:
+        # Swap a marker judged stale for a complete one of ours in one exchange, so the lock path never stands empty and
+        # this lock holds it once the file swapped out proves to be the one judged; the caller's pin keeps that file's
+        # inode number from naming anything else. Every failure before the handoff leaves our marker off the path and
+        # puts back what the exchange took. Without an exchange, the portable break decides.
+        if exchange_supported():  # pragma: win32 no cover
+            self._take_over_by_exchange(marker)
+        else:
+            break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
+
+    def _take_over_by_exchange(self, marker: os.stat_result) -> None:  # pragma: win32 no cover
+        if (current := os.lstat(self.lock_file)).st_mtime != marker.st_mtime or current.st_ino != marker.st_ino:
+            return
+        aside: Final = f"{self.lock_file}.break.{os.getpid()}.{secrets.token_hex(16)}"
+        flags: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd: Final = os.open(aside, flags, self._open_mode() & ~_OTHERS_WRITE)
+        self._mark_descriptor_pending(fd)
+        exchanged = held = False
+        try:
+            identity: Final = _file_identity(os.fstat(fd))
+            self._apply_explicit_mode(fd)
+            self._write_lock_info(fd)
+            if not exchange_names(aside, self.lock_file):
+                return  # NFS, SMB and the like refuse it; renaming the marker aside would empty the path
+            exchanged = True
+            if (taken := os.lstat(aside)).st_mtime != marker.st_mtime or taken.st_ino != marker.st_ino:
+                return  # a peer recreated the marker, which the cleanup below swaps back
+            Path(aside).unlink()
+            exchanged = False
+            if os.path.samestat(os.lstat(self.lock_file), os.fstat(fd)):
+                self._mark_descriptor_owned(fd, identity)
+                held = True
+        finally:
+            if not held:
+                self._abandon_take_over(fd, aside, put_back=exchanged)
+
+    def _abandon_take_over(self, fd: int, aside: str, *, put_back: bool) -> None:  # pragma: win32 no cover
+        self._mark_descriptor_released()
+        try:
+            if put_back:
+                exchange_names(aside, self.lock_file)
+        finally:
+            try:
+                # Whichever name still holds our marker loses it: the descriptor keeps its inode number ours.
+                own: Final = os.fstat(fd)
+                for name in (self.lock_file, aside):
+                    with suppress(FileNotFoundError):
+                        if os.path.samestat(os.lstat(name), own):
+                            Path(name).unlink()
+            finally:
+                os.close(fd)
 
     def _marker_unchanged_for(self, marker: os.stat_result) -> float:
         # The mtime is the writer's or file server's clock, so against time.time() a contender whose clock runs ahead

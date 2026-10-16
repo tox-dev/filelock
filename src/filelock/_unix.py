@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from filelock._api import BaseFileLock
-from filelock._util import break_lock_file, ensure_directory_exists
+from filelock._util import ensure_directory_exists, remove_own_file
 
 has_fcntl = False
 if sys.platform == "win32":  # pragma: win32 cover
@@ -132,11 +132,10 @@ else:  # pragma: win32 no cover
             try:
                 # A file this attempt did not create may be a peer's live marker; the soft lock ages out a stale empty
                 # one. Our own placeholder goes before the close: the open descriptor keeps its inode number from a
-                # peer's marker, and a break renames rather than unlinks whatever a stalled cleanup finds at the path.
+                # peer's marker, and an exchange puts back a peer's marker that replaced it.
                 if created and falls_back:
                     with suppress(OSError):
-                        placeholder: Final = os.fstat(fd)
-                        break_lock_file(self.lock_file, placeholder.st_mtime, placeholder.st_ino)
+                        remove_own_file(self.lock_file, fd)
             finally:
                 self._mark_descriptor_released()
                 os.close(fd)

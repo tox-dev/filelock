@@ -907,3 +907,25 @@ def _wait_until(condition: Callable[[], bool]) -> None:
 
 def _lease_heartbeats() -> set[threading.Thread]:
     return {thread for thread in threading.enumerate() if thread.name.startswith("filelock-lease-")}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+def test_lease_takes_over_a_dead_owners_marker_with_its_own_lease_record(  # pragma: win32 no cover
+    tmp_path: Path,
+) -> None:
+    (lock := tmp_path / "a.lock").write_text(
+        f"filelock/2\npid={2**22 + 1}\nhost={host_name()}\nmode=exclusive\n", encoding="utf-8"
+    )
+    lease: Final = SoftFileLease(lock, lease_duration=5)
+    lease.acquire(blocking=False)
+    try:
+        owner: Final = lease.owner
+        assert owner is not None
+        assert (owner.mode, owner.token, owner.lease_duration, lease.is_lock_held_by_us) == (
+            "lease",
+            lease.token,
+            5.0,
+            True,
+        )
+    finally:
+        lease.release()

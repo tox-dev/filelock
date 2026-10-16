@@ -28,7 +28,7 @@ from filelock._error import LeaseSettingsMismatch
 from filelock._identity import owner_is_stale
 from filelock._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord, parse_marker
 from filelock._soft import _read_lock_file
-from filelock._util import break_lock_file, pin_inode, touch
+from filelock._util import pin_inode, touch
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -267,10 +267,10 @@ class SoftFileLease(MarkerSoftFileLock):
         # A dead or recycled owner is reclaimed at once, whether it held a lease or an exclusive marker; a live lease
         # owner whose marker stops being refreshed is superseded on the schedule every contender agreed to.
         if owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
-            break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
+            self._take_over(marker)
             return
         if owner.mode == "lease" and self._marker_unchanged_for(marker) >= self._lease_duration:
-            break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
+            self._take_over(marker)
 
     def _read_peer(self) -> tuple[OwnerRecord, os.stat_result] | None:
         with suppress(OSError, ValueError):

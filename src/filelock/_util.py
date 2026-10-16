@@ -1,18 +1,22 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["pathlib", "secrets"]
+__lazy_modules__ = ["pathlib", "platform", "secrets"]
 
+import errno
 import os
+import platform
 import secrets
 import stat
 import sys
-from contextlib import contextmanager
-from errno import EACCES, EIO, EISDIR
+from contextlib import contextmanager, suppress
+from errno import EACCES, EINVAL, EIO, EISDIR, ENOSYS, EXDEV
+from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    import ctypes
+    from collections.abc import Callable, Generator
 
 
 def write_all(fd: int, data: bytes) -> None:
@@ -128,58 +132,182 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
     Remove the lock file a caller found stale with modification time *mtime_before* and inode *ino_before*.
 
     The caller keeps the judged file open, through :func:`pin_inode` or its own descriptor, until we return, so no other
-    file can carry *ino_before* meanwhile. Right before renaming we ``lstat`` the lock again and leave it alone if a
-    peer recreated it since the caller judged it stale, as Mercurial re-reads a lock under its break lock. We rename
-    before unlinking so that, of several processes racing to break the same lock, one takes the file and the rest get
-    ``OSError``. Another modification time or another inode on the renamed file means a peer recreated the lock between
-    that ``lstat`` and the rename, so we hard-link it back and drop the break name. ``link`` never replaces a name, so a
-    marker a third process created after our rename wins and the live one stays under the break name. In the two
-    syscalls between rename and link a third process can acquire beside the live holder, a soft lock by creating its
-    marker or a StrictSoftFileLock by publishing its sentinel at the empty path. Without ``os.link``, on a filesystem
-    that refuses hard links, or where ``os.link`` cannot be told not to follow a symlink, we rename the marker back
-    while the path is still free instead. We compare inodes as well as modification times because NFS and FAT store
-    coarse modification times, and a peer that recreates the lock within that granularity leaves the old mtime on it.
-    Times are compared for equality, since a file's owner can set any time, a future one included. We call ``lstat`` to
-    avoid following a symlink a peer swaps in after our stale check, put back only a regular file, and link without
-    following symlinks, because a symlink can replace the break name between that ``lstat`` and the link.
+    file can carry *ino_before* meanwhile. Right before breaking we ``lstat`` the lock again and leave it alone if a
+    peer recreated it since the caller judged it stale, as Mercurial re-reads a lock under its break lock. Where the
+    platform can exchange two names atomically (``renameat2`` on Linux, ``renamex_np`` on macOS), we swap the marker
+    with a placeholder of our own, so the lock path never stands empty: a contender that polls meanwhile finds a file it
+    cannot parse and waits. If the file we took is not the one judged stale, a peer recreated the lock, and a second
+    exchange puts it back; otherwise we remove it and then our placeholder. Of several processes racing to break the
+    same lock, only one takes the stale file.
 
-    We add a random token to the break name so other processes cannot guess it and two breakers in one process do not
-    share ``<lock>.break.<pid>``. With a shared name, the second breaker could rename a recreated live lock onto that
-    path between our ``lstat`` and ``unlink``, and our ``unlink`` would delete it.
+    Windows cannot exchange names, but it refuses to rename a marker its live holder keeps open, so there we rename the
+    marker aside and, if it was recreated after all, link it back; ``link`` never replaces a name, so a marker a third
+    process created meanwhile keeps the path. Elsewhere without an exchange (NFS, SMB, other filesystems that refuse it,
+    platforms without the call) a rename would leave the path empty beside a possibly live holder, so we do not move the
+    marker and the caller waits for ``timeout``, ``lifetime`` or ``break_lock()``. We compare inodes as well as
+    modification times because NFS and FAT store coarse modification times, and for equality, since a file's owner can
+    set any time. We ``lstat`` so a symlink a peer swaps in is never followed. The break name carries a random token so
+    no other process can guess it.
 
     :param lock_file: path to the lock file to break.
     :param mtime_before: modification time the caller saw when it judged the lock stale.
     :param ino_before: inode number the caller saw when it judged the lock stale.
 
-    :raises OSError: if the rename, the re-check or the restore fails, for example because the file vanished or another
-        user owns it in a sticky directory.
+    :raises OSError: if taking the marker fails, for example because the file vanished, another user owns it in a
+        sticky directory, or on Windows its holder keeps it open.
 
     """
     if (current := os.lstat(lock_file)).st_mtime != mtime_before or current.st_ino != ino_before:
         return
     break_path: Final[str] = f"{lock_file}.break.{os.getpid()}.{secrets.token_hex(16)}"
+    if exchange_supported():  # pragma: win32 no cover
+        _swap_out(lock_file, break_path, mtime_before, ino_before)
+    elif _MOVES_WITHOUT_EXCHANGE:  # pragma: win32 cover
+        _break_by_rename(lock_file, break_path, mtime_before, ino_before)
+
+
+def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
+    """
+    Remove *lock_file* while it still names the file open as *fd*, which the caller closes afterwards.
+
+    A stale break with an atomic exchange is tried first, so a peer's marker found at the path goes back. Without one
+    the path is unlinked by name if it still names this file: the open descriptor keeps the inode allocated, so a
+    matching number cannot belong to a successor's marker.
+
+    :raises OSError: if the descriptor cannot be read or the unlink fails.
+
+    """
+    own: Final = os.fstat(fd)
+    with suppress(FileNotFoundError):
+        break_lock_file(lock_file, own.st_mtime, own.st_ino)
+        if os.path.samestat(os.lstat(lock_file), own):
+            Path(lock_file).unlink()
+
+
+def _swap_out(lock_file: str, break_path: str, mtime_before: float, ino_before: int) -> None:  # pragma: win32 no cover
+    # An atomic exchange with a placeholder takes the marker without the lock path ever being empty, so no contender
+    # can create a marker while this one is judged, and a live marker goes back the same way.
+    fd: Final = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        try:
+            # Not a record any lock writes, so a contender that reads it waits, and one left by a crash ages out.
+            write_all(fd, b"filelock/break\n")
+            exchanged = exchange_names(break_path, lock_file)
+        except OSError:
+            exchanged = False
+        if not exchanged:
+            Path(break_path).unlink()
+            return
+        if (grabbed := os.lstat(break_path)).st_mtime == mtime_before and grabbed.st_ino == ino_before:
+            Path(break_path).unlink()
+            # Our descriptor keeps the placeholder's inode allocated, so a matching number at the path is still ours.
+            if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
+                Path(lock_file).unlink()
+        else:
+            exchange_names(break_path, lock_file)
+            Path(break_path).unlink()
+    finally:
+        os.close(fd)
+
+
+def _break_by_rename(
+    lock_file: str, break_path: str, mtime_before: float, ino_before: int
+) -> None:  # pragma: win32 cover
+    # Renaming the marker aside empties the path until a recreated live marker is put back, and link never replaces a
+    # name, so a marker a third process created meanwhile keeps the path and the live one waits under the break name.
+    # Without os.link, or where the filesystem refuses hard links, the live one waits there too.
     Path(lock_file).rename(break_path)
     if (st_after := os.lstat(break_path)).st_mtime == mtime_before and st_after.st_ino == ino_before:
         Path(break_path).unlink()
-    elif stat.S_ISREG(st_after.st_mode) and not _linked_back(break_path, lock_file) and not os.path.lexists(lock_file):
-        # Unlike link, rename replaces: a marker a third process creates between the check and the rename is lost, the
-        # way the live one stays aside when that process wins the same race against link.
-        Path(break_path).rename(lock_file)
-
-
-def _linked_back(break_path: str, lock_file: str) -> bool:
-    if _HAS_LINK:  # pragma: needs hard-link
-        try:
+    elif stat.S_ISREG(st_after.st_mode) and hasattr(os, "link"):  # pragma: needs hard-link
+        with suppress(OSError):
             os.link(break_path, lock_file, follow_symlinks=False)
-        except FileExistsError:
-            return True  # a third process took the path after our rename and keeps it
-        # A filesystem without hard links refuses, Windows can reject the option and PyPy fails it with EINVAL; a plain
-        # link would follow a symlink swapped in under the break name on macOS.
-        except (OSError, NotImplementedError, ValueError):
-            return False
-        Path(break_path).unlink()
+            Path(break_path).unlink()
+
+
+def exchange_supported() -> bool:
+    """Whether this platform has a call that swaps two names in one step; a filesystem may still refuse it."""
+    return _rename_call() is not None
+
+
+def exchange_names(source: str, target: str) -> bool:  # pragma: win32 no cover
+    """
+    Swap the names *source* and *target* in one step, so neither ever stands empty, where :func:`exchange_supported`.
+
+    :returns: ``False`` where the filesystem cannot, so the caller falls back
+
+    :raises OSError: for any other failure, such as a missing name or a denied rename
+
+    """
+    renamer, exchange_flag = cast("tuple[Callable[[bytes, bytes, int], int], int]", _rename_call())
+    if not (error := renamer(os.fsencode(source), os.fsencode(target), exchange_flag)):
         return True
-    return False  # pragma: lacks hard-link
+    # EXDEV: overlayfs and some FUSE filesystems refuse an exchange between layers.
+    if error in {EINVAL, ENOSYS, EXDEV, getattr(errno, "ENOTSUP", EINVAL), getattr(errno, "EOPNOTSUPP", EINVAL)}:
+        return False
+    raise OSError(error, os.strerror(error), source, None, target)
+
+
+@cache
+def _rename_call() -> tuple[Callable[[bytes, bytes, int], int], int] | None:
+    # The call returns 0 or the errno. Looked up on first use, since most processes never break a lock and ctypes is
+    # slow to import; None where ctypes is missing (GraalPy) or the platform has no exchange.
+    try:
+        import ctypes  # ruff:ignore[import-outside-top-level]  # only a stale break needs it
+    except ImportError:  # pragma: no cover  # GraalPy ships without ctypes
+        return None
+    if sys.platform in {"linux", "android"}:  # pragma: linux cover
+        if (renameat2 := _renameat2(ctypes.CDLL(None, use_errno=True))) is None:
+            return None  # pragma: no cover  # an architecture the CI matrix does not run
+        return renameat2, 2  # RENAME_EXCHANGE in linux/fs.h
+    if sys.platform == "darwin":  # pragma: darwin cover
+        renamex_np: Final = ctypes.CDLL(None, use_errno=True).renamex_np
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+
+        def call_renamex_np(source: bytes, target: bytes, flags: int) -> int:
+            return 0 if renamex_np(source, target, flags) == 0 else ctypes.get_errno()
+
+        return call_renamex_np, 0x2  # RENAME_SWAP in sys/stdio.h
+    return None  # pragma: linux no cover  # pragma: android no cover  # pragma: darwin no cover
+
+
+def _renameat2(libc: ctypes.CDLL) -> Callable[[bytes, bytes, int], int] | None:  # pragma: linux cover
+    # Reached through syscall(2) rather than the C library's wrapper, which glibc 2.28, musl 1.2.2 and bionic API 30
+    # added while Termux still ships an older bionic; the kernel has had the call since 3.15. The number is the
+    # architecture's own, so an architecture outside the table gets no exchange rather than another call.
+    import ctypes  # ruff:ignore[import-outside-top-level]  # only a stale break needs it
+
+    numbers: Final = {
+        "x86_64": 316,
+        "i386": 353,
+        "i686": 353,
+        "armv7l": 382,
+        "armv8l": 382,
+        "aarch64": 276,
+        "riscv64": 276,
+        "loongarch64": 276,
+        "ppc64le": 357,
+        "s390x": 347,
+    }
+    if (number := numbers.get(platform.machine())) is None:
+        return None  # pragma: no cover  # an architecture the CI matrix does not run
+    syscall: Final = libc.syscall
+    syscall.restype = ctypes.c_long
+    at_fdcwd: Final = -100
+
+    def call_renameat2(source: bytes, target: bytes, flags: int) -> int:
+        arguments: Final = (
+            ctypes.c_long(number),
+            ctypes.c_int(at_fdcwd),
+            ctypes.c_char_p(source),
+            ctypes.c_int(at_fdcwd),
+            ctypes.c_char_p(target),
+            ctypes.c_uint(flags),
+        )
+        return 0 if syscall(*arguments) == 0 else ctypes.get_errno()
+
+    return call_renameat2
 
 
 def touch(name: str, *, fd: int) -> None:
@@ -193,8 +321,10 @@ def touch(name: str, *, fd: int) -> None:
     os.utime(name, None, follow_symlinks=not _SUPPORTS_UTIME_NOFOLLOW)  # pragma: lacks utime-fd
 
 
-# Termux/Android CPython ships without os.link.
-_HAS_LINK: Final[bool] = hasattr(os, "link")
+# Windows refuses to rename a marker its live holder keeps open, so renaming aside only ever moves a marker nobody
+# holds; elsewhere without an exchange a contender could take the emptied path beside a live holder, so the marker
+# stays and the lock counts as held.
+_MOVES_WITHOUT_EXCHANGE: Final[bool] = sys.platform == "win32"
 # Retargeting os.utime to an open fd lets a heartbeat refresh the exact inode it verified instead of whatever the
 # pathname now names.
 _SUPPORTS_UTIME_FD: Final[bool] = sys.platform != "win32" and os.utime in os.supports_fd
@@ -205,8 +335,11 @@ _SUPPORTS_UTIME_NOFOLLOW: Final[bool] = os.utime in os.supports_follow_symlinks
 __all__ = [
     "break_lock_file",
     "ensure_directory_exists",
+    "exchange_names",
+    "exchange_supported",
     "pin_inode",
     "raise_on_not_writable_file",
+    "remove_own_file",
     "touch",
     "write_all",
 ]

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import AsyncFileLock, AsyncSoftFileLock, FileLock, SoftFileLock, Timeout
+from tests.break_helpers import take_break_route
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -74,6 +75,7 @@ def test_expired_lock_race_rename_fails(tmp_path: Path, mocker: MockerFixture) -
     lock_path.touch()
     os.utime(lock_path, (0, 0))
 
+    take_break_route(mocker, "no-exchange")
     mocker.patch("filelock._util.Path.rename", side_effect=FileNotFoundError)
 
     with pytest.raises(TimeoutError):
