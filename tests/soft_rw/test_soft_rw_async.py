@@ -15,7 +15,7 @@ import pytest
 
 from filelock import Timeout
 from filelock._soft_rw import AsyncSoftReadWriteLock, SoftReadWriteLock
-from filelock._soft_rw._protocol import GenerationLog
+from filelock._soft_rw._protocol import GenerationLog, Snapshot
 from filelock._soft_rw._storage import OsFiles
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from concurrent.futures import Executor
 
     from pytest_mock import MockerFixture
+
+    from filelock._lease import LeaseCompromise
 
 pytestmark = pytest.mark.requires_hard_links
 
@@ -52,6 +54,7 @@ def _make(
     loop: asyncio.AbstractEventLoop | None = None,
     executor: Executor | None = None,
     is_singleton: bool = False,
+    on_compromise: Callable[[LeaseCompromise], None] | None = None,
 ) -> AsyncSoftReadWriteLock:
     return AsyncSoftReadWriteLock(
         str(tmp_path / name),
@@ -63,6 +66,7 @@ def _make(
         poll_interval=poll_interval,
         loop=loop,
         executor=executor,
+        on_compromise=on_compromise,
     )
 
 
@@ -772,3 +776,55 @@ async def test_async_soft_close_cancellation_refuses_later_acquires(tmp_path: Pa
 
         with pytest.raises(RuntimeError, match="has been closed"):
             await asyncio.create_task(lock.acquire_read(timeout=5))
+
+
+@pytest.mark.asyncio
+async def test_async_soft_release_leaves_a_sync_reader_of_the_same_singleton_holding(tmp_path: Path) -> None:
+    async_lock: Final = AsyncSoftReadWriteLock(str(tmp_path / "foo.lock"))
+    with SoftReadWriteLock(str(tmp_path / "foo.lock")).read_lock():
+        async with async_lock.read_lock(timeout=5):
+            pass
+
+        assert not await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await async_lock.close()
+
+
+@pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_async_soft_canceled_acquire_leaves_a_sync_reader_of_the_same_singleton_holding(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    async_lock: Final = AsyncSoftReadWriteLock(str(tmp_path / "foo.lock"))
+    with SoftReadWriteLock(str(tmp_path / "foo.lock")).read_lock():
+        gate = _Gate(mocker, "_acquire_level_of")
+        acquiring = asyncio.create_task(async_lock.acquire_read(timeout=5))
+        await gate.started.wait()
+        acquiring.cancel()
+        gate.resume()
+        with pytest.raises(asyncio.CancelledError):
+            await acquiring
+
+        assert not await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await async_lock.close()
+
+
+@pytest.mark.asyncio
+async def test_async_soft_read_joining_a_lost_hold_raises(tmp_path: Path) -> None:
+    lost = threading.Event()
+    lock: Final = _make(
+        tmp_path, heartbeat_interval=0.05, stale_threshold=0.2, on_compromise=lambda _compromise: lost.set()
+    )
+    await lock.acquire_read(timeout=2)
+    _evict_every_holder(tmp_path)
+    assert await asyncio.to_thread(lost.wait, 10)
+
+    with pytest.raises(RuntimeError, match="hold was lost"):
+        await asyncio.create_task(lock.acquire_read(timeout=1))
+    await lock.release()
+    await lock.close()
+
+
+def _evict_every_holder(tmp_path: Path) -> None:
+    lock_file = str(tmp_path / "foo.lock")
+    log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
+    assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=None, readers=frozenset()))
