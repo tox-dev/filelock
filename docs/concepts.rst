@@ -439,10 +439,11 @@ The defense differs by platform:
   existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
   file as malformed, then checks the opened handle again with ``fstat``.
 
-:class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path. In a directory that processes of
-other accounts can write, it opens SQLite through a hard link (a second name for the same file) in a directory only the
-locking account can read, so a link or journal file another process puts beside the database cannot point the lock at
-another file.
+:class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path. On POSIX, in a directory that
+processes of other accounts can write, it opens SQLite through a hard link (a second name for the same file) in a
+directory only the locking account can read, so a link or journal file another process puts beside the database cannot
+point the lock at another file. On Windows the lock connects by name, so the database directory must be one other
+accounts cannot write.
 
 ***************************************
  What filelock doesn't protect against
