@@ -11,7 +11,12 @@ import pytest
 
 import filelock._identity
 from filelock._identity import host_name, owner_is_stale, process_alive, process_start_token
-from tests.pid_namespace_helpers import INITIAL_PID_NAMESPACE, pin_pid_namespace
+from tests.pid_namespace_helpers import (
+    INITIAL_PID_NAMESPACE,
+    INITIAL_TIME_NAMESPACE,
+    pin_pid_namespace,
+    pin_time_namespace,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -27,6 +32,9 @@ _NEEDS_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 _LINUX_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform not in {"linux", "android"}, reason="PID namespaces exist only on Linux"
 )
+_ANOTHER_TIME_NAMESPACE: Final[int] = 0xF0000A1C
+_BOOTTIME_SHIFTED: Final[str] = "monotonic           0         0\nboottime         1000         0\n"
+_BOOTTIME_UNSHIFTED: Final[str] = "monotonic           0         0\nboottime            0         0\n"
 
 
 @pytest.fixture
@@ -126,6 +134,27 @@ def test_process_start_token_none_for_dead() -> None:
     assert process_start_token(_DEAD_PID) is None
 
 
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize(
+    ("namespace", "offsets", "for_children", "readable"),
+    [
+        pytest.param(INITIAL_TIME_NAMESPACE, _BOOTTIME_SHIFTED, None, True, id="initial"),
+        pytest.param(_ANOTHER_TIME_NAMESPACE, _BOOTTIME_UNSHIFTED, None, True, id="container-without-offset"),
+        pytest.param(_ANOTHER_TIME_NAMESPACE, "1 0 0\n7 0 0\n", None, True, id="clock-ids-without-offset"),
+        pytest.param(_ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED, None, False, id="boottime-offset"),
+        pytest.param(_ANOTHER_TIME_NAMESPACE, "1 0 0\n7 1000 0\n", None, False, id="clock-ids-with-offset"),
+        pytest.param(_ANOTHER_TIME_NAMESPACE, _BOOTTIME_UNSHIFTED, 0xF0000A1D, False, id="unshared-not-entered"),
+        pytest.param(_ANOTHER_TIME_NAMESPACE, PermissionError(EACCES, "denied"), None, False, id="offsets-unreadable"),
+        pytest.param(FileNotFoundError(ENOENT, "missing"), _BOOTTIME_SHIFTED, None, True, id="kernel-before-5.6"),
+    ],
+)
+def test_process_start_token_read_only_without_a_boottime_offset(
+    namespace: int | OSError, offsets: str | OSError, for_children: int | None, readable: bool, mocker: MockerFixture
+) -> None:
+    pin_time_namespace(mocker, namespace, offsets, for_children=for_children)
+    assert (process_start_token(os.getpid()) is not None) is readable
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS sysctl probe")
 def test_darwin_sysctl_probe_failure_reads_no_token(mocker: MockerFixture) -> None:  # pragma: darwin cover
     mocker.patch("filelock._identity._LIBC.sysctl", return_value=-1)
@@ -154,6 +183,15 @@ def test_owner_is_stale_live_process_mismatched_token_reclaimed() -> None:
     assert token is not None
     # Far enough ahead that no task on this kernel started then.
     assert owner_is_stale(os.getpid(), host_name(), token + 10**9) is True
+
+
+@_LINUX_ONLY
+def test_owner_is_stale_live_process_across_time_namespaces_held(mocker: MockerFixture) -> None:  # pragma: linux cover
+    # The kernel shifts starttime by the reader's boottime offset, so a token recorded outside never matches inside.
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    pin_time_namespace(mocker, _ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED)
+    assert owner_is_stale(os.getpid(), host_name(), token + 100_000) is False
 
 
 @_LINUX_ONLY  # pragma: linux cover
@@ -205,13 +243,18 @@ def owner_in_another_namespace(mocker: MockerFixture) -> None:
         pytest.param("same-token", id="start-token-matches"),
         pytest.param("recorded-without-boot-id", id="holder-without-boot-id"),
         pytest.param("read-without-boot-id", id="contender-without-boot-id"),
+        pytest.param("time-namespace", id="contender-with-boottime-offset"),
     ],
 )
-def test_owner_is_stale_owner_running_in_another_namespace_held(view: str, hide_boot_id: Callable[[], None]) -> None:
+def test_owner_is_stale_owner_running_in_another_namespace_held(
+    view: str, hide_boot_id: Callable[[], None], mocker: MockerFixture
+) -> None:
     token: Final = process_start_token(os.getpid())
     assert token is not None
     if view == "read-without-boot-id":
         hide_boot_id()
+    if view == "time-namespace":
+        pin_time_namespace(mocker, _ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED)
     recorded: Final = token % 2**64 if view == "recorded-without-boot-id" else token
     assert owner_is_stale(_DEAD_PID, host_name(), recorded) is False
 

@@ -186,9 +186,39 @@ else:  # pragma: win32 no cover
                 return 0
 
         _BOOT_ID: Final[int] = _read_boot_id()
+        #: ``TIME_NS_INIT_INO`` in ``linux/proc_ns.h``, fixed by the kernel ABI like the initial PID namespace's inode.
+        _INITIAL_TIME_NAMESPACE: Final[int] = 0xEFFFFFFA
 
         def process_start_token(pid: int) -> int | None:
-            """The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id, or ``None`` when the process is gone."""
+            """
+            The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id.
+
+            ``None`` when the process is gone, or when this process runs in a time namespace with a boottime offset:
+            since Linux 5.6 the kernel shifts ``starttime`` by the offset of whoever reads it, so a value read there
+            means something else to a peer outside.
+            """
+            return _read_start_token(pid) if _starttime_unshifted() else None
+
+        def _starttime_unshifted() -> bool:
+            # setns can move this process into another time namespace, so ask on every read.
+            try:
+                namespace: Final = Path("/proc/self/ns/time").stat().st_ino
+            except OSError:  # before Linux 5.6 there are no time namespaces to shift starttime
+                return True
+            if namespace == _INITIAL_TIME_NAMESPACE:
+                return True
+            # A container runtime may give each container a time namespace without offsets. timens_offsets describes
+            # the namespace this process's children get, its own unless it unshared one since.
+            try:
+                if Path("/proc/self/ns/time_for_children").stat().st_ino != namespace:
+                    return False
+                offsets: Final = Path("/proc/self/timens_offsets").read_text(encoding="ascii")
+            except OSError:
+                return False
+            # The clock goes by name since Linux 5.8 and by clock id before.
+            return any(line.split() in (["boottime", "0", "0"], ["7", "0", "0"]) for line in offsets.splitlines())
+
+        def _read_start_token(pid: int) -> int | None:
             try:
                 data = Path(f"/proc/{pid}/stat").read_bytes()
             except OSError:
@@ -208,18 +238,22 @@ else:  # pragma: win32 no cover
             Whether the owner runs in another PID namespace as *pid*.
 
             An older release in a container sharing this hostname recorded its in-container PID, which means nothing
-            here. starttime and the boot id read the same in every PID namespace, so a task with that start token whose
-            innermost PID is *pid* is the owner; one that merely started in the same tick is not.
+            here. Readers without a boottime offset share starttime and the boot id, so a task with that start token
+            whose innermost PID is *pid* is the owner; one that merely started in the same tick is not. A reader with an
+            offset cannot compare start tokens, so the innermost PID alone keeps the marker.
             """
             if start_token is None or (_BOOT_ID and start_token >> 64 not in {0, _BOOT_ID}):
                 return False
+            unshifted: Final = _starttime_unshifted()
             try:
                 with os.scandir("/proc") as entries:
                     return any(
                         entry.name.isdigit()
                         and (task := int(entry.name)) != pid
-                        and (token := process_start_token(task)) is not None
-                        and _same_start(token, start_token)
+                        and (
+                            not unshifted
+                            or ((token := _read_start_token(task)) is not None and _same_start(token, start_token))
+                        )
                         and _innermost_pid(task) == pid
                         for entry in entries
                     )
