@@ -452,7 +452,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     SQLite VFS supports. Give the lock a file of its own: a WAL-mode database, or one with a schema larger than a lock
     needs, raises :class:`ValueError`. On POSIX, a database directory that other accounts can write must also be
     writable by this one and support hard links; the protection against other accounts ends once one of them can
-    replace the database directory or a directory above it.
+    replace the database directory or a directory above it. On Windows, use a directory other accounts cannot write.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days

@@ -459,6 +459,12 @@ comparison and before SQLite's first statement still makes SQLite look up ``-jou
 replacement: it deletes both, and beside a non-empty lock database it first replays the journal into that database and
 unlinks the file the journal names.
 
+On Windows the lock connects by the database name in every directory. A ``-wal`` or ``-journal`` file another account
+places beside the database is used or deleted by SQLite before the lock runs any statement, and a file the lock account
+cannot delete fails every acquire with :class:`sqlite3.OperationalError`. Keep the database in a directory other
+accounts cannot create files in; the per-user temporary directory and ``%LOCALAPPDATA%`` qualify, ``C:\Windows\Temp``
+and ``C:\Users\Public`` do not.
+
 .. code-block:: python
 
     from filelock import ReadWriteLock
