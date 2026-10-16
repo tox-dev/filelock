@@ -6,7 +6,7 @@ import os
 import socket
 import sys
 import threading
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from errno import EACCES, EINTR, ENODEV, ENOSPC, EPERM
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -18,6 +18,7 @@ from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.conftest import acquire_after_reclaim, held_after_reclaim
 from tests.pid_namespace_helpers import pin_pid_namespace
 
 if TYPE_CHECKING:
@@ -132,12 +133,7 @@ def test_recycled_pid_marker_self_heals_only_in_its_pid_namespace(
     pin_pid_namespace(mocker, contender_namespace)
 
     lock: Final[SoftFileLock] = SoftFileLock(lock_path)
-    # A deadline would measure scheduler speed: the first try breaks the marker and the second takes its path.
-    for _ in range(2):
-        with suppress(Timeout):
-            lock.acquire(blocking=False)
-        if lock.is_locked:
-            break
+    acquire_after_reclaim(lock)
     assert lock.is_locked is reclaimed
     lock.release()
 
@@ -471,8 +467,7 @@ def test_write_failure_rolls_back_acquire(lock_path: Path, mocker: MockerFixture
 
 
 def _assert_self_heals(lock_path: Path) -> None:
-    lock = SoftFileLock(lock_path, timeout=1)
-    with lock:
+    with held_after_reclaim(SoftFileLock(lock_path)) as lock:
         assert lock.is_locked
 
 
