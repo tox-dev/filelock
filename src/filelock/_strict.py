@@ -159,13 +159,14 @@ class StrictSoftFileLock(BaseFileLock):
             raise
         self._mark_descriptor_pending(sentinel_fd, sentinel_identity)
         try:
-            won = self._attempt_doorway(claim_directory)
+            if won := self._attempt_doorway(claim_directory):
+                self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
         except BaseException:
-            self._discard_doorway()
+            # Once recorded as held, the acquire's rollback releases the claim instead.
+            if not self.is_locked:
+                self._discard_doorway()
             raise
-        if won:
-            self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
-        else:
+        if not won:
             self._discard_doorway()
 
     def _discard_pending_doorways(self, *, exited_only: bool) -> None:

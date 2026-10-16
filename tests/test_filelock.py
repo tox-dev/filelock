@@ -1469,7 +1469,7 @@ def test_release_interrupted_at_any_call_leaves_the_lock_usable(
     for target in count(1):  # pragma: no branch  # count() never runs out; the release that finishes ends the loop
         lock = lock_type(lock_path, thread_local=thread_local, timeout=_SHARED_WAIT)
         lock.acquire()
-        if not _release_interrupted_at_call(lock, target):
+        if not _interrupted_at_call(lock, target, lock.release):
             break
         lock.release()
         # Bounded first, so a lock the interrupt leaked fails here instead of hanging the blocking acquire below.
@@ -1494,15 +1494,18 @@ def test_release_interrupted_at_any_call_leaves_the_lock_usable(
     ],
 )
 @pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
-def test_release_interrupted_at_any_call_reports_whether_it_still_holds(
-    tmp_path: Path, lock_type: type[BaseFileLock], thread_local: bool
+@pytest.mark.parametrize("operation", ["acquire", "release"])
+def test_interrupted_at_any_call_reports_whether_it_holds(
+    tmp_path: Path, lock_type: type[BaseFileLock], thread_local: bool, operation: Literal["acquire", "release"]
 ) -> None:
-    # A with block's exit has no second release to fix up what is_locked reports, so it must never claim a dropped hold.
+    # A with block makes no second call that could correct is_locked, so it must not report a hold the OS dropped.
     lock_path: Final = str(tmp_path / "a")
-    for target in count(1):  # pragma: no branch  # count() never runs out; the release that finishes ends the loop
+    for target in count(1):  # pragma: no branch  # count() never runs out; the call that finishes ends the loop
         lock = lock_type(lock_path, thread_local=thread_local)
-        lock.acquire()
-        if not _release_interrupted_at_call(lock, target):
+        if operation == "release":
+            lock.acquire()
+        if not _interrupted_at_call(lock, target, getattr(lock, operation)):
+            lock.release()
             break
         peer = lock_type(lock_path, blocking=False)
         if lock.is_locked:
@@ -1515,7 +1518,7 @@ def test_release_interrupted_at_any_call_reports_whether_it_still_holds(
     assert target > 1
 
 
-def _release_interrupted_at_call(lock: BaseFileLock, target: int) -> bool:
+def _interrupted_at_call(lock: BaseFileLock, target: int, operation: Callable[[], object]) -> bool:
     # Interpreters run a profile hook with tracing off, so coverage never records its body.
     def interrupt(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover
         # Only calls handed the lock: raising inside threading's own context managers would leak its locks.
@@ -1530,7 +1533,7 @@ def _release_interrupted_at_call(lock: BaseFileLock, target: int) -> bool:
     entered: Final[set[FrameType]] = set()
     sys.setprofile(interrupt)
     try:
-        lock.release()
+        operation()
     except KeyboardInterrupt:
         return True
     finally:

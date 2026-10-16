@@ -1315,10 +1315,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _mark_descriptor_owned(self, fd: int, identity: tuple[int, int] | None = None) -> None:
         state: Final = self._hold_state()
-        state.pending_lock_file_fd = None
-        state.pending_lock_file_fd_identity = None
+        # Held first, pending cleared second: an interrupt between the two then leaves the descriptor recorded.
         state.lock_file_fd = fd
         state.lock_file_fd_identity = identity
+        state.pending_lock_file_fd = None
+        state.pending_lock_file_fd_identity = None
         if isinstance(self._context, ThreadLocalFileContext):
             self._thread_pending.pop(id(state), None)
             self._thread_holds[id(state)] = state, current_thread()
