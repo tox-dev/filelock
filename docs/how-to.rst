@@ -855,6 +855,7 @@ file strict cannot read blocks the same way, because Windows refuses to read a m
 reads but cannot parse, such as the empty marker filelock before 3.22 wrote or a path a ``UnixFileLock`` truncated,
 blocks while it changes and raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` once it stays
 unchanged for two seconds, the grace a soft contender waits before evicting a malformed marker other than an empty one.
+
 A marker whose owner on this host has exited raises the same error naming that owner, and a directory, symlink, or other
 node no lock writes raises it after half a second. Strict mode never removes what it found. A crashed owner on another
 host, or one that left no PID, cannot be told apart from a live one, so its marker blocks until an operator who has
