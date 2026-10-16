@@ -192,6 +192,11 @@ description = "run the tests with pytest under {env_name}, unmeasured"
 set_env.COVERAGE_FILE = { replace = "env", name = "COVERAGE_FILE", default = "{work_dir}{/}.coverage.{env_name}" }
 set_env.PYTHONPATH = "{tox_root}{/}tasks"
 set_env.PYTEST_ADDOPTS = "{env:PYTEST_ADDOPTS:} --timeout-method=thread --timeout=60"
+# GraalPy 25.4.4 throws a NullPointerException from findBytecodeIndex, killing the thread, when a signal handler or
+# finalizer runs while a generator or coroutine executes an OSR-compiled loop. The option has to come through
+# GRAAL_PYTHON_VM_ARGS: GRAAL_PYTHON_ARGS lands after the script as program arguments. Set here rather than in the
+# workflow, since tox forwards only the variables in pass_env.
+set_env.GRAAL_PYTHON_VM_ARGS = "--experimental-options --engine.OSR=false"
 
 [env.release]
 description = "build the changelog from the news fragments for the given version, e.g. tox r -e release -- 3.30.0"
