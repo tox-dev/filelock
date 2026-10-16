@@ -1,0 +1,4 @@
+:class:`~filelock.SoftReadWriteLock` reaches its records through descriptors of ``<path>.rw`` and ``gen`` or ``holders``
+opened without following symlinks (on Windows, holding them open and refusing a junction), so a tree swapped in after
+an earlier acquire cannot redirect them, and its heartbeat rewrites a holder record only when the name still leads to
+the file it created, without blocking on a FIFO.
