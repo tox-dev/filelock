@@ -483,6 +483,30 @@ def test_strict_soft_reaper_leaves_non_regular_private_node(tmp_path: Path, node
     assert private_path.is_dir() if node == "directory" else private_path.is_symlink()
 
 
+@pytest.mark.parametrize(
+    "node",
+    [
+        pytest.param("directory", id="directory"),
+        pytest.param(
+            "symlink",
+            id="symlink",
+            marks=pytest.mark.skipif(not CAPABILITIES["symlink"], reason="stages the private record as a symlink"),
+        ),
+    ],
+)
+def test_strict_soft_non_regular_sentinel_private_node_fails_closed(tmp_path: Path, node: str) -> None:
+    lock_path = tmp_path / "resource.lock"
+    private_path = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
+    if node == "directory":
+        private_path.mkdir()
+    else:
+        private_path.symlink_to(tmp_path / "missing")  # pragma: needs symlink
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot reclaim sentinel private records"):
+        StrictSoftFileLock(lock_path, timeout=0).acquire()
+    assert private_path.is_dir() if node == "directory" else private_path.is_symlink()
+
+
 def test_strict_soft_reaper_does_not_retry_sharing_error(
     abandoned_record: tuple[Path, Path], mocker: MockerFixture
 ) -> None:
