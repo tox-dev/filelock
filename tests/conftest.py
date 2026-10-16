@@ -3,14 +3,17 @@ from __future__ import annotations
 import gc
 import itertools
 import os
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, TypeVar
 
 import pytest
 from capabilities import CAPABILITIES
 
+from filelock import BaseFileLock, Timeout
+
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
 
     from pytest_mock import MockerFixture
 
@@ -19,6 +22,33 @@ if TYPE_CHECKING:
 os.environ["PYTHONPATH"] = os.pathsep.join(
     part for part in (str(Path(__file__).parent.parent / "tasks"), os.environ.get("PYTHONPATH")) if part
 )
+
+_LockT = TypeVar("_LockT", bound=BaseFileLock)
+
+
+def acquire_after_reclaim(lock: BaseFileLock) -> None:
+    """
+    Take a path whose stale marker the lock has to break first, without a wall-clock budget.
+
+    A try finds the marker and breaks it, or first watches an unreadable one age; the last creates its own. A deadline
+    would test how fast the machine is: a first try that outlasts it times out after the marker is gone and before the
+    lock is held.
+    """
+    for _ in range(3):
+        with suppress(Timeout):
+            lock.acquire(blocking=False)
+        if lock.is_locked:
+            return
+
+
+@contextmanager
+def held_after_reclaim(lock: _LockT) -> Generator[_LockT]:
+    """Hold *lock* through :func:`acquire_after_reclaim` and release it on exit."""
+    acquire_after_reclaim(lock)
+    try:
+        yield lock
+    finally:
+        lock.release()
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
