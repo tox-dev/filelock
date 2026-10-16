@@ -7,19 +7,23 @@ import socket
 import sys
 import threading
 from contextlib import contextmanager, suppress
-from errno import EACCES, EINTR, EIO, ENODEV, ENOSPC, EPERM
+from errno import EACCES, EINTR, EINVAL, EIO, ENODEV, ENOSPC, EPERM
+from multiprocessing import get_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLock, Timeout
+from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD
+from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import exchange_names
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.conftest import DEAD_OWNER, STALE_BREAKERS
 from tests.pid_namespace_helpers import pin_pid_namespace
+from tests.process_helpers import break_then_hang_after_exchange, cleanup_processes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -33,6 +37,8 @@ _HOST: Final[str] = host_name()
 _DEAD_PID: Final[int] = 2**22 + 1
 _WIN_ERROR_ACCESS_DENIED: Final[int] = 5
 _WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
+#: A spawned GraalPy interpreter alone can take seconds to start on a loaded runner.
+_PROCESS_DEADLINE: Final[int] = 30
 
 
 @pytest.fixture
@@ -291,6 +297,175 @@ def test_stale_break_keeps_the_lock_when_a_peer_swaps_its_marker_aside(  # pragm
     assert (lock.is_locked, lock.is_lock_held_by_us) == (True, True)
     lock.release()
     assert list(lock_path.parent.glob("test.lock*")) == []
+
+
+def _break_name(lock: Path, pid: int = _DEAD_PID) -> Path:  # pragma: win32 no cover
+    return lock.with_name(f"test.lock.break.{pid}.{'0' * 32}")
+
+
+def _live(record: str) -> str:  # pragma: win32 no cover
+    return record.replace(str(_DEAD_PID), str(os.getpid()))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+def test_stale_break_restores_a_live_marker_a_dead_breaker_left_under_its_break_name(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    _break_name(lock).write_text(_live(record), encoding="utf-8")
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (lock.read_text(encoding="utf-8"), list(tmp_path.glob("test.lock.break.*"))) == (_live(record), [])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+def test_stale_break_removes_a_stale_marker_a_dead_breaker_left_under_its_break_name(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    _break_name(lock).write_text(record.replace(str(_DEAD_PID), str(_DEAD_PID - 1)), encoding="utf-8")
+    contender: Final = lock_type(lock)
+    contender.acquire(blocking=False)
+
+    assert (contender.is_locked, list(tmp_path.glob("test.lock.break.*"))) == (True, [])
+    contender.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+def test_stale_break_restores_a_strict_sentinel_a_dead_breaker_left_under_its_break_name(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    _break_name(lock).write_text(STRICT_SOFT_SENTINEL_RECORD, encoding="utf-8")
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert lock.read_text(encoding="utf-8") == STRICT_SOFT_SENTINEL_RECORD
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@pytest.mark.parametrize("lock_type", [MarkerSoftFileLock, SoftFileLease])
+def test_stale_break_restores_a_marker_of_an_unknown_contract_under_its_break_name(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[MarkerSoftFileLock]
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(DEAD_OWNER, encoding="utf-8")
+    future: Final = DEAD_OWNER.replace(str(_DEAD_PID), str(_DEAD_PID - 1)).replace("exclusive", "future")
+    _break_name(lock).write_text(future, encoding="utf-8")
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert lock.read_text(encoding="utf-8") == future
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@pytest.mark.usefixtures("unchanged_past_grace")
+@STALE_BREAKERS
+def test_stale_break_restores_a_marker_a_dead_breaker_left_beside_its_placeholder(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(f"filelock/break\n{_DEAD_PID}\n", encoding="utf-8")
+    _break_name(lock).write_text(_live(record), encoding="utf-8")
+    contender: Final = lock_type(lock)
+    for _ in range(2):
+        with suppress(Timeout):
+            contender.acquire(blocking=False)
+
+    assert (contender.is_locked, lock.read_text(encoding="utf-8"), list(tmp_path.glob("test.lock.break.*"))) == (
+        False,
+        _live(record),
+        [],
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@pytest.mark.usefixtures("unchanged_past_grace")
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        pytest.param("filelock/break\n", id="no-pid"),
+        pytest.param("filelock/break\nnot-a-pid\n", id="not-a-pid"),
+        pytest.param(f"filelock/break\n{_DEAD_PID}", id="torn-pid"),
+    ],
+)
+def test_stale_break_evicts_a_placeholder_that_names_no_breaker(  # pragma: win32 no cover
+    tmp_path: Path, placeholder: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(placeholder, encoding="utf-8")
+    _break_name(lock).write_text(_holder(os.getpid()), encoding="utf-8")
+    contender: Final = SoftFileLock(lock)
+    for _ in range(2):
+        with suppress(Timeout):
+            contender.acquire(blocking=False)
+
+    assert (contender.is_locked, _break_name(lock).exists()) == (True, True)
+    contender.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@pytest.mark.parametrize("error", [pytest.param(EACCES, id="denied"), pytest.param(EINVAL, id="unsupported")])
+def test_stale_break_leaves_a_break_name_it_cannot_exchange(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture, error: int
+) -> None:
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    _break_name(lock_path).write_text(_holder(os.getpid()), encoding="utf-8")
+    mocker.patch("filelock._util._rename_call", return_value=(mocker.MagicMock(return_value=error), 2))
+    with pytest.raises(Timeout):
+        SoftFileLock(lock_path).acquire(blocking=False)
+
+    assert (lock_path.read_text(encoding="utf-8"), _break_name(lock_path).read_text(encoding="utf-8")) == (
+        _holder(_DEAD_PID),
+        _holder(os.getpid()),
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+def test_stale_break_waits_when_a_break_name_cannot_be_read(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    _break_name(lock_path).write_text(_holder(os.getpid()), encoding="utf-8")
+    open_: Final = os.open
+
+    def refuse_the_break_name(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if ".break." in os.fspath(path):
+            raise OSError(EACCES, "Permission denied", path)
+        return open_(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch.object(os, "open", new=refuse_the_break_name)
+    with pytest.raises(Timeout):
+        SoftFileLock(lock_path).acquire(blocking=False)
+    mocker.stopall()
+
+    assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
+def test_stale_break_after_a_breaker_was_killed_keeps_the_holder_alone(  # pragma: win32 no cover
+    lock_path: Path,
+) -> None:
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    context: Final = get_context("spawn")
+    ready, go, exchanged = context.Event(), context.Event(), context.Event()
+    breaker: Final = context.Process(target=break_then_hang_after_exchange, args=(str(lock_path), ready, go, exchanged))
+    holder: Final = SoftFileLock(lock_path)
+    with cleanup_processes([breaker]):
+        breaker.start()
+        assert ready.wait(_PROCESS_DEADLINE)
+        holder.acquire(blocking=False)
+        go.set()
+        assert exchanged.wait(_PROCESS_DEADLINE)
+        breaker.terminate()
+        breaker.join(_PROCESS_DEADLINE)
+        with pytest.raises(Timeout):
+            SoftFileLock(lock_path).acquire(blocking=False)
+
+        assert (holder.is_locked, holder.is_lock_held_by_us) == (True, True)
+    holder.release()
 
 
 @NEEDS_SYMLINK

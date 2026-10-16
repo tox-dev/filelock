@@ -42,8 +42,6 @@ _UNLINK_MAX_RETRIES: Final[int] = 10
 _MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
 #: Contenders act on the record in the marker, so no other account may write it, whatever the mode or umask.
 _OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
-#: What a release leaves in its marker while a peer's exchange holds the marker aside; no lock parses it as a holder.
-_RELEASED_MARKER: Final[bytes] = b"filelock/released\n"
 
 
 class SoftFileLock(BaseFileLock):
@@ -151,35 +149,38 @@ class SoftFileLock(BaseFileLock):
                 # Self-heal only once the file is clearly not a half-written fresh lock (a peer between O_EXCL and
                 # _write_lock_info), so the brief create-then-write window is never mistaken for a stale lock.
                 if self._marker_unchanged_for(marker) >= MALFORMED_LOCK_AGE_THRESHOLD:
-                    self._take_over(marker)
+                    self._take_over(marker, _placeholder_breaker(content))
                 return
 
             if owner_is_stale(*holder):
-                self._take_over(marker)
+                self._take_over(marker, holder[0])
 
     def _try_break_expired_lock(self) -> None:
         if (lifetime := self._context.lifetime) is None:
             return
         with suppress(OSError), pin_inode(self.lock_file) as pinned:
-            # lstat, not stat: a symlink swapped in at the path must report its own mtime, as the O_NOFOLLOW reads do.
-            marker = os.lstat(self.lock_file)
+            # _read_lock_file takes the lstat, not stat: a symlink swapped in at the path must report its own mtime.
+            content, marker = _read_lock_file(self.lock_file)
             if pinned not in {None, marker.st_ino} or time.time() - marker.st_mtime < lifetime:
                 return
-            self._take_over(marker)
+            holder = self._recorded_holder(content)
+            self._take_over(marker, None if holder is None else holder[0])
 
-    def _take_over(self, marker: os.stat_result) -> None:
+    def _take_over(self, marker: os.stat_result, breaker_pid: int | None) -> None:
         # Swap the judged marker for a complete marker of ours in one exchange, so the lock path never stands empty.
         # Once the file swapped out proves to be the one judged, this lock holds the path; the caller's pin keeps that
         # file's inode number from naming anything else. Only a peer's exchange can move our marker after that, and
         # the peer puts it back because what it took is not the file it judged. Every failure before the handoff takes
         # our marker off the path and puts back what the exchange took. Without an exchange, the portable break decides.
         if exchange_supported():  # pragma: win32 no cover
-            self._take_over_by_exchange(marker)
+            self._take_over_by_exchange(marker, breaker_pid)
         else:
             break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
 
-    def _take_over_by_exchange(self, marker: os.stat_result) -> None:  # pragma: win32 no cover
+    def _take_over_by_exchange(self, marker: os.stat_result, breaker_pid: int | None) -> None:  # pragma: win32 no cover
         if (current := os.lstat(self.lock_file)).st_mtime != marker.st_mtime or current.st_ino != marker.st_ino:
+            return
+        if breaker_pid is not None and self._restore_stranded_marker(breaker_pid, marker):
             return
         aside: Final = f"{self.lock_file}.break.{os.getpid()}.{secrets.token_hex(16)}"
         flags: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -202,6 +203,46 @@ class SoftFileLock(BaseFileLock):
         finally:
             if not held:
                 self._abandon_take_over(fd, aside, put_back=exchanged)
+
+    def _restore_stranded_marker(self, breaker_pid: int, marker: os.stat_result) -> bool:  # pragma: win32 no cover
+        # A breaker killed between its exchange and the put-back leaves its own marker at the path and the live
+        # holder's marker under its break name. The name carries the breaker's PID, so the search is one prefix. Where
+        # the marker cannot be put back the lock counts as held, as it does wherever no exchange is possible.
+        directory, name = os.path.split(self.lock_file)
+        prefix: Final = f"{name}.break.{breaker_pid}."
+        token_length: Final = 32
+        with os.scandir(directory or os.curdir) as entries:
+            stranded = sorted(
+                entry.name
+                for entry in entries
+                if entry.name.startswith(prefix)
+                and len(token := entry.name[len(prefix) :]) == token_length
+                and all(char in "0123456789abcdef" for char in token)
+                and entry.is_file(follow_symlinks=False)
+            )
+        for candidate in stranded:
+            path = str(Path(directory) / candidate)
+            try:
+                content, _ = _read_lock_file(path)
+            except OSError:
+                return True
+            if self._marker_is_live(content, breaker_pid):
+                _exchange_back(path, self.lock_file, marker)
+                return True
+            with suppress(OSError):
+                Path(path).unlink()
+        return False
+
+    @classmethod
+    def _marker_is_live(cls, content: str | None, breaker_pid: int) -> bool:  # pragma: win32 no cover
+        # The breaker's own PID is excluded: a record naming it is the breaker's marker in transit, not a holder's.
+        if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
+            return True
+        return (
+            (holder := _parse_lock_holder(content)) is not None
+            and holder[0] != breaker_pid
+            and not owner_is_stale(*holder)
+        )
 
     def _abandon_take_over(self, fd: int, aside: str, *, put_back: bool) -> None:  # pragma: win32 no cover
         self._mark_descriptor_released()
@@ -419,13 +460,34 @@ def _file_identity(st: os.stat_result) -> tuple[int, int]:
     return st.st_dev, st.st_ino
 
 
+def _placeholder_breaker(content: str | None) -> int | None:  # pragma: win32 no cover
+    # The placeholder a break leaves at the path while it works names the breaker that may have died there.
+    if content is None or not content.startswith(placeholder := "filelock/break\n") or not content.endswith("\n"):
+        return None
+    with suppress(ValueError):
+        return parse_decimal(content.removeprefix(placeholder)[:-1])
+    return None
+
+
+def _exchange_back(stranded: str, lock_file: str, marker: os.stat_result) -> None:  # pragma: win32 no cover
+    # The inode of the marker judged dead must still be at the path, or a peer has acted since and nothing is put back.
+    with suppress(OSError):
+        current = os.lstat(lock_file)
+        if (
+            (current.st_ino, current.st_mtime) == (marker.st_ino, marker.st_mtime)
+            and exchange_names(stranded, lock_file)
+            and os.lstat(stranded).st_ino == marker.st_ino
+        ):
+            Path(stranded).unlink()
+
+
 def _leave_released_record(fd: int) -> None:
     # A peer's exchange holds our marker under its break name and will put it back. Overwriting the record lets
     # contenders age it out instead of waiting on this live PID. The write comes before the truncate so the file is
     # never empty.
     if sys.platform != "win32":  # pragma: win32 no cover
-        os.pwrite(fd, _RELEASED_MARKER, 0)
-        os.ftruncate(fd, len(_RELEASED_MARKER))
+        os.pwrite(fd, released := b"filelock/released\n", 0)
+        os.ftruncate(fd, len(released))
 
 
 def _read_lock_file(path: str) -> tuple[str | None, os.stat_result]:

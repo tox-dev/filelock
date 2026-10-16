@@ -82,13 +82,21 @@ class MarkerSoftFileLock(SoftFileLock):
             if (owner := parse_marker(content)) is None:
                 super()._try_break_stale_lock()
             elif owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
-                self._take_over(marker)
+                self._take_over(marker, owner.pid)
 
     @classmethod
     def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
         if (owner := parse_marker(content)) is not None:
             return owner.pid, owner.hostname
         return super()._recorded_holder(content)
+
+    @classmethod
+    def _marker_is_live(cls, content: str | None, breaker_pid: int) -> bool:  # pragma: win32 no cover
+        if (owner := parse_marker(content)) is None:
+            return super()._marker_is_live(content, breaker_pid)
+        return owner.mode == "unknown" or (
+            owner.pid != breaker_pid and not owner_is_stale(owner.pid, owner.hostname, owner.start)
+        )
 
     def _read_owner(self) -> OwnerRecord | None:
         with suppress(OSError, ValueError):

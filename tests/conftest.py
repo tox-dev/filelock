@@ -11,6 +11,8 @@ import pytest
 from capabilities import CAPABILITIES
 
 import filelock._identity
+from filelock import MarkerSoftFileLock, SoftFileLease, SoftFileLock
+from filelock._identity import host_name
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -190,3 +192,20 @@ def _held_open(node: os.stat_result) -> bool:  # pragma: win32 no cover
             if os.path.samestat(os.fstat(int(entry.name)), node):
                 return True
     return False
+
+
+#: Linux and macOS cap PIDs below 2**22 + 1, and Windows answers OpenProcess for it with an invalid-parameter error, so
+#: the marker names a holder every platform reads as dead.
+DEAD_PID: Final[int] = 2**22 + 1
+DEAD_HOLDER: Final[str] = f"{DEAD_PID}\n{host_name()}\n"
+DEAD_OWNER: Final[str] = f"filelock/2\npid={DEAD_PID}\nhost={host_name()}\nmode=exclusive\n"
+
+#: Every soft lock that breaks a stale marker, with a record naming a dead owner in the format it reads.
+STALE_BREAKERS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
+    ("lock_type", "record"),
+    [
+        pytest.param(SoftFileLock, DEAD_HOLDER, id="soft"),
+        pytest.param(MarkerSoftFileLock, DEAD_OWNER, id="marker"),
+        pytest.param(SoftFileLease, DEAD_OWNER, id="lease"),
+    ],
+)

@@ -192,8 +192,9 @@ def _swap_out(lock_file: str, break_path: str, mtime_before: float, ino_before: 
     fd: Final = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         try:
-            # Not a record any lock writes, so a contender that reads it waits, and one left by a crash ages out.
-            write_all(fd, b"filelock/break\n")
+            # Not a record any lock writes, so a contender that reads it waits, and one left by a crash ages out. The
+            # PID tells the contender that evicts it whose break names to search for a marker this process left.
+            write_all(fd, f"filelock/break\n{os.getpid()}\n".encode())
             exchanged = exchange_names(break_path, lock_file)
         except OSError:
             exchanged = False

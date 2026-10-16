@@ -7,4 +7,5 @@ atomic exchange. On other platforms without one, except Windows, including NFS a
 waits for ``timeout`` or ``break_lock()``. Restoring a marker no longer follows a symlink found under the break name. A
 holder that releases while a peer's exchange has its marker aside leaves a record no lock parses, so the put-back lands
 a marker that ages out. A lease heartbeat that finds another file at the lock path once, while a peer's break has its
-marker aside, waits for the next refresh before it reports a compromise.
+marker aside, waits for the next refresh before it reports a compromise. A contender that finds a dead breaker's marker
+puts back the marker that breaker left under its break name.

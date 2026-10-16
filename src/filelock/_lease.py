@@ -267,10 +267,10 @@ class SoftFileLease(MarkerSoftFileLock):
         # A dead or recycled owner is reclaimed at once, whether it held a lease or an exclusive marker; a live lease
         # owner whose marker stops being refreshed is superseded on the schedule every contender agreed to.
         if owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
-            self._take_over(marker)
+            self._take_over(marker, owner.pid)
             return
         if owner.mode == "lease" and self._marker_unchanged_for(marker) >= self._lease_duration:
-            self._take_over(marker)
+            self._take_over(marker, None)
 
     def _read_peer(self) -> tuple[OwnerRecord, os.stat_result] | None:
         with suppress(OSError, ValueError):
