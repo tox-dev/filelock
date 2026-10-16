@@ -334,7 +334,7 @@ def test_break_lock_file_lets_acquire_retry_after_the_marker_vanishes(
     "lifetime",
     [pytest.param(None, id="stale-take-over"), pytest.param(0.1, id="expiry-placeholder")],
 )
-def test_break_lock_file_spares_a_file_that_replaced_what_it_swapped_in(  # pragma: win32 no cover
+def test_stale_take_over_keeps_the_lock_when_a_rename_replaces_its_marker(  # pragma: win32 no cover
     stale_lock: Path, mocker: MockerFixture, lifetime: float | None
 ) -> None:
     os.utime(stale_lock, (0, 0))
@@ -350,11 +350,17 @@ def test_break_lock_file_spares_a_file_that_replaced_what_it_swapped_in(  # prag
         return found
 
     mocker.patch.object(os, "lstat", new=peer_replaces_the_swapped_in_file)
-    with pytest.raises(Timeout):
-        SoftFileLock(stale_lock, lifetime=lifetime).acquire(blocking=False)
+    lock: Final = SoftFileLock(stale_lock, lifetime=lifetime)
+    lock.acquire(blocking=False)
     mocker.stopall()
+    held: Final = lock.is_locked
+    lock.release()
 
-    assert stale_lock.read_text(encoding="utf-8") == "other"
+    assert (held, stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("*.break.*"))) == (
+        True,
+        "other",
+        [],
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -482,8 +488,8 @@ def test_break_lock_file_break_name_is_unguessable(stale_lock: Path, mocker: Moc
         return result
 
     mocker.patch("os.lstat", side_effect=peer_moves_a_live_lock_onto_the_guessable_name)
-    with pytest.raises(Timeout):
-        SoftFileLock(stale_lock).acquire(blocking=False)
+    with SoftFileLock(stale_lock):
+        pass
 
     assert guessable.read_text(encoding="utf-8") == "live"
 

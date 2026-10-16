@@ -168,8 +168,9 @@ class SoftFileLock(BaseFileLock):
     def _take_over(self, marker: os.stat_result) -> None:
         # Swap the judged marker for a complete marker of ours in one exchange, so the lock path never stands empty.
         # Once the file swapped out proves to be the one judged, this lock holds the path; the caller's pin keeps that
-        # file's inode number from naming anything else. Every failure before the handoff takes our marker off the path
-        # and puts back what the exchange took. Without an exchange, the portable break decides.
+        # file's inode number from naming anything else. Only a peer's exchange can move our marker after that, and
+        # the peer puts it back because what it took is not the file it judged. Every failure before the handoff takes
+        # our marker off the path and puts back what the exchange took. Without an exchange, the portable break decides.
         if exchange_supported():  # pragma: win32 no cover
             self._take_over_by_exchange(marker)
         else:
@@ -194,9 +195,8 @@ class SoftFileLock(BaseFileLock):
                 return  # a peer recreated the marker, which the cleanup below swaps back
             Path(aside).unlink()
             exchanged = False
-            if os.path.samestat(os.lstat(self.lock_file), os.fstat(fd)):
-                self._mark_descriptor_owned(fd, identity)
-                held = True
+            self._mark_descriptor_owned(fd, identity)
+            held = True
         finally:
             if not held:
                 self._abandon_take_over(fd, aside, put_back=exchanged)

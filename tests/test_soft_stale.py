@@ -17,6 +17,7 @@ from capabilities import CAPABILITIES
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD
+from filelock._util import exchange_names
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.pid_namespace_helpers import pin_pid_namespace
 
@@ -267,6 +268,29 @@ def test_stale_break_racing_a_successor_admits_no_third_holder(
 
     _assert_times_out(lock_path)
     successor.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+def test_stale_break_keeps_the_lock_when_a_peer_swaps_its_marker_aside(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    (peer := lock_path.with_name("peer")).write_text(_holder(os.getpid()), encoding="utf-8")
+    unlink: Final = Path.unlink
+
+    def peer_exchanges_then_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        exchange_names(str(lock_path), str(peer))
+        unlink(path, missing_ok=missing_ok)
+
+    mocker.patch.object(Path, "unlink", new=peer_exchanges_then_unlink)
+    lock: Final = SoftFileLock(lock_path)
+    lock.acquire(blocking=False)
+    mocker.stopall()
+    exchange_names(str(lock_path), str(peer))
+
+    assert (lock.is_locked, lock.is_lock_held_by_us) == (True, True)
+    lock.release()
+    assert list(lock_path.parent.glob("test.lock*")) == []
 
 
 @NEEDS_SYMLINK
