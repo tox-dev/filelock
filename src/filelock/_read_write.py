@@ -420,8 +420,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. A ``.db`` extension is a convention rather than a requirement; the filesystem must be one the active
     SQLite VFS supports. On POSIX, a database directory other users can write must also be writable by this user and
-    support hard links. Give the lock a file of its own: a WAL-mode database, or one with a schema larger than a lock
-    needs, raises :class:`ValueError`.
+    support hard links. These protections hold only while no other user can replace the database directory or any of
+    its ancestors. Give the lock a file of its own: a WAL-mode database, or one with a schema larger than a lock needs,
+    raises :class:`ValueError`.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days

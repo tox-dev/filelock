@@ -436,11 +436,16 @@ requirement. Use a local filesystem the active SQLite VFS supports and a databas
 raises :class:`ValueError`, because WAL never blocks readers behind a writer, and so does a database whose schema takes
 more than a few kilobytes to load, because loading it is work the timeout cannot bound.
 
-On POSIX, SQLite opens the database by its name and acts on ``-journal``, ``-wal`` and ``-shm`` files it finds beside it.
-When other users can write to the database directory, filelock instead opens SQLite through a private hard link to the
-validated database, inside a ``.filelock-*`` directory that only the locking user can read. That directory must then be
-writable by the locking user, and the filesystem must support hard links; alias creation failure raises
+On POSIX, SQLite opens the database by its name and acts on ``-journal``, ``-wal`` and ``-shm`` files it finds beside
+it. When other users can write to the database directory, filelock instead opens SQLite through a private hard link to
+the validated database, inside a ``.filelock-*`` directory that only the locking user can read. That directory must then
+be writable by the locking user, and the filesystem must support hard links; alias creation failure raises
 :class:`OSError`.
+
+Both routes protect against other users only while none of them can replace the database directory or any of its
+ancestors: every ancestor must belong to the locking user or root and be either not writable by others or sticky. A user
+who can rename an entry in an ancestor owns every name below it, so SQLite may open a replacement swapped in before it
+connects; the acquire then raises :class:`OSError` instead of reporting the lock held.
 
 .. code-block:: python
 

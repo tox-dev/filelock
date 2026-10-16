@@ -105,6 +105,43 @@ def test_private_directory_connects_by_the_database_name(tmp_path: Path, mocker:
     assert (connect.call_args.args[0], list(tmp_path.iterdir())) == (str(database), [database])
 
 
+def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(
+    database: Path, mocker: MockerFixture
+) -> None:
+    # Whoever can rename in the shared parent owns every name below it, so the private directory check cannot stop
+    # SQLite from opening a replacement swapped in before it connects; the acquire only refuses to report the lock held.
+    private: Final = database.parent / "private"
+    private.mkdir(mode=0o700)
+    lock: Final = ReadWriteLock(private / "lock.db", is_singleton=False)
+    moved: Final = database.parent / "moved"
+    connect: Final = sqlite3.connect
+
+    def replace_then_connect(
+        path: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        private.rename(moved)
+        private.mkdir(mode=0o700)
+        (private / "lock.db").touch()
+        return connect(
+            path,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+
+    mocker.patch("sqlite3.connect", autospec=True, side_effect=replace_then_connect)
+
+    with pytest.raises(OSError, match="replaced while acquiring"):
+        lock.acquire_write()
+    assert_read_write_lock_state(str(moved / "lock.db"), "write", available=True)
+
+
 @pytest.fixture
 def database(tmp_path: Path) -> Path:
     shared: Final = tmp_path / "shared"
