@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import itertools
 import os
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed-argument, no-shell run below
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -87,3 +88,14 @@ def close_failure(
     yield capture, release_error, release_cause
     if locked_fd is not None:  # pragma: no branch  # every consumer calls capture, so this is always set
         real_close(locked_fd)
+
+
+@pytest.fixture
+def inheriting_directory(tmp_path: Path) -> Path:  # pragma: win32 cover
+    # A directory whose ACL has no inheritable entry hands a new file the token's default DACL, which icacls cannot
+    # tell from an explicit one, so grant Users an inheritable entry for the file to show as (I).
+    directory = tmp_path / "inheriting"
+    directory.mkdir()
+    icacls = Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe")
+    subprocess.run([icacls, directory, "/grant", "*S-1-5-32-545:(OI)(CI)(RX)"], capture_output=True, check=True)
+    return directory

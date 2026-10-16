@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from contextlib import suppress
+from functools import cache
 from pathlib import Path
 from typing import Final, cast
 
@@ -40,6 +41,11 @@ if sys.platform == "win32":  # pragma: win32 cover
     _CREATE_OPTIONS: Final[int] = _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_NON_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT
     _OBJ_CASE_INSENSITIVE: Final[int] = 0x00000040  # Win32 name lookups are case-insensitive
     _OWNER_WRITE: Final[int] = 0o200
+    _GROUP_AND_OTHERS: Final[int] = 0o077
+    # The DACL os.mkdir(mode=0o700) applies, less the inheritance flags a file has no use for: protected, so the
+    # directory's inheritable entries stay out, with full access for SYSTEM, Administrators and the owner.
+    _OWNER_ONLY_SDDL: Final[str] = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)"
+    _SDDL_REVISION_1: Final[int] = 1
 
     # LockFileEx locks a byte range at an offset carried in OVERLAPPED, independent of the descriptor's file position.
     # msvcrt.locking starts at the current position instead, so a metadata write between lock and unlock could shift
@@ -65,6 +71,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     _ntdll: Final[ctypes.WinDLL] = ctypes.WinDLL("ntdll")
     _kernel32: Final[ctypes.WinDLL] = ctypes.WinDLL("kernel32", use_last_error=True)
+    _advapi32: Final[ctypes.WinDLL] = ctypes.WinDLL("advapi32", use_last_error=True)
 
     class _UNICODE_STRING(ctypes.Structure):  # ruff:ignore[invalid-class-name]  # mirrors the Win32 struct name
         _fields_ = (
@@ -159,6 +166,13 @@ if sys.platform == "win32":  # pragma: win32 cover
         ctypes.POINTER(_OVERLAPPED),
     ]
     _kernel32.UnlockFileEx.restype = wintypes.BOOL
+    _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.ULONG),
+    ]
+    _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
 
     def _lock_fd_nonblocking(fd: int) -> bool:
         # One nonblocking exclusive LockFileEx attempt shared by WindowsFileLock and lock_descriptor, over the one-byte
@@ -244,7 +258,9 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         :param path: the lock file path.
         :param mode: the permission mode; as ``os.open`` does on Windows, a cleared owner-write bit creates the file
-            read-only. The attribute only takes effect when the file is created, not when an existing one is opened.
+            read-only. A mode without group and other bits creates it with an owner-only DACL; any other mode has no
+            Windows counterpart and leaves the file the entries its directory hands down. Both only take effect when the
+            file is created, not when an existing one is opened.
 
         :returns: a file descriptor owning the opened handle, or ``None`` on a sharing violation or a delete-pending
             name the caller should treat as contention and retry.
@@ -257,12 +273,13 @@ if sys.platform == "win32":  # pragma: win32 cover
         # Emit the audit event os.open would, so consumers watching "open" still see the path-level open and can veto.
         sys.audit("open", path, None, os.O_RDWR | os.O_CREAT)
         read_only = not mode & _OWNER_WRITE
-        handle, status = _nt_open(path, read_only=read_only)
+        owner_only = not mode & _GROUP_AND_OTHERS
+        handle, status = _nt_open(path, read_only=read_only, owner_only=owner_only)
         if status == _STATUS_ACCESS_DENIED:
             deadline = time.monotonic() + _ACCESS_DENIED_GRACE
             while status == _STATUS_ACCESS_DENIED and time.monotonic() < deadline:
                 time.sleep(_ACCESS_DENIED_RETRY)
-                handle, status = _nt_open(path, read_only=read_only)
+                handle, status = _nt_open(path, read_only=read_only, owner_only=owner_only)
         if status != _STATUS_SUCCESS:
             if status in {_STATUS_SHARING_VIOLATION, _STATUS_DELETE_PENDING}:
                 return None
@@ -300,12 +317,37 @@ if sys.platform == "win32":  # pragma: win32 cover
             _kernel32.CloseHandle(handle)
         return status in {_STATUS_OBJECT_NAME_NOT_FOUND, _STATUS_DELETE_PENDING}
 
-    def _nt_open(path: str, *, read_only: bool) -> tuple[int, int]:
-        """Open or create *path* for locking through ``NtCreateFile`` and return ``(handle, status)``."""
-        attributes = _FILE_ATTRIBUTE_READONLY if read_only else _FILE_ATTRIBUTE_NORMAL
-        return _nt_create(path, _DESIRED_ACCESS, attributes, _FILE_SHARE_READ_WRITE, _FILE_OPEN_IF)
+    def _nt_open(path: str, *, read_only: bool, owner_only: bool) -> tuple[int, int]:
+        """
+        Open or create *path* for locking through ``NtCreateFile`` and return ``(handle, status)``.
 
-    def _nt_create(path: str, access: int, attributes: int, share: int, disposition: int) -> tuple[int, int]:
+        Without *owner_only* a file this call creates gets no DACL of its own and inherits its directory's ACL.
+        """
+        attributes = _FILE_ATTRIBUTE_READONLY if read_only else _FILE_ATTRIBUTE_NORMAL
+        descriptor = _owner_only_descriptor() if owner_only else None
+        return _nt_create(
+            path, _DESIRED_ACCESS, attributes, _FILE_SHARE_READ_WRITE, _FILE_OPEN_IF, descriptor=descriptor
+        )
+
+    @cache
+    def _owner_only_descriptor() -> ctypes.c_void_p:
+        # Converted once and never freed: the open retries every few milliseconds while it waits.
+        descriptor = ctypes.c_void_p()
+        if not _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            _OWNER_ONLY_SDDL, _SDDL_REVISION_1, ctypes.byref(descriptor), None
+        ):  # pragma: no cover  # a constant string converts
+            raise ctypes.WinError(ctypes.get_last_error())
+        return descriptor
+
+    def _nt_create(  # ruff:ignore[too-many-arguments]  # mirrors the NtCreateFile parameters it fills in
+        path: str,
+        access: int,
+        attributes: int,
+        share: int,
+        disposition: int,
+        *,
+        descriptor: ctypes.c_void_p | None = None,
+    ) -> tuple[int, int]:
         """
         Open *path* through ``NtCreateFile`` and return ``(handle, status)``.
 
@@ -322,6 +364,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             object_attributes.Length = ctypes.sizeof(_OBJECT_ATTRIBUTES)
             object_attributes.ObjectName = ctypes.pointer(nt_name)
             object_attributes.Attributes = _OBJ_CASE_INSENSITIVE
+            object_attributes.SecurityDescriptor = descriptor
             handle = wintypes.HANDLE()
             io_status = _IO_STATUS_BLOCK()
             status = (

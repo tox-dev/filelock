@@ -962,6 +962,13 @@ When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock create
 :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`SoftFileLock <filelock.SoftFileLock>` then apply it with
 ``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory.
 
+Windows has no mode bits; a new file inherits the ACL of its directory. :class:`WindowsFileLock
+<filelock.WindowsFileLock>` honors the one request that has a Windows counterpart: a ``mode`` without group and other
+bits, such as ``0o600``, creates the lock file with a protected ACL that grants access to its owner, ``SYSTEM`` and
+``Administrators`` only, the ACL ``os.mkdir(mode=0o700)`` applies. The :class:`~filelock.ReadWriteLock` database, always
+``0o600``, gets the same ACL. A file that already exists keeps its own ACL. Every other ``mode``, and the files of the
+soft locks, which ``os.open`` creates, inherit the directory's ACL; restrict that ACL to keep other users out.
+
 An explicit ``mode`` must be an :class:`int` within ``0o000``-``0o777`` that grants the owner read and write;
 construction raises :class:`TypeError` for another type and :class:`ValueError` otherwise. A lock reopens, reads, and
 deletes the files it creates, so without those bits it fails later and stays broken: a native lock on its second

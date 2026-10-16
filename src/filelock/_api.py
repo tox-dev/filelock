@@ -738,7 +738,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             negative value or ``inf``. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
         :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask and
             default ACLs, preserving POSIX default ACL inheritance in shared directories. Construction raises
-            :class:`ValueError` unless it grants the owner read and write, which the lock needs for its own files.
+            :class:`ValueError` unless it grants the owner read and write, which the lock needs for its own files. On
+            Windows a native lock creates its file with an owner-only ACL when the mode has no group and other bits; any
+            other mode, and a soft lock, leave the file the ACL its directory hands down.
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set to
             ``False`` then the lock will be reentrant across threads. When ``True`` (the default), **all fields of the
             lock's internal context are per-thread**, including the configuration values ``poll_interval``, ``timeout``,

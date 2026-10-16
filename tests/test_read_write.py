@@ -4,6 +4,7 @@ import ctypes
 import os
 import re
 import struct
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed-argument, no-shell run below
 import sys
 import time
 from contextlib import closing
@@ -561,6 +562,19 @@ def test_read_write_lock_refuses_a_database_held_without_sharing(tmp_path: Path)
             ReadWriteLock(lock_path, is_singleton=False)
     finally:  # pragma: win32 cover
         kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="POSIX creates the database 0o600 through its mode bits")
+def test_read_write_lock_database_keeps_out_the_directory_acl(
+    inheriting_directory: Path,
+) -> None:  # pragma: win32 cover
+    lock_path = inheriting_directory / "lock.db"
+    with closing(ReadWriteLock(lock_path, is_singleton=False)):
+        acl = subprocess.run(
+            [Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe"), lock_path], capture_output=True, check=True
+        ).stdout
+    # icacls marks each entry the directory handed down with (I), whatever the display language.
+    assert b"(I)" not in acl
 
 
 @pytest.mark.parametrize(
