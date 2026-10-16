@@ -1430,7 +1430,8 @@ async def test_executor_acquire_keeps_filesystem_calls_off_the_loop(tmp_path: Pa
     lstat_threads: set[int] = set()
 
     def lstat(path: str, *, dir_fd: int | None = None) -> os.stat_result:
-        lstat_threads.add(threading.get_ident())
+        if os.fspath(path) == lock.lock_file:
+            lstat_threads.add(threading.get_ident())
         return real_lstat(path, dir_fd=dir_fd)
 
     mocker.patch("os.lstat", side_effect=lstat)
@@ -1438,5 +1439,6 @@ async def test_executor_acquire_keeps_filesystem_calls_off_the_loop(tmp_path: Pa
     mocker.stopall()
     await lock.release()
 
-    # Breaking the expired marker lstats it on every platform, so an empty set means the spy saw nothing.
-    assert (bool(lstat_threads), threading.get_ident() in lstat_threads) == (True, False)
+    # The patch is process-wide, so only the lock's own path counts; unrelated loop-thread lstats are not ours.
+    assert lstat_threads
+    assert threading.get_ident() not in lstat_threads
