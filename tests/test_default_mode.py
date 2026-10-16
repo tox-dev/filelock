@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from pathlib import Path
     from unittest.mock import MagicMock
 
+    from pytest_mock import MockerFixture
+
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize(
@@ -112,10 +114,10 @@ def test_explicit_mode_overrides_umask(tmp_path: Path) -> None:  # pragma: win32
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        pytest.param(_UNSET_FILE_MODE, "drwxrwxrwx", id="default"),
-        pytest.param(0o600, "drwx------", id="owner"),
-        pytest.param(0o640, "drwxr-x---", id="group-read"),
-        pytest.param(0o660, "drwxrwx---", id="group-write"),
+        pytest.param(_UNSET_FILE_MODE, "drwxrwxrwt", id="default"),
+        pytest.param(0o600, "drwx-----T", id="owner"),
+        pytest.param(0o640, "drwxr-x--T", id="group-read"),
+        pytest.param(0o660, "drwxrwx--T", id="group-write"),
     ],
 )
 def test_strict_protocol_directories_follow_mode(  # pragma: win32 no cover  # pragma: needs hard-link
@@ -129,6 +131,32 @@ def test_strict_protocol_directories_follow_mode(  # pragma: win32 no cover  # p
         os.umask(initial_umask)
 
     coordination = tmp_path / "a.lock.filelock"
+    assert [filemode(directory.stat().st_mode) for directory in (coordination, coordination / "claims")] == [
+        expected,
+        expected,
+    ]
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not apply POSIX modes to directories")
+@pytest.mark.parametrize(
+    ("owned", "expected"),
+    [pytest.param(True, "drwx-----T", id="owned"), pytest.param(False, "drwxrwxrwx", id="another-account")],
+)
+def test_strict_wide_directories_are_narrowed_only_when_owned(  # pragma: win32 no cover  # pragma: needs hard-link
+    tmp_path: Path, mocker: MockerFixture, *, owned: bool, expected: str
+) -> None:
+    # An earlier release, or a wider umask, may have left the directories open; ones of another account are not ours.
+    coordination = tmp_path / "a.lock.filelock"
+    (coordination / "claims").mkdir(parents=True)
+    for directory in (coordination, coordination / "claims"):
+        directory.chmod(0o777)
+    if not owned and sys.platform != "win32":  # the skip above keeps Windows out; the test narrows os.geteuid for ty
+        mocker.patch("filelock._strict.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+
+    with StrictSoftFileLock(tmp_path / "a.lock", mode=0o600):
+        pass
+
     assert [filemode(directory.stat().st_mode) for directory in (coordination, coordination / "claims")] == [
         expected,
         expected,
