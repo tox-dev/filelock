@@ -146,6 +146,7 @@ def test_process_start_token_none_for_dead() -> None:
         pytest.param(_ANOTHER_TIME_NAMESPACE, _BOOTTIME_UNSHIFTED, 0xF0000A1D, False, id="unshared-not-entered"),
         pytest.param(_ANOTHER_TIME_NAMESPACE, PermissionError(EACCES, "denied"), None, False, id="offsets-unreadable"),
         pytest.param(FileNotFoundError(ENOENT, "missing"), _BOOTTIME_SHIFTED, None, True, id="kernel-before-5.6"),
+        pytest.param(PermissionError(EACCES, "denied"), _BOOTTIME_UNSHIFTED, None, False, id="namespace-unreadable"),
     ],
 )
 def test_process_start_token_read_only_without_a_boottime_offset(

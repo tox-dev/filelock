@@ -204,8 +204,10 @@ else:  # pragma: win32 no cover
             # setns can move this process into another time namespace, so ask on every read.
             try:
                 namespace: Final = Path("/proc/self/ns/time").stat().st_ino
-            except OSError:  # before Linux 5.6 there are no time namespaces to shift starttime
+            except FileNotFoundError:  # no entry means no time namespaces on this kernel
                 return True
+            except OSError:  # any other failure leaves the namespace unknown, so starttime is not comparable
+                return False
             if namespace == _INITIAL_TIME_NAMESPACE:
                 return True
             # A container runtime may give each container a time namespace without offsets. timens_offsets describes
