@@ -147,18 +147,18 @@ def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
 
 def foreign_directory_owner(directory: os.stat_result, parent: os.stat_result) -> int | None:
     """
-    Name the other UID that controls a directory a lock found already in place, under a sticky parent.
+    Name the account that controls a directory a lock found already in place under a sticky parent, if not ours.
 
-    A lock that keeps its ownership records in a directory relies on nobody else removing them. Under a sticky parent
-    such as ``/tmp``, other UIDs cannot rename this UID's directory away, so that holds while the directory belongs to
-    this UID or to the parent's owner. If a different UID created it first, that UID can remove every record in it.
-    Without the sticky bit, any process that can create the directory can also rename this UID's own one away, so
-    refusing it there would protect nothing. Linux applies the same rule for ``fs.protected_regular``.
+    A lock that keeps its ownership records in a directory relies on them staying in place. Under a sticky parent such
+    as ``/tmp``, a directory cannot be renamed away by processes of other accounts, so that holds while the directory
+    belongs to this account or to the parent's owner; one that belongs to another account is outside the lock's
+    control. Without the sticky bit, any process that can create the directory can also rename this account's own one
+    away, so refusing it there would change nothing. Linux applies the same rule for ``fs.protected_regular``.
 
     :param directory: ``lstat`` of the directory found in place.
     :param parent: ``stat`` of the directory that holds it.
 
-    :returns: the owner's UID when a different UID controls the directory, otherwise ``None``.
+    :returns: the owning uid when another account controls the directory, otherwise ``None``.
 
     """
     if sys.platform != "win32" and parent.st_mode & stat.S_ISVTX:  # pragma: needs foreign-sticky-tmp

@@ -235,8 +235,8 @@ def lock_path_in_shared_tmp() -> Iterator[Path]:  # pragma: needs foreign-sticky
 
 
 @pytest.fixture
-def directories_of_another_uid(mocker: MockerFixture) -> None:  # pragma: needs foreign-sticky-tmp
-    # Directories this process creates then look, to the lock, like ones a different UID created first.
+def directories_of_another_account(mocker: MockerFixture) -> None:  # pragma: needs foreign-sticky-tmp
+    # Directories this process creates then look, to the lock, like ones another account created first.
     assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
     mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
 

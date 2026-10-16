@@ -140,7 +140,7 @@ class OsFiles:
                 raise RuntimeError(msg)
             owner = foreign_directory_owner(found, directory.parent.stat())
             if owner is not None:  # pragma: needs foreign-sticky-tmp
-                msg = f"{directory} belongs to UID {owner}, who can remove the records in it; refusing to use it"
+                msg = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
                 raise RuntimeError(msg)
         self._prepared = True
 

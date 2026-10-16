@@ -60,7 +60,7 @@ NEEDS_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 
 NEEDS_FOREIGN_STICKY_TMP: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["foreign-sticky-tmp"],
-    reason="a protocol directory of a different UID is refused only under a sticky parent this UID does not own",
+    reason="a protocol directory of another account is refused only under a sticky parent this account does not own",
 )
 
 NEEDS_FILE_PERMISSIONS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
