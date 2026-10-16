@@ -46,7 +46,9 @@ def _sqlite(path: Path, *, is_singleton: bool) -> tuple[ReadWriteLock, AsyncRead
     return ReadWriteLock(path / "lock.db", is_singleton=is_singleton), AsyncReadWriteLock(path / "lock.db")
 
 
-def _soft(path: Path, *, is_singleton: bool) -> tuple[SoftReadWriteLock, AsyncSoftReadWriteLock]:
+def _soft(  # pragma: needs hard-link
+    path: Path, *, is_singleton: bool
+) -> tuple[SoftReadWriteLock, AsyncSoftReadWriteLock]:
     return (
         SoftReadWriteLock(
             path / "lock", is_singleton=is_singleton, heartbeat_interval=0.1, stale_threshold=0.5, poll_interval=0.02
@@ -56,7 +58,9 @@ def _soft(path: Path, *, is_singleton: bool) -> tuple[SoftReadWriteLock, AsyncSo
 
 
 _Make = Callable[..., tuple[ReadWriteLock | SoftReadWriteLock, AsyncReadWriteLock | AsyncSoftReadWriteLock]]
-_FAMILIES: Final = pytest.mark.parametrize("make", [pytest.param(_sqlite, id="sqlite"), pytest.param(_soft, id="soft")])
+_FAMILIES: Final = pytest.mark.parametrize(
+    "make", [pytest.param(_sqlite, id="sqlite"), pytest.param(_soft, id="soft", marks=pytest.mark.requires_hard_links)]
+)
 _MODES: Final = pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 
 
