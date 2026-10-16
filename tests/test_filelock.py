@@ -18,6 +18,7 @@ from contextlib import contextmanager, suppress
 from decimal import Decimal
 from errno import EAGAIN, EINTR, EIO, ENOSPC, ENOSYS, EWOULDBLOCK
 from fractions import Fraction
+from functools import partial
 from inspect import getframeinfo, stack
 from itertools import count
 from pathlib import Path, PurePath
@@ -353,31 +354,22 @@ def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_pat
     holders: list[str] = []
     finished: list[None] = []
 
-    def t_1() -> None:
+    def work(lock: BaseFileLock) -> None:
         name = threading.current_thread().name
         for _ in range(100):
-            with lock_1:
+            with lock:
                 holders.append(name)
                 time.sleep(0)  # give up the GIL so an overlapping holder has a chance to show in the slot
                 assert holders == [name]
-                assert lock_1.is_locked
-                holders.pop()
-                finished.append(None)
-
-    def t_2() -> None:
-        name = threading.current_thread().name
-        for _ in range(100):
-            with lock_2:
-                holders.append(name)
-                time.sleep(0)
-                assert holders == [name]
-                assert lock_2.is_locked
+                assert lock.is_locked
                 holders.pop()
                 finished.append(None)
 
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
-    threads = [(ExThread(t_1, f"t1_{i}"), ExThread(t_2, f"t2_{i}")) for i in range(10)]
+    threads = [
+        (ExThread(partial(work, lock_1), f"t1_{i}"), ExThread(partial(work, lock_2), f"t2_{i}")) for i in range(10)
+    ]
 
     for thread_1, thread_2 in threads:
         thread_1.start()
