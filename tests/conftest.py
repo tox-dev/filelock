@@ -124,7 +124,7 @@ def close_failure(
 
 @pytest.fixture
 def lock_path_in_shared_tmp() -> Iterator[Path]:  # pragma: needs foreign-sticky-tmp
-    # Directly in /tmp, the sticky directory every user can create names in, rather than in this test's own directory.
+    # /tmp itself, where every account can create names, rather than this test's own directory.
     lock_path = Path("/tmp", f"filelock-{secrets.token_hex(8)}.lock")  # ruff:ignore[hardcoded-temp-file]  # the subject
     yield lock_path
     for derived in (Path(f"{lock_path}.filelock"), Path(f"{lock_path}.rw")):

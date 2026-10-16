@@ -673,8 +673,8 @@ def test_default_poll_interval(lock_type: type[BaseFileLock], tmp_path: Path) ->
 @pytest.fixture
 def steady_clock(mocker: MockerFixture) -> None:
     # These tests assert the sleep the lock asked for. The lock caps that sleep at the time left before its timeout, so
-    # a stall on a loaded machine between the start and the first poll would shorten it; a clock that advances 10 ms
-    # per reading keeps the first poll inside the timeout whatever the machine does.
+    # a stall on a loaded machine between the start and the first poll would shorten it. A clock that advances 10 ms
+    # per reading keeps the first poll inside the timeout regardless of load.
     mocker.patch("filelock._api.time.perf_counter", side_effect=(reading / 100 for reading in count()))
 
 

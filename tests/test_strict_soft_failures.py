@@ -1303,7 +1303,7 @@ def test_strict_soft_coordination_directory_swapped_for_symlink_leaves_target_al
     matches = 0
 
     def swap_at_the_occurrence(path: _PathValue, *args: int, **options: int | None) -> int | None:
-        # A process that can rename entries in the lock's directory can exchange the name after it was found real.
+        # A process that can rename entries in the lock's directory can swap the name after the lock saw a directory.
         nonlocal matches
         matches += os.fsdecode(path).endswith(suffix)
         if matches == occurrence and not coordination.is_symlink():
@@ -1477,7 +1477,7 @@ def test_strict_soft_sentinel_inspection_and_close_failure_group(tmp_path: Path,
     def fail_sentinel_close(fd: int) -> None:
         if fd == sentinel_fd:
             raise OSError(EIO, "sentinel close failed")
-        # Besides the sentinel this flow closes only the descriptor the claim directory is created against.
+        # Besides the sentinel this flow closes only the descriptor the lock creates the claim directory against.
         real_close(fd)  # pragma: needs dir-fd
 
     mocker.patch("filelock._strict._open_sentinel", side_effect=capture_sentinel)
@@ -1614,7 +1614,7 @@ def test_strict_soft_private_inspection_failure_unlinks_vanished_record(tmp_path
     real_fstat = os.fstat
 
     def fail_private_inspection(fd: int) -> os.stat_result:
-        # Only the private record is still an empty regular file when it is inspected; the sentinel holds its record.
+        # Only the private record is an empty regular file when the lock inspects it; the sentinel holds its record.
         if stat.S_ISREG((found := real_fstat(fd)).st_mode) and found.st_size == 0:
             raise OSError(EIO, "private inspection failed")
         return found
@@ -2020,7 +2020,7 @@ def test_strict_soft_claim_removed_between_inspection_and_open_is_skipped(
 
         return inspect_then_remove
 
-    # The claim is inspected with lstat by path, or with stat relative to its directory where dir_fd works.
+    # The lock inspects the claim with lstat by path, or with stat relative to its directory where dir_fd works.
     for function in ("lstat", "stat"):
         mocker.patch(f"filelock._strict.os.{function}", side_effect=remove_after_inspection(getattr(os, function)))
 
@@ -2033,7 +2033,7 @@ def test_strict_soft_owner_releases_while_a_contender_reads_its_claim(lock_path:
     real_read: Final = os.read
 
     def release_mid_read(fd: int, length: int) -> bytes:
-        # The scan reads this one claim and nothing else, so the holder releases exactly once.
+        # The scan reads this one claim and nothing else, so the holder releases once.
         holder.release()
         return real_read(fd, length)
 
@@ -2078,7 +2078,7 @@ def test_strict_soft_coordination_directory_swapped_for_a_junction_leaves_target
 
     def swap_after_the_inspection(inspect: Callable[..., os.stat_result]) -> Callable[..., os.stat_result]:
         def inspect_then_swap(path: _PathValue, **options: int | bool | None) -> os.stat_result:
-            # The name was a real directory when inspected; by the time claims is created inside it, it is a junction.
+            # The name was a real directory at inspection; by the time the lock creates claims in it, it is a junction.
             found = inspect(path, **options)
             if not swapped and os.fsdecode(path) == str(coordination):
                 swapped.append(True)
@@ -2176,7 +2176,7 @@ def test_strict_soft_record_read_and_close_failure_group(tmp_path: Path, mocker:
     real_fstat = os.fstat
 
     def fail_close(fd: int) -> None:
-        # Reading the single oversized claim closes exactly one record, so failing every such close still fails once.
+        # Reading the single oversized claim closes one record, so failing every such close still fails once.
         is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
         real_close(fd)
         if not is_directory:  # pragma: needs dir-fd
@@ -2275,7 +2275,7 @@ def test_strict_soft_opened_record_non_regular_fails_closed(tmp_path: Path, mock
 
 @_WINDOWS_ONLY  # pragma: win32 cover
 def test_strict_soft_release_rides_out_a_transient_unlink_denial(lock_path: Path, mocker: MockerFixture) -> None:
-    # Another process can hold a claim open for a moment after the owner is done with it, so one denial is retried.
+    # Another process can hold a claim open for a moment after its owner finished with it, so the release retries once.
     (lock := StrictSoftFileLock(lock_path)).acquire()
     real_unlink: Final = os.unlink
     denied: list[str] = []
