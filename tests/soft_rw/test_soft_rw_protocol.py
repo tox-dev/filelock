@@ -794,7 +794,7 @@ def test_heartbeat_without_a_published_record_is_lost(lock_file: str, files: OsF
 
 @pytest.mark.requires_hard_links
 def test_heartbeat_leaves_a_file_linked_over_the_holder_record_alone(lock_file: str, files: OsFiles, root: str) -> None:
-    # Whoever can write holders/ can rename a hard link to another of the holder's files over its record.
+    # A process that can write holders/ can rename a hard link to another of the holder's files over its record.
     writer = _participant(files, lock_file, "write")
     writer.publish()
     (private := Path(f"{lock_file}.private")).write_bytes(b"private")

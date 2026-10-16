@@ -21,8 +21,8 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 _O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
-#: Probed once at import, as in :mod:`filelock._strict`: a per-call check flips the moment a test mocks the function.
-#: os.replace shares os.rename's implementation, which is the one the set lists.
+#: Probed once at import, as :mod:`filelock._strict` does, because a per-call check flips when a test mocks the
+#: function. The set lists os.rename, whose implementation os.replace shares.
 _SUPPORTS_DIR_FD: Final[bool] = (
     hasattr(os, "link")
     and {os.link, os.open, os.stat, os.mkdir, os.rename, os.unlink} <= os.supports_dir_fd
@@ -88,9 +88,9 @@ class OsFiles:
             except (NotImplementedError, OSError) as error:
                 _raise_if_hard_links_unsupported(self._lock_file, error)
                 failure = error
-            # Whatever the call reported, the file's identity decides: an NFS retransmit can turn a link that landed
-            # into an error, and an EEXIST can be this very link answered twice. Any other error on a link that did not
-            # land is a real fault, not a peer winning the race, and retrying it would spin.
+            # The file's identity decides, not the call's result: an NFS retransmit can report a link that landed as
+            # failed, and an EEXIST can be this very link answered twice. Any other error on a link that did not land is
+            # a fault, not a peer winning the race, and a retry would spin.
             if (identity := _identity(source_name, source_fd)) is not None and identity == _identity(
                 target_name, target_fd
             ):
@@ -111,7 +111,8 @@ class OsFiles:
 
     @staticmethod
     def overwrite(path: str, data: bytes, identity: tuple[int, int]) -> bool:
-        # O_NONBLOCK keeps an open of a FIFO put at the path from blocking, as in read; with no reader it fails ENXIO.
+        # O_NONBLOCK keeps an open of a FIFO (a named pipe) at the path from blocking, as in read. With no reader the
+        # open fails with ENXIO.
         try:
             fd = _open(path, os.O_WRONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)
         except OSError as error:
@@ -121,9 +122,9 @@ class OsFiles:
         if fd is None:
             return False
         try:
-            # O_NOFOLLOW refuses a symlink, not a hard link or another file renamed over the name, and a write through
-            # either lands in a file that is not the record. Nothing links a holder record, so a second name also gives
-            # away a file that only inherited the removed record's inode number.
+            # O_NOFOLLOW refuses a symlink but not a hard link (a second name for the same file) or another file renamed
+            # over the name, and a write through either lands in a file that is not the record. The protocol does not
+            # link holder records, so a second name marks a file that inherited a removed record's inode number.
             opened = os.fstat(fd)
             if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != identity or opened.st_nlink != 1:
                 return False
@@ -163,7 +164,7 @@ class OsFiles:
             with _relative(str(directory), depth) as (name, dir_fd):
                 with suppress(FileExistsError):
                     os.mkdir(name, 0o700, dir_fd=dir_fd)
-                # mkdir has no O_NOFOLLOW, so check what the name resolves to before anything is created inside it.
+                # mkdir has no O_NOFOLLOW, so check what the name resolves to before the lock creates anything in it.
                 found = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
                 parent = directory.parent.stat() if dir_fd is None else os.fstat(dir_fd)
             if (
@@ -188,11 +189,11 @@ def _relative(path: str, depth: int = 2) -> Generator[tuple[str, int | None]]:
 
 @contextmanager
 def _directory(path: str, depth: int = 2) -> Generator[int | None]:
-    # O_NOFOLLOW guards only the last component of a path, and what prepare() checked at <root> and <root>/gen holds
-    # only until whoever can write the lock's directory renames the tree aside and puts one whose gen is a symlink in
-    # its place. So every call opens the root and then the record's directory without following a symlink, and acts
-    # inside what it opened. Nothing is kept between calls, so a log removed and started again is found by name as
-    # before. None where descriptors cannot anchor a call, and the path is then used whole.
+    # O_NOFOLLOW applies to the last path component. The check prepare() made on <root> and <root>/gen holds until a
+    # process that can write the lock's directory renames the tree aside and puts one with a symlinked gen in its place.
+    # Each call therefore opens the root and then the record's directory without following symlinks and works inside
+    # what it opened. No descriptor outlives the call, so a later call finds a log removed and started again by name,
+    # as before. None means descriptors cannot anchor a call and the call uses the whole path.
     if depth and _SUPPORTS_DIR_FD:  # pragma: needs link-dir-fd
         with _relative(path, depth - 1) as (name, parent_fd):
             try:
@@ -207,7 +208,7 @@ def _directory(path: str, depth: int = 2) -> Generator[int | None]:
         finally:
             os.close(fd)
     else:
-        # Without dir_fd, hold each of those directories open instead, so none can be renamed or replaced meanwhile.
+        # Without dir_fd, hold each of those directories open instead, so no process can rename or replace one.
         try:
             pins = _pin_directories(*[Path(path), *Path(path).parents][:depth][::-1])
         except NotADirectoryError as error:  # pragma: win32 cover

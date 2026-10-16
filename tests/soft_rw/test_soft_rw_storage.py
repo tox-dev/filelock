@@ -130,8 +130,8 @@ def test_overwrite_rewrites_the_record_it_created(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("swap", [pytest.param("link", id="hard-link"), pytest.param("rename", id="rename")])
 def test_overwrite_spares_a_file_swapped_in_for_the_record(tmp_path: Path, swap: str) -> None:
-    # Whoever can write the directory can put another of this user's files under the record's name; it opens for
-    # writing like the record would.
+    # A process that can write the directory can put another of this account's files under the record's name, and
+    # that file opens for writing like the record would.
     files = OsFiles(str(tmp_path / "x.lock"))
     identity = files.create(str(record := tmp_path / "record"), b"old")
     (private := tmp_path / "private").write_bytes(b"private")

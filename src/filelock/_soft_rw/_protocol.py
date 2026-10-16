@@ -69,7 +69,8 @@ class Files(Protocol):
         """
         Create the file exclusively with the whole record written; raise ``FileExistsError`` when it exists.
 
-        The device and inode returned identify the file to ``overwrite``, whatever its name leads to by then.
+        The returned device and inode (the kernel's identity for a file, independent of its name) let ``overwrite``
+        check that the name still leads to this file.
 
         *durable* flushes it to stable storage first, for a record that outlives the host that wrote it: a generation a
         crash left empty would wedge every other participant. A holder record dies with its writer, so it skips that.
@@ -82,7 +83,11 @@ class Files(Protocol):
         """Rename *source* over *target* atomically; ``False`` when the platform refused because *target* is in use."""
 
     def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:
-        """Rewrite the file ``create`` returned *identity* for, from offset zero; ``False`` when *path* is not it."""
+        """
+        Rewrite from offset zero the file ``create`` returned *identity* for.
+
+        ``False`` when *path* no longer leads to that file.
+        """
 
     def unlink(self, path: str) -> None:
         """Remove the file, tolerating one that is already gone."""

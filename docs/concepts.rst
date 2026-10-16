@@ -451,10 +451,10 @@ The defense differs by platform:
   ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
   directory after the check cannot redirect where claims are created, listed or removed.
 - :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` opens ``<path>.rw`` and then ``gen`` or ``holders`` without
-  following symlinks for every record operation on platforms that support ``dir_fd``, so a tree swapped in after an
-  earlier acquire cannot redirect its writes. It rewrites a holder record only when the name still leads to the file
-  it created, with no second link, and opens it without blocking, so a hard link or FIFO renamed over the record is
-  left alone.
+  following symlinks for every record operation on platforms that support ``dir_fd``. A tree swapped in after an
+  earlier acquire cannot redirect its writes. It rewrites a holder record only when the name still leads to the file it
+  created and that file has no second name, and it opens the record without blocking. It leaves alone a hard link (a
+  second name for the same file) or a FIFO (a named pipe) renamed over the record.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path and keeps SQLite on the file it
 checked, so a link planted in a shared directory cannot point the lock at another file.

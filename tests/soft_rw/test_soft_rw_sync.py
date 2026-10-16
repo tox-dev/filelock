@@ -1152,7 +1152,7 @@ def test_protocol_tree_swapped_after_an_acquire_is_refused(  # pragma: needs lin
 ) -> None:
     with lock.write_lock(timeout=2):
         pass
-    # Whoever can write the lock's directory can rename the checked tree aside and put one in its place.
+    # A process that can write the lock's directory can rename the checked tree aside and put one in its place.
     (root := Path(f"{lock_file}.rw")).rename(tmp_path / "aside")
     for name in ("gen", "holders"):
         (root / name).mkdir(parents=True)
