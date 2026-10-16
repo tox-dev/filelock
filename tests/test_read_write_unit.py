@@ -895,6 +895,39 @@ def test_acquire_respects_settings(
         assert minimum <= time.perf_counter() - started < 5
 
 
+def test_contended_acquire_beside_another_thread_times_out_on_time(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock],
+) -> None:
+    holder, contender = sync_locks
+    done: Final = threading.Event()
+    # With another thread alive the wait runs in short attempts, which together still honor the timeout.
+    other: Final = threading.Thread(target=done.wait)
+    other.start()
+    try:
+        started = time.perf_counter()
+        with holder.write_lock(), pytest.raises(Timeout):
+            contender.acquire_write(timeout=0.2)
+        # SQLite counts its busy timeout in whole milliseconds, so the last attempt can end a little early.
+        assert 0.15 <= time.perf_counter() - started < 5
+    finally:
+        done.set()
+        other.join()
+
+
+def test_unlimited_acquire_beside_another_thread_waits_for_the_holder(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock],
+) -> None:
+    holder, contender = sync_locks
+    holder.acquire_write()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        acquired: Final = executor.submit(contender.acquire_read, -1)
+        with pytest.raises(TimeoutError):
+            acquired.result(timeout=0.2)
+        holder.release()
+        acquired.result(timeout=5)
+        executor.submit(contender.release).result(timeout=5)
+
+
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 def test_acquire_default_excludes_contender(
     sync_locks: tuple[ReadWriteLock, ReadWriteLock], mode: Literal["read", "write"]

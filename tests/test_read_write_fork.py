@@ -430,6 +430,13 @@ def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None
     assert result == (0, "", "")
 
 
+@NEEDS_FORK  # pragma: needs fork
+def test_read_write_lock_fork_beside_a_waiting_acquire_returns(tmp_path: Path) -> None:
+    result = _run_fork_script(_fork_beside_waiter_script(), [str(tmp_path / "fork-waiter.db")], timeout=15)
+
+    assert result == (0, "", "")
+
+
 @pytest.mark.skipif(
     sys.implementation.name != "cpython" or not hasattr(os, "fork"),
     reason="requires CPython profile events and os.fork",
@@ -897,6 +904,47 @@ def _fork_script() -> str:
         assert os.waitstatus_to_exitcode(status) == 0
         with sqlite3.connect(lock_path) as connection:
             assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        """
+    )
+
+
+def _fork_beside_waiter_script() -> str:  # pragma: needs fork
+    return textwrap.dedent(
+        r"""
+        from __future__ import annotations
+
+        import os
+        import sys
+        import threading
+        import warnings
+
+        from filelock import ReadWriteLock
+
+        warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*fork\(\).*")
+
+        lock_path = sys.argv[1]
+        holder = ReadWriteLock(lock_path, is_singleton=False)
+        waiter = ReadWriteLock(lock_path, is_singleton=False)
+        acquired = threading.Event()
+
+        def acquire() -> None:
+            with waiter.write_lock():
+                acquired.set()
+
+        holder.acquire_write()
+        waiter_thread = threading.Thread(target=acquire, daemon=True)
+        waiter_thread.start()
+        assert not acquired.wait(0.2)
+        # Only this thread can end the waiter's wait, so a fork that waited for it would not return.
+        child_pid = os.fork()
+        if child_pid == 0:
+            os._exit(0)
+        _, status = os.waitpid(child_pid, 0)
+        holder.release()
+        assert acquired.wait(5)
+        waiter_thread.join(5)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert not waiter_thread.is_alive()
         """
     )
 

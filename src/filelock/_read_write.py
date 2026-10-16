@@ -71,6 +71,8 @@ _DatabaseIdentity: TypeAlias = tuple[int, int]
 # sqlite3_busy_timeout() accepts a C int, max 2_147_483_647 on 32-bit. Use a lower value to be safe (~23 days).
 _MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
 _UNSAFE_FORK_EXIT_STATUS: Final[int] = 70
+#: The longest a contended acquisition waits for the database inside one fork transition, in seconds.
+_MAX_TRANSITION_WAIT: Final[float] = 0.05
 # O_NONBLOCK keeps an open from blocking on a FIFO planted at the path; the regular-file check then rejects it.
 _DB_OPEN_FLAGS: Final[int] = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 # Descriptor paths reopen the validated inode; journal_mode=MEMORY avoids an on-disk journal at the synthetic path.
@@ -734,9 +736,32 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             raise sqlite3.ProgrammingError(msg)
 
     def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
+        timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
+        start_time: Final = time.monotonic()
+        remaining = timeout  # -1 waits up to SQLite's busy-timeout cap
+        while True:
+            # A fork waits for the open transitions and admits no new one meanwhile. A wait for the database inside one
+            # stalls the forking thread and, behind it, each lock call in the process. With no other thread to fork,
+            # the wait runs in one piece, which keeps SQLite's writer preference. threading does not count a
+            # thread started through _thread, so a fork from one of those still waits.
+            final = (
+                not blocking
+                or 0 <= remaining <= _MAX_TRANSITION_WAIT
+                or not hasattr(os, "register_at_fork")
+                or threading.active_count() == 1
+            )
+            try:
+                return self._attempt_acquire(mode, remaining if final else _MAX_TRANSITION_WAIT, blocking=blocking)
+            except Timeout:
+                if final:
+                    raise
+            # Only a runtime with fork handlers waits in more than one attempt.
+            if timeout != -1:  # pragma: needs register-at-fork
+                remaining = max(timeout - (time.monotonic() - start_time), 0)
+
+    def _attempt_acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
         with _fork_transition():
             self._raise_if_unusable()
-            timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
             operation_pid = _GETPID()
             thread_id = threading.get_ident()
             with self._internal_lock:
