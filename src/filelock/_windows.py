@@ -289,6 +289,25 @@ if sys.platform == "win32":  # pragma: win32 cover
             _kernel32.CloseHandle(handle)
             raise
 
+    def _open_deletable_for_reading(path: str) -> int:
+        """
+        Open *path* read-only without blocking its owner's unlink, and without following a reparse point.
+
+        ``os.open`` omits ``FILE_SHARE_DELETE``, so while any process has a file open that way, deleting it fails with
+        a sharing violation. A strict claim is read by every contender and unlinked by its owner, so under contention a
+        reader nearly always holds it open and the owner's release runs out of retries.
+        """
+        sys.audit("open", path, None, os.O_RDONLY)
+        handle, status = _nt_create(path, _GENERIC_READ | _SYNCHRONIZE, 0, _FILE_SHARE_ALL, _FILE_OPEN)
+        if status != _STATUS_SUCCESS:
+            winerror = _ntdll.RtlNtStatusToDosError(status)
+            raise OSError(None, ctypes.FormatError(winerror).strip(), path, winerror)
+        try:
+            return msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_NOINHERIT)
+        except BaseException:  # pragma: no cover  # open_osfhandle audits too; a hook raising must not leak the handle
+            _kernel32.CloseHandle(handle)
+            raise
+
     def _is_unlinked(path: str) -> bool:
         """
         Report whether *path* is gone or pending deletion, which ``os.open`` reports as the same EACCES as a denial.
@@ -363,5 +382,6 @@ else:  # pragma: win32 no cover
 __all__ = [
     "WindowsFileLock",
     "_is_unlinked",
+    "_open_deletable_for_reading",
     "_open_non_reparse_fd",
 ]

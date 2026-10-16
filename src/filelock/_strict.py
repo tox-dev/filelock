@@ -37,7 +37,7 @@ from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import foreign_directory_owner, write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._windows import _is_unlinked
+    from filelock._windows import _is_unlinked, _open_deletable_for_reading
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -1062,19 +1062,25 @@ def _lstat_relative(directory_ref: tuple[str, int | None], name: str) -> os.stat
 
 
 def _read_record(directory_ref: tuple[str, int | None], name: str, limit: int) -> bytes:
-    fd, record = _open_record(directory_ref, name, limit)
+    fd, record = _open_record(directory_ref, name, limit, deletable=True)
     os.close(fd)
     return record
 
 
-def _open_record(directory_ref: tuple[str, int | None], name: str, limit: int) -> tuple[int, bytes]:
+def _open_record(
+    directory_ref: tuple[str, int | None], name: str, limit: int, *, deletable: bool = False
+) -> tuple[int, bytes]:
     path = Path(directory_ref[0], name)
     path_stat = _lstat_relative(directory_ref, name)
     if not stat.S_ISREG(path_stat.st_mode):
         msg = f"{path} is not a regular file"
         raise OSError(msg)
-    flags = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    fd = _open_relative(directory_ref, name, flags, 0)
+    if deletable and sys.platform == "win32":  # pragma: win32 cover
+        # A claim's owner must be able to unlink it while contenders read it; the sentinel is never unlinked.
+        fd = _open_deletable_for_reading(str(path))
+    else:
+        flags = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = _open_relative(directory_ref, name, flags, 0)
     try:
         record = _read_opened_record(fd, path, path_stat, limit)
     except BaseException as read_error:  # preserve read and descriptor cleanup errors
