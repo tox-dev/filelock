@@ -47,9 +47,11 @@ def _sqlite(path: Path, *, is_singleton: bool) -> tuple[ReadWriteLock, AsyncRead
 
 
 def _soft(path: Path, *, is_singleton: bool) -> tuple[SoftReadWriteLock, AsyncSoftReadWriteLock]:
-    options: Final = {"heartbeat_interval": 0.1, "stale_threshold": 0.5, "poll_interval": 0.02}
-    return SoftReadWriteLock(path / "lock", is_singleton=is_singleton, **options), AsyncSoftReadWriteLock(
-        path / "lock", **options
+    return (
+        SoftReadWriteLock(
+            path / "lock", is_singleton=is_singleton, heartbeat_interval=0.1, stale_threshold=0.5, poll_interval=0.02
+        ),
+        AsyncSoftReadWriteLock(path / "lock", heartbeat_interval=0.1, stale_threshold=0.5, poll_interval=0.02),
     )
 
 
