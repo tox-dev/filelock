@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "pathlib", "secrets", "typing"]
+__lazy_modules__ = ["pathlib", "secrets"]
 
 import os
 import secrets
 import stat
 import sys
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from errno import EACCES, EIO, EISDIR
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 
 def write_all(fd: int, data: bytes) -> None:
@@ -83,23 +86,62 @@ def ensure_directory_exists(filename: Path | str) -> None:
     Path(filename).parent.mkdir(parents=True, exist_ok=True)
 
 
+@contextmanager
+def pin_inode(lock_file: str) -> Generator[int | None]:
+    """
+    Keep the node at *lock_file* allocated for the length of the block and yield its inode number.
+
+    An inode number names a file only while something keeps the inode allocated: ext4 hands a freed number to the next
+    file created, so once a stale marker is unlinked the next holder's marker can carry the number a contender just
+    read. A caller that reads the marker inside the block, gives up unless it read the yielded inode, and calls
+    :func:`break_lock_file` before leaving can rely on the number.
+
+    :param lock_file: path to the lock file about to be read and perhaps broken.
+
+    :returns: the pinned inode number, or ``None`` where nothing can be pinned: Windows cannot rename a file this
+        process holds open, and without ``O_PATH`` a symlink or a socket cannot be opened.
+
+    :raises FileNotFoundError: if the path is gone.
+
+    """
+    if sys.platform == "win32":  # pragma: win32 cover
+        yield None
+    else:  # pragma: win32 no cover
+        # O_PATH pins any node, a symlink or socket included, without read permission and without the filesystem seeing
+        # an open; elsewhere a nonblocking read-only open pins what it can.
+        flags: Final = getattr(os, "O_PATH", os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(lock_file, flags)
+        except FileNotFoundError:
+            raise
+        except OSError:
+            yield None
+            return
+        try:
+            yield os.fstat(fd).st_ino
+        finally:
+            os.close(fd)
+
+
 def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> None:
     """
     Remove the lock file a caller found stale with modification time *mtime_before* and inode *ino_before*.
 
-    Right before renaming we ``lstat`` the lock again and leave it alone if a peer recreated it since the caller judged
-    it stale, as Mercurial re-reads a lock under its break lock. We rename before unlinking so that, of several
-    processes racing to break the same lock, one takes the file and the rest get ``OSError``. A newer modification time
-    or another inode on the renamed file means a peer recreated the lock between that ``lstat`` and the rename, so we
-    hard-link it back and drop the break name. ``link`` never replaces a name, so a marker a third process created after
-    our rename wins and the live one stays under the break name. In the two syscalls between rename and link a third
-    process can acquire beside the live holder, a soft lock by creating its marker or a StrictSoftFileLock by
-    publishing its sentinel at the empty path. Without ``os.link``, on a filesystem that refuses hard links, or where
-    ``os.link`` cannot be told not to follow a symlink, the live marker stays under the break name. We compare inodes
-    as well as modification times because NFS and FAT store coarse modification times, and a peer that recreates the
-    lock within that granularity leaves the old mtime on it. We call ``lstat`` to avoid following a symlink a peer
-    swaps in after our stale check, put back only a regular file, and link without following symlinks, because a
-    symlink can replace the break name between that ``lstat`` and the link.
+    The caller keeps the judged file open, through :func:`pin_inode` or its own descriptor, until we return, so no other
+    file can carry *ino_before* meanwhile. Right before renaming we ``lstat`` the lock again and leave it alone if a
+    peer recreated it since the caller judged it stale, as Mercurial re-reads a lock under its break lock. We rename
+    before unlinking so that, of several processes racing to break the same lock, one takes the file and the rest get
+    ``OSError``. Another modification time or another inode on the renamed file means a peer recreated the lock between
+    that ``lstat`` and the rename, so we hard-link it back and drop the break name. ``link`` never replaces a name, so a
+    marker a third process created after our rename wins and the live one stays under the break name. In the two
+    syscalls between rename and link a third process can acquire beside the live holder, a soft lock by creating its
+    marker or a StrictSoftFileLock by publishing its sentinel at the empty path. Without ``os.link``, on a filesystem
+    that refuses hard links, or where ``os.link`` cannot be told not to follow a symlink, the live marker stays under
+    the break name. We compare inodes as well as modification times because NFS and FAT store coarse modification times,
+    and a peer that recreates the lock within that granularity leaves the old mtime on it. Times are compared for
+    equality, since a file's owner can set any time, a future one included. We call ``lstat`` to avoid following a
+    symlink a peer swaps in after our stale check, put back only a regular file, and link without following symlinks,
+    because a symlink can replace the break name between that ``lstat`` and the link.
 
     We add a random token to the break name so other processes cannot guess it and two breakers in one process do not
     share ``<lock>.break.<pid>``. With a shared name, the second breaker could rename a recreated live lock onto that
@@ -113,11 +155,11 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
         user owns it in a sticky directory.
 
     """
-    if (current := os.lstat(lock_file)).st_mtime > mtime_before or current.st_ino != ino_before:
+    if (current := os.lstat(lock_file)).st_mtime != mtime_before or current.st_ino != ino_before:
         return
     break_path: Final[str] = f"{lock_file}.break.{os.getpid()}.{secrets.token_hex(16)}"
     Path(lock_file).rename(break_path)
-    if (st_after := os.lstat(break_path)).st_mtime <= mtime_before and st_after.st_ino == ino_before:
+    if (st_after := os.lstat(break_path)).st_mtime == mtime_before and st_after.st_ino == ino_before:
         Path(break_path).unlink()
     elif stat.S_ISREG(st_after.st_mode) and _HAS_LINK:  # pragma: needs hard-link
         with suppress(FileExistsError):
@@ -152,6 +194,7 @@ _SUPPORTS_UTIME_NOFOLLOW: Final[bool] = os.utime in os.supports_follow_symlinks
 __all__ = [
     "break_lock_file",
     "ensure_directory_exists",
+    "pin_inode",
     "raise_on_not_writable_file",
     "touch",
     "write_all",

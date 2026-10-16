@@ -28,7 +28,7 @@ from filelock._error import LeaseSettingsMismatch
 from filelock._identity import owner_is_stale
 from filelock._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord, parse_marker
 from filelock._soft import _read_lock_file
-from filelock._util import break_lock_file, touch
+from filelock._util import break_lock_file, pin_inode, touch
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -239,6 +239,12 @@ class SoftFileLease(MarkerSoftFileLock):
         return super()._published_record()._replace(token=self._claim.token, lease_duration=self._lease_duration)
 
     def _try_break_stale_lock(self) -> None:
+        # A break can fail for reasons a contender must ride out rather than raise on: a peer broke the marker first,
+        # or Windows refuses to rename a file whose holder still has it open. Poll again instead.
+        with suppress(OSError), pin_inode(self.lock_file) as pinned:
+            self._try_break_pinned_lock(pinned)
+
+    def _try_break_pinned_lock(self, pinned: int | None) -> None:
         if (peer := self._read_peer()) is None:
             # Not a readable protocol 2 lease record: a partial write, a foreign or legacy protocol 1 marker, or the
             # strict sentinel. The base self-heal evicts a genuinely malformed marker once it ages past the grace
@@ -246,7 +252,9 @@ class SoftFileLease(MarkerSoftFileLock):
             # every lease contender until its own timeout.
             super()._try_break_stale_lock()
             return
-        owner, mtime, ino = peer
+        owner, marker = peer
+        if pinned not in {None, marker.st_ino}:
+            return  # replaced before the read, so nothing keeps the number read from reuse
         # Only a peer that published a lease agreed to be superseded by age; an exclusive owner is reclaimed only once
         # it is provably dead, and a contract this version does not know never is. Raise the mismatch outside the read
         # so the suppression cannot swallow it.
@@ -256,22 +264,19 @@ class SoftFileLease(MarkerSoftFileLock):
                 f"{self._lease_duration!r}s; every contender for a path must agree on lease_duration"
             )
             raise LeaseSettingsMismatch(msg)
-        # A break can fail for reasons a contender must ride out rather than raise on: a peer broke the marker first,
-        # or Windows refuses to rename a file whose holder still has it open. Poll again instead.
-        with suppress(OSError):
-            # A dead or recycled owner is reclaimed at once, whether it held a lease or an exclusive marker; a live
-            # lease owner whose marker stops being refreshed is superseded on the schedule every contender agreed to.
-            if owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
-                break_lock_file(self._lock_path, mtime, ino)
-                return
-            if owner.mode == "lease" and self._marker_unchanged_for(mtime, ino) >= self._lease_duration:
-                break_lock_file(self._lock_path, mtime, ino)
+        # A dead or recycled owner is reclaimed at once, whether it held a lease or an exclusive marker; a live lease
+        # owner whose marker stops being refreshed is superseded on the schedule every contender agreed to.
+        if owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
+            break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
+            return
+        if owner.mode == "lease" and self._marker_unchanged_for(marker.st_mtime, marker.st_ino) >= self._lease_duration:
+            break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
 
-    def _read_peer(self) -> tuple[OwnerRecord, float, int] | None:
+    def _read_peer(self) -> tuple[OwnerRecord, os.stat_result] | None:
         with suppress(OSError, ValueError):
-            content, mtime, ino = _read_lock_file(self._lock_path)
+            content, marker = _read_lock_file(self.lock_file)
             if (owner := parse_marker(content)) is not None:
-                return owner, mtime, ino
+                return owner, marker
         return None
 
     def _start_heartbeat(self, claim: _LeaseClaim, fd: int, identity: tuple[int, int], token: str) -> None:

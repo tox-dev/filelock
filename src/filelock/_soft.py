@@ -23,7 +23,7 @@ from typing import Final
 from filelock._api import BaseFileLock, _raise_grouped_errors
 from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import break_lock_file, raise_on_not_writable_file, write_all
+from filelock._util import break_lock_file, ensure_directory_exists, pin_inode, raise_on_not_writable_file, write_all
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
@@ -114,8 +114,10 @@ class SoftFileLock(BaseFileLock):
                 os.fchmod(fd, self._context.mode & ~_OTHERS_WRITE)
 
     def _try_break_stale_lock(self) -> None:
-        with suppress(OSError, ValueError):
-            content, mtime, ino = _read_lock_file(self._lock_path)
+        with suppress(OSError, ValueError), pin_inode(self.lock_file) as pinned:
+            content, marker = _read_lock_file(self.lock_file)
+            if pinned not in {None, marker.st_ino}:
+                return  # another node replaced the pinned one before the read, and nothing keeps its number from reuse
             if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
                 return
             holder = _parse_lock_holder(content)
@@ -124,12 +126,12 @@ class SoftFileLock(BaseFileLock):
                 # Unparsable: wrong line count, a non-integer PID or start token, empty, oversized or not UTF-8.
                 # Self-heal only once the file is clearly not a half-written fresh lock (a peer between O_EXCL and
                 # _write_lock_info), so the brief create-then-write window is never mistaken for a stale lock.
-                if self._marker_unchanged_for(mtime, ino) >= MALFORMED_LOCK_AGE_THRESHOLD:
-                    break_lock_file(self._lock_path, mtime, ino)
+                if self._marker_unchanged_for(marker.st_mtime, marker.st_ino) >= MALFORMED_LOCK_AGE_THRESHOLD:
+                    break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
                 return
 
             if owner_is_stale(*holder):
-                break_lock_file(self._lock_path, mtime, ino)
+                break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
 
     def _marker_unchanged_for(self, mtime: float, ino: int) -> float:
         # The mtime is the writer's or file server's clock, so against time.time() a contender whose clock runs ahead
@@ -334,14 +336,14 @@ def _file_identity(st: os.stat_result) -> tuple[int, int]:
     return st.st_dev, st.st_ino
 
 
-def _read_lock_file(path: str) -> tuple[str | None, float, int]:
+def _read_lock_file(path: str) -> tuple[str | None, os.stat_result]:
     # A legitimate lock file is always a regular file. Classify the path with lstat first, so any other node (symlink,
     # FIFO, socket, device) is reported as a malformed lock the caller can evict, without an os.open that would follow
-    # a symlink, stall on a FIFO, or fail on a socket and leave acquisition wedged. The mtime and inode still flow back
+    # a symlink, stall on a FIFO, or fail on a socket and leave acquisition wedged. The stat result still flows back
     # for the identity-checked stale break. lstat, not stat, so a hostile symlink is never followed onto its target.
     st = os.lstat(path)
     if not stat.S_ISREG(st.st_mode):  # pragma: needs fifo
-        return None, st.st_mtime, st.st_ino
+        return None, st
     # Re-check on the opened handle: O_NOFOLLOW refuses a symlink swapped in after the lstat, O_NONBLOCK stops a FIFO
     # swapped in from stalling the open, and the fstat catches any other non-regular replacement race before we read.
     # The capped read stops a huge regular file (e.g. one filled from /dev/zero) from exhausting memory.
@@ -349,14 +351,14 @@ def _read_lock_file(path: str) -> tuple[str | None, float, int]:
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):  # pragma: no cover  # only a non-regular node swapped in after the lstat
-            return None, st.st_mtime, st.st_ino
+            return None, st
         data = os.read(fd, _MAX_LOCK_FILE_SIZE + 1)
     finally:
         os.close(fd)
     if len(data) <= _MAX_LOCK_FILE_SIZE:
         with suppress(UnicodeDecodeError):
-            return data.decode("utf-8"), st.st_mtime, st.st_ino
-    return None, st.st_mtime, st.st_ino
+            return data.decode("utf-8"), st
+    return None, st
 
 
 def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | None:

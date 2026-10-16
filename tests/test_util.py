@@ -5,16 +5,17 @@ import runpy
 import sys
 import time
 from contextlib import suppress
-from errno import EACCES, EIO, ENOENT, EPERM
+from errno import EACCES, EIO, ELOOP, ENOENT, EPERM, ESRCH
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import SoftFileLock, Timeout
+from filelock import MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name
 from tests.capability_marks import NEEDS_FILE_PERMISSIONS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.inode_reuse_helpers import reuse_inode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -28,6 +29,7 @@ _SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 # Linux and macOS cap PIDs below 2**22 + 1, and Windows answers OpenProcess for it with an invalid-parameter error, so
 # the marker names a holder every platform reads as dead.
 _DEAD_HOLDER: Final[str] = f"{2**22 + 1}\n{host_name()}\n"
+_DEAD_OWNER: Final[str] = f"filelock/2\npid={2**22 + 1}\nhost={host_name()}\nmode=exclusive\n"
 
 
 @pytest.fixture
@@ -180,6 +182,116 @@ def test_break_lock_file_never_links_a_symlink_swapped_in_after_the_recheck(  # 
     mocker.stopall()
 
     assert target.stat().st_nlink == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the liveness probe of a Windows PID does not call os.kill")
+@pytest.mark.parametrize(
+    ("lock_type", "record"),
+    [
+        pytest.param(SoftFileLock, _DEAD_HOLDER, id="soft"),
+        pytest.param(MarkerSoftFileLock, _DEAD_OWNER, id="marker"),
+        pytest.param(SoftFileLease, _DEAD_OWNER, id="lease"),
+    ],
+)
+def test_stale_break_spares_a_successor_on_the_freed_inode_number(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    stale: Final = lock.lstat()
+
+    def owner_gone_and_successor_acquired(pid: int, signal: int) -> None:
+        # Between the stale read and the break the marker goes and the next holder's marker takes the freed inode
+        # number, created in the same timestamp tick.
+        lock.unlink()
+        lock.write_text("live", encoding="utf-8")
+        os.utime(lock, ns=(stale.st_atime_ns, stale.st_mtime_ns))
+        reuse_inode(mocker, lock, stale)
+        raise ProcessLookupError(ESRCH, f"no process {pid} for signal {signal}")
+
+    mocker.patch("filelock._identity.os.kill", side_effect=owner_gone_and_successor_acquired)
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+    mocker.stopall()
+
+    assert lock.read_text(encoding="utf-8") == "live"
+
+
+_STALE_BREAKERS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
+    ("lock_type", "record"),
+    [
+        pytest.param(SoftFileLock, _DEAD_HOLDER, id="soft"),
+        pytest.param(MarkerSoftFileLock, _DEAD_OWNER, id="marker"),
+        pytest.param(SoftFileLease, _DEAD_OWNER, id="lease"),
+    ],
+)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot rename a file held open, so it pins nothing")
+@_STALE_BREAKERS
+def test_stale_break_skips_a_marker_swapped_in_after_the_pin(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    fstat: Final = os.fstat
+    swapped: list[bool] = []
+
+    def pin_then_peer_swaps_the_marker(fd: int) -> os.stat_result:
+        found: Final = fstat(fd)
+        if not swapped:
+            swapped.append(True)
+            (replacement := lock.with_name("replacement")).write_text(record, encoding="utf-8")
+            replacement.replace(lock)
+        return found
+
+    mocker.patch("os.fstat", side_effect=pin_then_peer_swaps_the_marker)
+    rename: Final = mocker.spy(Path, "rename")
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+    mocker.stopall()
+
+    # Nothing keeps the swapped-in node's inode allocated, so its number proves nothing by the time of a break.
+    assert (lock.read_text(encoding="utf-8"), rename.call_count) == (record, 0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot rename a file held open, so it pins nothing")
+@_STALE_BREAKERS
+def test_stale_break_reclaims_a_marker_it_cannot_pin(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock], record: str
+) -> None:
+    # Without O_PATH a symlink or a socket cannot be opened, and the check falls back to the number it read.
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    open_: Final = os.open
+    pinned: list[bool] = []
+
+    def pin_refused(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        # The pin is the first open of the existing marker; the read after it opens the file for real.
+        if os.fspath(path) == os.fspath(lock) and not flags & os.O_CREAT and not pinned:
+            pinned.append(True)
+            raise OSError(ELOOP, "Too many levels of symbolic links", os.fspath(path))
+        return open_(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("os.open", side_effect=pin_refused)
+    with lock_type(lock, timeout=1) as held:
+        assert held.is_locked
+
+
+@_STALE_BREAKERS
+def test_stale_break_lets_acquire_retry_after_the_marker_vanishes_before_the_pin(
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    open_: Final = os.open
+    released: list[bool] = []
+
+    def holder_releases_then_open(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if os.fspath(path) == os.fspath(lock) and not flags & os.O_CREAT and not released:
+            released.append(True)
+            lock.unlink()
+        return open_(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("os.open", side_effect=holder_releases_then_open)
+    with lock_type(lock, timeout=1) as held:
+        assert held.is_locked
 
 
 def test_break_lock_file_lets_acquire_retry_after_the_marker_vanishes(stale_lock: Path, mocker: MockerFixture) -> None:

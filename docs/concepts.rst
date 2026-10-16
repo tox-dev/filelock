@@ -697,8 +697,10 @@ modification time again and leaves it alone if they moved since the stale check,
 its break lock before removing it. It then renames the marker to a private ``<lock>.break.*`` name, so only one of
 several breakers takes it, and checks the renamed file's inode and modification time once more. A mismatch means a peer
 recreated the marker between that last read and the rename, so the contender hard-links that live marker back to the
-lock path, without following a symlink found under the break name, and drops the break name. A third process that takes
-the empty path in the two syscalls between the rename
+lock path, without following a symlink found under the break name, and drops the break name. Outside Windows the
+contender holds the marker open from before it reads the record until the break ends: ext4 gives a freed inode number to
+the next file created, so a successor's marker could otherwise carry the number of the marker judged stale. A third
+process that takes the empty path in the two syscalls between the rename
 and the link keeps it, whether a soft lock creating its marker or a :class:`StrictSoftFileLock
 <filelock.StrictSoftFileLock>` publishing its sentinel, and the live marker stays under the break name. Both then hold
 the lock. Mercurial

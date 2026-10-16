@@ -10,7 +10,7 @@ from typing import Final, Literal, NamedTuple
 
 from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
 from filelock._soft import SoftFileLock, _read_lock_file, parse_decimal
-from filelock._util import break_lock_file, write_all
+from filelock._util import break_lock_file, pin_inode, write_all
 
 #: Protocol 1 is the legacy ``<pid>\n<hostname>\n[<start_token>\n]`` marker that :class:`SoftFileLock` still writes.
 #: Protocol 2 carries the owner mode and the lease claim. A protocol 1 reader treats a protocol 2 marker as malformed
@@ -74,13 +74,15 @@ class MarkerSoftFileLock(SoftFileLock):
         self.break_lock()
 
     def _try_break_stale_lock(self) -> None:
-        with suppress(OSError, ValueError):
-            snapshot: Final[tuple[str | None, float, int]] = _read_lock_file(self._lock_path)
+        with suppress(OSError, ValueError), pin_inode(self.lock_file) as pinned:
+            content, marker = _read_lock_file(self.lock_file)
             owner: Final[OwnerRecord | None]
-            if (owner := parse_marker(snapshot[0])) is None:
+            if pinned not in {None, marker.st_ino}:
+                return  # replaced before the read, so nothing keeps the number read from reuse
+            if (owner := parse_marker(content)) is None:
                 super()._try_break_stale_lock()
             elif owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
-                break_lock_file(self._lock_path, *snapshot[1:])
+                break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
 
     @classmethod
     def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
