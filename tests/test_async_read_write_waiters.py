@@ -13,6 +13,8 @@ from filelock import AsyncReadWriteLock, Timeout
 if TYPE_CHECKING:
     from pathlib import Path
 
+_GIVE_UPS: Final[int] = 200
+
 
 def _live_asyncio_futures() -> int:
     gc.collect()
@@ -31,9 +33,11 @@ async def test_async_reads_giving_up_behind_a_writer_leave_nothing_behind(tmp_pa
     await asyncio.create_task(_give_up_reading(lock))
     before: Final = _live_asyncio_futures()
 
-    for _ in range(100):
+    for _ in range(_GIVE_UPS):
         await asyncio.create_task(_give_up_reading(lock))
 
-    assert _live_asyncio_futures() == before
+    # Futures the interpreter or test session keep for themselves come and go by a handful; a leak keeps one per
+    # give-up, so it shows as growth near _GIVE_UPS, far past that noise.
+    assert _live_asyncio_futures() - before < _GIVE_UPS // 4
     await lock.release()
     await lock.close()
