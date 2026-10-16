@@ -1,4 +1,4 @@
-Cancelling an :class:`~filelock.AsyncReadWriteLock` or :class:`~filelock.AsyncSoftReadWriteLock` acquire that waits for
+Canceling an :class:`~filelock.AsyncReadWriteLock` or :class:`~filelock.AsyncSoftReadWriteLock` acquire that waits for
 another process now stops the wait and reports the cancellation, instead of waiting until that process releases or
 raising :class:`~filelock.Timeout`. A ``thread_local=True`` :class:`~filelock.AsyncFileLock` shared by threads with their
 own event loops no longer deadlocks when one thread waits for the lock while another holds it.
