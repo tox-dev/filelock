@@ -40,6 +40,7 @@ from filelock._api import (
     _ExtraValue,
     _fork_transition,
     _grouped_errors,
+    _is_system_call_failure,
     _raise_body_and_release,
     _raise_chained_errors,
     _raise_cleanup_errors,
@@ -527,12 +528,36 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             await self._release_serialized(force=force)
 
     async def _release_serialized(self, *, force: bool) -> None:
+        counter_before: Final = self._context.lock_counter
         if not self.is_locked:
             return
         if not force and self._context.lock_counter > 1:
             self._context.lock_counter -= 1
             return
 
+        try:
+            await self._release_through_backend()
+        except BaseException as release_error:
+            if self._release_interrupted_before_commit(counter_before, release_error):
+                with contextlib.suppress(Exception):
+                    self._release_with_fork_tracking()
+                self._commit_release_if_released()
+            raise
+
+    def _release_interrupted_before_commit(self, counter_before: int, release_error: BaseException) -> bool:
+        # Same rule as the sync release: a handler that raised before anything committed leaves the counter as it was,
+        # and only then does a second attempt release the hold. A worker thread never runs a handler, so a lock that
+        # runs its backend in the executor has nothing to retry.
+        return (
+            counter_before == self._context.lock_counter
+            and self.is_locked
+            and not self.run_in_executor
+            and not iscoroutinefunction(self._release)
+            and not isinstance(release_error, asyncio.CancelledError)
+            and not _is_system_call_failure(release_error)
+        )
+
+    async def _release_through_backend(self) -> None:
         lock_id, lock_filename = id(self), self.lock_file
         _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
         release_future = self._start_tracked_release()

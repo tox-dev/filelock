@@ -1264,7 +1264,23 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             stays with that thread. Dropping the last reference to the lock releases every thread's hold.
 
         """
-        self._release_current(force=force)
+        counter_before: int | None = None
+        try:
+            counter_before = self._context.lock_counter
+            self._release_current(force=force)
+        except BaseException as release_error:
+            # A handler that raised after release() began and before the backend changed anything leaves the counter as
+            # it was; only then does a second attempt release the hold the caller gave up. A failed system call keeps it
+            # for an explicit retry, and a changed counter means a nested level or the backend's own retry already ran.
+            if (
+                counter_before is not None
+                and counter_before == self._context.lock_counter
+                and self._context.lock_file_fd is not None
+                and not _is_system_call_failure(release_error)
+            ):
+                with contextlib.suppress(Exception):
+                    self._release_current(force=force)
+            raise
         if force:
             self._release_thread_holds(exited_only=True)
 

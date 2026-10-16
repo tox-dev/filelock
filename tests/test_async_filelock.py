@@ -4,6 +4,7 @@ import asyncio
 import gc
 import logging
 import os
+import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter exit finalizes a held lock
 import sys
 import threading
@@ -31,7 +32,12 @@ from filelock import (
     FileLock,
     Timeout,
 )
-from tests.capability_marks import NEEDS_FCNTL, NEEDS_PARENT_SYMLINK_COLLAPSE, NEEDS_PROMPT_FINALIZATION
+from tests.capability_marks import (
+    NEEDS_FCNTL,
+    NEEDS_PARENT_SYMLINK_COLLAPSE,
+    NEEDS_PROMPT_FINALIZATION,
+    NEEDS_PROMPT_SIGNAL_DELIVERY,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -194,6 +200,52 @@ async def test_non_executor(lock_type: type[BaseAsyncFileLock], thread_local: bo
         assert lock.is_locked
         assert lock is locked
     assert not lock.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_non_executor_release_interrupted_before_the_backend_completes(
+    lock_type: type[BaseAsyncFileLock], tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock = lock_type(str(tmp_path / "a"), run_in_executor=False)
+    await lock.acquire()
+    mocker.patch("filelock.asyncio._LOGGER.debug", autospec=True, side_effect=[KeyboardInterrupt, None, None])
+
+    with pytest.raises(KeyboardInterrupt):
+        await lock.release()
+    mocker.stopall()
+
+    assert not lock.is_locked
+    async with lock_type(str(tmp_path / "a"), blocking=False) as peer:
+        assert peer.is_locked
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.asyncio
+async def test_non_executor_release_interrupted_by_a_signal_before_the_backend_completes(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock = AsyncFileLock(str(tmp_path / "a"), run_in_executor=False)
+    await lock.acquire()
+    pending = [signal.SIGINT]
+
+    def signal_once(*_args: object) -> None:
+        signals = pending.copy()
+        pending.clear()
+        list(map(signal.raise_signal, signals))
+
+    mocker.patch("filelock.asyncio._LOGGER.debug", autospec=True, side_effect=signal_once)
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            await lock.release()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    mocker.stopall()
+
+    assert not lock.is_locked
+    async with AsyncFileLock(str(tmp_path / "a"), blocking=False) as peer:
+        assert peer.is_locked
 
 
 @pytest.mark.asyncio

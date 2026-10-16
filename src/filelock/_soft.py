@@ -194,8 +194,11 @@ class SoftFileLock(BaseFileLock):
             Path(self.lock_file).unlink()
 
     def _release_current(self, *, force: bool) -> None:
-        super()._release_current(force=force)
-        self._finish_marker_cleanup()
+        try:
+            super()._release_current(force=force)
+        finally:
+            # A release a handler cut short after the descriptor closed still owes the unlink on Windows.
+            self._finish_marker_cleanup()
 
     def _release(self) -> None:
         fd = self._context.lock_file_fd

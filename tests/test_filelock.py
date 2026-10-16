@@ -55,6 +55,7 @@ from tests.capability_marks import (
     NEEDS_FILE_PERMISSIONS,
     NEEDS_PARENT_SYMLINK_COLLAPSE,
     NEEDS_PROMPT_FINALIZATION,
+    NEEDS_PROMPT_SIGNAL_DELIVERY,
     NEEDS_SYMLINK,
 )
 
@@ -1556,6 +1557,34 @@ def test_interrupted_at_any_call_reports_whether_it_holds(
     assert target > 1
 
 
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        FileLock,
+        SoftFileLock,
+        MarkerSoftFileLock,
+        SoftFileLease,
+        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links),
+    ],
+)
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_release_interrupted_below_release_completes(
+    tmp_path: Path, lock_type: type[BaseFileLock], thread_local: bool
+) -> None:
+    lock_path: Final = str(tmp_path / "a")
+    # Target 1 is the entry of release() itself, which no Python code can cover.
+    for target in count(2):  # pragma: no branch  # count() never runs out; the release that finishes ends the loop
+        lock = lock_type(lock_path, thread_local=thread_local)
+        lock.acquire()
+        if not _interrupted_at_call(lock, target, lock.release):
+            lock.release()
+            break
+        assert not lock.is_locked
+        with lock_type(lock_path, blocking=False) as peer:
+            assert peer.is_locked
+    assert target > 2
+
+
 def test_acquire_interrupted_after_recording_the_hold_releases_it(tmp_path: Path) -> None:
     # The thread-hold bookkeeping after _mark_descriptor_owned stores the descriptor calls into threading, where a
     # signal can land too.
@@ -1622,13 +1651,7 @@ def _interrupted_at_call(
     return False
 
 
-_NEEDS_PROMPT_SIGNAL_DELIVERY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["prompt-signal-delivery"],
-    reason="this runtime runs a signal handler after raise_signal returns, so the signal escapes the acquire",
-)
-
-
-@_NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
 def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Path, mocker: MockerFixture) -> None:
     lock: Final = SoftFileLock(str(tmp_path / "a"))
 
@@ -1650,7 +1673,35 @@ def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Pa
     assert not (tmp_path / "a").exists()
 
 
-@_NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_release_interrupted_by_a_signal_before_the_backend_completes(
+    tmp_path: Path, mocker: MockerFixture, thread_local: bool
+) -> None:
+    lock: Final = FileLock(str(tmp_path / "a"), thread_local=thread_local)
+    lock.acquire()
+    pending: Final = [signal.SIGINT]
+
+    def signal_once(*_args: object) -> None:
+        signals = pending.copy()
+        pending.clear()
+        list(map(signal.raise_signal, signals))
+
+    mocker.patch("filelock._api._LOGGER.debug", autospec=True, side_effect=signal_once)
+    previous: Final = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            lock.release()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    mocker.stopall()
+
+    assert not lock.is_locked
+    with FileLock(str(tmp_path / "a"), blocking=False) as peer:
+        assert peer.is_locked
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
 @pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
 @pytest.mark.parametrize(
     "interrupted",
