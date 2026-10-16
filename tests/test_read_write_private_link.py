@@ -251,6 +251,20 @@ def test_private_link_sweep_keeps_a_directory_named_like_a_dead_holder(database:
     assert [(named / name).read_text() for name in (entry, "notes.txt")] == ["keep", "keep"]
 
 
+@pytest.mark.parametrize(
+    "shape", [pytest.param("empty", id="empty"), pytest.param("empty-subdirectory", id="empty-subdirectory")]
+)
+def test_private_link_sweep_removes_a_directory_left_without_a_link(database: Path, shape: str) -> None:
+    left: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    left.mkdir(mode=0o700)
+    if shape == "empty-subdirectory":
+        (left / "0123456789abcdef").mkdir(mode=0o700)
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        pass
+
+    assert _link_directories(database) == []
+
+
 def test_private_link_sweep_never_parses_a_directory_of_another_account(database: Path, mocker: MockerFixture) -> None:
     database.touch()
     planted: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
