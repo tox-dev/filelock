@@ -427,7 +427,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. A ``.db`` extension is a convention rather than a requirement; the filesystem must be one the active
     SQLite VFS supports. On macOS, the database directory must be writable and support hard links. Give the lock a file
-    of its own: a WAL-mode database raises :class:`ValueError`.
+    of its own: a WAL-mode database, or one with a schema larger than a lock needs, raises :class:`ValueError`.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
@@ -824,27 +824,28 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         with _sqlite_transition():
             operation_pid, start_time = operation
             connection = cast("_ForkSafeConnection", self._con)
-            waited = time.perf_counter() - start_time
-            timeout_ms = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
-            self._raise_if_process_changed(operation_pid)
-            connection.executescript(f"PRAGMA busy_timeout={timeout_ms}; PRAGMA journal_mode=MEMORY;").close()
-            # Use legacy journal mode (not WAL) because WAL does not block readers while a concurrent EXCLUSIVE
-            # write transaction is active, which makes read-write locking impossible without modifying table data.
-            # MEMORY is safe here since no writes happen, so a crash cannot corrupt the DB.
-            # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
-            #
-            # Recompute the remaining timeout after the blocking journal_mode pragma.
-            waited = time.perf_counter() - start_time
-            recomputed = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
-            self._raise_if_process_changed(operation_pid)
-            statements = f"PRAGMA busy_timeout={recomputed}; " if recomputed != timeout_ms else ""
-            statements += "BEGIN EXCLUSIVE TRANSACTION;" if mode == "write" else "BEGIN TRANSACTION;"
-            if mode == "read":
-                # SQLite takes the SHARED lock only when a statement reads; BEGIN alone stays deferred.
-                # https://www.sqlite.org/lockingv3.html#transaction_control
-                # sqlite_schema is an alias added in SQLite 3.33.0; sqlite_master works on every version.
-                statements += " SELECT name FROM sqlite_master LIMIT 1;"
-            connection.executescript(statements).close()
+            with _bounded_schema(connection, self.lock_file):
+                waited = time.perf_counter() - start_time
+                timeout_ms = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
+                self._raise_if_process_changed(operation_pid)
+                connection.executescript(f"PRAGMA busy_timeout={timeout_ms}; PRAGMA journal_mode=MEMORY;").close()
+                # Use legacy journal mode (not WAL) because WAL does not block readers while a concurrent EXCLUSIVE
+                # write transaction is active, which makes read-write locking impossible without modifying table data.
+                # MEMORY is safe here since no writes happen, so a crash cannot corrupt the DB.
+                # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
+                #
+                # Recompute the remaining timeout after the blocking journal_mode pragma.
+                waited = time.perf_counter() - start_time
+                recomputed = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
+                self._raise_if_process_changed(operation_pid)
+                statements = f"PRAGMA busy_timeout={recomputed}; " if recomputed != timeout_ms else ""
+                statements += "BEGIN EXCLUSIVE TRANSACTION;" if mode == "write" else "BEGIN TRANSACTION;"
+                if mode == "read":
+                    # SQLite takes the SHARED lock only when a statement reads; BEGIN alone stays deferred.
+                    # https://www.sqlite.org/lockingv3.html#transaction_control
+                    # sqlite_schema is an alias added in SQLite 3.33.0; sqlite_master works on every version.
+                    statements += " SELECT name FROM sqlite_master LIMIT 1;"
+                connection.executescript(statements).close()
             self._raise_if_database_replaced(connection)
 
     def _raise_if_database_replaced(self, connection: _ForkSafeConnection) -> None:
@@ -1113,6 +1114,29 @@ def _raise_if_wal(fd: int, database: str) -> None:
     if header.startswith(_SQLITE_MAGIC) and _WAL_FORMAT_VERSION in header[_FORMAT_VERSIONS]:
         msg = f"refusing a WAL-mode lock database: {database!r}; give ReadWriteLock a file of its own"
         raise ValueError(msg)
+
+
+@contextmanager
+def _bounded_schema(connection: sqlite3.Connection, database: str) -> Generator[None]:
+    # A lock database holds no schema, yet SQLite loads whatever schema the file has in one statement no timeout bounds.
+    # Waiting for a lock runs no virtual machine steps, so a budget of steps caps only that load.
+    calls: Final = count()
+    max_calls: Final = 10
+    connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 4096)
+    connection.set_progress_handler(lambda: next(calls) >= max_calls, 1000)
+    try:
+        yield
+    except sqlite3.DatabaseError as error:
+        # An interrupted schema load reports a malformed schema rather than the interrupt.
+        if isinstance(error, sqlite3.DataError) or next(calls) > max_calls:
+            msg = (
+                f"refusing a lock database whose schema is too large to load: {database!r}; "
+                "give ReadWriteLock a file of its own"
+            )
+            raise ValueError(msg) from error
+        raise
+    finally:
+        connection.set_progress_handler(None, 0)
 
 
 @contextmanager
