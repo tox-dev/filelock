@@ -1288,6 +1288,29 @@ def test_protocol_directory_of_another_account_is_refused(  # pragma: needs fore
     assert list(root.iterdir()) == []
 
 
+@NEEDS_FOREIGN_STICKY_TMP
+def test_live_lock_refuses_a_tree_another_account_planted_after_a_recovery(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path, mocker: MockerFixture
+) -> None:
+    lock = SoftReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
+    try:
+        with lock.write_lock(timeout=2):
+            pass
+        (root := Path(f"{lock_path_in_shared_tmp}.rw")).rename(aside := Path(f"{lock_path_in_shared_tmp}.rw.aside"))
+        try:
+            for name in ("gen", "holders"):
+                (root / name).mkdir(parents=True)
+            assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
+            mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+            with pytest.raises(RuntimeError, match="not to this process's account"):
+                lock.acquire_write(timeout=0.5)
+            assert list((root / "holders").iterdir()) == []
+        finally:
+            shutil.rmtree(aside, ignore_errors=True)
+    finally:
+        lock.close()
+
+
 def test_protocol_path_as_regular_file_is_refused(lock_file: str, lock: SoftReadWriteLock) -> None:
     Path(f"{lock_file}.rw").write_bytes(b"x")
     with pytest.raises(RuntimeError, match="not a directory or is a symlink"):

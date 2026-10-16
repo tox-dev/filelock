@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import sys
 import time
 from errno import EIO
@@ -16,6 +17,7 @@ from capabilities import CAPABILITIES
 from filelock import SoftFileLockProtocolError
 from filelock._soft_rw import _storage as storage_mod
 from filelock._soft_rw._storage import OsFiles
+from tests.capability_marks import NEEDS_FOREIGN_STICKY_TMP
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -207,3 +209,31 @@ def test_prepare_creates_missing_parents(tmp_path: Path) -> None:
     root = str(tmp_path / "nested" / "deeper" / "x.lock.rw")
     OsFiles(str(tmp_path / "nested" / "deeper" / "x.lock")).prepare(root)
     assert Path(root, "gen").is_dir()
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda files, path: files.create(path, b"data"), id="create"),
+        pytest.param(lambda files, path: files.read(path), id="read"),
+        pytest.param(lambda files, path: files.listdir(str(Path(path).parent)), id="listdir"),
+        pytest.param(lambda files, path: files.unlink(path), id="unlink"),
+    ],
+)
+def test_record_operations_recheck_the_owner_of_a_replaced_directory(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path, mocker: MockerFixture, call: Callable[[OsFiles, str], object]
+) -> None:
+    files = OsFiles(str(lock_path_in_shared_tmp))
+    files.prepare(root := f"{lock_path_in_shared_tmp}.rw")
+    Path(root).rename(aside := f"{root}.aside")
+    try:
+        for name in ("gen", "holders"):
+            Path(root, name).mkdir(parents=True)
+        assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
+        mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+        with pytest.raises(RuntimeError, match="not to this process's account"):
+            call(files, str(Path(root, "holders", "record")))
+        assert list(Path(root, "holders").iterdir()) == []
+    finally:
+        shutil.rmtree(aside, ignore_errors=True)

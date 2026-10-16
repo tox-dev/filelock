@@ -198,11 +198,11 @@ def test_an_epoch_a_peer_created_first_is_adopted(
     real_read = OsFiles.read
     missed = []
 
-    def miss_the_epoch_once(path: str) -> bytes | None:
+    def miss_the_epoch_once(self: OsFiles, path: str) -> bytes | None:
         if path == str(epoch) and not missed:
             missed.append(path)
             return None
-        return real_read(path)
+        return real_read(self, path)
 
     mocker.patch.object(OsFiles, "read", autospec=True, side_effect=miss_the_epoch_once)
     log = GenerationLog(files, lock_file, root)
@@ -243,7 +243,7 @@ def test_rescan_skips_a_generation_removed_after_listing(
     Path(root, "gen", "HEAD").unlink()
     real_read = OsFiles.read
     latest_path = str(Path(root, "gen", f"{2:020d}"))
-    mocker.patch.object(OsFiles, "read", side_effect=lambda path: None if path == latest_path else real_read(path))
+    mocker.patch.object(OsFiles, "read", lambda self, path: None if path == latest_path else real_read(self, path))
     fresh = GenerationLog(files, lock_file, root)
     assert fresh.latest().generation == 1
 
@@ -432,7 +432,7 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(
     assert log.commit(Snapshot(generation=1, writer=_FIRST, readers=frozenset()))
     real_listdir = OsFiles.listdir
     listings = iter([[f"{generation:020d}" for generation in (4, 5)]])
-    mocker.patch.object(OsFiles, "listdir", side_effect=lambda path: next(listings, None) or real_listdir(path))
+    mocker.patch.object(OsFiles, "listdir", lambda self, path: next(listings, None) or real_listdir(self, path))
     assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
 
 

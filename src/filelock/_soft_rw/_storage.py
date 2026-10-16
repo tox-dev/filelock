@@ -48,11 +48,11 @@ class OsFiles:
     def __init__(self, lock_file: str) -> None:
         self._lock_file = lock_file
         self._prepared = False
+        self._identities: dict[str, tuple[int, int]] = {}
 
-    @staticmethod
-    def read(path: str) -> bytes | None:
+    def read(self, path: str) -> bytes | None:
         # O_NONBLOCK keeps an open of a FIFO planted at the path from blocking; the regular-file check below rejects it.
-        if (fd := _open(path, os.O_RDONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)) is None:
+        if (fd := self._open(path, os.O_RDONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)) is None:
             return None
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -66,9 +66,8 @@ class OsFiles:
         finally:
             os.close(fd)
 
-    @classmethod
-    def create(cls, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
-        with _relative(path) as (name, dir_fd):
+    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
+        with self._relative(path) as (name, dir_fd):
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, 0o600, dir_fd=dir_fd)
         try:
             write_all(fd, data)
@@ -78,14 +77,14 @@ class OsFiles:
         except BaseException:
             os.close(fd)
             # The name is unique to this call, so removing it cannot take a record from anyone else.
-            cls.unlink(path)
+            self.unlink(path)
             raise
         os.close(fd)
         return created.st_dev, created.st_ino
 
     def link(self, source: str, target: str) -> bool:
         failure: NotImplementedError | OSError | None = None
-        with _relative(source) as (source_name, source_fd), _relative(target) as (target_name, target_fd):
+        with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
             try:
                 _link_no_follow(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
             except FileExistsError:
@@ -104,22 +103,20 @@ class OsFiles:
             raise failure
         return False
 
-    @staticmethod
-    def replace(source: str, target: str) -> bool:
+    def replace(self, source: str, target: str) -> bool:
         try:
-            with _relative(source) as (source_name, source_fd), _relative(target) as (target_name, target_fd):
+            with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
                 os.replace(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
         except PermissionError:
             # Windows refuses to rename over a file a reader holds open; callers tolerate a target one rename behind.
             return False
         return True
 
-    @staticmethod
-    def overwrite(path: str, data: bytes, identity: tuple[int, int]) -> bool:
+    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:
         # O_NONBLOCK keeps an open of a FIFO (a named pipe) at the path from blocking, as in read. With no reader the
         # open fails with ENXIO.
         try:
-            fd = _open(path, os.O_WRONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)
+            fd = self._open(path, os.O_WRONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)
         except OSError as error:
             if error.errno != ENXIO:
                 raise
@@ -138,10 +135,9 @@ class OsFiles:
             os.close(fd)
         return True
 
-    @staticmethod
-    def unlink(path: str) -> None:
+    def unlink(self, path: str) -> None:
         try:
-            with _relative(path) as (name, dir_fd):
+            with self._relative(path) as (name, dir_fd):
                 os.unlink(name, dir_fd=dir_fd)
         except OSError as error:
             # Windows refuses to remove a file another process holds open; the record then outlives its owner until
@@ -149,10 +145,9 @@ class OsFiles:
             if error.errno not in _MISSING_ERRNOS and not isinstance(error, PermissionError):
                 raise
 
-    @staticmethod
-    def listdir(path: str) -> list[str]:
+    def listdir(self, path: str) -> list[str]:
         try:
-            with _directory(path) as dir_fd, os.scandir(path if dir_fd is None else dir_fd) as entries:
+            with self._directory(path) as dir_fd, os.scandir(path if dir_fd is None else dir_fd) as entries:
                 return [entry.name for entry in entries]
         except FileNotFoundError:
             return []
@@ -160,13 +155,15 @@ class OsFiles:
     def prepare(self, root: str, *, force: bool = False) -> None:
         if self._prepared and not force:
             return
+        if force:
+            self._identities.clear()
         ensure_directory_exists(root)
         for directory, depth in (
             (Path(root), 0),
             (Path(root, _GENERATIONS_DIRECTORY), 1),
             (Path(root, _HOLDERS_DIRECTORY), 1),
         ):
-            with _relative(str(directory), depth) as (name, dir_fd):
+            with self._relative(str(directory), depth) as (name, dir_fd):
                 with suppress(FileExistsError):
                     os.mkdir(name, 0o700, dir_fd=dir_fd)
                 # mkdir has no O_NOFOLLOW, so check what the name resolves to before the lock creates anything in it.
@@ -182,73 +179,88 @@ class OsFiles:
             if owner is not None:  # pragma: needs foreign-sticky-tmp
                 msg = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
                 raise TreeReplacedError(msg)
+            self._identities[str(directory)] = found.st_dev, found.st_ino
         self._prepared = True
 
+    def _open(self, path: str, flags: int) -> int | None:
+        # Missing is the one answer a caller acts on without raising. A refused open is real on POSIX, where nothing
+        # this lock does makes its own records unreadable; on Windows it is usually another process mid-delete or
+        # holding the file without sharing, so it is retried through a short grace before it counts, and a file still
+        # refusing after that has been in delete-pending for longer than any deletion takes, so it is on its way out:
+        # missing.
+        deadline: float | None = None
+        while True:
+            if isinstance(opened := self._attempt_open(path, flags), int):
+                return opened
+            if opened.errno in _MISSING_ERRNOS:
+                return None
+            if not isinstance(opened, PermissionError) or sys.platform != "win32":
+                raise opened
+            if deadline is None:  # pragma: win32 cover
+                deadline = time.monotonic() + _WINDOWS_OPEN_GRACE
+            elif time.monotonic() >= deadline:  # pragma: win32 cover
+                return None
+            time.sleep(0.002)  # pragma: win32 cover
 
-@contextmanager
-def _relative(path: str, depth: int = 2) -> Generator[tuple[str, int | None]]:
-    directory, name = os.path.split(path)
-    with _directory(directory, depth) as dir_fd:
-        yield (path if dir_fd is None else name), dir_fd
+    def _attempt_open(self, path: str, flags: int) -> int | OSError:
+        try:
+            with self._relative(path) as (name, dir_fd):
+                return os.open(name, flags, dir_fd=dir_fd)
+        except OSError as error:
+            return error
 
+    @contextmanager
+    def _relative(self, path: str, depth: int = 2) -> Generator[tuple[str, int | None]]:
+        directory, name = os.path.split(path)
+        with self._directory(directory, depth) as dir_fd:
+            yield (path if dir_fd is None else name), dir_fd
 
-@contextmanager
-def _directory(path: str, depth: int = 2) -> Generator[int | None]:
-    # O_NOFOLLOW applies to the last path component. The check prepare() made on <root> and <root>/gen holds until a
-    # process that can write the lock's directory renames the tree aside and puts one with a symlinked gen in its place.
-    # Each call therefore opens the root and then the record's directory without following symlinks and works inside
-    # what it opened. No descriptor outlives the call, so a later call finds a log removed and started again by name,
-    # as before. None means descriptors cannot anchor a call and the call uses the whole path.
-    if depth and _SUPPORTS_DIR_FD:  # pragma: needs link-dir-fd
-        with _relative(path, depth - 1) as (name, parent_fd):
-            try:
-                fd = os.open(name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW, dir_fd=parent_fd)
-            except OSError as error:
-                if error.errno not in {ELOOP, ENOTDIR}:
+    @contextmanager
+    def _directory(self, path: str, depth: int = 2) -> Generator[int | None]:
+        # O_NOFOLLOW applies to the last path component. The check prepare() made on <root> and <root>/gen holds until a
+        # process that can write the lock's directory renames the tree aside and puts one with a symlinked gen in its
+        # place. Each call therefore opens the root and then the record's directory without following symlinks and
+        # works inside what it opened. No descriptor outlives the call, so a later call finds a log removed and started
+        # again by name, as before. None means descriptors cannot anchor a call and the call uses the whole path.
+        if depth and _SUPPORTS_DIR_FD:  # pragma: needs link-dir-fd
+            with self._relative(path, depth - 1) as (name, parent_fd):
+                try:
+                    fd = os.open(name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW, dir_fd=parent_fd)
+                except OSError as error:
+                    if error.errno not in {ELOOP, ENOTDIR}:
+                        raise
+                    msg = f"{path} is not a directory or is a symlink; refusing to use it"
+                    raise TreeReplacedError(msg) from error
+                try:
+                    self._admit(fd, path, parent_fd)
+                except BaseException:
+                    os.close(fd)
                     raise
-                msg = f"{path} is not a directory or is a symlink; refusing to use it"
+            try:
+                yield fd
+            finally:
+                os.close(fd)
+        else:
+            # Without dir_fd, hold each of those directories open instead, so no process can rename or replace one.
+            try:
+                pins = _pin_directories(*[Path(path), *Path(path).parents][:depth][::-1])
+            except NotADirectoryError as error:  # pragma: win32 cover
+                msg = f"{error.filename} is not a directory or is a symlink; refusing to use it"
                 raise TreeReplacedError(msg) from error
-        try:
-            yield fd
-        finally:
-            os.close(fd)
-    else:
-        # Without dir_fd, hold each of those directories open instead, so no process can rename or replace one.
-        try:
-            pins = _pin_directories(*[Path(path), *Path(path).parents][:depth][::-1])
-        except NotADirectoryError as error:  # pragma: win32 cover
-            msg = f"{error.filename} is not a directory or is a symlink; refusing to use it"
-            raise TreeReplacedError(msg) from error
-        with pins:
-            yield None
+            with pins:
+                yield None
 
-
-def _open(path: str, flags: int) -> int | None:
-    # Missing is the one answer a caller acts on without raising. A refused open is real on POSIX, where nothing this
-    # lock does makes its own records unreadable; on Windows it is usually another process mid-delete or holding the
-    # file without sharing, so it is retried through a short grace before it counts, and a file still refusing after
-    # that has been in delete-pending for longer than any deletion takes, so it is on its way out: missing.
-    deadline: float | None = None
-    while True:
-        if isinstance(opened := _attempt_open(path, flags), int):
-            return opened
-        if opened.errno in _MISSING_ERRNOS:
-            return None
-        if not isinstance(opened, PermissionError) or sys.platform != "win32":
-            raise opened
-        if deadline is None:  # pragma: win32 cover
-            deadline = time.monotonic() + _WINDOWS_OPEN_GRACE
-        elif time.monotonic() >= deadline:  # pragma: win32 cover
-            return None
-        time.sleep(0.002)  # pragma: win32 cover
-
-
-def _attempt_open(path: str, flags: int) -> int | OSError:
-    try:
-        with _relative(path) as (name, dir_fd):
-            return os.open(name, flags, dir_fd=dir_fd)
-    except OSError as error:
-        return error
+    def _admit(self, fd: int, path: str, parent_fd: int | None) -> None:  # pragma: needs link-dir-fd
+        # A directory other than the one prepare() checked may belong to another account: the tree can be renamed aside
+        # and recreated while this object lives, and the ownership check has to hold for what is opened now.
+        found = os.fstat(fd)
+        if (found.st_dev, found.st_ino) == self._identities.get(path):
+            return
+        parent = os.fstat(parent_fd) if parent_fd is not None else Path(path).parent.stat()
+        if (owner := foreign_directory_owner(found, parent)) is not None:  # pragma: needs foreign-sticky-tmp
+            msg = f"{path} belongs to uid {owner}, not to this process's account or the parent's owner"
+            raise TreeReplacedError(msg)
+        self._identities[path] = found.st_dev, found.st_ino
 
 
 def _identity(path: str, dir_fd: int | None) -> tuple[int, int] | None:
