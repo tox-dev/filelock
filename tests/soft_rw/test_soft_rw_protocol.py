@@ -609,6 +609,75 @@ def test_a_commit_that_lands_in_a_compacted_slot_counts_as_lost(
 
 
 @pytest.mark.requires_hard_links
+@pytest.mark.parametrize("witness", ["listing", "head"])
+def test_a_commit_beside_another_late_record_counts_as_lost(
+    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture, witness: str
+) -> None:
+    # Two committers stalled before their links to adjacent slots. The one below has put its record back into gen/3 and
+    # not yet removed it, so the predecessor check passes; either the listing or HEAD alone must still refuse gen/4.
+    log = _committed(files, lock_file, root, [None] * 3)
+    stale_head, stale_listing, real_link = head.read_bytes(), files.listdir(str(head.parent)), files.link
+
+    def peers_compact_then_both_link(source: str, target: str) -> bool:
+        _committed(OsFiles(lock_file), lock_file, root, [None] * 70)
+        Path(root, "gen", f"{3:020d}").write_bytes(Snapshot(generation=3, writer=None, readers=frozenset()).encode())
+        if witness == "listing":
+            head.write_bytes(stale_head)
+        else:
+            mocker.patch.object(OsFiles, "listdir", autospec=True, return_value=stale_listing)
+        return real_link(source, target)
+
+    mocker.patch.object(files, "link", autospec=True, side_effect=peers_compact_then_both_link)
+    assert (
+        log.commit(Snapshot(generation=4, writer=_FIRST, readers=frozenset())),
+        Path(root, "gen", f"{4:020d}").exists(),
+    ) == (False, False)
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.parametrize("generation", [pytest.param(1, id="first"), pytest.param(3, id="later")])
+def test_a_record_refused_inside_the_window_keeps_its_slot(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture, generation: int
+) -> None:
+    # Removing it would free a slot the log is not a window past, for a committer stalled before its link to take.
+    log = _committed(files, lock_file, root, [None] * (generation - 1))
+    log.latest()
+    real_link = files.link
+
+    def link_then_peers_commit(source: str, target: str) -> bool:
+        landed = real_link(source, target)
+        _committed(OsFiles(lock_file), lock_file, root, [None])
+        Path(root, "gen", f"{generation - 1:020d}").unlink(missing_ok=True)
+        return landed
+
+    mocker.patch.object(files, "link", autospec=True, side_effect=link_then_peers_commit)
+    assert (
+        log.commit(Snapshot(generation=generation, writer=_FIRST, readers=frozenset())),
+        Path(root, "gen", f"{generation:020d}").exists(),
+    ) == (False, True)
+
+
+@pytest.mark.requires_hard_links
+def test_a_record_refused_with_nothing_built_on_it_is_removed(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # The log was replaced after the epoch check: left behind, gen/6 would pass for the head of the new log.
+    log = _committed(files, lock_file, root, [None] * 5)
+    real_create = files.create
+
+    def wipe_then_create(path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
+        shutil.rmtree(root)
+        _committed(OsFiles(lock_file), lock_file, root, [_SECOND])
+        return real_create(path, data, durable=durable)
+
+    mocker.patch.object(files, "create", autospec=True, side_effect=wipe_then_create)
+    assert (
+        log.commit(Snapshot(generation=6, writer=_FIRST, readers=frozenset())),
+        Path(root, "gen", f"{6:020d}").exists(),
+    ) == (False, False)
+
+
+@pytest.mark.requires_hard_links
 def test_a_late_head_rename_never_moves_head_back(
     lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture
 ) -> None:

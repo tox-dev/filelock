@@ -311,15 +311,18 @@ class GenerationLog:
         return epoch
 
     def _list(self) -> list[int]:
+        listed = self._listed()
+        for generation in listed[:-_RETAINED_GENERATIONS]:
+            self._files.unlink(self._path(generation))
+        return listed[-_RETAINED_GENERATIONS:]
+
+    def _listed(self) -> list[int]:
         # isdigit() alone admits Unicode digits: superscripts int() rejects, fullwidth ones it parses to another number.
-        listed = sorted(
+        return sorted(
             int(name)
             for name in self._files.listdir(str(self._directory))
             if len(name) == _GENERATION_DIGITS and name.isascii() and name.isdigit()
         )
-        for generation in listed[:-_RETAINED_GENERATIONS]:
-            self._files.unlink(self._path(generation))
-        return listed[-_RETAINED_GENERATIONS:]
 
     def _probe(self, start: Snapshot, patience: int = _RETAINED_GENERATIONS) -> Snapshot:
         latest = start
@@ -352,8 +355,12 @@ class GenerationLog:
         changed since the snapshot was read is a different log, so the commit is refused as lost and the caller
         re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the link. A slot
         compaction freed is refused the same way, before the link and again after it, since a committer can stall in
-        between. A record refused after it landed is removed: it is the oldest survivor by then, and a legitimate one
-        was about to be compacted.
+        between. After the link a surviving predecessor is not proof enough: it may be the record another stalled
+        committer just linked into its own freed slot and has yet to take back. A slot only comes free once the log is
+        a whole window past it, and the head is never removed, so a record the listing or ``HEAD`` leads by a window is
+        refused too. A record refused after it landed is removed: it is the oldest survivor by then, and a legitimate
+        one was about to be compacted. One that peers lead by less than a window stays, or its slot would come free
+        early.
         """
         if self._files.read(self._epoch_path) != self._epoch or not self._extends_the_log(successor.generation):
             return False
@@ -361,8 +368,10 @@ class GenerationLog:
             self._path(successor.generation), data := successor.encode(), self._files.link, durable=True
         ):
             return False
-        if not self._extends_the_log(successor.generation):
-            self._files.unlink(self._path(successor.generation))
+        lead = max([*self._listed(), self._head_generation() or 0]) - successor.generation
+        if lead >= _RETAINED_GENERATIONS or not self._extends_the_log(successor.generation):
+            if not 0 < lead < _RETAINED_GENERATIONS:
+                self._files.unlink(self._path(successor.generation))
             return False
         self._latest = successor
         # Readers verify the generation HEAD names, so a failed rename costs a probe, not the commit. A late one would
@@ -379,8 +388,8 @@ class GenerationLog:
         return True
 
     def _extends_the_log(self, generation: int) -> bool:
-        # Compaction removes oldest first, so a surviving predecessor proves this slot was never freed. The first
-        # generation has none; a HEAD of this epoch means the log already moved past it.
+        # Compaction removes oldest first, so a missing predecessor means this slot was freed. The first generation has
+        # none; a HEAD of this epoch means the log already moved past it.
         if generation > 1:
             return self._files.read(self._path(generation - 1)) is not None
         return self._head_record() is None
