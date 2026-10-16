@@ -522,6 +522,17 @@ because that co-tenant owns the files and can bypass the protocol. Treat every s
 follow the protocol. Where that assumption does not hold, a file lock is the wrong tool; use an OS mechanism that enforces
 access, such as a privilege boundary or a broker process.
 
+The directory boundary
+======================
+
+Every protection filelock gives against other local UIDs holds only while no other UID can replace the lock's directory
+or any directory above it: each must belong to the lock's own UID or to root, and must either not be writable by others
+or be sticky. A UID that can rename entries in a non-sticky ancestor can move the lock file or protocol directory aside,
+even one it cannot read, and put its own in its place. Holders that already reached the old one keep using it while new
+contenders use the replacement, so two of them hold the lock at once and neither is told. No check inside the lock can
+rule that out, because that UID owns every name in such a directory. Keep locks in a directory only the lock's users can
+write, or in a sticky one such as ``/tmp``.
+
 Native locks are advisory
 ==========================
 
