@@ -54,7 +54,7 @@ def break_then_hang_after_exchange(
         SoftFileLock(lock_file).acquire(blocking=False)
 
 
-def call_within(call: Callable[[], object], seconds: float) -> tuple[bool, BaseException | None]:
+def call_within(call: Callable[[], object], seconds: float) -> tuple[bool, BaseException | None]:  # pragma: win32 cover
     """Run *call* on a daemon thread and report whether it returned within *seconds* and what it raised."""
     raised: list[BaseException] = []
 

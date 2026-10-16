@@ -3848,7 +3848,7 @@ def test_soft_windows_unlink_stops_on_non_permission_error(tmp_path: Path, mocke
     path.write_bytes(b"x")
     lock = SoftFileLock(str(path))
     st = os.lstat(path)
-    mocker.patch("filelock._soft.unlink_path", autospec=True, side_effect=OSError(ENOSYS, "boom"))
+    mocker.patch("filelock._soft.unlink_path", side_effect=OSError(ENOSYS, "boom"))
 
     lock._windows_unlink_if_ours((st.st_dev, st.st_ino))
 

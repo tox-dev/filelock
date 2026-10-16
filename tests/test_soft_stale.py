@@ -1491,7 +1491,7 @@ def test_close_and_marker_cleanup_failures_are_grouped(  # pragma: win32 cover
     lock = SoftFileLock(lock_path)
     lock.acquire()
     cleanup_error = RuntimeError("cleanup failed")
-    unlink_mock: Final = mocker.patch("filelock._soft.unlink_path", autospec=True, side_effect=cleanup_error)
+    unlink_mock: Final = mocker.patch("filelock._soft.unlink_path", side_effect=cleanup_error)
     with _close_after_commit(mocker, lock) as (close_error, _attempts), pytest.raises(ExceptionGroup) as info:
         lock.release()
     mocker.stop(unlink_mock)
@@ -1595,9 +1595,7 @@ def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Pa
     marker.write_text("x", encoding="utf-8")
     lock = SoftFileLock(marker)
     mocker.patch("filelock._soft.time.sleep")
-    unlink: Final = mocker.patch(
-        "filelock._soft.unlink_path", autospec=True, side_effect=PermissionError(EACCES, "handle still open")
-    )
+    unlink: Final = mocker.patch("filelock._soft.unlink_path", side_effect=PermissionError(EACCES, "handle still open"))
 
     lock._windows_unlink_if_ours(_file_identity(os.lstat(marker)))
     denied: Final = marker.exists()
