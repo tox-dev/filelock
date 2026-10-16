@@ -13,9 +13,7 @@ import pytest
 
 from filelock import MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name
-from tests.break_helpers import BREAK_ROUTES, on_break_recheck, take_break_route
 from tests.capability_marks import NEEDS_FILE_PERMISSIONS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
-from tests.inode_reuse_helpers import reuse_inode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -58,16 +56,18 @@ def _replace_with_same_mtime(lock: Path) -> None:
     replacement.replace(lock)
 
 
-@BREAK_ROUTES
+@pytest.mark.usefixtures("break_route")
 @pytest.mark.parametrize(
     "recreate",
     [pytest.param(_rewrite_in_place, id="mtime-advanced"), pytest.param(_replace_with_same_mtime, id="inode-changed")],
 )
 def test_break_lock_file_keeps_a_marker_recreated_after_the_recheck(
-    stale_lock: Path, mocker: MockerFixture, break_route: str, recreate: Callable[[Path], None]
+    stale_lock: Path,
+    mocker: MockerFixture,
+    on_break_recheck: Callable[[Path, Callable[[], None]], None],
+    recreate: Callable[[Path], None],
 ) -> None:
-    take_break_route(mocker, break_route)
-    on_break_recheck(mocker, stale_lock, lambda: recreate(stale_lock))
+    on_break_recheck(stale_lock, lambda: recreate(stale_lock))
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
     mocker.stopall()
@@ -100,7 +100,7 @@ def test_break_lock_file_leaves_a_marker_recreated_since_the_stale_check(
     assert (stale_lock.read_text(encoding="utf-8"), rename.call_count) == ("live", 0)
 
 
-@BREAK_ROUTES
+@pytest.mark.usefixtures("break_route")
 @pytest.mark.parametrize(
     "point",
     [
@@ -110,9 +110,9 @@ def test_break_lock_file_leaves_a_marker_recreated_since_the_stale_check(
     ],
 )
 def test_stale_break_admits_no_third_holder_beside_a_recreated_marker(
-    stale_lock: Path, mocker: MockerFixture, break_route: str, point: str
+    stale_lock: Path, mocker: MockerFixture, on_break_recheck: Callable[[Path, Callable[[], None]], None], point: str
 ) -> None:
-    # A peer broke the stale marker and the next holder acquired after the recheck; a third contender then polls at
+    # A peer broke the stale marker and the next holder acquired after the recheck. A third contender then polls at
     # every step of the break, including between taking the marker and checking whose it is.
     holder: Final = SoftFileLock(stale_lock)
     overlaps: list[bool] = []
@@ -135,9 +135,8 @@ def test_stale_break_admits_no_third_holder_beside_a_recreated_marker(
         stale_lock.unlink()
         holder.acquire()
 
-    take_break_route(mocker, break_route)
     mocker.patch.object(os, point, new=third_contender_polls)
-    on_break_recheck(mocker, stale_lock, peer_breaks_and_holder_acquires)
+    on_break_recheck(stale_lock, peer_breaks_and_holder_acquires)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
     mocker.stopall()
@@ -170,9 +169,9 @@ def test_break_lock_file_put_back_never_replaces_a_marker_at_the_path(  # pragma
 
 
 @NEEDS_SYMLINK
-@BREAK_ROUTES
+@pytest.mark.usefixtures("break_route")
 def test_break_lock_file_never_links_a_symlink_swapped_in_before_the_take(  # pragma: needs symlink
-    stale_lock: Path, mocker: MockerFixture, break_route: str
+    stale_lock: Path, mocker: MockerFixture, on_break_recheck: Callable[[Path, Callable[[], None]], None]
 ) -> None:
     (target := stale_lock.with_name("target")).write_text("victim", encoding="utf-8")
 
@@ -180,8 +179,7 @@ def test_break_lock_file_never_links_a_symlink_swapped_in_before_the_take(  # pr
         stale_lock.unlink()
         stale_lock.symlink_to(target)
 
-    take_break_route(mocker, break_route)
-    on_break_recheck(mocker, stale_lock, peer_swaps_in_a_symlink)
+    on_break_recheck(stale_lock, peer_swaps_in_a_symlink)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
     mocker.stopall()
@@ -224,7 +222,11 @@ def test_break_lock_file_never_links_a_symlink_swapped_in_under_the_break_name( 
     ],
 )
 def test_stale_break_spares_a_successor_on_the_freed_inode_number(  # pragma: win32 no cover
-    tmp_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock], record: str
+    tmp_path: Path,
+    mocker: MockerFixture,
+    reuse_inode: Callable[[Path, os.stat_result], None],
+    lock_type: type[SoftFileLock],
+    record: str,
 ) -> None:
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     stale: Final = lock.lstat()
@@ -235,7 +237,7 @@ def test_stale_break_spares_a_successor_on_the_freed_inode_number(  # pragma: wi
         lock.unlink()
         lock.write_text("live", encoding="utf-8")
         os.utime(lock, ns=(stale.st_atime_ns, stale.st_mtime_ns))
-        reuse_inode(mocker, lock, stale)
+        reuse_inode(lock, stale)
         raise ProcessLookupError(ESRCH, f"no process {pid} for signal {signal}")
 
     mocker.patch("filelock._identity.os.kill", side_effect=owner_gone_and_successor_acquired)
@@ -324,12 +326,11 @@ def test_stale_break_lets_acquire_retry_after_the_marker_vanishes_before_the_pin
         assert held.is_locked
 
 
-@BREAK_ROUTES
+@pytest.mark.usefixtures("break_route")
 def test_break_lock_file_lets_acquire_retry_after_the_marker_vanishes(
-    stale_lock: Path, mocker: MockerFixture, break_route: str
+    stale_lock: Path, on_break_recheck: Callable[[Path, Callable[[], None]], None]
 ) -> None:
-    take_break_route(mocker, break_route)
-    on_break_recheck(mocker, stale_lock, stale_lock.unlink)
+    on_break_recheck(stale_lock, stale_lock.unlink)
     with SoftFileLock(stale_lock, timeout=1):
         assert stale_lock.read_text(encoding="utf-8").splitlines()[0] == str(os.getpid())
 
@@ -378,7 +379,10 @@ def test_stale_break_takes_the_lock_over_in_one_poll(  # pragma: win32 no cover
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows pins nothing")
 def test_stale_break_spares_a_successor_on_the_freed_inode_number_across_the_exchange(  # pragma: win32 no cover
-    stale_lock: Path, mocker: MockerFixture
+    stale_lock: Path,
+    mocker: MockerFixture,
+    reuse_inode: Callable[[Path, os.stat_result], None],
+    on_break_recheck: Callable[[Path, Callable[[], None]], None],
 ) -> None:
     stale: Final = stale_lock.lstat()
 
@@ -388,9 +392,9 @@ def test_stale_break_spares_a_successor_on_the_freed_inode_number_across_the_exc
         stale_lock.unlink()
         stale_lock.write_text("live", encoding="utf-8")
         os.utime(stale_lock, ns=(stale.st_atime_ns, stale.st_mtime_ns))
-        reuse_inode(mocker, stale_lock, stale)
+        reuse_inode(stale_lock, stale)
 
-    on_break_recheck(mocker, stale_lock, successor_takes_the_freed_number)
+    on_break_recheck(stale_lock, successor_takes_the_freed_number)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
     mocker.stopall()
@@ -400,10 +404,10 @@ def test_stale_break_spares_a_successor_on_the_freed_inode_number_across_the_exc
 
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows renames a marker aside")
 def test_break_lock_file_leaves_a_recreated_marker_aside_where_links_are_refused(  # pragma: win32 cover
-    stale_lock: Path, mocker: MockerFixture
+    stale_lock: Path, mocker: MockerFixture, on_break_recheck: Callable[[Path, Callable[[], None]], None]
 ) -> None:
     mocker.patch("os.link", side_effect=PermissionError(1, "Operation not permitted"))
-    on_break_recheck(mocker, stale_lock, lambda: _rewrite_in_place(stale_lock))
+    on_break_recheck(stale_lock, lambda: _rewrite_in_place(stale_lock))
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
     mocker.stopall()

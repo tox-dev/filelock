@@ -17,13 +17,11 @@ from capabilities import CAPABILITIES
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD
-from tests.break_helpers import on_break_recheck, take_break_route
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
-from tests.inode_reuse_helpers import reuse_inode
 from tests.pid_namespace_helpers import pin_pid_namespace
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
     from unittest.mock import MagicMock
 
     from pytest_mock import MockerFixture
@@ -244,15 +242,18 @@ def test_out_of_range_pid_not_evicted_when_fresh(lock_path: Path) -> None:
     _assert_times_out(lock_path)
 
 
+@pytest.mark.usefixtures("break_route")
+@pytest.mark.parametrize("break_route", ["no-exchange"], indirect=True)
 def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
     mocker.patch("filelock._identity.process_alive", return_value=False)
-    take_break_route(mocker, "no-exchange")
     mocker.patch.object(Path, "rename", side_effect=FileNotFoundError("already gone"))
     _assert_times_out(lock_path)
 
 
-def test_stale_break_racing_a_successor_admits_no_third_holder(lock_path: Path, mocker: MockerFixture) -> None:
+def test_stale_break_racing_a_successor_admits_no_third_holder(
+    lock_path: Path, mocker: MockerFixture, on_break_recheck: Callable[[Path, Callable[[], None]], None]
+) -> None:
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
     successor: Final[SoftFileLock] = SoftFileLock(lock_path, timeout=0)
 
@@ -260,7 +261,7 @@ def test_stale_break_racing_a_successor_admits_no_third_holder(lock_path: Path, 
         lock_path.unlink()
         successor.acquire()
 
-    on_break_recheck(mocker, lock_path, successor_breaks_and_acquires_first)
+    on_break_recheck(lock_path, successor_breaks_and_acquires_first)
     _assert_times_out(lock_path)
     mocker.stopall()
 
@@ -537,7 +538,7 @@ def test_zero_write_rolls_back_acquire(lock_path: Path, mocker: MockerFixture) -
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows unlinks a marker only after closing it")
 def test_failed_acquire_spares_a_successor_on_the_freed_inode_number(  # pragma: win32 no cover
-    lock_path: Path, mocker: MockerFixture
+    lock_path: Path, mocker: MockerFixture, reuse_inode: Callable[[Path, os.stat_result], None]
 ) -> None:
     def evicted_and_succeeded_then_write_fails(fd: int, data: bytes) -> int:
         # A contender evicted the still-empty marker, and the next holder's marker gets its inode number once freed.
@@ -545,7 +546,7 @@ def test_failed_acquire_spares_a_successor_on_the_freed_inode_number(  # pragma:
         lock_path.unlink()
         lock_path.write_text("live", encoding="utf-8")
         os.utime(lock_path, ns=(ours.st_atime_ns, ours.st_mtime_ns))
-        reuse_inode(mocker, lock_path, ours)
+        reuse_inode(lock_path, ours)
         raise OSError(ENOSPC, f"No space left on device for {len(data)} bytes")
 
     mocker.patch("filelock._util.os.write", side_effect=evicted_and_succeeded_then_write_fails)

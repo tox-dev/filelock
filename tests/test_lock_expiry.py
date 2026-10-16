@@ -9,10 +9,9 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import AsyncFileLock, AsyncSoftFileLock, FileLock, SoftFileLock, Timeout
-from tests.break_helpers import take_break_route
-from tests.inode_reuse_helpers import reuse_inode
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from pytest_mock import MockerFixture
@@ -72,12 +71,13 @@ def test_soft_lifetime_none_no_expiry(tmp_path: Path) -> None:
         SoftFileLock(lock_path, lifetime=None, timeout=0.2).acquire()
 
 
+@pytest.mark.usefixtures("break_route")
+@pytest.mark.parametrize("break_route", ["no-exchange"], indirect=True)
 def test_expired_lock_race_rename_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
     os.utime(lock_path, (0, 0))
 
-    take_break_route(mocker, "no-exchange")
     mocker.patch("filelock._util.Path.rename", side_effect=FileNotFoundError)
 
     with pytest.raises(TimeoutError):
@@ -86,7 +86,7 @@ def test_expired_lock_race_rename_fails(tmp_path: Path, mocker: MockerFixture) -
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows pins nothing")
 def test_expired_break_spares_a_successor_on_the_freed_inode_number(  # pragma: win32 no cover
-    tmp_path: Path, mocker: MockerFixture
+    tmp_path: Path, mocker: MockerFixture, reuse_inode: Callable[[Path, os.stat_result], None]
 ) -> None:
     (lock := tmp_path / "test.lock").write_text("expired\n", encoding="utf-8")
     os.utime(lock, (0, 0))
@@ -105,7 +105,7 @@ def test_expired_break_spares_a_successor_on_the_freed_inode_number(  # pragma: 
             lock.unlink()
             lock.write_text("live", encoding="utf-8")
             os.utime(lock, ns=(expired.st_atime_ns, expired.st_mtime_ns))
-            reuse_inode(mocker, lock, expired)
+            reuse_inode(lock, expired)
         return found
 
     mocker.patch.object(os, "lstat", new=peer_breaks_then_successor_acquires)

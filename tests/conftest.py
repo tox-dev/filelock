@@ -3,14 +3,14 @@ from __future__ import annotations
 import gc
 import itertools
 import os
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, TypeVar
 
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import BaseFileLock, Timeout
+import filelock._identity
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -119,11 +119,74 @@ def close_failure(
         real_close(locked_fd)
 
 
+@pytest.fixture(params=[pytest.param("native", id="native"), pytest.param("no-exchange", id="no-exchange")])
+def break_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
+    """Run the test with the platform's own stale break, then as where no atomic exchange of two names exists."""
+    if request.param == "no-exchange":
+        mocker.patch("filelock._util._rename_call", return_value=None)
+
+
 @pytest.fixture
-def working_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    first.mkdir()
-    second.mkdir()
-    monkeypatch.chdir(first)
-    return first, second
+def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None]], None]:
+    """Schedule an action for right after the stale break re-reads the lock file and before it takes the marker."""
+
+    def schedule(lock: Path, action: Callable[[], None]) -> None:
+        alive: Final = filelock._identity.process_alive
+        lstat: Final = os.lstat
+        state: list[str] = []
+
+        def judged(pid: int) -> bool:
+            # The owner check comes right before the break, whose first look at the path is the recheck.
+            state.append("judged")
+            return alive(pid)
+
+        def lstat_then_act(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
+            found: Final = lstat(path, dir_fd=dir_fd)
+            if state == ["judged"] and os.fspath(path) == os.fspath(lock):
+                state.append("acted")
+                action()
+            return found
+
+        mocker.patch("filelock._identity.process_alive", side_effect=judged)
+        mocker.patch.object(os, "lstat", new=lstat_then_act)
+
+    return schedule
+
+
+@pytest.fixture
+def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]:
+    """
+    Stand in for ext4, which hands a freed inode number to the next file created.
+
+    A tmpfs test directory never reuses a number. The stand-in makes ``os.lstat`` report a successor under the number of
+    the unlinked file it is given, once no descriptor in this process keeps that inode allocated.
+    """
+
+    def stand_in(successor: Path, freed: os.stat_result) -> None:  # pragma: win32 no cover
+        created: Final = successor.lstat()
+        lstat: Final = os.lstat
+
+        def lstat_with_reuse(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
+            found: Final = lstat(path, dir_fd=dir_fd)
+            if (found.st_dev, found.st_ino) != (created.st_dev, created.st_ino) or _held_open(freed):
+                return found
+            # The tuple carries the integer fields up to st_size; the float and nanosecond times ride in the mapping.
+            extra: Final = {
+                name: getattr(found, name)
+                for name in dir(found)
+                if name.startswith("st_")
+                and name not in {"st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size"}
+            }
+            return os.stat_result((found.st_mode, freed.st_ino, *found[2:10]), extra)
+
+        mocker.patch("os.lstat", side_effect=lstat_with_reuse)
+
+    return stand_in
+
+
+def _held_open(node: os.stat_result) -> bool:  # pragma: win32 no cover
+    for entry in Path("/dev/fd").iterdir():
+        with suppress(OSError):  # the descriptor the listing itself used is closed by now
+            if os.path.samestat(os.fstat(int(entry.name)), node):
+                return True
+    return False

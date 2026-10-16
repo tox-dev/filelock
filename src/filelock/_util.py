@@ -93,17 +93,17 @@ def ensure_directory_exists(filename: Path | str) -> None:
 @contextmanager
 def pin_inode(lock_file: str) -> Generator[int | None]:
     """
-    Keep the node at *lock_file* allocated for the length of the block and yield its inode number.
+    Keep the file at *lock_file* allocated for the length of the block and yield its inode number.
 
-    An inode number names a file only while something keeps the inode allocated: ext4 hands a freed number to the next
-    file created, so once a stale marker is unlinked the next holder's marker can carry the number a contender just
-    read. A caller that reads the marker inside the block, gives up unless it read the yielded inode, and calls
-    :func:`break_lock_file` before leaving can rely on the number.
+    An inode is the kernel's identity for a file, independent of its name, and its number names a file only while the
+    inode stays allocated. ext4 hands a freed number to the next file created. Once a stale marker is unlinked, the next
+    holder's marker can therefore carry the number a contender read a moment ago. A caller that reads the marker inside
+    the block, gives up unless it read the yielded inode, and breaks the marker before leaving can rely on the number.
 
     :param lock_file: path to the lock file about to be read and perhaps broken.
 
-    :returns: the pinned inode number, or ``None`` where nothing can be pinned: Windows cannot rename a file this
-        process holds open, and without ``O_PATH`` a symlink or a socket cannot be opened.
+    :returns: the pinned inode number, or ``None`` where nothing can be pinned. Windows cannot rename a file this
+        process holds open, so it needs no pin. Without ``O_PATH`` a symlink or a socket cannot be opened.
 
     :raises FileNotFoundError: if the path is gone.
 
@@ -131,23 +131,25 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
     """
     Remove the lock file a caller found stale with modification time *mtime_before* and inode *ino_before*.
 
-    The caller keeps the judged file open, through :func:`pin_inode` or its own descriptor, until we return, so no other
-    file can carry *ino_before* meanwhile. Right before breaking we ``lstat`` the lock again and leave it alone if a
-    peer recreated it since the caller judged it stale, as Mercurial re-reads a lock under its break lock. Where the
-    platform can exchange two names atomically (``renameat2`` on Linux, ``renamex_np`` on macOS), we swap the marker
-    with a placeholder of our own, so the lock path never stands empty: a contender that polls meanwhile finds a file it
-    cannot parse and waits. If the file we took is not the one judged stale, a peer recreated the lock, and a second
-    exchange puts it back; otherwise we remove it and then our placeholder. Of several processes racing to break the
-    same lock, only one takes the stale file.
+    The caller keeps the judged file open until we return, through :func:`pin_inode` or its own descriptor, so no
+    other file can carry *ino_before* meanwhile. Right before breaking we ``lstat`` the lock again and leave it alone
+    if a peer recreated it since the caller judged it stale, as Mercurial re-reads a lock under its break lock.
 
-    Windows cannot exchange names, but it refuses to rename a marker its live holder keeps open, so there we rename the
-    marker aside and, if it was recreated after all, link it back; ``link`` never replaces a name, so a marker a third
-    process created meanwhile keeps the path. Elsewhere without an exchange (NFS, SMB, other filesystems that refuse it,
-    platforms without the call) a rename would leave the path empty beside a possibly live holder, so we do not move the
-    marker and the caller waits for ``timeout``, ``lifetime`` or ``break_lock()``. We compare inodes as well as
-    modification times because NFS and FAT store coarse modification times, and for equality, since a file's owner can
-    set any time. We ``lstat`` so a symlink a peer swaps in is never followed. The break name carries a random token so
-    no other process can guess it.
+    On Linux (``renameat2``) and macOS (``renamex_np``) the platform can exchange two names in one step. There we swap
+    the marker with a placeholder of our own, so the lock path never stands empty, and a contender that polls meanwhile
+    finds a file it cannot parse and waits. If the file we took is not the one judged stale, a peer recreated the lock,
+    and a second exchange puts it back. Otherwise we remove it and then our placeholder. Of several processes racing to
+    break the same lock, only one takes the stale file.
+
+    Windows cannot exchange names, but it refuses to rename a marker its live holder keeps open. There we rename the
+    marker aside and, if it was recreated after all, link it back. ``link`` never replaces a name, so a marker a third
+    process created meanwhile keeps the path. Elsewhere without an exchange (NFS, SMB and other filesystems that refuse
+    it, platforms without the call) a rename would leave the path empty beside a possibly live holder. We then do not
+    move the marker, and the caller waits for ``timeout`` or ``break_lock()``.
+
+    We compare inodes as well as modification times, because NFS and FAT store coarse modification times. The times are
+    compared for equality, since a file's owner can set any time. We ``lstat`` so a symlink a peer swaps in is never
+    followed. The break name carries a random token so no other process can guess it.
 
     :param lock_file: path to the lock file to break.
     :param mtime_before: modification time the caller saw when it judged the lock stale.
@@ -168,11 +170,11 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
 
 def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
     """
-    Remove *lock_file* while it still names the file open as *fd*, which the caller closes afterwards.
+    Remove *lock_file* while it still names the file open as *fd*; the caller closes the descriptor afterwards.
 
-    A stale break with an atomic exchange is tried first, so a peer's marker found at the path goes back. Without one
-    the path is unlinked by name if it still names this file: the open descriptor keeps the inode allocated, so a
-    matching number cannot belong to a successor's marker.
+    Where the platform has an atomic exchange, a stale break takes the file through it, so a peer's marker found at the
+    path goes back. Otherwise the path is unlinked by name if it still names this file. The open descriptor keeps the
+    inode allocated, so a matching number cannot belong to a successor's marker.
 
     :raises OSError: if the descriptor cannot be read or the unlink fails.
 
@@ -185,8 +187,8 @@ def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
 
 
 def _swap_out(lock_file: str, break_path: str, mtime_before: float, ino_before: int) -> None:  # pragma: win32 no cover
-    # An atomic exchange with a placeholder takes the marker without the lock path ever being empty, so no contender
-    # can create a marker while this one is judged, and a live marker goes back the same way.
+    # An atomic exchange with a placeholder takes the marker without the lock path ever being empty. No contender can
+    # then create a marker while this one is judged, and a live marker goes back the same way.
     fd: Final = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         try:
@@ -213,8 +215,8 @@ def _swap_out(lock_file: str, break_path: str, mtime_before: float, ino_before: 
 def _break_by_rename(
     lock_file: str, break_path: str, mtime_before: float, ino_before: int
 ) -> None:  # pragma: win32 cover
-    # Renaming the marker aside empties the path until a recreated live marker is put back, and link never replaces a
-    # name, so a marker a third process created meanwhile keeps the path and the live one waits under the break name.
+    # Renaming the marker aside empties the path until a recreated live marker is put back. link never replaces a name,
+    # so a marker a third process created meanwhile keeps the path, and the live one waits under the break name.
     # Without os.link, or where the filesystem refuses hard links, the live one waits there too.
     Path(lock_file).rename(break_path)
     if (st_after := os.lstat(break_path)).st_mtime == mtime_before and st_after.st_ino == ino_before:
@@ -251,7 +253,7 @@ def exchange_names(source: str, target: str) -> bool:  # pragma: win32 no cover
 @cache
 def _rename_call() -> tuple[Callable[[bytes, bytes, int], int], int] | None:
     # The call returns 0 or the errno. Looked up on first use, since most processes never break a lock and ctypes is
-    # slow to import; None where ctypes is missing (GraalPy) or the platform has no exchange.
+    # slow to import. None where ctypes is missing (GraalPy) or the platform has no exchange.
     try:
         import ctypes  # ruff:ignore[import-outside-top-level]  # only a stale break needs it
     except ImportError:  # pragma: no cover  # GraalPy ships without ctypes
@@ -273,8 +275,8 @@ def _rename_call() -> tuple[Callable[[bytes, bytes, int], int], int] | None:
 
 
 def _renameat2(libc: ctypes.CDLL) -> Callable[[bytes, bytes, int], int] | None:  # pragma: linux cover
-    # Reached through syscall(2) rather than the C library's wrapper, which glibc 2.28, musl 1.2.2 and bionic API 30
-    # added while Termux still ships an older bionic; the kernel has had the call since 3.15. The number is the
+    # Reached through syscall(2) rather than the C library's wrapper. glibc 2.28, musl 1.2.2 and bionic API 30 added
+    # the wrapper, and Termux ships an older bionic; the kernel has had the call since 3.15. The number is the
     # architecture's own, so an architecture outside the table gets no exchange rather than another call.
     import ctypes  # ruff:ignore[import-outside-top-level]  # only a stale break needs it
 
@@ -321,9 +323,9 @@ def touch(name: str, *, fd: int) -> None:
     os.utime(name, None, follow_symlinks=not _SUPPORTS_UTIME_NOFOLLOW)  # pragma: lacks utime-fd
 
 
-# Windows refuses to rename a marker its live holder keeps open, so renaming aside only ever moves a marker nobody
-# holds; elsewhere without an exchange a contender could take the emptied path beside a live holder, so the marker
-# stays and the lock counts as held.
+# Windows refuses to rename a marker its live holder keeps open, so renaming aside only moves a marker nobody holds.
+# Elsewhere without an exchange a contender could take the emptied path beside a live holder, so the marker stays and
+# the lock counts as held.
 _MOVES_WITHOUT_EXCHANGE: Final[bool] = sys.platform == "win32"
 # Retargeting os.utime to an open fd lets a heartbeat refresh the exact inode it verified instead of whatever the
 # pathname now names.

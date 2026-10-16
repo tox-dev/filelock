@@ -103,7 +103,7 @@ class SoftFileLock(BaseFileLock):
 
     def _publish_held_marker(self, fd: int) -> None:
         # Publish held state only once the record is fully on disk. On any failure, including cancellation, remove the
-        # path only while it still names the file we opened, so a rollback never deletes a successor's marker that
+        # path only while it still names the file we opened. A rollback then never deletes a successor's marker that
         # replaced ours after a contender evicted it.
         identity: tuple[int, int] | None = None
         try:
@@ -166,10 +166,10 @@ class SoftFileLock(BaseFileLock):
             self._take_over(marker)
 
     def _take_over(self, marker: os.stat_result) -> None:
-        # Swap a marker judged stale for a complete one of ours in one exchange, so the lock path never stands empty and
-        # this lock holds it once the file swapped out proves to be the one judged; the caller's pin keeps that file's
-        # inode number from naming anything else. Every failure before the handoff leaves our marker off the path and
-        # puts back what the exchange took. Without an exchange, the portable break decides.
+        # Swap the judged marker for a complete marker of ours in one exchange, so the lock path never stands empty.
+        # Once the file swapped out proves to be the one judged, this lock holds the path; the caller's pin keeps that
+        # file's inode number from naming anything else. Every failure before the handoff takes our marker off the path
+        # and puts back what the exchange took. Without an exchange, the portable break decides.
         if exchange_supported():  # pragma: win32 no cover
             self._take_over_by_exchange(marker)
         else:
@@ -220,8 +220,8 @@ class SoftFileLock(BaseFileLock):
     def _marker_unchanged_for(self, marker: os.stat_result) -> float:
         # The mtime is the writer's or file server's clock, so against time.time() a contender whose clock runs ahead
         # would expire a fresh marker. Only watch it for change, timed on this process's monotonic clock. The owner of a
-        # file sets its mtime and ext4 reuses a freed inode number, so a new marker can repeat both; the change time
-        # cannot be set and moves with every create, keeping a new marker from inheriting an old one's age.
+        # file sets its mtime, and ext4 reuses a freed inode number, so a new marker can repeat both. The change time
+        # cannot be set and moves with every create, which keeps a new marker from inheriting an old one's age.
         now: Final = time.monotonic()
         key: Final = marker.st_mtime, marker.st_ino, marker.st_ctime_ns
         if (seen := self._marker_seen) is None or seen[0] != key:
