@@ -458,7 +458,9 @@ The defense differs by platform:
   users.
 - :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL``, which fails on any
   existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
-  file as malformed, then checks the opened handle again with ``fstat``.
+  file as malformed, then checks the opened handle again with ``fstat``. On Windows it reads and breaks markers through
+  handles that do not wait for an oplock holder to answer, so an oplock on a marker ends as contention and the
+  ``timeout`` holds.
 - :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches
   ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
   directory after the check cannot redirect where claims are created, listed or removed.

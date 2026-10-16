@@ -2708,6 +2708,53 @@ def test_windows_unlink_without_oplock_wait_deletes_a_symlink_not_its_target(tmp
     assert (link.is_symlink(), target.exists()) == (False, True)
 
 
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_open_read_without_oplock_wait_reads_the_file(tmp_path: Path) -> None:
+    assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
+    from filelock._windows import open_read_without_oplock_wait
+
+    (path := tmp_path / "a").write_bytes(b"marker")
+    fd = open_read_without_oplock_wait(str(path))
+    try:
+        assert os.read(fd, 16) == b"marker"
+    finally:
+        os.close(fd)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_open_read_without_oplock_wait_reports_a_missing_file(tmp_path: Path) -> None:
+    assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
+    from filelock._windows import open_read_without_oplock_wait
+
+    with pytest.raises(FileNotFoundError):
+        open_read_without_oplock_wait(str(tmp_path / "missing"))
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@NEEDS_SYMLINK  # pragma: needs symlink
+def test_windows_open_read_without_oplock_wait_refuses_a_symlink(tmp_path: Path) -> None:
+    assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
+    from filelock._windows import open_read_without_oplock_wait
+
+    (target := tmp_path / "target").touch()
+    (link := tmp_path / "link").symlink_to(target)
+
+    with pytest.raises(OSError, match="reparse point"):
+        open_read_without_oplock_wait(str(link))
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize("opener", ["open_read_without_oplock_wait", "open_for_delete_without_oplock_wait"])
+def test_windows_open_without_oplock_wait_reports_the_break_as_contention(
+    oplocked_lock_path: Path, opener: str
+) -> None:
+    import filelock._windows as windows
+
+    finished, error = call_within(lambda: getattr(windows, opener)(str(oplocked_lock_path)), 5)
+
+    assert (finished, type(error)) == (True, BlockingIOError)
+
+
 @pytest.mark.parametrize(
     "use_proxy",
     [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],

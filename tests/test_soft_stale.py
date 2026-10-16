@@ -23,7 +23,7 @@ from filelock._util import exchange_names
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.conftest import DEAD_OWNER, STALE_BREAKERS, acquire_after_reclaim, held_after_reclaim
 from tests.pid_namespace_helpers import pin_pid_namespace
-from tests.process_helpers import break_then_hang_after_exchange, cleanup_processes
+from tests.process_helpers import break_then_hang_after_exchange, call_within, cleanup_processes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -1638,3 +1638,29 @@ def test_lock_with_a_non_decimal_number_names_no_holder(lock_path: Path, content
     lock_path.write_text(content, encoding="utf-8")
 
     assert SoftFileLock(lock_path).pid is None
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize("oplocked_lock_path", [_holder(os.getpid())], indirect=True, ids=["live-marker"])
+def test_soft_contender_keeps_its_deadline_under_an_oplocked_live_marker(oplocked_lock_path: Path) -> None:
+    lock = SoftFileLock(oplocked_lock_path, is_singleton=False)
+
+    finished, error = call_within(lambda: lock.acquire(timeout=0.1), 5)
+
+    assert (finished, type(error)) == (True, Timeout)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_stale_break_keeps_its_deadline_under_an_oplocked_marker(
+    lock_path: Path, hold_oplock: Callable[[Path], Callable[[], None]]
+) -> None:
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    close_holder = hold_oplock(lock_path)
+    lock = SoftFileLock(lock_path, is_singleton=False)
+
+    finished, error = call_within(lambda: lock.acquire(timeout=0.1), 5)
+    close_holder()
+
+    assert (finished, type(error)) == (True, Timeout)
+    with lock.acquire(timeout=5):
+        assert lock.is_locked

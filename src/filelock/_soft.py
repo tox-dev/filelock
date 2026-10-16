@@ -5,6 +5,7 @@ __lazy_modules__ = [
     "filelock._identity",
     "filelock._soft_protocol",
     "filelock._util",
+    "filelock._windows",
     "itertools",
     "pathlib",
     "re",
@@ -39,6 +40,9 @@ from filelock._util import (
     unlink_path,
     write_all,
 )
+
+if sys.platform == "win32":  # pragma: win32 cover
+    from filelock._windows import open_read_without_oplock_wait
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
@@ -577,7 +581,11 @@ def _read_lock_file(path: str) -> tuple[str | None, os.stat_result]:
     # Re-check on the opened handle: O_NOFOLLOW refuses a symlink swapped in after the lstat, O_NONBLOCK stops a FIFO
     # swapped in from stalling the open, and the fstat catches any other non-regular replacement race before we read.
     # The capped read stops a huge regular file (e.g. one filled from /dev/zero) from exhausting memory.
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    if sys.platform == "win32":  # pragma: win32 cover
+        # os.open would wait for an oplock holder to answer its break, past the caller's deadline.
+        fd = open_read_without_oplock_wait(path)
+    else:  # pragma: win32 no cover
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):  # pragma: no cover  # only a non-regular node swapped in after the lstat

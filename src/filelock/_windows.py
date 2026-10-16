@@ -380,6 +380,44 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         return _descriptor_for_non_reparse(handle, path, os.O_RDWR)
 
+    def open_read_without_oplock_wait(path: str) -> int:
+        """
+        Open *path* read-only and return a descriptor, without waiting for an oplock holder to answer its break.
+
+        ``os.open`` waits inside the system call until the holder of an oplock on the file answers or closes its handle,
+        so no timeout or ``blocking=False`` ends the wait. A reparse point at *path* is refused rather than followed.
+
+        :param path: the file to read.
+
+        :returns: a read-only file descriptor.
+
+        :raises BlockingIOError: if an oplock break is in progress, which callers treat as contention.
+        :raises FileNotFoundError: if *path* does not exist.
+        :raises OSError: if the open fails for any other reason, or *path* is a reparse point.
+
+        """
+        sys.audit("open", path, None, os.O_RDONLY)
+        return _open_existing_without_oplock_wait(path, _GENERIC_READ | _SYNCHRONIZE, os.O_RDONLY)
+
+    def open_for_delete_without_oplock_wait(path: str) -> int:
+        """
+        Open *path* with delete access and return a descriptor, without waiting for an oplock holder to answer.
+
+        The open handle shares read, write and delete, so a rename of *path* can proceed while the caller keeps it.
+        A holder that took an oplock through another handle is asked to answer by this open, which then raises, so the
+        caller skips the rename instead of waiting for it.
+
+        :param path: the file to rename.
+
+        :returns: a file descriptor owning the handle; the caller closes it.
+
+        :raises BlockingIOError: if an oplock break is in progress, which callers treat as contention.
+        :raises FileNotFoundError: if *path* does not exist.
+        :raises OSError: if the open fails for any other reason, or *path* is a reparse point.
+
+        """
+        return _open_existing_without_oplock_wait(path, _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE, os.O_RDONLY)
+
     def unlink_without_oplock_wait(path: str) -> None:
         """
         Delete *path* through a handle that does not wait for an oplock holder to answer its break.
@@ -407,7 +445,15 @@ if sys.platform == "win32":  # pragma: win32 cover
         elif status != _STATUS_OPLOCK_BREAK_IN_PROGRESS:
             raise _status_error(status, path)
 
+    def _open_existing_without_oplock_wait(path: str, access: int, flags: int) -> int:
+        handle, status = _nt_create(path, access, _FILE_ATTRIBUTE_NORMAL, _FILE_SHARE_ALL, _FILE_OPEN)
+        if status != _STATUS_SUCCESS:
+            raise _status_error(status, path)
+        return _descriptor_for_non_reparse(handle, path, flags)
+
     def _status_error(status: int, path: str) -> OSError:
+        if status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+            return BlockingIOError(EWOULDBLOCK, "oplock break in progress", path)
         if status in {_STATUS_OBJECT_NAME_NOT_FOUND, _STATUS_OBJECT_PATH_NOT_FOUND}:
             return FileNotFoundError(ENOENT, os.strerror(ENOENT), path)
         winerror = _ntdll.RtlNtStatusToDosError(status)
@@ -730,5 +776,7 @@ __all__ = [
     "_pin_directory",
     "_pinned",
     "_unpin_directory",
+    "open_for_delete_without_oplock_wait",
+    "open_read_without_oplock_wait",
     "unlink_without_oplock_wait",
 ]
