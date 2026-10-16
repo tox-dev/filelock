@@ -220,11 +220,13 @@ else:  # pragma: win32 no cover
 
         def _innermost_pid(task: int) -> int | None:
             try:
-                status: Final = Path(f"/proc/{task}/status").read_text(encoding="ascii", errors="replace")
+                status: Final = Path(f"/proc/{task}/status").read_bytes()
             except OSError:  # pragma: no cover  # the task exited between the stat read and this one
                 return None
+            # The kernel ends a line only with "\n". The task names itself, and the Name line carries "\r", "\v" and
+            # the other characters text-mode reads and str.splitlines() also split at, so a name could forge a line.
             return next(
-                (int(line.split()[-1]) for line in status.splitlines() if line.startswith("NSpid:")),
+                (int(line.split()[-1]) for line in status.split(b"\n") if line.startswith(b"NSpid:")),
                 None,  # kernels before 4.1 record no namespace PIDs
             )
 

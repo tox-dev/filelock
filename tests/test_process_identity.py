@@ -142,16 +142,33 @@ def test_owner_is_stale_owner_running_in_another_namespace_held(mocker: MockerFi
     # being the recorded one.
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
     own_status: Final = Path(f"/proc/{os.getpid()}/status")
-    read_text: Final = Path.read_text
+    read_bytes: Final = Path.read_bytes
     mocker.patch.object(
         Path,
-        "read_text",
+        "read_bytes",
         autospec=True,
-        side_effect=lambda path, **kwargs: (
-            f"NSpid:\t{os.getpid()}\t{_DEAD_PID}\n" if path == own_status else read_text(path, **kwargs)
+        side_effect=lambda path: (
+            f"NSpid:\t{os.getpid()}\t{_DEAD_PID}\n".encode() if path == own_status else read_bytes(path)
         ),
     )
     assert owner_is_stale(_DEAD_PID, host_name(), process_start_token(os.getpid())) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize("forged", ["x", str(_DEAD_PID)])
+@pytest.mark.parametrize("separator", ["\r", "\v", "\f", "\x1c", "\x1d", "\x1e"])
+def test_owner_is_stale_task_name_shaped_like_a_namespace_line_reclaimed(
+    separator: str, forged: str, mocker: MockerFixture
+) -> None:
+    # A task picks its own name and /proc/<pid>/status prints it raw but for "\n" and "\\".
+    pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
+    comm: Final = Path("/proc/self/comm")
+    name: Final = comm.read_bytes().rstrip(b"\n")
+    comm.write_bytes(f"{separator}NSpid:\t{forged}".encode())
+    try:
+        assert owner_is_stale(_DEAD_PID, host_name(), process_start_token(os.getpid())) is True
+    finally:
+        comm.write_bytes(name)
 
 
 @_LINUX_ONLY  # pragma: linux cover
