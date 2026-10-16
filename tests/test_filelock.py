@@ -577,6 +577,44 @@ def test_del_releases_hold_of_live_thread(lock_type: type[BaseFileLock], tmp_pat
             assert other.is_locked
 
 
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_singleton_handed_out_while_finalizing_keeps_its_hold(tmp_path: Path, thread_local: bool) -> None:
+    lock_path: Final = str(tmp_path / "a")
+    handed_out: Final = _singleton_handed_out_while_finalizing(lock_path, thread_local=thread_local)
+    with pytest.raises(Timeout):
+        FileLock(lock_path, blocking=False).acquire()
+    handed_out.release()
+
+
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_singleton_handed_out_while_finalizing_releases_once_dropped(tmp_path: Path, thread_local: bool) -> None:
+    lock_path: Final = str(tmp_path / "a")
+    handed_out = _singleton_handed_out_while_finalizing(lock_path, thread_local=thread_local)
+    del handed_out
+    with FileLock(lock_path, blocking=False) as other:
+        assert other.is_locked
+
+
+def _singleton_handed_out_while_finalizing(lock_path: str, *, thread_local: bool) -> FileLock:
+    # The cache still finds a lock whose finalizer is starting, as another thread asking at that moment would.
+    handed_out: Final[list[FileLock]] = []
+
+    # Interpreters run a profile hook with tracing off, so coverage does not record its body.
+    def take_from_cache(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover
+        if event == "call" and frame.f_code is BaseFileLock.__del__.__code__ and not handed_out:
+            handed_out.append(FileLock(lock_path, is_singleton=True, thread_local=thread_local))
+            handed_out[0].acquire()
+
+    sys.setprofile(take_from_cache)
+    try:
+        FileLock(lock_path, is_singleton=True, thread_local=thread_local)
+    finally:
+        sys.setprofile(None)
+    return handed_out.pop()
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_concurrent_force_releases_free_an_exited_threads_hold_once(
     lock_type: type[BaseFileLock], tmp_path: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture

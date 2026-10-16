@@ -30,12 +30,12 @@ from collections.abc import Callable, Hashable
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from decimal import Decimal
-from functools import cache
+from functools import cache, partial
 from itertools import count, starmap
 from numbers import Real
 from threading import TIMEOUT_MAX, Condition, RLock, Thread, current_thread, get_ident, local
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
-from weakref import WeakKeyDictionary, WeakValueDictionary
+from weakref import WeakKeyDictionary, WeakValueDictionary, ref
 
 from filelock._error import SoftFileLockLifetimeWarning, Timeout
 from filelock._util import break_lock_file
@@ -433,6 +433,7 @@ class FileLockMeta(ABCMeta):
                     msg = "Lock construction cannot continue after fork; construct a new lock in the child"
                     raise RuntimeError(msg)
                 cls._instances[singleton_key] = instance
+                instance._singleton_key = singleton_key  # ruff:ignore[private-member-access]  # the cache entry the finalizer looks up
                 return instance
 
         non_matching_params = {
@@ -698,6 +699,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     #: poll cadence; a multi-file backend sets it so contending processes desynchronize instead of livelocking.
     _poll_backoff_cap: float = 0.0
 
+    #: The singleton cache key of this instance, or ``None`` outside the cache.
+    _singleton_key: str | None = None
+
     def __init_subclass__(cls, **kwargs: _SubclassValue) -> None:
         """Give each lock subclass its own singleton registry and lock."""
         super().__init_subclass__(**kwargs)
@@ -790,6 +794,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         """
         self._creator_pid = os.getpid()
+        #: Holder id in the deadlock registry; a stand-in that finishes the finalizer has another id(self).
+        self._holder_id = id(self)
         self._transition_lock = RLock()
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
@@ -1089,6 +1095,15 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         """Force-release so a dropped reference never leaks a held lock, including every thread's hold."""
         if vars(self).get("_creator_pid") != os.getpid():
             return  # pragma: forked child
+        # CPython runs __del__ before it clears weak references. Until then the singleton cache still hands this lock
+        # out, and a thread that takes a hold through it would lose that hold to a release here. The cycle collector
+        # clears the references first, and at exit no other thread runs.
+        if (key := self._singleton_key) is not None and not sys.is_finalizing() and self._instances.get(key) is self:
+            self._release_once_unreachable()
+        else:
+            self._release_abandoned_holds()
+
+    def _release_abandoned_holds(self) -> None:
         # A finalizer must not raise. A release error during garbage collection would otherwise surface as an
         # unraisable-exception warning, attributed to whichever code triggered collection. The dropped lock still gets
         # best-effort cleanup; an explicit release() reports the same error to a caller who can act on it.
@@ -1097,6 +1112,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         # Nothing references the lock any more, so no thread can still be inside it through this instance.
         with contextlib.suppress(Exception):
             self._release_thread_holds(exited_only=False)
+
+    def _release_once_unreachable(self) -> None:
+        # The callback runs once the lock is gone, so it reads the state through a holder. The state alone keeps the
+        # holder alive: a reference from the callback would keep the state, and through it the lock, alive.
+        self._finalizer_state = _FinalizerState(vars(self))
+        _UNREACHABLE_LOCKS.add(ref(self, partial(_finalize_unreachable, ref(self._finalizer_state), type(self))))
 
     def acquire(
         self,
@@ -1376,7 +1397,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         block on a lock this flow already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
         """
         would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
-        if would_block and _registry.held.get(self._registry_key(canonical)) not in {None, id(self)}:
+        if would_block and _registry.held.get(self._registry_key(canonical)) not in {None, self._holder_id}:
             self._context.lock_counter -= 1
             msg = (
                 f"Deadlock: lock '{self.lock_file}' is already held by a different {self._deadlock_holder_desc}. "
@@ -1586,14 +1607,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             # A shared instance may be released from another thread, which must clear the entry in the acquirer's
             # registry: the releaser's own thread-local registry never held it.
             self._context.lock_file_registry = _registry.held
-            _registry.held[key] = id(self)
+            _registry.held[key] = self._holder_id
 
     def _drop_registry_entry(self) -> None:
         """Forget the key owned by this hold without resolving a mutable path again."""
         # Ordered so a run an interrupt cuts short repeats safely: the entry goes only while it is still ours, and the
         # key outlives the registry it indexes, so a later commit sees no registry and records the hold afresh.
         key, registry = self._context.lock_file_key, self._context.lock_file_registry
-        if registry is not None and registry.get(key) == id(self):
+        if registry is not None and registry.get(key) == self._holder_id:
             del registry[key]
         self._context.lock_file_registry = None
         self._context.lock_file_key = None
@@ -1668,8 +1689,32 @@ def _resolve_timeout(timeout: float, *, blocking: bool) -> float:
     return -1 if timeout == math.inf else timeout
 
 
+@dataclass(slots=True, weakref_slot=True)
+class _FinalizerState:
+    """A finalized lock's state, held for the release that runs once the lock is unreachable."""
+
+    state: dict[str, object] | None
+
+
+#: Weak references whose callback finishes a singleton's finalizer once the cache no longer finds it.
+_UNREACHABLE_LOCKS: Final[set[ref[BaseFileLock]]] = set()
+
+
+def _finalize_unreachable(holder: ref[_FinalizerState], cls: type[BaseFileLock], reference: ref[BaseFileLock]) -> None:
+    _UNREACHABLE_LOCKS.discard(reference)
+    if (finalizer_state := holder()) is None or (state := finalizer_state.state) is None:
+        return  # pragma: no cover  # only a collector freeing a resurrected lock as part of a cycle drops the holder
+    # The lock's dictionary points back at the holder; that cycle ends here.
+    finalizer_state.state = None
+    # The release methods only read and write this state, so a fresh instance takes it over. Dropping that instance
+    # runs __del__ again, and the cache no longer finds the lock.
+    stand_in = object.__new__(cls)
+    stand_in.__dict__ = state
+    del stand_in
+
+
 def _is_system_call_failure(error: BaseException) -> bool:
-    # A failed system call always sets errno; an OSError a signal handler raises, such as a bare TimeoutError, does not.
+    # A failed system call sets errno. A bare TimeoutError raised by a signal handler is an OSError without one.
     if _is_exception_group(error):
         return all(map(_is_system_call_failure, cast("_ExceptionGroupProtocol", error).exceptions))
     return isinstance(error, OSError) and error.errno is not None

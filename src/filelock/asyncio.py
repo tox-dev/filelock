@@ -220,6 +220,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
         """
         self._creator_pid = os.getpid()
+        self._holder_id = id(self)
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
@@ -734,10 +735,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                         _raise_grouped_errors(_ASYNC_CONTEXT_RELEASE_ERRORS, body_error, cancellation, backend_error)
             _raise_body_and_release(body_error, release_error)
 
-    def __del__(self) -> None:
-        """Release on deletion; safe to call during GC even when no event loop is running."""
-        if vars(self).get("_creator_pid") != os.getpid():
-            return  # pragma: forked child
+    def _release_abandoned_holds(self) -> None:
+        # Runs from garbage collection, where no event loop may be running.
         with contextlib.suppress(Exception):
             # A thread-local lock never uses an executor, so an in-place release matches the loop's and also reaches
             # threads whose loops it cannot schedule on.
@@ -754,28 +753,16 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 if not loop.is_running():  # pragma: no cover
                     loop.run_until_complete(self.release(force=True))
                     return
-                self._leave_shared_registries()
+                # Off the deadlock registry, a new lock in this task waits for the scheduled release instead of failing.
+                self._drop_registry_entry()
                 # The stored loop runs in another thread, and only its own thread may create tasks on it.
                 pending = asyncio.run_coroutine_threadsafe(self.release(force=True), loop)
             else:
-                self._leave_shared_registries()
+                self._drop_registry_entry()
                 pending = loop.create_task(self.release(force=True))
             # The loop keeps only a weak reference to a task, so hold one until the release finishes.
             _FINALIZER_RELEASES.add(pending)
             pending.add_done_callback(self._settle_finalizer_release)
-
-    def _leave_shared_registries(self) -> None:
-        # CPython finalizes before clearing weak references and the scheduled release keeps this lock alive, so the
-        # singleton cache would hand it to a new caller whose hold the forced release then drops. Off the deadlock
-        # registry, a new lock in this task waits for the release instead of failing fast. The cache lock is never
-        # awaited: a constructor holds it while taking the fork locks, inside which the collector can run this.
-        if self._instances_lock.acquire(blocking=False):
-            try:
-                for key in [key for key, instance in self._instances.items() if instance is self]:
-                    del self._instances[key]
-            finally:
-                self._instances_lock.release()
-        self._drop_registry_entry()
 
     def _settle_finalizer_release(self, pending: asyncio.Task[None] | futures.Future[None]) -> None:
         _FINALIZER_RELEASES.discard(pending)

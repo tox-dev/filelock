@@ -284,10 +284,8 @@ class StrictSoftFileLock(BaseFileLock):
         ) is not None:  # pragma: needs dir-fd
             raise cleanup_error
 
-    def __del__(self) -> None:
-        super().__del__()
-        if vars(self).get("_creator_pid") != os.getpid():
-            return  # pragma: forked child
+    def _release_abandoned_holds(self) -> None:
+        super()._release_abandoned_holds()
         # release() skips a doorway whose cleanup failed, as it is no hold, so a dropped instance would strand claims.
         with contextlib.suppress(Exception):
             # GraalPy defers finalizers to the host collector, so its tests cannot drive this cleanup.
