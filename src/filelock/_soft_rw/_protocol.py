@@ -59,6 +59,13 @@ _HOLDERS_DIRECTORY: Final[str] = "holders"
 _TEMPORARY_PREFIX: Final[str] = ".commit-"
 
 
+class TreeReplacedError(RuntimeError):
+    """
+    Raised by a ``Files`` implementation when a protocol directory is not a real directory (a symlink, a junction, a
+    file) or belongs to another account.
+    """
+
+
 class Files(Protocol):
     """The filesystem operations the protocol runs on; :mod:`._storage` implements them over :mod:`os`."""
 
@@ -568,12 +575,14 @@ class Participant:
         try:
             if not self._refresh_nonce():
                 return "lost", None
+        except TreeReplacedError:
+            return "lost", None
         except OSError as error:
             return "transient", error
         try:
             latest = self._log.latest()
             self._sweep(latest)
-        except OSError:
+        except (OSError, TreeReplacedError):
             return "ok", None
         return ("ok" if self.token in latest.members else "lost"), None
 
@@ -581,19 +590,21 @@ class Participant:
         """Commit this participant out of the latest snapshot, then remove its holder record."""
         # The record goes even when the log cannot be read: a contender that never entered then leaves nothing behind,
         # and a member still named ages out the same way with or without one.
-        try:
-            while self.token in (latest := self._log.latest()).members:
-                successor = Snapshot(
-                    generation=latest.generation + 1,
-                    writer=None if latest.writer == self.token else latest.writer,
-                    readers=latest.readers - {self.token},
-                )
-                if self._log.commit(successor):
-                    break
-        finally:
-            self._entered = False
-            self.generation = None
-            self._files.unlink(self._holder)
+        # A tree that was swapped out leaves no record this participant can reach, so there is nothing to commit out of.
+        with suppress(TreeReplacedError):
+            try:
+                while self.token in (latest := self._log.latest()).members:
+                    successor = Snapshot(
+                        generation=latest.generation + 1,
+                        writer=None if latest.writer == self.token else latest.writer,
+                        readers=latest.readers - {self.token},
+                    )
+                    if self._log.commit(successor):
+                        break
+            finally:
+                self._entered = False
+                self.generation = None
+                self._files.unlink(self._holder)
 
 
 __all__ = [
@@ -604,6 +615,7 @@ __all__ = [
     "Mode",
     "Participant",
     "Snapshot",
+    "TreeReplacedError",
     "encode_holder",
     "holder_lease",
     "is_token",

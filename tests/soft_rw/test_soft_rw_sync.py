@@ -736,6 +736,66 @@ def test_heartbeat_reports_a_removed_holder_record(lock_file: str) -> None:
         lock.close()
 
 
+def _wait_for_compromise(lock: SoftReadWriteLock) -> LeaseCompromise:
+    deadline = time.monotonic() + 2
+    while (compromise := lock.compromise) is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert compromise is not None
+    return compromise
+
+
+@pytest.mark.skipif(
+    not (CAPABILITIES["symlink"] and CAPABILITIES["link-dir-fd"]),
+    reason="a swapped tree is refused only where records are reached through descriptors",
+)
+def test_heartbeat_reports_a_symlinked_tree_as_lost(
+    lock_file: str, tmp_path: Path
+) -> None:  # pragma: needs link-dir-fd
+    seen: list[LeaseCompromise] = []
+    lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2, on_compromise=seen.append)
+    lock.acquire_write(timeout=2)
+    try:
+        Path(f"{lock_file}.rw").rename(tmp_path / "aside")
+        Path(f"{lock_file}.rw").symlink_to(tmp_path, target_is_directory=True)
+        assert _wait_for_compromise(lock).reason == "evicted"
+        assert len(seen) == 1
+    finally:
+        lock.release(force=True)
+        lock.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name, through junctions")
+def test_heartbeat_reports_a_junction_tree_as_lost(  # pragma: win32 cover
+    lock_file: str, tmp_path: Path, create_junction: Callable[[Path, Path], None]
+) -> None:
+    seen: list[LeaseCompromise] = []
+    lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2, on_compromise=seen.append)
+    lock.acquire_write(timeout=2)
+    try:
+        Path(f"{lock_file}.rw").rename(tmp_path / "aside")
+        (target := tmp_path / "target").mkdir()
+        create_junction(Path(f"{lock_file}.rw"), target)
+        assert _wait_for_compromise(lock).reason == "evicted"
+        assert len(seen) == 1
+    finally:
+        lock.release(force=True)
+        lock.close()
+
+
+def test_a_heartbeat_that_raises_reports_the_hold_lost(lock_file: str, mocker: MockerFixture) -> None:
+    error = ValueError("broken")
+    lock = _make_lock(lock_file, heartbeat_interval=0.05, stale_threshold=0.2)
+    lock.acquire_write(timeout=2)
+    try:
+        mocker.patch.object(Participant, "heartbeat", autospec=True, side_effect=error)
+        compromise = _wait_for_compromise(lock)
+        assert (compromise.reason, compromise.error) == ("refresh-failed", error)
+    finally:
+        mocker.stopall()
+        lock.release(force=True)
+        lock.close()
+
+
 def test_release_leaves_a_peers_claim_alone(lock_file: str) -> None:
     # A holder paused past the stale threshold (GC pause, SIGSTOP, suspended VM) can be evicted, after which a peer
     # holds the writer slot. Releasing commits this holder out and leaves the peer's claim alone.

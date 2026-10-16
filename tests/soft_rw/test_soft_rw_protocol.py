@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
+from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
 from filelock._soft_rw._protocol import (
@@ -790,6 +791,24 @@ def test_heartbeat_reports_the_refresh_error(lock_file: str, files: OsFiles, moc
 
 def test_heartbeat_without_a_published_record_is_lost(lock_file: str, files: OsFiles) -> None:
     assert _participant(files, lock_file, "write").heartbeat() == ("lost", None)
+
+
+@pytest.mark.skipif(
+    not (CAPABILITIES["symlink"] and CAPABILITIES["link-dir-fd"]),
+    reason="a swapped tree is refused only where records are reached through descriptors",
+)
+@pytest.mark.requires_hard_links
+def test_heartbeat_with_the_tree_swapped_for_a_symlink_is_lost(  # pragma: needs link-dir-fd
+    lock_file: str, files: OsFiles, root: str, tmp_path: Path
+) -> None:
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    assert writer.advance()
+    Path(root).rename(tmp_path / "aside")
+    Path(root).symlink_to(target := tmp_path / "target", target_is_directory=True)
+    target.mkdir()
+
+    assert (writer.heartbeat(), list(target.iterdir())) == (("lost", None), [])
 
 
 @pytest.mark.requires_hard_links

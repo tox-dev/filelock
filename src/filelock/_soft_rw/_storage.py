@@ -13,7 +13,12 @@ from errno import ELOOP, ENOENT, ENOTDIR, ENXIO, ESTALE
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from filelock._soft_rw._protocol import _GENERATIONS_DIRECTORY, _HOLDERS_DIRECTORY, _MAX_RECORD_SIZE
+from filelock._soft_rw._protocol import (
+    _GENERATIONS_DIRECTORY,
+    _HOLDERS_DIRECTORY,
+    _MAX_RECORD_SIZE,
+    TreeReplacedError,
+)
 from filelock._strict import _link_no_follow, _pin_directories, _raise_if_hard_links_unsupported
 from filelock._util import ensure_directory_exists, foreign_directory_owner, write_all
 
@@ -172,11 +177,11 @@ class OsFiles:
                 or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
             ):
                 msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
-                raise RuntimeError(msg)
+                raise TreeReplacedError(msg)
             owner = foreign_directory_owner(found, parent)
             if owner is not None:  # pragma: needs foreign-sticky-tmp
                 msg = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
-                raise RuntimeError(msg)
+                raise TreeReplacedError(msg)
         self._prepared = True
 
 
@@ -202,7 +207,7 @@ def _directory(path: str, depth: int = 2) -> Generator[int | None]:
                 if error.errno not in {ELOOP, ENOTDIR}:
                     raise
                 msg = f"{path} is not a directory or is a symlink; refusing to use it"
-                raise RuntimeError(msg) from error
+                raise TreeReplacedError(msg) from error
         try:
             yield fd
         finally:
@@ -213,7 +218,7 @@ def _directory(path: str, depth: int = 2) -> Generator[int | None]:
             pins = _pin_directories(*[Path(path), *Path(path).parents][:depth][::-1])
         except NotADirectoryError as error:  # pragma: win32 cover
             msg = f"{error.filename} is not a directory or is a symlink; refusing to use it"
-            raise RuntimeError(msg) from error
+            raise TreeReplacedError(msg) from error
         with pins:
             yield None
 
