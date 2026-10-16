@@ -213,10 +213,10 @@ class Ledger:
 
     def observe(self, key: str, value: bytes | None, *, asked: float | None = None) -> float:
         """
-        Record *value* for *key* and return how long it has been unchanged.
+        Record *value* for *key* and return for how long it has stayed the same.
 
-        *asked* is the clock reading taken before *value* was fetched: an unchanged value is vouched for only up to
-        then, so a pause between the fetch and this call does not count as time the value stayed the same.
+        *asked* is the clock reading taken before the caller fetched *value*. An unchanged value counts as unchanged up
+        to *asked*, so a pause between the fetch and this call adds no time.
         """
         now = self._clock()
         if (seen := self._seen.get(key)) is None or seen[0] != value:
@@ -360,12 +360,11 @@ class GenerationLog:
         changed since the snapshot was read is a different log, so the commit is refused as lost and the caller
         re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the link. A slot
         compaction freed is refused the same way, before the link and again after it, since a committer can stall in
-        between. After the link a surviving predecessor is not proof enough: it may be the record another stalled
-        committer just linked into its own freed slot and has yet to take back. A slot only comes free once the log is
-        a whole window past it, and the head is never removed, so a record the listing or ``HEAD`` leads by a window is
-        refused too. A record refused after it landed is removed: it is the oldest survivor by then, and a legitimate
-        one was about to be compacted. One that peers lead by less than a window stays, or its slot would come free
-        early.
+        between. After the link a surviving predecessor proves little: it may be a record another stalled committer
+        linked into its own freed slot and has yet to remove. A slot comes free once the log is a whole window past it,
+        and the head stays, so a record the listing or ``HEAD`` leads by a window is refused as well. A record refused
+        after it landed is removed when nothing was built on it. One that peers lead by less than a window stays, or its
+        slot would come free early.
         """
         if self._files.read(self._epoch_path) != self._epoch or not self._extends_the_log(successor.generation):
             return False
@@ -393,8 +392,8 @@ class GenerationLog:
         return True
 
     def _extends_the_log(self, generation: int) -> bool:
-        # Compaction removes oldest first, so a missing predecessor means this slot was freed. The first generation has
-        # none; a HEAD of this epoch means the log already moved past it.
+        # Compaction removes oldest first, so a missing predecessor means compaction freed this slot. The first
+        # generation has none; a HEAD of this epoch means the log already moved past it.
         if generation > 1:
             return self._files.read(self._path(generation - 1)) is not None
         return self._head_record() is None

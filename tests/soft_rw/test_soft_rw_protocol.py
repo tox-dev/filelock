@@ -669,7 +669,7 @@ def test_a_record_refused_inside_the_window_keeps_its_slot(
 def test_a_record_refused_with_nothing_built_on_it_is_removed(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:
-    # The log was replaced after the epoch check: left behind, gen/6 would pass for the head of the new log.
+    # A peer replaced the log after the epoch check: left behind, gen/6 would pass for the head of the new log.
     log = _committed(files, lock_file, root, [None] * 5)
     real_create = files.create
 
