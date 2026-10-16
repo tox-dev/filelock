@@ -155,6 +155,16 @@ class SoftFileLock(BaseFileLock):
             if owner_is_stale(*holder):
                 self._take_over(marker)
 
+    def _try_break_expired_lock(self) -> None:
+        if (lifetime := self._context.lifetime) is None:
+            return
+        with suppress(OSError), pin_inode(self.lock_file) as pinned:
+            # lstat, not stat: a symlink swapped in at the path must report its own mtime, as the O_NOFOLLOW reads do.
+            marker = os.lstat(self.lock_file)
+            if pinned not in {None, marker.st_ino} or time.time() - marker.st_mtime < lifetime:
+                return
+            self._take_over(marker)
+
     def _take_over(self, marker: os.stat_result) -> None:
         # Swap a marker judged stale for a complete one of ours in one exchange, so the lock path never stands empty and
         # this lock holds it once the file swapped out proves to be the one judged; the caller's pin keeps that file's

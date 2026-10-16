@@ -1,7 +1,8 @@
 Fix :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease` removing
 or displacing a live holder's marker when a freed inode number was handed to the next marker, when a stalled
 :class:`~filelock.FileLock` removed its ``ENOSYS`` placeholder after a peer had replaced it, when a failed acquire
-cleaned up after a successor took the path, or when a stale break left the lock path empty while it checked the marker
-it had moved. On Linux and macOS a stale marker is now taken over in one atomic exchange; on other platforms without
-one, except Windows, including NFS and SMB, it is no longer moved and waits for ``timeout``, ``lifetime`` or
-``break_lock()``. Restoring a marker no longer follows a symlink found under the break name.
+cleaned up after a successor took the path, when a stale break left the lock path empty while it checked the marker it
+had moved, or when a ``lifetime`` break judged a marker by a reused inode number. On Linux and macOS a stale marker is
+now taken over in one atomic exchange; on other platforms without one, except Windows, including NFS and SMB, it is no
+longer moved and waits for ``timeout`` or ``break_lock()``. Restoring a marker no longer follows a symlink found under
+the break name.
