@@ -168,18 +168,18 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
 
 
 def _linked_back(break_path: str, lock_file: str) -> bool:
-    if not _HAS_LINK:  # pragma: lacks hard-link
-        return False
-    try:
-        os.link(break_path, lock_file, follow_symlinks=False)
-    except FileExistsError:
-        return True  # a third process took the path after our rename and keeps it
-    # A filesystem without hard links refuses, Windows can reject the option and PyPy fails it with EINVAL; a plain
-    # link would follow a symlink swapped in under the break name on macOS.
-    except (OSError, NotImplementedError, ValueError):
-        return False
-    Path(break_path).unlink()
-    return True
+    if _HAS_LINK:  # pragma: needs hard-link
+        try:
+            os.link(break_path, lock_file, follow_symlinks=False)
+        except FileExistsError:
+            return True  # a third process took the path after our rename and keeps it
+        # A filesystem without hard links refuses, Windows can reject the option and PyPy fails it with EINVAL; a plain
+        # link would follow a symlink swapped in under the break name on macOS.
+        except (OSError, NotImplementedError, ValueError):
+            return False
+        Path(break_path).unlink()
+        return True
+    return False  # pragma: lacks hard-link
 
 
 def touch(name: str, *, fd: int) -> None:

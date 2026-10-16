@@ -128,7 +128,7 @@ class SoftFileLock(BaseFileLock):
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError), pin_inode(self.lock_file) as pinned:
             content, marker = _read_lock_file(self.lock_file)
-            if pinned not in {None, marker.st_ino}:
+            if pinned not in {None, marker.st_ino}:  # pragma: win32 no cover  # Windows pins nothing
                 return  # another node replaced the pinned one before the read, and nothing keeps its number from reuse
             if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
                 return

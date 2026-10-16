@@ -77,7 +77,7 @@ class MarkerSoftFileLock(SoftFileLock):
         with suppress(OSError, ValueError), pin_inode(self.lock_file) as pinned:
             content, marker = _read_lock_file(self.lock_file)
             owner: Final[OwnerRecord | None]
-            if pinned not in {None, marker.st_ino}:
+            if pinned not in {None, marker.st_ino}:  # pragma: win32 no cover  # Windows pins nothing
                 return  # replaced before the read, so nothing keeps the number read from reuse
             if (owner := parse_marker(content)) is None:
                 super()._try_break_stale_lock()

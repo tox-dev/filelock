@@ -253,7 +253,7 @@ class SoftFileLease(MarkerSoftFileLock):
             super()._try_break_stale_lock()
             return
         owner, marker = peer
-        if pinned not in {None, marker.st_ino}:
+        if pinned not in {None, marker.st_ino}:  # pragma: win32 no cover  # Windows pins nothing
             return  # replaced before the read, so nothing keeps the number read from reuse
         # Only a peer that published a lease agreed to be superseded by age; an exclusive owner is reclaimed only once
         # it is provably dead, and a contract this version does not know never is. Raise the mismatch outside the read
