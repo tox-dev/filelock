@@ -4,4 +4,6 @@ or displacing a live holder's marker in five cases. ext4 gave a freed inode numb
 after a successor took the path. A stale break left the lock path empty while it checked the marker it had moved. A
 ``lifetime`` break judged a marker by a reused inode number. On Linux and macOS a stale marker now changes hands in one
 atomic exchange. On other platforms without one, except Windows, including NFS and SMB, the marker stays in place and
-waits for ``timeout`` or ``break_lock()``. Restoring a marker no longer follows a symlink found under the break name.
+waits for ``timeout`` or ``break_lock()``. Restoring a marker no longer follows a symlink found under the break name. A
+holder that releases while a peer's exchange has its marker aside leaves a record no lock parses, so the put-back lands
+a marker that ages out.

@@ -42,6 +42,8 @@ _UNLINK_MAX_RETRIES: Final[int] = 10
 _MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
 #: Contenders act on the record in the marker, so no other account may write it, whatever the mode or umask.
 _OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
+#: What a release leaves in its marker while a peer's exchange holds the marker aside; no lock parses it as a holder.
+_RELEASED_MARKER: Final[bytes] = b"filelock/released\n"
 
 
 class SoftFileLock(BaseFileLock):
@@ -304,7 +306,7 @@ class SoftFileLock(BaseFileLock):
         else:  # pragma: win32 no cover
             # Our open descriptor keeps the inode allocated, so its number cannot name a successor's marker yet, and an
             # interrupt before the unlink lands leaves the lock held for the retried release to finish.
-            unlinked: Final = self._unlink_open_marker(identity)
+            unlinked: Final = self._unlink_open_marker(fd, identity)
             # A failed close may already have released and recycled the descriptor number. Relinquish it before the
             # one close attempt so no later release can close an unrelated descriptor that reused the same integer.
             self._mark_descriptor_released()
@@ -338,20 +340,15 @@ class SoftFileLock(BaseFileLock):
                 raise
             self._finish_marker_cleanup()
 
-    def _marker_names(self) -> tuple[str, ...]:
-        # After a rename of the lock's directory only the caller's spelling, resolved through the working directory,
-        # still reaches the marker this hold opened.
-        return tuple(dict.fromkeys((self._lock_path, self.lock_file)))
-
-    def _unlink_open_marker(self, identity: tuple[int, int] | None) -> bool:  # pragma: win32 no cover
+    def _unlink_open_marker(self, fd: int, identity: tuple[int, int] | None) -> bool:  # pragma: win32 no cover
         if identity is None:
             return True
         try:
-            for name in self._marker_names():
-                with suppress(FileNotFoundError):
-                    if _file_identity(os.lstat(name)) == identity:
-                        Path(name).unlink()
-                        return True
+            with suppress(FileNotFoundError):
+                if _file_identity(os.lstat(self.lock_file)) == identity:
+                    Path(self.lock_file).unlink()
+                else:
+                    _leave_released_record(fd)
         except OSError:
             return False
         return True
@@ -420,6 +417,15 @@ def _file_identity(st: os.stat_result) -> tuple[int, int]:
     # (st_dev, st_ino) names the concrete inode behind a path, so a marker recreated at the same pathname after an
     # expired lease reads as a different file. CPython populates both on Windows from the volume serial and file index.
     return st.st_dev, st.st_ino
+
+
+def _leave_released_record(fd: int) -> None:
+    # A peer's exchange holds our marker under its break name and will put it back. Overwriting the record lets
+    # contenders age it out instead of waiting on this live PID. The write comes before the truncate so the file is
+    # never empty.
+    if sys.platform != "win32":  # pragma: win32 no cover
+        os.pwrite(fd, _RELEASED_MARKER, 0)
+        os.ftruncate(fd, len(_RELEASED_MARKER))
 
 
 def _read_lock_file(path: str) -> tuple[str | None, os.stat_result]:

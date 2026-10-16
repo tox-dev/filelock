@@ -624,6 +624,40 @@ def test_publication_without_identity_leaves_the_marker(lock_path: Path, mocker:
     assert (lock.is_locked, lock_path.exists()) == (False, True)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@pytest.mark.usefixtures("unchanged_past_grace")
+def test_release_under_a_peers_exchange_leaves_no_marker_naming_this_process(  # pragma: win32 no cover
+    lock_path: Path,
+) -> None:
+    lock: Final = SoftFileLock(lock_path)
+    lock.acquire()
+    (peer := lock_path.with_name("peer")).write_text(_holder(_DEAD_PID), encoding="utf-8")
+    exchange_names(str(lock_path), str(peer))
+    lock.release()
+    exchange_names(str(lock_path), str(peer))
+    restored: Final = lock_path.read_text(encoding="utf-8")
+
+    contender: Final = SoftFileLock(lock_path)
+    for _ in range(2):
+        with suppress(Timeout):
+            contender.acquire(blocking=False)
+    assert (restored.startswith(f"{os.getpid()}\n"), contender.is_locked) == (False, True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+def test_release_under_a_peers_exchange_leaves_the_peers_marker(lock_path: Path) -> None:  # pragma: win32 no cover
+    lock: Final = SoftFileLock(lock_path)
+    lock.acquire()
+    (peer := lock_path.with_name("peer")).write_text(_holder(_DEAD_PID), encoding="utf-8")
+    exchange_names(str(lock_path), str(peer))
+    lock.release()
+
+    assert (lock_path.read_text(encoding="utf-8"), peer.read_text(encoding="utf-8")) == (
+        _holder(_DEAD_PID),
+        "filelock/released\n",
+    )
+
+
 def test_release_without_identity_skips_unlink(lock_path: Path, mocker: MockerFixture) -> None:
     lock = SoftFileLock(lock_path)
     lock.acquire()

@@ -702,9 +702,12 @@ A contender never leaves the lock path empty while it breaks a marker. Right bef
 check, it leaves the marker alone, the way Mercurial re-reads a lock under its break lock before removing it. On Linux
 (``renameat2``) and macOS (``renamex_np``) it then writes a complete marker of its own under a private
 ``<lock>.break.*`` name and exchanges the two names in one step. A contender that polls meanwhile finds a marker and
-waits. If the file it took is the one judged stale, it removes that file and holds the lock from then on. A peer that
-exchanges after that moves the holder's marker aside only while it checks what it took, and puts it back. Otherwise a
-peer recreated the marker, and a second exchange puts the live marker back before its own is removed.
+waits.
+
+If the file it took is the one judged stale, it removes that file and holds the lock from then on. A peer that
+exchanges after that moves the holder's marker aside only while it checks what it took, and puts it back. A holder that
+releases while its marker is aside leaves a record no lock parses, so the put-back lands a marker that ages out.
+Otherwise a peer recreated the marker, and a second exchange puts the live marker back before its own is removed.
 
 The contender holds the judged marker open from before it reads the record until the break ends. ext4 gives a freed
 inode number to the next file created, so a successor's marker could otherwise carry the number of the marker judged
