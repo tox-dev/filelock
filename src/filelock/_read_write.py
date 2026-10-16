@@ -4,7 +4,6 @@ __lazy_modules__ = [
     "collections",
     "filelock._error",
     "filelock._identity",
-    "filelock._windows",
     "hashlib",
     "itertools",
     "pathlib",

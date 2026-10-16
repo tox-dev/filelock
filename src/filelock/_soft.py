@@ -5,7 +5,6 @@ __lazy_modules__ = [
     "filelock._identity",
     "filelock._soft_protocol",
     "filelock._util",
-    "filelock._windows",
     "itertools",
     "pathlib",
     "re",
@@ -37,12 +36,14 @@ from filelock._util import (
     raise_on_not_writable_file,
     remove_own_file,
     ensure_directory_exists,
-    unlink_path,
     write_all,
 )
 
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._windows import open_read_without_oplock_wait
+    from filelock._windows import unlink_without_oplock_wait as unlink_path
+else:  # pragma: win32 no cover
+    from filelock._util import unlink_path
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
