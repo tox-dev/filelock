@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interpreter isolates the blocked fcntl import
 import sys
+import warnings
 from errno import EACCES, EIO, ENOSYS
 from textwrap import dedent
 from typing import TYPE_CHECKING, Final
@@ -73,6 +74,20 @@ def test_fallback_emits_warning(tmp_path: Path) -> None:  # pragma: needs fcntl
     with pytest.warns(UserWarning, match="flock not supported on this filesystem, falling back to SoftFileLock"):
         lock.acquire()
     lock.release()
+
+
+@NEEDS_FCNTL
+def test_fchmod_enosys_is_not_a_missing_flock(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: needs fcntl
+    mocker.patch("os.fchmod", side_effect=OSError(ENOSYS, "Function not implemented"))
+    lock = UnixFileLock(tmp_path / "test.lock", mode=0o644)
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        with pytest.raises(OSError, match="Function not implemented"):
+            lock.acquire()
+
+    assert not recorded
+    assert not isinstance(lock, SoftFileLock)
 
 
 @NEEDS_FCNTL

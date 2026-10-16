@@ -85,13 +85,19 @@ else:  # pragma: win32 no cover
                 return None
             fd, created = opened
             self._mark_descriptor_pending(fd)
+            if created:
+                # Before the flock: a peer may win it first, and only the creator may set the mode. Outside the flock
+                # handler below: an fchmod that answers ENOSYS says nothing about flock.
+                try:
+                    self._apply_explicit_mode(fd)
+                except BaseException:
+                    self._mark_descriptor_released()
+                    os.close(fd)
+                    raise
             # One guard covers the flock through the recording of the hold. A signal handler that raises in between
             # would otherwise leave an unreferenced descriptor, and its flock, open until the process exits.
             locked = False
             try:
-                if created:
-                    # Before the flock: a peer may win it first, and only the creator may set the mode.
-                    self._apply_explicit_mode(fd)
                 locked = _lock_fd_nonblocking(fd)
                 if locked and self._finalize_locked_fd(fd):
                     return None
