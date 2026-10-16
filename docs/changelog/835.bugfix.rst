@@ -1,0 +1,6 @@
+Fix four bugs in opening the lock file. :class:`~filelock.UnixFileLock` no longer truncates or applies ``mode`` to a
+file it did not create, such as one renamed to the lock path; an ``on_acquired`` hook that writes holder metadata now
+truncates for itself. A Linux lease or a Windows oplock on the lock file no longer makes ``acquire()`` run past its
+``timeout`` or ``blocking=False``. On Windows, a ``mode`` without group and other bits, such as ``0o600``, and the
+:class:`~filelock.ReadWriteLock` database now get an owner-only ACL instead of the directory's. The writability check
+of the soft locks no longer follows a symlink swapped in at the lock path.
