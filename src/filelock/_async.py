@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._error"]
+__lazy_modules__ = ["asyncio", "collections", "concurrent.futures", "filelock._error"]
 
 import asyncio
 import contextlib
