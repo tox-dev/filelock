@@ -4,7 +4,7 @@ import ctypes
 import os
 import re
 import struct
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed-argument, no-shell run below
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only fixed-argument, no-shell runs below
 import sys
 import time
 from contextlib import closing
@@ -24,6 +24,11 @@ from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.process_helpers import cleanup_processes
 from tests.read_write_helpers import assert_read_write_lock_state
 
+if sys.platform == "win32":  # pragma: win32 cover
+    from filelock._identity import host_name
+    from filelock._read_write import _host_digest, _remove_link_directory_on_windows
+    from filelock._windows import _advapi32, _make_private_directory
+
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
 # slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
 # has to outlast the waits it makes, so those are multiples of this rather than bare seconds.
@@ -40,11 +45,13 @@ if sys.implementation.name == "pypy":
     )  # pragma: no cover  # exercised only under the pypy fork backend, which runs without coverage
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
     from multiprocessing.sharedctypes import Synchronized
     from multiprocessing.synchronize import Event as EventType
 
     from pytest_mock import MockerFixture
+
+    from filelock._read_write import _LinkDirectory
 
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 5)
@@ -453,7 +460,7 @@ def test_closing_every_instance_closes_its_descriptors(lock_file: str) -> None:
             marks=[
                 pytest.mark.requires_hard_links,
                 pytest.mark.skipif(
-                    not CAPABILITIES["posix-hard-link"],
+                    not CAPABILITIES["posix-hard-link"] and sys.platform != "win32",
                     reason="private database aliases need POSIX hard links without following symlinks",
                 ),
             ],
@@ -462,7 +469,9 @@ def test_closing_every_instance_closes_its_descriptors(lock_file: str) -> None:
 )
 def connect_route(request: pytest.FixtureRequest, tmp_path: Path) -> None:
     # Where others may create names beside the database, SQLite connects through a private link instead of the name.
-    if request.param:  # pragma: needs posix-hard-link
+    if request.param and sys.platform == "win32":  # pragma: win32 cover
+        _grant_everyone_write(tmp_path)
+    elif request.param:  # pragma: needs posix-hard-link
         tmp_path.chmod(0o777)
 
 
@@ -944,6 +953,160 @@ def test_shared_directory_ignores_a_directory_at_the_wal_name(  # pragma: needs 
         assert_read_write_lock_state(str(shared_database), "read", available=False)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_shared_directory_ignores_a_journal_beside_the_database(  # pragma: win32 cover
+    everyone_writable_database: Path, tmp_path: Path
+) -> None:
+    # SQLite treats a journal beside a non-empty database as an interrupted transaction, and finishing it deletes the
+    # super-journal file the journal names.
+    named = tmp_path / "notes.txt"
+    named.write_text("keep")
+    with closing(sqlite3.connect(everyone_writable_database)) as connection:
+        connection.execute("CREATE TABLE application (value)")
+    Path(f"{everyone_writable_database}-journal").write_bytes(_hot_journal(named))
+
+    with ReadWriteLock(everyone_writable_database, is_singleton=False).read_lock():
+        pass
+
+    assert named.read_text() == "keep"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_shared_directory_ignores_an_undeletable_file_at_the_wal_name(  # pragma: win32 cover
+    everyone_writable_database: Path,
+) -> None:
+    # SQLite removes a leftover -wal beside an empty database, so a name it cannot remove failed every acquire.
+    with Path(f"{everyone_writable_database}-wal").open("wb") as wal:
+        wal.write(b"\0" * 32)
+        wal.flush()
+
+        with ReadWriteLock(everyone_writable_database, is_singleton=False).write_lock():
+            assert_read_write_lock_state(str(everyone_writable_database), "read", available=False)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_directory_whose_acl_cannot_be_read_gets_a_private_link(  # pragma: win32 cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    # An account without read access to a directory's ACL, as with C:\Windows\Temp, cannot tell who may write there.
+    read_acl = _advapi32.GetNamedSecurityInfoW
+    denials = [5]
+    mocker.patch.object(
+        _advapi32,
+        "GetNamedSecurityInfoW",
+        side_effect=lambda *args: denials.pop() if denials else read_acl(*args),
+    )
+    connect = mocker.spy(sqlite3, "connect")
+    database = tmp_path / "lock.db"
+
+    ReadWriteLock(database, is_singleton=False).close()
+
+    opened = Path(connect.call_args_list[0].args[0])
+    assert (opened.name, opened.parent.parent.parent) == ("lock.db", tmp_path)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_shared_directory_leaves_only_the_database_after_release(  # pragma: win32 cover
+    everyone_writable_database: Path,
+) -> None:
+    lock = ReadWriteLock(everyone_writable_database, is_singleton=False)
+    lock.acquire_read()
+    assert len(list(everyone_writable_database.parent.iterdir())) == 2
+    lock.release()
+
+    assert list(everyone_writable_database.parent.iterdir()) == [everyone_writable_database]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+@pytest.mark.parametrize(
+    "boundary", [pytest.param("os.link", id="link"), pytest.param("sqlite3.connect", id="connect")]
+)
+def test_windows_shared_directory_removes_the_link_after_a_failure(  # pragma: win32 cover
+    everyone_writable_database: Path, mocker: MockerFixture, boundary: str
+) -> None:
+    mocker.patch(boundary, autospec=True, side_effect=OSError("cannot open database"))
+
+    with pytest.raises(OSError, match="cannot open database"):
+        ReadWriteLock(everyone_writable_database, is_singleton=False)
+
+    assert list(everyone_writable_database.parent.iterdir()) == [everyone_writable_database]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_shared_directory_refuses_a_link_directory_others_can_write(  # pragma: win32 cover
+    everyone_writable_database: Path, mocker: MockerFixture
+) -> None:
+    mocker.patch("filelock._read_write._directory_is_private", autospec=True, return_value=False)
+
+    with pytest.raises(OSError, match="replaced while opening"):
+        ReadWriteLock(everyone_writable_database, is_singleton=False)
+
+    assert list(everyone_writable_database.parent.iterdir()) == [everyone_writable_database]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_shared_directory_release_keeps_a_directory_renamed_onto_the_link(  # pragma: win32 cover
+    everyone_writable_database: Path, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "notes.txt").write_text("keep")
+    renamed: list[Path] = []
+
+    def swap_then_remove(link: _LinkDirectory) -> None:
+        link.path.rename(tmp_path / "aside")
+        other.rename(link.path)
+        renamed.append(link.path)
+        _remove_link_directory_on_windows(link)
+
+    mocker.patch("filelock._read_write._remove_link_directory_on_windows", autospec=True, side_effect=swap_then_remove)
+    ReadWriteLock(everyone_writable_database, is_singleton=False).close()
+
+    assert (renamed[0] / "notes.txt").read_text() == "keep"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_shared_directory_sweeps_the_link_of_a_dead_holder(  # pragma: win32 cover
+    everyone_writable_database: Path,
+) -> None:
+    everyone_writable_database.touch()
+    left = everyone_writable_database.parent / f".filelock-{2**31 - 1}--{_host_digest(host_name())}-x"
+    _make_private_directory(os.fspath(left))
+    (left / "0123456789abcdef").mkdir()
+    (left / "0123456789abcdef" / "lock.db").hardlink_to(everyone_writable_database)
+
+    with ReadWriteLock(everyone_writable_database, is_singleton=False).read_lock():
+        pass
+
+    assert (_link_directories(everyone_writable_database), everyone_writable_database.stat().st_nlink) == ([], 1)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_shared_directory_sweep_keeps_a_file_that_is_not_a_link_to_the_database(  # pragma: win32 cover
+    everyone_writable_database: Path,
+) -> None:
+    left = everyone_writable_database.parent / f".filelock-{2**31 - 1}--{_host_digest(host_name())}-x"
+    _make_private_directory(os.fspath(left))
+    (left / "0123456789abcdef").mkdir()
+    (left / "0123456789abcdef" / "lock.db").write_text("keep")
+
+    ReadWriteLock(everyone_writable_database, is_singleton=False).close()
+
+    assert (left / "0123456789abcdef" / "lock.db").read_text() == "keep"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_shared_directory_sweep_keeps_the_link_of_a_live_holder(  # pragma: win32 cover
+    everyone_writable_database: Path, holder: subprocess.Popen[str]
+) -> None:
+    left = _link_directories(everyone_writable_database)
+
+    ReadWriteLock(everyone_writable_database, is_singleton=False).close()
+
+    assert (len(left), _link_directories(everyone_writable_database)) == (1, left)
+    assert holder.poll() is None
+
+
 @pytest.mark.requires_hard_links
 @_NEEDS_POSIX_HARD_LINK
 def test_shared_directory_keeps_sqlite_off_the_name_of_an_unlinked_database(  # pragma: needs posix-hard-link
@@ -1073,3 +1236,41 @@ def shared_database(tmp_path: Path) -> Path:  # pragma: needs posix-hard-link
     shared.mkdir()
     shared.chmod(0o777)
     return shared / "lock.db"
+
+
+@pytest.fixture
+def everyone_writable_database(tmp_path: Path) -> Path:  # pragma: win32 cover
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    _grant_everyone_write(shared)
+    return shared / "lock.db"
+
+
+def _grant_everyone_write(directory: Path) -> None:  # pragma: win32 cover
+    icacls = Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe")
+    subprocess.run([icacls, directory, "/grant", "*S-1-1-0:(OI)(CI)(M)"], capture_output=True, check=True)
+
+
+@pytest.fixture
+def holder(everyone_writable_database: Path) -> Generator[subprocess.Popen[str]]:  # pragma: win32 cover
+    script = (
+        "import sys, time\n"
+        "from filelock import ReadWriteLock\n"
+        "lock = ReadWriteLock(sys.argv[1], is_singleton=False)\n"
+        "lock.acquire_read()\n"
+        "print('held', flush=True)\n"
+        "time.sleep(600)\n"
+    )
+    command = [sys.executable, "-c", script, str(everyone_writable_database)]
+    with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as process:
+        try:
+            assert process.stdout is not None
+            assert process.stdout.readline() == "held\n"
+            yield process
+        finally:
+            process.kill()
+            process.wait(timeout=_PROCESS_DEADLINE)
+
+
+def _link_directories(database: Path) -> list[Path]:  # pragma: win32 cover
+    return sorted(path for path in database.parent.iterdir() if path.name.startswith(".filelock-"))

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._util", "msvcrt", "pathlib", "typing"]
+__lazy_modules__ = ["filelock._util", "msvcrt", "pathlib", "struct"]
 
 import os
+import struct
 import sys
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from functools import cache
 from pathlib import Path
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from filelock._api import BaseFileLock
 from filelock._util import ensure_directory_exists, raise_on_not_writable_file
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 if sys.platform == "win32":  # pragma: win32 cover
     import ctypes
@@ -46,6 +50,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     # directory's inheritable entries stay out, with full access for SYSTEM, Administrators and the owner.
     _OWNER_ONLY_SDDL: Final[str] = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)"
     _SDDL_REVISION_1: Final[int] = 1
+    _INVALID_HANDLE_VALUE: Final[int | None] = ctypes.c_void_p(-1).value
 
     # LockFileEx locks a byte range at an offset carried in OVERLAPPED, independent of the descriptor's file position.
     # msvcrt.locking starts at the current position instead, so a metadata write between lock and unlock could shift
@@ -53,6 +58,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     # descriptor lock.
     _LOCKFILE_FAIL_IMMEDIATELY: Final[int] = 0x00000001
     _LOCKFILE_EXCLUSIVE_LOCK: Final[int] = 0x00000002
+    _ERROR_ACCESS_DENIED: Final[int] = 5
     _ERROR_LOCK_VIOLATION: Final[int] = 33  # another handle holds the byte range
     _ERROR_NOT_LOCKED: Final[int] = 158  # the byte range is not locked
 
@@ -94,6 +100,13 @@ if sys.platform == "win32":  # pragma: win32 cover
         _fields_ = (
             ("Status", ctypes.c_void_p),  # a union of NTSTATUS and PVOID, so it is pointer-sized
             ("Information", ctypes.c_void_p),
+        )
+
+    class _SECURITY_ATTRIBUTES(ctypes.Structure):  # ruff:ignore[invalid-class-name]  # mirrors the Win32 struct name
+        _fields_ = (
+            ("nLength", wintypes.DWORD),
+            ("lpSecurityDescriptor", ctypes.c_void_p),
+            ("bInheritHandle", wintypes.BOOL),
         )
 
     class _OVERLAPPED(ctypes.Structure):  # mirrors the Win32 struct name
@@ -173,6 +186,50 @@ if sys.platform == "win32":  # pragma: win32 cover
         ctypes.POINTER(wintypes.ULONG),
     ]
     _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    _advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    _advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    _advapi32.OpenThreadToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.BOOL,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    _advapi32.OpenThreadToken.restype = wintypes.BOOL
+    _advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    _advapi32.OpenProcessToken.restype = wintypes.BOOL
+    _advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _advapi32.GetTokenInformation.restype = wintypes.BOOL
+    _kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    _kernel32.GetCurrentThread.restype = wintypes.HANDLE
+    _kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    _kernel32.LocalFree.restype = ctypes.c_void_p
+    _kernel32.CreateDirectoryW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_SECURITY_ATTRIBUTES)]
+    _kernel32.CreateDirectoryW.restype = wintypes.BOOL
+    _kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    _kernel32.CreateFileW.restype = ctypes.c_void_p
 
     def _lock_fd_nonblocking(fd: int) -> bool:
         # One nonblocking exclusive LockFileEx attempt shared by WindowsFileLock and lock_descriptor, over the one-byte
@@ -389,6 +446,136 @@ if sys.platform == "win32":  # pragma: win32 cover
             return 0, status
         return handle.value or 0, status
 
+    def _directory_is_private(path: str) -> bool:
+        """
+        Report whether only the current user, ``SYSTEM`` and ``Administrators`` can create or remove names in *path*.
+
+        A directory whose owner is anyone else can have its ACL rewritten by that owner. Entries that only a child
+        inherits count too, since the DACL says nothing more precise about who may write.
+        """
+        owner, dacl, descriptor = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+        error = _advapi32.GetNamedSecurityInfoW(
+            path,
+            1,  # SE_FILE_OBJECT
+            0x1 | 0x4,  # OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+            ctypes.byref(owner),
+            None,
+            ctypes.byref(dacl),
+            None,
+            ctypes.byref(descriptor),
+        )
+        if error == _ERROR_ACCESS_DENIED:
+            # C:\Windows\Temp is one: its ACL hides from ordinary accounts, which says nothing good about who may write.
+            return False
+        if error:  # pragma: no cover  # the directory was opened or listed an instant earlier
+            raise ctypes.WinError(error)
+        try:
+            # SYSTEM, Administrators, CREATOR OWNER and OWNER RIGHTS; the last two stand for the owner.
+            trusted = {_sid_from_text(text) for text in ("S-1-5-18", "S-1-5-32-544", "S-1-3-0", "S-1-3-4")}
+            trusted.add(_user_sid())
+            # A missing DACL grants everyone full access.
+            return (
+                bool(dacl.value)
+                and _sid_at(cast("int", owner.value)) in trusted
+                and _name_writers(cast("int", dacl.value)) <= trusted
+            )
+        finally:
+            _kernel32.LocalFree(descriptor)
+
+    def _name_writers(dacl: int) -> set[bytes]:
+        (count,) = struct.unpack("<4xH2x", ctypes.string_at(dacl, 8))
+        writers = set()
+        offset = 8
+        for _ in range(count):
+            ace_type, _flags, ace_size, mask = struct.unpack("<BBHI", ctypes.string_at(dacl + offset, 8))
+            # Allowed and allowed-callback ACEs share a layout; object ACEs exist only in directory services. The mask
+            # is FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, GENERIC_WRITE or GENERIC_ALL.
+            if ace_type in {0, 9} and mask & (0x2 | 0x4 | 0x40 | 0x40000000 | 0x10000000):
+                writers.add(_sid_at(dacl + offset + 8))
+            offset += ace_size
+        return writers
+
+    def _user_sid() -> bytes:
+        token = wintypes.HANDLE()
+        token_query: Final = 0x0008
+        open_as_self: Final = True
+        # An impersonating thread acts as the account it impersonates, which is the one whose names the lock creates.
+        if not (
+            _advapi32.OpenThreadToken(_kernel32.GetCurrentThread(), token_query, open_as_self, ctypes.byref(token))
+            or _advapi32.OpenProcessToken(_kernel32.GetCurrentProcess(), token_query, ctypes.byref(token))
+        ):  # pragma: no cover  # every process may query its own token
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            size = wintypes.DWORD()
+            _advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+            buffer = ctypes.create_string_buffer(size.value)
+            if not _advapi32.GetTokenInformation(
+                token, 1, buffer, size, ctypes.byref(size)
+            ):  # pragma: no cover  # the buffer has the size the first call asked for
+                raise ctypes.WinError(ctypes.get_last_error())
+            return _sid_at(cast("int", ctypes.c_void_p.from_buffer(buffer).value))
+        finally:
+            _kernel32.CloseHandle(token)
+
+    def _sid_from_text(text: str) -> bytes:
+        revision, authority, *subauthorities = (int(part) for part in text.removeprefix("S-").split("-"))
+        return (
+            struct.pack("<BB", revision, len(subauthorities))
+            + authority.to_bytes(6, "big")
+            + struct.pack(f"<{len(subauthorities)}I", *subauthorities)
+        )
+
+    def _sid_at(address: int) -> bytes:
+        return ctypes.string_at(address, 8 + 4 * ctypes.string_at(address + 1, 1)[0])
+
+    def _make_private_directory(path: str) -> None:
+        """Create *path* with the owner-only descriptor, so that nobody else can add a name to it."""
+        attributes = _SECURITY_ATTRIBUTES(
+            nLength=ctypes.sizeof(_SECURITY_ATTRIBUTES),
+            lpSecurityDescriptor=_owner_only_descriptor(),
+            bInheritHandle=False,
+        )
+        if not _kernel32.CreateDirectoryW(path, ctypes.byref(attributes)):  # pragma: no cover  # the name is fresh
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    @contextmanager
+    def _pinned(path: str) -> Generator[tuple[int, int]]:
+        """Hold *path* open without delete sharing, which keeps its name from being renamed or removed."""
+        with _opened(path, _FILE_SHARE_READ_WRITE) as handle:
+            yield _identity_of(handle)
+
+    def _identity_at(path: str) -> tuple[int, int]:
+        with _opened(path, _FILE_SHARE_ALL) as handle:
+            return _identity_of(handle)
+
+    def _identity_of_fd(fd: int) -> tuple[int, int]:
+        return _identity_of(msvcrt.get_osfhandle(fd))
+
+    @contextmanager
+    def _opened(path: str, share: int) -> Generator[int]:
+        # The final component is opened as itself, never through a reparse point.
+        handle = _kernel32.CreateFileW(
+            path,
+            _FILE_READ_ATTRIBUTES,
+            share,
+            None,
+            3,  # OPEN_EXISTING
+            0x02000000 | 0x00200000,  # FILE_FLAG_BACKUP_SEMANTICS opens a directory; FILE_FLAG_OPEN_REPARSE_POINT
+            None,
+        )
+        if handle in {None, _INVALID_HANDLE_VALUE}:  # pragma: no cover  # callers open a name they just made or listed
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            yield cast("int", handle)
+        finally:
+            _kernel32.CloseHandle(handle)
+
+    def _identity_of(handle: int) -> tuple[int, int]:
+        info = _BY_HANDLE_FILE_INFORMATION()
+        if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):  # pragma: no cover
+            raise ctypes.WinError(ctypes.get_last_error())
+        return info.dwVolumeSerialNumber, info.nFileIndexHigh << 32 | info.nFileIndexLow
+
 else:  # pragma: win32 no cover
 
     class WindowsFileLock(BaseFileLock):
@@ -403,6 +590,11 @@ else:  # pragma: win32 no cover
 
 __all__ = [
     "WindowsFileLock",
+    "_directory_is_private",
+    "_identity_at",
+    "_identity_of_fd",
     "_is_unlinked",
+    "_make_private_directory",
     "_open_non_reparse_fd",
+    "_pinned",
 ]
