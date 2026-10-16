@@ -289,9 +289,12 @@ class SoftFileLock(BaseFileLock):
 
     @classmethod
     def _marker_is_live(cls, content: str | None, breaker_pid: int) -> bool:  # pragma: win32 no cover
-        # The breaker's own marker names its PID on this host; the same number on another host is a holder.
         if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
             return True
+        if content == _RECORDLESS_MARKER:
+            # An empty marker is a pre-3.22 holder for as long as it exists, as the stale check treats it.
+            return True
+        # The breaker's own marker names its PID on this host; the same number on another host is a holder.
         return (
             (holder := _parse_lock_holder(content)) is not None
             and (holder[0] != breaker_pid or holder[1] != host_name())

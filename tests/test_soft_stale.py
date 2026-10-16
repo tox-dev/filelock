@@ -180,6 +180,19 @@ def test_empty_lock_not_evicted_when_old(lock_path: Path, lock_type: type[SoftFi
     assert lock_path.read_bytes() == b""
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+def test_stale_break_restores_a_stranded_empty_marker(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    _break_name(lock).write_bytes(b"")
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (lock.read_bytes(), list(tmp_path.glob("test.lock.break.*"))) == (b"", [])
+
+
 def test_timeout_names_an_owner_that_recorded_no_pid(lock_path: Path) -> None:
     lock_path.write_bytes(b"")
     with pytest.raises(Timeout, match="held by an owner that recorded no PID"):
