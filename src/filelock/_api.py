@@ -59,6 +59,7 @@ _CLOSE_ERROR_POLICIES: Final[frozenset[str]] = frozenset({"default", "raise", "s
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping
+    from threading import Lock
     from types import FrameType, TracebackType
     from typing import Protocol
 
@@ -1719,6 +1720,24 @@ def _resolve_read_write_timeout(timeout: float, *, blocking: bool) -> float:
     return timeout
 
 
+def _acquire_thread_lock(
+    lock: Lock, *, blocking: bool, timeout: float, poll_interval: float, cancel_check: Callable[[], bool] | None
+) -> bool:
+    """Take a read-write lock's in-process lock; with *cancel_check*, ask it every *poll_interval* while waiting."""
+    if not blocking:
+        return lock.acquire(blocking=False)
+    if cancel_check is None:
+        # Lock.acquire raises OverflowError past TIMEOUT_MAX, which is 49.7 days on Windows.
+        return lock.acquire() if timeout == -1 else lock.acquire(timeout=min(timeout, TIMEOUT_MAX))
+    deadline = None if timeout == -1 else time.perf_counter() + timeout
+    while not lock.acquire(
+        timeout=poll_interval if deadline is None else min(poll_interval, max(deadline - time.perf_counter(), 0))
+    ):
+        if cancel_check() or (deadline is not None and time.perf_counter() >= deadline):
+            return False
+    return True
+
+
 def _resolve_timeout(timeout: float, *, blocking: bool) -> float:
     """Validate an acquire ``timeout``; every negative value waits without a limit."""
     if math.isnan(timeout := _seconds("timeout", timeout)) and blocking:
@@ -2232,6 +2251,7 @@ __all__ = [
     "FileLockMeta",
     "LockOptions",
     "ThreadLocalFileContext",
+    "_acquire_thread_lock",
     "_append_exception_context",
     "_canonical",
     "_check_timeout_max",

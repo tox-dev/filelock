@@ -395,14 +395,15 @@ async def test_async_acquire_cancellation_hands_the_claim_back(
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_acquire_cancellation_surfaces_a_failed_acquire(tmp_path: Path, mocker: MockerFixture) -> None:
-    acquire_error = Timeout(str(tmp_path / "foo.lock"))
+    # A Timeout here means the acquire gave up on the cancellation, so a real failure has to be another error.
+    acquire_error = OSError("acquire failed")
     gate = _Gate(mocker, "_acquire_level_of", fail_with=acquire_error)
     lock = _make(tmp_path)
     task = asyncio.create_task(lock.acquire_write(timeout=5))
     await gate.started.wait()
     task.cancel("cancel acquire")
     gate.resume()
-    with pytest.raises(Timeout) as info:
+    with pytest.raises(OSError, match="acquire failed") as info:
         await task
 
     assert info.value is acquire_error

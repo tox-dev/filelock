@@ -32,6 +32,7 @@ from weakref import WeakValueDictionary
 
 from filelock._api import (
     AcquireReturnProxy,
+    _acquire_thread_lock,
     _canonical,
     _ensure_current_process,
     _fork_transition,
@@ -70,6 +71,8 @@ _DatabaseIdentity: TypeAlias = tuple[int, int]
 
 # sqlite3_busy_timeout() accepts a C int, max 2_147_483_647 on 32-bit. Use a lower value to be safe (~23 days).
 _MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
+# How long a wait that its caller may abandon runs before it checks whether it should stop.
+_CANCEL_POLL_INTERVAL: Final[float] = 0.1
 _UNSAFE_FORK_EXIT_STATUS: Final[int] = 70
 #: The longest a contended acquisition waits for the database inside one fork transition, in seconds.
 _MAX_TRANSITION_WAIT: Final[float] = 0.05
@@ -260,6 +263,13 @@ class _ProbeDescriptors:
         self._lock = threading.Lock()
         self._inodes = {}
         self._releases = deque()
+
+
+class _Operation(NamedTuple):
+    pid: int
+    start_time: float
+    #: Asked between bounded waits, so an abandoned acquire stops waiting; ``None`` waits in one call.
+    cancel_check: Callable[[], bool] | None
 
 
 class _Probe(NamedTuple):
@@ -643,11 +653,17 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._release(force=True, close=True)
 
     def _acquire_level_of(
-        self, holder: int, mode: Literal["read", "write"], timeout: float, *, blocking: bool
+        self,
+        holder: int,
+        mode: Literal["read", "write"],
+        timeout: float,
+        *,
+        blocking: bool,
+        cancel_check: Callable[[], bool],
     ) -> AcquireReturnProxy:
         # Records the level under *holder* instead of the calling thread: an async wrapper's executor thread does not
-        # identify the tasks it holds for.
-        return self._acquire(mode, timeout, blocking=blocking, holder=holder)
+        # identify the tasks it holds for. Gives up with Timeout once *cancel_check* is true.
+        return self._acquire(mode, timeout, blocking=blocking, holder=holder, cancel_check=cancel_check)
 
     def _release_level_of(self, thread_id: int) -> None:
         with _fork_transition():
@@ -763,7 +779,13 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             raise sqlite3.ProgrammingError(msg)
 
     def _acquire(
-        self, mode: Literal["read", "write"], timeout: float, *, blocking: bool, holder: int | None = None
+        self,
+        mode: Literal["read", "write"],
+        timeout: float,
+        *,
+        blocking: bool,
+        holder: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> AcquireReturnProxy:
         timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
         start_time: Final = time.monotonic()
@@ -781,7 +803,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             )
             try:
                 return self._attempt_acquire(
-                    mode, remaining if final else _MAX_TRANSITION_WAIT, blocking=blocking, holder=holder
+                    mode,
+                    remaining if final else _MAX_TRANSITION_WAIT,
+                    blocking=blocking,
+                    holder=holder,
+                    cancel_check=cancel_check,
                 )
             except Timeout:
                 if final:
@@ -791,7 +817,13 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 remaining = max(timeout - (time.monotonic() - start_time), 0)
 
     def _attempt_acquire(
-        self, mode: Literal["read", "write"], timeout: float, *, blocking: bool, holder: int | None = None
+        self,
+        mode: Literal["read", "write"],
+        timeout: float,
+        *,
+        blocking: bool,
+        holder: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> AcquireReturnProxy:
         with _fork_transition():
             self._raise_if_unusable()
@@ -807,11 +839,15 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 self._acquisition_thread_ids.add(thread_id)
             try:
                 start_time = time.perf_counter()
-                self._acquire_transaction_lock(blocking=blocking, timeout=timeout)
+                self._acquire_transaction_lock(blocking=blocking, timeout=timeout, cancel_check=cancel_check)
                 try:
                     self._raise_if_unusable()
                     return self._do_acquire_inner(
-                        mode, timeout, holder, blocking=blocking, operation=(operation_pid, start_time)
+                        mode,
+                        timeout,
+                        holder,
+                        blocking=blocking,
+                        operation=_Operation(operation_pid, start_time, cancel_check),
                     )
                 finally:
                     self._transaction_lock.release()
@@ -826,9 +862,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         holder: int,
         *,
         blocking: bool,
-        operation: tuple[int, float],
+        operation: _Operation,
     ) -> AcquireReturnProxy:
-        operation_pid, start_time = operation
+        operation_pid, start_time, _ = operation
         # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
         with self._internal_lock:
             if self._holds_level():
@@ -891,33 +927,52 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         timeout: float,
         *,
         blocking: bool,
-        operation: tuple[int, float],
+        operation: _Operation,
     ) -> None:
         with _sqlite_transition():
-            operation_pid, start_time = operation
             connection = cast("_ForkSafeConnection", self._con)
-            waited = time.perf_counter() - start_time
-            timeout_ms = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
-            self._raise_if_process_changed(operation_pid)
-            connection.executescript(f"PRAGMA busy_timeout={timeout_ms}; PRAGMA journal_mode=MEMORY;").close()
+            self._raise_if_process_changed(operation.pid)
             # Use legacy journal mode (not WAL) because WAL does not block readers while a concurrent EXCLUSIVE
             # write transaction is active, which makes read-write locking impossible without modifying table data.
             # MEMORY is safe here since no writes happen, so a crash cannot corrupt the DB.
             # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
-            #
-            # Recompute the remaining timeout after the blocking journal_mode pragma.
-            waited = time.perf_counter() - start_time
-            recomputed = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
-            self._raise_if_process_changed(operation_pid)
-            statements = f"PRAGMA busy_timeout={recomputed}; " if recomputed != timeout_ms else ""
-            statements += "BEGIN EXCLUSIVE TRANSACTION;" if mode == "write" else "BEGIN TRANSACTION;"
+            self._execute_waiting(
+                connection, "PRAGMA journal_mode=MEMORY;", timeout, blocking=blocking, operation=operation
+            )
+            self._raise_if_process_changed(operation.pid)
+            statements = "BEGIN EXCLUSIVE TRANSACTION;" if mode == "write" else "BEGIN TRANSACTION;"
             if mode == "read":
                 # SQLite takes the SHARED lock only when a statement reads; BEGIN alone stays deferred.
                 # https://www.sqlite.org/lockingv3.html#transaction_control
                 # sqlite_schema is an alias added in SQLite 3.33.0; sqlite_master works on every version.
                 statements += " SELECT name FROM sqlite_master LIMIT 1;"
-            connection.executescript(statements).close()
+            self._execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
             self._raise_if_database_replaced(connection)
+
+    @staticmethod
+    def _execute_waiting(
+        connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
+    ) -> None:
+        # SQLite's busy wait cannot be interrupted, so an acquire its caller may abandon waits in bounded slices and
+        # asks between them whether to stop.
+        slice_ms = int(_CANCEL_POLL_INTERVAL * 1000)
+        while True:
+            busy_ms = timeout_for_sqlite(
+                timeout, blocking=blocking, already_waited=time.perf_counter() - operation.start_time
+            )
+            cancel_check = operation.cancel_check if busy_ms > slice_ms else None
+            try:
+                connection.executescript(
+                    f"PRAGMA busy_timeout={busy_ms if cancel_check is None else slice_ms}; {statements}"
+                ).close()
+            except sqlite3.OperationalError as error:
+                if cancel_check is None or "database is locked" not in str(error) or cancel_check():
+                    raise
+                # A read's BEGIN succeeds before its SELECT waits, so the retry has to start a fresh transaction.
+                if connection.in_transaction:
+                    connection.rollback()
+            else:
+                return
 
     def _raise_if_database_replaced(self, connection: _ForkSafeConnection) -> None:
         # Windows pins the name: SQLite opens the database without delete sharing, so it cannot be unlinked or renamed.
@@ -1015,15 +1070,16 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._lock_level += 1
         return AcquireReturnProxy(lock=self)
 
-    def _acquire_transaction_lock(self, *, blocking: bool, timeout: float) -> None:
-        if not blocking:
-            acquired = self._transaction_lock.acquire(blocking=False)
-        elif timeout == -1:
-            acquired = self._transaction_lock.acquire(blocking=True)
-        else:
-            # Lock.acquire raises OverflowError past TIMEOUT_MAX, which is 49.7 days on Windows.
-            acquired = self._transaction_lock.acquire(blocking=True, timeout=min(timeout, threading.TIMEOUT_MAX))
-        if not acquired:
+    def _acquire_transaction_lock(
+        self, *, blocking: bool, timeout: float, cancel_check: Callable[[], bool] | None
+    ) -> None:
+        if not _acquire_thread_lock(
+            self._transaction_lock,
+            blocking=blocking,
+            timeout=timeout,
+            poll_interval=_CANCEL_POLL_INTERVAL,
+            cancel_check=cancel_check,
+        ):
             raise Timeout(self.lock_file) from None
 
     def _raise_if_acquiring(self, operation: Literal["acquire", "close", "release"]) -> None:

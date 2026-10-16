@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._async", "functools"]
+__lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._async", "filelock._error", "functools", "threading"]
 
 import asyncio
 import functools
 import os
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import thread as executor_threads
 from contextlib import asynccontextmanager
@@ -29,10 +30,10 @@ from filelock._async import (
     _task_owners_for,
     _wait_until_done,
 )
+from filelock._error import Timeout
 from filelock._read_write import ReadWriteLock
 
 if TYPE_CHECKING:
-    import threading
     from collections.abc import AsyncGenerator, Callable, MutableMapping
     from concurrent import futures
     from types import TracebackType
@@ -311,13 +312,19 @@ class AsyncReadWriteLock:
         if self._owns_executor:
             await asyncio.to_thread(functools.partial(self._executor.shutdown, wait=True))
 
-    async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
-        acquire_future = self._submit(acquire)
+    async def _run_acquire(self, acquire: Callable[..., AcquireReturnProxy]) -> None:
+        abandoned = threading.Event()
+        acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
         try:
             await _wait_until_done(acquire_future)
         except asyncio.CancelledError as cancellation:
+            # Stops a backend wait on another process's hold, which would otherwise outlast the caller by as long.
+            abandoned.set()
             try:
                 await _drain_future(acquire_future)
+            except Timeout:
+                # Nothing was taken, so the caller's cancellation is the whole outcome.
+                raise cancellation from None
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             try:

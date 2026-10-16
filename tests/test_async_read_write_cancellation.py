@@ -362,6 +362,30 @@ async def test_context_cancellation_preserves_body_and_rollback_contexts(
     assert_read_write_lock_state(lock_file, probe_mode, available=True)
 
 
+@pytest.mark.asyncio
+async def test_read_retried_after_its_select_waited_starts_a_fresh_transaction(
+    lock_file: str, mocker: MockerFixture
+) -> None:
+    busy_once = True
+
+    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+        nonlocal busy_once
+        if busy_once and "SELECT name" in statement:
+            # A writer can take the lock between the deferred BEGIN and the SELECT that needs the shared lock.
+            busy_once = False
+            real_connection.execute("BEGIN TRANSACTION")
+            msg = "database is locked"
+            raise sqlite3.OperationalError(msg)
+        return real_connection.executescript(statement)
+
+    _patch_async_connection(mocker, executescript=executescript)
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+
+    async with lock.read_lock():
+        assert_read_write_lock_state(lock_file, "write", available=False)
+    await lock.close()
+
+
 def _patch_async_rollback(
     mocker: MockerFixture,
     loop: asyncio.AbstractEventLoop,
