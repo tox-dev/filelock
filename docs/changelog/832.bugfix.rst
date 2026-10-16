@@ -1,0 +1,4 @@
+:meth:`AsyncReadWriteLock.close() <filelock.AsyncReadWriteLock.close>` and
+:meth:`AsyncSoftReadWriteLock.close() <filelock.AsyncSoftReadWriteLock.close>` on a singleton wrapper end only the holds
+taken through that wrapper, a reader arriving during ``close()`` is refused instead of joining the hold being closed, and
+the async wrappers stop admitting readers into a hold that synchronous code closed or force-released.
