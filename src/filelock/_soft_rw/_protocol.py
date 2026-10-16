@@ -211,13 +211,18 @@ class Ledger:
         self._clock = clock
         self._seen: dict[str, tuple[bytes | None, float]] = {}
 
-    def observe(self, key: str, value: bytes | None) -> float:
-        """Record *value* for *key* and return how long it has been unchanged."""
+    def observe(self, key: str, value: bytes | None, *, asked: float | None = None) -> float:
+        """
+        Record *value* for *key* and return how long it has been unchanged.
+
+        *asked* is the clock reading taken before *value* was fetched: an unchanged value is vouched for only up to
+        then, so a pause between the fetch and this call does not count as time the value stayed the same.
+        """
         now = self._clock()
         if (seen := self._seen.get(key)) is None or seen[0] != value:
             self._seen[key] = (value, now)
             return 0.0
-        return now - seen[1]
+        return (now if asked is None else asked) - seen[1]
 
     def forget(self, key: str) -> None:
         self._seen.pop(key, None)
@@ -561,8 +566,9 @@ class Participant:
         return self._unchanged_for_its_lease(token, self._holder_path(token))
 
     def _unchanged_for_its_lease(self, key: str, path: str) -> bool:
+        asked = self._clock()
         record = self._files.read(path)
-        return self._ledger.observe(key, record) >= max(self._stale_threshold, holder_lease(record) or 0.0)
+        return self._ledger.observe(key, record, asked=asked) >= max(self._stale_threshold, holder_lease(record) or 0.0)
 
     def _holder_path(self, token: str) -> str:
         return str(Path(self._root, _HOLDERS_DIRECTORY, token))

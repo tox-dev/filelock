@@ -166,6 +166,14 @@ def test_ledger_measures_how_long_a_value_stays_unchanged() -> None:
     assert ledger.observe("a", None) == pytest.approx(0.0)
 
 
+def test_ledger_counts_no_time_past_the_moment_the_observer_asked() -> None:
+    clock = [10.0]
+    ledger = Ledger(lambda: clock[0])
+    assert ledger.observe("a", b"1", asked=4.0) == pytest.approx(0.0)
+    clock[0] = 50.0
+    assert ledger.observe("a", b"1", asked=12.5) == pytest.approx(2.5)
+
+
 def test_ledger_retain_forgets_everything_else() -> None:
     clock = [0.0]
     ledger = Ledger(lambda: clock[0])
@@ -775,6 +783,33 @@ def test_a_tighter_peer_waits_out_the_holders_own_lease(lock_file: str, files: O
     assert not peer.advance()
     clock[0] = 11.0
     assert peer.advance()
+
+
+@pytest.mark.requires_hard_links
+def test_a_contender_suspended_after_its_read_does_not_evict_a_live_holder(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # The stop lands between the read of the holder's record and the clock sample that follows it; the holder keeps
+    # heartbeating throughout, so the bytes the contender resumes with are stale, not the holder.
+    clock = [0.0]
+    holder = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
+    holder.publish()
+    assert holder.advance()
+    peer = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
+    peer.publish()
+    assert not peer.advance()
+    record, real_read = str(Path(root, "holders", holder.token)), files.read
+
+    def read_then_sleep_through_a_heartbeat(path: str) -> bytes | None:
+        data = real_read(path)
+        if path == record:
+            clock[0] += 11.0
+            assert holder.heartbeat() == ("ok", None)
+        return data
+
+    mocker.patch.object(files, "read", autospec=True, side_effect=read_then_sleep_through_a_heartbeat)
+    assert not peer.advance()
+    assert holder.heartbeat() == ("ok", None)
 
 
 @pytest.mark.requires_hard_links
