@@ -56,10 +56,11 @@ class _AsyncTransitionGate:
 
     @contextlib.asynccontextmanager
     async def hold(self) -> AsyncGenerator[None]:
-        ticket = self._join()
+        ticket: ConcurrentFuture[None] = ConcurrentFuture()
         try:
+            self._join(ticket)
             if not ticket.done():
-                await _wait_until_done(asyncio.wrap_future(ticket))
+                await self._wait_for_turn(ticket, blocking=True, cancel_check=None, deadline=None, poll_interval=0.05)
             yield
         finally:
             self._leave(ticket)
@@ -73,8 +74,9 @@ class _AsyncTransitionGate:
         deadline: float | None,
         poll_interval: float,
     ) -> AsyncGenerator[None]:
-        ticket = self._join()
+        ticket: ConcurrentFuture[None] = ConcurrentFuture()
         try:
+            self._join(ticket)
             if not ticket.done():
                 await self._wait_for_turn(
                     ticket,
@@ -87,8 +89,8 @@ class _AsyncTransitionGate:
         finally:
             self._leave(ticket)
 
-    @staticmethod
     async def _wait_for_turn(
+        self,
         ticket: ConcurrentFuture[None],
         *,
         blocking: bool,
@@ -102,30 +104,37 @@ class _AsyncTransitionGate:
         while not ticket.done():
             if cancel_check is not None and cancel_check():
                 raise _AsyncTransitionUnavailableError
+            wait_interval = poll_interval
             if deadline is not None:
                 if (remaining := deadline - time.perf_counter()) <= 0:
                     raise _AsyncTransitionUnavailableError
-                wait_interval = min(poll_interval, remaining) if cancel_check is not None else remaining
-            else:
-                wait_interval = poll_interval if cancel_check is not None else None
+                wait_interval = min(wait_interval, remaining)
             await asyncio.wait((waiter,), timeout=wait_interval)
+            # A hand-off that a signal handler's exception cut short leaves the head undone, so the head settles itself.
+            self._settle_head()
 
-    def _join(self) -> ConcurrentFuture[None]:
-        ticket: ConcurrentFuture[None] = ConcurrentFuture()
+    def _join(self, ticket: ConcurrentFuture[None]) -> None:
         with self._queue_lock:
             self._queue.append(ticket)
             if len(self._queue) == 1:
                 ticket.set_result(None)
-        return ticket
 
     def _leave(self, ticket: ConcurrentFuture[None]) -> None:
         with self._queue_lock:
-            # A waiter whose turn came while it was giving up holds the gate too, so it hands it on.
-            held = self._queue[0] is ticket
-            self._queue.remove(ticket)
-            successor = self._queue[0] if held and self._queue else None
-        if successor is not None:
-            successor.set_result(None)
+            try:
+                self._queue.remove(ticket)
+            except ValueError:
+                # The join never completed, or this ticket already left.
+                return
+            self._settle_head_locked()
+
+    def _settle_head(self) -> None:
+        with self._queue_lock:
+            self._settle_head_locked()
+
+    def _settle_head_locked(self) -> None:
+        if self._queue and not (head := self._queue[0]).done():
+            head.set_result(None)
 
 
 @dataclass

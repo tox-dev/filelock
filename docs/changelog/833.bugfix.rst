@@ -1,4 +1,5 @@
 :class:`~filelock.ReadWriteLock` locks again after a ``release()`` that an exception from a signal handler interrupted.
 The async read-write wrappers stop admitting readers into such a level. The async read-write locks forget a hold whose
 backend release failed after the backend let go, and they free the memory of each acquire that times out or is canceled.
-:class:`~filelock.AsyncFileLock` returns from ``release()`` after a few hundred acquires gave up behind a waiting one.
+:class:`~filelock.AsyncFileLock` returns from ``release()`` after a few hundred acquires gave up behind a waiting one. An exception from a signal handler delivered while an :class:`~filelock.AsyncFileLock` call joins
+its queue no longer blocks every later call on that lock.
