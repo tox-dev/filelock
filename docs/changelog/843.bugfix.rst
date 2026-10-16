@@ -1,0 +1,5 @@
+Fix :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease`
+removing a live holder's marker when a freed inode number was handed to the next marker, when a stalled
+:class:`~filelock.FileLock` removed its ``ENOSYS`` placeholder after a peer had replaced it, or when a failed acquire
+cleaned up after a successor took the path. Restoring a marker a stale break moved aside no longer follows a symlink
+found under the break name.
