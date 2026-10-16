@@ -18,7 +18,7 @@ from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
-from tests.conftest import acquire_after_reclaim, held_after_reclaim
+from tests.inode_reuse_helpers import reuse_inode
 from tests.pid_namespace_helpers import pin_pid_namespace
 
 if TYPE_CHECKING:
@@ -538,6 +538,27 @@ def test_zero_write_rolls_back_acquire(lock_path: Path, mocker: MockerFixture) -
     assert not lock_path.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows unlinks a marker only after closing it")
+def test_failed_acquire_spares_a_successor_on_the_freed_inode_number(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    def evicted_and_succeeded_then_write_fails(fd: int, data: bytes) -> int:
+        # A contender evicted the still-empty marker, and the next holder's marker gets its inode number once freed.
+        ours: Final = os.fstat(fd)
+        lock_path.unlink()
+        lock_path.write_text("live", encoding="utf-8")
+        os.utime(lock_path, ns=(ours.st_atime_ns, ours.st_mtime_ns))
+        reuse_inode(mocker, lock_path, ours)
+        raise OSError(ENOSPC, f"No space left on device for {len(data)} bytes")
+
+    mocker.patch("filelock._util.os.write", side_effect=evicted_and_succeeded_then_write_fails)
+    with pytest.raises(OSError, match="No space left on device"):
+        SoftFileLock(lock_path).acquire()
+    mocker.stopall()
+
+    assert lock_path.read_text(encoding="utf-8") == "live"
+
+
 def test_failed_acquire_cleanup_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:
     mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
     _hold_reports_foreign_identity(mocker)
@@ -747,6 +768,25 @@ def test_marker_unlink_refused_while_open_is_retried_after_the_close(  # pragma:
     lock.release()
 
     assert (lock.is_locked, lock_path.exists(), len(attempts)) == (False, False, 2)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows always unlinks the marker after the close")
+def test_marker_unlink_retried_after_the_close_spares_a_successor(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    lock: Final = SoftFileLock(lock_path)
+    lock.acquire()
+
+    def refuse_while_open_and_successor_replaces(path: Path, missing_ok: bool = False) -> None:
+        (successor := path.with_name("successor")).write_text("live", encoding="utf-8")
+        successor.replace(path)
+        raise PermissionError(EACCES, f"file in use, missing_ok={missing_ok}")
+
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=refuse_while_open_and_successor_replaces)
+    lock.release()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock_path.read_text(encoding="utf-8")) == (False, "live")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="POSIX unlinks the marker before the close, so both cannot fail")
