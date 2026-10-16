@@ -346,6 +346,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     # Distinct from "symlink": a runtime can create them yet still not refuse to follow one.
     "o-nofollow": _refuses_to_open_a_symlink(),
     "utime-nofollow": os.utime in os.supports_follow_symlinks,
+    "access-nofollow": os.access in os.supports_follow_symlinks,
     "utime-fd": os.utime in os.supports_fd,
     "sqlite3": find_spec("sqlite3") is not None,
     "lazy-imports": hasattr(sys, "set_lazy_imports"),
