@@ -1,0 +1,3 @@
+Fix a :class:`~filelock.SoftFileLock` contender evicting an empty marker after two seconds while its owner, a
+``SoftFileLock`` before 3.22 or a current one still writing its record, held the lock. An empty marker now reads as held
+and is cleared by ``timeout``, ``lifetime`` or ``break_lock()``.
