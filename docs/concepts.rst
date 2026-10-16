@@ -458,8 +458,9 @@ The defense differs by platform:
   created and that file has no second name, and it opens the record without blocking. It leaves alone a hard link (a
   second name for the same file) or a FIFO (a named pipe) renamed over the record.
 
-:class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path and keeps SQLite on the file it
-checked, so a link planted in a shared directory cannot point the lock at another file.
+:class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path. In a directory other users can
+write, it connects SQLite through a private hard link to the file it checked, so neither a link nor a journal file
+another process puts there can point the lock at another file.
 
 ***************************************
  What filelock doesn't protect against

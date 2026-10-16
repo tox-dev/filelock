@@ -438,9 +438,11 @@ requirement. Use a local filesystem the active SQLite VFS supports and a databas
 raises :class:`ValueError`, because WAL never blocks readers behind a writer, and so does a database whose schema takes
 more than a few kilobytes to load, because loading it is work the timeout cannot bound.
 
-On macOS, the database directory must be writable and the filesystem must support hard links. filelock opens SQLite
-through a private alias of the validated database to avoid the ``/dev/fd`` lookup implicated in the kernel panic in
-`issue #818 <https://github.com/tox-dev/filelock/issues/818>`_. Alias creation failure raises :class:`OSError`.
+On POSIX, SQLite opens the database by its name and acts on ``-journal``, ``-wal`` and ``-shm`` files it finds beside it.
+When other users can write to the database directory, filelock instead opens SQLite through a private hard link to the
+validated database, inside a ``.filelock-*`` directory that only the locking user can read. That directory must then be
+writable by the locking user, and the filesystem must support hard links; alias creation failure raises
+:class:`OSError`.
 
 .. code-block:: python
 

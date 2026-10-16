@@ -8,7 +8,7 @@ __lazy_modules__ = [
     "hashlib",
     "itertools",
     "pathlib",
-    "shutil",
+    "secrets",
     "tempfile",
 ]
 
@@ -16,7 +16,7 @@ import hashlib
 import logging
 import os
 import pathlib
-import shutil
+import secrets
 import sqlite3
 import stat
 import sys
@@ -78,8 +78,7 @@ _UNSAFE_FORK_EXIT_STATUS: Final[int] = 70
 _MAX_TRANSITION_WAIT: Final[float] = 0.05
 # O_NONBLOCK keeps an open from blocking on a FIFO planted at the path; the regular-file check then rejects it.
 _DB_OPEN_FLAGS: Final[int] = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-# Descriptor paths reopen the validated inode; journal_mode=MEMORY avoids an on-disk journal at the synthetic path.
-_FD_DIR: Final[str] = "/proc/self/fd" if sys.platform == "linux" else "/dev/fd"
+_DIRECTORY_FLAGS: Final[int] = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 # Header bytes 18 and 19 hold the file format versions, 2 in WAL mode: https://www.sqlite.org/fileformat.html
 _SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
 _FORMAT_VERSIONS: Final[slice] = slice(18, 20)
@@ -177,7 +176,8 @@ class _ForkedDatabaseRegistry:
 _FORKED_DATABASES: Final = _ForkedDatabaseRegistry()
 
 _LINK_PREFIX: Final[str] = ".filelock-"
-_SWEPT_DIRECTORIES: Final[set[str]] = set()
+_LINK_NAME: Final[str] = "lock.db"
+_SWEPT_DATABASES: Final[set[_DatabaseIdentity]] = set()
 
 
 # POSIX locks belong to the process and the inode, so closing any descriptor on the inode drops the locks every other
@@ -192,7 +192,7 @@ class _ProbeDescriptors:
 
     def adopt(self, database: str, claimed: list[_Probe]) -> _Probe | None:  # pragma: win32 no cover
         # Reuse a probe no live connection holds: each connect would otherwise keep another descriptor open until the
-        # inode's last close, and two live connections through one /dev/fd name make macOS SQLite fail to open.
+        # inode's last close.
         try:
             stat_result: Final = os.lstat(database)
         except OSError:
@@ -214,11 +214,6 @@ class _ProbeDescriptors:
             claimed.append(retained := _Probe(identity, fd, next(self._leases)))
             probes.leases.add(retained.lease)
         return retained
-
-    # macOS opens through a hard link, so only descriptor-path connections need this check.
-    def shared(self, probe: _Probe) -> bool:  # pragma: win32 no cover  # pragma: darwin no cover
-        with self._lock:
-            return len(self._inodes[probe.identity].leases) > 1
 
     def release(self, probe: _Probe) -> None:  # pragma: win32 no cover
         # A finalizer may run this on a thread already inside the lock, so it never waits; the lock holder drains.
@@ -292,7 +287,7 @@ _PROBE_DESCRIPTORS: Final = _ProbeDescriptors()
 class _ForkSafeConnection(sqlite3.Connection):
     _creator_pid: int
     _decrement_escrow: Callable[[sqlite3.Connection], None] | None
-    _database_directory: pathlib.Path | None
+    _database_directory: _LinkDirectory | None
     database_identity: _DatabaseIdentity | None = None
     _probe: _Probe | None = None
 
@@ -316,9 +311,7 @@ class _ForkSafeConnection(sqlite3.Connection):
                 try:
                     if (directory := self._database_directory) is not None:  # pragma: needs posix-hard-link
                         self._database_directory = None
-                        # Leftover private links are plain directories someone may already have removed.
-                        with suppress(FileNotFoundError):
-                            shutil.rmtree(directory)
+                        _remove_link_directory(directory)
                 finally:
                     if (probe := self._probe) is not None:  # pragma: win32 no cover
                         self._probe = self.database_identity = None
@@ -327,7 +320,7 @@ class _ForkSafeConnection(sqlite3.Connection):
                     self._decrement_escrow = None
                     decrement(self)
 
-    def retain_until_close(self, directory: pathlib.Path | None, probe: _Probe) -> None:  # pragma: win32 no cover
+    def retain_until_close(self, directory: _LinkDirectory | None, probe: _Probe) -> None:  # pragma: win32 no cover
         """Keep the private link and this connection's probe descriptor until SQLite no longer uses them."""
         self._database_directory = directory
         self._probe = probe
@@ -456,8 +449,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. A ``.db`` extension is a convention rather than a requirement; the filesystem must be one the active
-    SQLite VFS supports. On macOS, the database directory must be writable and support hard links. Give the lock a file
-    of its own: a WAL-mode database, or one with a schema larger than a lock needs, raises :class:`ValueError`.
+    SQLite VFS supports. On POSIX, a database directory other users can write must also be writable by this user and
+    support hard links. Give the lock a file of its own: a WAL-mode database, or one with a schema larger than a lock
+    needs, raises :class:`ValueError`.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
@@ -1119,7 +1113,7 @@ def _connect_through_descriptor(  # pragma: win32 no cover
     # Listed before its lease is taken and cleared once a connection owns it, so any exception between, an interrupt
     # included, releases the lease instead of pinning the inode's probes.
     claimed: Final[list[_Probe]] = []
-    directory: pathlib.Path | None = None
+    link: _LinkDirectory | None = None
     try:
         if (probe := _PROBE_DESCRIPTORS.adopt(database, claimed)) is None:
             probe = _PROBE_DESCRIPTORS.retain(_open_lock_database(database), claimed)
@@ -1127,76 +1121,122 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         # Releases a finalizer queued while the table was locked.
         _PROBE_DESCRIPTORS.drain()
         _raise_if_wal(fd, database)
-        target = pathlib.Path(f"{_FD_DIR}/{fd}")
-        # macOS /dev/fd lookup can panic the kernel: https://github.com/tox-dev/filelock/issues/818
-        descriptor_usable: Final = sys.platform != "darwin" and os.access(target, os.F_OK)
-        # SQLite reuses a descriptor it deferred closing for a peer's locks only when stat of the name it opened reports
-        # the file, which macOS's /dev/fd does not, so every connect beside a holder would keep one more open. NetBSD's
-        # static /dev/fd exposes only descriptors 0-63. A private hard link names the file and pins the validated inode.
-        if not descriptor_usable or (  # pragma: needs posix-hard-link
-            _PROBE_DESCRIPTORS.shared(probe) and ((named := target.stat()).st_dev, named.st_ino) != identity
-        ):
-            try:
-                directory = _link_beside(database, identity)
-            except OSError:
-                # A usable descriptor path still pins the inode; macOS must not fall back to /dev/fd.
-                if not descriptor_usable:
-                    raise
-            else:
-                target = directory / "lock.db"
+        target = database
+        # SQLite opens the name it is given, following symlinks, and acts on -journal, -wal and -shm files it finds
+        # beside it, so it gets the database name only where no other user can create or rename names. A descriptor
+        # path such as /proc/self/fd/<n> does not help: SQLite reads it back into the name the kernel reports.
+        if not _names_are_private(pathlib.Path(database).parent):  # pragma: needs posix-hard-link
+            link = _link_beside(database, identity)
+            target = os.fspath(link.database)
         connection = sqlite3.connect(
-            os.fspath(target), check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+            target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
         )
-        connection.retain_until_close(directory, probe)
+        connection.retain_until_close(link, probe)
         claimed.clear()
         return connection
     finally:
         for unowned in claimed:
             _PROBE_DESCRIPTORS.release(unowned)
-        if claimed and directory is not None:  # pragma: needs posix-hard-link
+        if claimed and link is not None:  # pragma: needs posix-hard-link
             # A connection that already took the link removes it too when it closes.
-            with suppress(FileNotFoundError):
-                shutil.rmtree(directory)
+            _remove_link_directory(link)
 
 
-def _link_beside(database: str, identity: _DatabaseIdentity) -> pathlib.Path:  # pragma: needs posix-hard-link
+def _names_are_private(directory: pathlib.Path) -> bool:  # pragma: win32 no cover
+    status: Final = os.lstat(directory)
+    # The sticky bit still lets others create names, so a directory anyone else may write to never qualifies.
+    return status.st_uid in {os.geteuid(), 0} and not status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
+class _LinkDirectory(NamedTuple):  # pragma: needs posix-hard-link
+    path: pathlib.Path
+    identity: _DatabaseIdentity
+    # Created through a descriptor of path and unlisted to anyone else, so a directory another user swaps in under path
+    # cannot hold it, and SQLite fails to open rather than follow what that directory holds.
+    name: str
+
+    @property
+    def database(self) -> pathlib.Path:
+        return self.path / self.name / _LINK_NAME
+
+
+def _link_beside(database: str, identity: _DatabaseIdentity) -> _LinkDirectory:  # pragma: needs posix-hard-link
     # Beside the database because a link cannot cross filesystems, and TMPDIR is often on another one.
     parent: Final = pathlib.Path(database).parent
-    _sweep_links_of_the_dead(parent)
-    directory: Final = pathlib.Path(tempfile.mkdtemp(prefix=_link_prefix(), dir=parent))
+    _sweep_links_of_the_dead(parent, identity)
+    path: Final = pathlib.Path(tempfile.mkdtemp(prefix=_link_prefix(), dir=parent))
+    fd: Final = os.open(path, _DIRECTORY_FLAGS)
     try:
-        os.link(database, link := directory / "lock.db", follow_symlinks=False)
-        linked: Final = link.stat(follow_symlinks=False)
-    except BaseException:
-        shutil.rmtree(directory)
-        raise
+        made: Final = os.fstat(fd)
+        # Whoever can rename in the parent can put another directory under the new name before it opens.
+        if made.st_uid != os.geteuid() or made.st_mode & 0o077:
+            msg = f"link directory {os.fspath(path)!r} was replaced while opening"
+            raise OSError(msg)
+        link: Final = _LinkDirectory(path, (made.st_dev, made.st_ino), secrets.token_hex(8))
+        try:
+            os.mkdir(link.name, 0o700, dir_fd=fd)
+            os.link(database, link.database, follow_symlinks=False)
+            linked: Final = link.database.stat(follow_symlinks=False)
+        except BaseException:
+            _remove_link_directory(link)
+            raise
+    finally:
+        os.close(fd)
     if (linked.st_dev, linked.st_ino) != identity:
-        shutil.rmtree(directory)
+        _remove_link_directory(link)
         msg = f"lock database changed while opening: {database!r}"
         raise OSError(msg)
-    return directory
+    return link
 
 
-def _sweep_links_of_the_dead(parent: pathlib.Path) -> None:  # pragma: needs posix-hard-link
+def _sweep_links_of_the_dead(
+    parent: pathlib.Path, identity: _DatabaseIdentity
+) -> None:  # pragma: needs posix-hard-link
     # A process killed while it held a link leaves the directory, and an extra link to the database, behind for good.
     # Two threads sweeping at once only both try the same removals, which a lock would cost a fork-safety reset for.
-    if (key := os.fspath(parent)) in _SWEPT_DIRECTORIES:
+    if identity in _SWEPT_DATABASES:
         return
-    _SWEPT_DIRECTORIES.add(key)
+    _SWEPT_DATABASES.add(identity)
     try:
         with os.scandir(parent) as entries:
-            directories: Final = [
-                pathlib.Path(entry.path)
+            names: Final = [
+                entry.name
                 for entry in entries
                 if entry.name.startswith(_LINK_PREFIX) and entry.is_dir(follow_symlinks=False)
             ]
     except OSError:
         return
-    for directory in directories:
-        if _owner_is_gone(directory.name):
+    for name in names:
+        if _owner_is_gone(name):
             # A peer sweeping alongside, or a directory this user cannot remove, must not fail the connect.
             with suppress(OSError):
-                shutil.rmtree(directory)
+                _remove_dead_links(parent / name, identity)
+
+
+def _remove_dead_links(path: pathlib.Path, identity: _DatabaseIdentity) -> None:  # pragma: needs posix-hard-link
+    # Anyone who can rename in the parent can give any directory a dead holder's name, so only hard links to this
+    # database go, and a directory only once that leaves it empty.
+    fd: Final = os.open(path, _DIRECTORY_FLAGS)
+    try:
+        with os.scandir(fd) as entries:
+            names: Final = [entry.name for entry in entries]
+        removed = False
+        for entry in names:
+            # Releases up to 4.2.0 linked the database right inside the directory.
+            relative = entry if entry == _LINK_NAME else f"{entry}/{_LINK_NAME}"
+            try:
+                linked = os.stat(relative, dir_fd=fd, follow_symlinks=False)
+            except OSError:
+                continue
+            if (linked.st_dev, linked.st_ino) == identity:
+                os.unlink(relative, dir_fd=fd)
+                if relative != entry:
+                    os.rmdir(entry, dir_fd=fd)
+                removed = True
+    finally:
+        os.close(fd)
+    if removed:
+        path.rmdir()
 
 
 def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
@@ -1222,6 +1262,29 @@ def _link_prefix() -> str:  # pragma: needs posix-hard-link
 def _host_digest(host: str) -> str:  # pragma: needs posix-hard-link
     # SHA-256 as host_name does: some runtimes, GraalPy's among them, have no BLAKE2 with a custom digest size.
     return hashlib.sha256(host.encode()).hexdigest()[:16]
+
+
+def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix-hard-link
+    # Another user who can rename in the parent may have put any directory under the name, so its entries go through a
+    # descriptor checked to be the directory made, and the name goes only with rmdir, which leaves anything not empty.
+    try:
+        fd: Final = os.open(link.path, _DIRECTORY_FLAGS)
+    except OSError:
+        return
+    try:
+        opened: Final = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != link.identity:
+            return
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            with suppress(FileNotFoundError):
+                os.unlink(f"{link.name}/{_LINK_NAME}{suffix}", dir_fd=fd)
+        with suppress(FileNotFoundError):
+            os.rmdir(link.name, dir_fd=fd)
+    finally:
+        os.close(fd)
+    # Only a leftover: the link the directory held is gone, so a failure costs nothing worth failing a release for.
+    with suppress(OSError):
+        link.path.rmdir()
 
 
 def _open_lock_database(database: str) -> int:
