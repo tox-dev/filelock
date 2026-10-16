@@ -1004,11 +1004,14 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if _GETPID() != creator_pid:  # pragma: forked child
                 msg = "SQLite connection construction cannot continue after fork"
                 raise RuntimeError(msg)
-            connection = _connect(
-                os.fspath(self._canonical_path),
-                factory=_ForkSafeConnection,
-                timeout=sqlite_timeout,
-            )
+            try:
+                connection = _connect(
+                    os.fspath(self._canonical_path),
+                    factory=_ForkSafeConnection,
+                    timeout=sqlite_timeout,
+                )
+            except BlockingIOError:
+                raise Timeout(self.lock_file) from None
             if functions is not None:  # pragma: <3.12 cover  # pragma: needs fork
                 connection.acquire_escrow(functions)
             if _GETPID() != creator_pid:  # pragma: forked child
@@ -1110,7 +1113,7 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
     # A symlink at the path would make SQLite open, lock, or create its target, so connect through a descriptor that
     # refuses one.
     if sys.platform == "win32":  # pragma: win32 cover
-        fd: Final = _open_lock_database(database)
+        fd: Final = _open_lock_database(database, oplock_wait=timeout)
         link: _LinkDirectory | None = None
         # A Windows lock belongs to the handle that took it, so closing this one leaves SQLite's locks in place.
         try:
@@ -1402,11 +1405,11 @@ if sys.platform == "win32":  # pragma: win32 cover
             link.path.rmdir()
 
 
-def _open_lock_database(database: str) -> int:
+def _open_lock_database(database: str, *, oplock_wait: float = 0) -> int:
     if sys.platform == "win32":  # pragma: win32 cover
         # The handle refuses a reparse point and omits delete sharing, so the name cannot be swapped while it is open.
-        if (fd := _open_non_reparse_fd(database, 0o600)) is None:
-            msg = f"lock database {database!r} is being deleted or held without sharing"
+        if (fd := _open_non_reparse_fd(database, 0o600, oplock_wait=oplock_wait)) is None:
+            msg = f"lock database {database!r} is held without sharing or pending deletion"
             raise PermissionError(msg)
         return fd
     fd = os.open(database, _DB_OPEN_FLAGS, 0o600)  # pragma: win32 no cover

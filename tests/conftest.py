@@ -267,3 +267,79 @@ def inheriting_directory(tmp_path: Path) -> Path:  # pragma: win32 cover
         check=True,
     )
     return directory
+
+
+@pytest.fixture
+def hold_oplock() -> Iterator[Callable[[Path], Callable[[], None]]]:  # pragma: win32 cover
+    # The marker skips the run off Windows; this only narrows ctypes.WinDLL for ty.
+    assert sys.platform == "win32"
+    import ctypes
+    from ctypes import wintypes
+
+    class Overlapped(ctypes.Structure):
+        _fields_ = (
+            ("Internal", ctypes.c_void_p),
+            ("InternalHigh", ctypes.c_void_p),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = kernel32.CreateEventW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.DeviceIoControl.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.POINTER(Overlapped),
+    ]
+    closers: list[Callable[[], None]] = []
+
+    def hold(path: Path) -> Callable[[], None]:
+        generic_read, share_all, open_existing, flag_overlapped = 0x80000000, 0x1 | 0x2 | 0x4, 3, 0x40000000
+        handle = kernel32.CreateFileW(str(path), generic_read, share_all, None, open_existing, flag_overlapped, None)
+        overlapped = Overlapped(hEvent=kernel32.CreateEventW(None, True, False, None))
+        # FSCTL_REQUEST_OPLOCK_LEVEL_1 stays pending while granted; a read handle suffices to make other opens wait.
+        assert not kernel32.DeviceIoControl(handle, 0x00090000, None, 0, None, 0, None, ctypes.byref(overlapped))
+        assert ctypes.get_last_error() == 997  # ERROR_IO_PENDING
+        closed = False
+
+        def close() -> None:
+            nonlocal closed
+            if closed:
+                return
+            closed = True
+            kernel32.CloseHandle(handle)
+            # The request completes on close and writes overlapped, so wait before freeing it.
+            kernel32.WaitForSingleObject(overlapped.hEvent, 5000)
+            kernel32.CloseHandle(overlapped.hEvent)
+
+        closers.append(close)
+        return close
+
+    yield hold
+    for close in closers:
+        close()
+
+
+@pytest.fixture
+def oplocked_lock_path(
+    request: pytest.FixtureRequest, tmp_path: Path, hold_oplock: Callable[[Path], Callable[[], None]]
+) -> Path:  # pragma: win32 cover
+    lock_path = tmp_path / "a"
+    lock_path.write_text(getattr(request, "param", ""), encoding="utf-8")
+    hold_oplock(lock_path)
+    return lock_path

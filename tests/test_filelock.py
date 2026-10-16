@@ -2625,61 +2625,6 @@ def test_windows_owner_only_mode_keeps_out_the_directory_acl(
     assert (b"(I)" in acl) is inherits  # icacls marks inherited entries with (I) in every display language
 
 
-@pytest.fixture
-def oplocked_lock_path(tmp_path: Path) -> Iterator[Path]:  # pragma: win32 cover
-    # The marker skips the run off Windows; this only narrows ctypes.WinDLL for ty.
-    assert sys.platform == "win32"
-    import ctypes
-    from ctypes import wintypes
-
-    class Overlapped(ctypes.Structure):
-        _fields_ = (
-            ("Internal", ctypes.c_void_p),
-            ("InternalHigh", ctypes.c_void_p),
-            ("Offset", wintypes.DWORD),
-            ("OffsetHigh", wintypes.DWORD),
-            ("hEvent", wintypes.HANDLE),
-        )
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateFileW.restype = kernel32.CreateEventW.restype = wintypes.HANDLE
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    kernel32.DeviceIoControl.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        ctypes.POINTER(Overlapped),
-    ]
-    lock_path = tmp_path / "a"
-    lock_path.touch()
-    generic_read, share_read_write, open_existing, flag_overlapped = 0x80000000, 0x1 | 0x2, 3, 0x40000000
-    handle = kernel32.CreateFileW(
-        str(lock_path), generic_read, share_read_write, None, open_existing, flag_overlapped, None
-    )
-    overlapped = Overlapped(hEvent=kernel32.CreateEventW(None, True, False, None))
-    try:
-        # FSCTL_REQUEST_OPLOCK_LEVEL_1 stays pending while granted; a read handle suffices to make other opens wait.
-        assert not kernel32.DeviceIoControl(handle, 0x00090000, None, 0, None, 0, None, ctypes.byref(overlapped))
-        assert ctypes.get_last_error() == 997  # ERROR_IO_PENDING
-        yield lock_path
-    finally:
-        kernel32.CloseHandle(handle)
-        kernel32.WaitForSingleObject(overlapped.hEvent, 5000)  # the request completes on close and writes overlapped
-        kernel32.CloseHandle(overlapped.hEvent)
-
-
 @_WINDOWS_ONLY  # pragma: win32 cover
 @pytest.mark.parametrize(
     ("timeout", "blocking"), [pytest.param(0.1, True, id="timeout"), pytest.param(-1, False, id="non-blocking")]

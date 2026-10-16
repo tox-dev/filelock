@@ -7,7 +7,7 @@ import struct
 import sys
 import time
 from contextlib import contextmanager, suppress
-from errno import ENOTDIR
+from errno import ENOTDIR, EWOULDBLOCK
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
@@ -85,6 +85,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     #: Probes, 2 ms apart, an open spends waiting out STATUS_ACCESS_DENIED or an oplock break. NTFS answers the former
     #: briefly while a peer unlinks the name (#604). A count ensures every probe runs even when the process stalls.
     _ACCESS_DENIED_PROBES: Final[int] = 250
+    _ACCESS_DENIED_GRACE: Final[float] = 0.5
     _ACCESS_DENIED_RETRY: Final[float] = 0.002
 
     _ntdll: Final[ctypes.WinDLL] = ctypes.WinDLL("ntdll")
@@ -279,7 +280,10 @@ if sys.platform == "win32":  # pragma: win32 cover
 
             # The reparse test is bound to the opened handle, so a symlink or junction swapped in cannot defeat it
             # through a check-then-open TOCTOU race.
-            fd = _open_non_reparse_fd(self._lock_path, self._open_mode())
+            try:
+                fd = _open_non_reparse_fd(self._lock_path, self._open_mode())
+            except BlockingIOError:
+                return  # an oplock holder has not answered its break; let the retry loop keep its deadline
             if fd is None:
                 return  # open contention (share conflict or a name pending deletion); let the retry loop try again
             try:
@@ -306,7 +310,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 with suppress(OSError):
                     Path(self._lock_path).unlink()
 
-    def _open_non_reparse_fd(path: str, mode: int) -> int | None:
+    def _open_non_reparse_fd(path: str, mode: int, *, oplock_wait: float = _ACCESS_DENIED_GRACE) -> int | None:
         """
         Open *path* for locking while refusing reparse points, bound to the handle actually locked.
 
@@ -333,9 +337,12 @@ if sys.platform == "win32":  # pragma: win32 cover
             the entries its directory hands down. Both only take effect when the file is created, not when an existing
             one is opened.
 
-        :returns: a file descriptor owning the opened handle, or ``None`` on a sharing violation, a delete-pending name,
-            or an oplock break its holder leaves unanswered, which the caller should treat as contention and retry.
+        :param oplock_wait: seconds to wait for the holder of an oplock on the file to answer its break.
 
+        :returns: a file descriptor owning the opened handle, or ``None`` on a sharing violation or a delete-pending
+            name, which the caller should treat as contention and retry.
+
+        :raises BlockingIOError: if an oplock break stays unanswered for *oplock_wait* seconds.
         :raises OSError: if the path resolves to a reparse point, or the open fails for any other reason, raised with
             the Win32 error the status maps to. An access denial is raised only once it outlasts a run of probes, since
             a peer unlinking the file as it releases can make the open answer ``STATUS_ACCESS_DENIED`` for a moment.
@@ -346,13 +353,25 @@ if sys.platform == "win32":  # pragma: win32 cover
         read_only = not mode & _OWNER_WRITE
         owner_only = not mode & 0o077
         handle, status = _nt_open(path, read_only=read_only, owner_only=owner_only)
-        for _ in range(_ACCESS_DENIED_PROBES):
-            if status not in {_STATUS_ACCESS_DENIED, _STATUS_OPLOCK_BREAK_IN_PROGRESS}:
+        denied_probes = 0
+        oplock_deadline = time.monotonic() + oplock_wait
+        while True:
+            if status == _STATUS_ACCESS_DENIED:
+                if denied_probes >= _ACCESS_DENIED_PROBES:
+                    break
+                denied_probes += 1
+            elif status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+                if time.monotonic() >= oplock_deadline:
+                    break
+            else:
                 break
             time.sleep(_ACCESS_DENIED_RETRY)
             handle, status = _nt_open(path, read_only=read_only, owner_only=owner_only)
+        if status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+            msg = "oplock break in progress"
+            raise BlockingIOError(EWOULDBLOCK, msg, path)
         if status != _STATUS_SUCCESS:
-            if status in {_STATUS_SHARING_VIOLATION, _STATUS_DELETE_PENDING, _STATUS_OPLOCK_BREAK_IN_PROGRESS}:
+            if status in {_STATUS_SHARING_VIOLATION, _STATUS_DELETE_PENDING}:
                 return None
             winerror = _ntdll.RtlNtStatusToDosError(status)
             raise OSError(None, ctypes.FormatError(winerror).strip(), path, winerror)
