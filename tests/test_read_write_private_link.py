@@ -277,18 +277,8 @@ def test_private_link_sweep_never_parses_a_directory_of_another_account(database
         status = real_fstat(fd)
         if status.st_ino != planted.stat().st_ino:
             return status
-        return os.stat_result((
-            status.st_mode,
-            status.st_ino,
-            status.st_dev,
-            status.st_nlink,
-            status.st_uid + 1,
-            status.st_gid,
-            status.st_size,
-            status.st_atime,
-            status.st_mtime,
-            status.st_ctime,
-        ))
+        fields = tuple(status)
+        return os.stat_result((*fields[:4], status.st_uid + 1, *fields[5:]))
 
     mocker.patch("os.fstat", autospec=True, side_effect=fstat_with_other_owner)
     mocker.patch("os.kill", autospec=True, side_effect=AssertionError("PID probed"))
