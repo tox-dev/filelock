@@ -31,15 +31,15 @@ pytestmark = XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 @pytest.fixture(autouse=True)
 def _clear_singleton_caches() -> Generator[None]:
-    ReadWriteLock._instances.clear()
-    SoftReadWriteLock._instances.clear()
+    caches: Final = (ReadWriteLock._instances, SoftReadWriteLock._instances)
+    for cache in caches:
+        cache.clear()
     yield
-    for lock in filter(None, (ref() for ref in list(ReadWriteLock._instances.valuerefs()))):
+    # One loop for both caches, so a platform where only one kind of lock runs still closes through it.
+    for lock in filter(None, [ref() for cache in caches for ref in list(cache.valuerefs())]):
         lock.close()
-    for soft in filter(None, (ref() for ref in list(SoftReadWriteLock._instances.valuerefs()))):
-        soft.close()
-    ReadWriteLock._instances.clear()
-    SoftReadWriteLock._instances.clear()
+    for cache in caches:
+        cache.clear()
 
 
 def _sqlite(path: Path, *, is_singleton: bool) -> tuple[ReadWriteLock, AsyncReadWriteLock]:
