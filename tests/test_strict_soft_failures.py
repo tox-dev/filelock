@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
 import pickle  # ruff:ignore[suspicious-pickle-import]  # round-trip uses bytes produced in this test
@@ -37,6 +38,10 @@ _NEEDS_DIR_FD: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 _NEEDS_LINK_DIR_FD: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["link-dir-fd"],
     reason="counts the directory the dir_fd link path opens, which a runtime without link dir_fd never opens",
+)
+
+_NEEDS_FD_DIRECTORY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["fd-directory"], reason="counting open descriptors needs a /dev/fd or /proc/self/fd view"
 )
 
 # Only NTFS refuses every open of a name whose deletion is pending while the deleting handle stays open.
@@ -1674,6 +1679,61 @@ def test_strict_soft_dropped_instance_removes_pending_claims(  # pragma: needs c
     gc.collect()
 
     assert StrictSoftFileLock(lock_path).claims == ()
+
+
+@_NEEDS_FD_DIRECTORY  # pragma: needs fd-directory
+def test_strict_soft_failed_doorway_cleanup_keeps_no_descriptor(lock_path: Path, mocker: MockerFixture) -> None:
+    real_link: Final = os.link
+
+    def fail_held_link(source: _PathValue, destination: _PathValue, **options: int | bool | None) -> None:
+        if Path(os.fsdecode(destination)).name.startswith("held-"):
+            raise OSError(EIO, "held link failed")
+        real_link(source, destination, **options)  # ty: ignore[invalid-argument-type]
+
+    mocker.patch("filelock._strict.os.link", autospec=True, side_effect=fail_held_link)
+    _deny_claim_unlinks(mocker)
+    lock: Final = StrictSoftFileLock(lock_path)
+
+    with pytest.raises(BaseExceptionGroup, match="strict doorway claim cleanup failed"):
+        lock.acquire()
+    assert (_descriptors_on(lock_path), lock.is_locked) == (0, False)
+
+
+@_NEEDS_FD_DIRECTORY  # pragma: needs fd-directory
+@NEEDS_COLLECTED_FINALIZATION
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread-local"), pytest.param(False, id="shared")])
+def test_strict_soft_dropped_hold_with_stuck_claims_closes_its_descriptor(  # pragma: needs collected-finalization
+    lock_path: Path, mocker: MockerFixture, thread_local: bool
+) -> None:
+    lock = StrictSoftFileLock(lock_path, thread_local=thread_local)
+    lock.acquire()
+    _deny_claim_unlinks(mocker)
+
+    del lock
+    gc.collect()
+
+    assert _descriptors_on(lock_path) == 0
+
+
+def _deny_claim_unlinks(mocker: MockerFixture) -> None:  # pragma: needs fd-directory
+    real_unlink: Final = os.unlink
+
+    def deny(path: _PathValue, *, dir_fd: int | None = None) -> None:
+        if os.fsdecode(path).endswith(".claim"):
+            raise PermissionError(EACCES, "claim unlink denied")
+        real_unlink(path, dir_fd=dir_fd)
+
+    mocker.patch("filelock._strict.os.unlink", autospec=True, side_effect=deny)
+
+
+def _descriptors_on(path: Path) -> int:  # pragma: needs fd-directory
+    target: Final = path.stat()
+    count = 0
+    for entry in (Path("/dev/fd") if Path("/dev/fd").is_dir() else Path("/proc/self/fd")).iterdir():
+        # The descriptor that listed the directory is already closed.
+        with contextlib.suppress(OSError):
+            count += os.path.samestat(os.fstat(int(entry.name)), target)
+    return count
 
 
 def test_strict_soft_acquire_leaves_a_live_threads_pending_doorway_alone(

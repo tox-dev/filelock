@@ -129,6 +129,8 @@ class StrictSoftFileLock(BaseFileLock):
     #: poll_interval below this cap jitters; the default equals it and keeps a fixed cadence.
     _poll_backoff_cap: float = 0.05
     _occupant_seen: tuple[tuple[float, int, int], float] | None = None
+    #: Set by the finalizer, whose cleanup is the last this instance gets.
+    _finalizing: bool = False
 
     def _acquire(self) -> None:
         # Finish a doorway whose claim cleanup failed before publishing, so this owner never contends with leftovers.
@@ -280,7 +282,10 @@ class StrictSoftFileLock(BaseFileLock):
             raise cleanup_error
 
     def _release_abandoned_holds(self) -> None:
+        self._finalizing = True
         super()._release_abandoned_holds()
+        if vars(self).get("_creator_pid") != os.getpid():
+            return  # forked child
         # release() skips a doorway whose cleanup failed, as it is no hold, so a dropped instance would strand claims.
         with contextlib.suppress(Exception):
             # GraalPy defers finalizers to the host collector, so its tests cannot drive this cleanup.
@@ -294,8 +299,7 @@ class StrictSoftFileLock(BaseFileLock):
     def _release(self) -> None:
         fd = cast("int", self._context.lock_file_fd)
         self._context.claim_root = None
-        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
-        self._context.owner_claim_paths = tuple(remaining)
+        remaining, errors = self._unlink_owner_claims()
         if remaining:
             _raise_recorded_errors("strict claim release failed", errors)
         self._mark_descriptor_released()
@@ -307,20 +311,31 @@ class StrictSoftFileLock(BaseFileLock):
             _raise_recorded_errors("strict release cleanup failed", errors)
 
     def _discard_doorway(self) -> None:
-        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
-        self._context.owner_claim_paths = tuple(remaining)
+        remaining, errors = self._unlink_owner_claims()
+        # The pending descriptor carries no lock and the retry needs only the claim paths, so close it now rather than
+        # leave it to a retry that a dropped instance never makes.
+        if (fd := self._context.pending_lock_file_fd) is not None:
+            self._context.pending_lock_file_fd = self._context.pending_lock_file_fd_identity = None
+            try:
+                self._close_released_fd(fd, default_suppresses=False)
+            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
+                errors.append(close_error)
         if remaining:
             # Stay pending, not owned: is_locked reports only a held claim that passed the final rescan. The next
             # acquire retries this cleanup.
             _raise_recorded_errors("strict doorway claim cleanup failed", errors)
-        fd = cast("int", self._context.pending_lock_file_fd)
         self._mark_descriptor_released()
-        try:
-            self._close_released_fd(fd, default_suppresses=False)
-        except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
-            errors.append(close_error)
         if errors:
             _raise_recorded_errors("strict doorway cleanup failed", errors)
+
+    def _unlink_owner_claims(self) -> tuple[list[str], list[BaseException]]:
+        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
+        self._context.owner_claim_paths = tuple(remaining)
+        if self._finalizing:
+            # Nothing retries after the finalizer and nobody hears its errors, so report success and let it close the
+            # descriptor whatever became of the claims.
+            return [], []  # pragma: needs collected-finalization
+        return remaining, errors
 
     @property
     def _claim_directory(self) -> Path:
