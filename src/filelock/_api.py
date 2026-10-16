@@ -2060,10 +2060,11 @@ def _resume_parent_after_fork() -> None:  # pragma: needs fork
     finally:
         # No other code reopens admission. A failure above would leave the other threads waiting for good.
         with _FORK_STATE.gate:
-            if _FORK_STATE.fork_owner_depths[thread_id] == 1:
-                del _FORK_STATE.fork_owner_depths[thread_id]
+            # A handler that raised before the depth was stored left no entry to decrement.
+            if (depth := _FORK_STATE.fork_owner_depths.get(thread_id, 1)) <= 1:
+                _FORK_STATE.fork_owner_depths.pop(thread_id, None)
             else:  # pragma: no cover - earlier at-fork callbacks may deadlock first
-                _FORK_STATE.fork_owner_depths[thread_id] -= 1
+                _FORK_STATE.fork_owner_depths[thread_id] = depth - 1
             _FORK_STATE.admission_closed = bool(_FORK_STATE.fork_owner_depths)
             _FORK_STATE.gate.notify_all()
 
