@@ -109,11 +109,14 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(
     database: Path, mocker: MockerFixture
 ) -> None:
     # Whoever can rename in the shared parent owns every name below it, so the private directory check cannot stop
-    # SQLite from opening a replacement swapped in before it connects; the acquire only refuses to report the lock held.
+    # SQLite from opening a replacement swapped in before it connects; the acquire refuses before any statement runs,
+    # so a hot journal beside the replacement is neither replayed nor finished.
     private: Final = database.parent / "private"
     private.mkdir(mode=0o700)
     lock: Final = ReadWriteLock(private / "lock.db", is_singleton=False)
     moved: Final = database.parent / "moved"
+    named: Final = moved / "notes.txt"
+    (private / "notes.txt").write_text("keep")
     connect: Final = sqlite3.connect
     before: Final[dict[Path, list[tuple[str, bytes | None]]]] = {moved: _entries(private)}
 
@@ -127,7 +130,13 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(
     ) -> sqlite3.Connection:
         private.rename(moved)
         private.mkdir(mode=0o700)
-        (private / "lock.db").touch()
+        with closing(connect(private / "lock.db")) as replacement:
+            replacement.execute("CREATE TABLE application (value)")
+        encoded: Final = os.fsencode(named)
+        (private / "lock.db-journal").write_bytes(
+            encoded + struct.pack(">II", len(encoded), sum(encoded)) + _JOURNAL_MAGIC
+        )
+        (private / "lock.db-wal").write_bytes(b"\0" * 32)
         before[private] = _entries(private)
         return connect(
             path,
@@ -141,7 +150,7 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(
 
     with pytest.raises(OSError, match="replaced while acquiring"):
         lock.acquire_write()
-    # Neither the replacement nor the original gains a journal, a link directory or any bytes.
+    # The journal and WAL beside the replacement stay, the file the journal names stays, and no bytes change anywhere.
     assert {directory: _entries(directory) for directory in before} == before
     assert_read_write_lock_state(str(moved / "lock.db"), "write", available=True)
 

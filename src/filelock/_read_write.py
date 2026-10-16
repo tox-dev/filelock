@@ -926,6 +926,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     ) -> None:
         with _sqlite_transition():
             connection = cast("_ForkSafeConnection", self._con)
+            # Before any statement: SQLite opened whatever the name held, and its first statement would replay a journal
+            # found beside that file.
+            self._raise_if_database_replaced(connection)
             with _bounded_schema(connection, self.lock_file):
                 self._raise_if_process_changed(operation.pid)
                 # Use legacy journal mode (not WAL) because WAL does not block readers while a concurrent EXCLUSIVE
@@ -1271,8 +1274,9 @@ def _host_digest(host: str) -> str:  # pragma: needs posix-hard-link
 
 
 def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix-hard-link
-    # Another user who can rename in the parent may have put any directory under the name, so its entries go through a
-    # descriptor checked to be the directory made, and the name goes only with rmdir, which leaves anything not empty.
+    # Another process that can rename in the parent may have put any directory under the name, so its entries go
+    # through a descriptor checked to be the directory made, and the name goes only with rmdir, which leaves anything
+    # not empty.
     try:
         fd: Final = os.open(link.path, _DIRECTORY_FLAGS)
     except OSError:
