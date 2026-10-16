@@ -127,6 +127,24 @@ def pin_inode(lock_file: str) -> Generator[int | None]:
             os.close(fd)
 
 
+def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
+    """
+    Remove *lock_file* while it still names the file open as *fd*; the caller closes the descriptor afterwards.
+
+    Where the platform has an atomic exchange, a stale break takes the file through it, so a peer's marker found at the
+    path goes back. Otherwise the path is unlinked by name if it still names this file. The open descriptor keeps the
+    inode allocated, so a matching number cannot belong to a successor's marker.
+
+    :raises OSError: if the descriptor cannot be read or the unlink fails.
+
+    """
+    own: Final = os.fstat(fd)
+    with suppress(FileNotFoundError):
+        break_lock_file(lock_file, own.st_mtime, own.st_ino)
+        if os.path.samestat(os.lstat(lock_file), own):
+            Path(lock_file).unlink()
+
+
 def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> None:
     """
     Remove the lock file a caller found stale with modification time *mtime_before* and inode *ino_before*.
@@ -166,24 +184,6 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
         _swap_out(lock_file, break_path, mtime_before, ino_before)
     elif _MOVES_WITHOUT_EXCHANGE:  # pragma: win32 cover
         _break_by_rename(lock_file, break_path, mtime_before, ino_before)
-
-
-def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
-    """
-    Remove *lock_file* while it still names the file open as *fd*; the caller closes the descriptor afterwards.
-
-    Where the platform has an atomic exchange, a stale break takes the file through it, so a peer's marker found at the
-    path goes back. Otherwise the path is unlinked by name if it still names this file. The open descriptor keeps the
-    inode allocated, so a matching number cannot belong to a successor's marker.
-
-    :raises OSError: if the descriptor cannot be read or the unlink fails.
-
-    """
-    own: Final = os.fstat(fd)
-    with suppress(FileNotFoundError):
-        break_lock_file(lock_file, own.st_mtime, own.st_ino)
-        if os.path.samestat(os.lstat(lock_file), own):
-            Path(lock_file).unlink()
 
 
 def _swap_out(lock_file: str, break_path: str, mtime_before: float, ino_before: int) -> None:  # pragma: win32 no cover

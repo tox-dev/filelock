@@ -212,8 +212,7 @@ def test_break_lock_file_never_links_a_symlink_swapped_in_under_the_break_name( 
     assert target.stat().st_nlink == 1
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the liveness probe of a Windows PID does not call os.kill")
-@pytest.mark.parametrize(
+_STALE_BREAKERS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
     ("lock_type", "record"),
     [
         pytest.param(SoftFileLock, _DEAD_HOLDER, id="soft"),
@@ -221,6 +220,10 @@ def test_break_lock_file_never_links_a_symlink_swapped_in_under_the_break_name( 
         pytest.param(SoftFileLease, _DEAD_OWNER, id="lease"),
     ],
 )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the liveness probe of a Windows PID does not call os.kill")
+@_STALE_BREAKERS
 def test_stale_break_spares_a_successor_on_the_freed_inode_number(  # pragma: win32 no cover
     tmp_path: Path,
     mocker: MockerFixture,
@@ -246,16 +249,6 @@ def test_stale_break_spares_a_successor_on_the_freed_inode_number(  # pragma: wi
     mocker.stopall()
 
     assert lock.read_text(encoding="utf-8") == "live"
-
-
-_STALE_BREAKERS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
-    ("lock_type", "record"),
-    [
-        pytest.param(SoftFileLock, _DEAD_HOLDER, id="soft"),
-        pytest.param(MarkerSoftFileLock, _DEAD_OWNER, id="marker"),
-        pytest.param(SoftFileLease, _DEAD_OWNER, id="lease"),
-    ],
-)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot rename a file held open, so it pins nothing")

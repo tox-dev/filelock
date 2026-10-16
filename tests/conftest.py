@@ -154,7 +154,7 @@ def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None
 
 
 @pytest.fixture
-def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]:
+def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]:  # pragma: win32 no cover
     """
     Stand in for ext4, which hands a freed inode number to the next file created.
 
@@ -162,7 +162,7 @@ def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]
     the unlinked file it is given, once no descriptor in this process keeps that inode allocated.
     """
 
-    def stand_in(successor: Path, freed: os.stat_result) -> None:  # pragma: win32 no cover
+    def stand_in(successor: Path, freed: os.stat_result) -> None:
         created: Final = successor.lstat()
         lstat: Final = os.lstat
 
