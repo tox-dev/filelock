@@ -1534,6 +1534,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         with _fork_transition(self):
             try:
                 self._release()
+            except BaseException as release_error:
+                # A backend unlocks first and clears the descriptor second. A signal handler that raises in between
+                # leaves a hold the OS dropped. A failed system call alone shows the lock is still held, so it keeps it.
+                if self._context.lock_file_fd is not None and not _is_system_call_failure(release_error):
+                    with contextlib.suppress(Exception):
+                        self._release()
+                raise
             finally:
                 self._unregister_released_descriptor()
 
@@ -1653,6 +1660,13 @@ def _resolve_timeout(timeout: float, *, blocking: bool) -> float:
         raise ValueError(msg)
     # The fail-fast deadlock check only sees a negative timeout as unlimited, so spell inf that way.
     return -1 if timeout == math.inf else timeout
+
+
+def _is_system_call_failure(error: BaseException) -> bool:
+    # A failed system call always sets errno; an OSError a signal handler raises, such as a bare TimeoutError, does not.
+    if _is_exception_group(error):
+        return all(map(_is_system_call_failure, cast("_ExceptionGroupProtocol", error).exceptions))
+    return isinstance(error, OSError) and error.errno is not None
 
 
 def _on_this_stack(frame: FrameType | None) -> bool:

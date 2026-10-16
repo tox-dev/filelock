@@ -1482,6 +1482,38 @@ def test_release_interrupted_at_any_call_leaves_the_lock_usable(
     assert target > 1
 
 
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        FileLock,
+        SoftFileLock,
+        MarkerSoftFileLock,
+        SoftFileLease,
+        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links),
+    ],
+)
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_release_interrupted_at_any_call_reports_whether_it_still_holds(
+    tmp_path: Path, lock_type: type[BaseFileLock], thread_local: bool
+) -> None:
+    # A with block's exit has no second release to fix up what is_locked reports, so it must never claim a dropped hold.
+    lock_path: Final = str(tmp_path / "a")
+    for target in count(1):  # pragma: no branch  # count() never runs out; the release that finishes ends the loop
+        lock = lock_type(lock_path, thread_local=thread_local)
+        lock.acquire()
+        if not _release_interrupted_at_call(lock, target):
+            break
+        peer = lock_type(lock_path, blocking=False)
+        if lock.is_locked:
+            with pytest.raises(Timeout):
+                peer.acquire()
+        # Windows leaves a soft marker's unlink that the interrupt cut short to the instance's next call.
+        lock.release()
+        with peer:
+            assert peer.is_locked
+    assert target > 1
+
+
 def _release_interrupted_at_call(lock: BaseFileLock, target: int) -> bool:
     # Interpreters run a profile hook with tracing off, so coverage never records its body.
     def interrupt(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover
