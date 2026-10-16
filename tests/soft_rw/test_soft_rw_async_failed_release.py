@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -11,6 +13,7 @@ from filelock._soft_rw import AsyncSoftReadWriteLock, SoftReadWriteLock
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
+    from concurrent.futures import Executor
     from pathlib import Path
 
     from pytest_mock import MockerFixture
@@ -39,9 +42,14 @@ def failing_release(mocker: MockerFixture) -> None:
     mocker.patch.object(SoftReadWriteLock, "release", autospec=True, side_effect=release)
 
 
-def _make(lock_file: str) -> AsyncSoftReadWriteLock:
+def _make(lock_file: str, *, executor: Executor | None = None) -> AsyncSoftReadWriteLock:
     return AsyncSoftReadWriteLock(
-        lock_file, is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5, poll_interval=0.02
+        lock_file,
+        is_singleton=False,
+        heartbeat_interval=0.1,
+        stale_threshold=0.5,
+        poll_interval=0.02,
+        executor=executor,
     )
 
 
@@ -77,11 +85,25 @@ async def test_async_soft_release_retried_after_the_hold_was_dropped_raises(lock
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_soft_close_cancellation_refuses_later_acquires(lock_file: str) -> None:
-    lock: Final = _make(lock_file)
-    await lock.acquire_read(timeout=5)
-    with pytest.raises(TimeoutError):
-        async with asyncio.timeout(0):  # expires while close() waits for its executor call
-            await lock.close()
+    started, resume = threading.Event(), threading.Event()
 
-    with pytest.raises(RuntimeError, match="has been closed"):
-        await asyncio.create_task(lock.acquire_read(timeout=5))
+    def park() -> None:
+        started.set()
+        resume.wait(5)
+
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        lock: Final = _make(lock_file, executor=worker)
+        await lock.acquire_read(timeout=5)
+        # Parking the only worker keeps close() waiting for its backend call when the cancellation lands.
+        parked = asyncio.get_running_loop().run_in_executor(worker, park)
+        await asyncio.to_thread(started.wait, 5)
+        closing = asyncio.create_task(lock.close())
+        await asyncio.sleep(0)
+        closing.cancel()
+        resume.set()
+        await parked
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+
+        with pytest.raises(RuntimeError, match="has been closed"):
+            await asyncio.create_task(lock.acquire_read(timeout=5))
