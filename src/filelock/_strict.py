@@ -34,7 +34,7 @@ from filelock._identity import host_name, owner_is_stale, process_start_token
 from filelock._marker import parse_marker
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import write_all
+from filelock._util import foreign_directory_owner, write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._windows import _is_unlinked
@@ -1125,12 +1125,17 @@ def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, paren
             os.mkdir(directory.name, mode, dir_fd=parent_fd)
     except FileExistsError:
         try:
-            mode = _lstat_relative((os.fspath(directory.parent), parent_fd), directory.name).st_mode
+            found = _lstat_relative((os.fspath(directory.parent), parent_fd), directory.name)
+            owner = foreign_directory_owner(
+                found, directory.parent.stat() if parent_fd is None else os.fstat(parent_fd)
+            )
         except OSError as error:
             raise SoftFileLockProtocolError(lock_file, None, f"cannot inspect {directory}") from error
-        if stat.S_ISDIR(mode) and not stat.S_ISLNK(mode):
-            return
-        raise SoftFileLockProtocolError(lock_file, None, f"{directory} is not a real directory") from None
+        if not stat.S_ISDIR(found.st_mode):
+            raise SoftFileLockProtocolError(lock_file, None, f"{directory} is not a real directory") from None
+        if owner is not None:  # pragma: needs foreign-sticky-tmp
+            reason = f"{directory} belongs to UID {owner}, who can remove the claims published in it"
+            raise SoftFileLockProtocolError(lock_file, None, reason) from None
 
 
 def _validate_force_break_name(name: str) -> None:

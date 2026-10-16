@@ -58,6 +58,11 @@ NEEDS_FILE_MODE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     reason="requires a filesystem that preserves POSIX mode bits",
 )
 
+NEEDS_FOREIGN_STICKY_TMP: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["foreign-sticky-tmp"],
+    reason="a protocol directory of a different UID is refused only under a sticky parent this UID does not own",
+)
+
 NEEDS_FILE_PERMISSIONS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["file-permissions"],
     reason="requires enforced file permissions",
