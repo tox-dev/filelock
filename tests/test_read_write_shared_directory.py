@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 pytestmark: Final = [
     pytest.mark.requires_hard_links,
     pytest.mark.skipif(
-        not CAPABILITIES["posix-hard-link"] or not CAPABILITIES["symlink"],
-        reason="other users share the lock directory only on POSIX, where the lock links the database privately",
+        not CAPABILITIES["posix-hard-link"],
+        reason="a shared lock directory gets a private link to the database only where POSIX hard links work",
     ),
 ]
 
