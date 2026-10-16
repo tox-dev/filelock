@@ -1,0 +1,5 @@
+Fix :class:`~filelock.ReadWriteLock` on Windows acting on ``-journal`` and ``-wal`` files another account places beside
+its database: an acquire could fail with :class:`sqlite3.OperationalError`, or SQLite could replay the journal and
+delete the file it names. The lock now reads the database directory's access control list. Where an account other than
+the locking account, ``SYSTEM`` and ``Administrators`` can add or remove names, SQLite opens a hard link inside a
+directory only those accounts can write. A filesystem without hard links raises :class:`OSError`.
