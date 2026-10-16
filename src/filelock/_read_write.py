@@ -1104,11 +1104,13 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
             )
         finally:
             os.close(fd)
-    return _connect_through_descriptor(database, factory=factory, timeout=timeout)  # pragma: win32 no cover
+    return _connect_through_descriptor(  # pragma: win32 no cover
+        database, factory=factory, timeout=timeout, owner=os.geteuid()
+    )
 
 
 def _connect_through_descriptor(  # pragma: win32 no cover
-    database: str, *, factory: type[_ForkSafeConnection], timeout: float
+    database: str, *, factory: type[_ForkSafeConnection], timeout: float, owner: int
 ) -> _ForkSafeConnection:
     # Listed before its lease is taken and cleared once a connection owns it, so any exception between, an interrupt
     # included, releases the lease instead of pinning the inode's probes.
@@ -1125,8 +1127,8 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         # SQLite opens the name it is given, following symlinks, and acts on -journal, -wal and -shm files it finds
         # beside it, so it gets the database name only where no other user can create or rename names. A descriptor
         # path such as /proc/self/fd/<n> does not help: SQLite reads it back into the name the kernel reports.
-        if not _names_are_private(pathlib.Path(database).parent):  # pragma: needs posix-hard-link
-            link = _link_beside(database, identity)
+        if not _names_are_private(pathlib.Path(database).parent, owner):  # pragma: needs posix-hard-link
+            link = _link_beside(database, identity, owner)
             target = os.fspath(link.database)
         connection = sqlite3.connect(
             target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
@@ -1142,10 +1144,10 @@ def _connect_through_descriptor(  # pragma: win32 no cover
             _remove_link_directory(link)
 
 
-def _names_are_private(directory: pathlib.Path) -> bool:  # pragma: win32 no cover
+def _names_are_private(directory: pathlib.Path, owner: int) -> bool:  # pragma: win32 no cover
     status: Final = os.lstat(directory)
     # The sticky bit still lets others create names, so a directory anyone else may write to never qualifies.
-    return status.st_uid in {os.geteuid(), 0} and not status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    return status.st_uid in {owner, 0} and not status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
 
 
 class _LinkDirectory(NamedTuple):  # pragma: needs posix-hard-link
@@ -1160,7 +1162,9 @@ class _LinkDirectory(NamedTuple):  # pragma: needs posix-hard-link
         return self.path / self.name / _LINK_NAME
 
 
-def _link_beside(database: str, identity: _DatabaseIdentity) -> _LinkDirectory:  # pragma: needs posix-hard-link
+def _link_beside(  # pragma: needs posix-hard-link
+    database: str, identity: _DatabaseIdentity, owner: int
+) -> _LinkDirectory:
     # Beside the database because a link cannot cross filesystems, and TMPDIR is often on another one.
     parent: Final = pathlib.Path(database).parent
     _sweep_links_of_the_dead(parent, identity)
@@ -1169,7 +1173,7 @@ def _link_beside(database: str, identity: _DatabaseIdentity) -> _LinkDirectory: 
     try:
         made: Final = os.fstat(fd)
         # Whoever can rename in the parent can put another directory under the new name before it opens.
-        if made.st_uid != os.geteuid() or made.st_mode & 0o077:
+        if made.st_uid != owner or made.st_mode & 0o077:
             msg = f"link directory {os.fspath(path)!r} was replaced while opening"
             raise OSError(msg)
         link: Final = _LinkDirectory(path, (made.st_dev, made.st_ino), secrets.token_hex(8))
