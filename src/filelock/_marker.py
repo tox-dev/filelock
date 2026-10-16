@@ -95,7 +95,8 @@ class MarkerSoftFileLock(SoftFileLock):
         if (owner := parse_marker(content)) is None:
             return super()._marker_is_live(content, breaker_pid)
         return owner.mode == "unknown" or (
-            owner.pid != breaker_pid and not owner_is_stale(owner.pid, owner.hostname, owner.start)
+            (owner.pid != breaker_pid or owner.hostname != host_name())
+            and not owner_is_stale(owner.pid, owner.hostname, owner.start)
         )
 
     def _read_owner(self) -> OwnerRecord | None:

@@ -322,6 +322,20 @@ def test_stale_break_restores_a_live_marker_a_dead_breaker_left_under_its_break_
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+def test_stale_break_restores_a_marker_of_another_host_with_the_breakers_pid(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    foreign: Final = record.replace(_HOST, "elsewhere")
+    _break_name(lock).write_text(foreign, encoding="utf-8")
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (lock.read_text(encoding="utf-8"), list(tmp_path.glob("test.lock.break.*"))) == (foreign, [])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
 def test_stale_break_removes_a_stale_marker_a_dead_breaker_left_under_its_break_name(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:

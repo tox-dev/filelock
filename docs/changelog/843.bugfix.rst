@@ -8,4 +8,5 @@ waits for ``timeout`` or ``break_lock()``. Restoring a marker no longer follows 
 holder that releases while a peer's exchange has its marker aside leaves a record no lock parses, so the put-back lands
 a marker that ages out. A lease heartbeat that finds another file at the lock path once, while a peer's break has its
 marker aside, waits for the next refresh before it reports a compromise. A contender that finds a dead breaker's marker
-puts back the marker that breaker left under its break name.
+puts back the marker that breaker left under its break name. A marker is the breaker's own only when it names the
+breaker's process on this host; the same process number on another host is a holder.
