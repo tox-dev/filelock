@@ -270,9 +270,10 @@ class _TaskOwners:
         try:
             cancellation = await _drain_cancellation(leave())
         except BaseException:
-            # The sync lock may still hold the transaction, so keep the hold for a retried release to find.
             hold.depths[via] = removed
-            self._finish_transition(mode=mode, holds={task: hold})
+            # Keep the hold for a retried release only while the sync lock still has the level: restored after the sync
+            # lock let go, it would stand for a lock nobody holds.
+            self._finish_transition(mode=mode if still_held() else None, holds={task: hold})
             raise
         self._finish_transition(mode=None)
         if cancellation is not None:
