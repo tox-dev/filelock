@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from capabilities import CAPABILITIES
 
 from filelock import SoftFileLock, Timeout
 from filelock._identity import host_name
@@ -73,7 +74,16 @@ def test_break_lock_file_restores_a_recreated_marker(  # pragma: needs hard-link
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
 
-    assert (stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("test.lock.break.*"))) == ("live", [])
+    # Where os.link cannot be told to leave a symlink unfollowed, the live marker stays under the break name.
+    restored: Final = CAPABILITIES["link-follow-symlinks"]
+    assert (
+        stale_lock.exists(),
+        [
+            path.read_text(encoding="utf-8")
+            for path in [stale_lock, *stale_lock.parent.glob("test.lock.break.*")]
+            if path.exists()
+        ],
+    ) == (restored, ["live"])
 
 
 @pytest.mark.parametrize(
@@ -145,6 +155,31 @@ def test_break_lock_file_leaves_a_swapped_in_symlink_aside(  # pragma: needs sym
         [True],
         False,
     )
+
+
+@NEEDS_SYMLINK
+@pytest.mark.requires_hard_links
+def test_break_lock_file_never_links_a_symlink_swapped_in_after_the_recheck(  # pragma: needs symlink
+    stale_lock: Path, mocker: MockerFixture
+) -> None:
+    (target := stale_lock.with_name("target")).write_text("private", encoding="utf-8")
+    lstat: Final = os.lstat
+
+    def peer_recreates_then_swaps_in_a_symlink(path: str, *, dir_fd: int | None = None) -> os.stat_result:
+        if ".break." not in os.fspath(path):
+            return lstat(path, dir_fd=dir_fd)
+        _rewrite_in_place(Path(path))
+        found: Final = lstat(path, dir_fd=dir_fd)
+        Path(path).unlink()
+        Path(path).symlink_to(target)
+        return found
+
+    mocker.patch("os.lstat", side_effect=peer_recreates_then_swaps_in_a_symlink)
+    with pytest.raises(Timeout):
+        SoftFileLock(stale_lock).acquire(blocking=False)
+    mocker.stopall()
+
+    assert target.stat().st_nlink == 1
 
 
 def test_break_lock_file_lets_acquire_retry_after_the_marker_vanishes(stale_lock: Path, mocker: MockerFixture) -> None:

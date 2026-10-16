@@ -94,11 +94,12 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
     hard-link it back and drop the break name. ``link`` never replaces a name, so a marker a third process created after
     our rename wins and the live one stays under the break name. In the two syscalls between rename and link a third
     process can acquire beside the live holder, a soft lock by creating its marker or a StrictSoftFileLock by
-    publishing its sentinel at the empty path. Without ``os.link``, or on a filesystem that refuses hard links, the live
-    marker stays under the break name. We compare inodes as well as modification times because NFS and FAT store
-    coarse modification times, and a peer that recreates the lock within that granularity leaves the old mtime on it.
-    We call ``lstat`` to avoid following a symlink a peer swaps in after our stale check, and put back only a regular
-    file because ``link`` would follow a symlink to its target.
+    publishing its sentinel at the empty path. Without ``os.link``, on a filesystem that refuses hard links, or where
+    ``os.link`` cannot be told not to follow a symlink, the live marker stays under the break name. We compare inodes
+    as well as modification times because NFS and FAT store coarse modification times, and a peer that recreates the
+    lock within that granularity leaves the old mtime on it. We call ``lstat`` to avoid following a symlink a peer
+    swaps in after our stale check, put back only a regular file, and link without following symlinks, because a
+    symlink can replace the break name between that ``lstat`` and the link.
 
     We add a random token to the break name so other processes cannot guess it and two breakers in one process do not
     share ``<lock>.break.<pid>``. With a shared name, the second breaker could rename a recreated live lock onto that
@@ -120,7 +121,11 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
         Path(break_path).unlink()
     elif stat.S_ISREG(st_after.st_mode) and _HAS_LINK:  # pragma: needs hard-link
         with suppress(FileExistsError):
-            os.link(break_path, lock_file)
+            try:
+                os.link(break_path, lock_file, follow_symlinks=False)
+            # Windows can reject the option and PyPy fails it with EINVAL; a plain link would follow a symlink on macOS.
+            except (NotImplementedError, ValueError):  # pragma: lacks link-follow-symlinks
+                return
             Path(break_path).unlink()
 
 
