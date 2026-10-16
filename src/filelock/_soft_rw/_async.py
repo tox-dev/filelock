@@ -20,7 +20,7 @@ from filelock._async import (
     _task_owners_for,
     _wait_until_done,
 )
-from filelock._soft_rw._sync import SoftReadWriteLock
+from filelock._soft_rw._sync import SoftReadWriteLock, _lost_hold_error
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
@@ -116,7 +116,7 @@ class AsyncSoftReadWriteLock:
 
     @property
     def compromise(self) -> LeaseCompromise | None:
-        """How the current hold was lost, or ``None`` while it stands."""
+        """How the current hold was lost, or ``None`` while it stands; acquiring raises until the hold is released."""
         return self._lock.compromise
 
     @property
@@ -237,6 +237,8 @@ class AsyncSoftReadWriteLock:
 
         def joinable() -> bool:
             self._raise_if_unusable()
+            if (compromise := self._lock.compromise) is not None:
+                raise _lost_hold_error(self.lock_file, mode, compromise)
             return self._backend_holds()
 
         await self._owners.acquire(

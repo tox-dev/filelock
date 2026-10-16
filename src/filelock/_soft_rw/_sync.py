@@ -251,7 +251,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         How the current hold was lost, or ``None`` while it stands.
 
         Set by the heartbeat thread once a peer has evicted this holder or refreshes have failed for long enough that a
-        peer could have. The holder should stop using the protected resource when it is set.
+        peer could have. The holder should stop using the protected resource when it is set. Until the lost hold is
+        released, acquiring on this instance raises :class:`RuntimeError` instead of joining it.
 
         .. versionadded:: 3.33.0
 
@@ -606,6 +607,10 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 f"from thread {holder} while it is held by thread {hold.write_thread_id}"
             )
             raise RuntimeError(msg)
+        # Publishing a hold clears the loss recorded for the one before, so a loss seen here is this hold's: its
+        # heartbeat has stopped and a peer may hold the lock, so another level would be granted without asking the log.
+        if (compromise := self._compromise) is not None:
+            raise _lost_hold_error(self.lock_file, mode, compromise)
         if mode == "read":
             hold.read_depths[holder] = hold.read_depths.get(holder, 0) + 1
         hold.level += 1
@@ -689,6 +694,13 @@ class _HeartbeatThread(threading.Thread):
             self._stop_event.set()
 
 
+def _lost_hold_error(lock_file: str, mode: Mode, compromise: LeaseCompromise) -> RuntimeError:
+    return RuntimeError(
+        f"Cannot acquire {mode} lock on {lock_file}: the current hold was lost ({compromise.reason}), "
+        "release it before acquiring again"
+    )
+
+
 def _validate_intervals(
     heartbeat_interval: float, stale_threshold: float | None, poll_interval: float
 ) -> tuple[float, float, float]:
@@ -759,4 +771,5 @@ _register_fork_class(SoftReadWriteLock)
 
 __all__ = [
     "SoftReadWriteLock",
+    "_lost_hold_error",
 ]
