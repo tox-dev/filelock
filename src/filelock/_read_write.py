@@ -672,8 +672,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             try:
                 self._finish_connection()
             except BaseException:
-                # Once the rollback ran the level is gone whatever stopped the cleanup, a signal handler's exception
-                # included; kept, it would let the next acquire nest into a transaction that no longer exists.
+                # Once the rollback ran, the level is gone whatever stopped the cleanup, a signal handler's exception
+                # included. Kept, it would let the next acquire nest into a transaction that no longer exists.
                 if self._transaction_ended():
                     self._clear_lock_state()
                 raise

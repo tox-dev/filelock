@@ -46,8 +46,8 @@ class _AsyncTransitionGate:
     """
     First-in, first-out admission for the calls that transition one lock context.
 
-    Each call queues a ticket; the head of the queue holds the gate. A call that gives up removes only its own ticket,
-    so abandoned calls neither pile up behind a long holder nor have to be settled one by one when it leaves.
+    Each call queues a ticket, and the head of the queue holds the gate. A call that gives up removes its own ticket,
+    so abandoned calls do not pile up behind a long holder.
     """
 
     def __init__(self) -> None:
@@ -281,7 +281,7 @@ class _TaskOwners:
             cancellation = await _drain_cancellation(leave())
         except BaseException:
             hold.depths[via] = removed
-            # Keep the hold for a retried release only while the sync lock still has the level: restored after the sync
+            # Keep the hold for a retried release only while the sync lock still has the level. Restored after the sync
             # lock let go, it would stand for a lock nobody holds.
             self._finish_transition(mode=mode if still_held() else None, holds={task: hold})
             raise
