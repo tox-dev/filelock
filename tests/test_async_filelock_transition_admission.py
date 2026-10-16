@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock import AsyncFileLock, AsyncSoftFileLock, Timeout
+from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, Timeout
 from filelock._async import _AsyncTransitionGate
 from tests.async_filelock_cancellation_helpers import (
     assert_cancellation_message,
@@ -185,6 +185,34 @@ def _start_signaled_acquire(lock: AsyncFileLock) -> tuple[asyncio.Task[None], as
         await lock.acquire()
 
     return asyncio.create_task(acquire()), started
+
+
+@pytest.mark.parametrize(
+    "lock_type", [pytest.param(AsyncFileLock, id="flock"), pytest.param(AsyncSoftFileLock, id="soft")]
+)
+@pytest.mark.asyncio
+async def test_thread_local_lock_releases_while_another_thread_waits_for_it(
+    tmp_path: Path, lock_type: type[BaseAsyncFileLock]
+) -> None:
+    lock = lock_type(tmp_path / "a", thread_local=True, run_in_executor=False)
+    await lock.acquire()
+    polling = threading.Event()
+
+    def note_poll() -> bool:
+        polling.set()
+        return False
+
+    async def acquire_and_release() -> None:
+        await lock.acquire(timeout=5, cancel_check=note_poll, poll_interval=0.01)
+        await lock.release()
+
+    waiter = asyncio.create_task(asyncio.to_thread(asyncio.run, acquire_and_release()))
+    assert await asyncio.to_thread(polling.wait, 5)
+
+    await asyncio.wait_for(lock.release(), 5)
+
+    await waiter
+    assert not lock.is_locked
 
 
 class _Interrupt(BaseException):
