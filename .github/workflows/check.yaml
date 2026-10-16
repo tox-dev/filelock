@@ -111,10 +111,6 @@ jobs:
       - name: "✅ Run test suite"
         run: tox run --skip-pkg-install -e graalpy3.13 --
         env:
-          # GraalPy throws a NullPointerException from findBytecodeIndex, killing the thread, when a signal handler or
-          # finalizer runs while a generator or coroutine executes an OSR-compiled loop. GRAAL_PYTHON_ARGS would land
-          # after the script as program arguments, so the option goes through GRAAL_PYTHON_VM_ARGS.
-          GRAAL_PYTHON_VM_ARGS: "--experimental-options --engine.OSR=false"
           PYTEST_ADDOPTS: "-vv --durations=20"
           UV_PYTHON_PREFERENCE: only-managed
   coverage:
