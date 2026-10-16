@@ -131,9 +131,13 @@ def test_recycled_pid_marker_self_heals_only_in_its_pid_namespace(
     lock_path.write_text(_holder(os.getpid(), host=host_name(), start=token + 1), encoding="utf-8")
     pin_pid_namespace(mocker, contender_namespace)
 
-    lock: Final[SoftFileLock] = SoftFileLock(lock_path, timeout=0.1)
-    with suppress(Timeout):
-        lock.acquire()
+    lock: Final[SoftFileLock] = SoftFileLock(lock_path)
+    # A deadline would measure scheduler speed: the first try breaks the marker and the second takes its path.
+    for _ in range(2):
+        with suppress(Timeout):
+            lock.acquire(blocking=False)
+        if lock.is_locked:
+            break
     assert lock.is_locked is reclaimed
     lock.release()
 
