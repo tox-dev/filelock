@@ -1,0 +1,8 @@
+:class:`~filelock.StrictSoftFileLock` creates ``<path>.filelock`` and its ``claims`` directory with the lock's ``mode``,
+reaches ``claims`` through a descriptor opened without following symlinks (on Windows, holding both directories open
+and refusing a junction), and refuses a coordination directory a different UID created first under a sticky parent such
+as ``/tmp``; :class:`~filelock.SoftReadWriteLock` refuses such a ``<path>.rw`` too. A claim scan waits out unreadable
+claims for one shared grace instead of one per claim, a failed claim cleanup no longer leaves the sentinel descriptor
+open, and a non-regular node at a sentinel private-record name raises :class:`~filelock.SoftFileLockProtocolError`. On
+Windows, contenders read claims without blocking their owner's unlink, so a release no longer fails with
+``PermissionError`` while another process is still reading the claim.
