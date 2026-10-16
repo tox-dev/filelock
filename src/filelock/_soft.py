@@ -7,14 +7,17 @@ __lazy_modules__ = [
     "filelock._util",
     "itertools",
     "pathlib",
+    "re",
     "secrets",
     "typing",
 ]
 
 import os
+import re
 import secrets
 import stat
 import sys
+import threading
 import time
 from contextlib import suppress
 from errno import EACCES, EEXIST, EPERM
@@ -42,6 +45,8 @@ _UNLINK_MAX_RETRIES: Final[int] = 10
 _MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
 #: Contenders act on the record in the marker, so no other account may write it, whatever the mode or umask.
 _OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
+_CLAIMS_IN_PROGRESS: Final[set[str]] = set()
+_CLAIMS_LOCK: Final[threading.Lock] = threading.Lock()
 
 
 class SoftFileLock(BaseFileLock):
@@ -206,32 +211,80 @@ class SoftFileLock(BaseFileLock):
 
     def _restore_stranded_marker(self, breaker_pid: int, marker: os.stat_result) -> bool:  # pragma: win32 no cover
         # A breaker killed between its exchange and the put-back leaves its own marker at the path and the live
-        # holder's marker under its break name. The name carries the breaker's PID, so the search is one prefix. Where
-        # the marker cannot be put back the lock counts as held, as it does wherever no exchange is possible.
+        # holder's marker under its break name. A recoverer first renames that record to a name of its own. Only one
+        # contender wins the rename, so two of them never exchange the same record and reverse each other. A record
+        # a dead recoverer holds is claimable again. A claim of this process that no thread is working on was
+        # abandoned by a failed put-back, and the next poll takes it up again. Where the marker cannot be put back
+        # the lock counts as held, as it does wherever no exchange is possible.
+        if (candidates := self._stranded_candidates(breaker_pid)) is None:
+            return True
+        return any(self._recover_claimed(path, breaker_pid, marker, adopt=abandoned) for path, abandoned in candidates)
+
+    def _stranded_candidates(self, breaker_pid: int) -> list[tuple[str, bool]] | None:  # pragma: win32 no cover
         directory, name = os.path.split(self.lock_file)
-        prefix: Final = f"{name}.break.{breaker_pid}."
-        token_length: Final = 32
+        stranded: Final = re.compile(rf"{re.escape(name)}\.break\.{breaker_pid}\.[0-9a-f]{{32}}")
+        claimed: Final = re.compile(rf"{re.escape(name)}\.restore\.(\d+)\.[0-9a-f]{{32}}")
+        candidates: list[tuple[str, bool]] = []
         with os.scandir(directory or os.curdir) as entries:
-            stranded = sorted(
-                entry.name
-                for entry in entries
-                if entry.name.startswith(prefix)
-                and len(token := entry.name[len(prefix) :]) == token_length
-                and all(char in "0123456789abcdef" for char in token)
-                and entry.is_file(follow_symlinks=False)
-            )
-        for candidate in stranded:
-            path = str(Path(directory) / candidate)
-            try:
-                content, _ = _read_lock_file(path)
-            except OSError:
-                return True
-            if self._marker_is_live(content, breaker_pid):
-                _exchange_back(path, self.lock_file, marker)
-                return True
+            for entry in entries:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                path = str(Path(directory) / entry.name)
+                if stranded.fullmatch(entry.name):
+                    candidates.append((path, False))
+                elif found := claimed.fullmatch(entry.name):
+                    ours = int(found[1]) == os.getpid()
+                    if not (ours or owner_is_stale(int(found[1]), host_name(), None)):
+                        return None
+                    candidates.append((path, ours))
+        return sorted(candidates)
+
+    def _recover_claimed(
+        self, path: str, breaker_pid: int, marker: os.stat_result, *, adopt: bool
+    ) -> bool:  # pragma: win32 no cover
+        # One try/finally owns the registration from the first step to the last, so no interruption can leave it set.
+        # Registered before the rename publishes the name, so a thread that scans meanwhile sees a claim in progress.
+        own: Final = path if adopt else f"{self.lock_file}.restore.{os.getpid()}.{secrets.token_hex(16)}"
+        if not _begin_claim(own):
+            return True
+        try:
+            if not adopt:
+                try:
+                    Path(path).rename(own)
+                except OSError:  # a peer that won the rename now holds the record, so the lock counts as held
+                    return True
+            return self._restore_claimed(own, breaker_pid, marker)
+        finally:
+            _end_claim(own)
+
+    def _restore_claimed(self, own: str, breaker_pid: int, marker: os.stat_result) -> bool:  # pragma: win32 no cover
+        try:
+            content, _ = _read_lock_file(own)
+        except OSError:
+            self._return_claim(own, breaker_pid)
+            return True
+        if not self._marker_is_live(content, breaker_pid):
             with suppress(OSError):
-                Path(path).unlink()
-        return False
+                Path(own).unlink()
+            return False
+        # The inode of the marker judged dead must still be at the path, or a peer has acted since.
+        with suppress(OSError):
+            current = os.lstat(self.lock_file)
+            if (current.st_ino, current.st_mtime) == (marker.st_ino, marker.st_mtime) and exchange_names(
+                own, self.lock_file
+            ):
+                if os.lstat(own).st_ino == marker.st_ino:
+                    Path(own).unlink()
+                    return True
+                # A peer replaced the path after the check, so the exchange took its marker: swap it straight back.
+                exchange_names(own, self.lock_file)
+        self._return_claim(own, breaker_pid)
+        return True
+
+    def _return_claim(self, own: str, breaker_pid: int) -> None:  # pragma: win32 no cover
+        # A refused rename leaves the claim under this process's PID, and the next poll retries it.
+        with suppress(OSError):
+            Path(own).rename(f"{self.lock_file}.break.{breaker_pid}.{secrets.token_hex(16)}")
 
     @classmethod
     def _marker_is_live(cls, content: str | None, breaker_pid: int) -> bool:  # pragma: win32 no cover
@@ -460,6 +513,20 @@ def _file_identity(st: os.stat_result) -> tuple[int, int]:
     return st.st_dev, st.st_ino
 
 
+def _begin_claim(name: str | Path) -> bool:  # pragma: win32 no cover
+    # Keyed by the file name alone: its random token identifies the claim, and the spelling of the directory varies.
+    with _CLAIMS_LOCK:
+        if (key := Path(name).name) in _CLAIMS_IN_PROGRESS:
+            return False
+        _CLAIMS_IN_PROGRESS.add(key)
+        return True
+
+
+def _end_claim(name: str | Path) -> None:  # pragma: win32 no cover
+    with _CLAIMS_LOCK:
+        _CLAIMS_IN_PROGRESS.discard(Path(name).name)
+
+
 def _placeholder_breaker(content: str | None) -> int | None:  # pragma: win32 no cover
     # The placeholder a break leaves at the path while it works names the breaker that may have died there.
     if content is None or not content.startswith(placeholder := "filelock/break\n") or not content.endswith("\n"):
@@ -467,18 +534,6 @@ def _placeholder_breaker(content: str | None) -> int | None:  # pragma: win32 no
     with suppress(ValueError):
         return parse_decimal(content.removeprefix(placeholder)[:-1])
     return None
-
-
-def _exchange_back(stranded: str, lock_file: str, marker: os.stat_result) -> None:  # pragma: win32 no cover
-    # The inode of the marker judged dead must still be at the path, or a peer has acted since and nothing is put back.
-    with suppress(OSError):
-        current = os.lstat(lock_file)
-        if (
-            (current.st_ino, current.st_mtime) == (marker.st_ino, marker.st_mtime)
-            and exchange_names(stranded, lock_file)
-            and os.lstat(stranded).st_ino == marker.st_ino
-        ):
-            Path(stranded).unlink()
 
 
 def _leave_released_record(fd: int) -> None:

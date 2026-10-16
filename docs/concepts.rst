@@ -712,10 +712,13 @@ Otherwise a peer recreated the marker, and a second exchange puts the live marke
 The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID, then 32 random hex digits. A breaker killed
 between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under that name.
 A contender that finds the breaker's marker dead first looks in the lock's directory for names that start with
-``<lock>.break.<pid>.``, where ``<pid>`` is the dead breaker's. It exchanges back a marker whose owner is alive or
-cannot be proven dead, and removes one whose owner is dead. Where the filesystem refuses that exchange, the lock counts
-as held until ``timeout`` or ``break_lock()``. The placeholder a break writes while it works carries the same PID, so a
-contender that evicts a placeholder a killed process left finds the same names.
+``<lock>.break.<pid>.``, where ``<pid>`` is the dead breaker's. It first renames the record to
+``<lock>.restore.<pid>.<token>`` with its own PID, so only one of several contenders acts on it; a record whose
+recoverer died there is claimable again, and a claim a failed put-back left in the same process is retried on the next
+poll. It then exchanges back a marker whose owner is alive or cannot be proven dead, and removes one whose owner is
+dead. Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. The
+placeholder a break writes while it works carries the same PID, so a contender that evicts a placeholder a killed
+process left finds the same names.
 
 The contender holds the judged marker open from before it reads the record until the break ends. ext4 gives a freed
 inode number to the next file created, so a successor's marker could otherwise carry the number of the marker judged

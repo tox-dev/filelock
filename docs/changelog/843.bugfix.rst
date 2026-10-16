@@ -9,4 +9,6 @@ holder that releases while a peer's exchange has its marker aside leaves a recor
 a marker that ages out. A lease heartbeat that finds another file at the lock path once, while a peer's break has its
 marker aside, waits for the next refresh before it reports a compromise. A contender that finds a dead breaker's marker
 puts back the marker that breaker left under its break name. A marker is the breaker's own only when it names the
-breaker's process on this host; the same process number on another host is a holder.
+breaker's process on this host; the same process number on another host is a holder. A contender takes a stranded marker
+under a name of its own before it puts the marker back, so two contenders no longer reverse each other's exchange and
+remove the live holder's marker. A claim left behind by a failed put-back is retried on the next poll.
