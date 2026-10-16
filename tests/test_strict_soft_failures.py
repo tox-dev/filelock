@@ -1286,28 +1286,32 @@ def test_strict_soft_directory_inspection_error_fails_closed(tmp_path: Path, moc
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
 @NEEDS_SYMLINK  # pragma: needs symlink
 @pytest.mark.parametrize(
-    ("function", "suffix", "match"),
+    ("function", "suffix", "occurrence", "match"),
     [
-        pytest.param("mkdir", "claims", "cannot open claim directory", id="before-creating-claims"),
-        pytest.param("open", ".filelock", "cannot open .*filelock$", id="before-opening-coordination"),
+        pytest.param("mkdir", "claims", 1, "cannot open claim directory", id="before-creating-claims"),
+        pytest.param("open", ".filelock", 1, "cannot open .*filelock$", id="before-settling-the-mode"),
+        pytest.param("open", ".filelock", 2, "cannot open .*filelock$", id="before-opening-coordination"),
     ],
 )
 def test_strict_soft_coordination_directory_swapped_for_symlink_leaves_target_alone(
-    tmp_path: Path, mocker: MockerFixture, function: str, suffix: str, match: str
+    tmp_path: Path, mocker: MockerFixture, function: str, suffix: str, occurrence: int, match: str
 ) -> None:
     lock_path: Final = tmp_path / "resource.lock"
     (coordination := Path(f"{lock_path}.filelock")).mkdir()
     (target := tmp_path / "target").mkdir()
     real: Final = getattr(os, function)
+    matches = 0
 
-    def swap_first(path: _PathValue, *args: int, **options: int | None) -> int | None:
-        # Whoever can rename entries in the lock's directory can exchange the name after acquire found a real directory.
-        if os.fsdecode(path).endswith(suffix) and not coordination.is_symlink():
+    def swap_at_the_occurrence(path: _PathValue, *args: int, **options: int | None) -> int | None:
+        # A process that can rename entries in the lock's directory can exchange the name after it was found real.
+        nonlocal matches
+        matches += os.fsdecode(path).endswith(suffix)
+        if matches == occurrence and not coordination.is_symlink():
             coordination.rename(tmp_path / "aside")
             coordination.symlink_to(target, target_is_directory=True)
         return real(path, *args, **options)
 
-    mocker.patch(f"filelock._strict.os.{function}", autospec=True, side_effect=swap_first)
+    mocker.patch(f"filelock._strict.os.{function}", autospec=True, side_effect=swap_at_the_occurrence)
 
     with pytest.raises(SoftFileLockProtocolError, match=match):
         StrictSoftFileLock(lock_path, timeout=0).acquire()
@@ -1933,6 +1937,16 @@ def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: Moc
     else:
         with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
             _ = StrictSoftFileLock(lock_path).claims
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
+def test_strict_soft_directory_mode_failure_fails_closed(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    mocker.patch("filelock._strict.os.fchmod", autospec=True, side_effect=PermissionError(EACCES, "read-only mount"))
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot set the mode"):
+        StrictSoftFileLock(tmp_path / "resource.lock").acquire()
 
 
 def test_strict_soft_claims_removed_one_by_one_share_one_read_grace(tmp_path: Path, mocker: MockerFixture) -> None:

@@ -169,13 +169,14 @@ Every strict participant needs filelock 3.30.0 or newer. Legacy clients configur
 ``break_lock()``, and code that deletes lock files can remove the sentinel; mixing them with strict clients voids mutual
 exclusion.
 
-Whoever can write ``<path>.filelock`` or its ``claims`` directory can remove a holder's claims, so the lock creates both
-with its ``mode``, adding search permission wherever the mode grants read: ``mode=0o600`` gives ``0o700``. Under a
-sticky parent such as ``/tmp``, acquisition raises :class:`SoftFileLockProtocolError
-<filelock.SoftFileLockProtocolError>` when a different UID created ``<path>.filelock`` first, unless that UID owns the
-parent too. Where the platform supports ``dir_fd``, the lock reaches ``claims`` through a descriptor of
-``<path>.filelock`` opened without following symlinks, so a symlink swapped in for either directory fails the
-operation instead of redirecting it.
+The lock creates ``<path>.filelock`` and its ``claims`` directory with its ``mode``, adding search permission wherever
+the mode grants read, so ``mode=0o600`` gives ``0o700``, and sets the sticky bit on both so that a claim can be removed
+only by the account that published it, whatever the mode leaves other accounts. A directory it owns that is wider than
+the mode, such as one an earlier release created, is narrowed on the next acquisition. Under a sticky parent such as
+``/tmp``, acquisition raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` when
+``<path>.filelock`` belongs to another account that does not own the parent either. Where the platform supports
+``dir_fd``, the lock reaches ``claims`` through a descriptor of ``<path>.filelock`` opened without following symlinks,
+so a symlink swapped in for either directory fails the operation instead of redirecting it.
 
 Strict claims require coherent directory reads and atomic no-replace hard links. The class reports a protocol error
 when the filesystem reports that it cannot publish hard links. NFS and SMB remain outside this guarantee until their
