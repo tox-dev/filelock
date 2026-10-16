@@ -59,6 +59,13 @@ else:  # pragma: win32 no cover
         def _unlock_fd(fd: int) -> None:
             fcntl.flock(fd, fcntl.LOCK_UN)
 
+    def _flock_is_missing(fd: int) -> bool:
+        try:
+            _lock_fd_nonblocking(fd)
+        except OSError as exception:
+            return exception.errno == ENOSYS
+        return False  # the probe's own flock, if it won, ends when the caller closes fd
+
     class UnixFileLock(BaseFileLock):
         """
         Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems.
@@ -125,12 +132,27 @@ else:  # pragma: win32 no cover
                 # Sticky-bit dirs (e.g. /tmp): O_CREAT fails if another user owns the file (#317).
                 if not Path(self._lock_path).exists():
                     raise
+            return self._open_existing_lock_file(open_flags, open_mode)
+
+        def _open_existing_lock_file(self, open_flags: int, open_mode: int) -> tuple[int, bool] | None:
             try:
                 return os.open(self._lock_path, open_flags, open_mode), False
             except FileNotFoundError:
                 return None  # unlinked since the create attempt; let the retry loop start over
             except BlockingIOError:
                 return None  # the lease is breaking; contention, so the retry loop keeps the caller's deadline
+            except PermissionError:
+                # A soft marker left by a process of a different account is readable but not writable by us. On a
+                # filesystem without flock, reading it is all that waiting on it takes; where flock works the lock
+                # writes its file, so the denial stands.
+                try:
+                    fd = os.open(self.lock_file, open_flags & ~os.O_RDWR | os.O_RDONLY)
+                except FileNotFoundError:
+                    return None
+                if _flock_is_missing(fd):
+                    return fd, False
+                os.close(fd)
+                raise
 
         def _switch_to_soft_lock(self, fd: int, missing_flock: OSError, *, created: bool) -> None:
             # The filesystem does not implement flock. Fail closed when the caller opted out of existence-lock

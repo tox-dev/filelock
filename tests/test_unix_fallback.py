@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interpreter isolates the blocked fcntl import
 import sys
-from errno import EIO, ENOSYS
+from errno import EACCES, EIO, ENOSYS
 from textwrap import dedent
 from typing import TYPE_CHECKING, Final
 
@@ -198,6 +198,58 @@ def test_fallback_spares_a_peer_marker_that_replaced_its_placeholder(  # pragma:
 
     # Where os.link cannot restore it, the peer's marker waits under a break name, but it is never deleted.
     assert peer_marker in [path.read_text(encoding="utf-8") for path in tmp_path.glob("test.lock*")]
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock", "write_denied_lock_file")
+def test_fallback_waits_on_a_peer_marker_it_cannot_write(tmp_path: Path) -> None:  # pragma: needs fcntl
+    lock_path = tmp_path / "test.lock"
+    holder = UnixFileLock(lock_path)
+    holder.acquire()
+
+    with pytest.raises(Timeout):
+        UnixFileLock(lock_path).acquire(timeout=0)
+    holder.release()
+    with (contender := UnixFileLock(lock_path)).acquire(timeout=0):
+        assert contender.is_locked
+
+
+@NEEDS_FCNTL
+@pytest.mark.usefixtures("write_denied_lock_file")
+def test_lock_file_it_cannot_write_stays_denied_where_flock_works(tmp_path: Path) -> None:  # pragma: needs fcntl
+    (lock_path := tmp_path / "test.lock").touch()
+
+    with pytest.raises(PermissionError):
+        UnixFileLock(lock_path).acquire(timeout=0)
+
+
+@NEEDS_FCNTL
+@pytest.mark.parametrize("write_denied_lock_file", [True], ids=["unlinked-under-the-denial"], indirect=True)
+@pytest.mark.usefixtures("write_denied_lock_file")
+def test_lock_file_unlinked_under_a_denied_open_is_retried(tmp_path: Path) -> None:  # pragma: needs fcntl
+    (lock_path := tmp_path / "test.lock").touch()
+
+    with (lock := UnixFileLock(lock_path)).acquire(timeout=1):
+        assert lock.is_locked
+
+
+@pytest.fixture
+def write_denied_lock_file(
+    request: pytest.FixtureRequest, tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: needs fcntl
+    # Stand in for a marker a process of a different account owns: an O_RDWR open of it is refused, a read works.
+    unlink_under_denial = getattr(request, "param", False)
+    real_open = os.open
+
+    def deny_write(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if flags & os.O_RDWR and not flags & os.O_CREAT and str(tmp_path / "test.lock") == path:
+            if unlink_under_denial:
+                (tmp_path / "test.lock").unlink()
+            raise PermissionError(EACCES, "Permission denied", path)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("os.open", side_effect=deny_write)
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
