@@ -2002,44 +2002,54 @@ def _unregister_owned_descriptor(token: int) -> None:  # pragma: needs fork
 def _pin_fork_objects() -> None:  # pragma: needs fork
     _ensure_current_process()
     thread_id = get_ident()
-    with _FORK_STATE.gate:
-        _FORK_STATE.fork_owner_depths[thread_id] = _FORK_STATE.fork_owner_depths.get(thread_id, 0) + 1
-        _FORK_STATE.admission_closed = True
-        while _FORK_STATE.active_transitions > len(_FORK_STATE.transitions.get(thread_id, ())):
-            _FORK_STATE.gate.wait()
-        transition_owners = tuple(_FORK_STATE.transitions.get(thread_id, {}).values())
-    _verify_unverified_descriptors()
-    owners = {id(owner): owner for owner in transition_owners if owner is not None}
-    provisional_descriptor_tokens = tuple(
-        starmap(
-            _snapshot_descriptor_for_fork,
-            (descriptor for owner in owners.values() for descriptor in owner._descriptors_for_fork()),  # ruff:ignore[private-member-access]  # snapshots each owner's own fork descriptors
+    provisional_descriptor_tokens: list[int] = []
+    # A signal handler that raises during the wait does not stop the fork. The after hooks pop one snapshot per
+    # admission closed here, so the finally records the snapshot on failure too.
+    try:
+        with _FORK_STATE.gate:
+            _FORK_STATE.fork_owner_depths[thread_id] = _FORK_STATE.fork_owner_depths.get(thread_id, 0) + 1
+            _FORK_STATE.admission_closed = True
+            while _FORK_STATE.active_transitions > len(_FORK_STATE.transitions.get(thread_id, ())):
+                _FORK_STATE.gate.wait()
+            transition_owners = tuple(_FORK_STATE.transitions.get(thread_id, {}).values())
+        _verify_unverified_descriptors()
+        owners = {id(owner): owner for owner in transition_owners if owner is not None}
+        provisional_descriptor_tokens.extend(
+            starmap(
+                _snapshot_descriptor_for_fork,
+                (descriptor for owner in owners.values() for descriptor in owner._descriptors_for_fork()),  # ruff:ignore[private-member-access]  # snapshots each owner's own fork descriptors
+            )
         )
-    )
-    with _FORK_STATE.registry_lock:
-        _FORK_STATE.provisional_descriptor_tokens.setdefault(thread_id, []).append(provisional_descriptor_tokens)
-        _FORK_STATE.pinned_objects.setdefault(thread_id, []).append(tuple(_FORK_OBJECTS.values()))
-        _FORK_STATE.pinned_classes.setdefault(thread_id, []).append(tuple(_FORK_CLASSES.values()))
+    finally:
+        with _FORK_STATE.registry_lock:
+            _FORK_STATE.provisional_descriptor_tokens.setdefault(thread_id, []).append(
+                tuple(provisional_descriptor_tokens)
+            )
+            _FORK_STATE.pinned_objects.setdefault(thread_id, []).append(tuple(_FORK_OBJECTS.values()))
+            _FORK_STATE.pinned_classes.setdefault(thread_id, []).append(tuple(_FORK_CLASSES.values()))
 
 
 def _resume_parent_after_fork() -> None:  # pragma: needs fork
     thread_id = get_ident()
-    with _FORK_STATE.registry_lock:
-        for token in _FORK_STATE.provisional_descriptor_tokens[thread_id].pop():
-            _OWNED_DESCRIPTORS.pop(token, None)
-        _FORK_STATE.pinned_objects[thread_id].pop()
-        _FORK_STATE.pinned_classes[thread_id].pop()
-        if not _FORK_STATE.provisional_descriptor_tokens[thread_id]:  # pragma: needs fork
-            del _FORK_STATE.provisional_descriptor_tokens[thread_id]
-            del _FORK_STATE.pinned_objects[thread_id]
-            del _FORK_STATE.pinned_classes[thread_id]
-    with _FORK_STATE.gate:
-        if _FORK_STATE.fork_owner_depths[thread_id] == 1:
-            del _FORK_STATE.fork_owner_depths[thread_id]
-        else:  # pragma: no cover - earlier at-fork callbacks may deadlock first
-            _FORK_STATE.fork_owner_depths[thread_id] -= 1
-        _FORK_STATE.admission_closed = bool(_FORK_STATE.fork_owner_depths)
-        _FORK_STATE.gate.notify_all()
+    try:
+        with _FORK_STATE.registry_lock:
+            for token in _FORK_STATE.provisional_descriptor_tokens[thread_id].pop():
+                _OWNED_DESCRIPTORS.pop(token, None)
+            _FORK_STATE.pinned_objects[thread_id].pop()
+            _FORK_STATE.pinned_classes[thread_id].pop()
+            if not _FORK_STATE.provisional_descriptor_tokens[thread_id]:  # pragma: needs fork
+                del _FORK_STATE.provisional_descriptor_tokens[thread_id]
+                del _FORK_STATE.pinned_objects[thread_id]
+                del _FORK_STATE.pinned_classes[thread_id]
+    finally:
+        # No other code reopens admission. A failure above would leave the other threads waiting for good.
+        with _FORK_STATE.gate:
+            if _FORK_STATE.fork_owner_depths[thread_id] == 1:
+                del _FORK_STATE.fork_owner_depths[thread_id]
+            else:  # pragma: no cover - earlier at-fork callbacks may deadlock first
+                _FORK_STATE.fork_owner_depths[thread_id] -= 1
+            _FORK_STATE.admission_closed = bool(_FORK_STATE.fork_owner_depths)
+            _FORK_STATE.gate.notify_all()
 
 
 def _ensure_current_process() -> None:
