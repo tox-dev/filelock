@@ -29,7 +29,7 @@ MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
 _UNLINK_MAX_RETRIES: Final[int] = 10
 _MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
-#: Contenders act on the record in the marker, so only its owner may write it, whatever the mode or umask.
+#: Contenders act on the record in the marker, so no other account may write it, whatever the mode or umask.
 _OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
 
 

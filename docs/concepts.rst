@@ -684,13 +684,13 @@ cannot be read, and a marker from another host all read as held. The start token
 remove it once it has seen it unchanged for two seconds, so a half-written marker never wedges acquisition. This is the
 rule PostgreSQL, Qt ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
 
-Two Linux processes do not always read the same token for one task. Since Linux 5.6 the kernel shifts ``starttime`` by
-the boottime offset of the reader's time namespace, so a process in a time namespace with such an offset records no
-start token and reads none, and falls back to the PID alone: a recycled PID then keeps a dead owner's marker until
-``timeout``, ``lifetime`` or ``break_lock()``. A time namespace a container runtime creates without an offset keeps
-the token. A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's ``ProcSubset=pid`` hides it)
-records ``starttime`` without the boot id, and a contender compares ``starttime`` alone whenever either side lacks the
-boot id.
+Two Linux processes do not always read the same token for one task. Since Linux 5.6 the kernel adds the reader's
+boottime offset (the shift a time namespace applies to the boot clock) to ``starttime``. A process in a time namespace
+with such an offset therefore records no start token and reads none. It falls back to the PID alone, so a recycled PID
+keeps a dead owner's marker until ``timeout``, ``lifetime`` or ``break_lock()``. A time namespace without an offset, as
+container runtimes create, keeps the token. A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's
+``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
+whenever either side lacks the boot id.
 
 Breaking a marker leaves a short window. Right before breaking it the contender reads the marker's inode and
 modification time again and leaves it alone if they moved since the stale check, the way Mercurial re-reads a lock under
@@ -967,7 +967,7 @@ inheritance so the lock file gets the directory's default permissions rather tha
 When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock creates the file with it. On Unix,
 :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`SoftFileLock <filelock.SoftFileLock>` then apply it with
 ``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory. A soft lock's marker never
-gets the group or other write bits, whatever the ``mode`` or umask: contenders only read and rename it, and they act on
+gets the group or other write bits, whatever the ``mode`` or umask. Contenders only read and rename it, and they act on
 the record its owner wrote.
 
 An explicit ``mode`` must be an :class:`int` within ``0o000``-``0o777`` that grants the owner read and write;

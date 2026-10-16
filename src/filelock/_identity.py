@@ -97,9 +97,10 @@ def owner_is_current_process(pid: int, hostname: str, start_token: int | None) -
 
 
 def _same_start(current: int, recorded: int) -> bool:
-    # A Linux token carries the boot id in its high bits, or 0 there when its process could not read the boot id. One
-    # process may lack it while its peer reads it (systemd's ProcSubset=pid hides /proc/sys from a single unit), so a
-    # missing boot id proves nothing and only starttime is compared. Tokens of other platforms fit in the low bits.
+    # A Linux token carries the boot id in its high 64 bits, or 0 there when the process could not read the boot id.
+    # systemd's ProcSubset=pid hides /proc/sys from one unit, so one process may lack the boot id while its peer has
+    # it. A missing boot id then proves nothing, and only starttime is compared. Other platforms' tokens fit in the
+    # low bits.
     return current == recorded or (0 in {current >> 64, recorded >> 64} and current % 2**64 == recorded % 2**64)
 
 
@@ -178,7 +179,7 @@ else:  # pragma: win32 no cover
             # starttime is measured in clock ticks since boot, so on its own it repeats across a reboot. Folding the
             # boot id into the high bits makes the Linux token reboot-safe like the absolute clocks macOS and Windows
             # expose, while staying a single integer so a 3.29 reader still parses the third marker line. 0 when this
-            # process cannot read the boot id degrades to bare starttime, which _same_start compares alone.
+            # process cannot read the boot id leaves the bare starttime, which _same_start compares alone.
             try:
                 boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii")
                 return int(boot_id.strip().replace("-", ""), 16)
@@ -193,9 +194,9 @@ else:  # pragma: win32 no cover
             """
             The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id.
 
-            ``None`` when the process is gone, or when this process runs in a time namespace with a boottime offset:
-            since Linux 5.6 the kernel shifts ``starttime`` by the offset of whoever reads it, so a value read there
-            means something else to a peer outside.
+            ``None`` when the process is gone, or when this process runs in a time namespace with a boottime offset.
+            Since Linux 5.6 the kernel shifts ``starttime`` by the reader's offset, so a value read there differs
+            from what a peer outside reads.
             """
             return _read_start_token(pid) if _starttime_unshifted() else None
 
@@ -238,9 +239,9 @@ else:  # pragma: win32 no cover
             Whether the owner runs in another PID namespace as *pid*.
 
             An older release in a container sharing this hostname recorded its in-container PID, which means nothing
-            here. Readers without a boottime offset share starttime and the boot id, so a task with that start token
-            whose innermost PID is *pid* is the owner; one that merely started in the same tick is not. A reader with an
-            offset cannot compare start tokens, so the innermost PID alone keeps the marker.
+            here. Readers without a boottime offset read the same starttime and boot id. A task with the recorded
+            start token whose innermost PID is *pid* is therefore the owner; one that started in the same tick is not.
+            A reader with an offset cannot compare start tokens, so the innermost PID alone keeps the marker.
             """
             if start_token is None or (_BOOT_ID and start_token >> 64 not in {0, _BOOT_ID}):
                 return False
@@ -266,8 +267,8 @@ else:  # pragma: win32 no cover
                 status: Final = Path(f"/proc/{task}/status").read_bytes()
             except OSError:  # pragma: no cover  # the task exited between the stat read and this one
                 return None
-            # The kernel ends a line only with "\n". The task names itself, and the Name line carries "\r", "\v" and
-            # the other characters text-mode reads and str.splitlines() also split at, so a name could forge a line.
+            # The kernel ends a line only with "\n". A task names itself, and its Name line keeps "\r", "\v" and the
+            # other separators that a text-mode read and str.splitlines() split at. A name could then forge a line.
             return next(
                 (int(line.split()[-1]) for line in status.split(b"\n") if line.startswith(b"NSpid:")),
                 None,  # kernels before 4.1 record no namespace PIDs
