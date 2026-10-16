@@ -21,6 +21,7 @@ from fractions import Fraction
 from inspect import getframeinfo, stack
 from itertools import count
 from pathlib import Path, PurePath
+from pkgutil import resolve_name
 from queue import Queue
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import FrameType, TracebackType
@@ -1563,6 +1564,47 @@ def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Pa
     lock.acquire(blocking=False)
     lock.release()
     assert not (tmp_path / "a").exists()
+
+
+@_NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+@pytest.mark.parametrize(
+    "interrupted",
+    [pytest.param("fcntl.flock", id="after_unlock", marks=NEEDS_FCNTL), pytest.param("os.close", id="after_close")],
+)
+def test_acquire_from_a_signal_handler_during_a_release_is_refused(
+    tmp_path: Path, mocker: MockerFixture, thread_local: bool, interrupted: str
+) -> None:
+    lock: Final = FileLock(str(tmp_path / "a"), thread_local=thread_local)
+    lock.acquire()
+
+    def acquire_in_handler(_signum: int, _frame: FrameType | None) -> None:
+        lock.acquire()
+
+    # Right after the unlock the handler used to nest into a hold the OS had dropped. After the close it took a hold
+    # whose release the interrupted one swallowed.
+    real: Final = resolve_name(interrupted)
+    pending: Final = [signal.SIGINT]
+
+    def call_then_signal_once(*args: int) -> None:
+        real(*args)
+        # Only the first call raises the signal, so the release the interrupt restarts can finish. Windows makes one
+        # call here, so a branch on the call count would stay half covered there.
+        signals = pending.copy()
+        pending.clear()
+        list(map(signal.raise_signal, signals))
+
+    mocker.patch(interrupted, autospec=True, side_effect=call_then_signal_once)
+    previous: Final = signal.signal(signal.SIGINT, acquire_in_handler)
+    try:
+        with pytest.raises(RuntimeError, match="acquired again while this thread's release of it runs"):
+            lock.release()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    mocker.stopall()
+
+    with FileLock(str(tmp_path / "a"), blocking=False) as peer:
+        assert peer.is_locked
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl

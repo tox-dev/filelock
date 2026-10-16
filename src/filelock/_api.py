@@ -1176,6 +1176,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             if not self.is_locked and _on_this_stack(self._context.acquiring):
                 msg = f"Deadlock: lock '{self.lock_file}' is acquired again while this thread's acquire of it waits"
                 raise RuntimeError(msg)
+            # An interrupted release commits only the hold it started with and ignores a release above it on the
+            # stack. A hold taken here would nest into one the OS dropped, or stay held for good.
+            if _on_this_stack(self._context.releasing):
+                msg = f"lock '{self.lock_file}' is acquired again while this thread's release of it runs"
+                raise RuntimeError(msg)
             # Bump the counter up front; _undo_acquire rolls it back if acquisition fails.
             self._context.lock_counter += 1
 
