@@ -204,7 +204,9 @@ if sys.platform == "win32":  # pragma: win32 cover
                 locked = _lock_fd_nonblocking(fd)
                 if locked:
                     self._mark_descriptor_owned(fd)
-            except BaseException:  # pragma: no cover  # cleanup only if the lock attempt itself raises
+            except BaseException:
+                # Closing drops the byte-range lock, so a hold already recorded for this descriptor must go with it.
+                self._mark_descriptor_released()
                 os.close(fd)
                 raise
             if not locked:

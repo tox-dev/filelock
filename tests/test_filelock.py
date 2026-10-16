@@ -24,7 +24,7 @@ from pathlib import Path, PurePath
 from pkgutil import resolve_name
 from queue import Queue
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
-from types import FrameType, TracebackType
+from types import CodeType, FrameType, TracebackType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast, get_args
 from uuid import uuid4
 from weakref import WeakValueDictionary
@@ -1518,11 +1518,54 @@ def test_interrupted_at_any_call_reports_whether_it_holds(
     assert target > 1
 
 
-def _interrupted_at_call(lock: BaseFileLock, target: int, operation: Callable[[], object]) -> bool:
+def test_acquire_interrupted_after_recording_the_hold_releases_it(tmp_path: Path) -> None:
+    # The thread-hold bookkeeping after _mark_descriptor_owned stores the descriptor calls into threading, where a
+    # signal can land too.
+    lock_path: Final = str(tmp_path / "a")
+    for target in count(1):  # pragma: no branch  # count() never runs out; the acquire that finishes ends the loop
+        lock = FileLock(lock_path)
+        if not _interrupted_at_call(lock, target, lock.acquire, callee=threading.current_thread.__code__):
+            lock.release()
+            break
+        assert not lock.is_locked
+        with FileLock(lock_path, blocking=False) as peer:
+            assert peer.is_locked
+    assert target > 1
+
+
+def test_acquire_after_one_interrupted_once_held_excludes_another_process(tmp_path: Path) -> None:
+    # The interrupt lands right after acquire takes and records the OS lock. The same object's next acquire must take
+    # the OS lock again, not nest into a hold whose handle the cut-short acquire closed.
+    lock_path: Final = str(tmp_path / "a")
+    lock: Final = FileLock(lock_path)
+    assert _interrupted_at_call(lock, 1, lock.acquire, callee=threading.current_thread.__code__)
+    with lock:
+        script = textwrap.dedent(f"""
+            from filelock import FileLock, Timeout
+            try:
+                FileLock({lock_path!r}).acquire(blocking=False)
+            except Timeout:
+                print("refused")
+        """)
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert (result.returncode, result.stdout.strip()) == (0, "refused"), result.stderr
+
+
+def _interrupted_at_call(
+    lock: BaseFileLock, target: int, operation: Callable[[], object], *, callee: CodeType | None = None
+) -> bool:
     # Interpreters run a profile hook with tracing off, so coverage never records its body.
     def interrupt(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover
-        # Only calls handed the lock: raising inside threading's own context managers would leak its locks.
-        if event == "call" and (resumable or frame not in entered) and any(v is lock for v in frame.f_locals.values()):
+        # Only calls handed the lock, or calls of callee made by one: raising inside threading's own context managers
+        # would leak its locks.
+        if event != "call" or (callee is not None and frame.f_code is not callee):
+            return
+        holder = frame if callee is None else frame.f_back
+        if (
+            (resumable or frame not in entered)
+            and holder is not None
+            and any(v is lock for v in holder.f_locals.values())
+        ):
             entered.add(frame)
             if next(calls) == target:
                 raise KeyboardInterrupt
