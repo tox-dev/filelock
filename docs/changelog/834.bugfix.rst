@@ -1,5 +1,5 @@
 Fix :class:`~filelock.ReadWriteLock` acting on ``-journal``, ``-wal`` or ``-shm`` files another process puts beside its
 database, which could redirect writes, admit a reader beside a writer or fail every acquire. SQLite now opens the
-database by name only in a directory no other user can write, and through a private hard link elsewhere. Link
-directories are removed through a checked descriptor instead of by name, and a database whose schema takes more than a
-few kilobytes to load raises :class:`ValueError` instead of running past the acquire timeout.
+database by name only in an owner-only directory, and through a private hard link elsewhere. Link directories are
+removed through a checked descriptor instead of by name, and a database whose schema takes more than a few kilobytes to
+load raises :class:`ValueError` instead of running past the acquire timeout.
