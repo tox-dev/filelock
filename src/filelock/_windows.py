@@ -192,12 +192,12 @@ if sys.platform == "win32":  # pragma: win32 cover
         """
 
         def _acquire(self) -> None:
-            raise_on_not_writable_file(self.lock_file)
-            ensure_directory_exists(self.lock_file)
+            raise_on_not_writable_file(self._lock_path)
+            ensure_directory_exists(self._lock_path)
 
             # The reparse test is bound to the opened handle, so a symlink or junction swapped in cannot defeat it
             # through a check-then-open TOCTOU race.
-            fd = _open_non_reparse_fd(self.lock_file, self._open_mode())
+            fd = _open_non_reparse_fd(self._lock_path, self._open_mode())
             if fd is None:
                 return  # open contention (share conflict or a name pending deletion); let the retry loop try again
             try:
@@ -222,7 +222,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             self._close_released_fd(fd, default_suppresses=False)
             if not self._preserve_lock_file:  # preserve_lock_file keeps a stable file identity for the caller (#605)
                 with suppress(OSError):
-                    Path(self.lock_file).unlink()
+                    Path(self._lock_path).unlink()
 
     def _open_non_reparse_fd(path: str, mode: int) -> int | None:
         """

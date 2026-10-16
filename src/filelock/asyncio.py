@@ -378,7 +378,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             canonical = await self._off_loop(functools.partial(_canonical, self.lock_file))
             self._context.lock_counter += 1
             self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
-            self._context.claim_root = canonical
+            self._pin_lock_path(canonical)
             try:
                 await self._async_poll_until_acquired(
                     blocking=blocking,
@@ -390,8 +390,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             except BaseException:
                 self._reconcile_failed_acquire(canonical)
                 raise
-            finally:
-                self._context.claim_root = None
             self._commit_acquire(canonical)
             return AsyncAcquireReturnProxy(lock=self)
 

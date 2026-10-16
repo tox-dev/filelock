@@ -262,14 +262,14 @@ class SoftFileLease(MarkerSoftFileLock):
             # A dead or recycled owner is reclaimed at once, whether it held a lease or an exclusive marker; a live
             # lease owner whose marker stops being refreshed is superseded on the schedule every contender agreed to.
             if owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
-                break_lock_file(self.lock_file, mtime, ino)
+                break_lock_file(self._lock_path, mtime, ino)
                 return
             if owner.mode == "lease" and self._marker_unchanged_for(mtime, ino) >= self._lease_duration:
-                break_lock_file(self.lock_file, mtime, ino)
+                break_lock_file(self._lock_path, mtime, ino)
 
     def _read_peer(self) -> tuple[OwnerRecord, float, int] | None:
         with suppress(OSError, ValueError):
-            content, mtime, ino = _read_lock_file(self.lock_file)
+            content, mtime, ino = _read_lock_file(self._lock_path)
             if (owner := parse_marker(content)) is not None:
                 return owner, mtime, ino
         return None
@@ -282,7 +282,7 @@ class SoftFileLease(MarkerSoftFileLock):
             # A strong reference from a running thread would keep a dropped lease alive, so __del__ would never release
             # it and its marker would outlive the process. The callback stops a heartbeat that __del__ could not reach.
             report=WeakMethod(self._report_compromise, lambda _: stop.set()),
-            lock_file=self.lock_file,
+            lock_file=self._lock_path,
             claim=claim,
             fd=fd,
             identity=identity,

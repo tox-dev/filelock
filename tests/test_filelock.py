@@ -18,6 +18,7 @@ from contextlib import contextmanager, suppress
 from decimal import Decimal
 from errno import EAGAIN, EINTR, EIO, ENOSPC, ENOSYS, EWOULDBLOCK
 from fractions import Fraction
+from functools import partial
 from inspect import getframeinfo, stack
 from itertools import count
 from pathlib import Path, PurePath
@@ -2833,6 +2834,99 @@ def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
     finally:
         on_link.release(force=True)
         on_target.release(force=True)
+
+
+_RELATIVE_LOCK_TYPES: Final = [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease]
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_relative_waiter_keeps_acquisition_directory(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    # acquire resolves a relative path once, when the acquisition starts, and keeps that file until the hold ends, so
+    # a chdir mid-wait does not move the waiter to a file in the new directory.
+    first, second = working_directories
+    holder = lock_type(first / "resource.lock")
+    holder.acquire()
+    polling = threading.Event()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_acquire_relative_lock, lock_type, polling)
+            assert polling.wait(timeout=2)
+            os.chdir(second)
+            with pytest.raises(Timeout):
+                future.result(timeout=2)
+    finally:
+        holder.release(force=True)
+
+    assert not (second / "resource.lock").exists()
+
+
+def _acquire_relative_lock(lock_type: type[BaseFileLock], polling: threading.Event) -> None:
+    lock_type("resource.lock", timeout=0.2, poll_interval=0.001).acquire(cancel_check=partial(_signal_poll, polling))
+
+
+def _signal_poll(polling: threading.Event) -> bool:
+    polling.set()
+    return False
+
+
+@pytest.mark.parametrize("lock_type", [SoftFileLock, MarkerSoftFileLock, SoftFileLease])
+def test_relative_release_uses_acquisition_directory(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    lock = lock_type("resource.lock")
+    lock.acquire()
+
+    os.chdir(second)
+    with lock:  # re-entry joins the hold, so it keeps that hold's path
+        pass
+    lock.release()
+
+    assert not (first / "resource.lock").exists()
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_each_acquisition_resolves_the_working_directory(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    _, second = working_directories
+    lock = lock_type("resource.lock")
+    with lock:
+        pass
+
+    os.chdir(second)
+    with lock:
+        assert (lock.lock_file, (second / "resource.lock").exists()) == ("resource.lock", True)
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_singleton_after_chdir_locks_the_requested_file(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    relative = lock_type("resource.lock", is_singleton=True)
+    os.chdir(second)
+    with lock_type(first / "resource.lock", is_singleton=True):
+        assert ((first / "resource.lock").exists(), (second / "resource.lock").exists()) == (True, False)
+    del relative
+
+
+@NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_singleton_after_parent_link_moves_locks_the_requested_file(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    link = first.parent / "current"
+    link.symlink_to(first)
+    through_link = lock_type(link / "resource.lock", is_singleton=True)
+    link.unlink()
+    link.symlink_to(second)
+    with lock_type(first / "resource.lock", is_singleton=True):
+        assert ((first / "resource.lock").exists(), (second / "resource.lock").exists()) == (True, False)
+    del through_link
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl

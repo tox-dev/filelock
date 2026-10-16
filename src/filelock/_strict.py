@@ -133,11 +133,7 @@ class StrictSoftFileLock(BaseFileLock):
     def _acquire(self) -> None:
         # Finish a doorway whose claim cleanup failed before publishing, so this owner never contends with leftovers.
         self._discard_pending_doorways(exited_only=True)
-        # Resolve once per acquisition, not per poll: a waiter on a relative path must keep publishing into the
-        # directory it started waiting in even when another thread changes the working directory mid-wait.
-        if (claim_root := self._context.claim_root) is None:
-            claim_root = self._context.claim_root = _canonical(self.lock_file)
-        lock_path = Path(claim_root)
+        lock_path = Path(self._lock_path)
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
         ensure_directory_exists(os.fspath(lock_path))

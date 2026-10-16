@@ -70,15 +70,15 @@ class SoftFileLock(BaseFileLock):
 
     def _acquire(self) -> None:
         self._finish_marker_cleanup()
-        raise_on_not_writable_file(self.lock_file)
-        ensure_directory_exists(self.lock_file)
+        raise_on_not_writable_file(self._lock_path)
+        ensure_directory_exists(self._lock_path)
         # O_CREAT | O_EXCL makes the create fail with EEXIST when the file already exists, so a successful open
         # means this process now holds the lock.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
         if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:  # pragma: needs o-nofollow
             flags |= o_nofollow
         try:
-            fd = os.open(self.lock_file, flags, self._open_mode())
+            fd = os.open(self._lock_path, flags, self._open_mode())
         except OSError as exception:
             if not (
                 exception.errno == EEXIST or (exception.errno == EACCES and sys.platform == "win32")
@@ -114,7 +114,7 @@ class SoftFileLock(BaseFileLock):
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
-            content, mtime, ino = _read_lock_file(self.lock_file)
+            content, mtime, ino = _read_lock_file(self._lock_path)
             if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
                 return
             holder = _parse_lock_holder(content)
@@ -124,11 +124,11 @@ class SoftFileLock(BaseFileLock):
                 # Self-heal only once the file is clearly not a half-written fresh lock (a peer between O_EXCL and
                 # _write_lock_info), so the brief create-then-write window is never mistaken for a stale lock.
                 if self._marker_unchanged_for(mtime, ino) >= MALFORMED_LOCK_AGE_THRESHOLD:
-                    break_lock_file(self.lock_file, mtime, ino)
+                    break_lock_file(self._lock_path, mtime, ino)
                 return
 
             if owner_is_stale(*holder):
-                break_lock_file(self.lock_file, mtime, ino)
+                break_lock_file(self._lock_path, mtime, ino)
 
     def _marker_unchanged_for(self, mtime: float, ino: int) -> float:
         # The mtime is the writer's or file server's clock, so against time.time() a contender whose clock runs ahead
@@ -142,7 +142,7 @@ class SoftFileLock(BaseFileLock):
     def _unprobeable_holder(self) -> str | None:
         # This host cannot prove such a holder dead, so whoever decides whether it is gone needs its name.
         with suppress(OSError, ValueError):
-            if (holder := self._recorded_holder(_read_lock_file(self.lock_file)[0])) and holder[1] != host_name():
+            if (holder := self._recorded_holder(_read_lock_file(self._lock_path)[0])) and holder[1] != host_name():
                 return f"pid {holder[0]} on {holder[1]}"
         return None
 
@@ -169,7 +169,7 @@ class SoftFileLock(BaseFileLock):
 
         """
         with suppress(OSError, ValueError):
-            holder = _parse_lock_holder(_read_lock_file(self.lock_file)[0])
+            holder = _parse_lock_holder(_read_lock_file(self._lock_path)[0])
             if holder is not None:
                 return holder[0]
         return None
@@ -184,14 +184,14 @@ class SoftFileLock(BaseFileLock):
 
         """
         with suppress(OSError, ValueError):
-            if (holder := _parse_lock_holder(_read_lock_file(self.lock_file)[0])) is not None:
+            if (holder := _parse_lock_holder(_read_lock_file(self._lock_path)[0])) is not None:
                 return owner_is_current_process(*holder)
         return False
 
     def break_lock(self) -> None:
         """Forcibly break the lock by removing the lock file, regardless of who holds it."""
         with suppress(OSError):
-            Path(self.lock_file).unlink()
+            Path(self._lock_path).unlink()
 
     def _release_current(self, *, force: bool) -> None:
         try:
@@ -251,8 +251,8 @@ class SoftFileLock(BaseFileLock):
     def _unlink_open_marker(self, identity: tuple[int, int] | None) -> bool:  # pragma: win32 no cover
         try:
             with suppress(FileNotFoundError):
-                if identity is not None and _file_identity(os.lstat(self.lock_file)) == identity:
-                    Path(self.lock_file).unlink()
+                if identity is not None and _file_identity(os.lstat(self._lock_path)) == identity:
+                    Path(self._lock_path).unlink()
         except OSError:
             return False
         return True
@@ -287,11 +287,11 @@ class SoftFileLock(BaseFileLock):
             self._windows_unlink_if_ours(identity)
         else:  # pragma: win32 no cover
             with suppress(OSError):
-                if _file_identity(os.lstat(self.lock_file)) == identity:
-                    Path(self.lock_file).unlink()
+                if _file_identity(os.lstat(self._lock_path)) == identity:
+                    Path(self._lock_path).unlink()
 
     def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:  # pragma: win32 cover
-        path: Final = self.lock_file
+        path: Final = self._lock_path
         retry_delay = 0.001
         for attempt in range(_UNLINK_MAX_RETRIES):
             # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck

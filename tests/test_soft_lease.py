@@ -120,6 +120,20 @@ def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> N
             _lease(marker).acquire()
 
 
+def test_lease_heartbeat_uses_acquisition_directory(working_directories: tuple[Path, Path]) -> None:
+    first, second = working_directories
+    compromised = Event()
+    lease = SoftFileLease(
+        "resource.lock", lease_duration=0.9, heartbeat_interval=0.05, on_compromise=lambda _: compromised.set()
+    )
+    with lease:
+        os.chdir(second)
+        os.utime(first / "resource.lock", (0, 0))
+
+        assert not compromised.wait(timeout=0.3)
+        assert (first / "resource.lock").stat().st_mtime > 0
+
+
 @NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) -> None:
     # A wedged holder: its marker stays on disk, but no refresh ever lands on it again, so the claim ages out.

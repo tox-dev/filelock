@@ -74,7 +74,7 @@ else:  # pragma: win32 no cover
                 self._switch_to_soft_lock(fd, exception, created=created)
 
         def _acquire_native(self) -> tuple[int, OSError, bool] | None:
-            ensure_directory_exists(self.lock_file)
+            ensure_directory_exists(self._lock_path)
             if (opened := self._open_lock_file()) is None:
                 return None
             fd, created = opened
@@ -106,22 +106,22 @@ else:  # pragma: win32 no cover
                 open_flags |= o_nofollow
             open_mode = self._open_mode()
             try:
-                return os.open(self.lock_file, open_flags | os.O_CREAT | os.O_EXCL, open_mode), True
+                return os.open(self._lock_path, open_flags | os.O_CREAT | os.O_EXCL, open_mode), True
             except FileExistsError:
                 pass
             except FileNotFoundError:
                 # On FUSE/NFS a split LOOKUP + CREATE lets a concurrent unlink() race the create, so ENOENT is transient
                 # contention. An empty or separator-terminated path (Path() strips the separator) fails this way on
                 # every attempt on macOS, so re-raise rather than retry forever.
-                if self.lock_file and not self.lock_file.endswith(os.sep) and Path(self.lock_file).parent.exists():
+                if self._lock_path and not self._lock_path.endswith(os.sep) and Path(self._lock_path).parent.exists():
                     return None
                 raise
             except PermissionError:
                 # Sticky-bit dirs (e.g. /tmp): O_CREAT fails if another user owns the file (#317).
-                if not Path(self.lock_file).exists():
+                if not Path(self._lock_path).exists():
                     raise
             try:
-                return os.open(self.lock_file, open_flags, open_mode), False
+                return os.open(self._lock_path, open_flags, open_mode), False
             except FileNotFoundError:
                 return None  # unlinked since the create attempt; let the retry loop start over
 
@@ -140,9 +140,9 @@ else:  # pragma: win32 no cover
             # A file this attempt did not create may be a peer's live marker; the soft lock ages out a stale empty one.
             if created:
                 with suppress(OSError):
-                    current = os.lstat(self.lock_file)
+                    current = os.lstat(self._lock_path)
                     if identity == (current.st_dev, current.st_ino):
-                        Path(self.lock_file).unlink()
+                        Path(self._lock_path).unlink()
             self._fallback_to_soft_lock()
             self._acquire()
 
