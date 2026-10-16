@@ -169,6 +169,14 @@ Every strict participant needs filelock 3.30.0 or newer. Legacy clients configur
 ``break_lock()``, and code that deletes lock files can remove the sentinel; mixing them with strict clients voids mutual
 exclusion.
 
+Whoever can write ``<path>.filelock`` or its ``claims`` directory can remove a holder's claims, so the lock creates both
+with its ``mode``, adding search permission wherever the mode grants read: ``mode=0o600`` gives ``0o700``. Under a
+sticky parent such as ``/tmp``, acquisition raises :class:`SoftFileLockProtocolError
+<filelock.SoftFileLockProtocolError>` when a different UID created ``<path>.filelock`` first, unless that UID owns the
+parent too. Where the platform supports ``dir_fd``, the lock reaches ``claims`` through a descriptor of
+``<path>.filelock`` opened without following symlinks, so a symlink swapped in for either directory fails the
+operation instead of redirecting it.
+
 Strict claims require coherent directory reads and atomic no-replace hard links. The class reports a protocol error
 when the filesystem reports that it cannot publish hard links. NFS and SMB remain outside this guarantee until their
 mount and server combination passes the protocol tests. Linux documents the hard-link lock pattern in `open(2)
@@ -438,6 +446,9 @@ The defense differs by platform:
 - :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL``, which fails on any
   existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
   file as malformed, then checks the opened handle again with ``fstat``.
+- :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches
+  ``claims`` relative to that descriptor on platforms that support ``dir_fd``, so a symlink swapped in for either
+  directory after it was checked cannot redirect where claims are created, listed or removed.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path and keeps SQLite on the file it
 checked, so a link planted in a shared directory cannot point the lock at another file.
@@ -944,7 +955,9 @@ inherited ``with lock.read_lock():`` block can unwind in the child without raisi
 fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMongo's connection-pool semantics.
 
 **Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
-permissions can exclude another UID. A process with the same effective UID can alter the records. A filesystem that
+permissions can exclude another UID. Under a sticky parent such as ``/tmp``, acquisition raises :class:`RuntimeError`
+when a different UID created ``<path>.rw``, ``gen`` or ``holders`` first, unless that UID owns the parent too. A process
+with the same effective UID can alter the records. A filesystem that
 delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a holder remains active.
 
 ****************************
