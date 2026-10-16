@@ -49,6 +49,7 @@ _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from unittest.mock import MagicMock
 
     from pytest_mock import MockerFixture
 
@@ -222,11 +223,11 @@ def test_strict_soft_force_break_during_doorway_backs_off(
     real_scandir = os.scandir
     scans = 0
 
-    def break_before_scan(path: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
+    def break_before_scan(path: int | str) -> Iterator[os.DirEntry[str]]:
         nonlocal scans
         scans += 1
         if scans == scan_to_empty:
-            for claim in Path(os.fsdecode(path)).glob("*.claim"):
+            for claim in Path(f"{lock_path}.filelock", "claims").glob("*.claim"):
                 claim.unlink()
         return real_scandir(path)
 
@@ -244,11 +245,11 @@ def test_strict_soft_force_break_held_during_doorway_backs_off(tmp_path: Path, m
     real_scandir = os.scandir
     scans = 0
 
-    def break_held_before_final_scan(path: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
+    def break_held_before_final_scan(path: int | str) -> Iterator[os.DirEntry[str]]:
         nonlocal scans
         scans += 1
         if scans == 3:
-            for claim in Path(os.fsdecode(path)).glob("held-*.claim"):
+            for claim in Path(f"{lock_path}.filelock", "claims").glob("held-*.claim"):
                 claim.unlink()
         return real_scandir(path)
 
@@ -313,21 +314,21 @@ def test_strict_soft_reaper_replacement_only_aborts_publisher(tmp_path: Path, mo
     token = "0" * 32
     private_path = _private_claim_path(lock_path, token)
     displaced_path = private_path.with_suffix(".displaced")
-    real_unlink = Path.unlink
+    real_unlink = os.unlink
     replaced = False
 
-    def replace_instead_of_unlink(path: Path, *, missing_ok: bool = False) -> None:
-        # The reaper's clock probe and the peer's own records are the other Path.unlink callers; let them through.
+    def replace_instead_of_unlink(path: _PathValue, *, dir_fd: int | None = None) -> None:
+        # The reaper's clock probe and the peer's own records are the other os.unlink callers; let them through.
         nonlocal replaced
-        if path != private_path:
-            real_unlink(path, missing_ok=missing_ok)
+        if os.fsdecode(path) != private_path.name:
+            real_unlink(path, dir_fd=dir_fd)
             return
         replaced = True
-        path.replace(displaced_path)
-        path.write_bytes(b"replacement publisher")
+        private_path.replace(displaced_path)
+        private_path.write_bytes(b"replacement publisher")
 
     _reap_before_publication(lock_path, token, mocker)
-    mocker.patch.object(Path, "unlink", autospec=True, side_effect=replace_instead_of_unlink)
+    mocker.patch("filelock._strict.os.unlink", autospec=True, side_effect=replace_instead_of_unlink)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(Timeout):
@@ -388,15 +389,19 @@ def test_strict_soft_private_close_failure_removes_public_claim(tmp_path: Path, 
 
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         nonlocal private_fd
-        private_fd = real_open_relative(directory_ref, name, flags, mode)
-        return private_fd
+        fd = real_open_relative(directory_ref, name, flags, mode)
+        if flags & os.O_CREAT:
+            private_fd = fd
+        return fd
 
     # filelock._strict.os is the os module, so this patches os.close process-wide. Key the fault to the descriptor
     # under test rather than to call order: a background thread closing first would otherwise consume it, which is how
     # a soft-rw heartbeat still winding down turned these injections red on GraalPy.
     def fail_private_close(fd: int) -> None:
+        nonlocal private_fd
         real_close(fd)
         if fd == private_fd:
+            private_fd = None  # the cleanup that follows opens a directory under the same number
             raise OSError(EIO, "private close failed")
 
     mocker.patch("filelock._strict._open_relative", side_effect=capture_private_record)
@@ -414,17 +419,23 @@ def test_strict_soft_link_and_directory_close_failures_preserve_both(tmp_path: P
     _initialize_protocol(lock_path)
     real_close = os.close
     real_fstat = os.fstat
+    link_failed = False
     directory_close_failed = False
+
+    def fail_link(_source: _PathValue, _destination: _PathValue, **_options: int | bool | None) -> None:
+        nonlocal link_failed
+        link_failed = True
+        raise OSError(EIO, "link failed")
 
     def fail_directory_close(fd: int) -> None:
         nonlocal directory_close_failed
         is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
         real_close(fd)
-        if is_directory and not directory_close_failed:
+        if is_directory and link_failed and not directory_close_failed:
             directory_close_failed = True
             raise OSError(EIO, "directory close failed")
 
-    mocker.patch("filelock._strict.os.link", side_effect=OSError(EIO, "link failed"))
+    mocker.patch("filelock._strict.os.link", side_effect=fail_link)
     mocker.patch("filelock._strict.os.close", side_effect=fail_directory_close)
     lock = StrictSoftFileLock(lock_path)
 
@@ -442,20 +453,7 @@ def test_strict_soft_link_and_directory_close_failures_preserve_both(tmp_path: P
 def test_strict_soft_held_directory_close_failure_removes_both_claims(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
-    real_close = os.close
-    real_fstat = os.fstat
-    directory_closes = 0
-
-    def fail_second_directory_close(fd: int) -> None:
-        nonlocal directory_closes
-        is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
-        real_close(fd)
-        if is_directory:
-            directory_closes += 1
-            if directory_closes == 2:
-                raise OSError(EIO, "held directory close failed")
-
-    mocker.patch("filelock._strict.os.close", side_effect=fail_second_directory_close)
+    _fail_directory_close_after(mocker, "link", "held-", "held directory close failed")
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(OSError, match="held directory close failed"):
@@ -516,8 +514,8 @@ def test_strict_soft_reaper_does_not_retry_sharing_error(
     abandoned_record: tuple[Path, Path], mocker: MockerFixture
 ) -> None:
     lock_path, private_path = abandoned_record
-    unlink = mocker.patch.object(
-        Path, "unlink", autospec=True, side_effect=PermissionError(EACCES, "sharing violation")
+    unlink = mocker.patch(
+        "filelock._strict.os.unlink", autospec=True, side_effect=PermissionError(EACCES, "sharing violation")
     )
     sleep = mocker.patch("filelock._strict.time.sleep", autospec=True)
     # A contender blocked by a foreign claim ages the record out in its scan without removing a claim of its own.
@@ -525,7 +523,7 @@ def test_strict_soft_reaper_does_not_retry_sharing_error(
 
     with pytest.raises(Timeout):
         StrictSoftFileLock(lock_path, timeout=0).acquire()
-    reaper_unlinks = [call.args[0] for call in unlink.call_args_list].count(private_path)
+    reaper_unlinks = [Path(os.fsdecode(call.args[0])).name for call in unlink.call_args_list].count(private_path.name)
     assert (reaper_unlinks, sleep.call_count, private_path.exists()) == (1, 0, True)
 
 
@@ -592,14 +590,14 @@ def _fail_probe_stamp(mocker: MockerFixture) -> None:
 
 
 def _fail_probe_removal(mocker: MockerFixture) -> None:
-    real_unlink: Final = Path.unlink
+    real_unlink: Final = os.unlink
 
-    def eio_on_probe(path: Path, *, missing_ok: bool = False) -> None:
-        if path.name.startswith(".held-v1-"):
+    def eio_on_probe(path: _PathValue, *, dir_fd: int | None = None) -> None:
+        if Path(os.fsdecode(path)).name.startswith(".held-v1-"):
             raise OSError(EIO, "probe unlink failed")
-        real_unlink(path, missing_ok=missing_ok)
+        real_unlink(path, dir_fd=dir_fd)
 
-    mocker.patch.object(Path, "unlink", autospec=True, side_effect=eio_on_probe)
+    mocker.patch("filelock._strict.os.unlink", autospec=True, side_effect=eio_on_probe)
 
 
 # An unstamped probe reads no time, so the record's age is untrusted; a probe left behind still read the time.
@@ -653,23 +651,11 @@ def test_strict_soft_release_commits_before_directory_close_error(tmp_path: Path
     lock_path = tmp_path / "resource.lock"
     lock = StrictSoftFileLock(lock_path)
     lock.acquire()
-    real_close = os.close
-    real_fstat = os.fstat
-    directory_close_failed = False
-
-    def fail_directory_close(fd: int) -> None:
-        nonlocal directory_close_failed
-        is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
-        real_close(fd)
-        if is_directory and not directory_close_failed:
-            directory_close_failed = True
-            raise OSError(EIO, "directory close failed")
-
-    close_mock = mocker.patch("filelock._strict.os.close", side_effect=fail_directory_close)
+    _fail_directory_close_after(mocker, "unlink", "held-", "directory close failed")
 
     with pytest.raises(OSError, match="directory close failed"):
         lock.release()
-    mocker.stop(close_mock)
+    mocker.stopall()
     assert (lock.is_locked, lock.lock_counter, lock.claims) == (False, 0, ())
     with StrictSoftFileLock(lock_path, timeout=0) as contender:
         assert contender.is_locked
@@ -683,10 +669,13 @@ def test_strict_soft_release_preserves_unlink_and_directory_close_errors(tmp_pat
     real_close = os.close
     real_fstat = os.fstat
     real_unlink = os.unlink
+    unlink_failed = False
     directory_close_failed = False
 
     def fail_claim_unlink(path: _PathValue, *, dir_fd: int | None = None) -> None:
+        nonlocal unlink_failed
         if Path(os.fsdecode(path)).name.startswith("held-"):
+            unlink_failed = True
             raise PermissionError(EACCES, "claim unlink failed")
         real_unlink(path, dir_fd=dir_fd)
 
@@ -694,7 +683,7 @@ def test_strict_soft_release_preserves_unlink_and_directory_close_errors(tmp_pat
         nonlocal directory_close_failed
         is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
         real_close(fd)
-        if is_directory and not directory_close_failed:
+        if is_directory and unlink_failed and not directory_close_failed:
             directory_close_failed = True
             raise OSError(EIO, "directory close failed")
 
@@ -735,11 +724,11 @@ def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path,
     scans = 0
     cleanup_name: str | None = None
 
-    def add_competitor_before_final_scan(path: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
+    def add_competitor_before_final_scan(path: int | str) -> Iterator[os.DirEntry[str]]:
         nonlocal scans
         scans += 1
         if scans == 3:
-            Path(path, competitor_name).write_text(
+            Path(f"{lock_path}.filelock", "claims", competitor_name).write_text(
                 f"filelock-strict-v1\n{competitor_token}\n{os.getpid()}\n{socket.gethostname().encode().hex()}\n4242\n",
                 encoding="ascii",
                 newline="",
@@ -754,11 +743,16 @@ def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path,
         real_unlink(path, dir_fd=dir_fd)
 
     def fail_cleanup_directory_close(fd: int) -> None:
+        nonlocal cleanup_name
         is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
         real_close(fd)
-        if is_directory and cleanup_name == f"intent-v1-{owner_token}.claim":
+        if not is_directory:
+            return
+        # Only the first directory closed after an unlink is the one it ran in; the next walk closes others.
+        unlinked, cleanup_name = cleanup_name, None
+        if unlinked == f"intent-v1-{owner_token}.claim":
             raise OSError(EIO, "intent directory close failed")
-        if is_directory and cleanup_name == f"held-v1-{owner_token}.claim":
+        if unlinked == f"held-v1-{owner_token}.claim":
             raise OSError(EIO, "held directory close failed")
 
     mocker.patch("filelock._strict.secrets.token_hex", return_value=owner_token)
@@ -1180,7 +1174,7 @@ def test_strict_soft_claim_replaced_while_opening_fails_closed(
         dir_fd: int | None = None,
     ) -> int:
         nonlocal replaced
-        if not replaced and os.fsdecode(path) == str(claim):
+        if not replaced and Path(os.fsdecode(path)).name == claim.name:
             replaced = True
             claim.replace(claim.with_name(f".{claim.name}.replaced"))
             if replacement == "file":
@@ -1202,16 +1196,16 @@ def _write_held_claim(claims: Path) -> Path:
     return claim
 
 
-def _open_raising_for(claim: Path, error: OSError, mocker: MockerFixture) -> None:
+def _open_raising_for(claim: Path, error: OSError, mocker: MockerFixture) -> MagicMock:
     real_open = os.open
 
     def failing_open(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
-        if os.fsdecode(path) == str(claim):
+        if Path(os.fsdecode(path)).name == claim.name:
             raise error
-        # The flows using this helper open only the single target claim, so the passthrough never runs.
-        return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: no cover
+        # The flows using this helper read only the single target claim, so only the directory walk passes through.
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: needs dir-fd
 
-    mocker.patch("filelock._strict.os.open", side_effect=failing_open)
+    return mocker.patch("filelock._strict.os.open", side_effect=failing_open)
 
 
 def test_strict_soft_stale_claim_read_is_skipped(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -1233,12 +1227,12 @@ def test_strict_soft_stale_claim_read_revalidates_to_gone(tmp_path: Path, mocker
 
     def stale_then_vanish(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         nonlocal stale_raised
-        if not stale_raised and os.fsdecode(path) == str(claim):
+        if not stale_raised and Path(os.fsdecode(path)).name == claim.name:
             stale_raised = True
             claim.unlink()
             raise OSError(ESTALE, "Stale file handle")
-        # The retry re-lstats the vanished claim and fails there before reopening, so this passthrough never runs.
-        return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: no cover
+        # The retry re-lstats the vanished claim and fails there before reopening, so only the directory walk passes.
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: needs dir-fd
 
     mocker.patch("filelock._strict.os.open", side_effect=stale_then_vanish)
 
@@ -1270,6 +1264,80 @@ def test_strict_soft_directory_inspection_error_fails_closed(tmp_path: Path, moc
         StrictSoftFileLock(tmp_path / "resource.lock").acquire()
 
 
+@_NEEDS_DIR_FD  # pragma: needs dir-fd
+@NEEDS_SYMLINK  # pragma: needs symlink
+@pytest.mark.parametrize(
+    ("function", "suffix", "match"),
+    [
+        pytest.param("mkdir", "claims", "cannot open claim directory", id="before-creating-claims"),
+        pytest.param("open", ".filelock", "cannot open .*filelock$", id="before-opening-coordination"),
+    ],
+)
+def test_strict_soft_coordination_directory_swapped_for_symlink_leaves_target_alone(
+    tmp_path: Path, mocker: MockerFixture, function: str, suffix: str, match: str
+) -> None:
+    lock_path: Final = tmp_path / "resource.lock"
+    (coordination := Path(f"{lock_path}.filelock")).mkdir()
+    (target := tmp_path / "target").mkdir()
+    real: Final = getattr(os, function)
+
+    def swap_first(path: _PathValue, *args: int, **options: int | None) -> int | None:
+        # Whoever can rename entries in the lock's directory can exchange the name after acquire found a real directory.
+        if os.fsdecode(path).endswith(suffix) and not coordination.is_symlink():
+            coordination.rename(tmp_path / "aside")
+            coordination.symlink_to(target, target_is_directory=True)
+        return real(path, *args, **options)
+
+    mocker.patch(f"filelock._strict.os.{function}", autospec=True, side_effect=swap_first)
+
+    with pytest.raises(SoftFileLockProtocolError, match=match):
+        StrictSoftFileLock(lock_path, timeout=0).acquire()
+    assert list(target.iterdir()) == []
+
+
+@_NEEDS_DIR_FD  # pragma: needs dir-fd
+@NEEDS_SYMLINK  # pragma: needs symlink
+def test_strict_soft_release_keeps_claims_while_coordination_directory_is_a_symlink(
+    lock_path: Path, tmp_path: Path
+) -> None:
+    coordination, aside, target = Path(f"{lock_path}.filelock"), tmp_path / "aside", tmp_path / "target"
+    (target / "claims").mkdir(parents=True)
+    lock = StrictSoftFileLock(lock_path)
+    lock.acquire()
+    coordination.rename(aside)
+    coordination.symlink_to(target, target_is_directory=True)
+
+    # Following the symlink would find no claim in the target, count both as removed and strand them.
+    with pytest.raises(BaseExceptionGroup, match="strict claim release failed"):
+        lock.release()
+    assert (lock.is_locked, len(list((aside / "claims").iterdir()))) == (True, 2)
+
+    coordination.unlink()
+    aside.rename(coordination)
+    lock.release()
+    assert (lock.is_locked, lock.claims) == (False, ())
+
+
+@_NEEDS_DIR_FD  # pragma: needs dir-fd
+@NEEDS_SYMLINK  # pragma: needs symlink
+@pytest.mark.parametrize("symlink", ["resource.lock.filelock", "claims"])
+def test_strict_soft_symlinked_protocol_directory_is_neither_listed_nor_broken(tmp_path: Path, symlink: str) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(tmp_path / "target" / "claims")
+    if symlink == "claims":
+        Path(f"{lock_path}.filelock").mkdir()
+        Path(f"{lock_path}.filelock", "claims").symlink_to(claim.parent, target_is_directory=True)
+    else:
+        Path(f"{lock_path}.filelock").symlink_to(claim.parent.parent, target_is_directory=True)
+    lock = StrictSoftFileLock(lock_path)
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot open claim directory"):
+        _ = lock.claims
+    with pytest.raises(OSError, match=re.escape(f"{symlink}'")):
+        lock.force_break(claim.name)
+    assert claim.exists()
+
+
 @pytest.fixture
 def lock_path(tmp_path: Path) -> Path:
     _initialize_protocol(path := tmp_path / "resource.lock")
@@ -1290,6 +1358,34 @@ def _initialize_protocol(lock_path: Path) -> None:
 
 def _private_claim_path(lock_path: Path, token: str) -> Path:
     return Path(f"{lock_path}.filelock") / "claims" / f".intent-v1-{token}.claim.private-v1-{token}.tmp"
+
+
+def _fail_directory_close_after(  # pragma: needs dir-fd
+    mocker: MockerFixture, function: str, prefix: str, message: str
+) -> None:
+    # Every claim operation walks to its directory through descriptors it closes on the way, so fail the first
+    # directory close after os.link or os.unlink touched the name rather than count the directory closes. Where os.link
+    # takes no dir_fd it gets full paths, so match the final component.
+    real_close: Final = os.close
+    real_fstat: Final = os.fstat
+    real_function: Final = getattr(os, function)
+    armed = False
+
+    def arm_after(*paths: _PathValue, **options: int | bool | None) -> None:
+        nonlocal armed
+        real_function(*paths, **options)
+        armed = armed or Path(os.fsdecode(paths[-1])).name.startswith(prefix)
+
+    def fail_directory_close(fd: int) -> None:
+        nonlocal armed
+        is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
+        real_close(fd)
+        if armed and is_directory:
+            armed = False
+            raise OSError(EIO, message)
+
+    mocker.patch(f"filelock._strict.os.{function}", side_effect=arm_after)
+    mocker.patch("filelock._strict.os.close", side_effect=fail_directory_close)
 
 
 def _leaf_error_messages(error: BaseException) -> list[str]:  # pragma: needs dir-fd
@@ -1335,8 +1431,8 @@ def test_strict_soft_sentinel_inspection_and_close_failure_group(tmp_path: Path,
     def fail_sentinel_close(fd: int) -> None:
         if fd == sentinel_fd:
             raise OSError(EIO, "sentinel close failed")
-        # Only the sentinel descriptor is closed in this flow, so the passthrough never runs.
-        real_close(fd)  # pragma: no cover
+        # Besides the sentinel this flow closes only the descriptor the claim directory is created against.
+        real_close(fd)  # pragma: needs dir-fd
 
     mocker.patch("filelock._strict._open_sentinel", side_effect=capture_sentinel)
     mocker.patch("filelock._strict.os.fstat", side_effect=fail_sentinel_inspection)
@@ -1359,19 +1455,8 @@ def test_strict_soft_publication_directory_close_failure(
     lock_path = tmp_path / "resource.lock"
     if initialized:
         _initialize_protocol(lock_path)
-    real_close = os.close
-    real_fstat = os.fstat
-    closed = False
-
-    def fail_first_directory_close(fd: int) -> None:
-        nonlocal closed
-        is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
-        real_close(fd)
-        if is_directory and not closed:
-            closed = True
-            raise OSError(EIO, "publication directory close failed")
-
-    mocker.patch("filelock._strict.os.close", side_effect=fail_first_directory_close)
+    published = "intent-" if initialized else lock_path.name
+    _fail_directory_close_after(mocker, "link", published, "publication directory close failed")
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(OSError, match="publication directory close failed"):
@@ -1385,19 +1470,7 @@ def test_strict_soft_force_break_directory_close_failure(tmp_path: Path, mocker:
     lock = StrictSoftFileLock(lock_path)
     lock.acquire()
     claim_name = lock.claims[0].name
-    real_close = os.close
-    real_fstat = os.fstat
-    closed = False
-
-    def fail_directory_close(fd: int) -> None:
-        nonlocal closed
-        is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
-        real_close(fd)
-        if is_directory and not closed:
-            closed = True
-            raise OSError(EIO, "force break directory close failed")
-
-    mocker.patch("filelock._strict.os.close", side_effect=fail_directory_close)
+    _fail_directory_close_after(mocker, "unlink", claim_name, "force break directory close failed")
 
     with pytest.raises(OSError, match="force break directory close failed"):
         lock.force_break(claim_name)
@@ -1430,16 +1503,15 @@ def test_strict_soft_discard_sentinel_close_failure(tmp_path: Path, mocker: Mock
     _initialize_protocol(lock_path)
     _write_foreign_claim(Path(f"{lock_path}.filelock") / "claims", "a" * 32)
     real_close = os.close
-    closes = 0
+    real_fstat = os.fstat
+    sentinel = lock_path.stat()
 
-    def fail_second_close(fd: int) -> None:
-        nonlocal closes
-        closes += 1
-        if closes == 2:
+    def fail_sentinel_close(fd: int) -> None:
+        if os.path.samestat(real_fstat(fd), sentinel):
             raise OSError(EIO, "doorway sentinel close failed")
         real_close(fd)
 
-    mocker.patch("filelock._strict.os.close", side_effect=fail_second_close)
+    mocker.patch("filelock._strict.os.close", side_effect=fail_sentinel_close)
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(OSError, match="doorway sentinel close failed"):
@@ -1521,7 +1593,8 @@ def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(tmp_path:
 
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         fd = real_open_relative(directory_ref, name, flags, mode)
-        private_records[fd] = Path(directory_ref[0], name)
+        if flags & os.O_CREAT:
+            private_records[fd] = Path(directory_ref[0], name)
         return fd
 
     def reclaim_on_close(fd: int) -> None:
@@ -1548,12 +1621,16 @@ def test_strict_soft_record_finalization_close_and_unlink_failures_group(tmp_pat
 
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         nonlocal private_fd
-        private_fd = real_open_relative(directory_ref, name, flags, mode)
-        return private_fd
+        fd = real_open_relative(directory_ref, name, flags, mode)
+        if flags & os.O_CREAT:
+            private_fd = fd
+        return fd
 
     def fail_private_close(fd: int) -> None:
+        nonlocal private_fd
         real_close(fd)
         if fd == private_fd:
+            private_fd = None  # the cleanup that follows opens a directory under the same number
             raise OSError(EIO, "private close failed")
 
     mocker.patch("filelock._strict._open_relative", side_effect=capture_private_record)
@@ -1600,18 +1677,17 @@ def test_strict_soft_doorway_claim_unlink_failure_stays_pending(tmp_path: Path, 
     real_scandir = os.scandir
     injected = False
 
-    def add_competitor_once_intent_is_published(path: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
+    def add_competitor_once_intent_is_published(path: int | str) -> Iterator[os.DirEntry[str]]:
         # Key on directory content, not scandir call count: the setup and publication paths scan a differing number
         # of times per platform, so plant the held competitor on the first rescan that already lists our own intent.
         nonlocal injected
-        directory = Path(os.fsdecode(path))
         if not injected:
-            with real_scandir(directory) as entries:
+            with real_scandir(path) as entries:
                 intent_published = any(entry.name == intent_name for entry in entries)
             if intent_published:
-                _write_foreign_claim(directory, "0" * 32)
+                _write_foreign_claim(Path(f"{lock_path}.filelock") / "claims", "0" * 32)
                 injected = True
-        return real_scandir(directory)
+        return real_scandir(path)
 
     real_unlink_in_directory = filelock._strict._unlink_in_directory
 
@@ -1810,7 +1886,7 @@ def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: Moc
 
     mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=tick)
     mocker.patch("filelock._strict.time.sleep", autospec=True)
-    mocker.patch("filelock._strict.os.open", autospec=True, side_effect=PermissionError(EACCES, "sharing violation"))
+    _open_raising_for(claim, PermissionError(EACCES, "sharing violation"), mocker)
 
     if vanished:
         assert StrictSoftFileLock(lock_path).claims == ()
@@ -1876,14 +1952,12 @@ def test_strict_soft_claim_pending_deletion_is_skipped(tmp_path: Path) -> None:
 
 def test_strict_soft_claims_recheck_after_a_denied_claim_creates_no_file(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path: Final = tmp_path / "resource.lock"
-    _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    claim: Final = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
     (private_path := _private_claim_path(lock_path, "0" * 32)).write_bytes(b"abandoned")
     os.utime(private_path, (0, 0))
     mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=[0, 1])
     mocker.patch("filelock._strict.time.sleep", autospec=True)
-    opened: Final = mocker.patch(
-        "filelock._strict.os.open", autospec=True, side_effect=PermissionError(EACCES, "sharing violation")
-    )
+    opened: Final = _open_raising_for(claim, PermissionError(EACCES, "sharing violation"), mocker)
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
         _ = StrictSoftFileLock(lock_path).claims
@@ -1904,7 +1978,7 @@ def test_strict_soft_claim_read_retries_after_a_slow_denied_attempt(tmp_path: Pa
 
     def deny_slowly_once(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         nonlocal denied
-        if not denied and os.fsdecode(path) == str(claim):
+        if not denied and Path(os.fsdecode(path)).name == claim.name:
             denied = True
             time.sleep(0.05)
             raise PermissionError(EACCES, "sharing violation")
@@ -1930,11 +2004,14 @@ def test_strict_soft_record_read_and_close_failure_group(tmp_path: Path, mocker:
     claims.mkdir(parents=True)
     (claims / f"held-v1-{'0' * 32}.claim").write_bytes(b"x" * 1025)
     real_close = os.close
+    real_fstat = os.fstat
 
     def fail_close(fd: int) -> None:
-        # Reading the single oversized claim closes exactly one descriptor, so failing every close still fails once.
+        # Reading the single oversized claim closes exactly one record, so failing every such close still fails once.
+        is_directory = stat.S_ISDIR(real_fstat(fd).st_mode)
         real_close(fd)
-        raise OSError(EIO, "record close failed")
+        if not is_directory:  # pragma: needs dir-fd
+            raise OSError(EIO, "record close failed")
 
     mocker.patch("filelock._strict.os.close", side_effect=fail_close)
 
@@ -1956,6 +2033,8 @@ def test_strict_soft_acquires_without_dir_fd(tmp_path: Path, mocker: MockerFixtu
     mocker.patch("filelock._strict._UNLINK_SUPPORTS_DIR_FD", new=False)
     mocker.patch("filelock._strict._STAT_SUPPORTS_DIR_FD", new=False)
     mocker.patch("filelock._strict._LINK_SUPPORTS_DIR_FD", new=False)
+    mocker.patch("filelock._strict._MKDIR_SUPPORTS_DIR_FD", new=False)
+    mocker.patch("filelock._strict._SCANDIR_SUPPORTS_FD", new=False)
 
     with StrictSoftFileLock(lock_path) as lock:
         assert (lock.is_locked, [claim.state for claim in lock.claims]) == (True, ["held", "intent"])
