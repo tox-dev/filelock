@@ -267,7 +267,9 @@ class AsyncSoftReadWriteLock:
 
         Idempotent. After calling this method the instance can no longer acquire locks. With ``is_singleton=False`` it
         also closes the underlying :class:`SoftReadWriteLock`. A singleton wrapper leaves the shared one open, so tasks
-        that acquired through another wrapper and synchronous users of the same path keep their holds.
+        that acquired through another wrapper and synchronous users of the same path keep their holds. A synchronous
+        ``close()`` or forced release of that shared lock is noticed by the next acquire; one landing in the few
+        bytecodes between that check and the admission can still admit the task into the ended hold.
 
         """
         if self._creator_pid != os.getpid() or self._closed:
