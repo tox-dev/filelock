@@ -318,10 +318,9 @@ class AsyncSoftReadWriteLock:
         self._lock._release_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     async def _run_acquire(self, acquire: Callable[..., AcquireReturnProxy]) -> None:
-        # run_in_executor cannot recall work the pool already started. A sync acquire that got the lock before it saw
-        # the cancellation has committed its claim, set the hold, and started the heartbeat, which keeps the record
-        # fresh forever so no peer on any host can evict it as stale. Wait the submitted call out and hand the claim
-        # back, the way AsyncReadWriteLock does.
+        # run_in_executor cannot recall work the pool already started. A sync acquire that won the lock before it saw
+        # the cancellation has published its claim and started the heartbeat, which keeps the record fresh so no peer
+        # evicts it. Wait the call out and hand the claim back, as AsyncReadWriteLock does.
         abandoned = threading.Event()
         acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
         try:

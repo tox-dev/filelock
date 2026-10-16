@@ -831,7 +831,7 @@ class AsyncFileLockContext(FileLockContext):
     loop: asyncio.AbstractEventLoop | None = None
 
     #: Serializes the tasks that transition this context. An acquire keeps it while it polls, so a thread-local lock
-    #: needs one per thread: a thread waiting for the lock must not keep the thread that holds it from releasing.
+    #: needs one per thread. A thread waiting for the lock must not keep the thread that holds it from releasing.
     transition_gate: _AsyncTransitionGate = field(default_factory=_new_transition_gate)
 
 

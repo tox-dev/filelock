@@ -953,8 +953,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     def _execute_waiting(
         connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
     ) -> None:
-        # SQLite's busy wait cannot be interrupted, so an acquire its caller may abandon waits in bounded slices and
-        # asks between them whether to stop.
+        # SQLite's busy wait cannot be interrupted. An acquire its caller may abandon waits in bounded slices and asks
+        # between them whether to stop.
         slice_ms = int(_CANCEL_POLL_INTERVAL * 1000)
         while True:
             busy_ms = timeout_for_sqlite(
