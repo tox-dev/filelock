@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import gc
+import itertools
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 from capabilities import CAPABILITIES
@@ -42,6 +43,10 @@ def _tracemalloc_lookup_without_support() -> Iterator[None]:
         yield
 
 
+_HOST_COLLECTION_INTERVAL: Final[int] = 20
+_HOST_COLLECTION_DUE: Final = itertools.cycle((False,) * (_HOST_COLLECTION_INTERVAL - 1) + (True,))
+
+
 @pytest.fixture(autouse=True)
 def _collect_garbage() -> Iterator[None]:
     # Multiprocessing objects register finalizers that close pipes, unlink semaphores and write to the resource
@@ -50,8 +55,9 @@ def _collect_garbage() -> Iterator[None]:
     # created the objects, before any such patch is in place. This runs after mocker's undo, since autouse fixtures
     # set up first and tear down last. Where a collection runs no finalizers (GraalPy queues them on the host
     # collector), it cannot do that, and a full host collection after every test was nearly all of the suite's runtime.
+    # It still needs one now and then: with none at all, GraalPy CI runs stalled past the timeout inside trivial tests.
     yield
-    if CAPABILITIES["collected-finalization"]:  # pragma: needs collected-finalization
+    if CAPABILITIES["collected-finalization"] or next(_HOST_COLLECTION_DUE):  # pragma: needs collected-finalization
         gc.collect()
 
 
