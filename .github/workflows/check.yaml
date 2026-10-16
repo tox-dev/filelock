@@ -7,6 +7,7 @@ on:
   pull_request:
   schedule:
     - cron: "0 8 * * *"
+    - cron: "0 6 * * 1"
 concurrency:
   group: check-${{ github.ref }}
   cancel-in-progress: true
@@ -28,19 +29,12 @@ jobs:
           - "3.12"
           - "3.11"
           - "pypy3.11"
-          # GraalPy 25.4.4 fixes errno loss during event-loop creation:
-          # https://github.com/oracle/graalpython/commit/3fd5d5fe5f4a3bde3bca10ce3d87adaf13ffb03b
-          - "graalpy3.13"
         os:
           - ubuntu-24.04
           - windows-2025
           - macos-15
         exclude:
           - {os: windows-2025, py: pypy3.11}
-          # GraalPy validates the capability probes the suite gates on, which is a per-OS answer, not a per-arch one.
-          # One Linux job settles it; the Windows and macOS builds only repeat it at triple the runtime.
-          - {os: windows-2025, py: graalpy3.13}
-          - {os: macos-15, py: graalpy3.13}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,10 +55,10 @@ jobs:
           UV_PYTHON_PREFERENCE: only-managed
       # PyPy runs unmeasured: coverage has no JIT path there, so the suite takes 12m rather than 2m and roughly 60 of
       # its lock, heartbeat and poll deadlines lapse under the added latency, though they pass measured in isolation.
-      # GraalPy runs unmeasured for the same reason, and neither is a coverage source: the 100% gate stays CPython's.
+      # PyPy is not a coverage source either: the 100% gate stays CPython's.
       - name: "✅ Run test suite"
         run: |
-          if [[ "${{ matrix.py }}" == pypy* || "${{ matrix.py }}" == graalpy* ]]; then
+          if [[ "${{ matrix.py }}" == pypy* ]]; then
             tox run --skip-pkg-install -e ${{ matrix.py }} --
           else
             tox run --skip-pkg-install -e ${{ matrix.py }}
@@ -75,19 +69,54 @@ jobs:
           UV_PYTHON_PREFERENCE: only-managed
           DIFF_AGAINST: HEAD
       - name: "📝 Rename coverage report file"
-        if: ${{ !startsWith(matrix.py, 'pypy') && !startsWith(matrix.py, 'graalpy') }}
+        if: ${{ !startsWith(matrix.py, 'pypy') }}
         run: |
           import os; import sys
           os.rename(f".tox/.coverage.${{ matrix.py }}", f".tox/.coverage.${{ matrix.py }}-{sys.platform}")
         shell: python
       - name: "📦 Upload coverage data"
-        if: ${{ !startsWith(matrix.py, 'pypy') && !startsWith(matrix.py, 'graalpy') }}
+        if: ${{ !startsWith(matrix.py, 'pypy') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           include-hidden-files: true
           name: .coverage.${{ matrix.os }}.${{ matrix.py }}
           path: ".tox/.coverage.*"
           retention-days: 3
+  graalpy:
+    # GraalPy 25.4.4 can freeze every thread at once under the threaded lock tests, so it stays off pull requests and
+    # pushes. A weekly run keeps the capability probes the suite gates on honest on a second runtime. It runs on one
+    # Linux job because those probes are a per-OS answer, and unmeasured, so the 100% gate stays CPython's.
+    name: "🧪 Test graalpy3.13 - ubuntu-24.04 (weekly)"
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 * * 1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: "🔄 Install the latest version of uv"
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.15"
+          enable-cache: false
+      - name: "🧪 Install tox"
+        run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
+      - name: "🐍 Install Python"
+        run: uv python install --python-preference only-managed graalpy3.13
+      - name: "⚙️ Setup test suite"
+        run: tox run -vv --notest --skip-missing-interpreters false -e graalpy3.13
+        env:
+          UV_PYTHON_PREFERENCE: only-managed
+      - name: "✅ Run test suite"
+        run: tox run --skip-pkg-install -e graalpy3.13 --
+        env:
+          # GraalPy throws a NullPointerException from findBytecodeIndex, killing the thread, when a signal handler or
+          # finalizer runs while a generator or coroutine executes an OSR-compiled loop. GRAAL_PYTHON_ARGS would land
+          # after the script as program arguments, so the option goes through GRAAL_PYTHON_VM_ARGS.
+          GRAAL_PYTHON_VM_ARGS: "--experimental-options --engine.OSR=false"
+          PYTEST_ADDOPTS: "-vv --durations=20"
+          UV_PYTHON_PREFERENCE: only-managed
   coverage:
     name: "📊 Combine coverage"
     runs-on: ubuntu-24.04
