@@ -107,6 +107,34 @@ def test_explicit_mode_overrides_umask(tmp_path: Path) -> None:  # pragma: win32
     lock.release()
 
 
+@pytest.mark.requires_hard_links
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not apply POSIX modes to directories")
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        pytest.param(_UNSET_FILE_MODE, "drwxrwxrwx", id="default"),
+        pytest.param(0o600, "drwx------", id="owner"),
+        pytest.param(0o640, "drwxr-x---", id="group-read"),
+        pytest.param(0o660, "drwxrwx---", id="group-write"),
+    ],
+)
+def test_strict_protocol_directories_follow_mode(  # pragma: win32 no cover  # pragma: needs hard-link
+    mode: int, expected: str, tmp_path: Path
+) -> None:
+    initial_umask = os.umask(0)
+    try:  # pragma: win32 no cover
+        with StrictSoftFileLock(tmp_path / "a.lock", mode=mode):
+            pass
+    finally:
+        os.umask(initial_umask)
+
+    coordination = tmp_path / "a.lock.filelock"
+    assert [filemode(directory.stat().st_mode) for directory in (coordination, coordination / "claims")] == [
+        expected,
+        expected,
+    ]
+
+
 @pytest.mark.parametrize(
     "mode",
     [

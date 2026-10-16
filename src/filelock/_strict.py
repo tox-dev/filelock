@@ -138,8 +138,11 @@ class StrictSoftFileLock(BaseFileLock):
         lock_path = Path(self._lock_path)
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
-        _ensure_protocol_directory(self.lock_file, coordination_directory)
-        _ensure_protocol_directory(self.lock_file, claim_directory)
+        # Whoever can write these directories can remove a holder's claims, so the mode governs them as it does the
+        # claims, with search permission wherever it grants read.
+        directory_mode: Final = (mode := self._open_mode()) | (mode & 0o444) >> 2
+        _ensure_protocol_directory(self.lock_file, coordination_directory, directory_mode)
+        _ensure_protocol_directory(self.lock_file, claim_directory, directory_mode)
         if (
             sentinel_fd := _open_or_create_sentinel(
                 self.lock_file, lock_path, self._open_mode(), self._occupant_unchanged_for
@@ -1038,9 +1041,9 @@ def _read_opened_record(fd: int, path: Path, path_stat: os.stat_result, limit: i
     return record
 
 
-def _ensure_protocol_directory(lock_file: str, directory: Path) -> None:
+def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int) -> None:
     try:
-        directory.mkdir()
+        directory.mkdir(mode)
     except FileExistsError:
         try:
             mode = directory.lstat().st_mode
