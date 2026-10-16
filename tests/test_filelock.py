@@ -2369,7 +2369,7 @@ def held_lock_path(tmp_path: Path) -> Iterator[Path]:  # pragma: needs fcntl
 def test_winner_leaves_existing_file_as_found(tmp_path: Path, mode: int) -> None:
     (journal := tmp_path / "journal.log").write_text("data", encoding="utf-8")
     journal.chmod(0o600)
-    # One name and no link, so nothing tells it from a lock file left by an earlier holder.
+    # A regular file with one name is indistinguishable from a lock file an earlier holder left.
     journal.rename(lock_path := tmp_path / "resource.lock")
 
     with FileLock(lock_path, timeout=0, mode=mode):
@@ -2379,7 +2379,7 @@ def test_winner_leaves_existing_file_as_found(tmp_path: Path, mode: int) -> None
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_creator_that_loses_the_flock_applies_mode(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
-    # A peer that opens the new file first wins the flock, and only the creator sets the mode.
+    # A peer may win the flock first, and only the creator may set the mode.
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(EWOULDBLOCK, "Resource temporarily unavailable"))
 
     initial_umask = os.umask(0o077)
@@ -2608,8 +2608,7 @@ def test_windows_owner_only_mode_keeps_out_the_directory_acl(
         acl = subprocess.run(
             [Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe"), lock_path], capture_output=True, check=True
         ).stdout
-    # icacls marks each entry the directory handed down with (I), whatever the display language.
-    assert (b"(I)" in acl) is inherits
+    assert (b"(I)" in acl) is inherits  # icacls marks inherited entries with (I) in every display language
 
 
 @pytest.fixture
@@ -2657,7 +2656,7 @@ def oplocked_lock_path(tmp_path: Path) -> Iterator[Path]:  # pragma: win32 cover
     )
     overlapped = Overlapped(hEvent=kernel32.CreateEventW(None, True, False, None))
     try:
-        # FSCTL_REQUEST_OPLOCK_LEVEL_1 pends while granted: a read handle is enough to make every other open wait.
+        # FSCTL_REQUEST_OPLOCK_LEVEL_1 stays pending while granted; a read handle suffices to make other opens wait.
         assert not kernel32.DeviceIoControl(handle, 0x00090000, None, 0, None, 0, None, ctypes.byref(overlapped))
         assert ctypes.get_last_error() == 997  # ERROR_IO_PENDING
         yield lock_path

@@ -587,8 +587,7 @@ def test_read_write_lock_database_keeps_out_the_directory_acl(
         acl = subprocess.run(
             [Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe"), lock_path], capture_output=True, check=True
         ).stdout
-    # icacls marks each entry the directory handed down with (I), whatever the display language.
-    assert b"(I)" not in acl
+    assert b"(I)" not in acl  # icacls marks inherited entries with (I) in every display language
 
 
 @pytest.mark.parametrize(

@@ -39,8 +39,8 @@ if sys.platform == "win32":  # pragma: win32 cover
     _FILE_ATTRIBUTE_NORMAL: Final[int] = 0x00000080
     _FILE_ATTRIBUTE_REPARSE_POINT: Final[int] = 0x00000400
     # CreateOptions: keep the handle synchronous (the CRT and msvcrt.locking rely on a maintained file position),
-    # refuse a directory, return at once rather than wait for another handle's oplock holder to answer the break, and
-    # open a reparse point rather than following it so the check below acts on the link itself.
+    # refuse a directory, return at once instead of waiting for an oplock holder to answer the break, and open a
+    # reparse point rather than following it so the check below acts on the link itself.
     _FILE_SYNCHRONOUS_IO_NONALERT: Final[int] = 0x00000020
     _FILE_NON_DIRECTORY_FILE: Final[int] = 0x00000040
     _FILE_COMPLETE_IF_OPLOCKED: Final[int] = 0x00000100
@@ -76,7 +76,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     # ERROR_ACCESS_DENIED. Telling them apart is the point (#604): a name pending deletion or a share conflict is
     # transient and worth a retry, a real access denial is not.
     _STATUS_SUCCESS: Final[int] = 0x00000000
-    # A success code that comes with a handle: another handle's oplock is being broken and its holder has not answered.
+    # A success code that comes with a handle: another handle's oplock is breaking and its holder has not answered yet.
     _STATUS_OPLOCK_BREAK_IN_PROGRESS: Final[int] = 0x00000108
     _STATUS_ACCESS_DENIED: Final[int] = 0xC0000022
     _STATUS_OBJECT_NAME_NOT_FOUND: Final[int] = 0xC0000034
@@ -328,9 +328,10 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         :param path: the lock file path.
         :param mode: the permission mode; as ``os.open`` does on Windows, a cleared owner-write bit creates the file
-            read-only. A mode without group and other bits creates it with an owner-only DACL; any other mode has no
-            Windows counterpart and leaves the file the entries its directory hands down. Both only take effect when the
-            file is created, not when an existing one is opened.
+            read-only. A mode without group and other bits creates it with an owner-only DACL (discretionary access
+            control list, the Windows permission list); any other mode has no Windows counterpart and leaves the file
+            the entries its directory hands down. Both only take effect when the file is created, not when an existing
+            one is opened.
 
         :returns: a file descriptor owning the opened handle, or ``None`` on a sharing violation, a delete-pending name,
             or an oplock break its holder leaves unanswered, which the caller should treat as contention and retry.
@@ -343,7 +344,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         # Emit the audit event os.open would, so consumers watching "open" still see the path-level open and can veto.
         sys.audit("open", path, None, os.O_RDWR | os.O_CREAT)
         read_only = not mode & _OWNER_WRITE
-        owner_only = not mode & _GROUP_AND_OTHERS
+        owner_only = not mode & 0o077
         handle, status = _nt_open(path, read_only=read_only, owner_only=owner_only)
         for _ in range(_ACCESS_DENIED_PROBES):
             if status not in {_STATUS_ACCESS_DENIED, _STATUS_OPLOCK_BREAK_IN_PROGRESS}:
@@ -451,10 +452,12 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     @cache
     def _owner_only_descriptor() -> ctypes.c_void_p:
+        # The DACL os.mkdir(mode=0o700) applies, minus the directory-only inheritance flags: protected (P), so the
+        # directory's inheritable entries stay out, with full access (FA) for SYSTEM, Administrators and the owner.
         # Converted once and never freed: the open retries every few milliseconds while it waits.
         descriptor = ctypes.c_void_p()
         if not _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            _OWNER_ONLY_SDDL, _SDDL_REVISION_1, ctypes.byref(descriptor), None
+            "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)", 1, ctypes.byref(descriptor), None
         ):  # pragma: no cover  # a constant string converts
             raise ctypes.WinError(ctypes.get_last_error())
         return descriptor

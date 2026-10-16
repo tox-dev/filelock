@@ -238,7 +238,7 @@ def test_lock_file_unlinked_under_a_denied_open_is_retried(tmp_path: Path) -> No
 def write_denied_lock_file(
     request: pytest.FixtureRequest, tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: needs fcntl
-    # Stand in for a marker a process of a different account owns: an O_RDWR open of it is refused, a read works.
+    # Stand in for a marker another account owns: an O_RDWR open is refused, a read works.
     unlink_under_denial = getattr(request, "param", False)
     real_open = os.open
 

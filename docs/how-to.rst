@@ -1491,8 +1491,8 @@ write, seek, truncate, or set metadata through ``os`` on it, but must not close,
 descriptor. A recursive acquire does not call it again. If the callback raises, filelock releases the lock and
 re-raises.
 
-A common use is stamping holder metadata into the lock file. filelock does not empty a lock file that already exists,
-so the hook truncates what an earlier holder wrote:
+A common use is writing holder metadata into the lock file. filelock does not empty an existing lock file, so the hook
+truncates what an earlier holder wrote:
 
 .. code-block:: python
 

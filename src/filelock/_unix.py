@@ -64,7 +64,7 @@ else:  # pragma: win32 no cover
             _lock_fd_nonblocking(fd)
         except OSError as exception:
             return exception.errno == ENOSYS
-        return False  # the probe's own flock, if it won, ends when the caller closes fd
+        return False  # a flock the probe won is released when the caller closes fd
 
     class UnixFileLock(BaseFileLock):
         """
@@ -90,7 +90,7 @@ else:  # pragma: win32 no cover
             locked = False
             try:
                 if created:
-                    # Before the flock: a peer that opens the new file may win it, and only the creator sets the mode.
+                    # Before the flock: a peer may win it first, and only the creator may set the mode.
                     self._apply_explicit_mode(fd)
                 locked = _lock_fd_nonblocking(fd)
                 if locked and self._finalize_locked_fd(fd):
@@ -107,12 +107,11 @@ else:  # pragma: win32 no cover
             return None
 
         def _open_lock_file(self) -> tuple[int, bool] | None:
-            # No O_TRUNC: a contender that loses the flock must not truncate the holder's file (#591). Nor does the
-            # winner: nothing tells a lock file from another file of ours renamed or hard-linked to the lock path, so a
-            # file already there is locked as found. O_EXCL tells whether this attempt made the inode: only then does it
-            # get the explicit mode, and the ENOSYS fallback removes only its own placeholder, never a peer's marker.
-            # O_NONBLOCK: a Linux lease its owner holds on the file would otherwise put the open to sleep in the kernel
-            # for up to fs.lease-break-time, out of reach of timeout, blocking=False and cancel_check.
+            # No O_TRUNC: a contender that loses the flock must not truncate the holder's file (#591), and neither may
+            # the winner, since a file renamed or hard-linked to the lock path is indistinguishable from a lock file.
+            # O_EXCL tells whether this attempt created the inode: only then does it get the explicit mode, and the
+            # ENOSYS fallback removes only its own placeholder. O_NONBLOCK: a lease (Linux F_SETLEASE) on the file would
+            # otherwise block the open for up to fs.lease-break-time, beyond timeout, blocking=False and cancel_check.
             open_flags = os.O_RDWR | os.O_NONBLOCK
             if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
                 open_flags |= o_nofollow
@@ -140,11 +139,10 @@ else:  # pragma: win32 no cover
             except FileNotFoundError:
                 return None  # unlinked since the create attempt; let the retry loop start over
             except BlockingIOError:
-                return None  # the lease is breaking; contention, so the retry loop keeps the caller's deadline
+                return None  # a lease is breaking: contention, so the retry loop keeps the deadline
             except PermissionError:
-                # A soft marker left by a process of a different account is readable but not writable by us. On a
-                # filesystem without flock, reading it is all that waiting on it takes; where flock works the lock
-                # writes its file, so the denial stands.
+                # A marker another account left is readable but not writable. Without flock, waiting on it only needs
+                # reading it; with flock the lock writes its file, so the denial stands.
                 try:
                     fd = os.open(self.lock_file, open_flags & ~os.O_RDWR | os.O_RDONLY)
                 except FileNotFoundError:
