@@ -261,7 +261,10 @@ class AsyncReadWriteLock:
         if self._inherited:  # pragma: needs fork
             return
         await self._owners.release(
-            force=force, lock_file=self.lock_file, leave=functools.partial(self._submit, self._leave_backend)
+            force=force,
+            lock_file=self.lock_file,
+            leave=functools.partial(self._submit, self._leave_backend),
+            still_held=self._backend_holds,
         )
 
     async def close(self) -> None:

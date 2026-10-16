@@ -232,7 +232,12 @@ class _TaskOwners:
             return self._changed
 
     async def release(
-        self, *, force: bool, lock_file: str, leave: Callable[[], asyncio.Future[_BackendOutcome[None]]]
+        self,
+        *,
+        force: bool,
+        lock_file: str,
+        leave: Callable[[], asyncio.Future[_BackendOutcome[None]]],
+        still_held: Callable[[], bool],
     ) -> None:
         task = _current_task()
         with self._lock:
@@ -249,6 +254,10 @@ class _TaskOwners:
                 return
             self._transitioning = True
             mode = self._mode
+        if not still_held():
+            self._finish_transition(mode=None)
+            msg = f"Cannot release a lock on {lock_file} that is not held by this task"
+            raise RuntimeError(msg)
         try:
             cancellation = await _drain_cancellation(leave())
         except BaseException:
@@ -282,13 +291,16 @@ class _TaskOwners:
             except asyncio.CancelledError as error:
                 cancellation = error
         mode, dropped = settled
-        if mode is not None or via is None:
+        if via is None or (mode is not None and still_held()):
             try:
                 cancellation = await _drain_cancellation(leave()) or cancellation
             except BaseException:
                 # A close that failed with the backend still holding stays retryable, as a failed release does.
                 self._finish_transition(mode=mode if still_held() else None, holds=dropped)
                 raise
+            self._finish_transition(mode=None)
+        elif mode is not None:
+            # Sync code already ended the level taken for tasks, so there is nothing to give back.
             self._finish_transition(mode=None)
         if cancellation is not None:
             raise cancellation

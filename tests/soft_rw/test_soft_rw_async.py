@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import re
 import threading
@@ -529,6 +530,30 @@ async def test_async_soft_read_after_a_sync_close_of_the_shared_singleton_raises
 
     with pytest.raises(RuntimeError, match="has been closed"):
         await asyncio.create_task(lock.acquire_read(timeout=_TASK_WAIT))
+    with pytest.raises(RuntimeError, match="not held by this task"):
+        await lock.release()
+    await lock.close()
+
+
+@pytest.mark.parametrize("sync_end", [pytest.param("release", id="release"), pytest.param("close", id="close")])
+@pytest.mark.asyncio
+async def test_async_soft_close_after_a_sync_end_of_the_shared_singleton_returns(tmp_path: Path, sync_end: str) -> None:
+    lock: Final = _make(tmp_path, is_singleton=True)
+    await lock.acquire_read(timeout=_TASK_WAIT)
+    sync: Final = SoftReadWriteLock(str(tmp_path / "foo.lock"))
+    await asyncio.to_thread(sync.close if sync_end == "close" else functools.partial(sync.release, force=True))
+
+    await lock.close()
+
+    assert _members(tmp_path, "foo.lock") == []
+
+
+@pytest.mark.asyncio
+async def test_async_soft_release_after_a_sync_forced_release_raises_not_held_by_this_task(tmp_path: Path) -> None:
+    lock: Final = _make(tmp_path, is_singleton=True)
+    await lock.acquire_read(timeout=_TASK_WAIT)
+    await asyncio.to_thread(SoftReadWriteLock(str(tmp_path / "foo.lock")).release, force=True)
+
     with pytest.raises(RuntimeError, match="not held by this task"):
         await lock.release()
     await lock.close()

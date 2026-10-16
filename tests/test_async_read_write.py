@@ -633,6 +633,30 @@ async def test_async_read_after_a_sync_close_of_the_shared_singleton_raises(lock
     await lock.close()
 
 
+@pytest.mark.parametrize("sync_end", [pytest.param("release", id="release"), pytest.param("close", id="close")])
+@pytest.mark.asyncio
+async def test_async_close_after_a_sync_end_of_the_shared_singleton_returns(lock_file: str, sync_end: str) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file)
+    await lock.acquire_read()
+    sync: Final = ReadWriteLock(lock_file)
+    sync.close() if sync_end == "close" else sync.release(force=True)
+
+    await lock.close()
+
+    assert _writer_gets_in(lock_file)
+
+
+@pytest.mark.asyncio
+async def test_async_release_after_a_sync_forced_release_raises_not_held_by_this_task(lock_file: str) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file)
+    await lock.acquire_read()
+    ReadWriteLock(lock_file).release(force=True)
+
+    with pytest.raises(RuntimeError, match="not held by this task"):
+        await lock.release()
+    await lock.close()
+
+
 @pytest.mark.asyncio
 async def test_async_read_after_a_sync_forced_release_takes_the_lock_again(lock_file: str) -> None:
     lock: Final = AsyncReadWriteLock(lock_file)
