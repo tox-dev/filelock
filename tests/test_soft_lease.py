@@ -716,6 +716,9 @@ def test_lease_dropped_while_held_releases_its_marker(marker: Path) -> None:
 
     del lease
     gc.collect()
+    # PyPy queues the finalizer the collection found and runs it at a later bytecode boundary, in whichever thread gets
+    # there first, so the release lands after the collection returns.
+    _wait_until(lambda: not marker.exists())
 
     assert not marker.exists()
 
