@@ -421,8 +421,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self._release(threading.get_ident(), force=force)
 
     def _acquire_level_of(self, holder: int, mode: Mode, timeout: float, *, blocking: bool) -> AcquireReturnProxy:
-        # Records the level under *holder* instead of the calling thread, for an async wrapper whose executor thread
-        # does not identify the tasks it holds for.
+        # Records the level under *holder* instead of the calling thread: an async wrapper's executor thread does not
+        # identify the tasks it holds for.
         return self._acquire(mode, timeout, blocking=blocking, holder=holder)
 
     def _release_level_of(self, holder: int) -> None:
@@ -607,8 +607,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 f"from thread {holder} while it is held by thread {hold.write_thread_id}"
             )
             raise RuntimeError(msg)
-        # Publishing a hold clears the loss recorded for the one before, so a loss seen here is this hold's: its
-        # heartbeat has stopped and a peer may hold the lock, so another level would be granted without asking the log.
+        # Publishing a hold clears the loss recorded for the one before, so a loss seen here is this hold's. Its
+        # heartbeat has stopped and a peer may hold the lock, so a new level must not bypass the log.
         if (compromise := self._compromise) is not None:
             raise _lost_hold_error(self.lock_file, mode, compromise)
         if mode == "read":

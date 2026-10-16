@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
-#: The holder an async wrapper records its backend level under. No thread has this identifier, so a sync caller that
-#: lands on the executor thread that took the level cannot re-enter or release it as if it were that holder.
+#: The holder an async wrapper records its backend level under. No thread has this identifier, so sync code on the
+#: executor thread that took the level cannot re-enter or release it.
 _TASKS_THREAD_ID: Final[int] = 0
 
 

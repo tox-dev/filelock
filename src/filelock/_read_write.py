@@ -645,8 +645,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     def _acquire_level_of(
         self, holder: int, mode: Literal["read", "write"], timeout: float, *, blocking: bool
     ) -> AcquireReturnProxy:
-        # Records the level under *holder* instead of the calling thread, for an async wrapper whose executor thread
-        # does not identify the tasks it holds for.
+        # Records the level under *holder* instead of the calling thread: an async wrapper's executor thread does not
+        # identify the tasks it holds for.
         return self._acquire(mode, timeout, blocking=blocking, holder=holder)
 
     def _release_level_of(self, thread_id: int) -> None:
