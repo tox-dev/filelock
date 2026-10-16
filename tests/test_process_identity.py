@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import importlib
 import os
 import sys
-from errno import EACCES, ENODEV, EPERM
+from errno import EACCES, ENODEV, ENOENT, EPERM
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
 
+import filelock._identity
 from filelock._identity import host_name, owner_is_stale, process_alive, process_start_token
 from tests.pid_namespace_helpers import INITIAL_PID_NAMESPACE, pin_pid_namespace
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
     from pytest_mock import MockerFixture
 
 _DEAD_PID: Final[int] = 2**22 + 1
@@ -23,6 +27,22 @@ _NEEDS_START_TOKEN: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 _LINUX_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform not in {"linux", "android"}, reason="PID namespaces exist only on Linux"
 )
+
+
+@pytest.fixture
+def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:
+    """Re-import the identity module as a process that cannot read the boot id, as under systemd's ProcSubset=pid."""
+
+    def hide() -> None:
+        # The boot id is the only text file the module reads at import.
+        hidden: Final = mocker.patch.object(
+            Path, "read_text", autospec=True, side_effect=FileNotFoundError(ENOENT, "No such file or directory")
+        )
+        importlib.reload(filelock._identity)
+        mocker.stop(hidden)
+
+    yield hide
+    importlib.reload(filelock._identity)
 
 
 @pytest.mark.parametrize(
@@ -136,8 +156,32 @@ def test_owner_is_stale_live_process_mismatched_token_reclaimed() -> None:
     assert owner_is_stale(os.getpid(), host_name(), token + 10**9) is True
 
 
-@_LINUX_ONLY
-def test_owner_is_stale_owner_running_in_another_namespace_held(mocker: MockerFixture) -> None:  # pragma: linux cover
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize("hidden_from", ["holder", "contender"])
+def test_owner_is_stale_live_process_boot_id_hidden_from_one_side_held(
+    hidden_from: str, hide_boot_id: Callable[[], None]
+) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    if hidden_from == "contender":
+        hide_boot_id()
+    assert owner_is_stale(os.getpid(), host_name(), token if hidden_from == "contender" else token % 2**64) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize("hidden_from", ["holder", "contender"])
+def test_owner_is_stale_recycled_pid_boot_id_hidden_from_one_side_reclaimed(
+    hidden_from: str, hide_boot_id: Callable[[], None]
+) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    if hidden_from == "contender":
+        hide_boot_id()
+    assert owner_is_stale(os.getpid(), host_name(), token % 2**64 + 10**9) is True
+
+
+@pytest.fixture
+def owner_in_another_namespace(mocker: MockerFixture) -> None:
     # An older release in a container recorded its in-container PID; this process stands in for it, its innermost PID
     # being the recorded one.
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
@@ -151,7 +195,25 @@ def test_owner_is_stale_owner_running_in_another_namespace_held(mocker: MockerFi
             f"NSpid:\t{os.getpid()}\t{_DEAD_PID}\n".encode() if path == own_status else read_bytes(path)
         ),
     )
-    assert owner_is_stale(_DEAD_PID, host_name(), process_start_token(os.getpid())) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.usefixtures("owner_in_another_namespace")
+@pytest.mark.parametrize(
+    "view",
+    [
+        pytest.param("same-token", id="start-token-matches"),
+        pytest.param("recorded-without-boot-id", id="holder-without-boot-id"),
+        pytest.param("read-without-boot-id", id="contender-without-boot-id"),
+    ],
+)
+def test_owner_is_stale_owner_running_in_another_namespace_held(view: str, hide_boot_id: Callable[[], None]) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    if view == "read-without-boot-id":
+        hide_boot_id()
+    recorded: Final = token % 2**64 if view == "recorded-without-boot-id" else token
+    assert owner_is_stale(_DEAD_PID, host_name(), recorded) is False
 
 
 @_LINUX_ONLY  # pragma: linux cover

@@ -684,6 +684,9 @@ cannot be read, and a marker from another host all read as held. The start token
 remove it once it has seen it unchanged for two seconds, so a half-written marker never wedges acquisition. This is the
 rule PostgreSQL, Qt ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
 
+A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's ``ProcSubset=pid`` hides it) records
+``starttime`` without the boot id, and a contender compares ``starttime`` alone whenever either side lacks the boot id.
+
 Breaking a marker leaves a short window. Right before breaking it the contender reads the marker's inode and
 modification time again and leaves it alone if they moved since the stale check, the way Mercurial re-reads a lock under
 its break lock before removing it. It then renames the marker to a private ``<lock>.break.*`` name, so only one of
@@ -708,8 +711,9 @@ start token instead: a 3.30 reader compares the whole token and would read any n
 A release before the namespace was recorded wrote the bare hostname from inside a container too, so a contender in the
 host's namespace reads such a marker from a container that shares the hostname (host networking) as local, where its PID
 names another process or none. Before it calls that owner dead it looks for a task in another namespace whose innermost
-PID (``NSpid`` in ``/proc/<pid>/status``) and start token match the record, since ``starttime`` and the boot id are
-kernel-wide, and keeps the marker if one exists. Three limits remain. A marker without a start token, a kernel before
+PID (``NSpid`` in ``/proc/<pid>/status``) and start token match the record, since ``starttime`` and the boot id read the
+same in every PID namespace, and keeps the marker if one exists. Three limits remain. A marker without a start token, a
+kernel before
 4.1 without ``NSpid``, or a ``/proc`` this process cannot list leaves the check nothing to find. Where
 ``/proc/self/ns/pid`` cannot be read, the bare hostname is all that separates namespaces. And a contender never reclaims
 a marker from another namespace: a container that crashes and is replaced comes back in a new namespace. A

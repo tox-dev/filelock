@@ -75,7 +75,9 @@ def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
     """
     if hostname != host_name():
         return False
-    if process_alive(pid) and (start_token is None or process_start_token(pid) in {None, start_token}):
+    if process_alive(pid) and (
+        start_token is None or (current := process_start_token(pid)) is None or _same_start(current, start_token)
+    ):
         return False
     # Only a bare hostname can be an older release's, written from a container that shares this host's name.
     return _NAMESPACE_MARK in hostname or not _owner_runs_elsewhere(pid, start_token)
@@ -92,6 +94,13 @@ def owner_is_current_process(pid: int, hostname: str, start_token: int | None) -
     if pid != os.getpid() or hostname != host_name():
         return False
     return start_token is None or start_token == process_start_token(pid)
+
+
+def _same_start(current: int, recorded: int) -> bool:
+    # A Linux token carries the boot id in its high bits, or 0 there when its process could not read the boot id. One
+    # process may lack it while its peer reads it (systemd's ProcSubset=pid hides /proc/sys from a single unit), so a
+    # missing boot id proves nothing and only starttime is compared. Tokens of other platforms fit in the low bits.
+    return current == recorded or (0 in {current >> 64, recorded >> 64} and current % 2**64 == recorded % 2**64)
 
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -168,13 +177,12 @@ else:  # pragma: win32 no cover
         def _read_boot_id() -> int:
             # starttime is measured in clock ticks since boot, so on its own it repeats across a reboot. Folding the
             # boot id into the high bits makes the Linux token reboot-safe like the absolute clocks macOS and Windows
-            # expose, while staying a single integer so a 3.29 reader still parses the third marker line. 0 when the
-            # kernel does not expose a boot id degrades to bare starttime, which stays safe (a reboot collision fails
-            # closed rather than reclaiming a live marker).
+            # expose, while staying a single integer so a 3.29 reader still parses the third marker line. 0 when this
+            # process cannot read the boot id degrades to bare starttime, which _same_start compares alone.
             try:
                 boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii")
                 return int(boot_id.strip().replace("-", ""), 16)
-            except (OSError, ValueError):  # pragma: no cover  # the kernel always exposes boot_id as a UUID on Linux
+            except (OSError, ValueError):
                 return 0
 
         _BOOT_ID: Final[int] = _read_boot_id()
@@ -200,17 +208,18 @@ else:  # pragma: win32 no cover
             Whether the owner runs in another PID namespace as *pid*.
 
             An older release in a container sharing this hostname recorded its in-container PID, which means nothing
-            here. starttime and the boot id are kernel-wide, so a task with that start token whose innermost PID is
-            *pid* is the owner; one that merely started in the same tick is not.
+            here. starttime and the boot id read the same in every PID namespace, so a task with that start token whose
+            innermost PID is *pid* is the owner; one that merely started in the same tick is not.
             """
-            if start_token is None or start_token >> 64 != _BOOT_ID:
+            if start_token is None or (_BOOT_ID and start_token >> 64 not in {0, _BOOT_ID}):
                 return False
             try:
                 with os.scandir("/proc") as entries:
                     return any(
                         entry.name.isdigit()
                         and (task := int(entry.name)) != pid
-                        and process_start_token(task) == start_token
+                        and (token := process_start_token(task)) is not None
+                        and _same_start(token, start_token)
                         and _innermost_pid(task) == pid
                         for entry in entries
                     )
