@@ -6,7 +6,7 @@ import os
 import secrets
 import stat
 import sys
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from errno import EACCES, EIO, EISDIR
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -136,12 +136,12 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
     marker a third process created after our rename wins and the live one stays under the break name. In the two
     syscalls between rename and link a third process can acquire beside the live holder, a soft lock by creating its
     marker or a StrictSoftFileLock by publishing its sentinel at the empty path. Without ``os.link``, on a filesystem
-    that refuses hard links, or where ``os.link`` cannot be told not to follow a symlink, the live marker stays under
-    the break name. We compare inodes as well as modification times because NFS and FAT store coarse modification times,
-    and a peer that recreates the lock within that granularity leaves the old mtime on it. Times are compared for
-    equality, since a file's owner can set any time, a future one included. We call ``lstat`` to avoid following a
-    symlink a peer swaps in after our stale check, put back only a regular file, and link without following symlinks,
-    because a symlink can replace the break name between that ``lstat`` and the link.
+    that refuses hard links, or where ``os.link`` cannot be told not to follow a symlink, we rename the marker back
+    while the path is still free instead. We compare inodes as well as modification times because NFS and FAT store
+    coarse modification times, and a peer that recreates the lock within that granularity leaves the old mtime on it.
+    Times are compared for equality, since a file's owner can set any time, a future one included. We call ``lstat`` to
+    avoid following a symlink a peer swaps in after our stale check, put back only a regular file, and link without
+    following symlinks, because a symlink can replace the break name between that ``lstat`` and the link.
 
     We add a random token to the break name so other processes cannot guess it and two breakers in one process do not
     share ``<lock>.break.<pid>``. With a shared name, the second breaker could rename a recreated live lock onto that
@@ -161,14 +161,25 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
     Path(lock_file).rename(break_path)
     if (st_after := os.lstat(break_path)).st_mtime == mtime_before and st_after.st_ino == ino_before:
         Path(break_path).unlink()
-    elif stat.S_ISREG(st_after.st_mode) and _HAS_LINK:  # pragma: needs hard-link
-        with suppress(FileExistsError):
-            try:
-                os.link(break_path, lock_file, follow_symlinks=False)
-            # Windows can reject the option and PyPy fails it with EINVAL; a plain link would follow a symlink on macOS.
-            except (NotImplementedError, ValueError):  # pragma: lacks link-follow-symlinks
-                return
-            Path(break_path).unlink()
+    elif stat.S_ISREG(st_after.st_mode) and not _linked_back(break_path, lock_file) and not os.path.lexists(lock_file):
+        # Unlike link, rename replaces: a marker a third process creates between the check and the rename is lost, the
+        # way the live one stays aside when that process wins the same race against link.
+        Path(break_path).rename(lock_file)
+
+
+def _linked_back(break_path: str, lock_file: str) -> bool:
+    if not _HAS_LINK:  # pragma: lacks hard-link
+        return False
+    try:
+        os.link(break_path, lock_file, follow_symlinks=False)
+    except FileExistsError:
+        return True  # a third process took the path after our rename and keeps it
+    # A filesystem without hard links refuses, Windows can reject the option and PyPy fails it with EINVAL; a plain
+    # link would follow a symlink swapped in under the break name on macOS.
+    except (OSError, NotImplementedError, ValueError):
+        return False
+    Path(break_path).unlink()
+    return True
 
 
 def touch(name: str, *, fd: int) -> None:

@@ -711,8 +711,9 @@ and the link keeps it, whether a soft lock creating its marker or a :class:`Stri
 the lock. Mercurial
 closes this window by serializing breakers on a separate ``<lock>.break`` lock; filelock does not, because a breaker that
 crashes would leave that lock needing stale detection of its own and a 3.29 peer never takes it. Where ``os.link`` is
-missing or the filesystem refuses hard links, the live marker stays under the break name. The same applies to the
-``lifetime`` and :class:`SoftFileLease <filelock.SoftFileLease>` expiry breaks.
+missing, the filesystem refuses hard links, or the link cannot be told not to follow a symlink, the contender renames
+the live marker back while the lock path is still free instead. The same applies to the ``lifetime`` and
+:class:`SoftFileLease <filelock.SoftFileLease>` expiry breaks.
 
 A PID means something only inside its PID namespace, and two containers in one pod share the hostname and the boot id
 without sharing one. On Linux the recorded hostname therefore names the namespace too, as ``<host>?pidns-<inode>`` with

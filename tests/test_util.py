@@ -5,12 +5,11 @@ import runpy
 import sys
 import time
 from contextlib import suppress
-from errno import EACCES, EIO, ELOOP, ENOENT, EPERM, ESRCH
+from errno import EACCES, EINVAL, EIO, ELOOP, ENOENT, EPERM, ESRCH
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from capabilities import CAPABILITIES
 
 from filelock import MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name
@@ -44,12 +43,12 @@ def test_break_lock_file_unlinks_a_dead_holders_marker(stale_lock: Path) -> None
         assert list(stale_lock.parent.glob("test.lock.break.*")) == []
 
 
-def _rewrite_in_place(lock: Path) -> None:  # pragma: needs hard-link
+def _rewrite_in_place(lock: Path) -> None:
     lock.write_text("live", encoding="utf-8")
     os.utime(lock, (time.time() + 10, time.time() + 10))
 
 
-def _replace_with_same_mtime(lock: Path) -> None:  # pragma: needs hard-link
+def _replace_with_same_mtime(lock: Path) -> None:
     # A filesystem with coarse modification times (NFS, FAT) gives a same-second recreation the old mtime, so only the
     # inode tells it apart. Writing the replacement while the original exists guarantees a fresh inode.
     stale: Final[os.stat_result] = lock.stat()
@@ -58,34 +57,44 @@ def _replace_with_same_mtime(lock: Path) -> None:  # pragma: needs hard-link
     replacement.replace(lock)
 
 
-@pytest.mark.requires_hard_links
+_LINK_UNUSABLE: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
+    "link_failure",
+    [
+        pytest.param(None, id="linked-back"),
+        pytest.param(PermissionError(EPERM, "Operation not permitted"), id="filesystem-without-hard-links"),
+        pytest.param(OSError(EINVAL, "Invalid argument"), id="follow-option-failed"),
+        pytest.param(NotImplementedError("follow_symlinks unavailable"), id="follow-option-rejected"),
+    ],
+)
+
+
+@pytest.fixture
+def link_failure_applied(mocker: MockerFixture, link_failure: Exception | None) -> None:
+    if link_failure is not None:
+        mocker.patch("os.link", side_effect=link_failure, create=True)
+
+
+@_LINK_UNUSABLE
+@pytest.mark.usefixtures("link_failure_applied")
 @pytest.mark.parametrize(
     "recreate",
     [pytest.param(_rewrite_in_place, id="mtime-advanced"), pytest.param(_replace_with_same_mtime, id="inode-changed")],
 )
-def test_break_lock_file_restores_a_recreated_marker(  # pragma: needs hard-link
+def test_break_lock_file_restores_a_recreated_marker(
     stale_lock: Path, mocker: MockerFixture, recreate: Callable[[Path], None]
 ) -> None:
     rename: Final = Path.rename
 
     def peer_recreates_then_rename(source: Path, target: str) -> Path:
-        recreate(source)
+        if source == stale_lock:
+            recreate(source)
         return rename(source, target)
 
     mocker.patch.object(Path, "rename", autospec=True, side_effect=peer_recreates_then_rename)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
 
-    # Where os.link cannot be told to leave a symlink unfollowed, the live marker stays under the break name.
-    restored: Final = CAPABILITIES["link-follow-symlinks"]
-    assert (
-        stale_lock.exists(),
-        [
-            path.read_text(encoding="utf-8")
-            for path in [stale_lock, *stale_lock.parent.glob("test.lock.break.*")]
-            if path.exists()
-        ],
-    ) == (restored, ["live"])
+    assert (stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("test.lock.break.*"))) == ("live", [])
 
 
 @pytest.mark.parametrize(
@@ -113,10 +122,9 @@ def test_break_lock_file_leaves_a_marker_recreated_since_the_stale_check(
     assert (stale_lock.read_text(encoding="utf-8"), rename.call_count) == ("live", 0)
 
 
-@pytest.mark.requires_hard_links
-def test_break_lock_file_keeps_a_third_marker_created_after_the_rename(  # pragma: needs hard-link
-    stale_lock: Path, mocker: MockerFixture
-) -> None:
+@_LINK_UNUSABLE
+@pytest.mark.usefixtures("link_failure_applied")
+def test_break_lock_file_keeps_a_third_marker_created_after_the_rename(stale_lock: Path, mocker: MockerFixture) -> None:
     rename: Final = Path.rename
 
     def peer_recreates_then_third_creates(source: Path, target: str) -> Path:
@@ -129,7 +137,7 @@ def test_break_lock_file_keeps_a_third_marker_created_after_the_rename(  # pragm
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
 
-    # link never replaces, so the third marker keeps the path and the live one waits under the break name.
+    # Neither link nor the rename back replaces the third marker, so it keeps the path and the live one waits aside.
     assert (
         stale_lock.read_text(encoding="utf-8"),
         [path.read_text(encoding="utf-8") for path in stale_lock.parent.glob("test.lock.break.*")],
@@ -160,7 +168,6 @@ def test_break_lock_file_leaves_a_swapped_in_symlink_aside(  # pragma: needs sym
 
 
 @NEEDS_SYMLINK
-@pytest.mark.requires_hard_links
 def test_break_lock_file_never_links_a_symlink_swapped_in_after_the_recheck(  # pragma: needs symlink
     stale_lock: Path, mocker: MockerFixture
 ) -> None:
