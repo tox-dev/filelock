@@ -48,9 +48,11 @@ def _collect_garbage() -> Iterator[None]:
     # tracker; when cyclic garbage from one test is collected during a later one, those run against whatever that
     # later test has patched onto os.close or os.write. Collect after every test so finalizers fire in the test that
     # created the objects, before any such patch is in place. This runs after mocker's undo, since autouse fixtures
-    # set up first and tear down last.
+    # set up first and tear down last. Where a collection runs no finalizers (GraalPy queues them on the host
+    # collector), it cannot do that, and a full host collection after every test was nearly all of the suite's runtime.
     yield
-    gc.collect()
+    if CAPABILITIES["collected-finalization"]:  # pragma: needs collected-finalization
+        gc.collect()
 
 
 @pytest.fixture
