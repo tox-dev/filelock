@@ -878,7 +878,7 @@ A soft-lock owner's marker at ``work.lock`` (from ``SoftFileLock``, ``MarkerSoft
 strict acquisition like any holder, without appearing in ``lock.claims``; :attr:`lock_path_occupant
 <filelock.StrictSoftFileLock.lock_path_occupant>` describes it, with its PID and host when the marker records them. A
 file strict cannot read blocks the same way, because Windows refuses to read a marker its holder keeps open. A file it
-reads but cannot parse, such as the empty marker filelock before 3.22 wrote or a path a ``UnixFileLock`` truncated,
+reads but cannot parse, such as the empty marker filelock before 3.22 wrote or an empty ``UnixFileLock`` lock file,
 blocks while it changes and raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` once it stays
 unchanged for two seconds, the grace a soft contender waits before evicting a malformed marker other than an empty one.
 
@@ -1491,7 +1491,8 @@ write, seek, truncate, or set metadata through ``os`` on it, but must not close,
 descriptor. A recursive acquire does not call it again. If the callback raises, filelock releases the lock and
 re-raises.
 
-A common use is stamping holder metadata into the lock file:
+A common use is stamping holder metadata into the lock file. filelock does not empty a lock file that already exists,
+so the hook truncates what an earlier holder wrote:
 
 .. code-block:: python
 

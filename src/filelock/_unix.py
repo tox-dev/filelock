@@ -82,6 +82,9 @@ else:  # pragma: win32 no cover
             # would otherwise leave an unreferenced descriptor, and its flock, open until the process exits.
             locked = False
             try:
+                if created:
+                    # Before the flock: a peer that opens the new file may win it, and only the creator sets the mode.
+                    self._apply_explicit_mode(fd)
                 locked = _lock_fd_nonblocking(fd)
                 if locked and self._finalize_locked_fd(fd):
                     return None
@@ -97,9 +100,10 @@ else:  # pragma: win32 no cover
             return None
 
         def _open_lock_file(self) -> tuple[int, bool] | None:
-            # No O_TRUNC: a contender that loses the flock must not truncate the holder's file or change its mode; the
-            # winner does both once it owns the lock (#591). O_EXCL tells the ENOSYS fallback whether this attempt made
-            # the inode, so it removes only its own placeholder, never a peer's marker.
+            # No O_TRUNC: a contender that loses the flock must not truncate the holder's file (#591). Nor does the
+            # winner: nothing tells a lock file from another file of ours renamed or hard-linked to the lock path, so a
+            # file already there is locked as found. O_EXCL tells whether this attempt made the inode: only then does it
+            # get the explicit mode, and the ENOSYS fallback removes only its own placeholder, never a peer's marker.
             open_flags = os.O_RDWR
             if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
                 open_flags |= o_nofollow
@@ -150,8 +154,6 @@ else:  # pragma: win32 no cover
             # it and let the retry loop start over.
             if (stat_result := os.fstat(fd)).st_nlink == 0:
                 return False
-            os.ftruncate(fd, 0)
-            self._apply_explicit_mode(fd)
             self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
             return True
 

@@ -2312,12 +2312,31 @@ def held_lock_path(tmp_path: Path) -> Iterator[Path]:  # pragma: needs fcntl
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
-def test_winner_truncates_stale_content(tmp_path: Path) -> None:
-    lock_path = tmp_path / "resource.lock"
-    lock_path.write_text("stale from a previous holder", encoding="utf-8")
+@pytest.mark.parametrize("mode", [pytest.param(-1, id="default-mode"), pytest.param(0o666, id="explicit-mode")])
+def test_winner_leaves_existing_file_as_found(tmp_path: Path, mode: int) -> None:
+    (journal := tmp_path / "journal.log").write_text("data", encoding="utf-8")
+    journal.chmod(0o600)
+    # One name and no link, so nothing tells it from a lock file left by an earlier holder.
+    journal.rename(lock_path := tmp_path / "resource.lock")
 
-    with FileLock(lock_path, timeout=0):
-        assert lock_path.stat().st_size == 0
+    with FileLock(lock_path, timeout=0, mode=mode):
+        assert (lock_path.read_text(encoding="utf-8"), S_IMODE(lock_path.stat().st_mode)) == ("data", 0o600)
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_creator_that_loses_the_flock_applies_mode(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    # A peer that opens the new file first wins the flock, and only the creator sets the mode.
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(EWOULDBLOCK, "Resource temporarily unavailable"))
+
+    initial_umask = os.umask(0o077)
+    try:
+        with pytest.raises(Timeout):
+            FileLock(lock_path, timeout=0, mode=0o666).acquire()
+    finally:
+        os.umask(initial_umask)
+
+    assert S_IMODE(lock_path.stat().st_mode) == 0o666
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
@@ -2351,13 +2370,14 @@ def test_contender_does_not_fchmod(held_lock_path: Path, mocker: MockerFixture) 
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
-def test_post_lock_truncate_failure_closes_fd(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("os.ftruncate", side_effect=OSError(ENOSPC, "No space left on device"))
+@pytest.mark.parametrize("failing", [pytest.param("fchmod", id="fchmod"), pytest.param("fstat", id="fstat")])
+def test_post_open_failure_closes_fd(tmp_path: Path, mocker: MockerFixture, failing: str) -> None:
+    mocker.patch(f"os.{failing}", side_effect=OSError(EIO, "Input/output error"))
     open_spy = mocker.spy(os, "open")
     close_spy = mocker.spy(os, "close")
 
-    with pytest.raises(OSError, match="No space left on device"):
-        FileLock(tmp_path / "resource.lock", timeout=0).acquire()
+    with pytest.raises(OSError, match="Input/output error"):
+        FileLock(tmp_path / "resource.lock", timeout=0, mode=0o644).acquire()
 
     assert any(call.args and call.args[0] == open_spy.spy_return for call in close_spy.call_args_list)
 
@@ -3434,20 +3454,16 @@ def test_on_acquired_not_called_for_contender(tmp_path: Path) -> None:
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
-def test_on_acquired_runs_after_truncation_and_mode(tmp_path: Path) -> None:
-    path = tmp_path / "a"
-    path.write_bytes(b"stale content")
-    seen: dict[str, int] = {}
+def test_on_acquired_runs_after_mode(tmp_path: Path) -> None:
+    seen: list[int] = []
 
     def hook(fd: int) -> None:
-        stat_result = os.fstat(fd)
-        seen["size"] = stat_result.st_size
-        seen["mode"] = S_IMODE(stat_result.st_mode)
+        seen.append(S_IMODE(os.fstat(fd).st_mode))
 
-    lock = FileLock(str(path), mode=0o600, on_acquired=hook)
+    lock = FileLock(str(tmp_path / "a"), mode=0o600, on_acquired=hook)
     lock.acquire()
     try:
-        assert seen == {"size": 0, "mode": 0o600}  # backend truncation and mode setup finished before the hook
+        assert seen == [0o600]
     finally:
         lock.release()
 
