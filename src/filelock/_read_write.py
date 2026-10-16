@@ -810,7 +810,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     cancel_check=cancel_check,
                 )
             except Timeout:
-                if final:
+                if final or (cancel_check is not None and cancel_check()):
                     raise
             # Only a runtime with fork handlers waits in more than one attempt.
             if timeout != -1:  # pragma: needs register-at-fork
