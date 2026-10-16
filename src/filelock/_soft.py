@@ -61,8 +61,8 @@ class SoftFileLock(BaseFileLock):
     #: An existence lock keeps protocol state in its marker, so it cannot lend the descriptor to an on_acquired hook.
     _on_acquired_supported: bool = False
 
-    #: The marker's (mtime, inode) when this instance last saw it change, and when that was on its monotonic clock.
-    _marker_seen: tuple[tuple[float, int], float] | None = None
+    #: The marker's (mtime, inode, ctime) when this instance last saw it change, and when, on its monotonic clock.
+    _marker_seen: tuple[tuple[float, int, int], float] | None = None
 
     #: The identity of a marker a Windows release relinquished but has not unlinked yet.
     _marker_cleanup: tuple[int, int] | None = None
@@ -126,19 +126,22 @@ class SoftFileLock(BaseFileLock):
                 # Unparsable: wrong line count, a non-integer PID or start token, empty, oversized or not UTF-8.
                 # Self-heal only once the file is clearly not a half-written fresh lock (a peer between O_EXCL and
                 # _write_lock_info), so the brief create-then-write window is never mistaken for a stale lock.
-                if self._marker_unchanged_for(marker.st_mtime, marker.st_ino) >= MALFORMED_LOCK_AGE_THRESHOLD:
+                if self._marker_unchanged_for(marker) >= MALFORMED_LOCK_AGE_THRESHOLD:
                     break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
                 return
 
             if owner_is_stale(*holder):
                 break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
 
-    def _marker_unchanged_for(self, mtime: float, ino: int) -> float:
+    def _marker_unchanged_for(self, marker: os.stat_result) -> float:
         # The mtime is the writer's or file server's clock, so against time.time() a contender whose clock runs ahead
-        # would expire a fresh marker. Only watch it for change, timed on this process's monotonic clock.
+        # would expire a fresh marker. Only watch it for change, timed on this process's monotonic clock. The owner of a
+        # file sets its mtime and ext4 reuses a freed inode number, so a new marker can repeat both; the change time
+        # cannot be set and moves with every create, keeping a new marker from inheriting an old one's age.
         now: Final = time.monotonic()
-        if (seen := self._marker_seen) is None or seen[0] != (mtime, ino):
-            self._marker_seen = (mtime, ino), now
+        key: Final = marker.st_mtime, marker.st_ino, marker.st_ctime_ns
+        if (seen := self._marker_seen) is None or seen[0] != key:
+            self._marker_seen = key, now
             return 0.0
         return now - seen[1]
 

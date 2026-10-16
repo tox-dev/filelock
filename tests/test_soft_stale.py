@@ -194,6 +194,24 @@ def test_unparseable_lock_not_evicted_when_fresh(lock_path: Path, content: bytes
     _assert_times_out(lock_path)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="st_ctime is the creation time on Windows, which no change moves")
+@pytest.mark.usefixtures("unchanged_past_grace")
+def test_unparseable_lock_changed_under_its_old_mtime_and_inode_not_evicted(  # pragma: win32 no cover
+    lock_path: Path,
+) -> None:
+    # Another file can repeat both: its owner sets the mtime, and ext4 hands a freed inode number to the next file.
+    lock_path.write_bytes(b"")
+    watched: Final = lock_path.stat()
+    contender: Final = SoftFileLock(lock_path)
+    with pytest.raises(Timeout):
+        contender.acquire(blocking=False)
+    while lock_path.stat().st_ctime_ns == watched.st_ctime_ns:
+        os.utime(lock_path, ns=(watched.st_atime_ns, watched.st_mtime_ns))
+    with pytest.raises(Timeout):
+        contender.acquire(blocking=False)
+    assert lock_path.exists()
+
+
 @_REQUIRES_START_TOKEN
 def test_fresh_marker_with_truncated_start_token_not_evicted(lock_path: Path) -> None:
     # A reader racing our own write sees a cut start token, which must not pass for a recycled PID and break our lock.

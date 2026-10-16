@@ -596,7 +596,10 @@ Malformed and legacy markers
 
 A soft lock treats a record it cannot parse as malformed, not as a holder. A plain :class:`SoftFileLock
 <filelock.SoftFileLock>` self-heals a malformed marker once it has watched it stay unchanged for a short grace window on
-its own monotonic clock, which absorbs the brief gap between creating a marker and writing its record. A strict lock
+its own monotonic clock, which absorbs the brief gap between creating a marker and writing its record. It tells
+markers apart by modification time, inode number and change time: an owner can set a file's modification time and ext4
+hands a freed inode number to the next file, but no process can set the change time, so a new marker never inherits the
+time spent watching an old one. A strict lock
 never age-breaks, so it fails closed on an unreadable claim. A marker written by an older filelock stays readable: the
 process start token is an integer, so a 3.29 reader parses a newer marker as well-formed and stays conservative rather
 than evicting a live holder.

@@ -269,7 +269,7 @@ class SoftFileLease(MarkerSoftFileLock):
         if owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
             break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
             return
-        if owner.mode == "lease" and self._marker_unchanged_for(marker.st_mtime, marker.st_ino) >= self._lease_duration:
+        if owner.mode == "lease" and self._marker_unchanged_for(marker) >= self._lease_duration:
             break_lock_file(self.lock_file, marker.st_mtime, marker.st_ino)
 
     def _read_peer(self) -> tuple[OwnerRecord, os.stat_result] | None:
