@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import struct
 import sys
 import time
 from contextlib import closing
@@ -796,3 +797,255 @@ def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acqui
         acquired_event.set()
         while True:  # pragma: win32 no cover
             time.sleep(0.1)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+def test_read_write_lock_refuses_a_schema_that_never_finishes_loading(
+    tmp_path: Path, mode: Literal["read", "write"]
+) -> None:
+    # Every interior page leads to the next one through each of its 660 cells, so the schema has 661**4 rows to scan.
+    database = tmp_path / "lock.db"
+    pages = [
+        _btree_page(
+            0x05,  # table interior page
+            struct.pack(">IB", number + 1, 1),
+            660,
+            right_child=struct.pack(">I", number + 1),
+            header_at=100 if number == 1 else 0,
+        )
+        for number in range(1, 5)
+    ]
+    pages.append(_btree_page(_TABLE_LEAF_PAGE, bytes([6, 1, 6, 0, 0, 0, 0, 0]), 1))
+    pages[0][:100] = _file_header(len(pages))
+    database.write_bytes(b"".join(pages))
+    lock = ReadWriteLock(database, is_singleton=False)
+
+    with pytest.raises(ValueError, match="schema"):
+        (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=1)
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+def test_read_write_lock_refuses_a_schema_row_longer_than_a_lock_needs(
+    tmp_path: Path, mode: Literal["read", "write"]
+) -> None:
+    # The row's text continues on an overflow page that names itself as the next one, so one page of disk reads as a
+    # megabyte, far more schema text than a lock database holds and below SQLite's one-billion-byte string limit.
+    long_sql_length = 1_000_000
+    database = tmp_path / "lock.db"
+    statement = b"CREATE TABLE application (value) --"
+    columns = [b"table", b"application", b"application", b"\x02"]
+    serial_types = [13 + 2 * len(column) for column in columns[:3]] + [1, 13 + 2 * long_sql_length]
+    record_header = b"".join(_varint(serial_type) for serial_type in serial_types)
+    record_start = _varint(len(record_header) + 1) + record_header + b"".join(columns) + statement
+    record_length = len(record_start) + long_sql_length - len(statement)
+    # How much of an overflowing record a table leaf keeps on its own page.
+    local = (minimum := (_PAGE_SIZE - 12) * 32 // 255 - 23) + (record_length - minimum) % (_PAGE_SIZE - 4)
+    cell = _varint(record_length) + _varint(1) + record_start.ljust(local, b"-") + struct.pack(">I", 2)
+    leaf = _btree_page(_TABLE_LEAF_PAGE, cell, 1, header_at=100)
+    page_count = long_sql_length // _PAGE_SIZE + 2
+    leaf[:100] = _file_header(page_count)
+    database.write_bytes(leaf + struct.pack(">I", 2).ljust(_PAGE_SIZE, b"-"))
+    # SQLite refuses a record longer than the file, which a hole stretches at no cost.
+    os.truncate(database, page_count * _PAGE_SIZE)
+    lock = ReadWriteLock(database, is_singleton=False)
+
+    with pytest.raises(ValueError, match="schema"):
+        (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=1)
+
+
+# https://www.sqlite.org/fileformat.html
+_PAGE_SIZE: Final[int] = 4096
+_TABLE_LEAF_PAGE: Final[int] = 0x0D
+
+
+def _btree_page(kind: int, cell: bytes, cell_count: int, *, right_child: bytes = b"", header_at: int = 0) -> bytearray:
+    page = bytearray(_PAGE_SIZE)
+    cell_at = _PAGE_SIZE - len(cell)
+    page[cell_at:] = cell
+    # Every slot of the cell pointer array names the one cell.
+    header = struct.pack(">BHHHB", kind, 0, cell_count, cell_at, 0) + right_child
+    pointers = struct.pack(">H", cell_at) * cell_count
+    page[header_at : header_at + len(header) + len(pointers)] = header + pointers
+    return page
+
+
+def _file_header(page_count: int) -> bytes:
+    # Rollback journal format, a matching change counter and version-valid-for, so SQLite trusts the page count.
+    return struct.pack(
+        ">16sH6B12I20s2I",
+        b"SQLite format 3\0",
+        _PAGE_SIZE,
+        *(1, 1, 0, 64, 32, 32),
+        *(1, page_count, 0, 0, 1, 4, 0, 0, 1, 0, 0, 0),
+        b"",
+        1,
+        3040001,
+    )
+
+
+def _varint(value: int) -> bytes:
+    groups = [value & 0x7F]
+    while value := value >> 7:
+        groups.insert(0, value & 0x7F | 0x80)
+    return bytes(groups)
+
+
+_NEEDS_POSIX_HARD_LINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["posix-hard-link"],
+    reason="a shared lock directory gets a private link to the database only where POSIX hard links work",
+)
+
+
+@pytest.mark.requires_hard_links
+@_NEEDS_POSIX_HARD_LINK
+def test_shared_directory_ignores_a_journal_beside_the_database(  # pragma: needs posix-hard-link
+    shared_database: Path, tmp_path: Path
+) -> None:
+    # SQLite treats a journal beside a non-empty database as an interrupted transaction, and finishing it deletes the
+    # super-journal file the journal names.
+    named = tmp_path / "notes.txt"
+    named.write_text("keep")
+    with closing(sqlite3.connect(shared_database)) as connection:
+        connection.execute("CREATE TABLE application (value)")
+    Path(f"{shared_database}-journal").write_bytes(_hot_journal(named))
+
+    with ReadWriteLock(shared_database, is_singleton=False).read_lock():
+        pass
+
+    assert named.read_text() == "keep"
+
+
+@pytest.mark.requires_hard_links
+@_NEEDS_POSIX_HARD_LINK
+def test_shared_directory_ignores_a_directory_at_the_wal_name(  # pragma: needs posix-hard-link
+    shared_database: Path,
+) -> None:
+    # SQLite removes a leftover -wal beside an empty database, so a name it cannot remove failed every acquire.
+    wal = Path(f"{shared_database}-wal")
+    wal.mkdir()
+    (wal / "entry").touch()
+
+    with ReadWriteLock(shared_database, is_singleton=False).write_lock():
+        assert_read_write_lock_state(str(shared_database), "read", available=False)
+
+
+@pytest.mark.requires_hard_links
+@_NEEDS_POSIX_HARD_LINK
+def test_shared_directory_keeps_sqlite_off_the_name_of_an_unlinked_database(  # pragma: needs posix-hard-link
+    shared_database: Path, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    # The kernel names an open file whose name was unlinked "<name> (deleted)", a name anyone sharing the directory can
+    # create; relinking the same inode under the database name keeps every check on the path satisfied.
+    target = tmp_path / "target.txt"
+    Path(f"{shared_database} (deleted)").symlink_to(target)
+    shared_database.touch()
+    kept = shared_database.with_name("kept.db")
+    kept.hardlink_to(shared_database)
+    connect = sqlite3.connect
+
+    def relink_then_connect(
+        path: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        shared_database.unlink()
+        shared_database.hardlink_to(kept)
+        return connect(
+            path,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+
+    mocker.patch("sqlite3.connect", autospec=True, side_effect=relink_then_connect)
+
+    ReadWriteLock(shared_database, is_singleton=False).close()
+
+    assert not target.exists()
+
+
+@pytest.mark.requires_hard_links
+@_NEEDS_POSIX_HARD_LINK
+def test_private_directory_connects_by_the_database_name(  # pragma: needs posix-hard-link
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    # Nobody else can create or rename names there, so SQLite may derive its side files beside the database.
+    database = tmp_path / "lock.db"
+    connect = mocker.spy(sqlite3, "connect")
+
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        assert_read_write_lock_state(str(database), "write", available=False)
+
+    assert (connect.call_args.args[0], list(tmp_path.iterdir())) == (str(database), [database])
+
+
+@pytest.mark.requires_hard_links
+@_NEEDS_POSIX_HARD_LINK
+def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(  # pragma: needs posix-hard-link
+    shared_database: Path, mocker: MockerFixture
+) -> None:
+    # A rename in the shared parent owns every name below it, so the private directory check cannot stop SQLite from
+    # opening a replacement swapped in before it connects; the acquire refuses before any statement runs, so a hot
+    # journal beside the replacement is neither replayed nor finished.
+    private = shared_database.parent / "private"
+    private.mkdir(mode=0o700)
+    lock = ReadWriteLock(private / "lock.db", is_singleton=False)
+    moved = shared_database.parent / "moved"
+    (private / "notes.txt").write_text("keep")
+    connect = sqlite3.connect
+    before: dict[Path, list[tuple[str, bytes | None]]] = {moved: _entries(private)}
+
+    def replace_then_connect(
+        path: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        private.rename(moved)
+        private.mkdir(mode=0o700)
+        with closing(connect(private / "lock.db")) as replacement:
+            replacement.execute("CREATE TABLE application (value)")
+        (private / "lock.db-journal").write_bytes(_hot_journal(moved / "notes.txt"))
+        (private / "lock.db-wal").write_bytes(b"\0" * 32)
+        before[private] = _entries(private)
+        return connect(
+            path,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+
+    mocker.patch("sqlite3.connect", autospec=True, side_effect=replace_then_connect)
+
+    with pytest.raises(OSError, match="replaced while acquiring"):
+        lock.acquire_write()
+    # The journal and WAL beside the replacement stay, the file the journal names stays, and no bytes change anywhere.
+    assert {directory: _entries(directory) for directory in before} == before
+    assert_read_write_lock_state(str(moved / "lock.db"), "write", available=True)
+
+
+def _hot_journal(super_journal: Path) -> bytes:  # pragma: needs posix-hard-link
+    # A journal whose tail names a super-journal makes SQLite unlink that file once it finishes the journal:
+    # https://www.sqlite.org/fileformat.html#the_rollback_journal
+    name = os.fsencode(super_journal)
+    return name + struct.pack(">II", len(name), sum(name)) + bytes.fromhex("d9d505f920a163d7")
+
+
+def _entries(directory: Path) -> list[tuple[str, bytes | None]]:  # pragma: needs posix-hard-link
+    return sorted((path.name, path.read_bytes() if path.is_file() else None) for path in directory.iterdir())
+
+
+@pytest.fixture
+def shared_database(tmp_path: Path) -> Path:  # pragma: needs posix-hard-link
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    return shared / "lock.db"
