@@ -233,7 +233,14 @@ def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: 
     assert (_link_directories(database), database.stat().st_nlink) == ([], 1)
 
 
-@pytest.mark.parametrize("entry", [pytest.param("lock.db", id="flat"), pytest.param("inner/lock.db", id="nested")])
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param("lock.db", id="flat"),
+        pytest.param("inner/lock.db", id="nested"),
+        pytest.param("inner/other", id="nested-without-link"),
+    ],
+)
 def test_private_link_sweep_keeps_a_directory_named_like_a_dead_holder(database: Path, entry: str) -> None:
     named: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     (named / entry).parent.mkdir(parents=True)
@@ -242,6 +249,60 @@ def test_private_link_sweep_keeps_a_directory_named_like_a_dead_holder(database:
     ReadWriteLock(database, is_singleton=False).close()
 
     assert [(named / name).read_text() for name in (entry, "notes.txt")] == ["keep", "keep"]
+
+
+def test_private_link_sweep_never_parses_a_directory_of_another_account(database: Path, mocker: MockerFixture) -> None:
+    database.touch()
+    planted: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    planted.mkdir(mode=0o700)
+    (planted / "inner").mkdir()
+    (planted / "inner" / "lock.db").hardlink_to(database)
+    real_fstat: Final = os.fstat
+
+    def fstat_with_other_owner(fd: int) -> os.stat_result:
+        status = real_fstat(fd)
+        if status.st_ino != planted.stat().st_ino:
+            return status
+        return os.stat_result((
+            status.st_mode,
+            status.st_ino,
+            status.st_dev,
+            status.st_nlink,
+            status.st_uid + 1,
+            status.st_gid,
+            status.st_size,
+            status.st_atime,
+            status.st_mtime,
+            status.st_ctime,
+        ))
+
+    mocker.patch("os.fstat", autospec=True, side_effect=fstat_with_other_owner)
+    mocker.patch("os.kill", autospec=True, side_effect=AssertionError("PID probed"))
+    ReadWriteLock(database, is_singleton=False).close()
+
+    assert ((planted / "inner" / "lock.db").exists(), database.stat().st_nlink) == (True, 2)
+
+
+def test_private_link_sweep_skips_a_symlink_under_a_dead_holder_name(database: Path) -> None:
+    # The symlink leads to the database's own directory.
+    database.touch()
+    named: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    named.mkdir()
+    (named / "inner").symlink_to(database.parent)
+    ReadWriteLock(database, is_singleton=False).close()
+
+    assert (database.exists(), (named / "inner").is_symlink()) == (True, True)
+
+
+def test_private_link_sweep_skips_a_symlink_to_a_live_holder(database: Path, holder: subprocess.Popen[str]) -> None:
+    (held,) = _link_directories(database)
+    (inner,) = list(held.iterdir())
+    named: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    named.mkdir()
+    (named / "inner").symlink_to(inner)
+    ReadWriteLock(database, is_singleton=False).close()
+
+    assert ((inner / "lock.db").exists(), holder.poll()) == (True, None)
 
 
 @pytest.mark.usefixtures("holder")
