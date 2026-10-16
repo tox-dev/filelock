@@ -1,0 +1,4 @@
+The async read-write locks no longer let synchronous code on the executor thread that took a task's hold re-enter or
+release it, and :class:`~filelock.AsyncSoftReadWriteLock` no longer ends synchronous readers' levels on a shared
+singleton. :class:`~filelock.SoftReadWriteLock` tracks read levels per thread, so ``release()`` from a thread holding
+none raises :class:`RuntimeError`, and it refuses new acquires on a hold whose loss it has recorded.
