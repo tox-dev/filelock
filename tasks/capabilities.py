@@ -298,19 +298,6 @@ def _unreadable_file() -> Generator[Path]:
             probe.chmod(0o600)
 
 
-def _fd_directory_names_the_file() -> bool:
-    # Mirrors the view ReadWriteLock connects through. SQLite reuses a descriptor it deferred closing only when stat of
-    # the name it opened reports the file itself; macOS's /dev/fd reports devfs instead.
-    view: Final = Path("/proc/self/fd" if sys.platform == "linux" else "/dev/fd")
-    if not view.is_dir():
-        return False
-    with tempfile.TemporaryFile() as handle:
-        try:
-            return os.path.samestat((view / str(handle.fileno())).stat(), os.fstat(handle.fileno()))
-        except OSError:  # a static /dev/fd, like NetBSD's or FreeBSD's without fdescfs, lists only low numbers
-            return False
-
-
 _LINK_FOLLOW_SYMLINKS: Final[bool] = _honors_link_follow_symlinks()
 
 
@@ -340,7 +327,6 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "settrace-safe-audit-hooks": _survives_settrace_inside_audit_hook(),
     "profile-interrupted-generator-finishes": _finishes_a_generator_a_profile_hook_interrupts_on_resume(),
     "fd-directory": any(Path(view).is_dir() for view in ("/dev/fd", "/proc/self/fd")),
-    "fd-directory-names-file": _fd_directory_names_the_file(),
     "fifo": hasattr(os, "mkfifo"),
     "af-unix": hasattr(socket, "AF_UNIX"),
     # Distinct from "symlink": a runtime can create them yet still not refuse to follow one.

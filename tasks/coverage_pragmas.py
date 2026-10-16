@@ -61,8 +61,8 @@ class CapabilityPragmas(CoveragePlugin):
 #: Modules a missing capability makes unrunnable in full; marking every line would restate one module-level gate.
 _CAPABILITY_MODULES: Final[dict[str, tuple[str, ...]]] = {
     "posix-hard-link": (
-        "*/tests/test_read_write_fd_fallback.py",
-        "*\\tests\\test_read_write_fd_fallback.py",
+        "*/tests/test_read_write_private_link.py",
+        "*\\tests\\test_read_write_private_link.py",
     ),
     "hard-link": (
         "*/tests/test_strict_soft*.py",

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import errno
 import gc
 import os
 import signal
@@ -34,10 +33,6 @@ _NEEDS_FD_DIRECTORY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 _NEEDS_PROBE_DESCRIPTORS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform == "win32", reason="Windows connects without probe descriptors"
 )
-_LINKS_BEFORE_THE_DESCRIPTOR: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["fd-directory"] or CAPABILITIES["fd-directory-names-file"],
-    reason="only a descriptor path that misreports the file sends a connect through a hard link first",
-)
 
 
 @NEEDS_AUDIT_EVENTS
@@ -53,11 +48,9 @@ def test_read_write_lock_closes_idle_connections(tmp_path: Path) -> None:
         if event != "sqlite3.connect":
             return
         database = args[0]
-        # The lock connects through /dev/fd, /proc/self/fd or a private hard link, or by its own path on Windows.
+        # The lock connects by its own path, or through a private hard link where others share its directory.
         if isinstance(database, (str, bytes)) and (
-            (path := os.fsdecode(database)) == str(lock_path)
-            or path.startswith(("/dev/fd/", "/proc/self/fd/"))
-            or Path(path).parent.name.startswith(".filelock-")
+            (path := os.fsdecode(database)) == str(lock_path) or Path(path).parent.parent.name.startswith(".filelock-")
         ):
             connection_events += 1
 
@@ -105,28 +98,6 @@ def test_read_write_lock_cycling_beside_a_holder_keeps_descriptors_flat(tmp_path
         assert _descriptors_on(lock_path) == before
 
 
-@pytest.mark.skipif(sys.platform == "darwin", reason="macOS must reject a failed alias")
-@_LINKS_BEFORE_THE_DESCRIPTOR  # pragma: needs fd-directory  # pragma: lacks fd-directory-names-file
-@pytest.mark.parametrize(
-    "failing", [pytest.param("tempfile.mkdtemp", id="mkdtemp"), pytest.param("os.link", id="link")]
-)
-def test_read_write_lock_connects_through_the_descriptor_when_linking_fails(  # pragma: darwin no cover
-    tmp_path: Path, mocker: MockerFixture, failing: str
-) -> None:
-    lock_path: Final[Path] = tmp_path / "held.db"
-    # Only a connect beside a live peer links: that is when SQLite defers its closes.
-    peer: Final = ReadWriteLock(lock_path, is_singleton=False)
-    peer.acquire_read()
-    mocker.patch(failing, autospec=True, side_effect=PermissionError(errno.EACCES, "read-only directory"))
-    lock: Final = ReadWriteLock(lock_path, is_singleton=False)
-    lock.acquire_read()
-    peer.release()
-    contender: Final = _run_fork_script(_TRY_WRITE_SCRIPT, [str(lock_path)], timeout=30)
-    lock.release()
-
-    assert (contender, sorted(path.name for path in tmp_path.iterdir())) == ((0, "Timeout\n", ""), ["held.db"])
-
-
 @_NEEDS_FD_DIRECTORY
 def test_read_write_locks_held_together_each_keep_their_own_probe(tmp_path: Path) -> None:  # pragma: needs fd-directory
     # macOS SQLite fails, now and then, to open two live connections through one /dev/fd name.
@@ -153,15 +124,10 @@ def test_read_write_lock_close_interrupted_among_its_probes_closes_the_rest_late
     newer.acquire_read()
     first, last = (older, newer) if newer_releases_last else (newer, older)
     first.release()
-    database: Final = lock_path.stat()
     real_close: Final = os.close
 
     def close_then_interrupt(fd: int) -> None:
-        same_inode: Final = os.path.samestat(os.fstat(fd), database)
         real_close(fd)
-        # Removing a private hard link's directory closes descriptors of its own.
-        if not same_inode:  # pragma: lacks fd-directory-names-file
-            return
         # A signal handler runs once the first probe's close returns, before the second one closes.
         mocker.stopall()
         raise KeyboardInterrupt

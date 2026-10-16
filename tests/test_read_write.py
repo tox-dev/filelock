@@ -444,10 +444,10 @@ def test_closing_every_instance_closes_its_descriptors(lock_file: str) -> None:
 
 @pytest.fixture(
     params=[
-        pytest.param(True, id="descriptor-path"),
+        pytest.param(False, id="private-directory"),
         pytest.param(
-            False,
-            id="hard-link-fallback",
+            True,
+            id="shared-directory",
             marks=[
                 pytest.mark.requires_hard_links,
                 pytest.mark.skipif(
@@ -458,9 +458,10 @@ def test_closing_every_instance_closes_its_descriptors(lock_file: str) -> None:
         ),
     ]
 )
-def connect_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
-    if not request.param:  # pragma: needs posix-hard-link
-        mocker.patch("os.access", autospec=True, return_value=False)
+def connect_route(request: pytest.FixtureRequest, tmp_path: Path) -> None:
+    # Where others may create names beside the database, SQLite connects through a private link instead of the name.
+    if request.param:  # pragma: needs posix-hard-link
+        tmp_path.chmod(0o777)
 
 
 def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:
