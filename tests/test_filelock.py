@@ -2223,14 +2223,12 @@ def test_windows_delete_pending_is_treated_as_contention(tmp_path: Path, mocker:
 
 @_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_permanent_denial_raises_without_timeout(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._windows._ACCESS_DENIED_GRACE", 0.02)
+    mocker.patch("filelock._windows._ACCESS_DENIED_PROBES", 10)
     nt_open = mocker.patch("filelock._windows._nt_open", return_value=(0, 0xC0000022))  # STATUS_ACCESS_DENIED
-    started = time.monotonic()
     with pytest.raises(PermissionError):
         FileLock(str(tmp_path / "a"), timeout=5).acquire()
-    # The denial outlasted its grace, so it surfaced after a bounded wait rather than the caller's timeout.
-    assert 0.02 <= time.monotonic() - started < 5
-    assert nt_open.call_count > 1
+    # The denial outlasted the probes, so it surfaced after them rather than at the caller's timeout.
+    assert nt_open.call_count == 11
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
