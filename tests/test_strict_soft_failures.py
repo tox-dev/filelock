@@ -1819,6 +1819,35 @@ def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: Moc
             _ = StrictSoftFileLock(lock_path).claims
 
 
+def test_strict_soft_claims_removed_one_by_one_share_one_read_grace(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path: Final = tmp_path / "resource.lock"
+    (claims := Path(f"{lock_path}.filelock") / "claims").mkdir(parents=True)
+    denied: Final = [_write_foreign_claim(claims, f"{index:032x}") for index in range(10)]
+    now = 0.0
+
+    def tick(seconds: float) -> None:
+        # Another process removes the lowest unreadable claim every 0.2 s, inside the grace a single claim gets.
+        nonlocal now
+        before, now = now, now + seconds
+        if int(now / 0.2) > int(before / 0.2) and (remaining := [claim for claim in denied if claim.exists()]):
+            remaining[0].unlink()
+
+    real_open: Final = os.open
+
+    def deny_claims(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if os.fsdecode(path).endswith(".claim"):
+            raise PermissionError(EACCES, "claim read denied")
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: needs dir-fd
+
+    mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=lambda: now)
+    mocker.patch("filelock._strict.time.sleep", autospec=True, side_effect=tick)
+    mocker.patch("filelock._strict.os.open", autospec=True, side_effect=deny_claims)
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
+        _ = StrictSoftFileLock(lock_path).claims
+    assert now < 1
+
+
 @_WINDOWS_ONLY  # pragma: win32 cover
 def test_strict_soft_claim_pending_deletion_is_skipped(tmp_path: Path) -> None:
     # A peer's unlink sets the claim's delete disposition, then closes its handle. Until that close, every open fails
