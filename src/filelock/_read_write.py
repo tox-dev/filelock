@@ -649,8 +649,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._release(force=False, close=False, thread_id=thread_id)
 
     def _holds_level_of(self, thread_id: int) -> bool:
-        # Read without the internal lock: an async wrapper asks from its event loop, which must not wait out a release
-        # running on another thread, and a stale answer is one a caller asking a moment earlier would have had.
+        # Read without the internal lock. The async wrapper asks from its event loop, which must not wait out a release
+        # on another thread. A stale answer is what a caller asking a moment earlier would have had.
         return thread_id == self._write_thread_id or thread_id in self._read_depths
 
     def _release(self, *, force: bool, close: bool, thread_id: int | None = None) -> None:

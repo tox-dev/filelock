@@ -270,9 +270,9 @@ class AsyncReadWriteLock:
 
         After calling this method, the lock instance is no longer usable. With ``is_singleton=False`` it also closes the
         underlying SQLite connection. A singleton wrapper leaves the shared :class:`ReadWriteLock` open, so tasks that
-        acquired through another wrapper and synchronous users of the same path keep their holds. A synchronous
-        ``close()`` or forced release of that shared lock is noticed by the next acquire; one landing in the few
-        bytecodes between that check and the admission can still admit the task into the ended hold.
+        acquired through another wrapper and synchronous users of the same path keep their holds. The next acquire
+        notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
+        between that check and the admission still admits the task into the ended hold.
 
         """
         _ensure_current_process()
@@ -317,8 +317,7 @@ class AsyncReadWriteLock:
         _future_result(acquire_future)
 
     def _backend_holds(self) -> bool:
-        # Whether the sync lock still has the level taken for the tasks: a sync close() or forced release of a shared
-        # singleton ends it without the task table taking part.
+        # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
         if (thread := self._owners.backend_thread) is None:
             return False
         return self._lock._holds_level_of(thread)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold

@@ -267,9 +267,9 @@ class AsyncSoftReadWriteLock:
 
         Idempotent. After calling this method the instance can no longer acquire locks. With ``is_singleton=False`` it
         also closes the underlying :class:`SoftReadWriteLock`. A singleton wrapper leaves the shared one open, so tasks
-        that acquired through another wrapper and synchronous users of the same path keep their holds. A synchronous
-        ``close()`` or forced release of that shared lock is noticed by the next acquire; one landing in the few
-        bytecodes between that check and the admission can still admit the task into the ended hold.
+        that acquired through another wrapper and synchronous users of the same path keep their holds. The next acquire
+        notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
+        between that check and the admission still admits the task into the ended hold.
 
         """
         if self._creator_pid != os.getpid() or self._closed:
@@ -300,8 +300,7 @@ class AsyncSoftReadWriteLock:
             raise RuntimeError(msg)
 
     def _backend_holds(self) -> bool:
-        # Whether the sync lock still has the level taken for the tasks: a sync close() or forced release of a shared
-        # singleton ends it without the task table taking part.
+        # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
         return self._lock._hold is not None  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:

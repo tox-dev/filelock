@@ -136,9 +136,9 @@ class _TaskOwners:
 
     An async wrapper runs each call on an executor thread, and that thread does not identify the calling task. Waiting
     writers block new readers so a stream of readers cannot starve them. A thread lock guards the table because tasks on
-    different event loops share it. The table stands for one backend level taken for every task. A caller that ends
-    that level directly, such as a sync ``close()`` or forced release of a shared singleton, leaves holds that the next
-    admission forgets instead of letting more tasks join them.
+    different event loops share it. The table stands for one backend level, taken once for all tasks. Sync code can
+    end that level directly, with ``close()`` or a forced release on a shared singleton. The next admission then
+    forgets the holds instead of letting more tasks join them.
     """
 
     def __init__(self) -> None:
@@ -206,8 +206,8 @@ class _TaskOwners:
         waiting_writer: bool,
     ) -> Literal["held", "enter"] | ConcurrentFuture[None]:
         with self._lock:
-            # Every "held" answer below trusts the backend level, so ask the backend first: once it lost that level, the
-            # holds it stood behind are gone and the next task has to take the lock again.
+            # A "held" answer trusts the backend level. Once the backend lost it, the holds are gone and the next task
+            # has to take the lock again.
             if self._mode is not None and not self._transitioning and not joinable():
                 self._holds.clear()
                 self._mode = None
@@ -271,9 +271,9 @@ class _TaskOwners:
         End the holds taken through *via*, or every hold when it is ``None``, as one transition.
 
         Leaves the backend through *leave* when that ends the last hold, and always when *via* is ``None``. Arrivals
-        wait while it runs, so none joins a hold the backend is letting go of. It waits out a transition already under
-        way, since a task entering through *via* must not get a hold after the wrapper is gone; a cancellation is held
-        back until the holds are settled.
+        wait while it runs, so none joins a hold the backend is letting go of. A transition already under way is waited
+        out first: a task entering through *via* must not get a hold after the wrapper is gone. A cancellation is raised
+        once the holds are settled.
         """
         cancellation: asyncio.CancelledError | None = None
         while isinstance(settled := self._drop_holds_via(via), ConcurrentFuture):
