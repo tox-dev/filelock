@@ -352,8 +352,9 @@ class _RefreshLoop:
             if outcome == "ok":
                 last_success, missing = time.monotonic(), False
                 continue
-            # A peer's stale break moves a live marker aside for two syscalls, so only a second miss in a row is a loss.
-            if outcome == "marker-missing" and not missing:
+            # A peer's stale break exchanges a live marker aside for the length of its check, so only a second miss or
+            # change in a row is a loss.
+            if outcome in {"marker-missing", "owner-changed"} and not missing:
                 missing = True
                 continue
             if outcome == "transient" and time.monotonic() - last_success < self.duration - self.interval:

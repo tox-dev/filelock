@@ -28,6 +28,7 @@ from filelock import (
 )
 from filelock._identity import host_name
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD
+from filelock._util import exchange_names
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, NEEDS_PROMPT_FINALIZATION, NEEDS_UNLINK_OPEN_FILE
 from tests.conftest import held_after_reclaim
 
@@ -258,6 +259,47 @@ def test_lease_tolerates_a_transient_refresh_error(marker: Path, mocker: MockerF
         time.sleep(_HEARTBEAT * 6)  # several ticks: the first two fail, the rest recover
         assert seen == []
         assert lease.compromise is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+def test_lease_heartbeat_tolerates_one_refresh_under_a_peers_exchange(  # pragma: win32 no cover
+    marker: Path, mocker: MockerFixture
+) -> None:
+    seen: list[LeaseCompromise] = []
+    lease: Final = SoftFileLease(marker, lease_duration=2, heartbeat_interval=0.05, on_compromise=seen.append)
+    refreshed: Final = Event()
+    lstat: Final = os.lstat
+
+    def spy(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
+        found: Final = lstat(path, dir_fd=dir_fd)
+        os.fspath(path) == str(marker) and refreshed.set()
+        return found
+
+    with lease:
+        (peer := marker.with_name("peer")).write_text("peer", encoding="utf-8")
+        exchange_names(str(marker), str(peer))
+        mocker.patch.object(os, "lstat", new=spy)
+        assert refreshed.wait(5)
+        exchange_names(str(marker), str(peer))
+        mocker.stopall()
+        time.sleep(0.15)
+
+        assert (lease.compromise, seen, lease.is_locked) == (None, [], True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+def test_lease_heartbeat_reports_an_owner_changed_that_persists(marker: Path) -> None:  # pragma: win32 no cover
+    seen: list[LeaseCompromise] = []
+    lease: Final = SoftFileLease(marker, lease_duration=2, heartbeat_interval=0.05, on_compromise=seen.append)
+
+    with lease:
+        (peer := marker.with_name("peer")).write_text("peer", encoding="utf-8")
+        exchange_names(str(marker), str(peer))
+        _wait_until(lambda: bool(seen))
+        time.sleep(0.2)
+        exchange_names(str(marker), str(peer))
+
+    assert [compromise.reason for compromise in seen] == ["owner-changed"]
 
 
 @NEEDS_UNLINK_OPEN_FILE

@@ -6,4 +6,5 @@ after a successor took the path. A stale break left the lock path empty while it
 atomic exchange. On other platforms without one, except Windows, including NFS and SMB, the marker stays in place and
 waits for ``timeout`` or ``break_lock()``. Restoring a marker no longer follows a symlink found under the break name. A
 holder that releases while a peer's exchange has its marker aside leaves a record no lock parses, so the put-back lands
-a marker that ages out.
+a marker that ages out. A lease heartbeat that finds another file at the lock path once, while a peer's break has its
+marker aside, waits for the next refresh before it reports a compromise.
