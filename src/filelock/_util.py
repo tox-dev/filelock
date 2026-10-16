@@ -147,13 +147,14 @@ def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
 
 def foreign_directory_owner(directory: os.stat_result, parent: os.stat_result) -> int | None:
     """
-    Name the account that controls a directory a lock found already in place under a sticky parent, if not ours.
+    Return the uid that owns *directory* when another account controls it under a sticky parent.
 
-    A lock that keeps its ownership records in a directory relies on them staying in place. Under a sticky parent such
-    as ``/tmp``, a directory cannot be renamed away by processes of other accounts, so that holds while the directory
-    belongs to this account or to the parent's owner; one that belongs to another account is outside the lock's
-    control. Without the sticky bit, any process that can create the directory can also rename this account's own one
-    away, so refusing it there would change nothing. Linux applies the same rule for ``fs.protected_regular``.
+    A lock that keeps its ownership records in a directory relies on them staying in place. The sticky bit (a directory
+    flag that lets only a file's owner remove it) on a parent such as ``/tmp`` stops other accounts from renaming the
+    directory away. A directory that this account or the parent's owner owns is therefore safe there. One that another
+    account owns is outside the lock's control. Without the sticky bit, any process that can create the directory can
+    also rename this account's own one away, so a refusal there would change nothing. Linux applies the same rule for
+    ``fs.protected_regular``.
 
     :param directory: ``lstat`` of the directory found in place.
     :param parent: ``stat`` of the directory that holds it.

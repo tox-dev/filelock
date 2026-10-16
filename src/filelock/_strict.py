@@ -131,7 +131,7 @@ class StrictSoftFileLock(BaseFileLock):
     #: poll_interval below this cap jitters; the default equals it and keeps a fixed cadence.
     _poll_backoff_cap: float = 0.05
     _occupant_seen: tuple[tuple[float, int, int], float] | None = None
-    #: Set by the finalizer, whose cleanup is the last this instance gets.
+    #: Set by the finalizer, after which no retry of a failed cleanup can run.
     _finalizing: bool = False
 
     def _acquire(self) -> None:
@@ -140,8 +140,8 @@ class StrictSoftFileLock(BaseFileLock):
         lock_path = Path(self._lock_path)
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
-        # Whoever can write these directories can remove a holder's claims, so the mode governs them as it does the
-        # claims, with search permission wherever it grants read.
+        # A process that can write these directories can remove claims from them, so they take the lock's mode plus
+        # search permission where the mode grants read.
         directory_mode: Final = (mode := self._open_mode()) | (mode & 0o444) >> 2
         _ensure_protocol_directory(self.lock_file, coordination_directory, directory_mode)
         _ensure_claim_directory(self.lock_file, claim_directory, directory_mode)
@@ -320,8 +320,8 @@ class StrictSoftFileLock(BaseFileLock):
 
     def _discard_doorway(self) -> None:
         remaining, errors = self._unlink_owner_claims()
-        # The pending descriptor carries no lock and the retry needs only the claim paths, so close it now rather than
-        # leave it to a retry that a dropped instance never makes.
+        # The pending descriptor holds no lock and a retry needs the claim paths alone. A dropped instance does not
+        # retry, so close it now.
         if (fd := self._context.pending_lock_file_fd) is not None:
             self._context.pending_lock_file_fd = self._context.pending_lock_file_fd_identity = None
             try:
@@ -340,8 +340,8 @@ class StrictSoftFileLock(BaseFileLock):
         remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
         self._context.owner_claim_paths = tuple(remaining)
         if self._finalizing:
-            # Nothing retries after the finalizer and nobody hears its errors, so report success and let it close the
-            # descriptor whatever became of the claims.
+            # No retry runs after the finalizer and no caller sees its errors, so report success and let it close the
+            # descriptor even when claims remain.
             return [], []  # pragma: needs collected-finalization
         return remaining, errors
 
@@ -486,9 +486,9 @@ def _read_claim_records(
     # ESTALE rather than a clean ENOENT until the lookup revalidates against the server. Retrying re-runs the path
     # lookup, which turns the vanished claim into ENOENT (skip) or reads it if it still exists. A genuinely unreadable
     # record (a locked-down file, an EIO fault) still fails closed. The grace starts at the first pending result rather
-    # than before the first attempt, so a slow first read cannot use up the window and leave no retry. It covers the
-    # whole scan rather than each claim: claims that resolve one after another would otherwise stretch one scan, and
-    # with it the caller's timeout, by a grace per claim.
+    # than before the first attempt, so a slow first read cannot use up the window and leave no retry. One deadline
+    # covers the scan: a deadline per claim let claims that clear one after another stretch a scan, and the caller's
+    # timeout with it, by a grace each.
     records: dict[str, bytes] = {}
     deadline: float | None = None
     while True:
@@ -508,7 +508,7 @@ def _read_claim_records(
         names = list(pending)
         time.sleep(_CLAIM_READ_RETRY)
     # A stale handle that outlives revalidation is a claim the server no longer has (RFC 1813 NFS3ERR_STALE): skip it
-    # like ENOENT. Skipping a peer's vanished claim can only overcount contention, never free a held lock.
+    # like ENOENT. Skipping a vanished claim overcounts contention at worst; it cannot free a held lock.
     if denied := [name for name, error in pending.items() if error.errno != ESTALE]:
         # Windows can deny opens after a peer removes the claim from the directory.
         listed: Final = set(_list_claim_names(lock_file, directory_ref, probe_clock=probe_clock))
@@ -592,7 +592,7 @@ def _read_claims_through_descriptor(  # pragma: needs dir-fd
     try:
         return _read_claims(lock_file, (os.fspath(directory), directory_fd), probe_clock=probe_clock)
     finally:
-        # Nothing was written through the descriptor, so a failed close loses nothing worth reporting over the scan.
+        # The scan wrote nothing through the descriptor, so a failed close has no result to report.
         with contextlib.suppress(OSError):
             os.close(directory_fd)
 
@@ -1041,9 +1041,9 @@ def _pin_claim_directory(directory: Path) -> contextlib.ExitStack[bool | None]:
 
 
 def _pin_directories(*directories: Path) -> contextlib.ExitStack[bool | None]:
-    # Windows has no dir_fd, so every operation resolves each component by name again. Holding the directories open
-    # keeps anyone from swapping one for a junction or another directory while the operation runs. Elsewhere the
-    # callers already work through descriptors, so nothing is held.
+    # Windows has no dir_fd, so each operation resolves every path component by name again. An open handle on a
+    # directory blocks a rename of it, and with it a swap for a junction (a directory that points at another directory),
+    # until the operation ends. Other platforms work through descriptors and hold nothing.
     stack: contextlib.ExitStack[bool | None] = contextlib.ExitStack()
     if sys.platform == "win32":  # pragma: win32 cover
         with stack:
@@ -1058,15 +1058,15 @@ def _open_directory(directory: str, dir_fd: int | None = None) -> int:  # pragma
 
 
 def _open_claim_directory(directory: str) -> int:  # pragma: needs dir-fd
-    # O_NOFOLLOW guards only the last component, and whoever can rename entries in the lock's directory can swap the
-    # coordination directory for a symlink after any check of its name. Open the claim directory relative to a
-    # descriptor of the coordination directory, so nothing is created, listed or removed where a symlink points.
+    # O_NOFOLLOW applies to the last path component. A process that can rename entries in the lock's directory can
+    # swap the coordination directory for a symlink after any check of its name, so open the claim directory relative
+    # to a descriptor of the coordination directory: a symlink at either level then fails the open.
     coordination_directory, name = os.path.split(directory)
     coordination_fd = _open_directory(coordination_directory)
     try:
         return _open_directory(name, coordination_fd)
     finally:
-        # Nothing was written through it, and raising here would leak the descriptor being returned.
+        # The walk wrote nothing through it, and an error here would leak the descriptor this function returns.
         with contextlib.suppress(OSError):
             os.close(coordination_fd)
 
@@ -1102,7 +1102,8 @@ def _open_record(
         msg = f"{path} is not a regular file"
         raise OSError(msg)
     if deletable and sys.platform == "win32":  # pragma: win32 cover
-        # A claim's owner must be able to unlink it while contenders read it; the sentinel is never unlinked.
+        # A claim's owner must be able to unlink it while another process reads it. The sentinel stays for the lock's
+        # lifetime, so it keeps os.open.
         fd = _open_deletable_for_reading(str(path))
     else:
         flags = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -1180,9 +1181,10 @@ def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, paren
 
 
 def _settle_directory_mode(lock_file: str, directory: Path, mode: int, parent_fd: int | None) -> None:
-    # The umask or a default ACL may have left the directory wider than the mode, now or in an earlier release, so
-    # narrow a directory this account owns to the mode. The sticky bit then keeps a claim removable only by the
-    # account that published it, whatever the mode leaves others. Windows has neither mode bits nor a sticky bit.
+    # The umask or a default ACL can leave the directory wider than the mode, now or in an earlier release, so narrow a
+    # directory this account owns to the mode. The sticky bit (a directory flag that lets only a file's owner remove it)
+    # then protects each claim from other accounts even where the mode admits them. Windows has neither mode bits nor a
+    # sticky bit.
     if sys.platform != "win32":  # pragma: win32 no cover
         try:
             fd = os.open(

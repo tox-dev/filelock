@@ -39,8 +39,8 @@ if sys.platform == "win32":  # pragma: win32 cover
     _FILE_NON_DIRECTORY_FILE: Final[int] = 0x00000040
     _FILE_OPEN_REPARSE_POINT: Final[int] = 0x00200000
     _CREATE_OPTIONS: Final[int] = _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_NON_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT
-    # Listing access takes part in share-mode checks where attribute-only access does not, so a handle holding it
-    # without FILE_SHARE_DELETE refuses every rename or removal of the directory until it closes.
+    # Listing access takes part in share-mode checks, unlike attribute-only access, so a handle that holds it without
+    # FILE_SHARE_DELETE blocks renames and removals of the directory until it closes.
     _FILE_LIST_DIRECTORY: Final[int] = 0x00000001
     _FILE_DIRECTORY_FILE: Final[int] = 0x00000001
     _DIRECTORY_OPTIONS: Final[int] = _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT
@@ -297,11 +297,11 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     def _open_deletable_for_reading(path: str) -> int:
         """
-        Open *path* read-only without blocking its owner's unlink, and without following a reparse point.
+        Open *path* read-only without blocking a concurrent unlink and without following a reparse point.
 
-        ``os.open`` omits ``FILE_SHARE_DELETE``, so while any process has a file open that way, deleting it fails with
-        a sharing violation. A strict claim is read by every contender and unlinked by its owner, so under contention a
-        reader nearly always holds it open and the owner's release runs out of retries.
+        ``os.open`` omits ``FILE_SHARE_DELETE``, so while a process has a file open that way, a delete of it fails with
+        a sharing violation. Every contender reads a strict claim and its owner unlinks it, so a reader that keeps the
+        claim open past the owner's retries makes the release fail.
         """
         sys.audit("open", path, None, os.O_RDONLY)
         handle, status = _nt_create(path, _GENERIC_READ | _SYNCHRONIZE, 0, _FILE_SHARE_ALL, _FILE_OPEN)
@@ -316,13 +316,13 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     def _pin_directory(path: str) -> int:
         """
-        Open the directory at *path* so that nobody can rename or remove it until :func:`_unpin_directory`.
+        Open the directory at *path* so that no process can rename or remove it until :func:`_unpin_directory`.
 
-        Windows has no ``dir_fd``: an operation resolves every component by name again. Holding a handle to each
-        directory a record path passes through, opened without following a reparse point, keeps that name bound to the
-        directory checked here for as long as the operation runs.
+        Windows has no ``dir_fd``, so an operation resolves every path component by name again. A handle on each
+        directory of a record path, opened without following a reparse point, keeps that name bound to the directory
+        checked here until the operation ends.
 
-        :raises NotADirectoryError: when *path* is a junction, a symlink or anything but a directory.
+        :raises NotADirectoryError: when *path* is a junction, a symlink or anything other than a directory.
         """
         sys.audit("open", path, None, os.O_RDONLY)
         # GetFileInformationByHandle needs FILE_READ_ATTRIBUTES; listing access is what takes part in share checks.
