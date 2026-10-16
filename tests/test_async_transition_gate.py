@@ -40,7 +40,7 @@ async def test_hold_waits_for_a_predecessor_before_entering() -> None:
 
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
-async def test_hold_canceled_while_waiting_lets_the_predecessor_free_the_ticket() -> None:
+async def test_hold_canceled_while_waiting_takes_its_ticket_out() -> None:
     gate = _AsyncTransitionGate()
     first_holding = asyncio.Event()
     release_first = asyncio.Event()
@@ -65,8 +65,8 @@ async def test_hold_canceled_while_waiting_lets_the_predecessor_free_the_ticket(
     release_first.set()
     await first_task
 
-    # The canceled waiter registered a callback so the predecessor frees its abandoned ticket; a fresh holder must
-    # then enter without waiting on a tail that no coroutine will ever leave.
+    # The canceled waiter took its ticket out of the queue; a fresh holder must then enter without waiting on a ticket
+    # that no coroutine will ever leave.
     entered = asyncio.Event()
 
     async def third() -> None:
@@ -78,7 +78,7 @@ async def test_hold_canceled_while_waiting_lets_the_predecessor_free_the_ticket(
 
 
 @pytest.mark.asyncio
-async def test_hold_interrupted_while_waiting_lets_the_predecessor_free_the_ticket() -> None:
+async def test_hold_interrupted_while_waiting_takes_its_ticket_out() -> None:
     gate = _AsyncTransitionGate()
     first_holding = asyncio.Event()
     release_first = asyncio.Event()
@@ -106,15 +106,15 @@ async def test_hold_interrupted_while_waiting_lets_the_predecessor_free_the_tick
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(5)
-async def test_wait_for_predecessor_returns_immediately_when_already_done() -> None:
-    predecessor: ConcurrentFuture[None] = ConcurrentFuture()
-    predecessor.set_result(None)
+async def test_wait_for_turn_returns_immediately_when_already_done() -> None:
+    ticket: ConcurrentFuture[None] = ConcurrentFuture()
+    ticket.set_result(None)
 
-    await _AsyncTransitionGate._wait_for_predecessor(
-        predecessor, blocking=True, cancel_check=None, deadline=None, poll_interval=0.01
+    await _AsyncTransitionGate._wait_for_turn(
+        ticket, blocking=True, cancel_check=None, deadline=None, poll_interval=0.01
     )
 
-    assert predecessor.done()
+    assert ticket.done()
 
 
 class _Interrupt(BaseException):

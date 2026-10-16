@@ -80,6 +80,35 @@ async def test_queued_acquire_honors_own_admission_policy(
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
+@pytest.mark.asyncio
+async def test_acquires_giving_up_behind_a_waiter_leave_the_lock_releasable(tmp_path: Path) -> None:
+    first_polled = asyncio.Event()
+
+    def observe_first_poll() -> bool:
+        first_polled.set()
+        return False
+
+    holder, holder_started, finish_holder = start_file_lock_holder(str(tmp_path / "a"))
+    assert await asyncio.to_thread(holder_started.wait, 5)
+    lock = AsyncFileLock(tmp_path / "a")
+    waiter = asyncio.create_task(lock.acquire(cancel_check=observe_first_poll, poll_interval=0.001))
+    try:
+        await first_polled.wait()
+        # More callers than the recursion limit allows frames for, should they be settled one inside the other.
+        for _ in range(sys.getrecursionlimit()):
+            with pytest.raises(Timeout):
+                await lock.acquire(blocking=False)
+    finally:
+        finish_holder.set()
+        await asyncio.to_thread(holder.join, 5)
+    await waiter
+
+    await asyncio.wait_for(lock.release(), 5)
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
 @_UNIX_FLOCK_ONLY
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION

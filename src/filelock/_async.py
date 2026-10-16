@@ -7,6 +7,7 @@ __lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._error"]
 import asyncio
 import contextlib
 import time
+from collections import deque
 from concurrent.futures import Future as ConcurrentFuture
 from dataclasses import dataclass
 from threading import Lock
@@ -42,23 +43,23 @@ class _BackendOutcome(Generic[_T]):
 
 
 class _AsyncTransitionGate:
+    """
+    First-in, first-out admission for the calls that transition one lock context.
+
+    Each call queues a ticket; the head of the queue holds the gate. A call that gives up removes only its own ticket,
+    so abandoned calls neither pile up behind a long holder nor have to be settled one by one when it leaves.
+    """
+
     def __init__(self) -> None:
-        self._tail_lock: Final[Lock] = Lock()
-        self._tail: ConcurrentFuture[None] | None = None
+        self._queue_lock: Final[Lock] = Lock()
+        self._queue: Final[deque[ConcurrentFuture[None]]] = deque()
 
     @contextlib.asynccontextmanager
     async def hold(self) -> AsyncGenerator[None]:
-        ticket: ConcurrentFuture[None] = ConcurrentFuture()
-        with self._tail_lock:
-            predecessor = self._tail
-            self._tail = ticket
-        if predecessor is not None:
-            try:
-                await _wait_until_done(asyncio.wrap_future(predecessor))
-            except BaseException:
-                predecessor.add_done_callback(lambda _predecessor: self._leave(ticket))
-                raise
+        ticket = self._join()
         try:
+            if not ticket.done():
+                await _wait_until_done(asyncio.wrap_future(ticket))
             yield
         finally:
             self._leave(ticket)
@@ -72,30 +73,23 @@ class _AsyncTransitionGate:
         deadline: float | None,
         poll_interval: float,
     ) -> AsyncGenerator[None]:
-        ticket: ConcurrentFuture[None] = ConcurrentFuture()
-        with self._tail_lock:
-            predecessor = self._tail
-            self._tail = ticket
-        if predecessor is not None and not predecessor.done():
-            try:
-                await self._wait_for_predecessor(
-                    predecessor,
+        ticket = self._join()
+        try:
+            if not ticket.done():
+                await self._wait_for_turn(
+                    ticket,
                     blocking=blocking,
                     cancel_check=cancel_check,
                     deadline=deadline,
                     poll_interval=poll_interval,
                 )
-            except BaseException:
-                predecessor.add_done_callback(lambda _predecessor: self._leave(ticket))
-                raise
-        try:
             yield
         finally:
             self._leave(ticket)
 
     @staticmethod
-    async def _wait_for_predecessor(
-        predecessor: ConcurrentFuture[None],
+    async def _wait_for_turn(
+        ticket: ConcurrentFuture[None],
         *,
         blocking: bool,
         cancel_check: Callable[[], bool] | None,
@@ -104,8 +98,8 @@ class _AsyncTransitionGate:
     ) -> None:
         if not blocking:
             raise _AsyncTransitionUnavailableError
-        waiter = asyncio.wrap_future(predecessor)
-        while not predecessor.done():
+        waiter = asyncio.wrap_future(ticket)
+        while not ticket.done():
             if cancel_check is not None and cancel_check():
                 raise _AsyncTransitionUnavailableError
             if deadline is not None:
@@ -116,11 +110,22 @@ class _AsyncTransitionGate:
                 wait_interval = poll_interval if cancel_check is not None else None
             await asyncio.wait((waiter,), timeout=wait_interval)
 
+    def _join(self) -> ConcurrentFuture[None]:
+        ticket: ConcurrentFuture[None] = ConcurrentFuture()
+        with self._queue_lock:
+            self._queue.append(ticket)
+            if len(self._queue) == 1:
+                ticket.set_result(None)
+        return ticket
+
     def _leave(self, ticket: ConcurrentFuture[None]) -> None:
-        with self._tail_lock:
-            if self._tail is ticket:
-                self._tail = None
-        ticket.set_result(None)
+        with self._queue_lock:
+            # A waiter whose turn came while it was giving up holds the gate too, so it hands it on.
+            held = self._queue[0] is ticket
+            self._queue.remove(ticket)
+            successor = self._queue[0] if held and self._queue else None
+        if successor is not None:
+            successor.set_result(None)
 
 
 @dataclass
