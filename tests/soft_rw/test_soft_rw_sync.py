@@ -1165,6 +1165,54 @@ def test_protocol_tree_swapped_after_an_acquire_is_refused(  # pragma: needs lin
     assert list(target.iterdir()) == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name, through junctions")
+@pytest.mark.parametrize("when", ["before-first-acquire", "after-first-acquire"])
+@pytest.mark.parametrize("swapped", ["gen", "holders"])
+def test_protocol_tree_with_a_junction_is_refused(  # pragma: win32 cover
+    lock_file: str,
+    tmp_path: Path,
+    lock: SoftReadWriteLock,
+    create_junction: Callable[[Path, Path], None],
+    when: str,
+    swapped: str,
+) -> None:
+    root = Path(f"{lock_file}.rw")
+    if when == "after-first-acquire":
+        with lock.write_lock(timeout=2):
+            pass
+        root.rename(tmp_path / "aside")
+    for name in ("gen", "holders"):
+        if name != swapped:
+            (root / name).mkdir(parents=True)
+    (target := tmp_path / "target").mkdir()
+    create_junction(root / swapped, target)
+
+    with pytest.raises(RuntimeError, match="is not a directory or is a symlink"):
+        lock.acquire_write(timeout=0.5)
+    assert list(target.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name")
+def test_protocol_tree_stays_in_place_while_a_record_is_written(  # pragma: win32 cover
+    lock_file: str, tmp_path: Path, lock: SoftReadWriteLock, mocker: MockerFixture
+) -> None:
+    real_write: Final = storage_mod.write_all
+    refused: list[bool] = []
+
+    def try_to_move_the_tree_aside(fd: int, data: bytes) -> None:
+        try:
+            Path(f"{lock_file}.rw").rename(tmp_path / "aside")
+        except PermissionError:
+            refused.append(True)
+        real_write(fd, data)
+
+    mocker.patch.object(storage_mod, "write_all", side_effect=try_to_move_the_tree_aside)
+    with lock.write_lock(timeout=2):
+        pass
+
+    assert (bool(refused), (tmp_path / "aside").exists()) == (True, False)
+
+
 @NEEDS_FOREIGN_STICKY_TMP
 @pytest.mark.usefixtures("directories_of_another_account")
 def test_protocol_directory_of_another_account_is_refused(  # pragma: needs foreign-sticky-tmp

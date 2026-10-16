@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from filelock._soft_rw._protocol import _GENERATIONS_DIRECTORY, _HOLDERS_DIRECTORY, _MAX_RECORD_SIZE
-from filelock._strict import _link_no_follow, _raise_if_hard_links_unsupported
+from filelock._strict import _link_no_follow, _pin_directories, _raise_if_hard_links_unsupported
 from filelock._util import ensure_directory_exists, foreign_directory_owner, write_all
 
 if TYPE_CHECKING:
@@ -166,7 +166,10 @@ class OsFiles:
                 # mkdir has no O_NOFOLLOW, so check what the name resolves to before anything is created inside it.
                 found = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
                 parent = directory.parent.stat() if dir_fd is None else os.fstat(dir_fd)
-            if not stat.S_ISDIR(found.st_mode):
+            if (
+                not stat.S_ISDIR(found.st_mode)
+                or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            ):
                 msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
                 raise RuntimeError(msg)
             owner = foreign_directory_owner(found, parent)
@@ -204,7 +207,14 @@ def _directory(path: str, depth: int = 2) -> Generator[int | None]:
         finally:
             os.close(fd)
     else:
-        yield None
+        # Without dir_fd, hold each of those directories open instead, so none can be renamed or replaced meanwhile.
+        try:
+            pins = _pin_directories(*[Path(path), *Path(path).parents][:depth][::-1])
+        except NotADirectoryError as error:  # pragma: win32 cover
+            msg = f"{error.filename} is not a directory or is a symlink; refusing to use it"
+            raise RuntimeError(msg) from error
+        with pins:
+            yield None
 
 
 def _open(path: str, flags: int) -> int | None:
