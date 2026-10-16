@@ -355,7 +355,7 @@ def _open_or_create_sentinel(
     except FileNotFoundError:
         pass
 
-    _reclaim_sentinel_private_records(path)
+    _reclaim_sentinel_private_records(lock_file, path)
     try:
         publication_cleanup_error = _publish_record(os.fspath(path), _LEGACY_SENTINEL, mode)
     except _PrivateRecordReclaimedError:
@@ -719,13 +719,17 @@ def _private_public_name(private_name: str) -> str | None:
     return public_name
 
 
-def _reclaim_sentinel_private_records(path: Path) -> None:
+def _reclaim_sentinel_private_records(lock_file: str, path: Path) -> None:
     directory_ref = os.fspath(path.parent), None
     now = functools.cache(functools.partial(_filesystem_now, path.parent, path.name))
-    with os.scandir(path.parent) as entries:
-        for entry in entries:
-            if _private_public_name(entry.name) == path.name:
-                _reclaim_private_record(directory_ref, entry.name, now)
+    try:
+        with os.scandir(path.parent) as entries:
+            for entry in entries:
+                if _private_public_name(entry.name) == path.name:
+                    _reclaim_private_record(directory_ref, entry.name, now)
+    except OSError as error:
+        reason = f"cannot reclaim sentinel private records: {error.strerror or error}"
+        raise SoftFileLockProtocolError(lock_file, None, reason) from error
 
 
 def _reclaim_private_record(
