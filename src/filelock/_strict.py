@@ -451,13 +451,14 @@ def _describe_soft_marker(content: str) -> tuple[_OccupantState, str]:
 
 
 def _read_claims(lock_file: str, directory: Path, *, probe_clock: bool) -> tuple[StrictSoftFileClaim, ...]:
-    claims: list[StrictSoftFileClaim] = []
-    for name in _list_claim_names(lock_file, directory, probe_clock=probe_clock):
-        if (name_parts := _parse_claim_name(name)) is None:
+    names: Final = _list_claim_names(lock_file, directory, probe_clock=probe_clock)
+    name_parts: dict[str, tuple[StrictSoftFileClaimState, str]] = {}
+    for name in names:
+        if (parts := _parse_claim_name(name)) is None:
             raise SoftFileLockProtocolError(lock_file, name, "unknown claim name or protocol version")
-        if (record := _read_claim_record(lock_file, directory, name, probe_clock=probe_clock)) is not None:
-            claims.append(_parse_claim(lock_file, name, name_parts, record))
-    return tuple(claims)
+        name_parts[name] = parts
+    records: Final = _read_claim_records(lock_file, directory, names, probe_clock=probe_clock)
+    return tuple(_parse_claim(lock_file, name, name_parts[name], records[name]) for name in names if name in records)
 
 
 def _list_claim_names(lock_file: str, directory: Path, *, probe_clock: bool) -> list[str]:
@@ -469,7 +470,7 @@ def _list_claim_names(lock_file: str, directory: Path, *, probe_clock: bool) -> 
         raise SoftFileLockProtocolError(lock_file, None, reason) from error
 
 
-def _read_claim_record(lock_file: str, directory: Path, name: str, *, probe_clock: bool) -> bytes | None:
+def _read_claim_records(lock_file: str, directory: Path, names: list[str], *, probe_clock: bool) -> dict[str, bytes]:
     # A contended scan can list a claim that is not yet cleanly readable, in two ways that both resolve on a brief
     # retry. Windows fails an open with EACCES while a peer's unlink holds the claim; once the deletion is pending,
     # _attempt_claim_read skips the claim outright, as another process's handle can keep the name listed for seconds.
@@ -477,26 +478,37 @@ def _read_claim_record(lock_file: str, directory: Path, name: str, *, probe_cloc
     # ESTALE rather than a clean ENOENT until the lookup revalidates against the server. Retrying re-runs the path
     # lookup, which turns the vanished claim into ENOENT (skip) or reads it if it still exists. A genuinely unreadable
     # record (a locked-down file, an EIO fault) still fails closed. The grace starts at the first pending result rather
-    # than before the first attempt, so a slow first read cannot use up the window and leave no retry.
+    # than before the first attempt, so a slow first read cannot use up the window and leave no retry. It covers the
+    # whole scan rather than each claim: claims that resolve one after another would otherwise stretch one scan, and
+    # with it the caller's timeout, by a grace per claim.
+    records: dict[str, bytes] = {}
     deadline: float | None = None
     while True:
-        record, pending = _attempt_claim_read(lock_file, directory, name)
-        if pending is None:
-            return record
+        pending: dict[str, OSError] = {}
+        for name in names:
+            record, error = _attempt_claim_read(lock_file, directory, name)
+            if error is not None:
+                pending[name] = error
+            elif record is not None:
+                records[name] = record
+        if not pending:
+            return records
         if deadline is None:
             deadline = time.monotonic() + _CLAIM_READ_GRACE
         elif time.monotonic() >= deadline:
-            if pending.errno == ESTALE:
-                # A stale handle that outlives revalidation is a claim the server no longer has (RFC 1813
-                # NFS3ERR_STALE): skip it like ENOENT. Skipping a peer's vanished claim can only overcount
-                # contention, never free a held lock.
-                return None
-            # Windows can deny opens after a peer removes the claim from the directory.
-            if name not in _list_claim_names(lock_file, directory, probe_clock=probe_clock):
-                return None
-            reason = f"cannot read claim: {pending.strerror or str(pending) or type(pending).__name__}"
-            raise SoftFileLockProtocolError(lock_file, name, reason) from pending
+            break
+        names = list(pending)
         time.sleep(_CLAIM_READ_RETRY)
+    # A stale handle that outlives revalidation is a claim the server no longer has (RFC 1813 NFS3ERR_STALE): skip it
+    # like ENOENT. Skipping a peer's vanished claim can only overcount contention, never free a held lock.
+    if denied := [name for name, error in pending.items() if error.errno != ESTALE]:
+        # Windows can deny opens after a peer removes the claim from the directory.
+        listed: Final = set(_list_claim_names(lock_file, directory, probe_clock=probe_clock))
+        if still_listed := [name for name in denied if name in listed]:
+            error = pending[still_listed[0]]
+            reason = f"cannot read claim: {error.strerror or str(error) or type(error).__name__}"
+            raise SoftFileLockProtocolError(lock_file, still_listed[0], reason) from error
+    return records
 
 
 def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[bytes | None, OSError | None]:
