@@ -63,8 +63,6 @@ _CAPABILITY_MODULES: Final[dict[str, tuple[str, ...]]] = {
     "posix-hard-link": (
         "*/tests/test_read_write_private_link.py",
         "*\\tests\\test_read_write_private_link.py",
-        "*/tests/test_read_write_shared_directory.py",
-        "*\\tests\\test_read_write_shared_directory.py",
     ),
     "hard-link": (
         "*/tests/test_strict_soft*.py",
