@@ -115,6 +115,7 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(
     lock: Final = ReadWriteLock(private / "lock.db", is_singleton=False)
     moved: Final = database.parent / "moved"
     connect: Final = sqlite3.connect
+    before: Final[dict[Path, list[tuple[str, bytes | None]]]] = {moved: _entries(private)}
 
     def replace_then_connect(
         path: str,
@@ -127,6 +128,7 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(
         private.rename(moved)
         private.mkdir(mode=0o700)
         (private / "lock.db").touch()
+        before[private] = _entries(private)
         return connect(
             path,
             check_same_thread=check_same_thread,
@@ -139,7 +141,13 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(
 
     with pytest.raises(OSError, match="replaced while acquiring"):
         lock.acquire_write()
+    # Neither the replacement nor the original gains a journal, a link directory or any bytes.
+    assert {directory: _entries(directory) for directory in before} == before
     assert_read_write_lock_state(str(moved / "lock.db"), "write", available=True)
+
+
+def _entries(directory: Path) -> list[tuple[str, bytes | None]]:
+    return sorted((path.name, path.read_bytes() if path.is_file() else None) for path in directory.iterdir())
 
 
 @pytest.fixture
