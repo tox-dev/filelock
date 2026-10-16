@@ -76,8 +76,8 @@ def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixtur
     # An NFS retransmit can report a link that landed as failed; the target naming the source's file is what counts.
     real_link = storage_mod._link_no_follow
 
-    def link_then_fail(source: str, target: str) -> None:
-        real_link(source, target)
+    def link_then_fail(source: str, target: str, **dir_fds: int | None) -> None:
+        real_link(source, target, **dir_fds)
         raise OSError(EIO, "Input/output error")
 
     mocker.patch.object(storage_mod, "_link_no_follow", side_effect=link_then_fail)
@@ -114,18 +114,18 @@ def test_replace_renames_unless_refused(tmp_path: Path, mocker: MockerFixture, *
     (source := tmp_path / "source").write_bytes(b"new")
     (target := tmp_path / "target").write_bytes(b"old")
     if refused:
-        mocker.patch.object(storage_mod.Path, "replace", autospec=True, side_effect=PermissionError("in use"))
+        mocker.patch.object(storage_mod.os, "replace", autospec=True, side_effect=PermissionError("in use"))
     replaced = OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
     assert (replaced, target.read_bytes(), source.exists()) == (not refused, b"old" if refused else b"new", refused)
 
 
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(Path, "unlink", side_effect=PermissionError("held open"))
+    mocker.patch.object(storage_mod.os, "unlink", side_effect=PermissionError("held open"))
     OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
 
 
 def test_unlink_other_errors_propagate(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(Path, "unlink", side_effect=OSError(EIO, "Input/output error"))
+    mocker.patch.object(storage_mod.os, "unlink", side_effect=OSError(EIO, "Input/output error"))
     with pytest.raises(OSError, match="Input/output error"):
         OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
 

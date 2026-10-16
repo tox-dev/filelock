@@ -1142,6 +1142,29 @@ def test_symlinked_protocol_directory_is_refused(
     assert list(victim_dir.iterdir()) == []
 
 
+@pytest.mark.skipif(
+    not (CAPABILITIES["symlink"] and CAPABILITIES["link-dir-fd"]),
+    reason="swapping in a symlinked directory is refused only where records are reached through descriptors",
+)
+@pytest.mark.parametrize("swapped", ["gen", "holders"])
+def test_protocol_tree_swapped_after_an_acquire_is_refused(  # pragma: needs link-dir-fd
+    lock_file: str, tmp_path: Path, lock: SoftReadWriteLock, swapped: str
+) -> None:
+    with lock.write_lock(timeout=2):
+        pass
+    # Whoever can write the lock's directory can rename the checked tree aside and put one in its place.
+    (root := Path(f"{lock_file}.rw")).rename(tmp_path / "aside")
+    for name in ("gen", "holders"):
+        (root / name).mkdir(parents=True)
+    (root / swapped).rmdir()
+    (root / swapped).symlink_to(target := tmp_path / "target", target_is_directory=True)
+    target.mkdir()
+
+    with pytest.raises(RuntimeError, match="is not a directory or is a symlink"):
+        lock.acquire_write(timeout=0.5)
+    assert list(target.iterdir()) == []
+
+
 @NEEDS_FOREIGN_STICKY_TMP
 @pytest.mark.usefixtures("directories_of_another_account")
 def test_protocol_directory_of_another_account_is_refused(  # pragma: needs foreign-sticky-tmp
