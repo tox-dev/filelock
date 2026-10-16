@@ -28,6 +28,7 @@ from filelock._soft_rw._protocol import GenerationLog, Participant, Snapshot, en
 from filelock._soft_rw._storage import OsFiles
 from tests.capability_marks import (
     NEEDS_FILE_MODE,
+    NEEDS_FOREIGN_STICKY_TMP,
     NEEDS_FORK,
     NEEDS_POSIX_SIGNALS,
     NEEDS_SYMLINK,
@@ -1139,6 +1140,21 @@ def test_symlinked_protocol_directory_is_refused(
     with pytest.raises(RuntimeError, match="not a directory or is a symlink"):
         lock.acquire_read(timeout=0.5)
     assert list(victim_dir.iterdir()) == []
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.usefixtures("directories_of_another_uid")
+def test_protocol_directory_of_another_uid_is_refused(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path,
+) -> None:
+    (root := Path(f"{lock_path_in_shared_tmp}.rw")).mkdir()
+    lock = SoftReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
+    try:
+        with pytest.raises(RuntimeError, match="who can remove the records in it"):
+            lock.acquire_write(timeout=0)
+    finally:
+        lock.close()
+    assert list(root.iterdir()) == []
 
 
 def test_protocol_path_as_regular_file_is_refused(lock_file: str, lock: SoftReadWriteLock) -> None:

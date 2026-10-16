@@ -23,7 +23,12 @@ import filelock._strict
 from filelock import MarkerSoftFileLock, SoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock, Timeout
 from filelock._identity import host_name
 from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_link_follow_symlinks, _relative_identity
-from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.capability_marks import (
+    NEEDS_COLLECTED_FINALIZATION,
+    NEEDS_FOREIGN_STICKY_TMP,
+    NEEDS_SYMLINK,
+    NEEDS_UNLINK_OPEN_FILE,
+)
 
 # These cases inject a failure into a directory-fd cleanup step or the reaper race, both of which only run where the
 # protocol uses dir_fd descriptors. Without dir_fd those branches never execute and the injected fault never fires; the
@@ -1338,6 +1343,18 @@ def test_strict_soft_symlinked_protocol_directory_is_neither_listed_nor_broken(t
     assert claim.exists()
 
 
+@NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.usefixtures("directories_of_another_uid")
+def test_strict_soft_refuses_coordination_directory_of_another_uid(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path,
+) -> None:
+    (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()
+
+    with pytest.raises(SoftFileLockProtocolError, match="who can remove the claims published in it"):
+        StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0).acquire()
+    assert list(coordination.iterdir()) == []
+
+
 @pytest.fixture
 def lock_path(tmp_path: Path) -> Path:
     _initialize_protocol(path := tmp_path / "resource.lock")
@@ -1566,14 +1583,12 @@ def test_strict_soft_private_inspection_failure_unlinks_vanished_record(tmp_path
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     real_fstat = os.fstat
-    fstats = 0
 
     def fail_private_inspection(fd: int) -> os.stat_result:
-        nonlocal fstats
-        fstats += 1
-        if fstats == 3:
+        # Only the private record is still an empty regular file when it is inspected; the sentinel holds its record.
+        if stat.S_ISREG((found := real_fstat(fd)).st_mode) and found.st_size == 0:
             raise OSError(EIO, "private inspection failed")
-        return real_fstat(fd)
+        return found
 
     mocker.patch("filelock._strict.os.fstat", side_effect=fail_private_inspection)
     mocker.patch("filelock._strict._unlink_relative", side_effect=FileNotFoundError(ENOENT, "record gone"))

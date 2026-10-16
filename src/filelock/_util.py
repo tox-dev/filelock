@@ -83,6 +83,27 @@ def ensure_directory_exists(filename: Path | str) -> None:
     Path(filename).parent.mkdir(parents=True, exist_ok=True)
 
 
+def foreign_directory_owner(directory: os.stat_result, parent: os.stat_result) -> int | None:
+    """
+    Name the other UID that controls a directory a lock found already in place, under a sticky parent.
+
+    A lock that keeps its ownership records in a directory relies on nobody else removing them. Under a sticky parent
+    such as ``/tmp``, other UIDs cannot rename this UID's directory away, so that holds while the directory belongs to
+    this UID or to the parent's owner. If a different UID created it first, that UID can remove every record in it.
+    Without the sticky bit, any process that can create the directory can also rename this UID's own one away, so
+    refusing it there would protect nothing. Linux applies the same rule for ``fs.protected_regular``.
+
+    :param directory: ``lstat`` of the directory found in place.
+    :param parent: ``stat`` of the directory that holds it.
+
+    :returns: the owner's UID when a different UID controls the directory, otherwise ``None``.
+
+    """
+    if sys.platform != "win32" and parent.st_mode & stat.S_ISVTX:  # pragma: needs foreign-sticky-tmp
+        return None if directory.st_uid in {os.geteuid(), parent.st_uid} else directory.st_uid
+    return None
+
+
 def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> None:
     """
     Remove the lock file a caller found stale with modification time *mtime_before* and inode *ino_before*.
@@ -147,6 +168,7 @@ _SUPPORTS_UTIME_NOFOLLOW: Final[bool] = os.utime in os.supports_follow_symlinks
 __all__ = [
     "break_lock_file",
     "ensure_directory_exists",
+    "foreign_directory_owner",
     "raise_on_not_writable_file",
     "touch",
     "write_all",

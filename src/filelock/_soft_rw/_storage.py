@@ -22,7 +22,7 @@ from typing import Final
 
 from filelock._soft_rw._protocol import _GENERATIONS_DIRECTORY, _HOLDERS_DIRECTORY, _MAX_RECORD_SIZE
 from filelock._strict import _link_no_follow, _raise_if_hard_links_unsupported
-from filelock._util import ensure_directory_exists, write_all
+from filelock._util import ensure_directory_exists, foreign_directory_owner, write_all
 
 _O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
 #: Windows opens descriptors in text mode by default, which rewrites newlines; every record here is exact bytes.
@@ -134,9 +134,13 @@ class OsFiles:
             with suppress(FileExistsError):
                 directory.mkdir(mode=0o700)
             # mkdir has no O_NOFOLLOW, so check what the name resolves to before anything is created inside it.
-            mode = directory.lstat().st_mode
-            if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            found = directory.lstat()
+            if not stat.S_ISDIR(found.st_mode):
                 msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
+                raise RuntimeError(msg)
+            owner = foreign_directory_owner(found, directory.parent.stat())
+            if owner is not None:  # pragma: needs foreign-sticky-tmp
+                msg = f"{directory} belongs to UID {owner}, who can remove the records in it; refusing to use it"
                 raise RuntimeError(msg)
         self._prepared = True
 

@@ -13,6 +13,7 @@ import gc
 import os
 import signal
 import socket
+import stat
 import sys
 import tempfile
 import time
@@ -298,6 +299,18 @@ def _unreadable_file() -> Generator[Path]:
             probe.chmod(0o600)
 
 
+def _has_a_sticky_tmp_of_another_user() -> bool:
+    # A lock refuses a protocol directory a different UID owns only under a sticky parent whose owner is not this UID.
+    # /tmp is that parent on Linux and macOS, unless the suite runs as the user who owns it.
+    if sys.platform == "win32":
+        return False
+    try:
+        tmp: Final = Path("/tmp").stat()  # ruff:ignore[hardcoded-temp-file]  # the shared directory is the subject
+    except OSError:
+        return False
+    return bool(tmp.st_mode & stat.S_ISVTX) and tmp.st_uid != os.geteuid()
+
+
 def _fd_directory_names_the_file() -> bool:
     # Mirrors the view ReadWriteLock connects through. SQLite reuses a descriptor it deferred closing only when stat of
     # the name it opened reports the file itself; macOS's /dev/fd reports devfs instead.
@@ -342,6 +355,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "fd-directory": any(Path(view).is_dir() for view in ("/dev/fd", "/proc/self/fd")),
     "fd-directory-names-file": _fd_directory_names_the_file(),
     "fifo": hasattr(os, "mkfifo"),
+    "foreign-sticky-tmp": _has_a_sticky_tmp_of_another_user(),
     "af-unix": hasattr(socket, "AF_UNIX"),
     # Distinct from "symlink": a runtime can create them yet still not refuse to follow one.
     "o-nofollow": _refuses_to_open_a_symlink(),
