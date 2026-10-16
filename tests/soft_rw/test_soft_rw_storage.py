@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
 from filelock._soft_rw import _storage as storage_mod
@@ -27,7 +29,7 @@ pytestmark = pytest.mark.requires_hard_links
     ("call", "expected"),
     [
         pytest.param(lambda files, path: files.read(path), None, id="read"),
-        pytest.param(lambda files, path: files.overwrite(path, b"data"), False, id="overwrite"),
+        pytest.param(lambda files, path: files.overwrite(path, b"data", (0, 0)), False, id="overwrite"),
         pytest.param(lambda files, path: files.listdir(path), [], id="listdir"),
     ],
 )
@@ -39,7 +41,7 @@ def test_missing_path_returns_default(tmp_path: Path, call: Callable[[OsFiles, s
     "call",
     [
         pytest.param(lambda files, path: files.read(path), id="read"),
-        pytest.param(lambda files, path: files.overwrite(path, b"data"), id="overwrite"),
+        pytest.param(lambda files, path: files.overwrite(path, b"data", (0, 0)), id="overwrite"),
     ],
 )
 def test_open_other_errors_propagate(
@@ -117,6 +119,48 @@ def test_replace_renames_unless_refused(tmp_path: Path, mocker: MockerFixture, *
         mocker.patch.object(storage_mod.os, "replace", autospec=True, side_effect=PermissionError("in use"))
     replaced = OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
     assert (replaced, target.read_bytes(), source.exists()) == (not refused, b"old" if refused else b"new", refused)
+
+
+def test_overwrite_rewrites_the_record_it_created(tmp_path: Path) -> None:
+    files = OsFiles(str(tmp_path / "x.lock"))
+    identity = files.create(str(record := tmp_path / "record"), b"old")
+
+    assert (files.overwrite(str(record), b"new", identity), record.read_bytes()) == (True, b"new")
+
+
+@pytest.mark.parametrize("swap", [pytest.param("link", id="hard-link"), pytest.param("rename", id="rename")])
+def test_overwrite_spares_a_file_swapped_in_for_the_record(tmp_path: Path, swap: str) -> None:
+    # Whoever can write the directory can put another of this user's files under the record's name; it opens for
+    # writing like the record would.
+    files = OsFiles(str(tmp_path / "x.lock"))
+    identity = files.create(str(record := tmp_path / "record"), b"old")
+    (private := tmp_path / "private").write_bytes(b"private")
+    record.unlink()
+    getattr(os, swap)(private, record)
+
+    assert (files.overwrite(str(record), b"new", identity), record.read_bytes()) == (False, b"private")
+
+
+def test_overwrite_spares_a_record_with_a_second_name(tmp_path: Path) -> None:
+    files = OsFiles(str(tmp_path / "x.lock"))
+    identity = files.create(str(record := tmp_path / "record"), b"old")
+    os.link(record, tmp_path / "private")
+
+    assert (files.overwrite(str(record), b"new", identity), record.read_bytes()) == (False, b"old")
+
+
+@pytest.mark.skipif(not CAPABILITIES["fifo"], reason="needs os.mkfifo")
+@pytest.mark.parametrize("reader", [pytest.param(False, id="no-reader"), pytest.param(True, id="reader")])
+def test_overwrite_does_not_block_on_a_fifo(tmp_path: Path, *, reader: bool) -> None:  # pragma: needs fifo
+    files = OsFiles(str(tmp_path / "x.lock"))
+    identity = files.create(str(record := tmp_path / "record"), b"old")
+    record.unlink()
+    assert sys.platform != "win32"  # skipped there; narrows os.mkfifo and os.O_NONBLOCK for the type checker
+    os.mkfifo(record)
+    with contextlib.ExitStack() as stack:
+        if reader:
+            stack.callback(os.close, os.open(record, os.O_RDONLY | os.O_NONBLOCK))
+        assert files.overwrite(str(record), b"new", identity) is False
 
 
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:

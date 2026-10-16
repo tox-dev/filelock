@@ -9,7 +9,7 @@ import stat
 import sys
 import time
 from contextlib import contextmanager, suppress
-from errno import ELOOP, ENOENT, ENOTDIR, ESTALE
+from errno import ELOOP, ENOENT, ENOTDIR, ENXIO, ESTALE
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -62,19 +62,21 @@ class OsFiles:
             os.close(fd)
 
     @classmethod
-    def create(cls, path: str, data: bytes, *, durable: bool = False) -> None:
+    def create(cls, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
         with _relative(path) as (name, dir_fd):
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, 0o600, dir_fd=dir_fd)
         try:
             write_all(fd, data)
             if durable:
                 os.fsync(fd)
+            created = os.fstat(fd)
         except BaseException:
             os.close(fd)
             # The name is unique to this call, so removing it cannot take a record from anyone else.
             cls.unlink(path)
             raise
         os.close(fd)
+        return created.st_dev, created.st_ino
 
     def link(self, source: str, target: str) -> bool:
         failure: NotImplementedError | OSError | None = None
@@ -108,10 +110,23 @@ class OsFiles:
         return True
 
     @staticmethod
-    def overwrite(path: str, data: bytes) -> bool:
-        if (fd := _open(path, os.O_WRONLY | _O_NOFOLLOW | _O_BINARY)) is None:
+    def overwrite(path: str, data: bytes, identity: tuple[int, int]) -> bool:
+        # O_NONBLOCK keeps an open of a FIFO put at the path from blocking, as in read; with no reader it fails ENXIO.
+        try:
+            fd = _open(path, os.O_WRONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)
+        except OSError as error:
+            if error.errno != ENXIO:
+                raise
+            return False  # pragma: needs fifo
+        if fd is None:
             return False
         try:
+            # O_NOFOLLOW refuses a symlink, not a hard link or another file renamed over the name, and a write through
+            # either lands in a file that is not the record. Nothing links a holder record, so a second name also gives
+            # away a file that only inherited the removed record's inode number.
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != identity or opened.st_nlink != 1:
+                return False
             write_all(fd, data)
         finally:
             os.close(fd)

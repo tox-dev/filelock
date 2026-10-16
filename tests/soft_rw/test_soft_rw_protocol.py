@@ -788,6 +788,23 @@ def test_heartbeat_reports_the_refresh_error(lock_file: str, files: OsFiles, moc
     assert writer.heartbeat() == ("transient", error)
 
 
+def test_heartbeat_without_a_published_record_is_lost(lock_file: str, files: OsFiles) -> None:
+    assert _participant(files, lock_file, "write").heartbeat() == ("lost", None)
+
+
+@pytest.mark.requires_hard_links
+def test_heartbeat_leaves_a_file_linked_over_the_holder_record_alone(lock_file: str, files: OsFiles, root: str) -> None:
+    # Whoever can write holders/ can rename a hard link to another of the holder's files over its record.
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    (private := Path(f"{lock_file}.private")).write_bytes(b"private")
+    os.link(private, linked := Path(root, "holders", "linked"))
+    linked.replace(Path(root, "holders", writer.token))
+    assert writer.advance()
+
+    assert (writer.heartbeat(), private.read_bytes()) == (("lost", None), b"private")
+
+
 _STALE_THRESHOLD: Final[float] = 1.0
 _HEARTBEAT: Final[float] = 0.3
 _POLL: Final[float] = 0.1
@@ -902,12 +919,13 @@ class _MemoryFiles:
         self._scheduler.yield_turn()
         return self.files.get(_key(path))
 
-    def create(self, path: str, data: bytes, *, durable: bool = False) -> None:  # ruff:ignore[unused-method-argument]  # memory has no storage to flush
+    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:  # ruff:ignore[unused-method-argument]  # memory has no storage to flush
         self._scheduler.yield_turn()
         if _key(path) in self.files:  # pragma: no cover  # every name created here is a fresh token
             raise FileExistsError(path)
         self.files[_key(path)] = data
         self._record()
+        return 0, 0
 
     def link(self, source: str, target: str) -> bool:
         self._scheduler.yield_turn()
@@ -923,7 +941,7 @@ class _MemoryFiles:
         self._record()
         return True
 
-    def overwrite(self, path: str, data: bytes) -> bool:
+    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:  # ruff:ignore[unused-method-argument]  # nothing here swaps one file for another
         self._scheduler.yield_turn()
         if (
             _key(path) not in self.files
