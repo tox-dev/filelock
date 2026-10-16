@@ -411,8 +411,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         :param force: if ``True``, release the lock completely regardless of the current lock level
 
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if a write lock is held by
-            another thread and *force* is ``False``
+        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if the calling thread holds no
+            level of the current lock and *force* is ``False``
 
         """
         if self._creator_pid != os.getpid():  # pragma: forked child
@@ -424,22 +424,11 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                     return
                 msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
                 raise RuntimeError(msg)
-            # Another thread's release would leave the generation log under the writer and let a peer in. The hold's
-            # own heartbeat thread may release it, since on_compromise runs there.
-            if (
-                not force
-                and hold.mode == "write"
-                and (cur := threading.get_ident()) not in {hold.write_thread_id, hold.heartbeat_thread.ident}
-            ):
-                msg = (
-                    f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
-                    f"from thread {cur} while it is held by thread {hold.write_thread_id}"
-                )
-                raise RuntimeError(msg)
             if force:
                 hold.level = 0
             else:
-                hold.level -= 1
+                self._raise_if_not_holder(hold, cur := threading.get_ident())
+                hold.leave_one_level(cur)
             if hold.level > 0:
                 return
             self._hold = None
@@ -454,6 +443,25 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         finally:
             # The hold is already gone from this instance, so a join that raises must not strand its record too.
             hold.participant.leave()
+
+    def _raise_if_not_holder(self, hold: _Hold, thread_id: int) -> None:
+        # The hold's own heartbeat thread may release it, since on_compromise runs there.
+        if thread_id == hold.heartbeat_thread.ident:
+            return
+        # Another thread's release would leave the generation log under the holder and let a peer in.
+        if hold.mode == "write" and thread_id != hold.write_thread_id:
+            msg = (
+                f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id} while it is held by thread {hold.write_thread_id}"
+            )
+            raise RuntimeError(msg)
+        # Readers share one participant, so a thread that holds no read level would end another's hold.
+        if hold.mode == "read" and thread_id not in hold.read_depths:
+            msg = (
+                f"Cannot release read lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id}, which does not hold it"
+            )
+            raise RuntimeError(msg)
 
     def _acquire(
         self,
@@ -529,6 +537,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             level=1,
             mode=mode,
             write_thread_id=threading.get_ident() if mode == "write" else None,
+            read_depths={threading.get_ident(): 1} if mode == "read" else {},
             participant=participant,
             heartbeat_thread=_HeartbeatThread(
                 refresh=lambda: self._refresh(participant, hold),
@@ -578,6 +587,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 f"from thread {cur} while it is held by thread {hold.write_thread_id}"
             )
             raise RuntimeError(msg)
+        if mode == "read":
+            cur = threading.get_ident()
+            hold.read_depths[cur] = hold.read_depths.get(cur, 0) + 1
         hold.level += 1
         return AcquireReturnProxy(lock=self)
 
@@ -701,10 +713,20 @@ class _Hold:
     level: int
     mode: Mode
     write_thread_id: int | None
+    #: Read levels per thread, so a thread can give back only the levels it took.
+    read_depths: dict[int, int]
     participant: Participant
     heartbeat_thread: _HeartbeatThread
     heartbeat_stop: threading.Event
     last_refresh: float
+
+    def leave_one_level(self, thread_id: int) -> None:
+        self.level -= 1
+        if self.mode == "read":
+            # The heartbeat thread holds no level of its own, so its release gives back one of a reader's.
+            owner = thread_id if thread_id in self.read_depths else next(iter(self.read_depths))
+            if depth := self.read_depths.pop(owner) - 1:
+                self.read_depths[owner] = depth
 
 
 def _cleanup_all_instances() -> None:  # pragma: no cover - runs from atexit at interpreter shutdown

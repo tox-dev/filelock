@@ -630,9 +630,9 @@ expired holder can resume:
         # A store that rejects a lower generation than the highest it accepted refuses an evicted holder that resumes.
         store.write(payload, fence=rw.generation)
 
-As with ``ReadWriteLock``, ``release()`` of a write lock from another thread raises ``RuntimeError``. ``on_compromise``
-runs on the hold's own heartbeat thread, so it may release, and ``release(force=True)`` and ``close()`` work from any
-thread.
+As with ``ReadWriteLock``, ``release()`` of a write lock from another thread raises ``RuntimeError``, and so does
+``release()`` from a thread that holds no level of a shared read lock. ``on_compromise`` runs on the hold's own heartbeat
+thread, so it may release, and ``release(force=True)`` and ``close()`` work from any thread.
 
 ``timeout`` and ``blocking`` set instance-wide defaults that each acquisition inherits. Passing ``None`` per call means
 "use the instance default", which is not the same as ``-1``:

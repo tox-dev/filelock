@@ -901,8 +901,9 @@ def test_singleton_rejects_a_different_on_compromise(lock_file: str) -> None:
         first.close()
 
 
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.parametrize("force", [pytest.param(True, id="force"), pytest.param(False, id="plain")])
-def test_release_from_on_compromise_leaves_cleanly(lock_file: str, force: bool) -> None:
+def test_release_from_on_compromise_leaves_cleanly(lock_file: str, force: bool, mode: Literal["read", "write"]) -> None:
     # The callback runs on the heartbeat thread; a release there has no thread to join and must still leave.
     lock = SoftReadWriteLock(
         lock_file,
@@ -912,7 +913,7 @@ def test_release_from_on_compromise_leaves_cleanly(lock_file: str, force: bool) 
         poll_interval=0.02,
         on_compromise=lambda _compromise: lock.release(force=force),
     )
-    lock.acquire_write(timeout=2)
+    (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=2)
     hold = lock._hold
     assert hold is not None
     try:
