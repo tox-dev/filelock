@@ -233,7 +233,9 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     <filelock.SoftFileLock>` and emits a warning, unless constructed with ``fallback_to_soft=False``. Before switching
     it removes the empty file only if this acquire created it. It does so while still holding the file open, with the
     exchange a stale break uses, so a peer's marker that replaced it is put back rather than deleted. A file that
-    already existed may be another process's soft marker, so it stays and the soft lock waits on it.
+    already existed may be another process's soft marker, so it stays and the soft lock waits on it. An empty file there
+    reads as a holder that recorded nothing, as a release before 3.22 writes. A leftover one therefore waits for
+    ``timeout``, ``lifetime`` or ``break_lock()``.
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,
@@ -594,9 +596,12 @@ cannot expire a live claim. In exchange a contender that first sees a long-aband
 Malformed and legacy markers
 ============================
 
-A soft lock treats a record it cannot parse as malformed, not as a holder. A plain :class:`SoftFileLock
-<filelock.SoftFileLock>` self-heals a malformed marker once it has watched it stay unchanged for a short grace window on
-its own monotonic clock, which absorbs the brief gap between creating a marker and writing its record.
+A soft lock treats a record it cannot parse as malformed, not as a holder. An empty marker is the exception: it is the
+whole marker of a :class:`SoftFileLock <filelock.SoftFileLock>` before 3.22, held for as long as its owner runs, and
+also what a current acquirer shows before it writes its record. A contender therefore waits on it like on any live
+holder. A plain :class:`SoftFileLock <filelock.SoftFileLock>` self-heals any other malformed marker once it has watched
+it stay unchanged for a short grace window on its own monotonic clock, which absorbs the brief gap between creating a
+marker and writing its record.
 
 It tells markers apart by modification time, inode number and change time (the time the kernel last changed the file's
 metadata). An owner can set a file's modification time, and ext4 hands a freed inode number to the next file, but no
@@ -684,10 +689,12 @@ Every platform records the holder's PID, hostname, and a process start token in 
 only when the recorded owner is provably gone. A PID that no longer exists is gone; a live PID whose start token differs
 is a recycled PID, so the process that wrote the marker is gone; a live PID whose token still matches, a token that
 cannot be read, and a marker from another host all read as held. The start token is ``kill(pid, 0)`` plus the
-``starttime`` from ``/proc/<pid>/stat`` folded with the boot id on Linux, ``sysctl`` process start time on macOS, and the
-``GetProcessTimes`` creation time on Windows. A malformed or unparsable record follows a separate rule: a waiter may
-remove it once it has seen it unchanged for two seconds, so a half-written marker never wedges acquisition. This is the
-rule PostgreSQL, Qt ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
+``starttime`` from ``/proc/<pid>/stat`` folded with the boot id on Linux, ``sysctl`` process start time on macOS, and
+the ``GetProcessTimes`` creation time on Windows.
+
+A malformed or unparsable record follows a separate rule: a waiter may remove it once it has seen it unchanged for two
+seconds, so a half-written marker never wedges acquisition. An empty marker is the exception and always reads as held.
+This is the rule PostgreSQL, Qt ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
 
 Two Linux processes do not always read the same token for one task. Since Linux 5.6 the kernel adds the reader's
 boottime offset (the shift a time namespace applies to the boot clock) to ``starttime``. A process in a time namespace

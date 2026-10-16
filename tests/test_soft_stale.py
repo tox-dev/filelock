@@ -168,11 +168,28 @@ def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixt
     _assert_times_out(lock_path)
 
 
+@pytest.mark.usefixtures("unchanged_past_grace")
+@pytest.mark.parametrize("lock_type", [SoftFileLock, MarkerSoftFileLock, SoftFileLease])
+def test_empty_lock_not_evicted_when_old(lock_path: Path, lock_type: type[SoftFileLock]) -> None:
+    # A SoftFileLock before 3.22 writes nothing into its marker and holds it for as long as it runs.
+    lock_path.write_bytes(b"")
+    contender: Final = lock_type(lock_path)
+    for _ in range(2):
+        with pytest.raises(Timeout):
+            contender.acquire(blocking=False)
+    assert lock_path.read_bytes() == b""
+
+
+def test_timeout_names_an_owner_that_recorded_no_pid(lock_path: Path) -> None:
+    lock_path.write_bytes(b"")
+    with pytest.raises(Timeout, match="held by an owner that recorded no PID"):
+        SoftFileLock(lock_path).acquire(blocking=False)
+
+
 @pytest.mark.parametrize(
     "content",
     [
         pytest.param(b"not-a-pid\n", id="malformed"),
-        pytest.param(b"", id="empty"),
         pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), id="oversized"),
         pytest.param(b"not-a-pid\nhostname\n", id="two_line_bad_pid"),
         pytest.param(f"{_DEAD_PID}\nhostname\nnot-a-token\n".encode(), id="three_line_bad_start_token"),
@@ -182,7 +199,7 @@ def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixt
 @pytest.mark.usefixtures("unchanged_past_grace")
 def test_unparseable_lock_evicted_when_old(lock_path: Path, content: bytes) -> None:
     lock_path.write_bytes(content)
-    # An unreadable lock (bad line count, non-integer pid/start token, empty, or oversized) must self-heal
+    # An unreadable lock (bad line count, non-integer pid/start token, or oversized) must self-heal
     # instead of staying stuck; a matching line count alone does not make a file well-formed.
     _assert_self_heals(lock_path)
 
@@ -206,7 +223,7 @@ def test_unparseable_lock_changed_under_its_old_mtime_and_inode_not_evicted(  # 
     lock_path: Path,
 ) -> None:
     # Another file can repeat both: its owner sets the mtime, and ext4 hands a freed inode number to the next file.
-    lock_path.write_bytes(b"")
+    lock_path.write_bytes(b"not-a-pid\n")
     watched: Final = lock_path.stat()
     contender: Final = SoftFileLock(lock_path)
     with pytest.raises(Timeout):
