@@ -365,7 +365,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         poll_interval: float,
         start_time: float,
     ) -> AsyncAcquireReturnProxy:
-        async with self._context.transition_gate.hold_for_acquire(
+        async with self._async_context.transition_gate.hold_for_acquire(
             blocking=blocking,
             cancel_check=cancel_check,
             deadline=None if timeout < 0 else start_time + timeout,
@@ -524,7 +524,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """
         if self._creator_pid != os.getpid() or not self.is_locked:
             return
-        async with self._context.transition_gate.hold():
+        async with self._async_context.transition_gate.hold():
             await self._release_serialized(force=force)
 
     async def _release_serialized(self, *, force: bool) -> None:
