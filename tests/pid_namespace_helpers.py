@@ -18,7 +18,7 @@ def pin_pid_namespace(mocker: MockerFixture, namespace: int | OSError) -> None:
     _pin_namespace(mocker, Path("/proc/self/ns/pid"), namespace)
 
 
-def pin_time_namespace(
+def pin_time_namespace(  # pragma: linux cover
     mocker: MockerFixture, namespace: int | OSError, offsets: str | OSError, *, for_children: int | None = None
 ) -> None:
     """

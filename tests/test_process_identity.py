@@ -38,7 +38,7 @@ _BOOTTIME_UNSHIFTED: Final[str] = "monotonic           0         0\nboottime    
 
 
 @pytest.fixture
-def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:
+def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:  # pragma: linux cover
     """Re-import the identity module as a process that cannot read the boot id, as under systemd's ProcSubset=pid."""
 
     def hide() -> None:
@@ -219,7 +219,7 @@ def test_owner_is_stale_recycled_pid_boot_id_hidden_from_one_side_reclaimed(
 
 
 @pytest.fixture
-def owner_in_another_namespace(mocker: MockerFixture) -> None:
+def owner_in_another_namespace(mocker: MockerFixture) -> None:  # pragma: linux cover
     # An older release in a container recorded its in-container PID; this process stands in for it, its innermost PID
     # being the recorded one.
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
