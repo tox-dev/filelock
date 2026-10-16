@@ -104,7 +104,9 @@ else:  # pragma: win32 no cover
             # winner: nothing tells a lock file from another file of ours renamed or hard-linked to the lock path, so a
             # file already there is locked as found. O_EXCL tells whether this attempt made the inode: only then does it
             # get the explicit mode, and the ENOSYS fallback removes only its own placeholder, never a peer's marker.
-            open_flags = os.O_RDWR
+            # O_NONBLOCK: a Linux lease its owner holds on the file would otherwise put the open to sleep in the kernel
+            # for up to fs.lease-break-time, out of reach of timeout, blocking=False and cancel_check.
+            open_flags = os.O_RDWR | os.O_NONBLOCK
             if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
                 open_flags |= o_nofollow
             open_mode = self._open_mode()
@@ -127,6 +129,8 @@ else:  # pragma: win32 no cover
                 return os.open(self._lock_path, open_flags, open_mode), False
             except FileNotFoundError:
                 return None  # unlinked since the create attempt; let the retry loop start over
+            except BlockingIOError:
+                return None  # the lease is breaking; contention, so the retry loop keeps the caller's deadline
 
         def _switch_to_soft_lock(self, fd: int, missing_flock: OSError, *, created: bool) -> None:
             # The filesystem does not implement flock. Fail closed when the caller opted out of existence-lock

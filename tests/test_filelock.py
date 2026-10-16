@@ -1872,6 +1872,59 @@ def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: M
     lock.release()
 
 
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_existing_lock_file_open_that_would_block_is_contention(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock_path.touch()
+    real_open = os.open
+
+    def open_would_block(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if not flags & os.O_CREAT and "test.lock" in path:
+            raise BlockingIOError(EWOULDBLOCK, "Resource temporarily unavailable", path)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("os.open", side_effect=open_would_block)
+    with pytest.raises(Timeout):
+        FileLock(str(lock_path), is_singleton=False).acquire(timeout=0)
+
+
+_NEEDS_FILE_LEASE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["file-lease"], reason="leasing the lock file needs Linux F_SETLEASE on a filesystem that grants it"
+)
+
+
+@pytest.fixture
+def leased_lock_path(tmp_path: Path) -> Iterator[Path]:  # pragma: needs file-lease
+    # typeshed hides fcntl's members off POSIX, so state the invariant the capability gate already enforces.
+    assert sys.platform != "win32"
+    import fcntl
+
+    lock_path = tmp_path / "test.lock"
+    # The kernel asks the holder to give the lease up with SIGIO, which kills by default; ignoring it keeps the lease
+    # for fs.lease-break-time, which is how long a blocking open would sleep.
+    previous_handler = signal.signal(signal.SIGIO, signal.SIG_IGN)
+    lease_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT)
+    try:
+        fcntl.fcntl(lease_fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)
+        yield lock_path
+    finally:
+        os.close(lease_fd)
+        signal.signal(signal.SIGIO, previous_handler)
+
+
+@_NEEDS_FILE_LEASE  # pragma: needs file-lease
+@pytest.mark.parametrize(
+    ("timeout", "blocking"), [pytest.param(0.1, True, id="timeout"), pytest.param(-1, False, id="non-blocking")]
+)
+def test_lease_on_lock_file_does_not_outlast_deadline(
+    leased_lock_path: Path, timeout: float, *, blocking: bool
+) -> None:
+    started = time.monotonic()
+    with pytest.raises(Timeout):
+        FileLock(str(leased_lock_path), is_singleton=False).acquire(timeout=timeout, blocking=blocking)
+    assert time.monotonic() - started < 5
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_cancel_check_triggers(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
@@ -2557,6 +2610,74 @@ def test_windows_owner_only_mode_keeps_out_the_directory_acl(
         ).stdout
     # icacls marks each entry the directory handed down with (I), whatever the display language.
     assert (b"(I)" in acl) is inherits
+
+
+@pytest.fixture
+def oplocked_lock_path(tmp_path: Path) -> Iterator[Path]:  # pragma: win32 cover
+    # The marker skips the run off Windows; this only narrows ctypes.WinDLL for ty.
+    assert sys.platform == "win32"
+    import ctypes
+    from ctypes import wintypes
+
+    class Overlapped(ctypes.Structure):
+        _fields_ = (
+            ("Internal", ctypes.c_void_p),
+            ("InternalHigh", ctypes.c_void_p),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = kernel32.CreateEventW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.DeviceIoControl.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.POINTER(Overlapped),
+    ]
+    lock_path = tmp_path / "a"
+    lock_path.touch()
+    generic_read, share_read_write, open_existing, flag_overlapped = 0x80000000, 0x1 | 0x2, 3, 0x40000000
+    handle = kernel32.CreateFileW(
+        str(lock_path), generic_read, share_read_write, None, open_existing, flag_overlapped, None
+    )
+    overlapped = Overlapped(hEvent=kernel32.CreateEventW(None, True, False, None))
+    try:
+        # FSCTL_REQUEST_OPLOCK_LEVEL_1 pends while granted: a read handle is enough to make every other open wait.
+        assert not kernel32.DeviceIoControl(handle, 0x00090000, None, 0, None, 0, None, ctypes.byref(overlapped))
+        assert ctypes.get_last_error() == 997  # ERROR_IO_PENDING
+        yield lock_path
+    finally:
+        kernel32.CloseHandle(handle)
+        kernel32.WaitForSingleObject(overlapped.hEvent, 5000)  # the request completes on close and writes overlapped
+        kernel32.CloseHandle(overlapped.hEvent)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize(
+    ("timeout", "blocking"), [pytest.param(0.1, True, id="timeout"), pytest.param(-1, False, id="non-blocking")]
+)
+def test_windows_oplock_on_lock_file_does_not_outlast_deadline(
+    oplocked_lock_path: Path, timeout: float, *, blocking: bool
+) -> None:
+    started = time.monotonic()
+    with pytest.raises(Timeout):
+        FileLock(str(oplocked_lock_path), is_singleton=False).acquire(timeout=timeout, blocking=blocking)
+    assert time.monotonic() - started < 5
 
 
 @pytest.mark.parametrize(
