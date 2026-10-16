@@ -137,3 +137,15 @@ def directories_of_another_uid(mocker: MockerFixture) -> None:  # pragma: needs 
     # Directories this process creates then look, to the lock, like ones a different UID created first.
     assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
     mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+
+
+@pytest.fixture
+def create_junction() -> Callable[[Path, Path], None]:  # pragma: win32 cover
+    # A junction needs no privilege, unlike a symlink, and lstat reports it as a directory.
+    def create(link: Path, target: Path) -> None:
+        if sys.platform == "win32":  # pragma: no branch  # narrows _winapi for the type checker
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+
+    return create
