@@ -1,0 +1,5 @@
+Fix :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease` removing
+a live holder's marker when holder and contender run in Linux time namespaces with different boottime offsets, when only
+one of them can read the boot id, or when a process other than its owner rewrote the marker; soft markers no longer get
+group or other write bits. A process name containing a carriage return or another line separator no longer makes the
+stale check raise :class:`ValueError`.
