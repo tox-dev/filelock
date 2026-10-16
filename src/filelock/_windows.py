@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from contextlib import suppress
+from errno import ENOTDIR
 from pathlib import Path
 from typing import Final, cast
 
@@ -38,6 +39,11 @@ if sys.platform == "win32":  # pragma: win32 cover
     _FILE_NON_DIRECTORY_FILE: Final[int] = 0x00000040
     _FILE_OPEN_REPARSE_POINT: Final[int] = 0x00200000
     _CREATE_OPTIONS: Final[int] = _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_NON_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT
+    # Listing access takes part in share-mode checks where attribute-only access does not, so a handle holding it
+    # without FILE_SHARE_DELETE refuses every rename or removal of the directory until it closes.
+    _FILE_LIST_DIRECTORY: Final[int] = 0x00000001
+    _FILE_DIRECTORY_FILE: Final[int] = 0x00000001
+    _DIRECTORY_OPTIONS: Final[int] = _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT
     _OBJ_CASE_INSENSITIVE: Final[int] = 0x00000040  # Win32 name lookups are case-insensitive
     _OWNER_WRITE: Final[int] = 0o200
 
@@ -308,6 +314,37 @@ if sys.platform == "win32":  # pragma: win32 cover
             _kernel32.CloseHandle(handle)
             raise
 
+    def _pin_directory(path: str) -> int:
+        """
+        Open the directory at *path* so that nobody can rename or remove it until :func:`_unpin_directory`.
+
+        Windows has no ``dir_fd``: an operation resolves every component by name again. Holding a handle to each
+        directory a record path passes through, opened without following a reparse point, keeps that name bound to the
+        directory checked here for as long as the operation runs.
+
+        :raises NotADirectoryError: when *path* is a junction, a symlink or anything but a directory.
+        """
+        sys.audit("open", path, None, os.O_RDONLY)
+        # GetFileInformationByHandle needs FILE_READ_ATTRIBUTES; listing access is what takes part in share checks.
+        access = _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+        handle, status = _nt_create(path, access, 0, _FILE_SHARE_READ_WRITE, _FILE_OPEN, _DIRECTORY_OPTIONS)
+        if status != _STATUS_SUCCESS:
+            winerror = _ntdll.RtlNtStatusToDosError(status)
+            raise OSError(None, ctypes.FormatError(winerror).strip(), path, winerror)
+        info = _BY_HANDLE_FILE_INFORMATION()
+        # Querying an open handle we just created does not fail.
+        if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):  # pragma: no cover
+            error = ctypes.get_last_error()
+            _kernel32.CloseHandle(handle)
+            raise ctypes.WinError(error)
+        if info.dwFileAttributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+            _kernel32.CloseHandle(handle)
+            raise NotADirectoryError(ENOTDIR, "is a junction or symlink, not a directory", path)
+        return handle
+
+    def _unpin_directory(handle: int) -> None:
+        _kernel32.CloseHandle(handle)
+
     def _is_unlinked(path: str) -> bool:
         """
         Report whether *path* is gone or pending deletion, which ``os.open`` reports as the same EACCES as a denial.
@@ -326,7 +363,9 @@ if sys.platform == "win32":  # pragma: win32 cover
         attributes = _FILE_ATTRIBUTE_READONLY if read_only else _FILE_ATTRIBUTE_NORMAL
         return _nt_create(path, _DESIRED_ACCESS, attributes, _FILE_SHARE_READ_WRITE, _FILE_OPEN_IF)
 
-    def _nt_create(path: str, access: int, attributes: int, share: int, disposition: int) -> tuple[int, int]:
+    def _nt_create(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]  # NtCreateFile's own knobs
+        path: str, access: int, attributes: int, share: int, disposition: int, options: int = _CREATE_OPTIONS
+    ) -> tuple[int, int]:
         """
         Open *path* through ``NtCreateFile`` and return ``(handle, status)``.
 
@@ -355,7 +394,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                     attributes,
                     share,
                     disposition,
-                    _CREATE_OPTIONS,
+                    options,
                     None,
                     0,
                 )
@@ -384,4 +423,6 @@ __all__ = [
     "_is_unlinked",
     "_open_deletable_for_reading",
     "_open_non_reparse_fd",
+    "_pin_directory",
+    "_unpin_directory",
 ]
