@@ -819,6 +819,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         with _sqlite_transition():
             operation_pid, start_time = operation
             connection = cast("_ForkSafeConnection", self._con)
+            # Before any statement: SQLite opened whatever the name held, and its first statement would replay a journal
+            # found beside that file.
+            self._raise_if_database_replaced(connection)
             with _bounded_schema(connection, self.lock_file):
                 waited = time.perf_counter() - start_time
                 timeout_ms = timeout_for_sqlite(timeout, blocking=blocking, already_waited=waited)
@@ -1138,8 +1141,9 @@ def _host_digest(host: str) -> str:  # pragma: needs posix-hard-link
 
 
 def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix-hard-link
-    # Another user who can rename in the parent may have put any directory under the name, so its entries go through a
-    # descriptor checked to be the directory made, and the name goes only with rmdir, which leaves anything not empty.
+    # Another process that can rename in the parent may have put any directory under the name, so its entries go
+    # through a descriptor checked to be the directory made, and the name goes only with rmdir, which leaves anything
+    # not empty.
     try:
         fd: Final = os.open(link.path, _DIRECTORY_FLAGS)
     except OSError:
