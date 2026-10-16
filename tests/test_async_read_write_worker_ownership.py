@@ -39,11 +39,16 @@ def _sqlite(path: Path, worker: ThreadPoolExecutor) -> tuple[AsyncReadWriteLock,
     return AsyncReadWriteLock(path / "lock.db", executor=worker), ReadWriteLock(path / "lock.db")
 
 
-def _soft(path: Path, worker: ThreadPoolExecutor) -> tuple[AsyncSoftReadWriteLock, SoftReadWriteLock]:
+def _soft(  # pragma: needs hard-link
+    path: Path, worker: ThreadPoolExecutor
+) -> tuple[AsyncSoftReadWriteLock, SoftReadWriteLock]:
     return AsyncSoftReadWriteLock(path / "lock", executor=worker), SoftReadWriteLock(path / "lock")
 
 
-_FAMILIES: Final = pytest.mark.parametrize("make", [pytest.param(_sqlite, id="sqlite"), pytest.param(_soft, id="soft")])
+_FAMILIES: Final = pytest.mark.parametrize(
+    "make",
+    [pytest.param(_sqlite, id="sqlite"), pytest.param(_soft, id="soft", marks=pytest.mark.requires_hard_links)],
+)
 
 
 @_FAMILIES
