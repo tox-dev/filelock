@@ -453,7 +453,8 @@ has the sticky bit (a directory flag that lets only a file's owner rename or rem
 
 A process that can rename an entry in a directory above owns every name below it, and can put a replacement at the
 database path between the lock's checks. filelock compares the name with the file it checked before it runs any SQL statement, and raises
-:class:`OSError` instead of reporting the lock held, and leaves the replacement as it was. A swap that lands after that
+:class:`OSError` instead of reporting the lock held, and leaves the replacement's files as they were, except that
+SQLite's open creates an empty ``lock.db`` there when the name is missing, following a symlink at that name. A swap that lands after that
 comparison and before SQLite's first statement still makes SQLite look up ``-journal`` and ``-wal`` under the
 replacement: it deletes both, and beside a non-empty lock database it first replays the journal into that database and
 unlinks the file the journal names.

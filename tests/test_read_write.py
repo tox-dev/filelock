@@ -1028,8 +1028,11 @@ def test_private_directory_connects_by_the_database_name(  # pragma: needs posix
 
 @pytest.mark.requires_hard_links
 @_NEEDS_POSIX_HARD_LINK
+@pytest.mark.parametrize(
+    "replacement", [pytest.param("database", id="database"), pytest.param("symlink", id="symlink")]
+)
 def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(  # pragma: needs posix-hard-link
-    shared_database: Path, mocker: MockerFixture
+    shared_database: Path, mocker: MockerFixture, tmp_path: Path, replacement: str
 ) -> None:
     # A rename in the shared parent owns every name below it, so the private directory check cannot stop SQLite from
     # opening a replacement swapped in before it connects; the acquire refuses before any statement runs, so a hot
@@ -1052,11 +1055,14 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(  
     ) -> sqlite3.Connection:
         private.rename(moved)
         private.mkdir(mode=0o700)
-        with closing(connect(private / "lock.db")) as replacement:
-            replacement.execute("CREATE TABLE application (value)")
-        (private / "lock.db-journal").write_bytes(_hot_journal(moved / "notes.txt"))
-        (private / "lock.db-wal").write_bytes(b"\0" * 32)
-        before[private] = _entries(private)
+        if replacement == "symlink":
+            (private / "lock.db").symlink_to(tmp_path / "elsewhere.txt")
+        else:
+            with closing(connect(private / "lock.db")) as created:
+                created.execute("CREATE TABLE application (value)")
+            (private / "lock.db-journal").write_bytes(_hot_journal(moved / "notes.txt"))
+            (private / "lock.db-wal").write_bytes(b"\0" * 32)
+            before[private] = _entries(private)
         return connect(
             path,
             check_same_thread=check_same_thread,
@@ -1069,8 +1075,12 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(  
 
     with pytest.raises(OSError, match="replaced while acquiring"):
         lock.acquire_write()
-    # The journal and WAL beside the replacement stay, the file the journal names stays, and no bytes change anywhere.
-    assert {directory: _entries(directory) for directory in before} == before
+    if replacement == "symlink":
+        # SQLite's open creates the missing name, which a symlink there sends to its target.
+        assert ((tmp_path / "elsewhere.txt").read_bytes(), (moved / "notes.txt").read_text()) == (b"", "keep")
+    else:
+        # The journal and WAL beside the replacement stay, the file the journal names stays, and no bytes change.
+        assert {directory: _entries(directory) for directory in before} == before
     assert_read_write_lock_state(str(moved / "lock.db"), "write", available=True)
 
 
