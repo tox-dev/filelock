@@ -125,9 +125,14 @@ class _AsyncTransitionGate:
 
 @dataclass
 class _TaskHold:
-    depth: int
-    #: The wrapper the task entered through, whose close() ends this hold.
-    via: object
+    """
+    One task's hold, as the nesting count per wrapper it entered through.
+
+    A task's hold ends when its last wrapper level is released or closed. Closing one wrapper ends only the levels
+    taken through it.
+    """
+
+    depths: dict[object, int]
 
 
 class _TaskOwners:
@@ -193,7 +198,7 @@ class _TaskOwners:
         except BaseException:
             self._finish_transition(mode=None)
             raise
-        self._finish_transition(mode=mode, holds={task: _TaskHold(depth=1, via=via)})
+        self._finish_transition(mode=mode, holds={task: _TaskHold(depths={via: 1})})
 
     def _admit(  # ruff:ignore[too-many-arguments]  # the acquire's state, passed through under the table lock
         self,
@@ -219,12 +224,12 @@ class _TaskOwners:
                         f"({'downgrade' if mode == 'read' else 'upgrade'} not allowed)"
                     )
                     raise RuntimeError(msg)
-                hold.depth += 1
+                hold.depths[via] = hold.depths.get(via, 0) + 1
                 return "held"
             writers_ahead = self._waiting_writers - waiting_writer
             if not self._transitioning:
                 if mode == "read" and self._mode == "read" and not writers_ahead:
-                    self._holds[task] = _TaskHold(depth=1, via=via)
+                    self._holds[task] = _TaskHold(depths={via: 1})
                     return "held"
                 if not self._holds and (mode == "write" or not writers_ahead):
                     self._transitioning, self._mode = True, mode
@@ -236,18 +241,22 @@ class _TaskOwners:
         *,
         force: bool,
         lock_file: str,
+        via: object,
         leave: Callable[[], asyncio.Future[_BackendOutcome[None]]],
         still_held: Callable[[], bool],
     ) -> None:
         task = _current_task()
         with self._lock:
-            if (hold := self._holds.get(task)) is None:
+            if (hold := self._holds.get(task)) is None or via not in hold.depths:
                 if force:
                     return
-                msg = f"Cannot release a lock on {lock_file} that is not held by this task"
+                msg = f"Cannot release a lock on {lock_file} that is not held by this task through this wrapper"
                 raise RuntimeError(msg)
-            if not force and hold.depth > 1:
-                hold.depth -= 1
+            if not force and hold.depths[via] > 1:
+                hold.depths[via] -= 1
+                return
+            removed = hold.depths.pop(via)
+            if hold.depths:
                 return
             del self._holds[task]
             if self._holds:
@@ -262,6 +271,7 @@ class _TaskOwners:
             cancellation = await _drain_cancellation(leave())
         except BaseException:
             # The sync lock may still hold the transaction, so keep the hold for a retried release to find.
+            hold.depths[via] = removed
             self._finish_transition(mode=mode, holds={task: hold})
             raise
         self._finish_transition(mode=None)
@@ -313,9 +323,16 @@ class _TaskOwners:
         with self._lock:
             if self._transitioning:
                 return self._changed
-            dropped = {task: hold for task, hold in self._holds.items() if via is None or hold.via is via}
-            for task in dropped:
-                del self._holds[task]
+            if via is None:
+                dropped = dict(self._holds)
+                self._holds.clear()
+            else:
+                dropped = {}
+                for task, hold in list(self._holds.items()):
+                    if (count := hold.depths.pop(via, None)) is not None:
+                        dropped[task] = _TaskHold(depths={via: count})
+                        if not hold.depths:
+                            del self._holds[task]
             if self._holds and via is not None:
                 return None, dropped
             mode = self._mode
@@ -328,7 +345,8 @@ class _TaskOwners:
         with self._lock:
             self._transitioning, self._mode = False, mode
             if mode is not None and holds:
-                self._holds.update(holds)
+                for task, hold in holds.items():
+                    self._holds.setdefault(task, _TaskHold(depths={})).depths.update(hold.depths)
             self._notify()
 
     def _notify(self) -> None:

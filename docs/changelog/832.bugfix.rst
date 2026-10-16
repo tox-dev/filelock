@@ -3,3 +3,4 @@ On a singleton wrapper, :meth:`AsyncReadWriteLock.close() <filelock.AsyncReadWri
 through that wrapper. A reader that arrives during ``close()`` gets the closed error instead of joining the ending hold.
 After synchronous code closes or force-releases the shared lock, the wrappers refuse to admit readers into the ended
 hold, and ``close()`` on such a wrapper returns.
+Closing one wrapper no longer ends a task's nested hold taken through another wrapper on the same path.

@@ -247,9 +247,10 @@ class AsyncSoftReadWriteLock:
 
         The wrapper releases the lock once no task holds it.
 
-        :param force: if ``True``, drop the calling task's whole hold at any nesting level
+        :param force: if ``True``, end every level the calling task took through this wrapper. Levels taken through
+            other wrappers on the same path stay. A wrapper that holds no level for the task releases nothing.
 
-        :raises RuntimeError: if the calling task holds no lock and *force* is ``False``
+        :raises RuntimeError: if the calling task holds no level through this wrapper and *force* is ``False``
 
         """
         if self._creator_pid == os.getpid():
@@ -258,6 +259,7 @@ class AsyncSoftReadWriteLock:
             await self._owners.release(
                 force=force,
                 lock_file=self.lock_file,
+                via=self._via,
                 leave=functools.partial(self._submit, self._lock.release, force=True),
                 still_held=self._backend_holds,
             )

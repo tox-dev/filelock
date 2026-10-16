@@ -601,6 +601,76 @@ async def test_async_soft_close_keeps_the_hold_taken_through_another_wrapper(
 
 
 @pytest.mark.asyncio
+async def test_async_soft_close_of_the_entering_wrapper_keeps_a_level_taken_through_another(tmp_path: Path) -> None:
+    entering, nested = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)
+    await entering.acquire_read(timeout=_TASK_WAIT)
+    await nested.acquire_read(timeout=_TASK_WAIT)
+
+    await entering.close()
+
+    assert not await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await nested.release()
+    assert await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await nested.close()
+
+
+@pytest.mark.asyncio
+async def test_async_soft_close_of_the_nested_wrapper_ends_only_its_own_level(tmp_path: Path) -> None:
+    entering, nested = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)
+    await entering.acquire_read(timeout=_TASK_WAIT)
+    await nested.acquire_read(timeout=_TASK_WAIT)
+
+    await nested.close()
+
+    await entering.release()
+    assert await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await entering.close()
+
+
+@pytest.mark.asyncio
+async def test_async_soft_release_through_each_wrapper_ends_the_hold_after_the_last(tmp_path: Path) -> None:
+    entering, nested = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)
+    await entering.acquire_read(timeout=_TASK_WAIT)
+    await nested.acquire_read(timeout=_TASK_WAIT)
+
+    await nested.release()
+
+    assert not await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await entering.release()
+    assert await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await entering.close()
+    await nested.close()
+
+
+@pytest.mark.asyncio
+async def test_async_soft_forced_release_through_a_wrapper_without_a_level_releases_nothing(tmp_path: Path) -> None:
+    holder, other = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)
+    await holder.acquire_read(timeout=_TASK_WAIT)
+
+    await other.release(force=True)
+
+    assert not await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await holder.release()
+    assert await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await holder.close()
+    await other.close()
+
+
+@pytest.mark.asyncio
+async def test_async_soft_release_through_a_wrapper_without_a_level_raises(tmp_path: Path) -> None:
+    holder, other = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)
+    await holder.acquire_read(timeout=_TASK_WAIT)
+
+    with pytest.raises(RuntimeError, match="through this wrapper"):
+        await other.release()
+
+    assert not await asyncio.to_thread(_writer_gets_in, tmp_path)
+    await holder.release()
+    await holder.close()
+    await other.close()
+
+
+@pytest.mark.asyncio
 async def test_async_soft_close_of_a_singleton_wrapper_ends_the_holds_taken_through_it(tmp_path: Path) -> None:
     lock: Final = _make(tmp_path, is_singleton=True)
     await lock.acquire_write(timeout=_TASK_WAIT)

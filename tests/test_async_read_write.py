@@ -711,6 +711,76 @@ async def test_async_close_keeps_the_hold_taken_through_another_wrapper(
 
 
 @pytest.mark.asyncio
+async def test_async_close_of_the_entering_wrapper_keeps_a_level_taken_through_another(lock_file: str) -> None:
+    entering, nested = AsyncReadWriteLock(lock_file), AsyncReadWriteLock(lock_file)
+    await entering.acquire_read()
+    await nested.acquire_read()
+
+    await entering.close()
+
+    assert not _writer_gets_in(lock_file)
+    await nested.release()
+    assert _writer_gets_in(lock_file)
+    await nested.close()
+
+
+@pytest.mark.asyncio
+async def test_async_close_of_the_nested_wrapper_ends_only_its_own_level(lock_file: str) -> None:
+    entering, nested = AsyncReadWriteLock(lock_file), AsyncReadWriteLock(lock_file)
+    await entering.acquire_read()
+    await nested.acquire_read()
+
+    await nested.close()
+
+    await entering.release()
+    assert _writer_gets_in(lock_file)
+    await entering.close()
+
+
+@pytest.mark.asyncio
+async def test_async_release_through_each_wrapper_ends_the_hold_after_the_last(lock_file: str) -> None:
+    entering, nested = AsyncReadWriteLock(lock_file), AsyncReadWriteLock(lock_file)
+    await entering.acquire_read()
+    await nested.acquire_read()
+
+    await nested.release()
+
+    assert not _writer_gets_in(lock_file)
+    await entering.release()
+    assert _writer_gets_in(lock_file)
+    await entering.close()
+    await nested.close()
+
+
+@pytest.mark.asyncio
+async def test_async_forced_release_through_a_wrapper_without_a_level_releases_nothing(lock_file: str) -> None:
+    holder, other = AsyncReadWriteLock(lock_file), AsyncReadWriteLock(lock_file)
+    await holder.acquire_read()
+
+    await other.release(force=True)
+
+    assert not _writer_gets_in(lock_file)
+    await holder.release()
+    assert _writer_gets_in(lock_file)
+    await holder.close()
+    await other.close()
+
+
+@pytest.mark.asyncio
+async def test_async_release_through_a_wrapper_without_a_level_raises(lock_file: str) -> None:
+    holder, other = AsyncReadWriteLock(lock_file), AsyncReadWriteLock(lock_file)
+    await holder.acquire_read()
+
+    with pytest.raises(RuntimeError, match="through this wrapper"):
+        await other.release()
+
+    assert not _writer_gets_in(lock_file)
+    await holder.release()
+    await holder.close()
+    await other.close()
+
+
+@pytest.mark.asyncio
 async def test_async_close_keeps_a_sync_reader_of_the_shared_singleton(lock_file: str) -> None:
     lock: Final = AsyncReadWriteLock(lock_file)
     with ReadWriteLock(lock_file).read_lock():
