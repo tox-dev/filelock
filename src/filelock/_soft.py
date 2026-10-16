@@ -29,6 +29,8 @@ MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
 _UNLINK_MAX_RETRIES: Final[int] = 10
 _MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
+#: Contenders act on the record in the marker, so only its owner may write it, whatever the mode or umask.
+_OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
 
 
 class SoftFileLock(BaseFileLock):
@@ -78,7 +80,7 @@ class SoftFileLock(BaseFileLock):
         if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:  # pragma: needs o-nofollow
             flags |= o_nofollow
         try:
-            fd = os.open(self.lock_file, flags, self._open_mode())
+            fd = os.open(self.lock_file, flags, self._open_mode() & ~_OTHERS_WRITE)
         except OSError as exception:
             if not (
                 exception.errno == EEXIST or (exception.errno == EACCES and sys.platform == "win32")
@@ -112,7 +114,7 @@ class SoftFileLock(BaseFileLock):
         # UnixFileLock applies it. Windows maps the mode to a read-only bit that os.open already set.
         if self.has_explicit_mode and sys.platform != "win32":  # pragma: win32 no cover
             with suppress(PermissionError):
-                os.fchmod(fd, self._context.mode)
+                os.fchmod(fd, self._context.mode & ~_OTHERS_WRITE)
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):

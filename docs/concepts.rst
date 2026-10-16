@@ -966,7 +966,9 @@ inheritance so the lock file gets the directory's default permissions rather tha
 
 When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock creates the file with it. On Unix,
 :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`SoftFileLock <filelock.SoftFileLock>` then apply it with
-``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory.
+``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory. A soft lock's marker never
+gets the group or other write bits, whatever the ``mode`` or umask: contenders only read and rename it, and they act on
+the record its owner wrote.
 
 An explicit ``mode`` must be an :class:`int` within ``0o000``-``0o777`` that grants the owner read and write;
 construction raises :class:`TypeError` for another type and :class:`ValueError` otherwise. A lock reopens, reads, and
