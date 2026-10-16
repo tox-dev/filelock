@@ -419,10 +419,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. A ``.db`` extension is a convention rather than a requirement; the filesystem must be one the active
-    SQLite VFS supports. On POSIX, a database directory that other accounts can write must also be writable by this
-    one and support hard links. These protections hold only while no process of another account can replace the
-    database directory or any of its ancestors. Give the lock a file of its own: a WAL-mode database, or one with a
-    schema larger than a lock needs, raises :class:`ValueError`.
+    SQLite VFS supports. Give the lock a file of its own: a WAL-mode database, or one with a schema larger than a lock
+    needs, raises :class:`ValueError`. On POSIX, a database directory that other accounts can write must also be
+    writable by this one and support hard links; the protection against other accounts ends once one of them can
+    replace the database directory or a directory above it.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
@@ -819,8 +819,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         with _sqlite_transition():
             operation_pid, start_time = operation
             connection = cast("_ForkSafeConnection", self._con)
-            # Before any statement: SQLite opened whatever the name held, and its first statement would replay a journal
-            # found beside that file.
+            # SQLite opened the file the name held at connect time, and its first statement would replay a journal
+            # beside that file, so the name is checked before any statement runs.
             self._raise_if_database_replaced(connection)
             with _bounded_schema(connection, self.lock_file):
                 waited = time.perf_counter() - start_time
@@ -995,10 +995,9 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         _PROBE_DESCRIPTORS.drain()
         _raise_if_wal(fd, database)
         target = database
-        # SQLite opens the name it is given, following symlinks, and acts on -journal, -wal and -shm files it finds
-        # beside it, so it gets the database name only where no process of another account can create or rename
-        # names. A descriptor path such as /proc/self/fd/<n> does not help: SQLite reads it back into the name the
-        # kernel reports.
+        # SQLite opens the name it is given, following symlinks, and uses the -journal, -wal and -shm names beside it,
+        # so the database name is safe only where no process of another account can create names. A descriptor path
+        # such as /proc/self/fd/<n> is no better: SQLite reads it back into the name the kernel reports.
         if not _names_are_private(pathlib.Path(database).parent, owner):  # pragma: needs posix-hard-link
             link = _link_beside(database, identity, owner)
             target = os.fspath(link.database)
@@ -1025,8 +1024,8 @@ def _names_are_private(directory: pathlib.Path, owner: int) -> bool:  # pragma: 
 class _LinkDirectory(NamedTuple):  # pragma: needs posix-hard-link
     path: pathlib.Path
     identity: _DatabaseIdentity
-    # Created through a descriptor of path and unlisted to anyone else, so a directory another process swaps in under
-    # path cannot hold it, and SQLite fails to open rather than follow what that directory holds.
+    # Made through a descriptor of path, which nobody else can list, so a directory another process swaps in under
+    # path cannot hold this name and SQLite fails to open instead of following the swap.
     name: str
 
     @property
@@ -1090,8 +1089,8 @@ def _sweep_links_of_the_dead(
 
 
 def _remove_dead_links(path: pathlib.Path, identity: _DatabaseIdentity) -> None:  # pragma: needs posix-hard-link
-    # Anyone who can rename in the parent can give any directory a dead holder's name, so only hard links to this
-    # database go, and a directory only once that leaves it empty.
+    # Any directory can carry a dead holder's name after a rename in the parent, so only hard links to this database
+    # go, and the directory only once that leaves it empty.
     fd: Final = os.open(path, _DIRECTORY_FLAGS)
     try:
         with os.scandir(fd) as entries:
@@ -1141,9 +1140,8 @@ def _host_digest(host: str) -> str:  # pragma: needs posix-hard-link
 
 
 def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix-hard-link
-    # Another process that can rename in the parent may have put any directory under the name, so its entries go
-    # through a descriptor checked to be the directory made, and the name goes only with rmdir, which leaves anything
-    # not empty.
+    # A rename in the parent may have put any directory under this name, so entries go through a descriptor checked
+    # to be the directory made, and the name goes only through rmdir, which refuses a non-empty directory.
     try:
         fd: Final = os.open(link.path, _DIRECTORY_FLAGS)
     except OSError:
@@ -1159,7 +1157,7 @@ def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix
             os.rmdir(link.name, dir_fd=fd)
     finally:
         os.close(fd)
-    # Only a leftover: the link the directory held is gone, so a failure costs nothing worth failing a release for.
+    # The link is gone, so a failure here leaves one stray empty directory and is not worth failing a release for.
     with suppress(OSError):
         link.path.rmdir()
 
@@ -1191,8 +1189,8 @@ def _raise_if_wal(fd: int, database: str) -> None:
 
 @contextmanager
 def _bounded_schema(connection: sqlite3.Connection, database: str) -> Generator[None]:
-    # A lock database holds no schema, yet SQLite loads whatever schema the file has in one statement no timeout bounds.
-    # Waiting for a lock runs no virtual machine steps, so a budget of steps caps only that load.
+    # The first statement loads the file's complete schema, which no timeout bounds, and a lock database has none.
+    # Waiting for a lock runs no virtual machine steps, so a step budget bounds only that load.
     calls: Final = count()
     max_calls: Final = 10
     connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 4096)

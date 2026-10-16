@@ -432,24 +432,28 @@ Parameters are frozen when the singleton is first created. Requesting the same p
 
 When you have many readers and occasional writers, use :class:`ReadWriteLock <filelock.ReadWriteLock>` to allow readers
 to proceed concurrently. ``ReadWriteLock`` is backed by SQLite; a ``.db`` extension is a convention rather than a
-requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. A WAL-mode database
-raises :class:`ValueError`, because WAL never blocks readers behind a writer, and so does a database whose schema takes
-more than a few kilobytes to load, because loading it is work the timeout cannot bound.
+requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. Two kinds of file
+raise :class:`ValueError`: a database in WAL mode (SQLite's write-ahead log, which never blocks readers behind a
+writer), and a database whose schema takes more than a few kilobytes to load, because the acquire timeout does not
+bound that load.
 
-On POSIX, SQLite opens the database by its name and acts on ``-journal``, ``-wal`` and ``-shm`` files it finds beside
-it. When processes of other accounts can write to the database directory, filelock instead opens SQLite through a
-private hard link to the validated database, inside a ``.filelock-*`` directory that only the locking account can read.
-That directory must then be writable by the locking account, and the filesystem must support hard links; alias creation
-failure raises :class:`OSError`.
+On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
+``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
+names the database directly only when no process of another account can create names in its directory: the directory
+belongs to the locking account or root and is not writable by its group or by others. In any other directory, filelock
+opens SQLite through a hard link (a second name for the same file) inside a ``.filelock-*`` directory that only the
+locking account can read. That directory must be writable by the locking account, and the filesystem must support hard
+links; when the link cannot be made, the lock raises :class:`OSError`.
 
-Both routes protect against processes of other accounts only while none of them can replace the database directory or
-any of its ancestors: every ancestor must belong to the locking account or root and be either not writable by others or
-sticky. A process that can rename an entry in an ancestor owns every name below it, so SQLite may open a replacement
-swapped in before it connects; the acquire compares the name with the file it checked before running any statement and
-raises :class:`OSError` instead of reporting the lock held, leaving the replacement untouched. A swap that lands after
-that comparison and before SQLite's first statement still has SQLite look up ``-journal`` and ``-wal`` under the
-replacement: it deletes both, and beside a lock database that is not empty it first replays the journal into that
-database and unlinks the file the journal names.
+Both routes assume that no process of another account can replace the database directory or any directory above it.
+That holds when every directory above belongs to the locking account or root and is either not writable by others or
+has the sticky bit (a directory flag that lets only a file's owner rename or remove it). A process that can rename an
+entry in a directory above owns every name below it, and can put a replacement at the database path between the
+lock's checks. filelock compares the name with the file it checked before it runs any SQL statement, and raises
+:class:`OSError` instead of reporting the lock held, and leaves the replacement as it was. A swap that lands after that
+comparison and before SQLite's first statement still makes SQLite look up ``-journal`` and ``-wal`` under the
+replacement: it deletes both, and beside a non-empty lock database it first replays the journal into that database and
+unlinks the file the journal names.
 
 .. code-block:: python
 
