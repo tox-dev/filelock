@@ -419,10 +419,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. A ``.db`` extension is a convention rather than a requirement; the filesystem must be one the active
-    SQLite VFS supports. On POSIX, a database directory other users can write must also be writable by this user and
-    support hard links. These protections hold only while no other user can replace the database directory or any of
-    its ancestors. Give the lock a file of its own: a WAL-mode database, or one with a schema larger than a lock needs,
-    raises :class:`ValueError`.
+    SQLite VFS supports. On POSIX, a database directory that other accounts can write must also be writable by this
+    one and support hard links. These protections hold only while no process of another account can replace the
+    database directory or any of its ancestors. Give the lock a file of its own: a WAL-mode database, or one with a
+    schema larger than a lock needs, raises :class:`ValueError`.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
@@ -993,8 +993,9 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         _raise_if_wal(fd, database)
         target = database
         # SQLite opens the name it is given, following symlinks, and acts on -journal, -wal and -shm files it finds
-        # beside it, so it gets the database name only where no other user can create or rename names. A descriptor
-        # path such as /proc/self/fd/<n> does not help: SQLite reads it back into the name the kernel reports.
+        # beside it, so it gets the database name only where no process of another account can create or rename
+        # names. A descriptor path such as /proc/self/fd/<n> does not help: SQLite reads it back into the name the
+        # kernel reports.
         if not _names_are_private(pathlib.Path(database).parent, owner):  # pragma: needs posix-hard-link
             link = _link_beside(database, identity, owner)
             target = os.fspath(link.database)
@@ -1021,8 +1022,8 @@ def _names_are_private(directory: pathlib.Path, owner: int) -> bool:  # pragma: 
 class _LinkDirectory(NamedTuple):  # pragma: needs posix-hard-link
     path: pathlib.Path
     identity: _DatabaseIdentity
-    # Created through a descriptor of path and unlisted to anyone else, so a directory another user swaps in under path
-    # cannot hold it, and SQLite fails to open rather than follow what that directory holds.
+    # Created through a descriptor of path and unlisted to anyone else, so a directory another process swaps in under
+    # path cannot hold it, and SQLite fails to open rather than follow what that directory holds.
     name: str
 
     @property
