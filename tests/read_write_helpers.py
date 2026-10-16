@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, TypeVar
 
 import pytest
 
@@ -9,6 +9,7 @@ from filelock import ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
     import sys
+    from collections.abc import Callable
 
     if sys.platform == "win32":
         from multiprocessing.connection import PipeConnection as Connection
@@ -84,4 +85,27 @@ def _probe_read_write_lock(lock_file: str, mode: Literal["read", "write"], sendi
             sending.send_bytes(bytes([acquired]))
 
 
-__all__ = ["ACQUIRE_SETTINGS", "INVALID_TIMEOUTS", "assert_read_write_lock_state"]
+_T = TypeVar("_T")
+
+
+def interrupt_once(real: Callable[[_T], None], *, before: bool) -> Callable[[_T], None]:
+    pending = True
+
+    def call(instance: _T) -> None:
+        nonlocal pending
+        if pending and before:
+            pending = False
+            raise Interrupt
+        real(instance)
+        if pending:
+            pending = False
+            raise Interrupt
+
+    return call
+
+
+class Interrupt(BaseException):
+    """Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt."""
+
+
+__all__ = ["ACQUIRE_SETTINGS", "INVALID_TIMEOUTS", "Interrupt", "assert_read_write_lock_state", "interrupt_once"]

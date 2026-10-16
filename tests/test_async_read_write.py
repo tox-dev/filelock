@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, XFAIL_WITHOUT_COROUTINE_CANCELLATION
-from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS
+from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS, Interrupt, interrupt_once
 
 pytest.importorskip("sqlite3")
 
@@ -666,6 +666,52 @@ async def test_async_read_after_a_sync_forced_release_takes_the_lock_again(lock_
     writer_got_in = await asyncio.create_task(_read_and_probe(lock))
 
     assert not writer_got_in
+    await lock.close()
+
+
+@pytest.mark.parametrize("sync_end", [pytest.param("release", id="release"), pytest.param("close", id="close")])
+@pytest.mark.asyncio
+async def test_async_read_after_an_interrupted_sync_forced_release_takes_the_lock_again(
+    lock_file: str, mocker: MockerFixture, sync_end: str
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file)
+    await lock.acquire_read()
+    mocker.patch.object(
+        ReadWriteLock, "_clear_lock_state", new=interrupt_once(ReadWriteLock._clear_lock_state, before=True)
+    )
+    sync: Final = ReadWriteLock(lock_file)
+    with pytest.raises(Interrupt):
+        sync.close() if sync_end == "close" else sync.release(force=True)
+
+    writer_got_in = await asyncio.create_task(_read_and_probe(lock))
+
+    assert not writer_got_in
+    await lock.close()
+
+
+@pytest.mark.asyncio
+async def test_async_read_treats_a_level_whose_connection_closed_meanwhile_as_gone(
+    lock_file: str, mocker: MockerFixture
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file)
+    await lock.acquire_read()
+    real_ended: Final = ReadWriteLock._transaction_ended
+    closed = False
+
+    def close_between_checks(instance: ReadWriteLock) -> bool:
+        nonlocal closed
+        if not closed:
+            closed = True
+            raise sqlite3.ProgrammingError
+        return real_ended(instance)
+
+    mocker.patch.object(ReadWriteLock, "_transaction_ended", autospec=True, side_effect=close_between_checks)
+
+    writer_got_in = await asyncio.create_task(_read_and_probe(lock))
+
+    assert not writer_got_in
+    with pytest.raises(RuntimeError, match="not held by this task"):
+        await lock.release()
     await lock.close()
 
 

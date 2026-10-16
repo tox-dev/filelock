@@ -650,8 +650,15 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     def _holds_level_of(self, thread_id: int) -> bool:
         # Read without the internal lock. The async wrapper asks from its event loop, which must not wait out a release
-        # on another thread. A stale answer is what a caller asking a moment earlier would have had.
-        return thread_id == self._write_thread_id or thread_id in self._read_depths
+        # on another thread. A stale answer is what a caller asking a moment earlier would have had. A level whose
+        # transaction ended is one an interrupted release left behind; it counts as gone, as _holds_level() treats it.
+        if thread_id != self._write_thread_id and thread_id not in self._read_depths:
+            return False
+        try:
+            return not self._transaction_ended()
+        except sqlite3.ProgrammingError:
+            # The connection closed between the read of _con and the in_transaction call, so the transaction is over.
+            return False
 
     def _release(self, *, force: bool, close: bool, thread_id: int | None = None) -> None:
         thread_id = threading.get_ident() if thread_id is None else thread_id

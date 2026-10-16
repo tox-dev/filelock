@@ -8,7 +8,7 @@ import time
 from contextlib import closing
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pytest
 from capabilities import CAPABILITIES
@@ -21,7 +21,7 @@ from filelock import ReadWriteLock, Timeout
 from filelock._read_write import _ForkSafeConnection
 from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.process_helpers import cleanup_processes
-from tests.read_write_helpers import assert_read_write_lock_state
+from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, interrupt_once
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
 # slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
@@ -817,12 +817,12 @@ def test_read_write_lock_after_an_interrupted_release_locks_again(
     acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
     acquire()
     if step == "level-reset":
-        reset = _interrupt_once(ReadWriteLock._clear_lock_state, before=True)
+        reset = interrupt_once(ReadWriteLock._clear_lock_state, before=True)
         mocker.patch.object(ReadWriteLock, "_clear_lock_state", new=reset)
     else:
         real = sqlite3.Connection.rollback if step == "rollback" else _ForkSafeConnection.close
-        mocker.patch.object(_ForkSafeConnection, step, new=_interrupt_once(real, before=False))
-    with pytest.raises(_Interrupt):
+        mocker.patch.object(_ForkSafeConnection, step, new=interrupt_once(real, before=False))
+    with pytest.raises(Interrupt):
         lock.release()
 
     acquire()
@@ -833,26 +833,3 @@ def test_read_write_lock_after_an_interrupted_release_locks_again(
     lock.release()
     contender.close()
     lock.close()
-
-
-_T = TypeVar("_T")
-
-
-def _interrupt_once(real: Callable[[_T], None], *, before: bool) -> Callable[[_T], None]:
-    pending = True
-
-    def call(instance: _T) -> None:
-        nonlocal pending
-        if pending and before:
-            pending = False
-            raise _Interrupt
-        real(instance)
-        if pending:
-            pending = False
-            raise _Interrupt
-
-    return call
-
-
-class _Interrupt(BaseException):
-    """Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt."""
