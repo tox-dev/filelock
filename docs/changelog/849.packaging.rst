@@ -1,0 +1,2 @@
+GraalPy is now tested weekly instead of on every change: GraalPy 25.4.4 can freeze the test suite, which made its job
+fail on unrelated changes.
