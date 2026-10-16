@@ -35,6 +35,8 @@ from filelock._util import (
     pin_inode,
     raise_on_not_writable_file,
     remove_own_file,
+    ensure_directory_exists,
+    unlink_path,
     write_all,
 )
 
@@ -512,7 +514,7 @@ class SoftFileLock(BaseFileLock):
                             # Forgotten before the unlink: Windows does not promise unique file IDs, so no retry may
                             # reach a successor that reused ours.
                             self._marker_cleanup = None
-                            os.unlink(name)  # ruff:ignore[os-unlink]  # Path.unlink runs Python code a handler can interrupt
+                            unlink_path(name)
                             break
             except OSError as exc:
                 if exc.errno in {EACCES, EPERM}:

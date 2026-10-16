@@ -231,7 +231,9 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     An oplock (opportunistic lock: a notice sent to a process holding a handle before another process opens the file,
     which the opener waits on until the holder answers) on the lock file does not hold an acquire past its ``timeout``.
     The open reports contention, and the retry loop keeps the deadline. :class:`~filelock.ReadWriteLock` waits for its
-    ``timeout`` on an oplocked database and then raises :class:`~filelock.Timeout`.
+    ``timeout`` on an oplocked database and then raises :class:`~filelock.Timeout`. Release deletes the lock file
+    through a handle that does not wait for an oplock holder either, so a holder that never answers leaves the file in
+    place.
 
 **Unix and macOS**
     Uses the :class:`UnixFileLock <filelock.UnixFileLock>` class, backed by the kernel's ``fcntl.flock`` interface. The

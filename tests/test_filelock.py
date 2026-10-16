@@ -60,6 +60,7 @@ from tests.capability_marks import (
     NEEDS_PROMPT_SIGNAL_DELIVERY,
     NEEDS_SYMLINK,
 )
+from tests.process_helpers import call_within
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -2638,6 +2639,75 @@ def test_windows_oplock_on_lock_file_does_not_outlast_deadline(
     assert time.monotonic() - started < 5
 
 
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_release_does_not_wait_for_an_oplock_taken_after_the_close(
+    tmp_path: Path, hold_oplock: Callable[[Path], Callable[[], None]], mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "a"
+    lock = FileLock(str(lock_path), is_singleton=False, thread_local=False)
+    real_close = BaseFileLock._close_released_fd
+
+    def close_then_take_oplock(self: BaseFileLock, fd: int, *, default_suppresses: bool) -> None:
+        real_close(self, fd, default_suppresses=default_suppresses)
+        hold_oplock(lock_path)
+
+    mocker.patch.object(BaseFileLock, "_close_released_fd", autospec=True, side_effect=close_then_take_oplock)
+    lock.acquire()
+
+    assert call_within(lock.release, 5) == (True, None)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize("name", [pytest.param("missing", id="name"), pytest.param("missing/a", id="path")])
+def test_windows_unlink_without_oplock_wait_reports_a_missing_file(tmp_path: Path, name: str) -> None:
+    assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
+    from filelock._windows import unlink_without_oplock_wait
+
+    with pytest.raises(FileNotFoundError):
+        unlink_without_oplock_wait(str(tmp_path / name))
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_unlink_without_oplock_wait_reports_a_file_held_without_delete_sharing(tmp_path: Path) -> None:
+    assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
+    from filelock._windows import unlink_without_oplock_wait
+
+    (path := tmp_path / "a").touch()
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        with pytest.raises(PermissionError):
+            unlink_without_oplock_wait(str(path))
+    finally:
+        os.close(fd)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_unlink_without_oplock_wait_leaves_an_oplocked_file(
+    tmp_path: Path, hold_oplock: Callable[[Path], Callable[[], None]]
+) -> None:
+    assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
+    from filelock._windows import unlink_without_oplock_wait
+
+    (path := tmp_path / "a").touch()
+    hold_oplock(path)
+
+    assert call_within(lambda: unlink_without_oplock_wait(str(path)), 5) == (True, None)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@NEEDS_SYMLINK  # pragma: needs symlink
+def test_windows_unlink_without_oplock_wait_deletes_a_symlink_not_its_target(tmp_path: Path) -> None:
+    assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
+    from filelock._windows import unlink_without_oplock_wait
+
+    (target := tmp_path / "target").touch()
+    (link := tmp_path / "link").symlink_to(target)
+
+    unlink_without_oplock_wait(str(link))
+
+    assert (link.is_symlink(), target.exists()) == (False, True)
+
+
 @pytest.mark.parametrize(
     "use_proxy",
     [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
@@ -3731,7 +3801,7 @@ def test_soft_windows_unlink_stops_on_non_permission_error(tmp_path: Path, mocke
     path.write_bytes(b"x")
     lock = SoftFileLock(str(path))
     st = os.lstat(path)
-    mocker.patch("os.unlink", autospec=True, side_effect=OSError(ENOSYS, "boom"))
+    mocker.patch("filelock._soft.unlink_path", autospec=True, side_effect=OSError(ENOSYS, "boom"))
 
     lock._windows_unlink_if_ours((st.st_dev, st.st_ino))
 
