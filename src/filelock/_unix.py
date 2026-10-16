@@ -151,8 +151,8 @@ else:  # pragma: win32 no cover
                 # reading it; with flock the lock writes its file, so the denial stands.
                 try:
                     fd = os.open(self.lock_file, open_flags & ~os.O_RDWR | os.O_RDONLY)
-                except FileNotFoundError:
-                    return None
+                except (FileNotFoundError, BlockingIOError):
+                    return None  # unlinked, or leased: the kernel checks permission before the lease
                 if _flock_is_missing(fd):
                     return fd, False
                 os.close(fd)

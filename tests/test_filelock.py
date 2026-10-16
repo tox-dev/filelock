@@ -1888,6 +1888,9 @@ def test_existing_lock_file_open_that_would_block_is_contention(tmp_path: Path, 
         FileLock(str(lock_path), is_singleton=False).acquire(timeout=0)
 
 
+_SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0, reason="root can write a 0o400 file"
+)
 _NEEDS_FILE_LEASE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["file-lease"], reason="leasing the lock file needs Linux F_SETLEASE on a filesystem that grants it"
 )
@@ -1922,6 +1925,17 @@ def test_lease_on_lock_file_does_not_outlast_deadline(
     started = time.monotonic()
     with pytest.raises(Timeout):
         FileLock(str(leased_lock_path), is_singleton=False).acquire(timeout=timeout, blocking=blocking)
+    assert time.monotonic() - started < 5
+
+
+@_NEEDS_FILE_LEASE  # pragma: needs file-lease
+@_SKIP_AS_ROOT
+def test_lease_on_a_read_only_lock_file_is_contention(leased_lock_path: Path) -> None:
+    leased_lock_path.chmod(0o400)
+
+    started = time.monotonic()
+    with pytest.raises(Timeout):
+        FileLock(str(leased_lock_path), is_singleton=False).acquire(timeout=0.1)
     assert time.monotonic() - started < 5
 
 

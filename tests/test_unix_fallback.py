@@ -4,7 +4,7 @@ import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interpreter isolates the blocked fcntl import
 import sys
 import warnings
-from errno import EACCES, EIO, ENOSYS
+from errno import EACCES, EIO, ENOSYS, EWOULDBLOCK
 from textwrap import dedent
 from typing import TYPE_CHECKING, Final
 
@@ -240,7 +240,30 @@ def test_lock_file_it_cannot_write_stays_denied_where_flock_works(tmp_path: Path
 
 
 @NEEDS_FCNTL
-@pytest.mark.parametrize("write_denied_lock_file", [True], ids=["unlinked-under-the-denial"], indirect=True)
+@pytest.mark.parametrize("write_denied_lock_file", ["leased"], indirect=True)
+@pytest.mark.usefixtures("write_denied_lock_file")
+def test_leased_lock_file_it_cannot_write_is_contention_where_flock_works(
+    tmp_path: Path,
+) -> None:  # pragma: needs fcntl
+    (lock_path := tmp_path / "test.lock").touch()
+
+    with pytest.raises(Timeout):
+        UnixFileLock(lock_path).acquire(timeout=0)
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.parametrize("write_denied_lock_file", ["leased"], indirect=True)
+@pytest.mark.usefixtures("unsupported_flock", "write_denied_lock_file")
+def test_fallback_treats_a_leased_marker_it_cannot_write_as_contention(tmp_path: Path) -> None:  # pragma: needs fcntl
+    (lock_path := tmp_path / "test.lock").touch()
+
+    with pytest.raises(Timeout):
+        UnixFileLock(lock_path).acquire(timeout=0)
+
+
+@NEEDS_FCNTL
+@pytest.mark.parametrize("write_denied_lock_file", ["unlink"], ids=["unlinked-under-the-denial"], indirect=True)
 @pytest.mark.usefixtures("write_denied_lock_file")
 def test_lock_file_unlinked_under_a_denied_open_is_retried(tmp_path: Path) -> None:  # pragma: needs fcntl
     (lock_path := tmp_path / "test.lock").touch()
@@ -253,15 +276,18 @@ def test_lock_file_unlinked_under_a_denied_open_is_retried(tmp_path: Path) -> No
 def write_denied_lock_file(
     request: pytest.FixtureRequest, tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: needs fcntl
-    # Stand in for a marker another account owns: an O_RDWR open is refused, a read works.
-    unlink_under_denial = getattr(request, "param", False)
+    # Stand in for a marker another account owns: an O_RDWR open is refused, a read works unless the file is leased.
+    behavior = getattr(request, "param", "deny")
     real_open = os.open
 
     def deny_write(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
-        if flags & os.O_RDWR and not flags & os.O_CREAT and str(tmp_path / "test.lock") == path:
-            if unlink_under_denial:
-                (tmp_path / "test.lock").unlink()
-            raise PermissionError(EACCES, "Permission denied", path)
+        if not flags & os.O_CREAT and str(tmp_path / "test.lock") == path:
+            if flags & os.O_RDWR:
+                if behavior == "unlink":
+                    (tmp_path / "test.lock").unlink()
+                raise PermissionError(EACCES, "Permission denied", path)
+            if behavior == "leased":
+                raise BlockingIOError(EWOULDBLOCK, "Resource temporarily unavailable", path)
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
     mocker.patch("os.open", side_effect=deny_write)
