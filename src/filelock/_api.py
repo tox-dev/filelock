@@ -4,6 +4,7 @@ __lazy_modules__ = [
     "atexit",
     "decimal",
     "filelock._error",
+    "filelock._util",
     "inspect",
     "math",
     "numbers",

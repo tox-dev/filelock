@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "pathlib", "typing", "warnings"]
+__lazy_modules__ = ["contextlib", "filelock._util", "pathlib", "typing", "warnings"]
 
 import os
 import sys
