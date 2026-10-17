@@ -313,8 +313,9 @@ def test_stale_break_reclaims_a_marker_it_cannot_pin(  # pragma: win32 no cover
         assert held.is_locked
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not open the marker while pinning")
 @STALE_BREAKERS
-def test_stale_break_lets_acquire_retry_after_the_marker_vanishes_before_the_pin(
+def test_stale_break_lets_acquire_retry_after_the_marker_vanishes_before_the_pin(  # pragma: win32 no cover
     tmp_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock], record: str
 ) -> None:
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
