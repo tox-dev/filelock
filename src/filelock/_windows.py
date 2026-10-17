@@ -58,9 +58,10 @@ if sys.platform == "win32":  # pragma: win32 cover
     _STATUS_OBJECT_NAME_NOT_FOUND: Final[int] = 0xC0000034
     _STATUS_SHARING_VIOLATION: Final[int] = 0xC0000043
     _STATUS_DELETE_PENDING: Final[int] = 0xC0000056
-    #: How long an open waits out a STATUS_ACCESS_DENIED before treating it as a real denial: NTFS answers it for a
-    #: moment while a peer's unlink tears the name down, so a bounded wait keeps a real denial failing fast (#604).
-    _ACCESS_DENIED_GRACE: Final[float] = 0.5
+    #: Probes, 2 ms apart, an open spends waiting out a STATUS_ACCESS_DENIED before treating it as a real denial: NTFS
+    #: answers it for a moment while a peer's unlink tears the name down (#604). A count rather than a wall-clock grace,
+    #: so a process stalled on a loaded machine still makes every probe.
+    _ACCESS_DENIED_PROBES: Final[int] = 250
     _ACCESS_DENIED_RETRY: Final[float] = 0.002
 
     _ntdll: Final[ctypes.WinDLL] = ctypes.WinDLL("ntdll")
@@ -251,7 +252,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             name the caller should treat as contention and retry.
 
         :raises OSError: if the path resolves to a reparse point, or the open fails for any other reason, raised with
-            the Win32 error the status maps to. An access denial is raised only once it outlasts a short grace, since
+            the Win32 error the status maps to. An access denial is raised only once it outlasts a run of probes, since
             a peer unlinking the file as it releases can make the open answer ``STATUS_ACCESS_DENIED`` for a moment.
 
         """
@@ -259,11 +260,11 @@ if sys.platform == "win32":  # pragma: win32 cover
         sys.audit("open", path, None, os.O_RDWR | os.O_CREAT)
         read_only = not mode & _OWNER_WRITE
         handle, status = _nt_open(path, read_only=read_only)
-        if status == _STATUS_ACCESS_DENIED:
-            deadline = time.monotonic() + _ACCESS_DENIED_GRACE
-            while status == _STATUS_ACCESS_DENIED and time.monotonic() < deadline:
-                time.sleep(_ACCESS_DENIED_RETRY)
-                handle, status = _nt_open(path, read_only=read_only)
+        for _ in range(_ACCESS_DENIED_PROBES):
+            if status != _STATUS_ACCESS_DENIED:
+                break
+            time.sleep(_ACCESS_DENIED_RETRY)
+            handle, status = _nt_open(path, read_only=read_only)
         if status != _STATUS_SUCCESS:
             if status in {_STATUS_SHARING_VIOLATION, _STATUS_DELETE_PENDING}:
                 return None

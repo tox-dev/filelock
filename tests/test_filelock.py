@@ -53,6 +53,7 @@ from filelock import (
 from filelock._api import _append_exception_context, _raise_grouped_errors, _registry
 from tests.capability_marks import (
     NEEDS_FCNTL,
+    NEEDS_FILE_MODE,
     NEEDS_FILE_PERMISSIONS,
     NEEDS_PARENT_SYMLINK_COLLAPSE,
     NEEDS_PROMPT_FINALIZATION,
@@ -836,20 +837,27 @@ def test_lock_mode(tmp_path: Path) -> None:
     lock.release()
 
 
-def test_lock_mode_soft(tmp_path: Path) -> None:
+@NEEDS_FILE_MODE
+@pytest.mark.parametrize(
+    ("mode", "umask"),
+    [
+        pytest.param(0o666, 0o022, id="explicit-mode"),
+        pytest.param(None, 0, id="default-mode-open-umask"),
+    ],
+)
+def test_lock_mode_soft_lets_only_the_owner_write_the_marker(  # pragma: needs file-mode
+    mode: int | None, umask: int, tmp_path: Path
+) -> None:
+    # Contenders act on the record inside, so no other account may rewrite it.
     lock_path = tmp_path / "a.lock"
-    lock = SoftFileLock(str(lock_path), mode=0o666)
+    lock = SoftFileLock(str(lock_path)) if mode is None else SoftFileLock(str(lock_path), mode=mode)
 
-    initial_umask = os.umask(0o022)  # pin umask so the resulting permissions are predictable
+    initial_umask = os.umask(umask)
     try:
-        lock.acquire()
-        assert lock.is_locked
-
-        assert filemode(lock_path.stat().st_mode) == "-rw-rw-rw-"
+        with lock:
+            assert filemode(lock_path.stat().st_mode) == "-rw-r--r--"
     finally:
         os.umask(initial_umask)
-
-    lock.release()
 
 
 def test_umask(tmp_path: Path) -> None:
@@ -2440,14 +2448,12 @@ def test_windows_delete_pending_is_treated_as_contention(tmp_path: Path, mocker:
 
 @_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_permanent_denial_raises_without_timeout(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._windows._ACCESS_DENIED_GRACE", 0.02)
+    mocker.patch("filelock._windows._ACCESS_DENIED_PROBES", 10)
     nt_open = mocker.patch("filelock._windows._nt_open", return_value=(0, 0xC0000022))  # STATUS_ACCESS_DENIED
-    started = time.monotonic()
     with pytest.raises(PermissionError):
         FileLock(str(tmp_path / "a"), timeout=5).acquire()
-    # The denial outlasted its grace, so it surfaced after a bounded wait rather than the caller's timeout.
-    assert 0.02 <= time.monotonic() - started < 5
-    assert nt_open.call_count > 1
+    # The denial outlasted the probes, so it surfaced after them rather than at the caller's timeout.
+    assert nt_open.call_count == 11
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover

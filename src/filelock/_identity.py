@@ -75,7 +75,9 @@ def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
     """
     if hostname != host_name():
         return False
-    if process_alive(pid) and (start_token is None or process_start_token(pid) in {None, start_token}):
+    if process_alive(pid) and (
+        start_token is None or (current := process_start_token(pid)) is None or _same_start(current, start_token)
+    ):
         return False
     # Only a bare hostname can be an older release's, written from a container that shares this host's name.
     return _NAMESPACE_MARK in hostname or not _owner_runs_elsewhere(pid, start_token)
@@ -92,6 +94,14 @@ def owner_is_current_process(pid: int, hostname: str, start_token: int | None) -
     if pid != os.getpid() or hostname != host_name():
         return False
     return start_token is None or start_token == process_start_token(pid)
+
+
+def _same_start(current: int, recorded: int) -> bool:
+    # A Linux token carries the boot id in its high 64 bits, or 0 there when the process could not read the boot id.
+    # systemd's ProcSubset=pid hides /proc/sys from one unit, so one process may lack the boot id while its peer has
+    # it. A missing boot id then proves nothing, and only starttime is compared. Other platforms' tokens fit in the
+    # low bits.
+    return current == recorded or (0 in {current >> 64, recorded >> 64} and current % 2**64 == recorded % 2**64)
 
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -168,19 +178,50 @@ else:  # pragma: win32 no cover
         def _read_boot_id() -> int:
             # starttime is measured in clock ticks since boot, so on its own it repeats across a reboot. Folding the
             # boot id into the high bits makes the Linux token reboot-safe like the absolute clocks macOS and Windows
-            # expose, while staying a single integer so a 3.29 reader still parses the third marker line. 0 when the
-            # kernel does not expose a boot id degrades to bare starttime, which stays safe (a reboot collision fails
-            # closed rather than reclaiming a live marker).
+            # expose, while staying a single integer so a 3.29 reader still parses the third marker line. 0 when this
+            # process cannot read the boot id leaves the bare starttime, which _same_start compares alone.
             try:
                 boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii")
                 return int(boot_id.strip().replace("-", ""), 16)
-            except (OSError, ValueError):  # pragma: no cover  # the kernel always exposes boot_id as a UUID on Linux
+            except (OSError, ValueError):
                 return 0
 
         _BOOT_ID: Final[int] = _read_boot_id()
+        #: ``TIME_NS_INIT_INO`` in ``linux/proc_ns.h``, fixed by the kernel ABI like the initial PID namespace's inode.
+        _INITIAL_TIME_NAMESPACE: Final[int] = 0xEFFFFFFA
 
         def process_start_token(pid: int) -> int | None:
-            """The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id, or ``None`` when the process is gone."""
+            """
+            The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id.
+
+            ``None`` when the process is gone, or when this process runs in a time namespace with a boottime offset.
+            Since Linux 5.6 the kernel shifts ``starttime`` by the reader's offset, so a value read there differs
+            from what a peer outside reads.
+            """
+            return _read_start_token(pid) if _starttime_unshifted() else None
+
+        def _starttime_unshifted() -> bool:
+            # setns can move this process into another time namespace, so ask on every read.
+            try:
+                namespace: Final = Path("/proc/self/ns/time").stat().st_ino
+            except FileNotFoundError:  # no entry means no time namespaces on this kernel
+                return True
+            except OSError:  # any other failure leaves the namespace unknown, so starttime is not comparable
+                return False
+            if namespace == _INITIAL_TIME_NAMESPACE:
+                return True
+            # A container runtime may give each container a time namespace without offsets. timens_offsets describes
+            # the namespace this process's children get, its own unless it unshared one since.
+            try:
+                if Path("/proc/self/ns/time_for_children").stat().st_ino != namespace:
+                    return False
+                offsets: Final = Path("/proc/self/timens_offsets").read_text(encoding="ascii")
+            except OSError:
+                return False
+            # The clock goes by name since Linux 5.8 and by clock id before.
+            return any(line.split() in (["boottime", "0", "0"], ["7", "0", "0"]) for line in offsets.splitlines())
+
+        def _read_start_token(pid: int) -> int | None:
             try:
                 data = Path(f"/proc/{pid}/stat").read_bytes()
             except OSError:
@@ -200,17 +241,22 @@ else:  # pragma: win32 no cover
             Whether the owner runs in another PID namespace as *pid*.
 
             An older release in a container sharing this hostname recorded its in-container PID, which means nothing
-            here. starttime and the boot id are kernel-wide, so a task with that start token whose innermost PID is
-            *pid* is the owner; one that merely started in the same tick is not.
+            here. Readers without a boottime offset read the same starttime and boot id. A task with the recorded
+            start token whose innermost PID is *pid* is therefore the owner; one that started in the same tick is not.
+            A reader with an offset cannot compare start tokens, so the innermost PID alone keeps the marker.
             """
-            if start_token is None or start_token >> 64 != _BOOT_ID:
+            if start_token is None or (_BOOT_ID and start_token >> 64 not in {0, _BOOT_ID}):
                 return False
+            unshifted: Final = _starttime_unshifted()
             try:
                 with os.scandir("/proc") as entries:
                     return any(
                         entry.name.isdigit()
                         and (task := int(entry.name)) != pid
-                        and process_start_token(task) == start_token
+                        and (
+                            not unshifted
+                            or ((token := _read_start_token(task)) is not None and _same_start(token, start_token))
+                        )
                         and _innermost_pid(task) == pid
                         for entry in entries
                     )
@@ -220,11 +266,13 @@ else:  # pragma: win32 no cover
 
         def _innermost_pid(task: int) -> int | None:
             try:
-                status: Final = Path(f"/proc/{task}/status").read_text(encoding="ascii", errors="replace")
+                status: Final = Path(f"/proc/{task}/status").read_bytes()
             except OSError:  # pragma: no cover  # the task exited between the stat read and this one
                 return None
+            # The kernel ends a line only with "\n". A task names itself, and its Name line keeps "\r", "\v" and the
+            # other separators that a text-mode read and str.splitlines() split at. A name could then forge a line.
             return next(
-                (int(line.split()[-1]) for line in status.splitlines() if line.startswith("NSpid:")),
+                (int(line.split()[-1]) for line in status.split(b"\n") if line.startswith(b"NSpid:")),
                 None,  # kernels before 4.1 record no namespace PIDs
             )
 

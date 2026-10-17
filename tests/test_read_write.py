@@ -83,13 +83,17 @@ def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
 
         with cleanup_processes([contender]):
             contender.start()
-            assert not write2_acquired.wait(timeout=1), "Second write lock should not be acquired"
+            # Wait for the contender's own timeout rather than release behind its back: a slow start could otherwise
+            # let it acquire after the release and be terminated inside the event's lock, which then never unlocks.
+            contender.join(timeout=_PROCESS_DEADLINE)
+            assert (contender.is_alive(), write2_acquired.is_set()) == (False, False), (
+                "Second write lock should not be acquired"
+            )
 
-            release_write1.set()
-            holder.join(timeout=_PROCESS_DEADLINE)
-            assert not holder.is_alive(), "Holder did not exit cleanly"
+        release_write1.set()
+        holder.join(timeout=_PROCESS_DEADLINE)
+        assert not holder.is_alive(), "Holder did not exit cleanly"
 
-        write2_acquired.clear()
         successor = Process(target=acquire_lock, args=(lock_file, "write", write2_acquired))
 
         with cleanup_processes([successor]):
