@@ -7,7 +7,7 @@ import math
 import os
 import runpy
 import signal
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed-argument, no-shell run below
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only fixed-argument, no-shell runs below
 import sys
 import textwrap
 import threading
@@ -2477,10 +2477,10 @@ def test_windows_transient_denial_is_retried_within_grace(tmp_path: Path, mocker
 
         statuses = [0xC0000022]
 
-        def deny_once(path: str, *, read_only: bool) -> tuple[int, int]:
+        def deny_once(path: str, *, read_only: bool, owner_only: bool) -> tuple[int, int]:
             if statuses:
                 return 0, statuses.pop()
-            return real_nt_open(path, read_only=read_only)
+            return real_nt_open(path, read_only=read_only, owner_only=owner_only)
 
         nt_open = mocker.patch("filelock._windows._nt_open", side_effect=deny_once)
         lock = FileLock(str(tmp_path / "a"), timeout=0)
@@ -2516,6 +2516,27 @@ def test_windows_delete_in_progress_is_contention_not_denial(tmp_path: Path) -> 
                 FileLock(target, timeout=0.3).acquire()
         finally:
             kernel32.CloseHandle(handle)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize(
+    ("mode", "inherits"),
+    [
+        pytest.param(-1, True, id="unset"),
+        pytest.param(0o644, True, id="others-read"),
+        pytest.param(0o600, False, id="owner-only"),
+    ],
+)
+def test_windows_owner_only_mode_keeps_out_the_directory_acl(
+    inheriting_directory: Path, mode: int, *, inherits: bool
+) -> None:
+    lock_path = inheriting_directory / "a"
+    with FileLock(str(lock_path), mode=mode):
+        acl = subprocess.run(
+            [Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe"), lock_path], capture_output=True, check=True
+        ).stdout
+    # icacls marks each entry the directory handed down with (I), whatever the display language.
+    assert (b"(I)" in acl) is inherits
 
 
 @pytest.mark.parametrize(

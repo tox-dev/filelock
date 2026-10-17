@@ -459,11 +459,13 @@ comparison and before SQLite's first statement still makes SQLite look up ``-jou
 replacement: it deletes both, and beside a non-empty lock database it first replays the journal into that database and
 unlinks the file the journal names.
 
-On Windows the lock connects by the database name in every directory. A ``-wal`` or ``-journal`` file another account
-places beside the database is used or deleted by SQLite before the lock runs any statement, and a file the lock account
-cannot delete fails every acquire with :class:`sqlite3.OperationalError`. Keep the database in a directory other
-accounts cannot create files in; the per-user temporary directory and ``%LOCALAPPDATA%`` qualify, ``C:\Windows\Temp``
-and ``C:\Users\Public`` do not.
+On Windows the lock makes the same choice from the directory's access control list (ACL). It connects by the database
+name only when the directory's owner and every entry that allows adding files, adding subdirectories or deleting entries
+name the locking account, ``SYSTEM`` or ``Administrators``. Otherwise it links the database into a directory created
+with an ACL that grants only those accounts, and SQLite opens the link. The filesystem must support hard links, or the
+lock raises :class:`OSError`. Where it does not, as on FAT or some network shares, keep the database in a directory
+other accounts cannot create files in. The per-user temporary directory and ``%LOCALAPPDATA%`` qualify,
+``C:\Windows\Temp`` and ``C:\Users\Public`` do not.
 
 .. code-block:: python
 

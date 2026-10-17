@@ -50,7 +50,14 @@ from filelock._error import Timeout
 from filelock._identity import host_name, owner_is_stale, process_start_token
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._windows import _open_non_reparse_fd
+    from filelock._windows import (
+        _directory_is_private,
+        _identity_at,
+        _identity_of_fd,
+        _make_private_directory,
+        _open_non_reparse_fd,
+        _pinned,
+    )
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -320,6 +327,10 @@ class _ForkSafeConnection(sqlite3.Connection):
                     self._decrement_escrow = None
                     decrement(self)
 
+    def retain_link(self, directory: _LinkDirectory | None) -> None:  # pragma: win32 cover
+        """Keep the private link directory, if there is one, until SQLite no longer uses it."""
+        self._database_directory = directory
+
     def retain_until_close(self, directory: _LinkDirectory | None, probe: _Probe) -> None:  # pragma: win32 no cover
         """Keep the private link and this connection's probe descriptor until SQLite no longer uses them."""
         self._database_directory = directory
@@ -450,9 +461,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     By default, ``is_singleton=True``: calling ``ReadWriteLock(path)`` with the same resolved path returns the same
     instance. A ``.db`` extension is a convention rather than a requirement; the filesystem must be one the active
     SQLite VFS supports. Give the lock a file of its own: a WAL-mode database, or one with a schema larger than a lock
-    needs, raises :class:`ValueError`. On POSIX, a database directory that other accounts can write must also be
-    writable by this one and support hard links; the protection against other accounts ends once one of them can
-    replace the database directory or a directory above it. On Windows, use a directory other accounts cannot write.
+    needs, raises :class:`ValueError`. A database directory that other accounts can write must also be writable by
+    this one and support hard links; the protection against other accounts ends once one of them can replace the
+    database directory or a directory above it.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
@@ -1100,12 +1111,24 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
     # refuses one.
     if sys.platform == "win32":  # pragma: win32 cover
         fd: Final = _open_lock_database(database)
+        link: _LinkDirectory | None = None
         # A Windows lock belongs to the handle that took it, so closing this one leaves SQLite's locks in place.
         try:
             _raise_if_wal(fd, database)
-            return sqlite3.connect(
-                database, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
-            )
+            target = database
+            if not _directory_is_private(os.fspath(pathlib.Path(database).parent)):
+                link = _link_beside_on_windows(database, _identity_of_fd(fd))
+                target = os.fspath(link.database)
+            try:
+                connection = sqlite3.connect(
+                    target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+                )
+            except BaseException:
+                if link is not None:
+                    _remove_link_directory(link)
+                raise
+            connection.retain_link(link)
+            return connection
         finally:
             os.close(fd)
     return _connect_through_descriptor(  # pragma: win32 no cover
@@ -1223,6 +1246,9 @@ def _sweep_links_of_the_dead(
 def _remove_dead_links(
     path: pathlib.Path, identity: _DatabaseIdentity, owner: int
 ) -> None:  # pragma: needs posix-hard-link
+    if sys.platform == "win32":  # pragma: win32 cover
+        _remove_dead_links_on_windows(path, identity)
+        return
     # Any directory can carry a dead holder's name after a rename in the parent, so only hard links to this database
     # go, and the directory only once that leaves it empty.
     fd: Final = os.open(path, _DIRECTORY_FLAGS)
@@ -1288,6 +1314,9 @@ def _host_digest(host: str) -> str:  # pragma: needs posix-hard-link
 
 
 def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix-hard-link
+    if sys.platform == "win32":  # pragma: win32 cover
+        _remove_link_directory_on_windows(link)
+        return
     # A rename in the parent may have put any directory under this name, so entries go through a descriptor checked
     # to be the directory made, and the name goes only through rmdir, which refuses a non-empty directory.
     try:
@@ -1308,6 +1337,69 @@ def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix
     # The link is gone, so a failure here leaves one stray empty directory and is not worth failing a release for.
     with suppress(OSError):
         link.path.rmdir()
+
+
+if sys.platform == "win32":  # pragma: win32 cover
+
+    def _link_beside_on_windows(database: str, identity: _DatabaseIdentity) -> _LinkDirectory:
+        parent: Final = pathlib.Path(database).parent
+        # No uid exists here: a directory is a dead holder's only if its ACL admits nobody but the trusted accounts.
+        _sweep_links_of_the_dead(parent, identity, 0)
+        path: Final = parent / f"{_link_prefix()}{secrets.token_hex(8)}"
+        _make_private_directory(os.fspath(path))
+        link: _LinkDirectory | None = None
+        try:
+            # The handle keeps a rename in the parent from swapping the directory while the link is made inside it.
+            with _pinned(os.fspath(path)) as directory_identity:
+                link = _LinkDirectory(path, directory_identity, secrets.token_hex(8))
+                _fill_link_directory(link, database, identity)
+        except BaseException:
+            if link is not None:  # pragma: no branch  # a pinned directory always gets its link
+                _remove_link_directory(link)
+            raise
+        return link
+
+    def _fill_link_directory(link: _LinkDirectory, database: str, identity: _DatabaseIdentity) -> None:
+        if not _directory_is_private(os.fspath(link.path)):
+            msg = f"link directory {os.fspath(link.path)!r} was replaced while opening"
+            raise OSError(msg)
+        _make_private_directory(os.fspath(link.path / link.name))
+        os.link(database, link.database)
+        # The open database handle pins its path against a rename, so only a file index that is not unique can differ.
+        if _identity_at(os.fspath(link.database)) != identity:  # pragma: no cover
+            msg = f"lock database changed while opening: {database!r}"
+            raise OSError(msg)
+
+    def _remove_dead_links_on_windows(path: pathlib.Path, identity: _DatabaseIdentity) -> None:
+        with _pinned(os.fspath(path)):
+            if not _directory_is_private(os.fspath(path)) or not _owner_is_gone(path.name):
+                return
+            with os.scandir(path) as entries:
+                nested: Final = [pathlib.Path(entry.path) for entry in entries]
+            for directory in nested:
+                _unlink_link_to_on_windows(identity, directory / _LINK_NAME)
+                with suppress(OSError):
+                    directory.rmdir()
+        with suppress(OSError):
+            path.rmdir()
+
+    def _unlink_link_to_on_windows(identity: _DatabaseIdentity, path: pathlib.Path) -> None:
+        with suppress(OSError):
+            if _identity_at(os.fspath(path)) == identity:
+                path.unlink()
+
+    def _remove_link_directory_on_windows(link: _LinkDirectory) -> None:
+        # A removal never fails a release: SQLite or a scanner may still hold a name, and the next sweep retries.
+        with suppress(OSError):
+            with _pinned(os.fspath(link.path)) as directory_identity:
+                if directory_identity != link.identity:
+                    return
+                for suffix in ("", "-journal", "-wal", "-shm"):
+                    with suppress(FileNotFoundError):
+                        pathlib.Path(f"{link.database}{suffix}").unlink()
+                with suppress(FileNotFoundError):
+                    pathlib.Path(link.database.parent).rmdir()
+            link.path.rmdir()
 
 
 def _open_lock_database(database: str) -> int:
