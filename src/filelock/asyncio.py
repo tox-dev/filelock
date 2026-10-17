@@ -8,6 +8,7 @@ __lazy_modules__ = [
     "contextlib",
     "filelock._async",
     "filelock._error",
+    "filelock._util",
     "functools",
     "inspect",
     "threading",
@@ -40,6 +41,7 @@ from filelock._api import (
     _ExtraValue,
     _fork_transition,
     _grouped_errors,
+    _is_system_call_failure,
     _raise_body_and_release,
     _raise_chained_errors,
     _raise_cleanup_errors,
@@ -64,6 +66,7 @@ from filelock._lease import SoftFileLease
 from filelock._soft import SoftFileLock
 from filelock._strict import StrictSoftFileLock
 from filelock._unix import UnixFileLock
+from filelock._util import ensure_directory_exists
 from filelock._windows import WindowsFileLock
 
 if TYPE_CHECKING:
@@ -220,6 +223,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
         """
         self._creator_pid = os.getpid()
+        self._holder_id = id(self)
         self._is_thread_local = thread_local
         self._is_singleton = is_singleton
         self._context_error_policy = context_error_policy  # already validated by the metaclass
@@ -376,7 +380,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             canonical = await self._off_loop(functools.partial(_canonical, self.lock_file))
             self._context.lock_counter += 1
             self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
-            self._context.claim_root = canonical
+            self._pin_lock_path(canonical)
             try:
                 await self._async_poll_until_acquired(
                     blocking=blocking,
@@ -388,8 +392,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             except BaseException:
                 self._reconcile_failed_acquire(canonical)
                 raise
-            finally:
-                self._context.claim_root = None
             self._commit_acquire(canonical)
             return AsyncAcquireReturnProxy(lock=self)
 
@@ -412,6 +414,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     ) -> None:
         lock_id = id(self)
         lock_filename = self.lock_file
+        await self._off_loop(functools.partial(ensure_directory_exists, self._lock_path))
         while True:
             self._raise_if_inherited()
             _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
@@ -526,12 +529,36 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             await self._release_serialized(force=force)
 
     async def _release_serialized(self, *, force: bool) -> None:
+        counter_before: Final = self._context.lock_counter
         if not self.is_locked:
             return
         if not force and self._context.lock_counter > 1:
             self._context.lock_counter -= 1
             return
 
+        try:
+            await self._release_through_backend()
+        except BaseException as release_error:
+            if self._release_interrupted_before_commit(counter_before, release_error):
+                with contextlib.suppress(Exception):
+                    self._release_with_fork_tracking()
+                self._commit_release_if_released()
+            raise
+
+    def _release_interrupted_before_commit(self, counter_before: int, release_error: BaseException) -> bool:
+        # Same rule as the sync release: a handler that raised before anything committed leaves the counter as it was,
+        # and only then does a second attempt release the hold. A worker thread never runs a handler, so a lock that
+        # runs its backend in the executor has nothing to retry.
+        return (
+            counter_before == self._context.lock_counter
+            and self.is_locked
+            and not self.run_in_executor
+            and not iscoroutinefunction(self._release)
+            and not isinstance(release_error, asyncio.CancelledError)
+            and not _is_system_call_failure(release_error)
+        )
+
+    async def _release_through_backend(self) -> None:
         lock_id, lock_filename = id(self), self.lock_file
         _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
         release_future = self._start_tracked_release()
@@ -734,10 +761,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                         _raise_grouped_errors(_ASYNC_CONTEXT_RELEASE_ERRORS, body_error, cancellation, backend_error)
             _raise_body_and_release(body_error, release_error)
 
-    def __del__(self) -> None:
-        """Release on deletion; safe to call during GC even when no event loop is running."""
-        if vars(self).get("_creator_pid") != os.getpid():
-            return  # pragma: forked child
+    def _release_abandoned_holds(self) -> None:
+        # Runs from garbage collection, where no event loop may be running.
         with contextlib.suppress(Exception):
             # A thread-local lock never uses an executor, so an in-place release matches the loop's and also reaches
             # threads whose loops it cannot schedule on.
@@ -754,28 +779,16 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 if not loop.is_running():  # pragma: no cover
                     loop.run_until_complete(self.release(force=True))
                     return
-                self._leave_shared_registries()
+                # Off the deadlock registry, a new lock in this task waits for the scheduled release instead of failing.
+                self._drop_registry_entry()
                 # The stored loop runs in another thread, and only its own thread may create tasks on it.
                 pending = asyncio.run_coroutine_threadsafe(self.release(force=True), loop)
             else:
-                self._leave_shared_registries()
+                self._drop_registry_entry()
                 pending = loop.create_task(self.release(force=True))
             # The loop keeps only a weak reference to a task, so hold one until the release finishes.
             _FINALIZER_RELEASES.add(pending)
             pending.add_done_callback(self._settle_finalizer_release)
-
-    def _leave_shared_registries(self) -> None:
-        # CPython finalizes before clearing weak references and the scheduled release keeps this lock alive, so the
-        # singleton cache would hand it to a new caller whose hold the forced release then drops. Off the deadlock
-        # registry, a new lock in this task waits for the release instead of failing fast. The cache lock is never
-        # awaited: a constructor holds it while taking the fork locks, inside which the collector can run this.
-        if self._instances_lock.acquire(blocking=False):
-            try:
-                for key in [key for key, instance in self._instances.items() if instance is self]:
-                    del self._instances[key]
-            finally:
-                self._instances_lock.release()
-        self._drop_registry_entry()
 
     def _settle_finalizer_release(self, pending: asyncio.Task[None] | futures.Future[None]) -> None:
         _FINALIZER_RELEASES.discard(pending)

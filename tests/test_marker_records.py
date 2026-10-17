@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 import os
 import time
+from contextlib import suppress
 from multiprocessing import get_context
 from typing import TYPE_CHECKING, Final
 
@@ -167,8 +168,12 @@ def test_lease_ages_out_a_malformed_record(tmp_path: Path, mocker: MockerFixture
     marker = tmp_path / "a.lock"
     marker.write_text("filelock/2\nnot-a-record\n", encoding="utf-8")
 
-    with SoftFileLease(str(marker), lease_duration=5, timeout=1) as lease:
+    lease = SoftFileLease(str(marker), lease_duration=5)
+    _acquire_after_reclaim(lease)
+    try:
         assert lease.is_lock_held_by_us
+    finally:
+        lease.release()
 
 
 def test_marker_pid_and_owner_are_none_without_marker(tmp_path: Path) -> None:
@@ -247,8 +252,12 @@ def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
         process.start()
         process.join(timeout=_PROCESS_DEADLINE)
         assert process.exitcode == 0
-    with MarkerSoftFileLock(marker, timeout=1) as lock:
+    lock = MarkerSoftFileLock(marker)
+    _acquire_after_reclaim(lock)
+    try:
         assert lock.pid == os.getpid()
+    finally:
+        lock.release()
 
 
 @pytest.mark.parametrize(
@@ -261,8 +270,24 @@ def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
 def test_marker_lock_reclaims_malformed_record(marker: Path, record: str, mocker: MockerFixture) -> None:
     mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
     marker.write_text(record, encoding="utf-8")
-    with MarkerSoftFileLock(marker, timeout=1) as lock:
+    lock = MarkerSoftFileLock(marker)
+    _acquire_after_reclaim(lock)
+    try:
         assert lock.pid == os.getpid()
+    finally:
+        lock.release()
+
+
+def _acquire_after_reclaim(lock: MarkerSoftFileLock) -> None:
+    # One poll per call: the first sees the marker, the second evicts a stale or aged-out one and the third takes the
+    # free path. Counting polls instead of timing them keeps a stalled runner from failing a reclaim that happens.
+    assert any(_polled_once_and_holds(lock) for _ in range(3)), "the marker was not reclaimed within three polls"
+
+
+def _polled_once_and_holds(lock: MarkerSoftFileLock) -> bool:
+    with suppress(Timeout):
+        lock.acquire(blocking=False)
+    return lock.is_locked
 
 
 @pytest.fixture

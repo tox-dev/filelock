@@ -149,3 +149,13 @@ def create_junction() -> Callable[[Path, Path], None]:  # pragma: win32 cover
             _winapi.CreateJunction(str(target), str(link))
 
     return create
+
+
+@pytest.fixture
+def working_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.chdir(first)
+    return first, second

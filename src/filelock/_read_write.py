@@ -71,6 +71,8 @@ _DatabaseIdentity: TypeAlias = tuple[int, int]
 # sqlite3_busy_timeout() accepts a C int, max 2_147_483_647 on 32-bit. Use a lower value to be safe (~23 days).
 _MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
 _UNSAFE_FORK_EXIT_STATUS: Final[int] = 70
+#: The longest a contended acquisition waits for the database inside one fork transition, in seconds.
+_MAX_TRANSITION_WAIT: Final[float] = 0.05
 # O_NONBLOCK keeps an open from blocking on a FIFO planted at the path; the regular-file check then rejects it.
 _DB_OPEN_FLAGS: Final[int] = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 # Descriptor paths reopen the validated inode; journal_mode=MEMORY avoids an on-disk journal at the synthetic path.
@@ -336,6 +338,25 @@ class _ForkSafeConnection(sqlite3.Connection):
             self.close()
 
 
+@dataclass(slots=True)
+class _OwnedConnection:
+    """
+    The connection of one lock, closed when the lock is collected.
+
+    CPython runs ``__del__`` before it clears weak references. A finalizer on the lock itself would close the
+    connection while the singleton cache still hands the lock out, and a thread given the lock would nest into a hold
+    with no database lock behind it. The lock alone refers to this holder, so the holder is collected once the cache no
+    longer finds the lock.
+    """
+
+    connection: _ForkSafeConnection | None = None
+
+    def __del__(self) -> None:
+        if (connection := self.connection) is not None:
+            with suppress(sqlite3.Error, RuntimeError):
+                connection.close()
+
+
 class _ReadWriteLockMeta(type):
     """
     Resolve singleton instances for ``is_singleton=True`` construction.
@@ -374,7 +395,8 @@ class _ReadWriteLockMeta(type):
         # Resolve only the parent, so a symlink at the lock path stays its own key instead of aliasing its target.
         normalized = pathlib.Path(_canonical(lock_file))
         with cls._instances_lock:
-            if normalized not in cls._instances:
+            # One lookup, since another thread can drop the last reference between a membership check and a read.
+            if (instance := cls._instances.get(normalized)) is None:
                 if normalized in cls._instances_under_construction:  # pragma: no cover - exercised in an audit callback
                     msg = f"Singleton lock construction is already active for {lock_file!s}"
                     raise RuntimeError(msg)
@@ -389,8 +411,6 @@ class _ReadWriteLockMeta(type):
                     msg = "ReadWriteLock construction cannot continue after fork"
                     raise RuntimeError(msg)
                 cls._instances[normalized] = instance
-            else:
-                instance = cls._instances[normalized]
 
             if (
                 _timeout_behavior(instance.timeout, any_negative=False)
@@ -489,7 +509,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._write_thread_id: int | None = None
         self._read_depths: dict[int, int] = {}
         self._acquisition_thread_ids: set[int] = set()
-        self._con: _ForkSafeConnection | None = None
+        self._owned_connection = _OwnedConnection()
         self._connection_transaction_released = True
         self._connection_identity: _DatabaseIdentity | None = None
         self._closed = False
@@ -628,6 +648,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._raise_if_acquiring("release")
             self._release(force=False, close=False, thread_id=thread_id)
 
+    def _holds_level_of(self, thread_id: int) -> bool:
+        # Read without the internal lock. The async wrapper asks from its event loop, which must not wait out a release
+        # on another thread. A stale answer is what a caller asking a moment earlier would have had.
+        return thread_id == self._write_thread_id or thread_id in self._read_depths
+
     def _release(self, *, force: bool, close: bool, thread_id: int | None = None) -> None:
         thread_id = threading.get_ident() if thread_id is None else thread_id
         with self._transaction_lock, self._internal_lock:
@@ -682,10 +707,13 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._write_thread_id = None
         self._read_depths = {}
 
-    def __del__(self) -> None:
-        if _GETPID() == getattr(self, "_creator_pid", None) and (connection := getattr(self, "_con", None)) is not None:
-            with suppress(sqlite3.Error, RuntimeError):
-                connection.close()
+    @property
+    def _con(self) -> _ForkSafeConnection | None:
+        return self._owned_connection.connection
+
+    @_con.setter
+    def _con(self, connection: _ForkSafeConnection | None) -> None:
+        self._owned_connection.connection = connection
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         if self._con is not None:
@@ -713,9 +741,32 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             raise sqlite3.ProgrammingError(msg)
 
     def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
+        timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
+        start_time: Final = time.monotonic()
+        remaining = timeout  # -1 waits up to SQLite's busy-timeout cap
+        while True:
+            # A fork waits for the open transitions and admits no new one meanwhile. A wait for the database inside one
+            # stalls the forking thread and, behind it, each lock call in the process. With no other thread to fork,
+            # the wait runs in one piece, which keeps SQLite's writer preference. threading does not count a
+            # thread started through _thread, so a fork from one of those still waits.
+            final = (
+                not blocking
+                or 0 <= remaining <= _MAX_TRANSITION_WAIT
+                or not hasattr(os, "register_at_fork")
+                or threading.active_count() == 1
+            )
+            try:
+                return self._attempt_acquire(mode, remaining if final else _MAX_TRANSITION_WAIT, blocking=blocking)
+            except Timeout:
+                if final:
+                    raise
+            # Only a runtime with fork handlers waits in more than one attempt.
+            if timeout != -1:  # pragma: needs register-at-fork
+                remaining = max(timeout - (time.monotonic() - start_time), 0)
+
+    def _attempt_acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
         with _fork_transition():
             self._raise_if_unusable()
-            timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
             operation_pid = _GETPID()
             thread_id = threading.get_ident()
             with self._internal_lock:

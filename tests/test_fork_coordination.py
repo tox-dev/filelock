@@ -178,6 +178,134 @@ if second_status != 0 or owner.is_alive() or statuses.get(timeout=1) != 0:
     assert result.returncode == 0, result.stderr
 
 
+@NEEDS_FORK  # pragma: needs fork
+@_FORK_WARNING
+def test_fork_interrupted_while_waiting_for_a_transition_reopens_admission(tmp_path: Path) -> None:
+    # CPython reports a signal handler that raises while the fork waits for another thread's lock call, and the fork
+    # goes on. The other threads then blocked in their next filelock call for good, and the child kept the parent's
+    # hold.
+    script = """
+from __future__ import annotations
+
+import os
+import signal
+import sys
+import threading
+from unittest import mock
+
+from filelock import FileLock
+
+entered = threading.Event()
+release = threading.Event()
+real_open = os.open
+
+def slow_open(*args: object, **kwargs: object) -> int:
+    if threading.current_thread().name == "slow-open":
+        entered.set()
+        release.wait(timeout=5)
+    return real_open(*args, **kwargs)
+
+def use_lock(path: str) -> None:
+    with FileLock(path).acquire(timeout=0):
+        pass
+
+def fork_once() -> int:
+    child_pid = os.fork()
+    if child_pid == 0:
+        os._exit(1 if held.is_locked else 0)
+    _, status = os.waitpid(child_pid, 0)
+    return os.waitstatus_to_exitcode(status)
+
+def interrupt(_signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt
+
+held = FileLock(sys.argv[3])
+held.acquire()
+with mock.patch("os.open", side_effect=slow_open):
+    slow = threading.Thread(target=use_lock, args=(sys.argv[1],), name="slow-open", daemon=True)
+    slow.start()
+    if not entered.wait(timeout=5):
+        sys.exit(1)
+    signal.signal(signal.SIGALRM, interrupt)
+    signal.setitimer(signal.ITIMER_REAL, 0.2)
+    interrupted_status = fork_once()
+    release.set()
+    slow.join(timeout=5)
+later = threading.Thread(target=use_lock, args=(sys.argv[2],), daemon=True)
+later.start()
+later.join(timeout=5)
+if interrupted_status != 0 or slow.is_alive() or later.is_alive():
+    sys.exit(2)
+if fork_once() != 0:
+    sys.exit(3)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, *(str(tmp_path / name) for name in ("slow.lock", "later.lock", "held.lock"))],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@NEEDS_FORK  # pragma: needs fork
+@_FORK_WARNING
+def test_fork_interrupted_while_taking_the_gate_reports_no_after_hook_error(tmp_path: Path) -> None:
+    # CPython forks anyway when the before hook raises, and the after hook then finds no depth stored for the thread.
+    script = """
+from __future__ import annotations
+
+import os
+import sys
+import threading
+from types import FrameType
+
+from filelock import FileLock
+from filelock._api import _pin_fork_objects
+
+fired = False
+
+def hook(frame: FrameType, event: str, _arg: object) -> None:
+    global fired
+    if (
+        event == "call"
+        and frame.f_code is threading.Condition.__enter__.__code__
+        and frame.f_back is not None
+        and frame.f_back.f_code is _pin_fork_objects.__code__
+        and not fired
+    ):
+        fired = True
+        raise KeyboardInterrupt
+
+held = FileLock(sys.argv[1])
+held.acquire()
+sys.setprofile(hook)
+try:
+    child_pid = os.fork()
+finally:
+    sys.setprofile(None)
+if child_pid == 0:
+    os._exit(0)
+os.waitpid(child_pid, 0)
+later = threading.Thread(target=lambda: FileLock(sys.argv[2]).acquire(timeout=0), daemon=True)
+later.start()
+later.join(timeout=5)
+sys.exit(0 if fired and not later.is_alive() else 1)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, *(str(tmp_path / name) for name in ("held.lock", "later.lock"))],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "_resume_parent_after_fork" not in result.stderr
+
+
 @NEEDS_REGISTER_AT_FORK  # pragma: needs register-at-fork
 @NEEDS_PROMPT_FINALIZATION
 @pytest.mark.parametrize("held", [pytest.param("gate", id="gate"), pytest.param("registry_lock", id="registry-lock")])
