@@ -230,10 +230,10 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     exclusion; remove the file only after the complete lock protocol has stopped using it.
 
     Filesystems without ``flock``: when ``flock`` fails with ``ENOSYS``, the lock switches to :class:`SoftFileLock
-    <filelock.SoftFileLock>` and emits a warning, unless constructed with ``fallback_to_soft=False``. Before switching it
-    removes the empty file only if this acquire created it. A file that already existed may be another process's soft
-    marker, so it stays: the soft lock waits on a live holder and reclaims an empty leftover once it has stayed
-    unchanged for two seconds.
+    <filelock.SoftFileLock>` and emits a warning, unless constructed with ``fallback_to_soft=False``. Before switching
+    it removes the empty file only if this acquire created it. It does so while still holding the file open, with the
+    exchange a stale break uses, so a peer's marker that replaced it is put back rather than deleted. A file that
+    already existed may be another process's soft marker, so it stays and the soft lock waits on it.
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,
@@ -596,10 +596,15 @@ Malformed and legacy markers
 
 A soft lock treats a record it cannot parse as malformed, not as a holder. A plain :class:`SoftFileLock
 <filelock.SoftFileLock>` self-heals a malformed marker once it has watched it stay unchanged for a short grace window on
-its own monotonic clock, which absorbs the brief gap between creating a marker and writing its record. A strict lock
-never age-breaks, so it fails closed on an unreadable claim. A marker written by an older filelock stays readable: the
-process start token is an integer, so a 3.29 reader parses a newer marker as well-formed and stays conservative rather
-than evicting a live holder.
+its own monotonic clock, which absorbs the brief gap between creating a marker and writing its record.
+
+It tells markers apart by modification time, inode number and change time (the time the kernel last changed the file's
+metadata). An owner can set a file's modification time, and ext4 hands a freed inode number to the next file, but no
+process can set the change time. A new marker therefore never inherits the time spent watching an old one.
+
+A strict lock never age-breaks, so it fails closed on an unreadable claim. A marker written by an older filelock stays
+readable: the process start token is an integer, so a 3.29 reader parses a newer marker as well-formed and stays
+conservative rather than evicting a live holder.
 
 Filesystem support matrix
 =========================
@@ -692,19 +697,39 @@ container runtimes create, keeps the token. A process that cannot read ``/proc/s
 ``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
 whenever either side lacks the boot id.
 
-Breaking a marker leaves a short window. Right before breaking it the contender reads the marker's inode and
-modification time again and leaves it alone if they moved since the stale check, the way Mercurial re-reads a lock under
-its break lock before removing it. It then renames the marker to a private ``<lock>.break.*`` name, so only one of
-several breakers takes it, and checks the renamed file's inode and modification time once more. A mismatch means a peer
-recreated the marker between that last read and the rename, so the contender hard-links that live marker back to the
-lock path and drops the break name. A third process that takes the empty path in the two syscalls between the rename
-and the link keeps it, whether a soft lock creating its marker or a :class:`StrictSoftFileLock
-<filelock.StrictSoftFileLock>` publishing its sentinel, and the live marker stays under the break name. Both then hold
-the lock. Mercurial
-closes this window by serializing breakers on a separate ``<lock>.break`` lock; filelock does not, because a breaker that
-crashes would leave that lock needing stale detection of its own and a 3.29 peer never takes it. Where ``os.link`` is
-missing or the filesystem refuses hard links, the live marker stays under the break name. The same applies to the
-``lifetime`` and :class:`SoftFileLease <filelock.SoftFileLease>` expiry breaks.
+A contender never leaves the lock path empty while it breaks a marker. Right before breaking it reads the marker's inode
+(the kernel's identity for a file, independent of its name) and modification time again. If they moved since the stale
+check, it leaves the marker alone, the way Mercurial re-reads a lock under its break lock before removing it. On Linux
+(``renameat2``) and macOS (``renamex_np``) it then writes a complete marker of its own under a private
+``<lock>.break.*`` name and exchanges the two names in one step. A contender that polls meanwhile finds a marker and
+waits.
+
+If the file it took is the one judged stale, it removes that file and holds the lock from then on. A peer that
+exchanges after that moves the holder's marker aside only while it checks what it took, and puts it back. A holder that
+releases while its marker is aside leaves a record no lock parses, so the put-back lands a marker that ages out.
+Otherwise a peer recreated the marker, and a second exchange puts the live marker back before its own is removed.
+
+The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID, then 32 random hex digits. A breaker killed
+between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under that name.
+A contender that finds the breaker's marker dead first looks in the lock's directory for names that start with
+``<lock>.break.<pid>.``, where ``<pid>`` is the dead breaker's. It first renames the record to
+``<lock>.restore.<pid>.<token>`` with its own PID, so only one of several contenders acts on it; a record whose
+recoverer died there is claimable again, and a claim a failed put-back left in the same process is retried on the next
+poll. It then exchanges back a marker whose owner is alive or cannot be proven dead, and removes one whose owner is
+dead. Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. The
+placeholder a break writes while it works carries the same PID, so a contender that evicts a placeholder a killed
+process left finds the same names.
+
+The contender holds the judged marker open from before it reads the record until the break ends. ext4 gives a freed
+inode number to the next file created, so a successor's marker could otherwise carry the number of the marker judged
+stale.
+
+Windows has no such exchange, but it refuses to rename a marker its live holder keeps open. There the contender renames
+the marker aside, checks it, and links back a marker it took by mistake; ``link`` never replaces a name. Anywhere else
+without an exchange, including NFS and SMB, which refuse it, a contender does not move a marker at all, because the path
+would stand empty beside a possibly live holder. The marker then counts as held until ``timeout`` or ``break_lock()``.
+The ``lifetime`` and :class:`SoftFileLease <filelock.SoftFileLease>` expiry breaks follow the same rules, and a failed
+acquire removes its own marker by the same exchange before it closes it.
 
 A PID means something only inside its PID namespace, and two containers in one pod share the hostname and the boot id
 without sharing one. On Linux the recorded hostname therefore names the namespace too, as ``<host>?pidns-<inode>`` with
@@ -718,13 +743,14 @@ host's namespace reads such a marker from a container that shares the hostname (
 names another process or none. Before it calls that owner dead it looks for a task in another namespace whose innermost
 PID (``NSpid`` in ``/proc/<pid>/status``) and start token match the record, since ``starttime`` and the boot id read the
 same in every PID namespace, and keeps the marker if one exists. From a time namespace with a boottime offset it matches
-the innermost PID alone. Three limits remain. A marker without a start token, a kernel before
-4.1 without ``NSpid``, or a ``/proc`` this process cannot list leaves the check nothing to find. Where
-``/proc/self/ns/pid`` cannot be read, the bare hostname is all that separates namespaces. And a contender never reclaims
-a marker from another namespace: a container that crashes and is replaced comes back in a new namespace. A
-:class:`~filelock.Timeout` names such a holder. Containers that can crash while holding a soft lock should use
-:class:`SoftFileLease <filelock.SoftFileLease>`, set ``lifetime``, or call ``break_lock()`` at entrypoint once nothing
-else can hold the path.
+the innermost PID alone.
+
+Three limits remain. A marker without a start token, a kernel before 4.1 without ``NSpid``, or a ``/proc`` this process
+cannot list leaves the check nothing to find. Where ``/proc/self/ns/pid`` cannot be read, the bare hostname is all that
+separates namespaces. And a contender never reclaims a marker from another namespace: a container that crashes and is
+replaced comes back in a new namespace. A :class:`~filelock.Timeout` names such a holder. Containers that can crash
+while holding a soft lock should use :class:`SoftFileLease <filelock.SoftFileLease>`, set ``lifetime``, or call
+``break_lock()`` at entrypoint once nothing else can hold the path.
 
 Why is ReadWriteLock backed by SQLite?
 ======================================

@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, 
 from weakref import WeakKeyDictionary, WeakValueDictionary, ref
 
 from filelock._error import SoftFileLockLifetimeWarning, Timeout
-from filelock._util import break_lock_file, ensure_directory_exists
+from filelock._util import ensure_directory_exists
 
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
@@ -1665,18 +1665,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.claim_root = None
 
     def _try_break_expired_lock(self) -> None:
-        """Remove the lock file if its modification time exceeds the configured :attr:`lifetime`."""
-        if (lifetime := self._context.lifetime) is None:
-            return
-        with contextlib.suppress(OSError):
-            # lstat, not stat: an attacker with write access to the lock directory can replace a held
-            # lock file with a symlink pointing at an old file, making stat() report the target's stale
-            # mtime so a waiter breaks a live lock and two processes hold it at once. lstat reads the
-            # symlink's own mtime, matching the O_NOFOLLOW reads elsewhere.
-            st = os.lstat(self._lock_path)
-            if time.time() - st.st_mtime < lifetime:
-                return
-            break_lock_file(self._lock_path, st.st_mtime, st.st_ino)
+        """Remove the lock file once it is older than :attr:`lifetime`; only an existence lock accepts one."""
 
     def _check_give_up(
         self,

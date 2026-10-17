@@ -10,7 +10,7 @@ from typing import Final, Literal, NamedTuple
 
 from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
 from filelock._soft import SoftFileLock, _read_lock_file, parse_decimal
-from filelock._util import break_lock_file, write_all
+from filelock._util import pin_inode, write_all
 
 #: Protocol 1 is the legacy ``<pid>\n<hostname>\n[<start_token>\n]`` marker that :class:`SoftFileLock` still writes.
 #: Protocol 2 carries the owner mode and the lease claim. A protocol 1 reader treats a protocol 2 marker as malformed
@@ -74,19 +74,30 @@ class MarkerSoftFileLock(SoftFileLock):
         self.break_lock()
 
     def _try_break_stale_lock(self) -> None:
-        with suppress(OSError, ValueError):
-            snapshot: Final[tuple[str | None, float, int]] = _read_lock_file(self._lock_path)
+        with suppress(OSError, ValueError), pin_inode(self._lock_path) as pinned:
+            content, marker = _read_lock_file(self._lock_path)
             owner: Final[OwnerRecord | None]
-            if (owner := parse_marker(snapshot[0])) is None:
+            if pinned not in {None, marker.st_ino}:  # pragma: win32 no cover  # Windows pins nothing
+                return  # replaced before the read, so nothing keeps the number read from reuse
+            if (owner := parse_marker(content)) is None:
                 super()._try_break_stale_lock()
             elif owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
-                break_lock_file(self._lock_path, *snapshot[1:])
+                self._take_over(marker, owner.pid)
 
     @classmethod
     def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
         if (owner := parse_marker(content)) is not None:
             return owner.pid, owner.hostname
         return super()._recorded_holder(content)
+
+    @classmethod
+    def _marker_is_live(cls, content: str | None, breaker_pid: int) -> bool:  # pragma: win32 no cover
+        if (owner := parse_marker(content)) is None:
+            return super()._marker_is_live(content, breaker_pid)
+        return owner.mode == "unknown" or (
+            (owner.pid != breaker_pid or owner.hostname != host_name())
+            and not owner_is_stale(owner.pid, owner.hostname, owner.start)
+        )
 
     def _read_owner(self) -> OwnerRecord | None:
         with suppress(OSError, ValueError):

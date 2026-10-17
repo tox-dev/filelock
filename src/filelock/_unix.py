@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "pathlib", "typing", "warnings"]
+__lazy_modules__ = ["contextlib", "filelock._util", "pathlib", "typing", "warnings"]
 
 import os
 import sys
@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from filelock._api import BaseFileLock
+from filelock._util import remove_own_file
 
 has_fcntl = False
 if sys.platform == "win32":  # pragma: win32 cover
@@ -124,23 +125,22 @@ else:  # pragma: win32 no cover
                 return None  # unlinked since the create attempt; let the retry loop start over
 
         def _switch_to_soft_lock(self, fd: int, missing_flock: OSError, *, created: bool) -> None:
-            # The filesystem does not implement flock. Capture the opened file's identity before closing so the cleanup
-            # below removes only this attempt's placeholder, not a peer's replacement.
-            identity: tuple[int, int] | None = None
-            with suppress(OSError):
-                identity = (fstat := os.fstat(fd)).st_dev, fstat.st_ino
-            self._mark_descriptor_released()
-            os.close(fd)
-            if not self._fallback_to_soft or self._preserve_lock_file or self._on_acquired is not None:
-                # Fail closed: the caller opted out of existence-lock semantics (#603), asked to preserve the pathname
-                # (#605), or set an on_acquired hook (#607), none of which a soft lock can honor.
+            # The filesystem does not implement flock. Fail closed when the caller opted out of existence-lock
+            # semantics (#603), asked to preserve the pathname (#605), or set an on_acquired hook (#607), none of which
+            # a soft lock can honor.
+            falls_back: Final = self._fallback_to_soft and not self._preserve_lock_file and self._on_acquired is None
+            try:
+                # A file this attempt did not create may be a peer's live marker; the soft lock ages out a stale empty
+                # one. Our own placeholder goes before the close: the open descriptor keeps its inode number from a
+                # peer's marker, and an exchange puts back a peer's marker that replaced it.
+                if created and falls_back:
+                    with suppress(OSError):
+                        remove_own_file(self._lock_path, fd)
+            finally:
+                self._mark_descriptor_released()
+                os.close(fd)
+            if not falls_back:
                 raise missing_flock
-            # A file this attempt did not create may be a peer's live marker; the soft lock ages out a stale empty one.
-            if created:
-                with suppress(OSError):
-                    current = os.lstat(self._lock_path)
-                    if identity == (current.st_dev, current.st_ino):
-                        Path(self._lock_path).unlink()
             self._fallback_to_soft_lock()
             self._acquire()
 

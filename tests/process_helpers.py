@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
+from unittest.mock import patch
+
+import filelock._soft
+from filelock import SoftFileLock
 
 if TYPE_CHECKING:
     from collections.abc import Generator
     from multiprocessing.process import BaseProcess
+    from multiprocessing.synchronize import Event
 
 #: Stays under the suite's per-test timeout so a wedged worker still surfaces as the hang it is.
 _REAP_DEADLINE: Final[int] = 5
@@ -29,4 +35,22 @@ def cleanup_processes(processes: list[BaseProcess]) -> Generator[None]:
             process.close()
 
 
-__all__ = ["cleanup_processes"]
+def break_then_hang_after_exchange(
+    lock_file: str, ready: Event, go: Event, exchanged: Event
+) -> None:  # pragma: win32 no cover
+    """Break a stale marker, pausing right before the exchange and hanging right after it, until the test kills it."""
+    exchange: Final = filelock._soft.exchange_names
+
+    def exchange_then_hang(source: str, target: str) -> bool:
+        ready.set()
+        go.wait()
+        exchange(source, target)
+        exchanged.set()
+        while True:
+            time.sleep(_REAP_DEADLINE)
+
+    with patch.object(filelock._soft, "exchange_names", new=exchange_then_hang):
+        SoftFileLock(lock_file).acquire(blocking=False)
+
+
+__all__ = ["break_then_hang_after_exchange", "cleanup_processes"]

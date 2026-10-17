@@ -166,6 +166,40 @@ def test_fallback_keeps_peer_soft_marker(tmp_path: Path) -> None:  # pragma: nee
     holder.release()
 
 
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+def test_fallback_spares_a_peer_marker_that_replaced_its_placeholder(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path: Final = tmp_path / "test.lock"
+    peer_marker: Final = f"{os.getpid()}\n{host_name()}\n"
+    lstat: Final = os.lstat
+    stalled: list[bool] = []
+
+    def flock_missing(fd: int, operation: int) -> None:
+        stalled.append(False)
+        raise OSError(ENOSYS, f"Function not implemented for {fd} with {operation}")
+
+    def lstat_then_peer_replaces_placeholder(path: str, *, dir_fd: int | None = None) -> os.stat_result:
+        found: Final = lstat(path, dir_fd=dir_fd)
+        if stalled == [False] and os.fspath(path) == os.fspath(lock_path):
+            # The cleanup stalls past the grace a waiting soft lock gives an empty file, which evicts the placeholder
+            # and publishes its own marker.
+            stalled[0] = True
+            lock_path.unlink()
+            lock_path.write_text(peer_marker, encoding="utf-8")
+        return found
+
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=flock_missing)
+    mocker.patch("os.lstat", side_effect=lstat_then_peer_replaces_placeholder)
+    with pytest.raises(Timeout):
+        UnixFileLock(lock_path).acquire(timeout=0)
+    mocker.stopall()
+
+    # Where os.link cannot restore it, the peer's marker waits under a break name, but it is never deleted.
+    assert peer_marker in [path.read_text(encoding="utf-8") for path in tmp_path.glob("test.lock*")]
+
+
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_trailing_slash_path_raises_instead_of_retrying(tmp_path: Path) -> None:
     # macOS reports ENOENT for a create through a trailing slash, Linux EISDIR; neither is contention.

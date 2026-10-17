@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 import time
 from typing import TYPE_CHECKING, Final
 
@@ -10,6 +11,7 @@ import pytest
 from filelock import AsyncFileLock, AsyncSoftFileLock, FileLock, SoftFileLock, Timeout
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from pytest_mock import MockerFixture
@@ -69,6 +71,8 @@ def test_soft_lifetime_none_no_expiry(tmp_path: Path) -> None:
         SoftFileLock(lock_path, lifetime=None, timeout=0.2).acquire()
 
 
+@pytest.mark.usefixtures("break_route")
+@pytest.mark.parametrize("break_route", ["no-exchange"], indirect=True)
 def test_expired_lock_race_rename_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
@@ -78,6 +82,38 @@ def test_expired_lock_race_rename_fails(tmp_path: Path, mocker: MockerFixture) -
 
     with pytest.raises(TimeoutError):
         SoftFileLock(lock_path, lifetime=0.1, timeout=0.5).acquire()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows pins nothing")
+def test_expired_break_spares_a_successor_on_the_freed_inode_number(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture, reuse_inode: Callable[[Path, os.stat_result], None]
+) -> None:
+    (lock := tmp_path / "test.lock").write_text("expired\n", encoding="utf-8")
+    os.utime(lock, (0, 0))
+    expired: Final = lock.lstat()
+    lstat: Final = os.lstat
+    seen: list[bool] = []
+
+    def peer_breaks_then_successor_acquires(
+        path: str | os.PathLike[str], *, dir_fd: int | None = None
+    ) -> os.stat_result:
+        found: Final = lstat(path, dir_fd=dir_fd)
+        if os.fspath(path) == os.fspath(lock) and not seen:
+            # After the age check: a peer broke the expired marker and the next holder's marker took its freed inode
+            # number, created with the same modification time, so only the pinned inode tells the two apart.
+            seen.append(True)
+            lock.unlink()
+            lock.write_text("live", encoding="utf-8")
+            os.utime(lock, ns=(expired.st_atime_ns, expired.st_mtime_ns))
+            reuse_inode(lock, expired)
+        return found
+
+    mocker.patch.object(os, "lstat", new=peer_breaks_then_successor_acquires)
+    with pytest.raises(Timeout):
+        SoftFileLock(lock, lifetime=0.1).acquire(blocking=False)
+    mocker.stopall()
+
+    assert lock.read_text(encoding="utf-8") == "live"
 
 
 def test_lifetime_property_getter_setter(tmp_path: Path) -> None:
