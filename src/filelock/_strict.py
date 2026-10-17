@@ -159,13 +159,14 @@ class StrictSoftFileLock(BaseFileLock):
             raise
         self._mark_descriptor_pending(sentinel_fd, sentinel_identity)
         try:
-            won = self._attempt_doorway(claim_directory)
+            if won := self._attempt_doorway(claim_directory):
+                self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
         except BaseException:
-            self._discard_doorway()
+            # Once recorded as held, the acquire's rollback releases the claim instead.
+            if not self.is_locked:
+                self._discard_doorway()
             raise
-        if won:
-            self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
-        else:
+        if not won:
             self._discard_doorway()
 
     def _discard_pending_doorways(self, *, exited_only: bool) -> None:
@@ -283,10 +284,8 @@ class StrictSoftFileLock(BaseFileLock):
         ) is not None:  # pragma: needs dir-fd
             raise cleanup_error
 
-    def __del__(self) -> None:
-        super().__del__()
-        if vars(self).get("_creator_pid") != os.getpid():
-            return  # pragma: forked child
+    def _release_abandoned_holds(self) -> None:
+        super()._release_abandoned_holds()
         # release() skips a doorway whose cleanup failed, as it is no hold, so a dropped instance would strand claims.
         with contextlib.suppress(Exception):
             # GraalPy defers finalizers to the host collector, so its tests cannot drive this cleanup.

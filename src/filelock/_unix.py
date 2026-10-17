@@ -79,19 +79,22 @@ else:  # pragma: win32 no cover
                 return None
             fd, created = opened
             self._mark_descriptor_pending(fd)
+            # One guard covers the flock through the recording of the hold. A signal handler that raises in between
+            # would otherwise leave an unreferenced descriptor, and its flock, open until the process exits.
+            locked = False
             try:
                 locked = _lock_fd_nonblocking(fd)
-            except OSError as exception:
-                if exception.errno != ENOSYS:
-                    self._mark_descriptor_released()
-                    os.close(fd)
-                    raise  # contention returns False from _lock_fd_nonblocking, so any raise here is a real failure
-                return fd, exception, created
-            if locked:
-                self._finalize_locked_fd(fd)
-            else:
+                if locked and self._finalize_locked_fd(fd):
+                    return None
+            except BaseException as exception:
+                if not locked and isinstance(exception, OSError) and exception.errno == ENOSYS:
+                    return fd, exception, created
+                # Contention returns False from _lock_fd_nonblocking, so a raise here is a failure.
                 self._mark_descriptor_released()
-                os.close(fd)  # contention; let the retry loop try again
+                os.close(fd)
+                raise
+            self._mark_descriptor_released()
+            os.close(fd)  # contention or an unlinked inode; let the retry loop try again
             return None
 
         def _open_lock_file(self) -> tuple[int, bool] | None:
@@ -143,26 +146,16 @@ else:  # pragma: win32 no cover
             self._fallback_to_soft_lock()
             self._acquire()
 
-        def _finalize_locked_fd(self, fd: int) -> None:
-            # Runs with the flock held. Truncate and normalize mode under a guard so any failure closes fd rather than
-            # leaking it and its lock. A concurrent _release() may have unlinked the inode between our open() and
-            # flock() (st_nlink 0), leaving a useless dead-inode lock; drop it and let the retry loop start fresh.
-            keep = False
-            try:
-                stat_result = os.fstat(fd)
-                if stat_result.st_nlink != 0:
-                    os.ftruncate(fd, 0)
-                    self._apply_explicit_mode(fd)
-                    keep = True
-            except OSError:
-                self._mark_descriptor_released()
-                os.close(fd)
-                raise
-            if keep:
-                self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
-            else:
-                self._mark_descriptor_released()
-                os.close(fd)
+        def _finalize_locked_fd(self, fd: int) -> bool:
+            # Runs with the flock held; the caller closes fd on failure. A concurrent _release() may have unlinked
+            # the file between our open() and flock(), which st_nlink 0 shows. That lock guards no name, so report
+            # it and let the retry loop start over.
+            if (stat_result := os.fstat(fd)).st_nlink == 0:
+                return False
+            os.ftruncate(fd, 0)
+            self._apply_explicit_mode(fd)
+            self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
+            return True
 
         def _apply_explicit_mode(self, fd: int) -> None:
             if self.has_explicit_mode:

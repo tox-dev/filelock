@@ -1310,6 +1310,10 @@ thread returns without doing anything, and the interrupted release finishes the 
 while the interrupted code is still acquiring that lock raises :class:`RuntimeError`: the interrupted acquire cannot go
 on until the handler returns.
 
+A ``release()`` that a handler interrupts after it has started finishes releasing before the handler's exception
+propagates, so the ``with`` block above never leaves the lock held. Only a handler that fires at the very entry of
+``release()`` leaves the hold for the next call.
+
 *******************************
  Check your own lock state
 *******************************

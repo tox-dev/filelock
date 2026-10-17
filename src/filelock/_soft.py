@@ -86,18 +86,17 @@ class SoftFileLock(BaseFileLock):
                 raise
             self._try_break_stale_lock()
             return
-        self._mark_descriptor_pending(fd)
-        self._publish_held_marker(fd)
-
-    def _publish_held_marker(self, fd: int) -> None:
-        # Publish held state only once the record is fully on disk. On any failure, including cancellation, close the
-        # descriptor and unlink the path only while it still names the file we opened, so a rollback never deletes a
-        # successor's marker that replaced ours at the same path after our lease expired.
+        # Publish held state only once the record is on disk. On failure, cancellation included, close the descriptor
+        # and unlink the path only while it still names the file we opened: after an expired lease a successor's
+        # marker may sit at the same path. The guard starts at the open, so a signal handler that raises before
+        # _mark_descriptor_owned leaves no marker behind.
         identity: tuple[int, int] | None = None
         try:
             identity = _file_identity(os.fstat(fd))
+            self._mark_descriptor_pending(fd)
             self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
+            self._mark_descriptor_owned(fd, identity)
         except BaseException:
             self._mark_descriptor_released()
             try:
@@ -105,7 +104,6 @@ class SoftFileLock(BaseFileLock):
             finally:
                 self._unlink_held_marker(identity)
             raise
-        self._mark_descriptor_owned(fd, identity)
 
     def _apply_explicit_mode(self, fd: int) -> None:
         # os.open filters the mode through the umask, so an explicit mode lands as given only through fchmod, the way
@@ -196,8 +194,11 @@ class SoftFileLock(BaseFileLock):
             Path(self.lock_file).unlink()
 
     def _release_current(self, *, force: bool) -> None:
-        super()._release_current(force=force)
-        self._finish_marker_cleanup()
+        try:
+            super()._release_current(force=force)
+        finally:
+            # A release a handler cut short after the descriptor closed still owes the unlink on Windows.
+            self._finish_marker_cleanup()
 
     def _release(self) -> None:
         fd = self._context.lock_file_fd

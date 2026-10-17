@@ -22,9 +22,10 @@ from functools import partial
 from inspect import getframeinfo, stack
 from itertools import count
 from pathlib import Path, PurePath
+from pkgutil import resolve_name
 from queue import Queue
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
-from types import FrameType, TracebackType
+from types import CodeType, FrameType, TracebackType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast, get_args
 from uuid import uuid4
 from weakref import WeakValueDictionary
@@ -55,6 +56,7 @@ from tests.capability_marks import (
     NEEDS_FILE_PERMISSIONS,
     NEEDS_PARENT_SYMLINK_COLLAPSE,
     NEEDS_PROMPT_FINALIZATION,
+    NEEDS_PROMPT_SIGNAL_DELIVERY,
     NEEDS_SYMLINK,
 )
 
@@ -590,6 +592,44 @@ def test_del_releases_hold_of_live_thread(lock_type: type[BaseFileLock], tmp_pat
         del lock
         with lock_type(lock_path, blocking=False) as other:
             assert other.is_locked
+
+
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_singleton_handed_out_while_finalizing_keeps_its_hold(tmp_path: Path, thread_local: bool) -> None:
+    lock_path: Final = str(tmp_path / "a")
+    handed_out: Final = _singleton_handed_out_while_finalizing(lock_path, thread_local=thread_local)
+    with pytest.raises(Timeout):
+        FileLock(lock_path, blocking=False).acquire()
+    handed_out.release()
+
+
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_singleton_handed_out_while_finalizing_releases_once_dropped(tmp_path: Path, thread_local: bool) -> None:
+    lock_path: Final = str(tmp_path / "a")
+    handed_out = _singleton_handed_out_while_finalizing(lock_path, thread_local=thread_local)
+    del handed_out
+    with FileLock(lock_path, blocking=False) as other:
+        assert other.is_locked
+
+
+def _singleton_handed_out_while_finalizing(lock_path: str, *, thread_local: bool) -> FileLock:
+    # The cache still finds a lock whose finalizer is starting, as another thread asking at that moment would.
+    handed_out: Final[list[FileLock]] = []
+
+    # Interpreters run a profile hook with tracing off, so coverage does not record its body.
+    def take_from_cache(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover
+        if event == "call" and frame.f_code is BaseFileLock.__del__.__code__ and not handed_out:
+            handed_out.append(FileLock(lock_path, is_singleton=True, thread_local=thread_local))
+            handed_out[0].acquire()
+
+    sys.setprofile(take_from_cache)
+    try:
+        FileLock(lock_path, is_singleton=True, thread_local=thread_local)
+    finally:
+        sys.setprofile(None)
+    return handed_out.pop()
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -1484,7 +1524,7 @@ def test_release_interrupted_at_any_call_leaves_the_lock_usable(
     for target in count(1):  # pragma: no branch  # count() never runs out; the release that finishes ends the loop
         lock = lock_type(lock_path, thread_local=thread_local, timeout=_SHARED_WAIT)
         lock.acquire()
-        if not _release_interrupted_at_call(lock, target):
+        if not _interrupted_at_call(lock, target, lock.release):
             break
         lock.release()
         # Bounded first, so a lock the interrupt leaked fails here instead of hanging the blocking acquire below.
@@ -1498,11 +1538,117 @@ def test_release_interrupted_at_any_call_leaves_the_lock_usable(
     assert target > 1
 
 
-def _release_interrupted_at_call(lock: BaseFileLock, target: int) -> bool:
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        FileLock,
+        SoftFileLock,
+        MarkerSoftFileLock,
+        SoftFileLease,
+        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links),
+    ],
+)
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+@pytest.mark.parametrize("operation", ["acquire", "release"])
+def test_interrupted_at_any_call_reports_whether_it_holds(
+    tmp_path: Path, lock_type: type[BaseFileLock], thread_local: bool, operation: Literal["acquire", "release"]
+) -> None:
+    # A with block makes no second call that could correct is_locked, so it must not report a hold the OS dropped.
+    lock_path: Final = str(tmp_path / "a")
+    for target in count(1):  # pragma: no branch  # count() never runs out; the call that finishes ends the loop
+        lock = lock_type(lock_path, thread_local=thread_local)
+        if operation == "release":
+            lock.acquire()
+        if not _interrupted_at_call(lock, target, getattr(lock, operation)):
+            lock.release()
+            break
+        peer = lock_type(lock_path, blocking=False)
+        if lock.is_locked:
+            with pytest.raises(Timeout):
+                peer.acquire()
+        # Windows leaves a soft marker's unlink that the interrupt cut short to the instance's next call.
+        lock.release()
+        with peer:
+            assert peer.is_locked
+    assert target > 1
+
+
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        FileLock,
+        SoftFileLock,
+        MarkerSoftFileLock,
+        SoftFileLease,
+        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links),
+    ],
+)
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_release_interrupted_below_release_completes(
+    tmp_path: Path, lock_type: type[BaseFileLock], thread_local: bool
+) -> None:
+    lock_path: Final = str(tmp_path / "a")
+    # Target 1 is the entry of release() itself, which no Python code can cover.
+    for target in count(2):  # pragma: no branch  # count() never runs out; the release that finishes ends the loop
+        lock = lock_type(lock_path, thread_local=thread_local)
+        lock.acquire()
+        if not _interrupted_at_call(lock, target, lock.release):
+            lock.release()
+            break
+        assert not lock.is_locked
+        with lock_type(lock_path, blocking=False) as peer:
+            assert peer.is_locked
+    assert target > 2
+
+
+def test_acquire_interrupted_after_recording_the_hold_releases_it(tmp_path: Path) -> None:
+    # The thread-hold bookkeeping after _mark_descriptor_owned stores the descriptor calls into threading, where a
+    # signal can land too.
+    lock_path: Final = str(tmp_path / "a")
+    for target in count(1):  # pragma: no branch  # count() never runs out; the acquire that finishes ends the loop
+        lock = FileLock(lock_path)
+        if not _interrupted_at_call(lock, target, lock.acquire, callee=threading.current_thread.__code__):
+            lock.release()
+            break
+        assert not lock.is_locked
+        with FileLock(lock_path, blocking=False) as peer:
+            assert peer.is_locked
+    assert target > 1
+
+
+def test_acquire_after_one_interrupted_once_held_excludes_another_process(tmp_path: Path) -> None:
+    # The interrupt lands right after acquire takes and records the OS lock. The same object's next acquire must take
+    # the OS lock again, not nest into a hold whose handle the cut-short acquire closed.
+    lock_path: Final = str(tmp_path / "a")
+    lock: Final = FileLock(lock_path)
+    assert _interrupted_at_call(lock, 1, lock.acquire, callee=threading.current_thread.__code__)
+    with lock:
+        script = textwrap.dedent(f"""
+            from filelock import FileLock, Timeout
+            try:
+                FileLock({lock_path!r}).acquire(blocking=False)
+            except Timeout:
+                print("refused")
+        """)
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert (result.returncode, result.stdout.strip()) == (0, "refused"), result.stderr
+
+
+def _interrupted_at_call(
+    lock: BaseFileLock, target: int, operation: Callable[[], object], *, callee: CodeType | None = None
+) -> bool:
     # Interpreters run a profile hook with tracing off, so coverage never records its body.
     def interrupt(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover
-        # Only calls handed the lock: raising inside threading's own context managers would leak its locks.
-        if event == "call" and (resumable or frame not in entered) and any(v is lock for v in frame.f_locals.values()):
+        # Only calls handed the lock, or calls of callee made by one: raising inside threading's own context managers
+        # would leak its locks.
+        if event != "call" or (callee is not None and frame.f_code is not callee):
+            return
+        holder = frame if callee is None else frame.f_back
+        if (
+            (resumable or frame not in entered)
+            and holder is not None
+            and any(v is lock for v in holder.f_locals.values())
+        ):
             entered.add(frame)
             if next(calls) == target:
                 raise KeyboardInterrupt
@@ -1513,7 +1659,7 @@ def _release_interrupted_at_call(lock: BaseFileLock, target: int) -> bool:
     entered: Final[set[FrameType]] = set()
     sys.setprofile(interrupt)
     try:
-        lock.release()
+        operation()
     except KeyboardInterrupt:
         return True
     finally:
@@ -1521,13 +1667,7 @@ def _release_interrupted_at_call(lock: BaseFileLock, target: int) -> bool:
     return False
 
 
-_NEEDS_PROMPT_SIGNAL_DELIVERY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
-    not CAPABILITIES["prompt-signal-delivery"],
-    reason="this runtime runs a signal handler after raise_signal returns, so the signal escapes the acquire",
-)
-
-
-@_NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
 def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Path, mocker: MockerFixture) -> None:
     lock: Final = SoftFileLock(str(tmp_path / "a"))
 
@@ -1547,6 +1687,75 @@ def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Pa
     lock.acquire(blocking=False)
     lock.release()
     assert not (tmp_path / "a").exists()
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_release_interrupted_by_a_signal_before_the_backend_completes(
+    tmp_path: Path, mocker: MockerFixture, thread_local: bool
+) -> None:
+    lock: Final = FileLock(str(tmp_path / "a"), thread_local=thread_local)
+    lock.acquire()
+    pending: Final = [signal.SIGINT]
+
+    def signal_once(*_args: object) -> None:
+        signals = pending.copy()
+        pending.clear()
+        list(map(signal.raise_signal, signals))
+
+    mocker.patch("filelock._api._LOGGER.debug", autospec=True, side_effect=signal_once)
+    previous: Final = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            lock.release()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    mocker.stopall()
+
+    assert not lock.is_locked
+    with FileLock(str(tmp_path / "a"), blocking=False) as peer:
+        assert peer.is_locked
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+@pytest.mark.parametrize(
+    "interrupted",
+    [pytest.param("fcntl.flock", id="after_unlock", marks=NEEDS_FCNTL), pytest.param("os.close", id="after_close")],
+)
+def test_acquire_from_a_signal_handler_during_a_release_is_refused(
+    tmp_path: Path, mocker: MockerFixture, thread_local: bool, interrupted: str
+) -> None:
+    lock: Final = FileLock(str(tmp_path / "a"), thread_local=thread_local)
+    lock.acquire()
+
+    def acquire_in_handler(_signum: int, _frame: FrameType | None) -> None:
+        lock.acquire()
+
+    # Right after the unlock the handler used to nest into a hold the OS had dropped. After the close it took a hold
+    # whose release the interrupted one swallowed.
+    real: Final = resolve_name(interrupted)
+    pending: Final = [signal.SIGINT]
+
+    def call_then_signal_once(*args: int) -> None:
+        real(*args)
+        # Only the first call raises the signal, so the release the interrupt restarts can finish. Windows makes one
+        # call here, so a branch on the call count would stay half covered there.
+        signals = pending.copy()
+        pending.clear()
+        list(map(signal.raise_signal, signals))
+
+    mocker.patch(interrupted, autospec=True, side_effect=call_then_signal_once)
+    previous: Final = signal.signal(signal.SIGINT, acquire_in_handler)
+    try:
+        with pytest.raises(RuntimeError, match="acquired again while this thread's release of it runs"):
+            lock.release()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    mocker.stopall()
+
+    with FileLock(str(tmp_path / "a"), blocking=False) as peer:
+        assert peer.is_locked
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl

@@ -4,6 +4,7 @@ import asyncio
 import gc
 import logging
 import os
+import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter exit finalizes a held lock
 import sys
 import threading
@@ -25,15 +26,24 @@ from filelock import (
     AsyncSoftFileLease,
     AsyncSoftFileLock,
     BaseAsyncFileLock,
+    BaseFileLock,
     CloseErrorPolicy,
     ContextErrorPolicy,
+    FileLock,
     Timeout,
 )
-from tests.capability_marks import NEEDS_FCNTL, NEEDS_PARENT_SYMLINK_COLLAPSE, NEEDS_PROMPT_FINALIZATION
+from tests.capability_marks import (
+    NEEDS_FCNTL,
+    NEEDS_PARENT_SYMLINK_COLLAPSE,
+    NEEDS_PROMPT_FINALIZATION,
+    NEEDS_PROMPT_SIGNAL_DELIVERY,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
+    from types import FrameType
 
+    from _typeshed import Unused
     from pytest_mock import MockerFixture, MockType
 
 
@@ -190,6 +200,52 @@ async def test_non_executor(lock_type: type[BaseAsyncFileLock], thread_local: bo
         assert lock.is_locked
         assert lock is locked
     assert not lock.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_non_executor_release_interrupted_before_the_backend_completes(
+    lock_type: type[BaseAsyncFileLock], tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock = lock_type(str(tmp_path / "a"), run_in_executor=False)
+    await lock.acquire()
+    mocker.patch("filelock.asyncio._LOGGER.debug", autospec=True, side_effect=[KeyboardInterrupt, None, None])
+
+    with pytest.raises(KeyboardInterrupt):
+        await lock.release()
+    mocker.stopall()
+
+    assert not lock.is_locked
+    async with lock_type(str(tmp_path / "a"), blocking=False) as peer:
+        assert peer.is_locked
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.asyncio
+async def test_non_executor_release_interrupted_by_a_signal_before_the_backend_completes(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock = AsyncFileLock(str(tmp_path / "a"), run_in_executor=False)
+    await lock.acquire()
+    pending = [signal.SIGINT]
+
+    def signal_once(*_args: object) -> None:
+        signals = pending.copy()
+        pending.clear()
+        list(map(signal.raise_signal, signals))
+
+    mocker.patch("filelock.asyncio._LOGGER.debug", autospec=True, side_effect=signal_once)
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            await lock.release()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    mocker.stopall()
+
+    assert not lock.is_locked
+    async with AsyncFileLock(str(tmp_path / "a"), blocking=False) as peer:
+        assert peer.is_locked
 
 
 @pytest.mark.asyncio
@@ -1335,13 +1391,14 @@ async def test_async_del_inside_a_running_loop_falls_back_when_the_release_does_
     assert (lock.is_locked, (tmp_path / "a").exists()) == (False, False)
 
 
+@NEEDS_PROMPT_FINALIZATION
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
 async def test_async_del_never_waits_on_the_singleton_cache_lock(tmp_path: Path, schedule: MockType) -> None:
     # A constructor holds the cache lock while it takes the fork locks, inside which the collector can finalize a lock.
     class StallingLock(AsyncSoftFileLock):
         def __init__(self, lock_file: Path, *, is_singleton: bool) -> None:
-            super().__init__(lock_file, is_singleton=is_singleton)
+            super().__init__(lock_file, is_singleton=is_singleton, run_in_executor=False)
             if next(constructions):
                 inside.set()
                 leave.wait()
@@ -1349,19 +1406,19 @@ async def test_async_del_never_waits_on_the_singleton_cache_lock(tmp_path: Path,
     constructions: Final = count()
     inside: Final = threading.Event()
     leave: Final = threading.Event()
-    lock: Final = StallingLock(tmp_path / "a", is_singleton=True)
+    lock = StallingLock(tmp_path / "a", is_singleton=True)
     await lock.acquire()
     holder: Final = threading.Thread(target=StallingLock, args=(tmp_path / "b",), kwargs={"is_singleton": True})
     holder.start()
     inside.wait()
     try:
-        lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+        del lock
     finally:
         leave.set()
         holder.join()
     await asyncio.wait([schedule.spy_return])
 
-    assert not lock.is_locked
+    assert not (tmp_path / "a").exists()
 
 
 @pytest.mark.asyncio
@@ -1378,20 +1435,47 @@ async def test_async_thread_local_del_inside_a_running_loop_releases_another_thr
     assert not lock_path.exists()
 
 
+@NEEDS_PROMPT_FINALIZATION
 @pytest.mark.asyncio
 async def test_async_del_hands_the_singleton_slot_to_a_new_lock(tmp_path: Path, schedule: MockType) -> None:
     lock_path: Final = tmp_path / "a"
-    dying: Final = AsyncSoftFileLock(lock_path, is_singleton=True)
+    # An executor worker keeps the call it ran until it picks up the next one, which would keep the lock alive.
+    dying = AsyncSoftFileLock(lock_path, is_singleton=True, run_in_executor=False)
     await dying.acquire()
 
-    # The scheduled release keeps the lock alive past its finalizer, as CPython runs it before clearing weak references.
-    dying.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
-    successor: Final = AsyncSoftFileLock(lock_path, is_singleton=True)
+    del dying
+    successor: Final = AsyncSoftFileLock(lock_path, is_singleton=True, run_in_executor=False)
     await successor.acquire()
     await asyncio.wait([schedule.spy_return])
 
     assert (successor.is_locked, lock_path.exists()) == (True, True)
     await successor.release()
+
+
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_async_singleton_handed_out_while_finalizing_keeps_its_hold(tmp_path: Path, thread_local: bool) -> None:
+    lock_path: Final = str(tmp_path / "a")
+    handed_out: Final[list[AsyncFileLock]] = []
+
+    # The cache still finds a lock whose finalizer is starting, as another thread asking at that moment would.
+    # Interpreters run a profile hook with tracing off, so coverage does not record its body.
+    def take_from_cache(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover
+        if event == "call" and frame.f_code is BaseFileLock.__del__.__code__ and not handed_out:
+            handed_out.append(
+                AsyncFileLock(lock_path, is_singleton=True, thread_local=thread_local, run_in_executor=False)
+            )
+            asyncio.run(handed_out[0].acquire())
+
+    sys.setprofile(take_from_cache)
+    try:
+        AsyncFileLock(lock_path, is_singleton=True, thread_local=thread_local, run_in_executor=False)
+    finally:
+        sys.setprofile(None)
+
+    with pytest.raises(Timeout):
+        FileLock(lock_path, blocking=False).acquire()
+    asyncio.run(handed_out[0].release())
 
 
 @pytest_asyncio.fixture(loop_scope="function")
