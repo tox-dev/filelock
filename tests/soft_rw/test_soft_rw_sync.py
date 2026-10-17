@@ -14,7 +14,7 @@ from errno import EIO
 from functools import partial
 from multiprocessing import Event, Process
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import pytest
 from capabilities import CAPABILITIES
@@ -249,6 +249,130 @@ def test_singleton_returns_same_instance(lock_file: str) -> None:
         assert first is second
     finally:
         first.close()
+
+
+@pytest.mark.parametrize("order", [(0, 1, 2), (1, 2, 0), (2, 0, 1)])
+def test_singletons_are_distinct_per_subclass(lock_file: str, order: tuple[int, int, int]) -> None:
+    class FirstLock(SoftReadWriteLock):
+        pass
+
+    class SecondLock(SoftReadWriteLock):
+        pass
+
+    lock_types = (SoftReadWriteLock, FirstLock, SecondLock)
+    instances: list[SoftReadWriteLock] = []
+    try:
+        for index in order:
+            lock_type = lock_types[index]
+            instance = lock_type(lock_file)
+            instances.append(instance)
+            assert type(instance) is lock_type
+            assert lock_type.get_lock(lock_file) is instance
+        assert len({id(instance) for instance in instances}) == len(lock_types)
+        with instances[0].write_lock():
+            for contender in instances[1:]:
+                with pytest.raises(Timeout):
+                    contender.acquire_write(blocking=False)
+    finally:
+        for instance in instances:
+            instance.close()
+
+
+@pytest.mark.parametrize("relation", ["base", "sibling", "child"])
+def test_singleton_construction_can_overlap_across_classes(lock_file: str, relation: str) -> None:
+    entered, release = threading.Event(), threading.Event()
+
+    class SlowLock(SoftReadWriteLock):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # ruff:ignore[any-type]  # forwards the public constructor unchanged
+            if type(self) is SlowLock:
+                entered.set()
+                assert release.wait(timeout=5)
+            super().__init__(*args, **kwargs)
+
+    class SiblingLock(SoftReadWriteLock):
+        pass
+
+    class ChildLock(SlowLock):
+        pass
+
+    other_type = {"base": SoftReadWriteLock, "sibling": SiblingLock, "child": ChildLock}[relation]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(SlowLock, lock_file)
+        try:
+            assert entered.wait(timeout=5)
+            # The second construction must finish while the first is still inside __init__.
+            with closing(pool.submit(other_type, lock_file).result(timeout=5)) as other:
+                assert type(other) is other_type
+                assert other_type.get_lock(lock_file) is other
+        finally:
+            release.set()
+            with closing(first.result(timeout=5)) as instance:
+                assert type(instance) is SlowLock
+                assert SlowLock.get_lock(lock_file) is instance
+
+
+@pytest.mark.parametrize("is_singleton", [True, False])
+def test_subclass_forwards_cooperative_class_keywords(lock_file: str, is_singleton: bool) -> None:
+    class LabelMixin:
+        label: str
+
+        def __init_subclass__(cls, *, label: str, **kwargs: object) -> None:
+            super().__init_subclass__(**kwargs)
+            cls.label = label
+
+    class LabeledLock(SoftReadWriteLock, LabelMixin, label="invoice"):
+        pass
+
+    class ChildLock(LabeledLock, label="child"):
+        pass
+
+    with (
+        closing(LabeledLock(lock_file, is_singleton=is_singleton)) as parent,
+        closing(ChildLock(lock_file, is_singleton=is_singleton)) as child,
+    ):
+        assert type(parent) is LabeledLock
+        assert type(child) is ChildLock
+        assert (parent.label, child.label) == ("invoice", "child")
+
+
+def test_subclass_rejects_recursive_singleton_construction_and_can_retry(lock_file: str) -> None:
+    recurse = True
+
+    class RecursiveLock(SoftReadWriteLock):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # ruff:ignore[any-type]  # forwards the public constructor unchanged
+            if recurse:
+                RecursiveLock(lock_file)
+            super().__init__(*args, **kwargs)
+
+    with pytest.raises(RuntimeError, match="Singleton lock construction is already active"):
+        RecursiveLock(lock_file)
+    recurse = False
+    with closing(RecursiveLock(lock_file)) as instance:
+        assert RecursiveLock(lock_file) is instance
+
+
+def test_subclass_concurrent_constructors_share_one_singleton(lock_file: str) -> None:
+    callers = threading.Barrier(8)
+    init_calls = 0
+
+    class CustomLock(SoftReadWriteLock):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # ruff:ignore[any-type]  # forwards the public constructor unchanged
+            nonlocal init_calls
+            init_calls += 1
+            super().__init__(*args, **kwargs)
+
+    def construct() -> SoftReadWriteLock:
+        callers.wait(timeout=5)
+        return CustomLock(lock_file)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        instances = list(pool.map(lambda _: construct(), range(8)))
+    try:
+        assert init_calls == 1
+        assert all(instance is instances[0] for instance in instances)
+    finally:
+        for instance in instances:
+            instance.close()
 
 
 def test_non_singleton_returns_distinct_instances(lock_file: str) -> None:
