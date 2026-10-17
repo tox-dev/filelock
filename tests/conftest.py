@@ -3,6 +3,9 @@ from __future__ import annotations
 import gc
 import itertools
 import os
+import secrets
+import shutil
+import sys
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, TypeVar
@@ -219,3 +222,32 @@ def working_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
     second.mkdir()
     monkeypatch.chdir(first)
     return first, second
+
+
+@pytest.fixture
+def lock_path_in_shared_tmp() -> Iterator[Path]:  # pragma: needs foreign-sticky-tmp
+    # /tmp itself, where every account can create names, rather than this test's own directory.
+    lock_path = Path("/tmp", f"filelock-{secrets.token_hex(8)}.lock")  # ruff:ignore[hardcoded-temp-file]  # the subject
+    yield lock_path
+    for derived in (Path(f"{lock_path}.filelock"), Path(f"{lock_path}.rw")):
+        shutil.rmtree(derived, ignore_errors=True)
+    lock_path.unlink(missing_ok=True)
+
+
+@pytest.fixture
+def directories_of_another_account(mocker: MockerFixture) -> None:  # pragma: needs foreign-sticky-tmp
+    # Directories this process creates then look, to the lock, like ones another account created first.
+    assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
+    mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+
+
+@pytest.fixture
+def create_junction() -> Callable[[Path, Path], None]:  # pragma: win32 cover
+    # A junction needs no privilege, unlike a symlink, and lstat reports it as a directory.
+    def create(link: Path, target: Path) -> None:
+        if sys.platform == "win32":  # pragma: no branch  # narrows _winapi for the type checker
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+
+    return create

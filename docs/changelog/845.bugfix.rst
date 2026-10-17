@@ -1,0 +1,3 @@
+:class:`~filelock.SoftReadWriteLock` refuses a commit that lands a whole retention window behind the log, so two
+committers stalled at adjacent generations can no longer admit a second writer. Its stale check samples the clock before
+it reads a holder record, so a pause between the two no longer counts as time the record stayed unchanged.

@@ -169,6 +169,15 @@ Every strict participant needs filelock 3.30.0 or newer. Legacy clients configur
 ``break_lock()``, and code that deletes lock files can remove the sentinel; mixing them with strict clients voids mutual
 exclusion.
 
+The lock creates ``<path>.filelock`` and its ``claims`` directory with its ``mode``, plus search permission where the
+mode grants read, so ``mode=0o600`` gives ``0o700``. It sets the sticky bit (a directory flag that lets only a file's
+owner remove it) on both, so only the account that published a claim can remove it. On each acquisition it
+narrows a directory it owns to the mode, which covers one an earlier release created wider. Under a sticky parent such
+as ``/tmp``, acquisition raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` when
+``<path>.filelock`` belongs to an account that owns neither the lock nor the parent. Where the platform supports
+``dir_fd``, the lock reaches ``claims`` through a descriptor of ``<path>.filelock`` opened without following symlinks.
+A symlink swapped in for either directory then fails the operation instead of redirecting it.
+
 Strict claims require coherent directory reads and atomic no-replace hard links. The class reports a protocol error
 when the filesystem reports that it cannot publish hard links. NFS and SMB remain outside this guarantee until their
 mount and server combination passes the protocol tests. Linux documents the hard-link lock pattern in `open(2)
@@ -440,6 +449,14 @@ The defense differs by platform:
 - :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL``, which fails on any
   existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
   file as malformed, then checks the opened handle again with ``fstat``.
+- :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches
+  ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
+  directory after the check cannot redirect where claims are created, listed or removed.
+- :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` opens ``<path>.rw`` and then ``gen`` or ``holders`` without
+  following symlinks for every record operation on platforms that support ``dir_fd``. A tree swapped in after an
+  earlier acquire cannot redirect its writes. It rewrites a holder record only when the name still leads to the file it
+  created and that file has no second name, and it opens the record without blocking. It leaves alone a hard link (a
+  second name for the same file) or a FIFO (a named pipe) renamed over the record.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path and keeps SQLite on the file it
 checked, so a link planted in a shared directory cannot point the lock at another file.
@@ -510,6 +527,17 @@ whatever its mode bits say. ``0o600`` and ``0o700`` keep *other* UIDs out; they 
 because that co-tenant owns the files and can bypass the protocol. Treat every same-UID process on the host as trusted to
 follow the protocol. Where that assumption does not hold, a file lock is the wrong tool; use an OS mechanism that enforces
 access, such as a privilege boundary or a broker process.
+
+The directory boundary
+======================
+
+Every protection filelock gives against processes of other accounts holds only while none of them can replace the
+lock's directory or any of its ancestors. Each ancestor must belong to the account the lock runs as or to root, and must
+either not be writable by others or carry the sticky bit. A process that can rename entries in a non-sticky ancestor
+can move the lock file or protocol directory aside, even one it cannot read, and put its own in its place. Holders that
+reached the old one keep using it while new contenders use the replacement, so two of them hold the lock at once and
+neither learns of it. No check inside the lock can rule that out, because the owner of such a directory controls every name
+in it. Keep locks in a directory that only the lock's users can write, or in a sticky one such as ``/tmp``.
 
 Native locks are advisory
 ==========================
@@ -986,8 +1014,11 @@ inherited ``with lock.read_lock():`` block can unwind in the child without raisi
 fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMongo's connection-pool semantics.
 
 **Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
-permissions can exclude another UID. A process with the same effective UID can alter the records. A filesystem that
-delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a holder remains active.
+permissions can exclude another UID. Under a sticky parent such as ``/tmp``, acquisition raises :class:`RuntimeError`
+when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent. The refusal
+also applies to a lock object that used an earlier tree: it repeats the check whenever a directory it opens is not the
+one it prepared. A process with the same effective UID can alter the records. A filesystem that delays a rewrite's
+visibility past ``stale_threshold`` can also trigger expiry while a holder remains active.
 
 ****************************
  File permissions and mode

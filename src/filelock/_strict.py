@@ -34,10 +34,10 @@ from filelock._identity import host_name, owner_is_stale, process_start_token
 from filelock._marker import parse_marker
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import write_all
+from filelock._util import foreign_directory_owner, write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._windows import _is_unlinked
+    from filelock._windows import _is_unlinked, _open_deletable_for_reading, _pin_directory, _unpin_directory
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -80,6 +80,8 @@ _OPEN_SUPPORTS_DIR_FD: Final[bool] = os.open in os.supports_dir_fd
 _UNLINK_SUPPORTS_DIR_FD: Final[bool] = os.unlink in os.supports_dir_fd
 _STAT_SUPPORTS_DIR_FD: Final[bool] = os.stat in os.supports_dir_fd
 _LINK_SUPPORTS_DIR_FD: Final[bool] = _HAS_LINK and os.link in os.supports_dir_fd
+_MKDIR_SUPPORTS_DIR_FD: Final[bool] = os.mkdir in os.supports_dir_fd
+_SCANDIR_SUPPORTS_FD: Final[bool] = os.scandir in os.supports_fd
 
 
 def _probe_link_follow_symlinks() -> bool:
@@ -129,6 +131,8 @@ class StrictSoftFileLock(BaseFileLock):
     #: poll_interval below this cap jitters; the default equals it and keeps a fixed cadence.
     _poll_backoff_cap: float = 0.05
     _occupant_seen: tuple[tuple[float, int, int], float] | None = None
+    #: Set by the finalizer, after which no retry of a failed cleanup can run.
+    _finalizing: bool = False
 
     def _acquire(self) -> None:
         # Finish a doorway whose claim cleanup failed before publishing, so this owner never contends with leftovers.
@@ -136,8 +140,11 @@ class StrictSoftFileLock(BaseFileLock):
         lock_path = Path(self._lock_path)
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
-        _ensure_protocol_directory(self.lock_file, coordination_directory)
-        _ensure_protocol_directory(self.lock_file, claim_directory)
+        # A process that can write these directories can remove claims from them, so they take the lock's mode plus
+        # search permission where the mode grants read.
+        directory_mode: Final = (mode := self._open_mode()) | (mode & 0o444) >> 2
+        _ensure_protocol_directory(self.lock_file, coordination_directory, directory_mode)
+        _ensure_claim_directory(self.lock_file, claim_directory, directory_mode)
         if (
             sentinel_fd := _open_or_create_sentinel(
                 self.lock_file, lock_path, self._open_mode(), self._occupant_unchanged_for
@@ -200,7 +207,10 @@ class StrictSoftFileLock(BaseFileLock):
         # _discard_doorway. The token makes the name unique, so removing it when the link never happened is a no-op.
         self._context.owner_claim_paths = (intent_path,)
         try:
-            publication_cleanup_error = _publish_record(intent_path, _claim_record(token), self._open_mode())
+            with _pin_claim_directory(claim_directory):
+                publication_cleanup_error = _publish_record(
+                    intent_path, _claim_record(token), self._open_mode(), _open_claim_directory
+                )
         except _PrivateRecordReclaimedError:
             return False
         except (NotImplementedError, OSError) as error:
@@ -273,13 +283,14 @@ class StrictSoftFileLock(BaseFileLock):
     def force_break(self, claim_name: str) -> None:
         """Remove one named claim, allowing overlap if its owner still holds the protected resource."""
         _validate_force_break_name(claim_name)
-        _require_exact_name(self._claim_directory, claim_name)
-        if (
-            cleanup_error := _unlink_in_directory(self._claim_directory, claim_name)
-        ) is not None:  # pragma: needs dir-fd
+        with _pin_claim_directory(directory := self._claim_directory):
+            _require_exact_name(directory, claim_name)
+            cleanup_error = _unlink_in_directory(directory, claim_name)
+        if cleanup_error is not None:  # pragma: needs dir-fd
             raise cleanup_error
 
     def _release_abandoned_holds(self) -> None:
+        self._finalizing = True
         super()._release_abandoned_holds()
         # release() skips a doorway whose cleanup failed, as it is no hold, so a dropped instance would strand claims.
         with contextlib.suppress(Exception):
@@ -294,8 +305,7 @@ class StrictSoftFileLock(BaseFileLock):
     def _release(self) -> None:
         fd = cast("int", self._context.lock_file_fd)
         self._context.claim_root = None
-        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
-        self._context.owner_claim_paths = tuple(remaining)
+        remaining, errors = self._unlink_owner_claims()
         if remaining:
             _raise_recorded_errors("strict claim release failed", errors)
         self._mark_descriptor_released()
@@ -307,20 +317,31 @@ class StrictSoftFileLock(BaseFileLock):
             _raise_recorded_errors("strict release cleanup failed", errors)
 
     def _discard_doorway(self) -> None:
-        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
-        self._context.owner_claim_paths = tuple(remaining)
+        remaining, errors = self._unlink_owner_claims()
+        # The pending descriptor holds no lock and a retry needs the claim paths alone. A dropped instance does not
+        # retry, so close it now.
+        if (fd := self._context.pending_lock_file_fd) is not None:
+            self._context.pending_lock_file_fd = self._context.pending_lock_file_fd_identity = None
+            try:
+                self._close_released_fd(fd, default_suppresses=False)
+            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
+                errors.append(close_error)
         if remaining:
             # Stay pending, not owned: is_locked reports only a held claim that passed the final rescan. The next
             # acquire retries this cleanup.
             _raise_recorded_errors("strict doorway claim cleanup failed", errors)
-        fd = cast("int", self._context.pending_lock_file_fd)
         self._mark_descriptor_released()
-        try:
-            self._close_released_fd(fd, default_suppresses=False)
-        except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
-            errors.append(close_error)
         if errors:
             _raise_recorded_errors("strict doorway cleanup failed", errors)
+
+    def _unlink_owner_claims(self) -> tuple[list[str], list[BaseException]]:
+        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
+        self._context.owner_claim_paths = tuple(remaining)
+        if self._finalizing:
+            # No retry runs after the finalizer and no caller sees its errors, so report success and let it close the
+            # descriptor even when claims remain.
+            return [], []  # pragma: needs collected-finalization
+        return remaining, errors
 
     @property
     def _claim_directory(self) -> Path:
@@ -355,7 +376,7 @@ def _open_or_create_sentinel(
     except FileNotFoundError:
         pass
 
-    _reclaim_sentinel_private_records(path)
+    _reclaim_sentinel_private_records(lock_file, path)
     try:
         publication_cleanup_error = _publish_record(os.fspath(path), _LEGACY_SENTINEL, mode)
     except _PrivateRecordReclaimedError:
@@ -402,7 +423,7 @@ def _inspect_lock_path(path: Path) -> tuple[int | None, _OccupantState, str]:
     if not stat.S_ISREG(mode := path.lstat().st_mode):
         return None, "damaged", _NODE_DESCRIPTIONS.get(stat.S_IFMT(mode), "a special file")
     try:
-        fd, record = _open_record(path, _CLAIM_RECORD_LIMIT)
+        fd, record = _open_record((os.fspath(path.parent), None), path.name, _CLAIM_RECORD_LIMIT)
     except FileNotFoundError:
         raise
     except PermissionError as error:
@@ -431,26 +452,31 @@ def _describe_soft_marker(content: str) -> tuple[_OccupantState, str]:
     return "held", f"a soft-lock marker held by pid {pid} on {hostname}"
 
 
-def _read_claims(lock_file: str, directory: Path, *, probe_clock: bool) -> tuple[StrictSoftFileClaim, ...]:
-    claims: list[StrictSoftFileClaim] = []
-    for name in _list_claim_names(lock_file, directory, probe_clock=probe_clock):
-        if (name_parts := _parse_claim_name(name)) is None:
+def _read_claims(
+    lock_file: str, directory_ref: tuple[str, int | None], *, probe_clock: bool
+) -> tuple[StrictSoftFileClaim, ...]:
+    names: Final = _list_claim_names(lock_file, directory_ref, probe_clock=probe_clock)
+    name_parts: dict[str, tuple[StrictSoftFileClaimState, str]] = {}
+    for name in names:
+        if (parts := _parse_claim_name(name)) is None:
             raise SoftFileLockProtocolError(lock_file, name, "unknown claim name or protocol version")
-        if (record := _read_claim_record(lock_file, directory, name, probe_clock=probe_clock)) is not None:
-            claims.append(_parse_claim(lock_file, name, name_parts, record))
-    return tuple(claims)
+        name_parts[name] = parts
+    records: Final = _read_claim_records(lock_file, directory_ref, names, probe_clock=probe_clock)
+    return tuple(_parse_claim(lock_file, name, name_parts[name], records[name]) for name in names if name in records)
 
 
-def _list_claim_names(lock_file: str, directory: Path, *, probe_clock: bool) -> list[str]:
+def _list_claim_names(lock_file: str, directory_ref: tuple[str, int | None], *, probe_clock: bool) -> list[str]:
     try:
-        with os.scandir(directory) as entries:
-            return _public_claim_names(directory, entries, probe_clock=probe_clock)
+        with _scandir_relative(directory_ref) as entries:
+            return _public_claim_names(directory_ref, entries, probe_clock=probe_clock)
     except OSError as error:
         reason = f"cannot list claim directory: {error.strerror or type(error).__name__}"
         raise SoftFileLockProtocolError(lock_file, None, reason) from error
 
 
-def _read_claim_record(lock_file: str, directory: Path, name: str, *, probe_clock: bool) -> bytes | None:
+def _read_claim_records(
+    lock_file: str, directory_ref: tuple[str, int | None], names: list[str], *, probe_clock: bool
+) -> dict[str, bytes]:
     # A contended scan can list a claim that is not yet cleanly readable, in two ways that both resolve on a brief
     # retry. Windows fails an open with EACCES while a peer's unlink holds the claim; once the deletion is pending,
     # _attempt_claim_read skips the claim outright, as another process's handle can keep the name listed for seconds.
@@ -458,38 +484,51 @@ def _read_claim_record(lock_file: str, directory: Path, name: str, *, probe_cloc
     # ESTALE rather than a clean ENOENT until the lookup revalidates against the server. Retrying re-runs the path
     # lookup, which turns the vanished claim into ENOENT (skip) or reads it if it still exists. A genuinely unreadable
     # record (a locked-down file, an EIO fault) still fails closed. The grace starts at the first pending result rather
-    # than before the first attempt, so a slow first read cannot use up the window and leave no retry.
+    # than before the first attempt, so a slow first read cannot use up the window and leave no retry. One deadline
+    # covers the scan: a deadline per claim let claims that clear one after another stretch a scan, and the caller's
+    # timeout with it, by a grace each.
+    records: dict[str, bytes] = {}
     deadline: float | None = None
     while True:
-        record, pending = _attempt_claim_read(lock_file, directory, name)
-        if pending is None:
-            return record
+        pending: dict[str, OSError] = {}
+        for name in names:
+            record, error = _attempt_claim_read(lock_file, directory_ref, name)
+            if error is not None:
+                pending[name] = error
+            elif record is not None:
+                records[name] = record
+        if not pending:
+            return records
         if deadline is None:
             deadline = time.monotonic() + _CLAIM_READ_GRACE
         elif time.monotonic() >= deadline:
-            if pending.errno == ESTALE:
-                # A stale handle that outlives revalidation is a claim the server no longer has (RFC 1813
-                # NFS3ERR_STALE): skip it like ENOENT. Skipping a peer's vanished claim can only overcount
-                # contention, never free a held lock.
-                return None
-            # Windows can deny opens after a peer removes the claim from the directory.
-            if name not in _list_claim_names(lock_file, directory, probe_clock=probe_clock):
-                return None
-            reason = f"cannot read claim: {pending.strerror or str(pending) or type(pending).__name__}"
-            raise SoftFileLockProtocolError(lock_file, name, reason) from pending
+            break
+        names = list(pending)
         time.sleep(_CLAIM_READ_RETRY)
+    # A stale handle that outlives revalidation is a claim the server no longer has (RFC 1813 NFS3ERR_STALE): skip it
+    # like ENOENT. Skipping a vanished claim overcounts contention at worst; it cannot free a held lock.
+    if denied := [name for name, error in pending.items() if error.errno != ESTALE]:
+        # Windows can deny opens after a peer removes the claim from the directory.
+        listed: Final = set(_list_claim_names(lock_file, directory_ref, probe_clock=probe_clock))
+        if still_listed := [name for name in denied if name in listed]:
+            error = pending[still_listed[0]]
+            reason = f"cannot read claim: {error.strerror or str(error) or type(error).__name__}"
+            raise SoftFileLockProtocolError(lock_file, still_listed[0], reason) from error
+    return records
 
 
-def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[bytes | None, OSError | None]:
+def _attempt_claim_read(
+    lock_file: str, directory_ref: tuple[str, int | None], name: str
+) -> tuple[bytes | None, OSError | None]:
     # Return the record, or (None, None) when the claim has already gone, or (None, error) for an open the caller may
     # retry: a Windows EACCES while a peer's unlink holds the claim, or an NFS ESTALE from a peer unlinking its own
     # claim out from under this client's cached filehandle. Any other OSError is a real fault and fails closed.
     try:
-        return _read_record(directory / name, _CLAIM_RECORD_LIMIT), None
+        return _read_record(directory_ref, name, _CLAIM_RECORD_LIMIT), None
     except FileNotFoundError:
         return None, None
     except PermissionError as error:
-        if sys.platform == "win32" and _is_unlinked(str(directory / name)):  # pragma: win32 cover
+        if sys.platform == "win32" and _is_unlinked(str(Path(directory_ref[0], name))):  # pragma: win32 cover
             return None, None
         return None, error
     except OSError as error:
@@ -499,12 +538,14 @@ def _attempt_claim_read(lock_file: str, directory: Path, name: str) -> tuple[byt
         raise SoftFileLockProtocolError(lock_file, name, reason) from error
 
 
-def _public_claim_names(directory: Path, entries: Iterator[os.DirEntry[str]], *, probe_clock: bool) -> list[str]:
+def _public_claim_names(
+    directory_ref: tuple[str, int | None], entries: Iterator[os.DirEntry[str]], *, probe_clock: bool
+) -> list[str]:
     names: list[str] = []
     now: Callable[[], float | None] = (
         functools.cache(
             functools.partial(
-                _filesystem_now, directory, _claim_name("held", secrets.token_hex(_TOKEN_HEX_LENGTH // 2))
+                _filesystem_now, directory_ref, _claim_name("held", secrets.token_hex(_TOKEN_HEX_LENGTH // 2))
             )
         )
         if probe_clock
@@ -516,16 +557,42 @@ def _public_claim_names(directory: Path, entries: Iterator[os.DirEntry[str]], *,
         elif (public_name := _private_public_name(entry.name)) is not None and _parse_claim_name(
             public_name
         ) is not None:
-            _reclaim_private_record((os.fspath(directory), None), entry.name, now)
+            _reclaim_private_record(directory_ref, entry.name, now)
     return sorted(names)
 
 
 def _read_existing_claims(
     lock_file: str, directory: Path, *, probe_clock: bool = True
 ) -> tuple[StrictSoftFileClaim, ...]:
-    if not directory.exists():
+    if not _OPEN_SUPPORTS_DIR_FD:  # pragma: lacks dir-fd
+        try:
+            pinned = _pin_claim_directory(directory)
+        except FileNotFoundError:
+            return ()
+        except OSError as error:
+            reason = f"cannot open claim directory: {error.strerror or type(error).__name__}"
+            raise SoftFileLockProtocolError(lock_file, None, reason) from error
+        with pinned:
+            return _read_claims(lock_file, (os.fspath(directory), None), probe_clock=probe_clock)
+    return _read_claims_through_descriptor(lock_file, directory, probe_clock=probe_clock)  # pragma: needs dir-fd
+
+
+def _read_claims_through_descriptor(  # pragma: needs dir-fd
+    lock_file: str, directory: Path, *, probe_clock: bool
+) -> tuple[StrictSoftFileClaim, ...]:
+    try:
+        directory_fd = _open_claim_directory(os.fspath(directory))
+    except FileNotFoundError:
         return ()
-    return _read_claims(lock_file, directory, probe_clock=probe_clock)
+    except OSError as error:
+        reason = f"cannot open claim directory: {error.strerror or type(error).__name__}"
+        raise SoftFileLockProtocolError(lock_file, None, reason) from error
+    try:
+        return _read_claims(lock_file, (os.fspath(directory), directory_fd), probe_clock=probe_clock)
+    finally:
+        # The scan wrote nothing through the descriptor, so a failed close has no result to report.
+        with contextlib.suppress(OSError):
+            os.close(directory_fd)
 
 
 def _parse_claim(
@@ -587,11 +654,12 @@ def _publish_record(
     public_path: str,
     record: bytes,
     mode: int,
+    open_directory: Callable[[str], int] | None = None,
 ) -> BaseException | None:
     directory, public_name = os.path.split(public_path)
     directory = directory or os.curdir
     private_name = _private_record_name(public_name)
-    directory_fd = _open_directory(directory) if _OPEN_SUPPORTS_DIR_FD else None
+    directory_fd = (open_directory or _open_directory)(directory) if _OPEN_SUPPORTS_DIR_FD else None
     directory_ref = directory, directory_fd
     try:
         _publish_record_in_directory(directory_ref, (private_name, public_name), mode, record)
@@ -719,13 +787,17 @@ def _private_public_name(private_name: str) -> str | None:
     return public_name
 
 
-def _reclaim_sentinel_private_records(path: Path) -> None:
+def _reclaim_sentinel_private_records(lock_file: str, path: Path) -> None:
     directory_ref = os.fspath(path.parent), None
-    now = functools.cache(functools.partial(_filesystem_now, path.parent, path.name))
-    with os.scandir(path.parent) as entries:
-        for entry in entries:
-            if _private_public_name(entry.name) == path.name:
-                _reclaim_private_record(directory_ref, entry.name, now)
+    now = functools.cache(functools.partial(_filesystem_now, directory_ref, path.name))
+    try:
+        with os.scandir(path.parent) as entries:
+            for entry in entries:
+                if _private_public_name(entry.name) == path.name:
+                    _reclaim_private_record(directory_ref, entry.name, now)
+    except OSError as error:
+        reason = f"cannot reclaim sentinel private records: {error.strerror or error}"
+        raise SoftFileLockProtocolError(lock_file, None, reason) from error
 
 
 def _reclaim_private_record(
@@ -756,13 +828,14 @@ def _reclaim_private_record(
             raise
 
 
-def _filesystem_now(directory: Path, public_name: str) -> float | None:
+def _filesystem_now(directory_ref: tuple[str, int | None], public_name: str) -> float | None:
     # A network filesystem stamps mtimes with the server's clock, which can run seconds off this client's, so read "now"
     # as the mtime of a probe written like a record (liblockfile uses a read's atime). The probe has a private-record
     # name, so a scan reaps one left behind. Without a stamp no age is trusted.
-    probe = directory / _private_record_name(public_name)
+    probe = _private_record_name(public_name)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = _open_relative(directory_ref, probe, flags, 0o600)
     except OSError:
         return None
     try:
@@ -774,14 +847,12 @@ def _filesystem_now(directory: Path, public_name: str) -> float | None:
         with contextlib.suppress(OSError):
             os.close(fd)
         with contextlib.suppress(OSError):
-            probe.unlink()
+            _unlink_private_record_once(directory_ref, probe)
 
 
 def _unlink_private_record_once(directory_ref: tuple[str, int | None], private_name: str) -> None:
     directory, directory_fd = directory_ref
-    if (
-        directory_fd is not None and _UNLINK_SUPPORTS_DIR_FD
-    ):  # pragma: no cover  # callers always pass directory_fd=None
+    if directory_fd is not None and _UNLINK_SUPPORTS_DIR_FD:  # pragma: needs dir-fd
         os.unlink(private_name, dir_fd=directory_fd)
     else:
         Path(directory, private_name).unlink()
@@ -877,7 +948,7 @@ def _unlink_relative(directory_ref: tuple[str, int | None], name: str) -> None:
 
 def _link_no_replace(directory: Path, source_name: str, destination_name: str) -> BaseException | None:
     if _LINK_SUPPORTS_DIR_FD:  # pragma: needs dir-fd
-        directory_fd = _open_directory(str(directory))
+        directory_fd = _open_claim_directory(str(directory))
         try:
             _link_or_find_committed((str(directory), directory_fd), source_name, destination_name)
         except BaseException as link_error:  # preserve link and directory cleanup errors
@@ -891,13 +962,15 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
         except BaseException as close_error:  # ruff:ignore[blind-except]  # the caller recorded the held path before linking
             return close_error
         return None
-    _link_or_find_committed((str(directory), None), source_name, destination_name)  # pragma: win32 cover
+    with _pin_claim_directory(directory):  # pragma: win32 cover
+        _link_or_find_committed((str(directory), None), source_name, destination_name)
     return None  # pragma: win32 cover
 
 
 def _unlink_owner_path(path: str) -> BaseException | None:
     directory, name = os.path.split(path)
-    return _unlink_in_directory(Path(directory or os.curdir), name)
+    with _pin_claim_directory(claim_directory := Path(directory or os.curdir)):
+        return _unlink_in_directory(claim_directory, name)
 
 
 def _unlink_owner_paths(paths: tuple[str, ...]) -> tuple[list[str], list[BaseException]]:
@@ -925,7 +998,7 @@ def _raise_recorded_errors(message: str, errors: list[BaseException]) -> None:
 
 def _unlink_in_directory(directory: Path, name: str) -> BaseException | None:
     if _UNLINK_SUPPORTS_DIR_FD:  # pragma: needs dir-fd
-        directory_fd = _open_directory(str(directory))
+        directory_fd = _open_claim_directory(str(directory))
         try:
             os.unlink(name, dir_fd=directory_fd)
         except BaseException as unlink_error:  # preserve unlink and directory cleanup errors
@@ -961,26 +1034,78 @@ def _unlink_error(path: Path) -> OSError | None:  # pragma: win32 cover
     return None
 
 
-def _open_directory(directory: str) -> int:  # pragma: needs dir-fd
-    return os.open(
-        directory,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
+def _pin_claim_directory(directory: Path) -> contextlib.ExitStack[bool | None]:
+    return _pin_directories(directory.parent, directory)
 
 
-def _read_record(path: Path, limit: int) -> bytes:
-    fd, record = _open_record(path, limit)
+def _pin_directories(*directories: Path) -> contextlib.ExitStack[bool | None]:
+    # Windows has no dir_fd, so each operation resolves every path component by name again. An open handle on a
+    # directory blocks a rename of it, and with it a swap for a junction (a directory that points at another directory),
+    # until the operation ends. Other platforms work through descriptors and hold nothing.
+    stack: contextlib.ExitStack[bool | None] = contextlib.ExitStack()
+    if sys.platform == "win32":  # pragma: win32 cover
+        with stack:
+            for directory in directories:
+                stack.callback(_unpin_directory, _pin_directory(str(directory)))
+            return stack.pop_all()
+    return stack  # pragma: win32 no cover
+
+
+def _open_directory(directory: str, dir_fd: int | None = None) -> int:  # pragma: needs dir-fd
+    return os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+
+
+def _open_claim_directory(directory: str) -> int:  # pragma: needs dir-fd
+    # O_NOFOLLOW applies to the last path component. A process that can rename entries in the lock's directory can
+    # swap the coordination directory for a symlink after any check of its name, so open the claim directory relative
+    # to a descriptor of the coordination directory: a symlink at either level then fails the open.
+    coordination_directory, name = os.path.split(directory)
+    coordination_fd = _open_directory(coordination_directory)
+    try:
+        return _open_directory(name, coordination_fd)
+    finally:
+        # The walk wrote nothing through it, and an error here would leak the descriptor this function returns.
+        with contextlib.suppress(OSError):
+            os.close(coordination_fd)
+
+
+def _scandir_relative(
+    directory_ref: tuple[str, int | None],
+) -> contextlib.AbstractContextManager[Iterator[os.DirEntry[str]]]:
+    directory, directory_fd = directory_ref
+    if directory_fd is not None and _SCANDIR_SUPPORTS_FD:  # pragma: needs dir-fd
+        return os.scandir(directory_fd)
+    return os.scandir(directory)  # pragma: lacks dir-fd
+
+
+def _lstat_relative(directory_ref: tuple[str, int | None], name: str) -> os.stat_result:
+    directory, directory_fd = directory_ref
+    if directory_fd is not None and _STAT_SUPPORTS_DIR_FD:  # pragma: needs dir-fd
+        return os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    return Path(directory, name).lstat()
+
+
+def _read_record(directory_ref: tuple[str, int | None], name: str, limit: int) -> bytes:
+    fd, record = _open_record(directory_ref, name, limit, deletable=True)
     os.close(fd)
     return record
 
 
-def _open_record(path: Path, limit: int) -> tuple[int, bytes]:
-    path_stat = path.lstat()
+def _open_record(
+    directory_ref: tuple[str, int | None], name: str, limit: int, *, deletable: bool = False
+) -> tuple[int, bytes]:
+    path = Path(directory_ref[0], name)
+    path_stat = _lstat_relative(directory_ref, name)
     if not stat.S_ISREG(path_stat.st_mode):
         msg = f"{path} is not a regular file"
         raise OSError(msg)
-    flags = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    fd = os.open(path, flags)
+    if deletable and sys.platform == "win32":  # pragma: win32 cover
+        # A claim's owner must be able to unlink it while another process reads it. The sentinel stays for the lock's
+        # lifetime, so it keeps os.open.
+        fd = _open_deletable_for_reading(str(path))
+    else:
+        flags = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = _open_relative(directory_ref, name, flags, 0)
     try:
         record = _read_opened_record(fd, path, path_stat, limit)
     except BaseException as read_error:  # preserve read and descriptor cleanup errors
@@ -1007,17 +1132,75 @@ def _read_opened_record(fd: int, path: Path, path_stat: os.stat_result, limit: i
     return record
 
 
-def _ensure_protocol_directory(lock_file: str, directory: Path) -> None:
+def _ensure_claim_directory(lock_file: str, directory: Path, mode: int) -> None:
+    if not (_OPEN_SUPPORTS_DIR_FD and _MKDIR_SUPPORTS_DIR_FD):  # pragma: lacks dir-fd
+        try:
+            pinned = _pin_directories(directory.parent)
+        except OSError as error:
+            raise SoftFileLockProtocolError(lock_file, None, f"cannot open {directory.parent}") from error
+        with pinned:
+            _ensure_protocol_directory(lock_file, directory, mode)
+    else:  # pragma: needs dir-fd
+        # mkdir follows a symlink in every component but the last, so create against a descriptor of the real parent.
+        try:
+            coordination_fd = _open_directory(os.fspath(directory.parent))
+        except OSError as error:
+            raise SoftFileLockProtocolError(lock_file, None, f"cannot open {directory.parent}") from error
+        try:
+            _ensure_protocol_directory(lock_file, directory, mode, coordination_fd)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(coordination_fd)
+
+
+def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, parent_fd: int | None = None) -> None:
     try:
-        directory.mkdir()
+        if parent_fd is None:
+            directory.mkdir(mode)
+        else:  # pragma: needs dir-fd
+            os.mkdir(directory.name, mode, dir_fd=parent_fd)
     except FileExistsError:
         try:
-            mode = directory.lstat().st_mode
+            found = _lstat_relative((os.fspath(directory.parent), parent_fd), directory.name)
+            owner = foreign_directory_owner(
+                found, directory.parent.stat() if parent_fd is None else os.fstat(parent_fd)
+            )
         except OSError as error:
             raise SoftFileLockProtocolError(lock_file, None, f"cannot inspect {directory}") from error
-        if stat.S_ISDIR(mode) and not stat.S_ISLNK(mode):
-            return
-        raise SoftFileLockProtocolError(lock_file, None, f"{directory} is not a real directory") from None
+        if (
+            not stat.S_ISDIR(found.st_mode)
+            or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            raise SoftFileLockProtocolError(lock_file, None, f"{directory} is not a real directory") from None
+        if owner is not None:  # pragma: needs foreign-sticky-tmp
+            reason = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
+            raise SoftFileLockProtocolError(lock_file, None, reason) from None
+    _settle_directory_mode(lock_file, directory, mode, parent_fd)
+
+
+def _settle_directory_mode(lock_file: str, directory: Path, mode: int, parent_fd: int | None) -> None:
+    # The umask or a default ACL can leave the directory wider than the mode, now or in an earlier release, so narrow a
+    # directory this account owns to the mode. The sticky bit (a directory flag that lets only a file's owner remove it)
+    # then protects each claim from other accounts even where the mode admits them. Windows has neither mode bits nor a
+    # sticky bit.
+    if sys.platform != "win32":  # pragma: win32 no cover
+        try:
+            fd = os.open(
+                directory.name if parent_fd is not None else os.fspath(directory),
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_fd,
+            )
+        except OSError as error:
+            raise SoftFileLockProtocolError(lock_file, None, f"cannot open {directory}") from error
+        try:
+            found = os.fstat(fd)
+            settled = found.st_mode & 0o7000 | found.st_mode & mode & 0o777 | stat.S_ISVTX
+            if found.st_uid == os.geteuid() and settled != stat.S_IMODE(found.st_mode):
+                os.fchmod(fd, settled)
+        except OSError as error:
+            raise SoftFileLockProtocolError(lock_file, None, f"cannot set the mode of {directory}") from error
+        finally:
+            os.close(fd)
 
 
 def _validate_force_break_name(name: str) -> None:
@@ -1028,9 +1211,15 @@ def _validate_force_break_name(name: str) -> None:
 
 
 def _require_exact_name(directory: Path, name: str) -> None:
-    with os.scandir(directory) as entries:
-        if not any(entry.name == name for entry in entries):
-            raise FileNotFoundError(ENOENT, os.strerror(ENOENT), name)
+    directory_fd = _open_claim_directory(os.fspath(directory)) if _OPEN_SUPPORTS_DIR_FD else None
+    try:
+        with _scandir_relative((os.fspath(directory), directory_fd)) as entries:
+            if not any(entry.name == name for entry in entries):
+                raise FileNotFoundError(ENOENT, os.strerror(ENOENT), name)
+    finally:
+        if directory_fd is not None:  # pragma: needs dir-fd
+            with contextlib.suppress(OSError):
+                os.close(directory_fd)
 
 
 def _raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:

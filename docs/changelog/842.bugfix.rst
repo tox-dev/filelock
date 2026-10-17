@@ -1,0 +1,7 @@
+:class:`~filelock.SoftReadWriteLock` reaches its records through descriptors of ``<path>.rw`` and ``gen`` or ``holders``
+opened without following symlinks. On Windows it holds those directories open and refuses a junction (a directory that
+points at another directory). A tree swapped in after an earlier acquire therefore cannot redirect them. Its heartbeat
+rewrites a holder record only when the name still leads to the file it created, and does not block on a FIFO (a named
+pipe). A heartbeat that finds ``<path>.rw`` replaced by a symlink or junction reports the hold lost instead of ending
+the heartbeat thread. A live lock object repeats the ownership check whenever the tree it opens is not the one it
+prepared.
