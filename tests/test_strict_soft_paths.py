@@ -171,13 +171,3 @@ def _signal_thread_poll(polling: threading.Event) -> bool:
 def _signal_async_poll(polling: asyncio.Event) -> bool:
     polling.set()
     return False
-
-
-@pytest.fixture
-def working_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    first.mkdir()
-    second.mkdir()
-    monkeypatch.chdir(first)
-    return first, second

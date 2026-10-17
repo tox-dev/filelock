@@ -18,6 +18,7 @@ from contextlib import contextmanager, suppress
 from decimal import Decimal
 from errno import EAGAIN, EINTR, EIO, ENOSPC, ENOSYS, EWOULDBLOCK
 from fractions import Fraction
+from functools import partial
 from inspect import getframeinfo, stack
 from itertools import count
 from pathlib import Path, PurePath
@@ -292,7 +293,7 @@ _ExcInfoType = tuple[type[BaseException], BaseException, TracebackType] | tuple[
 
 class ExThread(threading.Thread):
     def __init__(self, target: Callable[[], None], name: str) -> None:
-        super().__init__(target=target, name=name)
+        super().__init__(target=target, name=name, daemon=True)
         self.ex: _ExcInfoType | None = None
 
     def run(self) -> None:
@@ -307,8 +308,10 @@ class ExThread(threading.Thread):
             raise RuntimeError from self.ex[1]  # pragma: no cover  # only a worker that raised gets re-raised here
 
 
-# 100 threads x 100 acquisitions take over 40 s on GraalPy and strain the 20 s default on a loaded Windows runner.
-@pytest.mark.timeout(120)
+# A kill switch, not a budget: the run takes 1 to 2 s untraced, but under the coverage tracer 100 threads convoy on its
+# data lock, and on a two-vCPU Windows runner that ran twenty times slower than on a desktop. A stuck worker must fail
+# the run with its stack instead of hiding behind a larger number.
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     if sys.platform == "win32" and lock_type.__name__ == "SoftFileLock":  # pragma: win32 cover
@@ -320,10 +323,19 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path)
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
+    holders: list[str] = []
+    finished: list[None] = []
+
     def thread_work() -> None:
-        for _ in range(100):
+        name = threading.current_thread().name
+        for _ in range(10):
             with lock:
+                holders.append(name)
+                time.sleep(0)  # give up the GIL so an overlapping holder has a chance to show in the slot
+                assert holders == [name]
                 assert lock.is_locked
+                holders.pop()
+                finished.append(None)
 
     threads = [ExThread(target=thread_work, name=f"t{i}") for i in range(100)]
     for thread in threads:
@@ -331,30 +343,35 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path)
     for thread in threads:
         thread.join()
 
-    assert not lock.is_locked
+    assert len(finished) == 100 * 10
 
 
-@pytest.mark.timeout(120)  # a hundred contending threads take over 40 s on GraalPy
+# A kill switch, not a budget: see test_threaded_shared_lock_obj.
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     if sys.platform == "win32" and (hasattr(sys, "pypy_version_info") or lock_type.__name__ == "SoftFileLock"):
         pytest.skip("SoftFileLock on Windows has race conditions under heavy threading")  # pragma: win32 cover
 
-    def t_1() -> None:
-        for _ in range(1000):
-            with lock_1:
-                assert lock_1.is_locked
-                assert not lock_2.is_locked
+    holders: list[str] = []
+    finished: list[None] = []
 
-    def t_2() -> None:
-        for _ in range(1000):
-            with lock_2:
-                assert not lock_1.is_locked
-                assert lock_2.is_locked
+    def work(lock: BaseFileLock) -> None:
+        name = threading.current_thread().name
+        for _ in range(100):
+            with lock:
+                holders.append(name)
+                time.sleep(0)  # give up the GIL so an overlapping holder has a chance to show in the slot
+                assert holders == [name]
+                assert lock.is_locked
+                holders.pop()
+                finished.append(None)
 
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
-    threads = [(ExThread(t_1, f"t1_{i}"), ExThread(t_2, f"t2_{i}")) for i in range(10)]
+    threads = [
+        (ExThread(partial(work, lock_1), f"t1_{i}"), ExThread(partial(work, lock_2), f"t2_{i}")) for i in range(10)
+    ]
 
     for thread_1, thread_2 in threads:
         thread_1.start()
@@ -363,8 +380,7 @@ def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_pat
         thread_1.join()
         thread_2.join()
 
-    assert not lock_1.is_locked
-    assert not lock_2.is_locked
+    assert len(finished) == 20 * 100
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -2833,6 +2849,156 @@ def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
     finally:
         on_link.release(force=True)
         on_target.release(force=True)
+
+
+_RELATIVE_LOCK_TYPES: Final = [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease]
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_relative_waiter_keeps_acquisition_directory(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    # acquire resolves a relative path once, when the acquisition starts, and keeps that file until the hold ends, so
+    # a chdir mid-wait does not move the waiter to a file in the new directory.
+    first, second = working_directories
+    holder = lock_type(first / "resource.lock")
+    holder.acquire()
+    polling = threading.Event()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_acquire_relative_lock, lock_type, polling)
+            assert polling.wait(timeout=2)
+            os.chdir(second)
+            with pytest.raises(Timeout):
+                future.result(timeout=2)
+    finally:
+        holder.release(force=True)
+
+    assert not (second / "resource.lock").exists()
+
+
+def _acquire_relative_lock(lock_type: type[BaseFileLock], polling: threading.Event, timeout: float = 0.2) -> None:
+    lock_type("resource.lock", timeout=timeout, poll_interval=0.001).acquire(
+        cancel_check=partial(_signal_poll, polling)
+    )
+
+
+def _signal_poll(polling: threading.Event) -> bool:
+    polling.set()
+    return False
+
+
+@pytest.mark.parametrize("lock_type", [SoftFileLock, MarkerSoftFileLock, SoftFileLease])
+def test_relative_release_uses_acquisition_directory(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    lock = lock_type("resource.lock")
+    lock.acquire()
+
+    os.chdir(second)
+    with lock:  # re-entry joins the hold, so it keeps that hold's path
+        pass
+    lock.release()
+
+    assert not (first / "resource.lock").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows refuses to rename a directory holding an open file"
+)  # pragma: win32 no cover
+@pytest.mark.parametrize("lock_type", [SoftFileLock, MarkerSoftFileLock, SoftFileLease])
+def test_relative_release_after_directory_rename_removes_marker(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, _ = working_directories
+    lock = lock_type("resource.lock")
+    lock.acquire()
+    renamed = first.parent / "renamed"
+    Path(first).rename(renamed)
+
+    lock.release()
+
+    assert not (renamed / "resource.lock").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows refuses to rename a directory holding an open file"
+)  # pragma: win32 no cover
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_waiter_after_directory_rename_does_not_lock_a_new_file(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, _ = working_directories
+    holder = lock_type(first / "resource.lock")
+    holder.acquire()
+    polling = threading.Event()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_acquire_relative_lock, lock_type, polling, 2)
+            assert polling.wait(timeout=2)
+            Path(first).rename(first.parent / "renamed")
+            with pytest.raises(FileNotFoundError):
+                future.result(timeout=5)
+        assert not (first / "resource.lock").exists()
+        assert holder.is_locked
+    finally:
+        holder.release(force=True)
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_each_acquisition_resolves_the_working_directory(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    _, second = working_directories
+    lock = lock_type("resource.lock")
+    with lock:
+        pass
+
+    os.chdir(second)
+    with lock:
+        assert (lock.lock_file, (second / "resource.lock").exists()) == ("resource.lock", True)
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_singleton_after_chdir_locks_the_requested_file(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    relative = lock_type("resource.lock", is_singleton=True)
+    os.chdir(second)
+    with lock_type(first / "resource.lock", is_singleton=True):
+        assert ((first / "resource.lock").exists(), (second / "resource.lock").exists()) == (True, False)
+    del relative
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_singleton_held_before_chdir_re_enters_by_absolute_path(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    held = lock_type("resource.lock", is_singleton=True)
+    held.acquire()
+    os.chdir(second)
+    with lock_type(first / "resource.lock", is_singleton=True) as again:
+        assert (again is held, held.lock_counter) == (True, 2)
+    held.release(force=True)
+
+
+@NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_singleton_after_parent_link_moves_locks_the_requested_file(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    link = first.parent / "current"
+    link.symlink_to(first)
+    through_link = lock_type(link / "resource.lock", is_singleton=True)
+    link.unlink()
+    link.symlink_to(second)
+    with lock_type(first / "resource.lock", is_singleton=True):
+        assert ((first / "resource.lock").exists(), (second / "resource.lock").exists()) == (True, False)
+    del through_link
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
