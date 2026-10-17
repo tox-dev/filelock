@@ -3,7 +3,7 @@ from __future__ import annotations
 import gc
 import itertools
 import os
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, TypeVar
 
@@ -11,7 +11,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 import filelock._identity
-from filelock import MarkerSoftFileLock, SoftFileLease, SoftFileLock
+from filelock import BaseFileLock, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name
 
 if TYPE_CHECKING:
@@ -209,3 +209,13 @@ STALE_BREAKERS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
         pytest.param(SoftFileLease, DEAD_OWNER, id="lease"),
     ],
 )
+
+
+@pytest.fixture
+def working_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.chdir(first)
+    return first, second

@@ -21,7 +21,7 @@ from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _b
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import exchange_names
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
-from tests.conftest import DEAD_OWNER, STALE_BREAKERS
+from tests.conftest import DEAD_OWNER, STALE_BREAKERS, acquire_after_reclaim, held_after_reclaim
 from tests.pid_namespace_helpers import pin_pid_namespace
 from tests.process_helpers import break_then_hang_after_exchange, cleanup_processes
 
@@ -1379,6 +1379,20 @@ def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixt
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
     with _close_after_commit(mocker, holder) as (_, _attempts), pytest.raises(OSError, match="close failed"):
         holder.release()
+    assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
+
+
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+def test_released_record_write_error_spares_successor_marker(lock_path: Path, mocker: MockerFixture) -> None:
+    holder: Final = SoftFileLock(lock_path)
+    holder.acquire()
+    lock_path.unlink()
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    mocker.patch("filelock._soft.os.pwrite", side_effect=PermissionError(EACCES, "record denied"))
+
+    holder.release()
+
+    assert not holder.is_locked
     assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
 
 

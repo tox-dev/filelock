@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, 
 from weakref import WeakKeyDictionary, WeakValueDictionary, ref
 
 from filelock._error import SoftFileLockLifetimeWarning, Timeout
+from filelock._util import ensure_directory_exists
 
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.

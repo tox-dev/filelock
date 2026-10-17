@@ -241,7 +241,7 @@ class SoftFileLease(MarkerSoftFileLock):
     def _try_break_stale_lock(self) -> None:
         # A break can fail for reasons a contender must ride out rather than raise on: a peer broke the marker first,
         # or Windows refuses to rename a file whose holder still has it open. Poll again instead.
-        with suppress(OSError), pin_inode(self.lock_file) as pinned:
+        with suppress(OSError), pin_inode(self._lock_path) as pinned:
             self._try_break_pinned_lock(pinned)
 
     def _try_break_pinned_lock(self, pinned: int | None) -> None:
@@ -274,7 +274,7 @@ class SoftFileLease(MarkerSoftFileLock):
 
     def _read_peer(self) -> tuple[OwnerRecord, os.stat_result] | None:
         with suppress(OSError, ValueError):
-            content, marker = _read_lock_file(self.lock_file)
+            content, marker = _read_lock_file(self._lock_path)
             if (owner := parse_marker(content)) is not None:
                 return owner, marker
         return None
