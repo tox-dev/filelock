@@ -607,7 +607,11 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # EIO on the NFS-style filesystems this lock targets) is not a loss: retry rather than report a false
         # compromise. Report the record unrefreshable only once failures have run long enough that a peer could evict
         # it before the next success would land, a margin before the record actually ages out.
-        outcome, error = participant.heartbeat()
+        try:
+            outcome, error = participant.heartbeat()
+        except Exception as failure:  # ruff:ignore[blind-except]  # the thread would end with the hold still published
+            self._report_compromise(hold, "refresh-failed", failure)
+            return False
         if outcome == "ok":
             hold.last_refresh = time.monotonic()
             return True
@@ -619,7 +623,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             return False
         return True
 
-    def _report_compromise(self, hold: _Hold, reason: CompromiseReason, error: OSError | None) -> None:
+    def _report_compromise(self, hold: _Hold, reason: CompromiseReason, error: Exception | None) -> None:
         # A tick that outlived its release's join must not stamp the old hold's loss onto whatever was acquired since.
         with self._locks.internal:
             if self._hold is not hold:

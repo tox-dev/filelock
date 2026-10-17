@@ -450,6 +450,11 @@ The defense differs by platform:
 - :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches
   ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
   directory after the check cannot redirect where claims are created, listed or removed.
+- :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` opens ``<path>.rw`` and then ``gen`` or ``holders`` without
+  following symlinks for every record operation on platforms that support ``dir_fd``. A tree swapped in after an
+  earlier acquire cannot redirect its writes. It rewrites a holder record only when the name still leads to the file it
+  created and that file has no second name, and it opens the record without blocking. It leaves alone a hard link (a
+  second name for the same file) or a FIFO (a named pipe) renamed over the record.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path and keeps SQLite on the file it
 checked, so a link planted in a shared directory cannot point the lock at another file.
@@ -968,9 +973,10 @@ fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMo
 
 **Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
 permissions can exclude another UID. Under a sticky parent such as ``/tmp``, acquisition raises :class:`RuntimeError`
-when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent. A process
-with the same effective UID can alter the records. A filesystem that
-delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a holder remains active.
+when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent. The refusal
+also applies to a lock object that used an earlier tree: it repeats the check whenever a directory it opens is not the
+one it prepared. A process with the same effective UID can alter the records. A filesystem that delays a rewrite's
+visibility past ``stale_threshold`` can also trigger expiry while a holder remains active.
 
 ****************************
  File permissions and mode

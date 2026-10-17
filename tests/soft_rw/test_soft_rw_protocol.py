@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
+from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
 from filelock._soft_rw._protocol import (
@@ -197,11 +198,11 @@ def test_an_epoch_a_peer_created_first_is_adopted(
     real_read = OsFiles.read
     missed = []
 
-    def miss_the_epoch_once(path: str) -> bytes | None:
+    def miss_the_epoch_once(self: OsFiles, path: str) -> bytes | None:
         if path == str(epoch) and not missed:
             missed.append(path)
             return None
-        return real_read(path)
+        return real_read(self, path)
 
     mocker.patch.object(OsFiles, "read", autospec=True, side_effect=miss_the_epoch_once)
     log = GenerationLog(files, lock_file, root)
@@ -242,7 +243,7 @@ def test_rescan_skips_a_generation_removed_after_listing(
     Path(root, "gen", "HEAD").unlink()
     real_read = OsFiles.read
     latest_path = str(Path(root, "gen", f"{2:020d}"))
-    mocker.patch.object(OsFiles, "read", side_effect=lambda path: None if path == latest_path else real_read(path))
+    mocker.patch.object(OsFiles, "read", lambda self, path: None if path == latest_path else real_read(self, path))
     fresh = GenerationLog(files, lock_file, root)
     assert fresh.latest().generation == 1
 
@@ -431,7 +432,7 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(
     assert log.commit(Snapshot(generation=1, writer=_FIRST, readers=frozenset()))
     real_listdir = OsFiles.listdir
     listings = iter([[f"{generation:020d}" for generation in (4, 5)]])
-    mocker.patch.object(OsFiles, "listdir", side_effect=lambda path: next(listings, None) or real_listdir(path))
+    mocker.patch.object(OsFiles, "listdir", lambda self, path: next(listings, None) or real_listdir(self, path))
     assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
 
 
@@ -788,6 +789,41 @@ def test_heartbeat_reports_the_refresh_error(lock_file: str, files: OsFiles, moc
     assert writer.heartbeat() == ("transient", error)
 
 
+def test_heartbeat_without_a_published_record_is_lost(lock_file: str, files: OsFiles) -> None:
+    assert _participant(files, lock_file, "write").heartbeat() == ("lost", None)
+
+
+@pytest.mark.skipif(
+    not (CAPABILITIES["symlink"] and CAPABILITIES["link-dir-fd"]),
+    reason="a swapped tree is refused only where records are reached through descriptors",
+)
+@pytest.mark.requires_hard_links
+def test_heartbeat_with_the_tree_swapped_for_a_symlink_is_lost(  # pragma: needs link-dir-fd
+    lock_file: str, files: OsFiles, root: str, tmp_path: Path
+) -> None:
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    assert writer.advance()
+    Path(root).rename(tmp_path / "aside")
+    Path(root).symlink_to(target := tmp_path / "target", target_is_directory=True)
+    target.mkdir()
+
+    assert (writer.heartbeat(), list(target.iterdir())) == (("lost", None), [])
+
+
+@pytest.mark.requires_hard_links
+def test_heartbeat_leaves_a_file_linked_over_the_holder_record_alone(lock_file: str, files: OsFiles, root: str) -> None:
+    # A process that can write holders/ can rename a hard link to another of the holder's files over its record.
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    (private := Path(f"{lock_file}.private")).write_bytes(b"private")
+    os.link(private, linked := Path(root, "holders", "linked"))
+    linked.replace(Path(root, "holders", writer.token))
+    assert writer.advance()
+
+    assert (writer.heartbeat(), private.read_bytes()) == (("lost", None), b"private")
+
+
 _STALE_THRESHOLD: Final[float] = 1.0
 _HEARTBEAT: Final[float] = 0.3
 _POLL: Final[float] = 0.1
@@ -902,12 +938,13 @@ class _MemoryFiles:
         self._scheduler.yield_turn()
         return self.files.get(_key(path))
 
-    def create(self, path: str, data: bytes, *, durable: bool = False) -> None:  # ruff:ignore[unused-method-argument]  # memory has no storage to flush
+    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:  # ruff:ignore[unused-method-argument]  # memory has no storage to flush
         self._scheduler.yield_turn()
         if _key(path) in self.files:  # pragma: no cover  # every name created here is a fresh token
             raise FileExistsError(path)
         self.files[_key(path)] = data
         self._record()
+        return 0, 0
 
     def link(self, source: str, target: str) -> bool:
         self._scheduler.yield_turn()
@@ -923,7 +960,7 @@ class _MemoryFiles:
         self._record()
         return True
 
-    def overwrite(self, path: str, data: bytes) -> bool:
+    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:  # ruff:ignore[unused-method-argument]  # nothing here swaps one file for another
         self._scheduler.yield_turn()
         if (
             _key(path) not in self.files

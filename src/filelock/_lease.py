@@ -46,12 +46,12 @@ _DEFAULT_LEASE_DURATION: Final[float] = 30.0
 
 @dataclass(frozen=True)
 class LeaseCompromise:
-    """Why a held lease stopped being this process's to hold."""
+    """Why a held lease stopped being this process's to hold, and the error that ended its refresh, if any."""
 
     lock_file: str
     token: str
     reason: CompromiseReason
-    error: OSError | None = None
+    error: Exception | None = None
 
 
 @dataclass(frozen=True)

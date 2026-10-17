@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
 import sys
 import time
 from errno import EIO
@@ -10,10 +12,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
 from filelock._soft_rw import _storage as storage_mod
 from filelock._soft_rw._storage import OsFiles
+from tests.capability_marks import NEEDS_FOREIGN_STICKY_TMP
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,7 +31,7 @@ pytestmark = pytest.mark.requires_hard_links
     ("call", "expected"),
     [
         pytest.param(lambda files, path: files.read(path), None, id="read"),
-        pytest.param(lambda files, path: files.overwrite(path, b"data"), False, id="overwrite"),
+        pytest.param(lambda files, path: files.overwrite(path, b"data", (0, 0)), False, id="overwrite"),
         pytest.param(lambda files, path: files.listdir(path), [], id="listdir"),
     ],
 )
@@ -39,7 +43,7 @@ def test_missing_path_returns_default(tmp_path: Path, call: Callable[[OsFiles, s
     "call",
     [
         pytest.param(lambda files, path: files.read(path), id="read"),
-        pytest.param(lambda files, path: files.overwrite(path, b"data"), id="overwrite"),
+        pytest.param(lambda files, path: files.overwrite(path, b"data", (0, 0)), id="overwrite"),
     ],
 )
 def test_open_other_errors_propagate(
@@ -76,8 +80,8 @@ def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixtur
     # An NFS retransmit can report a link that landed as failed; the target naming the source's file is what counts.
     real_link = storage_mod._link_no_follow
 
-    def link_then_fail(source: str, target: str) -> None:
-        real_link(source, target)
+    def link_then_fail(source: str, target: str, **dir_fds: int | None) -> None:
+        real_link(source, target, **dir_fds)
         raise OSError(EIO, "Input/output error")
 
     mocker.patch.object(storage_mod, "_link_no_follow", side_effect=link_then_fail)
@@ -114,18 +118,60 @@ def test_replace_renames_unless_refused(tmp_path: Path, mocker: MockerFixture, *
     (source := tmp_path / "source").write_bytes(b"new")
     (target := tmp_path / "target").write_bytes(b"old")
     if refused:
-        mocker.patch.object(storage_mod.Path, "replace", autospec=True, side_effect=PermissionError("in use"))
+        mocker.patch.object(storage_mod.os, "replace", autospec=True, side_effect=PermissionError("in use"))
     replaced = OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
     assert (replaced, target.read_bytes(), source.exists()) == (not refused, b"old" if refused else b"new", refused)
 
 
+def test_overwrite_rewrites_the_record_it_created(tmp_path: Path) -> None:
+    files = OsFiles(str(tmp_path / "x.lock"))
+    identity = files.create(str(record := tmp_path / "record"), b"old")
+
+    assert (files.overwrite(str(record), b"new", identity), record.read_bytes()) == (True, b"new")
+
+
+@pytest.mark.parametrize("swap", [pytest.param("link", id="hard-link"), pytest.param("rename", id="rename")])
+def test_overwrite_spares_a_file_swapped_in_for_the_record(tmp_path: Path, swap: str) -> None:
+    # A process that can write the directory can put another of this account's files under the record's name, and
+    # that file opens for writing like the record would.
+    files = OsFiles(str(tmp_path / "x.lock"))
+    identity = files.create(str(record := tmp_path / "record"), b"old")
+    (private := tmp_path / "private").write_bytes(b"private")
+    record.unlink()
+    getattr(os, swap)(private, record)
+
+    assert (files.overwrite(str(record), b"new", identity), record.read_bytes()) == (False, b"private")
+
+
+def test_overwrite_spares_a_record_with_a_second_name(tmp_path: Path) -> None:
+    files = OsFiles(str(tmp_path / "x.lock"))
+    identity = files.create(str(record := tmp_path / "record"), b"old")
+    os.link(record, tmp_path / "private")
+
+    assert (files.overwrite(str(record), b"new", identity), record.read_bytes()) == (False, b"old")
+
+
+@pytest.mark.skipif(not CAPABILITIES["fifo"], reason="needs os.mkfifo")
+@pytest.mark.parametrize("reader", [pytest.param(False, id="no-reader"), pytest.param(True, id="reader")])
+def test_overwrite_does_not_block_on_a_fifo(tmp_path: Path, *, reader: bool) -> None:  # pragma: needs fifo
+    files = OsFiles(str(tmp_path / "x.lock"))
+    identity = files.create(str(record := tmp_path / "record"), b"old")
+    record.unlink()
+    assert sys.platform != "win32"  # skipped there; narrows os.mkfifo and os.O_NONBLOCK for the type checker
+    os.mkfifo(record)
+    with contextlib.ExitStack() as stack:
+        if reader:
+            stack.callback(os.close, os.open(record, os.O_RDONLY | os.O_NONBLOCK))
+        assert files.overwrite(str(record), b"new", identity) is False
+
+
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(Path, "unlink", side_effect=PermissionError("held open"))
+    mocker.patch.object(storage_mod.os, "unlink", side_effect=PermissionError("held open"))
     OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
 
 
 def test_unlink_other_errors_propagate(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(Path, "unlink", side_effect=OSError(EIO, "Input/output error"))
+    mocker.patch.object(storage_mod.os, "unlink", side_effect=OSError(EIO, "Input/output error"))
     with pytest.raises(OSError, match="Input/output error"):
         OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
 
@@ -163,3 +209,31 @@ def test_prepare_creates_missing_parents(tmp_path: Path) -> None:
     root = str(tmp_path / "nested" / "deeper" / "x.lock.rw")
     OsFiles(str(tmp_path / "nested" / "deeper" / "x.lock")).prepare(root)
     assert Path(root, "gen").is_dir()
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda files, path: files.create(path, b"data"), id="create"),
+        pytest.param(lambda files, path: files.read(path), id="read"),
+        pytest.param(lambda files, path: files.listdir(str(Path(path).parent)), id="listdir"),
+        pytest.param(lambda files, path: files.unlink(path), id="unlink"),
+    ],
+)
+def test_record_operations_recheck_the_owner_of_a_replaced_directory(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path, mocker: MockerFixture, call: Callable[[OsFiles, str], object]
+) -> None:
+    files = OsFiles(str(lock_path_in_shared_tmp))
+    files.prepare(root := f"{lock_path_in_shared_tmp}.rw")
+    Path(root).rename(aside := f"{root}.aside")
+    try:
+        for name in ("gen", "holders"):
+            Path(root, name).mkdir(parents=True)
+        assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
+        mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+        with pytest.raises(RuntimeError, match="not to this process's account"):
+            call(files, str(Path(root, "holders", "record")))
+        assert list(Path(root, "holders").iterdir()) == []
+    finally:
+        shutil.rmtree(aside, ignore_errors=True)
