@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +13,7 @@ from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 
-from tests.capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT
+from tests.capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT, NEEDS_PROMPT_FINALIZATION
 from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS
 
 pytest.importorskip("sqlite3")
@@ -32,6 +33,7 @@ from filelock._read_write import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
+    from types import FrameType
 
     from pytest_mock import MockerFixture
 
@@ -818,17 +820,40 @@ def test_read_lock_avoids_sqlite_schema_alias(lock_file: str, mocker: MockerFixt
     assert not [statement for statement in statements if "sqlite_schema" in statement]
 
 
+@NEEDS_PROMPT_FINALIZATION
 def test_dropping_a_lock_closes_its_connection(lock_file: str) -> None:
     # Nothing else closes a lock dropped while still holding one, so the connection would outlive it.
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock.acquire_read()
-    connection = lock._con
-    assert connection is not None
 
-    lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+    del lock
 
-    with pytest.raises(sqlite3.ProgrammingError):
-        connection.execute("select 1")
+    with ReadWriteLock(lock_file, is_singleton=False).write_lock(blocking=False):
+        pass
+
+
+@NEEDS_PROMPT_FINALIZATION
+@pytest.mark.parametrize("mode", ["read", "write"])
+def test_singleton_dropped_while_held_is_not_handed_out_again(lock_file: str, mode: Literal["read", "write"]) -> None:
+    lock = ReadWriteLock(lock_file)
+    (lock.acquire_read if mode == "read" else lock.acquire_write)()
+    looked_up: Final[list[ReadWriteLock]] = []
+
+    # The cache lookup another thread makes while the dropped lock's connection closes. Interpreters run a profile
+    # hook with tracing off, so coverage does not record its body.
+    def look_up_while_closing(_frame: FrameType, event: str, arg: object) -> None:  # pragma: no cover
+        closing = event == "c_call" and getattr(arg, "__name__", None) == "close"
+        if closing and isinstance(getattr(arg, "__self__", None), sqlite3.Connection) and not looked_up:
+            looked_up.append(ReadWriteLock(lock_file))
+
+    sys.setprofile(look_up_while_closing)
+    try:
+        del lock
+    finally:
+        sys.setprofile(None)
+
+    with (looked_up[0].read_lock if mode == "read" else looked_up[0].write_lock)(), pytest.raises(Timeout):
+        ReadWriteLock(lock_file, is_singleton=False).acquire_write(blocking=False)
 
 
 def test_connection_close_from_another_process_leaves_it_open(lock_file: str, mocker: MockerFixture) -> None:
@@ -868,6 +893,39 @@ def test_acquire_respects_settings(
         with pytest.raises(Timeout):
             acquire() if omitted else acquire(timeout=call_timeout, blocking=call_blocking)
         assert minimum <= time.perf_counter() - started < 5
+
+
+def test_contended_acquire_beside_another_thread_times_out_on_time(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock],
+) -> None:
+    holder, contender = sync_locks
+    done: Final = threading.Event()
+    # With another thread alive the wait runs in short attempts, which together still honor the timeout.
+    other: Final = threading.Thread(target=done.wait)
+    other.start()
+    try:
+        started = time.perf_counter()
+        with holder.write_lock(), pytest.raises(Timeout):
+            contender.acquire_write(timeout=0.2)
+        # SQLite counts its busy timeout in whole milliseconds, so the last attempt can end a little early.
+        assert 0.15 <= time.perf_counter() - started < 5
+    finally:
+        done.set()
+        other.join()
+
+
+def test_unlimited_acquire_beside_another_thread_waits_for_the_holder(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock],
+) -> None:
+    holder, contender = sync_locks
+    holder.acquire_write()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        acquired: Final = executor.submit(contender.acquire_read, -1)
+        with pytest.raises(TimeoutError):
+            acquired.result(timeout=0.2)
+        holder.release()
+        acquired.result(timeout=5)
+        executor.submit(contender.release).result(timeout=5)
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])

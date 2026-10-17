@@ -1,0 +1,6 @@
+Fix a lock on a relative path locking a file in the directory the process changed to while the lock waited, and leaving
+its marker behind on release after such a change. The path resolved when an acquisition starts stays in use until
+the hold ends. An ``is_singleton=True`` lookup no longer returns a cached lock whose relative path now resolves to
+another file; a held lock still matches the file it holds. A rename of the lock's directory during a hold no longer
+leaves the marker behind or reports a false lease compromise, and a waiter no longer creates a second lock file in a
+directory that was renamed away.

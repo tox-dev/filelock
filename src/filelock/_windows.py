@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from filelock._api import BaseFileLock
-from filelock._util import ensure_directory_exists, raise_on_not_writable_file
+from filelock._util import raise_on_not_writable_file
 
 if sys.platform == "win32":  # pragma: win32 cover
     import ctypes
@@ -193,19 +193,20 @@ if sys.platform == "win32":  # pragma: win32 cover
         """
 
         def _acquire(self) -> None:
-            raise_on_not_writable_file(self.lock_file)
-            ensure_directory_exists(self.lock_file)
+            raise_on_not_writable_file(self._lock_path)
 
             # The reparse test is bound to the opened handle, so a symlink or junction swapped in cannot defeat it
             # through a check-then-open TOCTOU race.
-            fd = _open_non_reparse_fd(self.lock_file, self._open_mode())
+            fd = _open_non_reparse_fd(self._lock_path, self._open_mode())
             if fd is None:
                 return  # open contention (share conflict or a name pending deletion); let the retry loop try again
             try:
                 locked = _lock_fd_nonblocking(fd)
                 if locked:
                     self._mark_descriptor_owned(fd)
-            except BaseException:  # pragma: no cover  # cleanup only if the lock attempt itself raises
+            except BaseException:
+                # Closing drops the byte-range lock, so a hold already recorded for this descriptor must go with it.
+                self._mark_descriptor_released()
                 os.close(fd)
                 raise
             if not locked:
@@ -221,7 +222,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             self._close_released_fd(fd, default_suppresses=False)
             if not self._preserve_lock_file:  # preserve_lock_file keeps a stable file identity for the caller (#605)
                 with suppress(OSError):
-                    Path(self.lock_file).unlink()
+                    Path(self._lock_path).unlink()
 
     def _open_non_reparse_fd(path: str, mode: int) -> int | None:
         """

@@ -29,6 +29,7 @@ from filelock import (
 from filelock._identity import host_name
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, NEEDS_PROMPT_FINALIZATION, NEEDS_UNLINK_OPEN_FILE
+from tests.conftest import held_after_reclaim
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -119,6 +120,40 @@ def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> N
             _lease(marker).acquire()
 
 
+def test_lease_heartbeat_uses_acquisition_directory(working_directories: tuple[Path, Path]) -> None:
+    first, second = working_directories
+    compromised = Event()
+    lease = SoftFileLease(
+        "resource.lock", lease_duration=0.9, heartbeat_interval=0.05, on_compromise=lambda _: compromised.set()
+    )
+    with lease:
+        os.chdir(second)
+        os.utime(first / "resource.lock", (0, 0))
+
+        assert not compromised.wait(timeout=0.3)
+        assert (first / "resource.lock").stat().st_mtime > 0
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows refuses to rename a directory holding an open file"
+)  # pragma: win32 no cover
+def test_lease_heartbeat_survives_directory_rename(
+    working_directories: tuple[Path, Path],
+) -> None:
+    first, _ = working_directories
+    renamed = first.parent / "renamed"
+    compromised = Event()
+    lease = SoftFileLease(
+        "resource.lock", lease_duration=0.9, heartbeat_interval=0.05, on_compromise=lambda _: compromised.set()
+    )
+    with lease:
+        first.rename(renamed)
+        os.utime(renamed / "resource.lock", (0, 0))
+
+        assert not compromised.wait(timeout=0.3)
+        assert (renamed / "resource.lock").stat().st_mtime > 0
+
+
 @NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) -> None:
     # A wedged holder: its marker stays on disk, but no refresh ever lands on it again, so the claim ages out.
@@ -155,7 +190,7 @@ def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture
 def test_lease_reclaims_a_dead_same_host_holder(marker: Path, contract: str) -> None:
     marker.write_text(f"filelock/2\npid=999999\nhost={host_name()}\n{contract}", encoding="utf-8")
 
-    with _lease(marker) as lease:
+    with held_after_reclaim(_lease(marker)) as lease:
         assert lease.is_lock_held_by_us
 
 
@@ -598,6 +633,7 @@ def test_lease_reports_marker_missing_when_a_refresh_cannot_stat_it(marker: Path
     lease.acquire()
     token = lease.token
     real_lstat: Final = os.lstat
+    real_fstat: Final = os.fstat
     missing = False
 
     def lstat(path: str) -> os.stat_result:
@@ -605,7 +641,11 @@ def test_lease_reports_marker_missing_when_a_refresh_cannot_stat_it(marker: Path
             raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
         return real_lstat(path)
 
+    def fstat(fd: int) -> os.stat_result | SimpleNamespace:
+        return SimpleNamespace(st_nlink=0) if missing else real_fstat(fd)
+
     mocker.patch("filelock._lease.os.lstat", autospec=True, side_effect=lstat)
+    mocker.patch("filelock._lease.os.fstat", autospec=True, side_effect=fstat)
     try:
         missing = True
         # The first miss may be a peer's break in flight, so the report comes a refresh later.
@@ -615,6 +655,43 @@ def test_lease_reports_marker_missing_when_a_refresh_cannot_stat_it(marker: Path
         lease.release()
 
     assert [(c.reason, c.token, c.lock_file) for c in seen] == [("marker-missing", token, str(marker))]
+
+
+def test_lease_reports_refresh_failed_when_a_missing_marker_cannot_be_inspected(
+    marker: Path, mocker: MockerFixture
+) -> None:
+    seen: list[LeaseCompromise] = []
+    lease = _lease(marker, on_compromise=seen.append)
+    lease.acquire()
+    real_lstat: Final = os.lstat
+    real_fstat: Final = os.fstat
+    missing = False
+    name_lost = False
+
+    def lstat(path: str) -> os.stat_result:
+        nonlocal name_lost
+        if missing and path.endswith(marker.name):
+            name_lost = True
+            raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
+        return real_lstat(path)
+
+    def fstat(fd: int) -> os.stat_result:
+        # Fails only once the name is gone, so no other call in the refresh can report first.
+        if name_lost:
+            raise OSError(EIO, "Input/output error")
+        return real_fstat(fd)
+
+    mocker.patch("filelock._lease.os.lstat", autospec=True, side_effect=lstat)
+    mocker.patch("filelock._lease.os.fstat", autospec=True, side_effect=fstat)
+    try:
+        missing = True
+        _wait_until(lambda: bool(seen))
+    finally:
+        missing = False
+        name_lost = False
+        lease.release()
+
+    assert [c.reason for c in seen] == ["refresh-failed"]
 
 
 def test_lease_rides_out_a_marker_missing_for_one_refresh(marker: Path, mocker: MockerFixture) -> None:
@@ -810,7 +887,11 @@ def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
             raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
         return real_lstat(path)
 
+    def fstat(_fd: int) -> SimpleNamespace:
+        return SimpleNamespace(st_nlink=0, st_dev=0, st_ino=0)
+
     mocker.patch("filelock._lease.os.lstat", autospec=True, side_effect=lstat)
+    mocker.patch("filelock._lease.os.fstat", autospec=True, side_effect=fstat)
     for heartbeat in heartbeats:
         heartbeat.join(timeout=_DURATION * 20)
 
