@@ -654,10 +654,10 @@ __all__ = [
     "_identity_at",
     "_identity_of_fd",
     "_is_unlinked",
-    "_open_deletable_for_reading",
     "_make_private_directory",
+    "_open_deletable_for_reading",
     "_open_non_reparse_fd",
     "_pin_directory",
-    "_unpin_directory",
     "_pinned",
+    "_unpin_directory",
 ]

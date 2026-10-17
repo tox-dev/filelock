@@ -5,8 +5,8 @@ import itertools
 import os
 import secrets
 import shutil
-import sys
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed-argument, no-shell run below
+import sys
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, TypeVar
