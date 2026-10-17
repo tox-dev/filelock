@@ -98,6 +98,7 @@ def test_soft_read_write_subclass_construction_state_is_reset_after_fork(tmp_pat
     parents = [lock_type(path) for lock_type in lock_types]
 
     def reset_child() -> NoReturn:
+        assert sys.platform != "win32"  # NEEDS_FORK enforces this; narrow signal's platform-specific API for ty.
         # A stale mutex or construction marker must fail within the parent's wait budget.
         signal.alarm(5)
         status = 1
