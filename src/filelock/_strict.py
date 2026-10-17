@@ -34,7 +34,7 @@ from filelock._identity import host_name, owner_is_stale, process_start_token
 from filelock._marker import parse_marker
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import ensure_directory_exists, foreign_directory_owner, write_all
+from filelock._util import foreign_directory_owner, write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._windows import _is_unlinked, _open_deletable_for_reading, _pin_directory, _unpin_directory
@@ -137,14 +137,9 @@ class StrictSoftFileLock(BaseFileLock):
     def _acquire(self) -> None:
         # Finish a doorway whose claim cleanup failed before publishing, so this owner never contends with leftovers.
         self._discard_pending_doorways(exited_only=True)
-        # Resolve once per acquisition, not per poll: a waiter on a relative path must keep publishing into the
-        # directory it started waiting in even when another thread changes the working directory mid-wait.
-        if (claim_root := self._context.claim_root) is None:
-            claim_root = self._context.claim_root = _canonical(self.lock_file)
-        lock_path = Path(claim_root)
+        lock_path = Path(self._lock_path)
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
-        ensure_directory_exists(os.fspath(lock_path))
         # A process that can write these directories can remove claims from them, so they take the lock's mode plus
         # search permission where the mode grants read.
         directory_mode: Final = (mode := self._open_mode()) | (mode & 0o444) >> 2
@@ -166,13 +161,14 @@ class StrictSoftFileLock(BaseFileLock):
             raise
         self._mark_descriptor_pending(sentinel_fd, sentinel_identity)
         try:
-            won = self._attempt_doorway(claim_directory)
+            if won := self._attempt_doorway(claim_directory):
+                self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
         except BaseException:
-            self._discard_doorway()
+            # Once recorded as held, the acquire's rollback releases the claim instead.
+            if not self.is_locked:
+                self._discard_doorway()
             raise
-        if won:
-            self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
-        else:
+        if not won:
             self._discard_doorway()
 
     def _discard_pending_doorways(self, *, exited_only: bool) -> None:
@@ -293,11 +289,9 @@ class StrictSoftFileLock(BaseFileLock):
         if cleanup_error is not None:  # pragma: needs dir-fd
             raise cleanup_error
 
-    def __del__(self) -> None:
+    def _release_abandoned_holds(self) -> None:
         self._finalizing = True
-        super().__del__()
-        if vars(self).get("_creator_pid") != os.getpid():
-            return  # pragma: forked child
+        super()._release_abandoned_holds()
         # release() skips a doorway whose cleanup failed, as it is no hold, so a dropped instance would strand claims.
         with contextlib.suppress(Exception):
             # GraalPy defers finalizers to the host collector, so its tests cannot drive this cleanup.

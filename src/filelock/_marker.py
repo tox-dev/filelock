@@ -75,12 +75,12 @@ class MarkerSoftFileLock(SoftFileLock):
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError):
-            snapshot: Final[tuple[str | None, float, int]] = _read_lock_file(self.lock_file)
+            snapshot: Final[tuple[str | None, float, int]] = _read_lock_file(self._lock_path)
             owner: Final[OwnerRecord | None]
             if (owner := parse_marker(snapshot[0])) is None:
                 super()._try_break_stale_lock()
             elif owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
-                break_lock_file(self.lock_file, *snapshot[1:])
+                break_lock_file(self._lock_path, *snapshot[1:])
 
     @classmethod
     def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
@@ -90,7 +90,7 @@ class MarkerSoftFileLock(SoftFileLock):
 
     def _read_owner(self) -> OwnerRecord | None:
         with suppress(OSError, ValueError):
-            return parse_marker(_read_lock_file(self.lock_file)[0])
+            return parse_marker(_read_lock_file(self._lock_path)[0])
         return None
 
     def _write_lock_info(self, fd: int) -> None:

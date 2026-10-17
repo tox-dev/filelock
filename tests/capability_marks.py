@@ -82,6 +82,11 @@ NEEDS_PROMPT_FINALIZATION: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     reason="a dropped reference does not run __del__ on a deferred collector",
 )
 
+NEEDS_PROMPT_SIGNAL_DELIVERY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["prompt-signal-delivery"],
+    reason="this runtime runs a signal handler after raise_signal returns, so the signal escapes the call",
+)
+
 NEEDS_COLLECTED_FINALIZATION: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["collected-finalization"],
     reason="gc.collect() does not run __del__ on this runtime",
@@ -123,6 +128,7 @@ __all__ = [
     "NEEDS_PARENT_SYMLINK_COLLAPSE",
     "NEEDS_POSIX_SIGNALS",
     "NEEDS_PROMPT_FINALIZATION",
+    "NEEDS_PROMPT_SIGNAL_DELIVERY",
     "NEEDS_REGISTER_AT_FORK",
     "NEEDS_SYMLINK",
     "NEEDS_UNLINK_OPEN_FILE",

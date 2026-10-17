@@ -1,0 +1,7 @@
+Fix a lock reporting a hold the OS had dropped after a signal handler raised during
+:meth:`~filelock.BaseFileLock.acquire` or :meth:`~filelock.BaseFileLock.release`. A release that a signal handler cuts
+short after it has started now completes before the error propagates. A handler that acquires the lock its own thread is
+releasing now gets :class:`RuntimeError` instead of a hold that stays held. The singleton cache no longer hands out an
+``is_singleton=True`` lock or a :class:`~filelock.ReadWriteLock` whose finalizer is running, which released the new
+holder's lock. A signal during ``os.fork()`` no longer leaves the other threads blocked in their next lock call, and a
+fork from another thread no longer waits for a :class:`~filelock.ReadWriteLock` acquire on a busy database.

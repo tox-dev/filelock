@@ -8,7 +8,7 @@ import asyncio
 import functools
 import os
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 
 from filelock._async import (
     _BackendOutcome,
@@ -41,7 +41,7 @@ class AsyncSoftReadWriteLock:
     ``asyncio`` task owns its own hold. Tasks share a read lock, and a task asking for the write lock waits until the
     other holders release, with waiting writers ahead of new readers. Upgrading or downgrading a held lock raises
     :class:`RuntimeError`. The underlying :class:`SoftReadWriteLock` handles forks, the heartbeat, and stale eviction.
-    Singleton wrappers share one sync lock and its task holds.
+    Singleton wrappers share one sync lock and its task holds, and closing one ends only the holds taken through it.
 
     :param lock_file: path to the lock file; the protocol directory lives next to it as ``<lock_file>.rw``
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
@@ -75,6 +75,10 @@ class AsyncSoftReadWriteLock:
         executor: futures.Executor | None = None,
     ) -> None:
         self._creator_pid = os.getpid()
+        self._closed = False
+        self._owns_backend = not is_singleton
+        #: Marks the task holds taken through this wrapper, which its close() ends.
+        self._via: Final = object()
         self._lock = SoftReadWriteLock(
             lock_file,
             timeout,
@@ -185,7 +189,7 @@ class AsyncSoftReadWriteLock:
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
-        self._raise_if_inherited()
+        self._raise_if_unusable()
         await self._acquire("read", timeout, blocking=blocking)
         return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
 
@@ -210,7 +214,7 @@ class AsyncSoftReadWriteLock:
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
-        self._raise_if_inherited()
+        self._raise_if_unusable()
         await self._acquire("write", timeout, blocking=blocking)
         return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
 
@@ -219,14 +223,22 @@ class AsyncSoftReadWriteLock:
         sync_acquire = self._lock.acquire_read if mode == "read" else self._lock.acquire_write
 
         async def enter(remaining: float) -> None:
+            # A close() may have landed while this task waited for the table.
+            self._raise_if_unusable()
             await self._run_acquire(functools.partial(sync_acquire, remaining, blocking=blocking))
+
+        def joinable() -> bool:
+            self._raise_if_unusable()
+            return self._backend_holds()
 
         await self._owners.acquire(
             mode,
             timeout=self._lock.timeout if timeout is None else timeout,
             blocking=blocking,
             lock_file=self.lock_file,
+            via=self._via,
             enter=enter,
+            joinable=joinable,
         )
 
     async def release(self, *, force: bool = False) -> None:
@@ -235,9 +247,10 @@ class AsyncSoftReadWriteLock:
 
         The wrapper releases the lock once no task holds it.
 
-        :param force: if ``True``, drop the calling task's whole hold at any nesting level
+        :param force: if ``True``, end every level the calling task took through this wrapper. Levels taken through
+            other wrappers on the same path stay. A wrapper that holds no level for the task releases nothing.
 
-        :raises RuntimeError: if the calling task holds no lock and *force* is ``False``
+        :raises RuntimeError: if the calling task holds no level through this wrapper and *force* is ``False``
 
         """
         if self._creator_pid == os.getpid():
@@ -246,19 +259,52 @@ class AsyncSoftReadWriteLock:
             await self._owners.release(
                 force=force,
                 lock_file=self.lock_file,
+                via=self._via,
                 leave=functools.partial(self._submit, self._lock.release, force=True),
+                still_held=self._backend_holds,
             )
 
     async def close(self) -> None:
-        """Release any held lock and release the underlying filesystem resources. Idempotent."""
-        if self._creator_pid == os.getpid():
-            await self._run(self._lock.close)
-            self._owners.reset()
+        """
+        End the holds of the tasks that acquired through this instance and release the lock once no task holds it.
 
-    def _raise_if_inherited(self) -> None:
+        Idempotent. After calling this method the instance can no longer acquire locks. With ``is_singleton=False`` it
+        also closes the underlying :class:`SoftReadWriteLock`. A singleton wrapper leaves the shared one open, so tasks
+        that acquired through another wrapper and synchronous users of the same path keep their holds. The next acquire
+        notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
+        between that check and the admission still admits the task into the ended hold.
+
+        """
+        if self._creator_pid != os.getpid() or self._closed:
+            return
+        # Refuse acquires from here on, so none is admitted into a hold the backend is letting go of.
+        self._closed = True
+        try:
+            await self._owners.retire(
+                None if self._owns_backend else self._via,
+                leave=functools.partial(
+                    self._submit,
+                    self._lock.close if self._owns_backend else functools.partial(self._lock.release, force=True),
+                ),
+                still_held=self._backend_holds,
+            )
+        except BaseException as error:
+            # Only a failed backend call can leave the level held, and then a retried close() has to find it.
+            if not isinstance(error, asyncio.CancelledError) and self._backend_holds():
+                self._closed = False
+            raise
+
+    def _raise_if_unusable(self) -> None:
         if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"AsyncSoftReadWriteLock on {self.lock_file} was inherited across fork; construct a new instance"
             raise RuntimeError(msg)
+        if self._closed:
+            msg = f"AsyncSoftReadWriteLock on {self.lock_file} has been closed"
+            raise RuntimeError(msg)
+
+    def _backend_holds(self) -> bool:
+        # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
+        return self._lock._hold is not None  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
         # run_in_executor cannot recall work the pool already started, so canceling the caller does not stop the sync
@@ -279,20 +325,6 @@ class AsyncSoftReadWriteLock:
                 _raise_cancelled_error(cancellation, error)
             raise
         _future_result(acquire_future)
-
-    async def _run(self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs) -> _R:
-        # A canceled release or close is already running on the pool thread; drain it so its outcome is observed
-        # instead of finishing unwatched, then let the cancellation through.
-        future = self._submit(func, *args, **kwargs)
-        try:
-            await _wait_until_done(future)
-        except asyncio.CancelledError as cancellation:
-            try:
-                await _drain_future(future)
-            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                _raise_cancelled_error(cancellation, error)
-            raise
-        return _future_result(future)
 
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs

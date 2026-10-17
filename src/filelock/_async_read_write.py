@@ -12,7 +12,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import thread as executor_threads
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar, cast
 
 from filelock._api import (
     _append_exception_context,
@@ -49,7 +49,7 @@ class AsyncReadWriteLock:
     Python's :mod:`sqlite3` module has no async API. Each ``asyncio`` task owns its own hold. Tasks share a read lock,
     and a task asking for the write lock waits until the other holders release, with waiting writers ahead of new
     readers. As with :class:`ReadWriteLock`, upgrading or downgrading a held lock raises :class:`RuntimeError`.
-    Singleton wrappers over one path share their task holds.
+    Singleton wrappers over one path share their task holds, and closing one ends only the holds taken through it.
 
     :param lock_file: path to the SQLite database file used as the lock
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
@@ -79,6 +79,9 @@ class AsyncReadWriteLock:
         self._creator_pid = creator_pid
         self._fork_invalidated = False
         self._closed = False
+        self._owns_backend = not is_singleton
+        #: Marks the task holds taken through this wrapper, which its close() ends.
+        self._via: Final = object()
         _register_fork_object(self)
         with _fork_transition():
             self._lock = ReadWriteLock(lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
@@ -225,9 +228,23 @@ class AsyncReadWriteLock:
             self._owners.backend_thread = threading.get_ident()
 
         async def enter(remaining: float) -> None:
+            # A close() may have landed while this task waited for the table.
+            self._raise_if_unusable()
             await self._run_acquire(functools.partial(enter_backend, remaining))
 
-        await self._owners.acquire(mode, timeout=timeout, blocking=blocking, lock_file=self.lock_file, enter=enter)
+        def joinable() -> bool:
+            self._raise_if_unusable()
+            return self._backend_holds()
+
+        await self._owners.acquire(
+            mode,
+            timeout=timeout,
+            blocking=blocking,
+            lock_file=self.lock_file,
+            via=self._via,
+            enter=enter,
+            joinable=joinable,
+        )
 
     async def release(self, *, force: bool = False) -> None:
         """
@@ -235,23 +252,32 @@ class AsyncReadWriteLock:
 
         The wrapper releases the database lock once no task holds it.
 
-        :param force: if ``True``, drop the calling task's whole hold at any nesting level
+        :param force: if ``True``, end every level the calling task took through this wrapper. Levels taken through
+            other wrappers on the same path stay. A wrapper that holds no level for the task releases nothing.
 
-        :raises RuntimeError: if the calling task holds no lock and *force* is ``False``
+        :raises RuntimeError: if the calling task holds no level through this wrapper and *force* is ``False``
 
         """
         _ensure_current_process()
         if self._inherited:  # pragma: needs fork
             return
         await self._owners.release(
-            force=force, lock_file=self.lock_file, leave=functools.partial(self._submit, self._leave_backend)
+            force=force,
+            lock_file=self.lock_file,
+            via=self._via,
+            leave=functools.partial(self._submit, self._leave_backend),
+            still_held=self._backend_holds,
         )
 
     async def close(self) -> None:
         """
-        Release the lock (if held) and close the underlying SQLite connection.
+        End the holds of the tasks that acquired through this instance and release the lock once no task holds it.
 
-        After calling this method, the lock instance is no longer usable.
+        After calling this method, the lock instance is no longer usable. With ``is_singleton=False`` it also closes the
+        underlying SQLite connection. A singleton wrapper leaves the shared :class:`ReadWriteLock` open, so tasks that
+        acquired through another wrapper and synchronous users of the same path keep their holds. The next acquire
+        notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
+        between that check and the admission still admits the task into the ended hold.
 
         """
         _ensure_current_process()
@@ -259,21 +285,21 @@ class AsyncReadWriteLock:
             return
         if self._closed:
             return
-        close_future = self._submit(self._lock.close)
-        try:
-            await _wait_until_done(close_future)
-        except asyncio.CancelledError as cancellation:
-            try:
-                await _drain_future(close_future)
-            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                _raise_cancelled_error(cancellation, error)
-            self._closed = True
-            self._owners.reset()
-            self._shutdown_owned_executor()
-            raise
-        _future_result(close_future)
+        # Refuse acquires from here on, so none is admitted into a hold the backend is letting go of.
         self._closed = True
-        self._owners.reset()
+        try:
+            await self._owners.retire(
+                None if self._owns_backend else self._via,
+                leave=functools.partial(self._submit, self._lock.close if self._owns_backend else self._leave_backend),
+                still_held=self._backend_holds,
+            )
+        except BaseException as error:
+            # Only a failed backend call can leave the level held, and then a retried close() has to find it.
+            if not isinstance(error, asyncio.CancelledError) and self._backend_holds():
+                self._closed = False
+            else:
+                self._shutdown_owned_executor()
+            raise
         # Wait for the worker to exit rather than letting it drain in the background: a caller that forks right
         # after closing deserves a single-threaded process, and os.fork warns about any surviving thread.
         if self._owns_executor:
@@ -294,6 +320,12 @@ class AsyncReadWriteLock:
                 _raise_cancelled_error(cancellation, error)
             raise
         _future_result(acquire_future)
+
+    def _backend_holds(self) -> bool:
+        # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
+        if (thread := self._owners.backend_thread) is None:
+            return False
+        return self._lock._holds_level_of(thread)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     def _leave_backend(self) -> None:
         # Only the entering worker's level: a sync user of the same singleton keeps its own.

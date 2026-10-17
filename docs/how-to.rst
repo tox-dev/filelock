@@ -42,6 +42,8 @@ Two more constraints worth designing around:
 - **All contenders must agree on the path.** A lock is a rendezvous on one pathname. Resolve symlinks and relative
   paths the same way everywhere, or two processes will politely lock different files. Bind-mounted containers make this
   easy to get wrong: the same file, two paths, no exclusion.
+  filelock resolves a relative path when an acquisition starts and keeps that path until the hold ends. Do not rename
+  the lock's directory while a lock in it is held or waited on: a waiter then fails with :class:`FileNotFoundError`.
 - **Create the resource's directory when using a separate lock tree.** filelock creates the lock file's parent
   directories automatically, but it does not create directories for the resource being protected.
 
@@ -745,6 +747,10 @@ time of the call rather than at construction:
     finally:
         await rw.close()  # shuts down the executor it created
 
+With the default ``is_singleton=True`` every wrapper on a path shares one lock, so ``close()`` ends only the holds of
+tasks that acquired through that wrapper. Tasks holding through another wrapper, and synchronous ``ReadWriteLock`` users
+of the same path, keep their locks.
+
 Low-level ``acquire_read``/``acquire_write``/``release`` methods are also available:
 
 .. code-block:: python
@@ -1309,6 +1315,10 @@ A ``release()`` that does run inside a handler while the interrupted code was al
 thread returns without doing anything, and the interrupted release finishes the job. An ``acquire()`` inside a handler
 while the interrupted code is still acquiring that lock raises :class:`RuntimeError`: the interrupted acquire cannot go
 on until the handler returns.
+
+A ``release()`` that a handler interrupts after it has started finishes releasing before the handler's exception
+propagates, so the ``with`` block above never leaves the lock held. Only a handler that fires at the very entry of
+``release()`` leaves the hold for the next call.
 
 *******************************
  Check your own lock state
