@@ -266,6 +266,8 @@ standalone.lazy-exclude-modules = [
   # installs its sqlite audit hook and fork handler at import, and must fail at import without sqlite3 so the package
   # __getattr__ resolves ReadWriteLock and AsyncReadWriteLock to None
   "filelock._read_write",
+  # a marker released from a finalizer at interpreter exit unlinks through it, and a first import then fails
+  "filelock._windows",
   # registers its atexit cleanup at import
   "filelock._soft_rw._sync",
   # a Python built without it must fail at import, as for filelock._read_write

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
@@ -9,7 +10,7 @@ import filelock._soft
 from filelock import SoftFileLock
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
     from multiprocessing.process import BaseProcess
     from multiprocessing.synchronize import Event
 
@@ -53,4 +54,20 @@ def break_then_hang_after_exchange(
         SoftFileLock(lock_file).acquire(blocking=False)
 
 
-__all__ = ["break_then_hang_after_exchange", "cleanup_processes"]
+def call_within(call: Callable[[], object], seconds: float) -> tuple[bool, BaseException | None]:  # pragma: win32 cover
+    """Run *call* on a daemon thread and report whether it returned within *seconds* and what it raised."""
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            call()
+        except Exception as error:  # handed to the caller, which asserts on it
+            raised.append(error)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    return not thread.is_alive(), next(iter(raised), None)
+
+
+__all__ = ["break_then_hang_after_exchange", "call_within", "cleanup_processes"]

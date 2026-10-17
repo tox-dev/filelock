@@ -59,6 +59,13 @@ else:  # pragma: win32 no cover
         def _unlock_fd(fd: int) -> None:
             fcntl.flock(fd, fcntl.LOCK_UN)
 
+    def _flock_is_missing(fd: int) -> bool:
+        try:
+            _lock_fd_nonblocking(fd)
+        except OSError as exception:
+            return exception.errno == ENOSYS
+        return False  # a flock the probe won is released when the caller closes fd
+
     class UnixFileLock(BaseFileLock):
         """
         Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems.
@@ -78,6 +85,15 @@ else:  # pragma: win32 no cover
                 return None
             fd, created = opened
             self._mark_descriptor_pending(fd)
+            if created:
+                # Before the flock: a peer may win it first, and only the creator may set the mode. Outside the flock
+                # handler below: an fchmod that answers ENOSYS says nothing about flock.
+                try:
+                    self._apply_explicit_mode(fd)
+                except BaseException:
+                    self._mark_descriptor_released()
+                    os.close(fd)
+                    raise
             # One guard covers the flock through the recording of the hold. A signal handler that raises in between
             # would otherwise leave an unreferenced descriptor, and its flock, open until the process exits.
             locked = False
@@ -97,10 +113,12 @@ else:  # pragma: win32 no cover
             return None
 
         def _open_lock_file(self) -> tuple[int, bool] | None:
-            # No O_TRUNC: a contender that loses the flock must not truncate the holder's file or change its mode; the
-            # winner does both once it owns the lock (#591). O_EXCL tells the ENOSYS fallback whether this attempt made
-            # the inode, so it removes only its own placeholder, never a peer's marker.
-            open_flags = os.O_RDWR
+            # No O_TRUNC: a contender that loses the flock must not truncate the holder's file (#591), and neither may
+            # the winner, since a file renamed or hard-linked to the lock path is indistinguishable from a lock file.
+            # O_EXCL tells whether this attempt created the inode: only then does it get the explicit mode, and the
+            # ENOSYS fallback removes only its own placeholder. O_NONBLOCK: a lease (Linux F_SETLEASE) on the file would
+            # otherwise block the open for up to fs.lease-break-time, beyond timeout, blocking=False and cancel_check.
+            open_flags = os.O_RDWR | os.O_NONBLOCK
             if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
                 open_flags |= o_nofollow
             open_mode = self._open_mode()
@@ -119,10 +137,26 @@ else:  # pragma: win32 no cover
                 # Sticky-bit dirs (e.g. /tmp): O_CREAT fails if another user owns the file (#317).
                 if not Path(self._lock_path).exists():
                     raise
+            return self._open_existing_lock_file(open_flags, open_mode)
+
+        def _open_existing_lock_file(self, open_flags: int, open_mode: int) -> tuple[int, bool] | None:
             try:
                 return os.open(self._lock_path, open_flags, open_mode), False
             except FileNotFoundError:
                 return None  # unlinked since the create attempt; let the retry loop start over
+            except BlockingIOError:
+                return None  # a lease is breaking: contention, so the retry loop keeps the deadline
+            except PermissionError:
+                # A marker another account left is readable but not writable. Without flock, waiting on it only needs
+                # reading it; with flock the lock writes its file, so the denial stands.
+                try:
+                    fd = os.open(self.lock_file, open_flags & ~os.O_RDWR | os.O_RDONLY)
+                except (FileNotFoundError, BlockingIOError):
+                    return None  # unlinked, or leased: the kernel checks permission before the lease
+                if _flock_is_missing(fd):
+                    return fd, False
+                os.close(fd)
+                raise
 
         def _switch_to_soft_lock(self, fd: int, missing_flock: OSError, *, created: bool) -> None:
             # The filesystem does not implement flock. Fail closed when the caller opted out of existence-lock
@@ -150,8 +184,6 @@ else:  # pragma: win32 no cover
             # it and let the retry loop start over.
             if (stat_result := os.fstat(fd)).st_nlink == 0:
                 return False
-            os.ftruncate(fd, 0)
-            self._apply_explicit_mode(fd)
             self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
             return True
 

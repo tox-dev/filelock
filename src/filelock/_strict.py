@@ -7,7 +7,6 @@ __lazy_modules__ = [
     "filelock._marker",
     "filelock._soft",
     "filelock._util",
-    "filelock._windows",
     "functools",
     "pathlib",
     "secrets",

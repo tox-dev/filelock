@@ -257,6 +257,22 @@ def _refuses_to_open_a_symlink() -> bool:
         return False
 
 
+def _grants_a_file_lease() -> bool:
+    # Only Linux has F_SETLEASE, and a filesystem or fs.leases-enable=0 can still refuse it.
+    try:
+        fcntl = import_module("fcntl")
+    except ImportError:
+        return False
+    if not hasattr(fcntl, "F_SETLEASE"):
+        return False
+    with tempfile.TemporaryFile() as handle:
+        try:
+            fcntl.fcntl(handle.fileno(), fcntl.F_SETLEASE, fcntl.F_WRLCK)
+        except OSError:
+            return False
+        return True
+
+
 def _reports_object_tracebacks() -> bool:
     # pytest's thread and unraisable exception hooks ask tracemalloc where the offending object was allocated. GraalPy
     # raises NotImplementedError from that lookup; CPython answers None while not tracing, and PyPy, which ships no
@@ -345,7 +361,9 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "af-unix": hasattr(socket, "AF_UNIX"),
     # Distinct from "symlink": a runtime can create them yet still not refuse to follow one.
     "o-nofollow": _refuses_to_open_a_symlink(),
+    "file-lease": _grants_a_file_lease(),
     "utime-nofollow": os.utime in os.supports_follow_symlinks,
+    "access-nofollow": os.access in os.supports_follow_symlinks,
     "utime-fd": os.utime in os.supports_fd,
     "sqlite3": find_spec("sqlite3") is not None,
     "lazy-imports": hasattr(sys, "set_lazy_imports"),

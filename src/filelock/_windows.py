@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["filelock._util", "msvcrt", "pathlib", "struct"]
+__lazy_modules__ = ["filelock._util", "msvcrt", "struct"]
 
 import os
 import struct
 import sys
 import time
 from contextlib import contextmanager, suppress
-from errno import ENOTDIR
+from errno import ENOENT, ENOTDIR, EWOULDBLOCK
 from functools import cache
-from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
 from filelock._api import BaseFileLock
@@ -26,6 +25,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     _GENERIC_READ: Final[int] = 0x80000000
     _GENERIC_WRITE: Final[int] = 0x40000000
     _SYNCHRONIZE: Final[int] = 0x00100000
+    _DELETE: Final[int] = 0x00010000
     _DESIRED_ACCESS: Final[int] = _GENERIC_READ | _GENERIC_WRITE | _SYNCHRONIZE
     _FILE_SHARE_READ_WRITE: Final[int] = (
         0x00000001 | 0x00000002
@@ -39,11 +39,16 @@ if sys.platform == "win32":  # pragma: win32 cover
     _FILE_ATTRIBUTE_NORMAL: Final[int] = 0x00000080
     _FILE_ATTRIBUTE_REPARSE_POINT: Final[int] = 0x00000400
     # CreateOptions: keep the handle synchronous (the CRT and msvcrt.locking rely on a maintained file position),
-    # refuse a directory, and open a reparse point rather than following it so the check below acts on the link itself.
+    # refuse a directory, return at once instead of waiting for an oplock holder to answer the break, and open a
+    # reparse point rather than following it so the check below acts on the link itself.
     _FILE_SYNCHRONOUS_IO_NONALERT: Final[int] = 0x00000020
     _FILE_NON_DIRECTORY_FILE: Final[int] = 0x00000040
+    _FILE_DELETE_ON_CLOSE: Final[int] = 0x00001000
+    _FILE_COMPLETE_IF_OPLOCKED: Final[int] = 0x00000100
     _FILE_OPEN_REPARSE_POINT: Final[int] = 0x00200000
-    _CREATE_OPTIONS: Final[int] = _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_NON_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT
+    _CREATE_OPTIONS: Final[int] = (
+        _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_NON_DIRECTORY_FILE | _FILE_COMPLETE_IF_OPLOCKED | _FILE_OPEN_REPARSE_POINT
+    )
     # Listing access takes part in share-mode checks, unlike attribute-only access, so a handle that holds it without
     # FILE_SHARE_DELETE blocks renames and removals of the directory until it closes.
     _FILE_LIST_DIRECTORY: Final[int] = 0x00000001
@@ -72,14 +77,17 @@ if sys.platform == "win32":  # pragma: win32 cover
     # ERROR_ACCESS_DENIED. Telling them apart is the point (#604): a name pending deletion or a share conflict is
     # transient and worth a retry, a real access denial is not.
     _STATUS_SUCCESS: Final[int] = 0x00000000
+    # A success code that comes with a handle: another handle's oplock is breaking and its holder has not answered yet.
+    _STATUS_OPLOCK_BREAK_IN_PROGRESS: Final[int] = 0x00000108
     _STATUS_ACCESS_DENIED: Final[int] = 0xC0000022
     _STATUS_OBJECT_NAME_NOT_FOUND: Final[int] = 0xC0000034
+    _STATUS_OBJECT_PATH_NOT_FOUND: Final[int] = 0xC000003A
     _STATUS_SHARING_VIOLATION: Final[int] = 0xC0000043
     _STATUS_DELETE_PENDING: Final[int] = 0xC0000056
-    #: Probes, 2 ms apart, an open spends waiting out a STATUS_ACCESS_DENIED before treating it as a real denial: NTFS
-    #: answers it for a moment while a peer's unlink tears the name down (#604). A count rather than a wall-clock grace,
-    #: so a process stalled on a loaded machine still makes every probe.
+    #: Probes, 2 ms apart, for transient STATUS_ACCESS_DENIED while a peer unlinks the name (#604). A count ensures
+    #: every probe runs even when the process stalls; oplock breaks use the caller's wait instead.
     _ACCESS_DENIED_PROBES: Final[int] = 250
+    _ACCESS_DENIED_GRACE: Final[float] = 0.5
     _ACCESS_DENIED_RETRY: Final[float] = 0.002
 
     _ntdll: Final[ctypes.WinDLL] = ctypes.WinDLL("ntdll")
@@ -274,7 +282,10 @@ if sys.platform == "win32":  # pragma: win32 cover
 
             # The reparse test is bound to the opened handle, so a symlink or junction swapped in cannot defeat it
             # through a check-then-open TOCTOU race.
-            fd = _open_non_reparse_fd(self._lock_path, self._open_mode())
+            try:
+                fd = _open_non_reparse_fd(self._lock_path, self._open_mode())
+            except BlockingIOError:
+                return  # an oplock holder has not answered its break; let the retry loop keep its deadline
             if fd is None:
                 return  # open contention (share conflict or a name pending deletion); let the retry loop try again
             try:
@@ -299,9 +310,9 @@ if sys.platform == "win32":  # pragma: win32 cover
             self._close_released_fd(fd, default_suppresses=False)
             if not self._preserve_lock_file:  # preserve_lock_file keeps a stable file identity for the caller (#605)
                 with suppress(OSError):
-                    Path(self._lock_path).unlink()
+                    unlink_without_oplock_wait(self._lock_path)
 
-    def _open_non_reparse_fd(path: str, mode: int) -> int | None:
+    def _open_non_reparse_fd(path: str, mode: int, *, oplock_wait: float = _ACCESS_DENIED_GRACE) -> int | None:
         """
         Open *path* for locking while refusing reparse points, bound to the handle actually locked.
 
@@ -323,13 +334,17 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         :param path: the lock file path.
         :param mode: the permission mode; as ``os.open`` does on Windows, a cleared owner-write bit creates the file
-            read-only. A mode without group and other bits creates it with an owner-only DACL; any other mode has no
-            Windows counterpart and leaves the file the entries its directory hands down. Both only take effect when the
-            file is created, not when an existing one is opened.
+            read-only. A mode without group and other bits creates it with an owner-only DACL (discretionary access
+            control list, the Windows permission list); any other mode has no Windows counterpart and leaves the file
+            the entries its directory hands down. Both only take effect when the file is created, not when an existing
+            one is opened.
+
+        :param oplock_wait: seconds to wait for the holder of an oplock on the file to answer its break.
 
         :returns: a file descriptor owning the opened handle, or ``None`` on a sharing violation or a delete-pending
-            name the caller should treat as contention and retry.
+            name, which the caller should treat as contention and retry.
 
+        :raises BlockingIOError: if an oplock break stays unanswered for *oplock_wait* seconds.
         :raises OSError: if the path resolves to a reparse point, or the open fails for any other reason, raised with
             the Win32 error the status maps to. An access denial is raised only once it outlasts a run of probes, since
             a peer unlinking the file as it releases can make the open answer ``STATUS_ACCESS_DENIED`` for a moment.
@@ -338,19 +353,112 @@ if sys.platform == "win32":  # pragma: win32 cover
         # Emit the audit event os.open would, so consumers watching "open" still see the path-level open and can veto.
         sys.audit("open", path, None, os.O_RDWR | os.O_CREAT)
         read_only = not mode & _OWNER_WRITE
-        owner_only = not mode & _GROUP_AND_OTHERS
+        owner_only = not mode & 0o077
         handle, status = _nt_open(path, read_only=read_only, owner_only=owner_only)
-        for _ in range(_ACCESS_DENIED_PROBES):
-            if status != _STATUS_ACCESS_DENIED:
+        denied_probes = 0
+        oplock_deadline = time.monotonic() + oplock_wait
+        while True:
+            if status == _STATUS_ACCESS_DENIED:
+                if denied_probes >= _ACCESS_DENIED_PROBES:
+                    break
+                denied_probes += 1
+            elif status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+                if time.monotonic() >= oplock_deadline:
+                    break
+            else:
                 break
             time.sleep(_ACCESS_DENIED_RETRY)
             handle, status = _nt_open(path, read_only=read_only, owner_only=owner_only)
+        if status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+            msg = "oplock break in progress"
+            raise BlockingIOError(EWOULDBLOCK, msg, path)
         if status != _STATUS_SUCCESS:
             if status in {_STATUS_SHARING_VIOLATION, _STATUS_DELETE_PENDING}:
                 return None
-            winerror = _ntdll.RtlNtStatusToDosError(status)
-            raise OSError(None, ctypes.FormatError(winerror).strip(), path, winerror)
+            raise _status_error(status, path)
 
+        return _descriptor_for_non_reparse(handle, path, os.O_RDWR)
+
+    def open_read_without_oplock_wait(path: str) -> int:
+        """
+        Open *path* read-only and return a descriptor, without waiting for an oplock holder to answer its break.
+
+        ``os.open`` waits inside the system call until the holder of an oplock on the file answers or closes its handle,
+        so no timeout or ``blocking=False`` ends the wait. A reparse point at *path* is refused rather than followed.
+
+        :param path: the file to read.
+
+        :returns: a read-only file descriptor.
+
+        :raises BlockingIOError: if an oplock break is in progress, which callers treat as contention.
+        :raises FileNotFoundError: if *path* does not exist.
+        :raises OSError: if the open fails for any other reason, or *path* is a reparse point.
+
+        """
+        sys.audit("open", path, None, os.O_RDONLY)
+        return _open_existing_without_oplock_wait(path, _GENERIC_READ | _SYNCHRONIZE, os.O_RDONLY)
+
+    def open_for_delete_without_oplock_wait(path: str) -> int:
+        """
+        Open *path* with delete access and return a descriptor, without waiting for an oplock holder to answer.
+
+        The open handle shares read, write and delete, so a rename of *path* can proceed while the caller keeps it.
+        A holder that took an oplock through another handle is asked to answer by this open, which then raises, so the
+        caller skips the rename instead of waiting for it.
+
+        :param path: the file to rename.
+
+        :returns: a file descriptor owning the handle; the caller closes it.
+
+        :raises BlockingIOError: if an oplock break is in progress, which callers treat as contention.
+        :raises FileNotFoundError: if *path* does not exist.
+        :raises OSError: if the open fails for any other reason, or *path* is a reparse point.
+
+        """
+        return _open_existing_without_oplock_wait(path, _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE, os.O_RDONLY)
+
+    def unlink_without_oplock_wait(path: str) -> None:
+        """
+        Delete *path* through a handle that does not wait for an oplock holder to answer its break.
+
+        ``os.unlink`` waits like ``os.open`` does. Here an unanswered break leaves the file in place, which callers
+        accept since deleting a lock file is best effort. A symlink at *path* is deleted as a link.
+
+        :param path: the file to delete.
+
+        :raises FileNotFoundError: if *path* does not exist.
+        :raises OSError: if the open fails for any other reason, such as a sharing violation.
+
+        """
+        sys.audit("os.remove", path, None)
+        handle, status = _nt_create(
+            path,
+            _DELETE | _SYNCHRONIZE,
+            _FILE_ATTRIBUTE_NORMAL,
+            _FILE_SHARE_ALL,
+            _FILE_OPEN,
+            options=_CREATE_OPTIONS | _FILE_DELETE_ON_CLOSE,
+        )
+        if status == _STATUS_SUCCESS:
+            _kernel32.CloseHandle(handle)  # deletes the file
+        elif status != _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+            raise _status_error(status, path)
+
+    def _open_existing_without_oplock_wait(path: str, access: int, flags: int) -> int:
+        handle, status = _nt_create(path, access, _FILE_ATTRIBUTE_NORMAL, _FILE_SHARE_ALL, _FILE_OPEN)
+        if status != _STATUS_SUCCESS:
+            raise _status_error(status, path)
+        return _descriptor_for_non_reparse(handle, path, flags)
+
+    def _status_error(status: int, path: str) -> OSError:
+        if status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+            return BlockingIOError(EWOULDBLOCK, "oplock break in progress", path)
+        if status in {_STATUS_OBJECT_NAME_NOT_FOUND, _STATUS_OBJECT_PATH_NOT_FOUND}:
+            return FileNotFoundError(ENOENT, os.strerror(ENOENT), path)
+        winerror = _ntdll.RtlNtStatusToDosError(status)
+        return OSError(None, ctypes.FormatError(winerror).strip(), path, winerror)
+
+    def _descriptor_for_non_reparse(handle: int, path: str, flags: int) -> int:
         info = _BY_HANDLE_FILE_INFORMATION()
         # Querying an open handle we just created does not fail.
         if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):  # pragma: no cover
@@ -364,7 +472,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         try:
             # O_NOINHERIT mirrors os.open on Windows: the lock fd must not leak into child processes.
-            return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_NOINHERIT)
+            return msvcrt.open_osfhandle(handle, flags | os.O_NOINHERIT)
         except BaseException:  # pragma: no cover  # open_osfhandle audits too; a hook raising must not leak the handle
             _kernel32.CloseHandle(handle)
             raise
@@ -446,10 +554,12 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     @cache
     def _owner_only_descriptor() -> ctypes.c_void_p:
+        # The DACL os.mkdir(mode=0o700) applies, minus the directory-only inheritance flags: protected (P), so the
+        # directory's inheritable entries stay out, with full access (FA) for SYSTEM, Administrators and the owner.
         # Converted once and never freed: the open retries every few milliseconds while it waits.
         descriptor = ctypes.c_void_p()
         if not _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            _OWNER_ONLY_SDDL, _SDDL_REVISION_1, ctypes.byref(descriptor), None
+            "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)", 1, ctypes.byref(descriptor), None
         ):  # pragma: no cover  # a constant string converts
             raise ctypes.WinError(ctypes.get_last_error())
         return descriptor
@@ -469,7 +579,9 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         ``RtlDosPathNameToNtPathName_U_WithStatus`` translates the Win32 path to the NT namespace, handling relative,
         drive, UNC and extended-length path forms as Win32 itself would, and allocates a buffer that
-        ``RtlFreeUnicodeString`` releases. The handle is ``0`` unless the status is ``STATUS_SUCCESS``.
+        ``RtlFreeUnicodeString`` releases. The handle is ``0`` unless the status is ``STATUS_SUCCESS``: one that comes
+        with ``STATUS_OPLOCK_BREAK_IN_PROGRESS`` is closed here, since the file is not ours until the oplock holder
+        answers.
         """
         nt_name = _UNICODE_STRING()
         status = _ntdll.RtlDosPathNameToNtPathName_U_WithStatus(path, ctypes.byref(nt_name), None, None) & 0xFFFFFFFF
@@ -501,6 +613,8 @@ if sys.platform == "win32":  # pragma: win32 cover
             )
         finally:
             _ntdll.RtlFreeUnicodeString(ctypes.byref(nt_name))
+        if status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+            _kernel32.CloseHandle(handle)
         if status != _STATUS_SUCCESS:
             return 0, status
         return handle.value or 0, status
@@ -660,4 +774,7 @@ __all__ = [
     "_pin_directory",
     "_pinned",
     "_unpin_directory",
+    "open_for_delete_without_oplock_wait",
+    "open_read_without_oplock_wait",
+    "unlink_without_oplock_wait",
 ]

@@ -228,6 +228,13 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     stable pathname across releases, construct the lock with ``preserve_lock_file=True`` (see :ref:`how-to:Keep the lock
     file on release`).
 
+    An oplock (opportunistic lock: a notice sent to a process holding a handle before another process opens the file,
+    which the opener waits on until the holder answers) on the lock file does not hold an acquire past its ``timeout``.
+    The open reports contention, and the retry loop keeps the deadline. :class:`~filelock.ReadWriteLock` waits for its
+    ``timeout`` on an oplocked database and then raises :class:`~filelock.Timeout`. Release deletes the lock file
+    through a handle that does not wait for an oplock holder either, so a holder that never answers leaves the file in
+    place.
+
 **Unix and macOS**
     Uses the :class:`UnixFileLock <filelock.UnixFileLock>` class, backed by the kernel's ``fcntl.flock`` interface. The
     interface is common on Unix systems but is not specified by POSIX. The lock is exclusive and enforced by the kernel.
@@ -441,14 +448,19 @@ How filelock mitigates this:
 The defense differs by platform:
 
 - On Unix, filelock opens lock files with ``O_NOFOLLOW``, so a symlink planted at the lock path makes the open fail
-  instead of reaching its target.
+  instead of reaching its target. ``O_NOFOLLOW`` does not catch a hard link (a second name for the same file) or a file
+  renamed to the lock path, and such a file is indistinguishable from a lock file. :class:`UnixFileLock
+  <filelock.UnixFileLock>` therefore locks a file it did not create as found, without truncating it or changing its
+  mode.
 - Windows has no ``O_NOFOLLOW``. :class:`WindowsFileLock <filelock.WindowsFileLock>` opens the file without following
   reparse points and rejects a symlink or junction by inspecting the handle it locks, so a swap between check and use
   cannot redirect it. Only the last path component is guarded; the lock directory must not be writable by untrusted
   users.
 - :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL``, which fails on any
   existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
-  file as malformed, then checks the opened handle again with ``fstat``.
+  file as malformed, then checks the opened handle again with ``fstat``. On Windows it reads and breaks markers through
+  handles that do not wait for an oplock holder to answer, so an oplock on a marker ends as contention and the
+  ``timeout`` holds.
 - :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches
   ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
   directory after the check cannot redirect where claims are created, listed or removed.
@@ -1034,16 +1046,17 @@ inheritance so the lock file gets the directory's default permissions rather tha
 
 When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock creates the file with it. On Unix,
 :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`SoftFileLock <filelock.SoftFileLock>` then apply it with
-``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory. A soft lock's marker never
-gets the group or other write bits, whatever the ``mode`` or umask. Contenders only read and rename it, and they act on
-the record its owner wrote.
+``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory. A Unix lock file that
+already exists keeps the mode it has. A soft lock's marker never gets the group or other write bits, whatever the
+``mode`` or umask. Contenders only read and rename it, and they act on the record its owner wrote.
 
-Windows has no mode bits; a new file inherits the ACL of its directory. :class:`WindowsFileLock
-<filelock.WindowsFileLock>` honors the one request that has a Windows counterpart: a ``mode`` without group and other
-bits, such as ``0o600``, creates the lock file with a protected ACL that grants access to its owner, ``SYSTEM`` and
-``Administrators`` only, the ACL ``os.mkdir(mode=0o700)`` applies. The :class:`~filelock.ReadWriteLock` database, always
-``0o600``, gets the same ACL. A file that already exists keeps its own ACL. Every other ``mode``, and the files of the
-soft locks, which ``os.open`` creates, inherit the directory's ACL; restrict that ACL to keep other users out.
+Windows has no mode bits. A new file inherits the ACL (access control list, the Windows permission list) of its
+directory. :class:`WindowsFileLock <filelock.WindowsFileLock>` honors the one ``mode`` that has a Windows counterpart: a
+``mode`` without group and other bits, such as ``0o600``, creates the lock file with an ACL that grants access to its
+owner, ``SYSTEM`` and ``Administrators`` only, the ACL ``os.mkdir(mode=0o700)`` applies. The
+:class:`~filelock.ReadWriteLock` database, always ``0o600``, gets the same ACL. A file that already exists keeps its own
+ACL. Every other ``mode`` inherits the directory's ACL, as do the files of the soft locks, which ``os.open`` creates;
+restrict the directory's ACL to keep other accounts out.
 
 An explicit ``mode`` must be an :class:`int` within ``0o000``-``0o777`` that grants the owner read and write;
 construction raises :class:`TypeError` for another type and :class:`ValueError` otherwise. A lock reopens, reads, and

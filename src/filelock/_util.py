@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Final, cast
 if TYPE_CHECKING:
     import ctypes
     from collections.abc import Callable, Generator
+    from contextlib import AbstractContextManager
 
 
 def write_all(fd: int, data: bytes) -> None:
@@ -68,9 +69,13 @@ def raise_on_not_writable_file(filename: str) -> None:
     # No mtime guard: the old `if st_mtime != 0` skip covered NFS/Linux quirks where os.lstat returned an all-zero
     # struct, which it no longer does. Skipping on mtime 0 let a read-only file or a directory at the lock path pass
     # as missing, so acquire() blocked forever on an open that cannot succeed.
-    # Match open() credentials where supported; group permissions and ACLs can grant access without S_IWUSR.
+    # Match open() credentials where supported; group permissions and ACLs can grant access without S_IWUSR. Do not
+    # follow a symlink, as the lstat above does not: one swapped in since would be judged by its target.
     if not (file_stat.st_mode & stat.S_IWUSR) and not os.access(
-        filename, os.W_OK, effective_ids=os.access in os.supports_effective_ids
+        filename,
+        os.W_OK,
+        effective_ids=os.access in os.supports_effective_ids,
+        follow_symlinks=os.access not in os.supports_follow_symlinks,
     ):
         try:
             os.lstat(filename)
@@ -241,13 +246,35 @@ def _break_by_rename(
     # Renaming the marker aside empties the path until a recreated live marker is put back. link never replaces a name,
     # so a marker a third process created meanwhile keeps the path, and the live one waits under the break name.
     # Without os.link, or where the filesystem refuses hard links, the live one waits there too.
-    Path(lock_file).rename(break_path)
+    with _pinned_for_rename(lock_file):
+        Path(lock_file).rename(break_path)
     if (st_after := os.lstat(break_path)).st_mtime == mtime_before and st_after.st_ino == ino_before:
-        Path(break_path).unlink()
+        unlink_path(break_path)
     elif stat.S_ISREG(st_after.st_mode) and hasattr(os, "link"):  # pragma: needs hard-link
         with suppress(OSError):
             os.link(break_path, lock_file, follow_symlinks=False)
-            Path(break_path).unlink()
+            unlink_path(break_path)
+
+
+if sys.platform == "win32":  # pragma: win32 cover
+
+    def _pinned_for_rename(path: str) -> AbstractContextManager[object]:
+        # A rename by path waits on a Level 1 or batch oplock holder until it answers or closes. Opening first with
+        # FILE_COMPLETE_IF_OPLOCKED turns that wait into BlockingIOError, and the open handle shares delete, so the
+        # rename then proceeds. Imported here because _windows imports this module.
+        from filelock._windows import open_for_delete_without_oplock_wait  # ruff:ignore[import-outside-top-level]
+
+        return os.fdopen(open_for_delete_without_oplock_wait(path), "rb")
+
+    def unlink_path(path: str) -> None:
+        from filelock._windows import unlink_without_oplock_wait  # ruff:ignore[import-outside-top-level]
+
+        unlink_without_oplock_wait(path)
+
+else:  # pragma: win32 no cover
+
+    def unlink_path(path: str) -> None:
+        Path(path).unlink()
 
 
 def exchange_supported() -> bool:
@@ -367,5 +394,6 @@ __all__ = [
     "raise_on_not_writable_file",
     "remove_own_file",
     "touch",
+    "unlink_path",
     "write_all",
 ]

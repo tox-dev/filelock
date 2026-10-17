@@ -10,21 +10,28 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from capabilities import CAPABILITIES
 
 import filelock._util
 from filelock import SoftFileLock, Timeout
 from filelock._identity import host_name
+from filelock._util import break_lock_file
 from tests.capability_marks import NEEDS_FILE_PERMISSIONS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.conftest import DEAD_HOLDER, STALE_BREAKERS
+from tests.process_helpers import call_within
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
+    from contextlib import AbstractContextManager
 
     from pytest_mock import MockerFixture
 
 _SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform != "win32" and os.geteuid() == 0,
     reason="root can write a 0o444 file",
+)
+_NEEDS_ACCESS_NOFOLLOW: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["access-nofollow"], reason="os.access cannot refuse to follow a symlink here"
 )
 
 
@@ -38,6 +45,18 @@ def stale_lock(tmp_path: Path) -> Path:
 def test_break_lock_file_unlinks_a_dead_holders_marker(stale_lock: Path) -> None:
     with SoftFileLock(stale_lock, timeout=1):
         assert list(stale_lock.parent.glob("test.lock.break.*")) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="oplocks exist only on Windows")
+def test_break_lock_file_skips_a_marker_under_an_oplock(  # pragma: win32 cover
+    stale_lock: Path, hold_oplock: Callable[[Path], Callable[[], None]]
+) -> None:
+    held = stale_lock.stat()
+    hold_oplock(stale_lock)
+
+    finished, error = call_within(lambda: break_lock_file(str(stale_lock), held.st_mtime, held.st_ino), 5)
+
+    assert (finished, type(error), stale_lock.exists()) == (True, BlockingIOError, True)
 
 
 def _rewrite_in_place(lock: Path) -> None:
@@ -147,15 +166,21 @@ def test_stale_break_admits_no_third_holder_beside_a_recreated_marker(
 def test_break_lock_file_put_back_never_replaces_a_marker_at_the_path(  # pragma: win32 cover
     stale_lock: Path, mocker: MockerFixture
 ) -> None:
+    assert sys.platform == "win32"
     rename: Final = Path.rename
+    pin: Final = filelock._util._pinned_for_rename
 
-    def peer_recreates_then_third_creates(source: Path, target: str) -> Path:
-        _rewrite_in_place(source)
+    def peer_recreates_then_pin(path: str) -> AbstractContextManager[object]:
+        _rewrite_in_place(Path(path))  # Windows refuses an in-place rewrite once the pin holds the marker
+        return pin(path)
+
+    def rename_then_third_creates(source: Path, target: str) -> Path:
         result: Final[Path] = rename(source, target)
         source.write_text("third", encoding="utf-8")
         return result
 
-    mocker.patch.object(Path, "rename", autospec=True, side_effect=peer_recreates_then_third_creates)
+    mocker.patch("filelock._util._pinned_for_rename", side_effect=peer_recreates_then_pin)
+    mocker.patch.object(Path, "rename", autospec=True, side_effect=rename_then_third_creates)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
 
@@ -563,7 +588,7 @@ def test_writability_uses_open_credentials(
 ) -> None:
     readonly_marker.chmod(mode)
 
-    def access(filename: str, permission: int, *, effective_ids: bool = False) -> bool:
+    def access(filename: str, permission: int, *, effective_ids: bool = False, **_: bool) -> bool:
         assert (filename, permission) == (str(readonly_marker), os.W_OK)
         return effective_ids == supported
 
@@ -575,7 +600,7 @@ def test_writability_uses_open_credentials(
 
 
 def test_writability_allows_creation_after_marker_disappears(readonly_marker: Path, mocker: MockerFixture) -> None:
-    def access(filename: str, permission: int, *, effective_ids: bool = False) -> bool:
+    def access(filename: str, permission: int, *, effective_ids: bool = False, **_: bool) -> bool:
         assert (permission, effective_ids) == (os.W_OK, os.access in os.supports_effective_ids)
         readonly_marker.chmod(0o644)
         Path(filename).unlink()
@@ -584,6 +609,21 @@ def test_writability_allows_creation_after_marker_disappears(readonly_marker: Pa
     mocker.patch("os.access", autospec=True, side_effect=access)
     with (lock := SoftFileLock(readonly_marker)).acquire(timeout=0):
         assert lock.is_locked
+
+
+@_NEEDS_ACCESS_NOFOLLOW  # pragma: needs access-nofollow
+def test_writability_check_ignores_symlink_swapped_in_after_lstat(readonly_marker: Path, mocker: MockerFixture) -> None:
+    def swap_then_access(filename: str, permission: int, **kwargs: bool) -> bool:
+        Path(filename).unlink()
+        Path(filename).symlink_to(readonly_marker.with_name("missing"))
+        return real_access(filename, permission, **kwargs)
+
+    real_access: Final = os.access
+    probe: Final = mocker.patch("os.access", autospec=True, side_effect=swap_then_access)
+    mocker.patch("os.supports_follow_symlinks", {*os.supports_follow_symlinks, probe})
+    # Following the symlink would find no target and raise PermissionError; the link itself is writable.
+    with pytest.raises(Timeout):
+        SoftFileLock(readonly_marker).acquire(timeout=0)
 
 
 def test_writability_rejects_denied_marker(readonly_marker: Path, mocker: MockerFixture) -> None:

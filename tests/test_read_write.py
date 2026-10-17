@@ -6,8 +6,10 @@ import re
 import struct
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only fixed-argument, no-shell runs below
 import sys
+import threading
 import time
 from contextlib import closing
+from errno import EWOULDBLOCK
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
@@ -578,6 +580,43 @@ def test_read_write_lock_refuses_a_database_held_without_sharing(tmp_path: Path)
         kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="oplocks exist only on Windows")
+def test_read_write_lock_oplocked_database_raises_timeout_after_its_timeout(
+    tmp_path: Path, hold_oplock: Callable[[Path], Callable[[], None]]
+) -> None:  # pragma: win32 cover
+    with closing(ReadWriteLock(database := tmp_path / "lock.db", is_singleton=False)) as lock:
+        hold_oplock(database)
+
+        started = time.monotonic()
+        with pytest.raises(Timeout):
+            lock.acquire_read(timeout=1)
+        assert 0.9 <= time.monotonic() - started < 5
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="oplocks exist only on Windows")
+def test_read_write_lock_waits_for_an_oplock_holder_that_answers(
+    tmp_path: Path, hold_oplock: Callable[[Path], Callable[[], None]]
+) -> None:  # pragma: win32 cover
+    with closing(ReadWriteLock(database := tmp_path / "lock.db", is_singleton=False)):
+        pass
+    timer = threading.Timer(1.0, hold_oplock(database))
+    started = time.monotonic()
+    timer.start()
+    try:
+        with closing(ReadWriteLock(database, is_singleton=False)) as lock, lock.read_lock():
+            assert time.monotonic() - started >= 1
+    finally:
+        timer.join()
+
+
+def test_read_write_lock_open_blocked_by_an_oplock_is_a_timeout(tmp_path: Path, mocker: MockerFixture) -> None:
+    with closing(ReadWriteLock(tmp_path / "lock.db", is_singleton=False)) as lock:
+        mocker.patch("filelock._read_write._connect", side_effect=BlockingIOError(EWOULDBLOCK, "oplock break"))
+
+        with pytest.raises(Timeout):
+            lock.acquire_read(timeout=0)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="POSIX creates the database 0o600 through its mode bits")
 def test_read_write_lock_database_keeps_out_the_directory_acl(
     inheriting_directory: Path,
@@ -587,8 +626,7 @@ def test_read_write_lock_database_keeps_out_the_directory_acl(
         acl = subprocess.run(
             [Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe"), lock_path], capture_output=True, check=True
         ).stdout
-    # icacls marks each entry the directory handed down with (I), whatever the display language.
-    assert b"(I)" not in acl
+    assert b"(I)" not in acl  # icacls marks inherited entries with (I) in every display language
 
 
 @pytest.mark.parametrize(

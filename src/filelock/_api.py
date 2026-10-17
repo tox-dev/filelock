@@ -750,7 +750,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             default ACLs, preserving POSIX default ACL inheritance in shared directories. Construction raises
             :class:`ValueError` unless it grants the owner read and write, which the lock needs for its own files. On
             Windows a native lock creates its file with an owner-only ACL when the mode has no group and other bits; any
-            other mode, and a soft lock, leave the file the ACL its directory hands down.
+            other mode, and a soft lock, leave the file the ACL its directory hands down. A Unix lock file that already
+            exists keeps its permissions.
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set to
             ``False`` then the lock will be reentrant across threads. When ``True`` (the default), **all fields of the
             lock's internal context are per-thread**, including the configuration values ``poll_interval``, ``timeout``,
