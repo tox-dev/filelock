@@ -642,6 +642,13 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._raise_if_acquiring("close")
             self._release(force=True, close=True)
 
+    def _acquire_level_of(
+        self, holder: int, mode: Literal["read", "write"], timeout: float, *, blocking: bool
+    ) -> AcquireReturnProxy:
+        # Records the level under *holder* instead of the calling thread: an async wrapper's executor thread does not
+        # identify the tasks it holds for.
+        return self._acquire(mode, timeout, blocking=blocking, holder=holder)
+
     def _release_level_of(self, thread_id: int) -> None:
         with _fork_transition():
             _ensure_current_process()
@@ -755,7 +762,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             msg = "Cannot operate on a closed database."
             raise sqlite3.ProgrammingError(msg)
 
-    def _acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
+    def _acquire(
+        self, mode: Literal["read", "write"], timeout: float, *, blocking: bool, holder: int | None = None
+    ) -> AcquireReturnProxy:
         timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
         start_time: Final = time.monotonic()
         remaining = timeout  # -1 waits up to SQLite's busy-timeout cap
@@ -771,7 +780,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 or threading.active_count() == 1
             )
             try:
-                return self._attempt_acquire(mode, remaining if final else _MAX_TRANSITION_WAIT, blocking=blocking)
+                return self._attempt_acquire(
+                    mode, remaining if final else _MAX_TRANSITION_WAIT, blocking=blocking, holder=holder
+                )
             except Timeout:
                 if final:
                     raise
@@ -779,14 +790,17 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if timeout != -1:  # pragma: needs register-at-fork
                 remaining = max(timeout - (time.monotonic() - start_time), 0)
 
-    def _attempt_acquire(self, mode: Literal["read", "write"], timeout: float, *, blocking: bool) -> AcquireReturnProxy:
+    def _attempt_acquire(
+        self, mode: Literal["read", "write"], timeout: float, *, blocking: bool, holder: int | None = None
+    ) -> AcquireReturnProxy:
         with _fork_transition():
             self._raise_if_unusable()
             operation_pid = _GETPID()
             thread_id = threading.get_ident()
+            holder = thread_id if holder is None else holder
             with self._internal_lock:
                 if self._holds_level():
-                    return self._validate_reentrant(mode)
+                    return self._validate_reentrant(mode, holder)
                 if thread_id in self._acquisition_thread_ids:  # pragma: no cover - exercised in an audit callback
                     msg = f"Cannot acquire ReadWriteLock on {self.lock_file} while acquisition is active in this thread"
                     raise RuntimeError(msg)
@@ -797,11 +811,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 try:
                     self._raise_if_unusable()
                     return self._do_acquire_inner(
-                        mode,
-                        timeout,
-                        blocking=blocking,
-                        operation_pid=operation_pid,
-                        start_time=start_time,
+                        mode, timeout, holder, blocking=blocking, operation=(operation_pid, start_time)
                     )
                 finally:
                     self._transaction_lock.release()
@@ -813,15 +823,16 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self,
         mode: Literal["read", "write"],
         timeout: float,
+        holder: int,
         *,
         blocking: bool,
-        operation_pid: int,
-        start_time: float,
+        operation: tuple[int, float],
     ) -> AcquireReturnProxy:
+        operation_pid, start_time = operation
         # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
         with self._internal_lock:
             if self._holds_level():
-                return self._validate_reentrant(mode)
+                return self._validate_reentrant(mode, holder)
         if self._con is not None:
             self._finish_connection()
         try:
@@ -831,12 +842,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 operation_pid=operation_pid,
                 start_time=start_time,
             )
-            self._configure_and_begin(
-                mode,
-                timeout,
-                blocking=blocking,
-                operation=(operation_pid, start_time),
-            )
+            self._configure_and_begin(mode, timeout, blocking=blocking, operation=operation)
             self._raise_if_process_changed(operation_pid)
         except BaseException as error:
             acquisition_error: BaseException
@@ -856,9 +862,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._current_mode = mode
             self._lock_level = 1
             if mode == "write":
-                self._write_thread_id = threading.get_ident()
+                self._write_thread_id = holder
             else:
-                self._read_depths = {threading.get_ident(): 1}
+                self._read_depths = {holder: 1}
         return AcquireReturnProxy(lock=self)
 
     def _open_for_acquisition(self, timeout: float, *, blocking: bool, operation_pid: int, start_time: float) -> None:
@@ -985,8 +991,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._clear_lock_state()
         return self._lock_level > 0
 
-    def _validate_reentrant(self, mode: Literal["read", "write"]) -> AcquireReturnProxy:
-        cur = threading.get_ident()
+    def _validate_reentrant(self, mode: Literal["read", "write"], cur: int) -> AcquireReturnProxy:
         if self._current_mode != mode:
             opposite = "write" if mode == "read" else "read"
             if cur == self._write_thread_id or cur in self._read_depths:

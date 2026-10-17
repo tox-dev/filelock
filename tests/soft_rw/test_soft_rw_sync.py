@@ -901,8 +901,9 @@ def test_singleton_rejects_a_different_on_compromise(lock_file: str) -> None:
         first.close()
 
 
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.parametrize("force", [pytest.param(True, id="force"), pytest.param(False, id="plain")])
-def test_release_from_on_compromise_leaves_cleanly(lock_file: str, force: bool) -> None:
+def test_release_from_on_compromise_leaves_cleanly(lock_file: str, force: bool, mode: Literal["read", "write"]) -> None:
     # The callback runs on the heartbeat thread; a release there has no thread to join and must still leave.
     lock = SoftReadWriteLock(
         lock_file,
@@ -912,7 +913,7 @@ def test_release_from_on_compromise_leaves_cleanly(lock_file: str, force: bool) 
         poll_interval=0.02,
         on_compromise=lambda _compromise: lock.release(force=force),
     )
-    lock.acquire_write(timeout=2)
+    (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=2)
     hold = lock._hold
     assert hold is not None
     try:
@@ -1494,3 +1495,102 @@ def test_writer_timeout_commits_itself_out(lock_file: str) -> None:
     finally:
         writer.close()
         reader.close()
+
+
+def test_soft_read_on_a_lost_hold_raises(lost_lock: SoftReadWriteLock, lost: threading.Event) -> None:
+    lost_lock.acquire_read(timeout=2)
+    _evict_every_holder(lost_lock.lock_file)
+    assert lost.wait(_PROCESS_DEADLINE)
+
+    with ThreadPoolExecutor(max_workers=1) as other_thread, pytest.raises(RuntimeError, match="hold was lost"):
+        other_thread.submit(lost_lock.acquire_read, 1).result(_PROCESS_DEADLINE)
+    lost_lock.release()
+
+
+def test_soft_read_after_the_lost_hold_drains_asks_the_log(lost_lock: SoftReadWriteLock, lost: threading.Event) -> None:
+    lost_lock.acquire_read(timeout=2)
+    _evict_every_holder(lost_lock.lock_file)
+    assert lost.wait(_PROCESS_DEADLINE)
+    lost_lock.release()
+    with closing(_make_lock(lost_lock.lock_file, heartbeat_interval=0.05, stale_threshold=0.2)) as writer:
+        writer.acquire_write(timeout=2)
+
+        with pytest.raises(Timeout):
+            lost_lock.acquire_read(blocking=False)
+
+
+@pytest.fixture
+def lost() -> threading.Event:
+    return threading.Event()
+
+
+@pytest.fixture
+def lost_lock(lock_file: str, lost: threading.Event) -> Generator[SoftReadWriteLock]:
+    instance = _make_lock(
+        lock_file, heartbeat_interval=0.05, stale_threshold=0.2, on_compromise=lambda _compromise: lost.set()
+    )
+    try:
+        yield instance
+    finally:
+        instance.close()
+
+
+def _evict_every_holder(lock_file: str) -> None:
+    log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
+    assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=None, readers=frozenset()))
+
+
+def test_soft_read_release_from_a_thread_without_a_read_level_raises(
+    lock: SoftReadWriteLock, other_thread: ThreadPoolExecutor
+) -> None:
+    lock.acquire_read(timeout=2)
+
+    with pytest.raises(RuntimeError, match="which does not hold it"):
+        other_thread.submit(lock.release).result(_PROCESS_DEADLINE)
+
+    assert not _writer_gets_in(lock.lock_file)
+    lock.release()
+
+
+def test_soft_read_release_of_a_dropped_hold_leaves_a_newer_one_held(
+    lock: SoftReadWriteLock, other_thread: ThreadPoolExecutor
+) -> None:
+    lock.acquire_read(timeout=2)
+    lock.release(force=True)
+    other_thread.submit(lock.acquire_read, 2).result(_PROCESS_DEADLINE)
+
+    with pytest.raises(RuntimeError, match="which does not hold it"):
+        lock.release()
+
+    assert not _writer_gets_in(lock.lock_file)
+    other_thread.submit(lock.release).result(_PROCESS_DEADLINE)
+
+
+def test_soft_read_release_gives_back_only_the_callers_levels(
+    lock: SoftReadWriteLock, other_thread: ThreadPoolExecutor
+) -> None:
+    lock.acquire_read(timeout=2)
+    other_thread.submit(lock.acquire_read, 2).result(_PROCESS_DEADLINE)
+    lock.release()
+
+    with pytest.raises(RuntimeError, match="which does not hold it"):
+        lock.release()
+
+    assert not _writer_gets_in(lock.lock_file)
+    other_thread.submit(lock.release).result(_PROCESS_DEADLINE)
+    assert _writer_gets_in(lock.lock_file)
+
+
+@pytest.fixture
+def other_thread() -> Generator[ThreadPoolExecutor]:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        yield executor
+
+
+def _writer_gets_in(lock_file: str) -> bool:
+    with closing(_make_lock(lock_file)) as contender:
+        try:
+            contender.acquire_write(blocking=False)
+        except Timeout:
+            return False
+    return True

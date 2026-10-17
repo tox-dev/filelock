@@ -1,0 +1,5 @@
+The async read-write locks record their hold under a task owner, so synchronous code on the executor thread that took
+the hold can no longer re-enter or release it. :class:`~filelock.AsyncSoftReadWriteLock` gives back one level on
+release, so synchronous readers of a shared singleton keep theirs. :class:`~filelock.SoftReadWriteLock` tracks read
+levels per thread: ``release()`` from a thread that holds none raises :class:`RuntimeError`. After its heartbeat
+recorded a lost hold, it refuses new acquires until that hold is released.
