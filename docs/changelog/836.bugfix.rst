@@ -1,6 +1,0 @@
-Fix :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease` removing
-a live holder's marker in three cases: the holder and the contender run in Linux time namespaces with different boottime
-offsets; only one of them can read the boot id; a process other than the owner rewrote the marker. Soft markers no
-longer carry group or other write bits. A process name containing a carriage return or another line separator no longer
-makes the stale check raise :class:`ValueError`. When ``/proc/self/ns/time`` exists but cannot be read, the stale check
-no longer compares start times and keeps the marker.

@@ -1,3 +1,0 @@
-Fix ``SoftReadWriteLock`` subclasses sharing singleton instances with the base class or sibling subclasses.
-Each concrete class now keeps its own cache and construction guard, including after fork, while preserving
-cooperative class-definition keywords.

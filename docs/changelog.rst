@@ -7,6 +7,115 @@
 .. towncrier release notes start
 
 *******************
+ 4.2.1 (2026-10-17)
+*******************
+
+- On a singleton wrapper, :meth:`AsyncReadWriteLock.close() <filelock.AsyncReadWriteLock.close>` and
+  :meth:`AsyncSoftReadWriteLock.close() <filelock.AsyncSoftReadWriteLock.close>` end only the holds that tasks acquired
+  through that wrapper. A reader that arrives during ``close()`` gets the closed error instead of joining the ending hold.
+  After synchronous code closes or force-releases the shared lock, the wrappers refuse to admit readers into the ended
+  hold, and ``close()`` on such a wrapper returns.
+  Closing one wrapper no longer ends a task's nested hold taken through another wrapper on the same path. :pr:`832`
+- :class:`~filelock.ReadWriteLock` locks again after a ``release()`` that an exception from a signal handler interrupted.
+  The async read-write wrappers stop admitting readers into such a level. The async read-write locks forget a hold whose
+  backend release failed after the backend let go, and they free the memory of each acquire that times out or is canceled.
+  :class:`~filelock.AsyncFileLock` returns from ``release()`` after a few hundred acquires gave up behind a waiting one. An exception from a signal handler delivered while an :class:`~filelock.AsyncFileLock` call joins
+  its queue no longer blocks every later call on that lock. :pr:`833`
+- Fix :class:`~filelock.ReadWriteLock` acting on ``-journal``, ``-wal`` or ``-shm`` files another process puts beside its
+  database: a write could land in another file, a reader could get in beside a writer, and an acquire could fail. SQLite
+  now opens the database by name only in a directory no other account can write, and through a private hard link
+  elsewhere. On Windows the directory's access control list decides. Where hard links are unavailable, keep the database
+  in a directory other accounts cannot write, such as one under ``%LOCALAPPDATA%``. The lock removes link directories
+  through a checked descriptor rather than by name, reads a link directory's name only when the locking account owns it,
+  and leaves alone a directory with other content renamed onto a link directory's name. A database whose schema takes more
+  than a few kilobytes to load raises :class:`ValueError` instead of running past the acquire timeout. :pr:`834`
+- Fix five bugs in opening the lock file. :class:`~filelock.UnixFileLock` no longer truncates a file it did not create,
+  such as one renamed to the lock path, and no longer applies ``mode`` to it. An ``on_acquired`` hook that writes holder
+  metadata now truncates the file itself. A lease (Linux) or an oplock (Windows) on the lock file or a soft lock's marker
+  no longer holds ``acquire()`` past its ``timeout`` or ``blocking=False``, and an oplock no longer holds ``release()``;
+  :class:`~filelock.ReadWriteLock` on Windows waits for its ``timeout`` and raises :class:`~filelock.Timeout`. On Windows,
+  a ``mode`` without group and other bits, such as ``0o600``, now creates the lock file with an owner-only permission
+  list; the :class:`~filelock.ReadWriteLock` database gets the same. The soft locks' writability check no longer follows a
+  symlink swapped in at the lock path. On a filesystem without ``flock``, a contender from another account now waits on a
+  marker it cannot write instead of raising ``PermissionError``. :pr:`835`
+- Fix :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease` removing
+  a live holder's marker in three cases: the holder and the contender run in Linux time namespaces with different boottime
+  offsets; only one of them can read the boot id; a process other than the owner rewrote the marker. Soft markers no
+  longer carry group or other write bits. A process name containing a carriage return or another line separator no longer
+  makes the stale check raise :class:`ValueError`. When ``/proc/self/ns/time`` exists but cannot be read, the stale check
+  no longer compares start times and keeps the marker. :pr:`836`
+- The async read-write locks record their hold under a task owner, so synchronous code on the executor thread that took
+  the hold can no longer re-enter or release it. :class:`~filelock.AsyncSoftReadWriteLock` gives back one level on
+  release, so synchronous readers of a shared singleton keep theirs. :class:`~filelock.SoftReadWriteLock` tracks read
+  levels per thread: ``release()`` from a thread that holds none raises :class:`RuntimeError`. After its heartbeat
+  recorded a lost hold, it refuses new acquires until that hold is released. :pr:`838`
+- :class:`~filelock.StrictSoftFileLock` creates ``<path>.filelock`` and its ``claims`` directory with the lock's ``mode``
+  and sets the sticky bit (a directory flag that lets only a file's owner remove it) on both. On the next acquisition it
+  narrows a directory it owns that an earlier release created wider; it leaves a directory of another account as it is,
+  so remove such leftovers by hand. It reaches ``claims`` through a descriptor opened without following symlinks; on
+  Windows it holds both directories open and refuses a junction (a directory that points at another directory). Under a
+  sticky parent such as ``/tmp`` it refuses a coordination directory of another account, as
+  :class:`~filelock.SoftReadWriteLock` does for ``<path>.rw``. One read grace now covers a whole claim scan, a failed
+  claim cleanup no longer leaves the sentinel descriptor open, and a non-regular node at a sentinel private-record name
+  raises :class:`~filelock.SoftFileLockProtocolError`. On Windows, contenders read claims without blocking their owner's
+  unlink. :pr:`839`
+- Fix a lock reporting a hold the OS had dropped after a signal handler raised during
+  :meth:`~filelock.BaseFileLock.acquire` or :meth:`~filelock.BaseFileLock.release`. A release that a signal handler cuts
+  short after it has started now completes before the error propagates. A handler that acquires the lock its own thread is
+  releasing now gets :class:`RuntimeError` instead of a hold that stays held. The singleton cache no longer hands out an
+  ``is_singleton=True`` lock or a :class:`~filelock.ReadWriteLock` whose finalizer is running, which released the new
+  holder's lock. A signal during ``os.fork()`` no longer leaves the other threads blocked in their next lock call, and a
+  fork from another thread no longer waits for a :class:`~filelock.ReadWriteLock` acquire on a busy database. :pr:`840`
+- Fix a lock on a relative path locking a file in the directory the process changed to while the lock waited, and leaving
+  its marker behind on release after such a change. The path resolved when an acquisition starts stays in use until
+  the hold ends. An ``is_singleton=True`` lookup no longer returns a cached lock whose relative path now resolves to
+  another file; a held lock still matches the file it holds. A rename of the lock's directory during a hold no longer
+  leaves the marker behind or reports a false lease compromise, and a waiter no longer creates a second lock file in a
+  directory that was renamed away. :pr:`841`
+- :class:`~filelock.SoftReadWriteLock` reaches its records through descriptors of ``<path>.rw`` and ``gen`` or ``holders``
+  opened without following symlinks. On Windows it holds those directories open and refuses a junction (a directory that
+  points at another directory). A tree swapped in after an earlier acquire therefore cannot redirect them. Its heartbeat
+  rewrites a holder record only when the name still leads to the file it created, and does not block on a FIFO (a named
+  pipe). A heartbeat that finds ``<path>.rw`` replaced by a symlink or junction reports the hold lost instead of ending
+  the heartbeat thread. A live lock object repeats the ownership check whenever the tree it opens is not the one it
+  prepared. :pr:`842`
+- Fix :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease` removing
+  or displacing a live holder's marker in five cases. ext4 gave a freed inode number to the next marker. A stalled
+  :class:`~filelock.FileLock` removed its ``ENOSYS`` placeholder after a peer replaced it. A failed acquire cleaned up
+  after a successor took the path. A stale break left the lock path empty while it checked the marker it had moved. A
+  ``lifetime`` break judged a marker by a reused inode number. On Linux and macOS a stale marker now changes hands in one
+  atomic exchange. On other platforms without one, except Windows, including NFS and SMB, the marker stays in place and
+  waits for ``timeout`` or ``break_lock()``. Restoring a marker no longer follows a symlink found under the break name. A
+  holder that releases while a peer's exchange has its marker aside leaves a record no lock parses, so the put-back lands
+  a marker that ages out. A lease heartbeat that finds another file at the lock path once, while a peer's break has its
+  marker aside, waits for the next refresh before it reports a compromise. A contender that finds a dead breaker's marker
+  puts back the marker that breaker left under its break name. A marker is the breaker's own only when it names the
+  breaker's process on this host; the same process number on another host is a holder. A contender takes a stranded marker
+  under a name of its own before it puts the marker back, so two contenders no longer reverse each other's exchange and
+  remove the live holder's marker. A claim left behind by a failed put-back is retried on the next poll. :pr:`843`
+- Canceling an :class:`~filelock.AsyncReadWriteLock` or :class:`~filelock.AsyncSoftReadWriteLock` acquire that waits for
+  another process now stops the wait and raises the cancellation. It used to wait until that process released, or raise
+  :class:`~filelock.Timeout`. A ``thread_local=True`` :class:`~filelock.AsyncFileLock` that threads with their own event
+  loops share no longer deadlocks when one thread waits for the lock while another holds it. :pr:`844`
+- :class:`~filelock.SoftReadWriteLock` refuses a commit that lands a whole retention window behind the log, so two
+  committers stalled at adjacent generations can no longer admit a second writer. Its stale check samples the clock before
+  it reads a holder record, so a pause between the two no longer counts as time the record stayed unchanged. :pr:`845`
+- Fix a :class:`~filelock.SoftFileLock` contender evicting an empty marker after two seconds while its owner held the
+  lock. The owner is a ``SoftFileLock`` before 3.22, which writes nothing into its marker, or a current one still writing
+  its record. An empty marker now reads as held, and ``timeout``, ``lifetime`` or ``break_lock()`` clears it. A contender
+  that finds an empty marker a dead breaker left aside puts it back instead of removing it. :pr:`846`
+- Fix :class:`~filelock.ReadWriteLock` on Windows acting on ``-journal`` and ``-wal`` files another account places beside
+  its database: an acquire could fail with :class:`sqlite3.OperationalError`, or SQLite could replay the journal and
+  delete the file it names. The lock now reads the database directory's access control list. Where an account other than
+  the locking account, ``SYSTEM`` and ``Administrators`` can add or remove names, SQLite opens a hard link inside a
+  directory only those accounts can write. A filesystem without hard links raises :class:`OSError`. :pr:`854`
+- Fix ``SoftReadWriteLock`` subclasses sharing singleton instances with the base class or sibling subclasses.
+  Each concrete class now keeps its own cache and construction guard, including after fork, while preserving
+  cooperative class-definition keywords. :pr:`855`
+- GraalPy is now tested weekly instead of on every change: GraalPy 25.4.4 can freeze the test suite, which made its job
+  fail on unrelated changes. :pr:`849`
+
+*******************
  4.2.0 (2026-10-14)
 *******************
 
