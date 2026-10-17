@@ -44,6 +44,8 @@ _UNLINK_MAX_RETRIES: Final[int] = 10
 _MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
 #: Contenders act on the record in the marker, so no other account may write it, whatever the mode or umask.
 _OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
+#: All a SoftFileLock before 3.22 writes, and what a current one shows between creating its marker and writing it.
+_RECORDLESS_MARKER: Final[str] = ""
 _CLAIMS_IN_PROGRESS: Final[set[str]] = set()
 _CLAIMS_LOCK: Final[threading.Lock] = threading.Lock()
 
@@ -142,6 +144,9 @@ class SoftFileLock(BaseFileLock):
             if pinned not in {None, marker.st_ino}:  # pragma: win32 no cover  # Windows pins nothing
                 return  # another node replaced the pinned one before the read, and nothing keeps its number from reuse
             if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
+                return
+            # Such a marker is held for as long as its owner runs, so being unchanged proves nobody gone.
+            if content == _RECORDLESS_MARKER:
                 return
             holder = _parse_lock_holder(content)
 
@@ -284,9 +289,12 @@ class SoftFileLock(BaseFileLock):
 
     @classmethod
     def _marker_is_live(cls, content: str | None, breaker_pid: int) -> bool:  # pragma: win32 no cover
-        # The breaker's own marker names its PID on this host; the same number on another host is a holder.
         if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
             return True
+        if content == _RECORDLESS_MARKER:
+            # An empty marker is a pre-3.22 holder for as long as it exists, as the stale check treats it.
+            return True
+        # The breaker's own marker names its PID on this host; the same number on another host is a holder.
         return (
             (holder := _parse_lock_holder(content)) is not None
             and (holder[0] != breaker_pid or holder[1] != host_name())
@@ -324,7 +332,9 @@ class SoftFileLock(BaseFileLock):
     def _unprobeable_holder(self) -> str | None:
         # This host cannot prove such a holder dead, so whoever decides whether it is gone needs its name.
         with suppress(OSError, ValueError):
-            if (holder := self._recorded_holder(_read_lock_file(self._lock_path)[0])) and holder[1] != host_name():
+            if (content := _read_lock_file(self._lock_path)[0]) == _RECORDLESS_MARKER:
+                return "an owner that recorded no PID (a filelock release before 3.22, or one still writing its record)"
+            if (holder := self._recorded_holder(content)) and holder[1] != host_name():
                 return f"pid {holder[0]} on {holder[1]}"
         return None
 

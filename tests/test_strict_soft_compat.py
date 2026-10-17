@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final, TextIO, cast
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import StrictSoftFileLock, Timeout
+from filelock import SoftFileLock, StrictSoftFileLock, Timeout
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -91,6 +91,27 @@ def test_old_soft_holder_blocks_strict_client(
 
     with StrictSoftFileLock(lock_path, timeout=0) as strict:
         assert strict.is_locked
+
+
+def test_old_soft_holder_blocks_soft_client(
+    tmp_path: Path, old_client_env: dict[str, str]
+) -> None:  # pragma: needs old-client
+    # The old release writes nothing into its marker; a current contender must wait it out past the malformed grace.
+    lock_path = tmp_path / "resource.lock"
+    with subprocess.Popen(
+        [sys.executable, "-c", _OLD_HOLDER, os.fspath(lock_path)],
+        cwd=tmp_path,
+        env=old_client_env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as holder:
+        assert cast("TextIO", holder.stdout).readline() == "acquired\n"
+        with pytest.raises(Timeout):
+            SoftFileLock(lock_path, timeout=3).acquire()
+        stdout, stderr = holder.communicate("\n", timeout=5)
+        assert (holder.returncode, stdout, stderr) == (0, "released\n", "")
 
 
 def test_strict_activation_rejects_old_soft_client(

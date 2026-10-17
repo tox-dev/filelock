@@ -809,7 +809,8 @@ a reused PID can also keep a dead owner's marker in place.
 Every platform stores a process start token in the marker to guard against PID recycling: Linux uses the
 ``/proc/<pid>/stat`` start time folded with the boot id, macOS reads it through ``sysctl``, and Windows uses the
 ``GetProcessTimes`` creation time. Malformed records follow a different rule: a waiter may evict them once it has seen
-them unchanged for two seconds.
+them unchanged for two seconds. An empty marker, which is all a ``SoftFileLock`` before 3.22 writes, is never evicted
+this way; remove a leftover one with ``break_lock()``.
 That recovery path is not fail closed.
 
 A contender breaks a stale marker without the lock path ever standing empty. Where it cannot (NFS, SMB and platforms
@@ -853,11 +854,12 @@ strict acquisition like any holder, without appearing in ``lock.claims``; :attr:
 file strict cannot read blocks the same way, because Windows refuses to read a marker its holder keeps open. A file it
 reads but cannot parse, such as the empty marker filelock before 3.22 wrote or a path a ``UnixFileLock`` truncated,
 blocks while it changes and raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` once it stays
-unchanged for two seconds, the grace a soft contender waits before evicting it. A marker whose owner on this host has
-exited raises the same error naming that owner, and a directory, symlink, or other node no lock writes raises it after
-half a second. Strict mode never removes what it found. A crashed owner on another host, or one that left no PID, cannot
-be told apart from a live one, so its marker blocks until an operator who has confirmed that owner is gone deletes
-``work.lock``.
+unchanged for two seconds, the grace a soft contender waits before evicting a malformed marker other than an empty one.
+
+A marker whose owner on this host has exited raises the same error naming that owner, and a directory, symlink, or other
+node no lock writes raises it after half a second. Strict mode never removes what it found. A crashed owner on another
+host, or one that left no PID, cannot be told apart from a live one, so its marker blocks until an operator who has
+confirmed that owner is gone deletes ``work.lock``.
 
 A crash can leave an intent, a held claim, or both claims for one token. Strict mode treats each claim as live because
 PID and clock checks cannot prove that another host or a recycled process has stopped using the resource. Inspect the

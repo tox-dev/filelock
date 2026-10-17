@@ -130,9 +130,9 @@ else:  # pragma: win32 no cover
             # a soft lock can honor.
             falls_back: Final = self._fallback_to_soft and not self._preserve_lock_file and self._on_acquired is None
             try:
-                # A file this attempt did not create may be a peer's live marker; the soft lock ages out a stale empty
-                # one. Our own placeholder goes before the close: the open descriptor keeps its inode number from a
-                # peer's marker, and an exchange puts back a peer's marker that replaced it.
+                # A file this attempt did not create may be a peer's live marker, so it stays. Our own placeholder goes
+                # before the close: the open descriptor keeps its inode number from a peer's marker, and an exchange
+                # puts back a peer's marker that replaced it.
                 if created and falls_back:
                     with suppress(OSError):
                         remove_own_file(self._lock_path, fd)
