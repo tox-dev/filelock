@@ -747,6 +747,10 @@ time of the call rather than at construction:
     finally:
         await rw.close()  # shuts down the executor it created
 
+With the default ``is_singleton=True`` every wrapper on a path shares one lock, so ``close()`` ends only the holds of
+tasks that acquired through that wrapper. Tasks holding through another wrapper, and synchronous ``ReadWriteLock`` users
+of the same path, keep their locks.
+
 Low-level ``acquire_read``/``acquire_write``/``release`` methods are also available:
 
 .. code-block:: python
