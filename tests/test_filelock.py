@@ -293,7 +293,7 @@ _ExcInfoType = tuple[type[BaseException], BaseException, TracebackType] | tuple[
 
 class ExThread(threading.Thread):
     def __init__(self, target: Callable[[], None], name: str) -> None:
-        super().__init__(target=target, name=name)
+        super().__init__(target=target, name=name, daemon=True)
         self.ex: _ExcInfoType | None = None
 
     def run(self) -> None:
@@ -308,8 +308,10 @@ class ExThread(threading.Thread):
             raise RuntimeError from self.ex[1]  # pragma: no cover  # only a worker that raised gets re-raised here
 
 
-# 100 threads x 100 acquisitions take over 40 s on GraalPy and strain the 20 s default on a loaded Windows runner.
-@pytest.mark.timeout(120)
+# A kill switch, not a budget: the run takes 1 to 2 s untraced, but under the coverage tracer 100 threads convoy on its
+# data lock, and on a two-vCPU Windows runner that ran twenty times slower than on a desktop. A stuck worker must fail
+# the run with its stack instead of hiding behind a larger number.
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     if sys.platform == "win32" and lock_type.__name__ == "SoftFileLock":  # pragma: win32 cover
@@ -321,10 +323,19 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path)
     lock_path = tmp_path / "a"
     lock = lock_type(str(lock_path))
 
+    holders: list[str] = []
+    finished: list[None] = []
+
     def thread_work() -> None:
-        for _ in range(100):
+        name = threading.current_thread().name
+        for _ in range(10):
             with lock:
+                holders.append(name)
+                time.sleep(0)  # give up the GIL so an overlapping holder has a chance to show in the slot
+                assert holders == [name]
                 assert lock.is_locked
+                holders.pop()
+                finished.append(None)
 
     threads = [ExThread(target=thread_work, name=f"t{i}") for i in range(100)]
     for thread in threads:
@@ -332,30 +343,35 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path)
     for thread in threads:
         thread.join()
 
-    assert not lock.is_locked
+    assert len(finished) == 100 * 10
 
 
-@pytest.mark.timeout(120)  # a hundred contending threads take over 40 s on GraalPy
+# A kill switch, not a budget: see test_threaded_shared_lock_obj.
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     if sys.platform == "win32" and (hasattr(sys, "pypy_version_info") or lock_type.__name__ == "SoftFileLock"):
         pytest.skip("SoftFileLock on Windows has race conditions under heavy threading")  # pragma: win32 cover
 
-    def t_1() -> None:
-        for _ in range(1000):
-            with lock_1:
-                assert lock_1.is_locked
-                assert not lock_2.is_locked
+    holders: list[str] = []
+    finished: list[None] = []
 
-    def t_2() -> None:
-        for _ in range(1000):
-            with lock_2:
-                assert not lock_1.is_locked
-                assert lock_2.is_locked
+    def work(lock: BaseFileLock) -> None:
+        name = threading.current_thread().name
+        for _ in range(100):
+            with lock:
+                holders.append(name)
+                time.sleep(0)  # give up the GIL so an overlapping holder has a chance to show in the slot
+                assert holders == [name]
+                assert lock.is_locked
+                holders.pop()
+                finished.append(None)
 
     lock_path = tmp_path / "a"
     lock_1, lock_2 = lock_type(str(lock_path)), lock_type(str(lock_path))
-    threads = [(ExThread(t_1, f"t1_{i}"), ExThread(t_2, f"t2_{i}")) for i in range(10)]
+    threads = [
+        (ExThread(partial(work, lock_1), f"t1_{i}"), ExThread(partial(work, lock_2), f"t2_{i}")) for i in range(10)
+    ]
 
     for thread_1, thread_2 in threads:
         thread_1.start()
@@ -364,8 +380,7 @@ def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_pat
         thread_1.join()
         thread_2.join()
 
-    assert not lock_1.is_locked
-    assert not lock_2.is_locked
+    assert len(finished) == 20 * 100
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
