@@ -22,7 +22,7 @@ import os
 import sys
 import time
 from concurrent import futures
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from inspect import iscoroutinefunction
 from threading import RLock
 from typing import TYPE_CHECKING, Final, NoReturn, TypeVar, cast
@@ -231,7 +231,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self._fallback_to_soft = fallback_to_soft
         self._preserve_lock_file = preserve_lock_file  # already validated by the metaclass
         self._on_acquired = on_acquired  # already validated by the metaclass
-        self._transition_gate: Final[_AsyncTransitionGate] = _AsyncTransitionGate()
         # BaseFileLock.__init__ never runs here, and the finalizer releases thread-local holds through these.
         self._transition_lock = RLock()
         self._thread_holds = {}
@@ -366,7 +365,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         poll_interval: float,
         start_time: float,
     ) -> AsyncAcquireReturnProxy:
-        async with self._transition_gate.hold_for_acquire(
+        async with self._async_context.transition_gate.hold_for_acquire(
             blocking=blocking,
             cancel_check=cancel_check,
             deadline=None if timeout < 0 else start_time + timeout,
@@ -525,7 +524,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """
         if self._creator_pid != os.getpid() or not self.is_locked:
             return
-        async with self._transition_gate.hold():
+        async with self._async_context.transition_gate.hold():
             await self._release_serialized(force=force)
 
     async def _release_serialized(self, *, force: bool) -> None:
@@ -813,6 +812,11 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self._release_thread_holds(exited_only=False)
 
 
+def _new_transition_gate() -> _AsyncTransitionGate:
+    # Called per context rather than passed as the factory, so the lazy import resolves on first use, not at import.
+    return _AsyncTransitionGate()
+
+
 @dataclass
 class AsyncFileLockContext(FileLockContext):
     """A dataclass which holds the context for a ``BaseAsyncFileLock`` object."""
@@ -825,6 +829,10 @@ class AsyncFileLockContext(FileLockContext):
 
     #: The loop
     loop: asyncio.AbstractEventLoop | None = None
+
+    #: Serializes the tasks that transition this context. An acquire keeps it while it polls, so a thread-local lock
+    #: needs one per thread. A thread waiting for the lock must not keep the thread that holds it from releasing.
+    transition_gate: _AsyncTransitionGate = field(default_factory=_new_transition_gate)
 
 
 class AsyncThreadLocalFileContext(AsyncFileLockContext, ThreadLocalFileContext):

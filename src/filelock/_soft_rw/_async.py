@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["asyncio", "filelock._async", "functools"]
+__lazy_modules__ = ["asyncio", "filelock._async", "filelock._error", "functools", "threading"]
 
 import asyncio
 import functools
 import os
+import threading
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 
@@ -20,6 +21,7 @@ from filelock._async import (
     _task_owners_for,
     _wait_until_done,
 )
+from filelock._error import Timeout
 from filelock._soft_rw._sync import SoftReadWriteLock, _lost_hold_error
 
 if TYPE_CHECKING:
@@ -315,17 +317,22 @@ class AsyncSoftReadWriteLock:
         # Only the tasks' level: a sync user of the same singleton keeps its own.
         self._lock._release_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
-    async def _run_acquire(self, acquire: Callable[[], AcquireReturnProxy]) -> None:
-        # run_in_executor cannot recall work the pool already started, so canceling the caller does not stop the sync
-        # acquire: it still commits its claim, sets the hold, and starts the heartbeat, which keeps the record fresh
-        # forever so no peer on any host can evict it as stale. Wait the submitted call out and hand the claim back,
-        # the way AsyncReadWriteLock does.
-        acquire_future = self._submit(acquire)
+    async def _run_acquire(self, acquire: Callable[..., AcquireReturnProxy]) -> None:
+        # run_in_executor cannot recall work the pool already started. A sync acquire that won the lock before it saw
+        # the cancellation has published its claim and started the heartbeat, which keeps the record fresh so no peer
+        # evicts it. Wait the call out and hand the claim back, as AsyncReadWriteLock does.
+        abandoned = threading.Event()
+        acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
         try:
             await _wait_until_done(acquire_future)
         except asyncio.CancelledError as cancellation:
+            # Stops a backend wait on another process's hold, which would otherwise outlast the caller by as long.
+            abandoned.set()
             try:
                 await _drain_future(acquire_future)
+            except Timeout:
+                # Nothing was taken, so the caller's cancellation is the whole outcome.
+                raise cancellation from None
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 _raise_cancelled_error(cancellation, error)
             try:

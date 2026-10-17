@@ -22,6 +22,7 @@ from weakref import WeakValueDictionary
 
 from filelock._api import (
     AcquireReturnProxy,
+    _acquire_thread_lock,
     _canonical,
     _check_timeout_max,
     _ensure_current_process,
@@ -420,10 +421,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             return
         self._release(threading.get_ident(), force=force)
 
-    def _acquire_level_of(self, holder: int, mode: Mode, timeout: float, *, blocking: bool) -> AcquireReturnProxy:
+    def _acquire_level_of(
+        self, holder: int, mode: Mode, timeout: float, *, blocking: bool, cancel_check: Callable[[], bool]
+    ) -> AcquireReturnProxy:
         # Records the level under *holder* instead of the calling thread: an async wrapper's executor thread does not
-        # identify the tasks it holds for.
-        return self._acquire(mode, timeout, blocking=blocking, holder=holder)
+        # identify the tasks it holds for. Gives up with Timeout once *cancel_check* is true.
+        return self._acquire(mode, timeout, blocking=blocking, holder=holder, cancel_check=cancel_check)
 
     def _release_level_of(self, holder: int) -> None:
         self._release(holder, force=False)
@@ -487,6 +490,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         *,
         blocking: bool | None,
         holder: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> AcquireReturnProxy:
         if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"SoftReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
@@ -502,18 +506,17 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             if self._hold is not None:
                 return self._validate_reentrant(mode, holder)
 
-        start = time.perf_counter()
-        if not blocking:
-            acquired = self._locks.transaction.acquire(blocking=False)
-        elif timeout == -1:
-            acquired = self._locks.transaction.acquire(blocking=True)
-        else:
-            # Lock.acquire raises OverflowError past TIMEOUT_MAX, which is 49.7 days on Windows.
-            acquired = self._locks.transaction.acquire(blocking=True, timeout=min(timeout, threading.TIMEOUT_MAX))
-        if not acquired:
+        deadline = None if timeout == -1 else time.perf_counter() + timeout
+        if not _acquire_thread_lock(
+            self._locks.transaction,
+            blocking=blocking,
+            timeout=timeout,
+            poll_interval=self.poll_interval,
+            cancel_check=cancel_check,
+        ):
             raise Timeout(self.lock_file) from None
         try:
-            return self._do_acquire_inner(mode, timeout, start, holder, blocking=blocking)
+            return self._do_acquire_inner(mode, deadline, holder, blocking=blocking, cancel_check=cancel_check)
         finally:
             self._locks.transaction.release()
 
@@ -523,16 +526,15 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     def _do_acquire_inner(
         self,
         mode: Mode,
-        effective_timeout: float,
-        start: float,
+        deadline: float | None,
         holder: int,
         *,
         blocking: bool,
+        cancel_check: Callable[[], bool] | None,
     ) -> AcquireReturnProxy:
         with self._locks.internal:
             if self._hold is not None:
                 return self._validate_reentrant(mode, holder)
-        deadline = None if effective_timeout == -1 else start + effective_timeout
         participant = Participant(
             self._files,
             self._root,
@@ -544,7 +546,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         )
         participant.publish()
         try:
-            self._wait_for(participant.advance, deadline=deadline, blocking=blocking)
+            self._wait_for(participant.advance, deadline=deadline, blocking=blocking, cancel_check=cancel_check)
         except BaseException:
             # A contender that gives up must not stay named in the snapshot: a writer left there would block every
             # reader until a peer waits out the stale threshold. Its own token is all leave() touches, so it cannot
@@ -622,15 +624,17 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         *,
         deadline: float | None,
         blocking: bool,
+        cancel_check: Callable[[], bool] | None,
     ) -> None:
         while not predicate():
             # The flag is read without the lock here only to stop waiting early; publishing the hold re-checks it.
             if self._closed:
                 raise self._closed_error()
             now = time.perf_counter()
-            if not blocking:
+            if not blocking or (deadline is not None and now >= deadline):
                 raise Timeout(self.lock_file)
-            if deadline is not None and now >= deadline:
+            # An abandoned acquire gives up like a timed-out one, so the caller's rollback withdraws its claim.
+            if cancel_check is not None and cancel_check():
                 raise Timeout(self.lock_file)
             sleep_for = self.poll_interval
             if deadline is not None:

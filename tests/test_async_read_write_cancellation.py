@@ -362,6 +362,58 @@ async def test_context_cancellation_preserves_body_and_rollback_contexts(
     assert_read_write_lock_state(lock_file, probe_mode, available=True)
 
 
+@pytest.mark.asyncio
+async def test_read_retried_after_its_select_waited_starts_a_fresh_transaction(
+    lock_file: str, mocker: MockerFixture
+) -> None:
+    busy_once = True
+    seen_in_transaction: list[bool] = []
+
+    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+        nonlocal busy_once
+        if "SELECT name" in statement:
+            if busy_once:
+                # A writer can take the lock between the deferred BEGIN and the SELECT that needs the shared lock.
+                busy_once = False
+                real_connection.execute("BEGIN TRANSACTION")
+                msg = "database is locked"
+                raise sqlite3.OperationalError(msg)
+            seen_in_transaction.append(real_connection.in_transaction)
+        return real_connection.executescript(statement)
+
+    _patch_async_connection(mocker, executescript=executescript)
+    # With other threads alive the acquire waits in short slices that never reach the in-place retry under test.
+    mocker.patch.object(threading, "active_count", return_value=1)
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+
+    async with lock.read_lock():
+        assert_read_write_lock_state(lock_file, "write", available=False)
+    await lock.close()
+    assert seen_in_transaction == [False]
+
+
+@pytest.mark.asyncio
+async def test_write_retried_after_its_begin_waited_is_acquired(lock_file: str, mocker: MockerFixture) -> None:
+    busy_once = True
+
+    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+        nonlocal busy_once
+        if "BEGIN EXCLUSIVE" in statement and busy_once:
+            busy_once = False
+            msg = "database is locked"
+            raise sqlite3.OperationalError(msg)
+        return real_connection.executescript(statement)
+
+    _patch_async_connection(mocker, executescript=executescript)
+    mocker.patch.object(threading, "active_count", return_value=1)
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+
+    async with lock.write_lock():
+        assert_read_write_lock_state(lock_file, "read", available=False)
+    await lock.close()
+    assert not busy_once
+
+
 def _patch_async_rollback(
     mocker: MockerFixture,
     loop: asyncio.AbstractEventLoop,
@@ -511,7 +563,7 @@ def _patch_async_connection(
             timeout=timeout,
         )
         connection_count += 1
-        if connection_count != 2:
+        if connection_count < 2:
             return real_connection
         configuration: dict[str, Callable[[str], sqlite3.Cursor] | Callable[[], None]] = {}
         if executescript is not None:
