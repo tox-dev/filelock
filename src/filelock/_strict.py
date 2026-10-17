@@ -34,7 +34,7 @@ from filelock._identity import host_name, owner_is_stale, process_start_token
 from filelock._marker import parse_marker
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import ensure_directory_exists, write_all
+from filelock._util import write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._windows import _is_unlinked
@@ -133,14 +133,9 @@ class StrictSoftFileLock(BaseFileLock):
     def _acquire(self) -> None:
         # Finish a doorway whose claim cleanup failed before publishing, so this owner never contends with leftovers.
         self._discard_pending_doorways(exited_only=True)
-        # Resolve once per acquisition, not per poll: a waiter on a relative path must keep publishing into the
-        # directory it started waiting in even when another thread changes the working directory mid-wait.
-        if (claim_root := self._context.claim_root) is None:
-            claim_root = self._context.claim_root = _canonical(self.lock_file)
-        lock_path = Path(claim_root)
+        lock_path = Path(self._lock_path)
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
-        ensure_directory_exists(os.fspath(lock_path))
         _ensure_protocol_directory(self.lock_file, coordination_directory)
         _ensure_protocol_directory(self.lock_file, claim_directory)
         if (

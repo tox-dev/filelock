@@ -13,6 +13,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from errno import EINTR, EIO, ENOSYS
+from functools import partial
 from itertools import count
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
@@ -633,6 +634,59 @@ def test_async_singleton_rejects_reuse_with_another_option(
     del async_options[option]
     with pytest.raises(ValueError, match=rf"\n\t{option} \(existing lock has "):
         lock_type(tmp_path / "a.lock", is_singleton=True, **async_options)
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_async_relative_waiter_keeps_acquisition_directory(
+    lock_type: type[BaseAsyncFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    holder = lock_type(first / "resource.lock")
+    await holder.acquire()
+    polling = asyncio.Event()
+    contender = lock_type("resource.lock", timeout=0.2, poll_interval=0.001)
+    task = asyncio.create_task(contender.acquire(cancel_check=partial(_signal_poll, polling)))
+    try:
+        await asyncio.wait_for(polling.wait(), timeout=2)
+        os.chdir(second)
+        with pytest.raises(Timeout):
+            await asyncio.wait_for(task, timeout=2)
+    finally:
+        await holder.release(force=True)
+
+    assert not (second / "resource.lock").exists()
+
+
+def _signal_poll(polling: asyncio.Event) -> bool:
+    polling.set()
+    return False
+
+
+@pytest.mark.asyncio
+async def test_async_relative_release_uses_acquisition_directory(working_directories: tuple[Path, Path]) -> None:
+    first, second = working_directories
+    lock = AsyncSoftFileLock("resource.lock")
+    await lock.acquire()
+
+    os.chdir(second)
+    await lock.release()
+
+    assert not (first / "resource.lock").exists()
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_async_singleton_held_before_chdir_re_enters_by_absolute_path(
+    lock_type: type[BaseAsyncFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    held = lock_type("resource.lock", is_singleton=True)
+    await held.acquire()
+    os.chdir(second)
+    async with lock_type(first / "resource.lock", is_singleton=True) as again:
+        assert (again is held, held.lock_counter) == (True, 2)
+    await held.release(force=True)
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])

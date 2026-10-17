@@ -42,6 +42,8 @@ Two more constraints worth designing around:
 - **All contenders must agree on the path.** A lock is a rendezvous on one pathname. Resolve symlinks and relative
   paths the same way everywhere, or two processes will politely lock different files. Bind-mounted containers make this
   easy to get wrong: the same file, two paths, no exclusion.
+  filelock resolves a relative path when an acquisition starts and keeps that path until the hold ends. Do not rename
+  the lock's directory while a lock in it is held or waited on: a waiter then fails with :class:`FileNotFoundError`.
 - **Create the resource's directory when using a separate lock tree.** filelock creates the lock file's parent
   directories automatically, but it does not create directories for the resource being protected.
 

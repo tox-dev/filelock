@@ -117,3 +117,13 @@ def close_failure(
     yield capture, release_error, release_cause
     if locked_fd is not None:  # pragma: no branch  # every consumer calls capture, so this is always set
         real_close(locked_fd)
+
+
+@pytest.fixture
+def working_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.chdir(first)
+    return first, second

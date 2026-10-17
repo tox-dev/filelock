@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, 
 from weakref import WeakKeyDictionary, WeakValueDictionary, ref
 
 from filelock._error import SoftFileLockLifetimeWarning, Timeout
-from filelock._util import break_lock_file
+from filelock._util import break_lock_file, ensure_directory_exists
 
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
@@ -418,7 +418,12 @@ class FileLockMeta(ABCMeta):
         # deadlock-registry key acquire() uses.
         singleton_key = _canonical(lock_file)
         with cls._instances_lock:
-            if (instance := cls._instances.get(singleton_key)) is None:
+            # A cached lock resolves its relative path at each acquisition and pins it for the hold. After a chdir, or
+            # once a parent symlink points elsewhere, an unheld lock may name another file than this key; a held one
+            # names the file it pinned.
+            if (instance := cls._instances.get(singleton_key)) is None or _canonical(
+                instance._lock_path  # ruff:ignore[private-member-access]  # the metaclass owns the instance it returns
+            ) != singleton_key:
                 if singleton_key in cls._instances_under_construction:  # pragma: needs fork
                     msg = f"Singleton lock construction is already active for {lock_file!s}"
                     raise RuntimeError(msg)
@@ -917,6 +922,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         return self._context.lock_file
 
     @property
+    def _lock_path(self) -> str:
+        # The OS resolves a relative lock_file against the working directory at each call. A chdir during an
+        # acquisition or a hold would otherwise make the backend wait on, lock or remove a different file.
+        return self._context.claim_root or self._context.lock_file
+
+    @property
     def timeout(self) -> float:
         """
         The default timeout value, in seconds.
@@ -1207,6 +1218,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
             canonical = _canonical(self.lock_file)
             self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
+            if not self.is_locked:
+                self._pin_lock_path(canonical)
 
             try:
                 self._poll_until_acquired(
@@ -1449,6 +1462,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         attempt = 0
         self._context.acquiring = inspect.currentframe()
         try:
+            # Created once, so a directory that disappears while the acquisition waits fails it, not builds a second
+            # lock file beside the holder's.
+            ensure_directory_exists(self._lock_path)
             while True:
                 self._raise_if_inherited()
                 if not self.is_locked:
@@ -1611,6 +1627,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.lock_counter = max(0, self._context.lock_counter - 1)
         if self._context.lock_counter == 0:
             self._drop_registry_entry()
+            self._context.claim_root = None
+
+    def _pin_lock_path(self, canonical: str) -> None:
+        # A path without a final component names no file. Its canonical form is a directory, and pinning that would
+        # change the error the backend raises.
+        self._context.claim_root = None if canonical.endswith(os.sep) else canonical
 
     def _commit_acquire(self, canonical: str) -> None:
         """Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock."""
@@ -1639,6 +1661,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         """Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry."""
         self._context.lock_counter = 0
         self._drop_registry_entry()
+        self._context.claim_root = None
 
     def _try_break_expired_lock(self) -> None:
         """Remove the lock file if its modification time exceeds the configured :attr:`lifetime`."""
@@ -1649,10 +1672,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             # lock file with a symlink pointing at an old file, making stat() report the target's stale
             # mtime so a waiter breaks a live lock and two processes hold it at once. lstat reads the
             # symlink's own mtime, matching the O_NOFOLLOW reads elsewhere.
-            st = os.lstat(self.lock_file)
+            st = os.lstat(self._lock_path)
             if time.time() - st.st_mtime < lifetime:
                 return
-            break_lock_file(self.lock_file, st.st_mtime, st.st_ino)
+            break_lock_file(self._lock_path, st.st_mtime, st.st_ino)
 
     def _check_give_up(
         self,
@@ -1819,8 +1842,8 @@ class FileLockContext:
     #: The frame of an acquire still polling for this hold, so one a signal handler starts on this thread fails fast.
     acquiring: FrameType | None = None
 
-    #: Canonical lock path resolved when an acquisition starts. A waiter polling a relative path must keep publishing
-    #: into the directory it started in, even when another thread changes the working directory mid-wait.
+    #: Canonical lock path, resolved when an acquisition starts and kept until its hold ends. A waiter on a relative
+    #: path stays in the directory it started in, and the release finds the file there, after a chdir in between.
     claim_root: str | None = None
 
     #: The lease claim of this hold, kept with it so a cross-thread release stops the right heartbeat.
