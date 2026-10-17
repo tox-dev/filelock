@@ -17,7 +17,7 @@ import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from math import isfinite
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, ClassVar, Final
 from weakref import WeakValueDictionary
 
 from filelock._api import (
@@ -44,12 +44,12 @@ if TYPE_CHECKING:
 
 _ALL_INSTANCES: Final[WeakValueDictionary[int, SoftReadWriteLock]] = WeakValueDictionary()
 _ALL_INSTANCES_LOCK: threading.Lock = threading.Lock()
-_SINGLETONS_UNDER_CONSTRUCTION: Final[set[str]] = set()
 
 
 class _SoftRWMeta(type):
     _instances: WeakValueDictionary[str, SoftReadWriteLock]
     _instances_lock: threading.RLock
+    _instances_under_construction: set[str]
 
     def __call__(  # ruff:ignore[too-many-arguments]  # forwards the public constructor's documented parameters
         cls,
@@ -84,11 +84,12 @@ class _SoftRWMeta(type):
         with cls._instances_lock:
             instance = cls._instances.get(normalized)
             if instance is None:
-                if normalized in _SINGLETONS_UNDER_CONSTRUCTION:  # pragma: needs fork
+                if normalized in cls._instances_under_construction:
                     msg = f"Singleton lock construction is already active for {lock_file!s}"
                     raise RuntimeError(msg)
                 construction_pid = os.getpid()
-                _SINGLETONS_UNDER_CONSTRUCTION.add(normalized)
+                construction_registry = cls._instances_under_construction
+                construction_registry.add(normalized)
                 try:
                     instance = super().__call__(
                         lock_file,
@@ -101,7 +102,7 @@ class _SoftRWMeta(type):
                         **extra,
                     )
                 finally:
-                    _SINGLETONS_UNDER_CONSTRUCTION.discard(normalized)
+                    construction_registry.discard(normalized)
                 if os.getpid() != construction_pid:  # pragma: needs fork
                     msg = "Lock construction cannot continue after fork; construct a new lock in the child"
                     raise RuntimeError(msg)
@@ -181,6 +182,15 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     _instances: WeakValueDictionary[str, SoftReadWriteLock] = WeakValueDictionary()
     _instances_lock = threading.RLock()
+    _instances_under_construction: ClassVar[set[str]] = set()
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Give each lock subclass its own singleton registry and lock."""
+        super().__init_subclass__(**kwargs)
+        cls._instances = WeakValueDictionary()
+        cls._instances_lock = threading.RLock()
+        cls._instances_under_construction = set()
+        _register_fork_class(cls)
 
     def __init__(  # ruff:ignore[too-many-arguments]  # public constructor: one parameter per documented lock option
         self,
@@ -228,7 +238,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         _ALL_INSTANCES_LOCK = threading.Lock()
         cls._instances = WeakValueDictionary()
         cls._instances_lock = threading.RLock()
-        _SINGLETONS_UNDER_CONSTRUCTION.clear()
+        cls._instances_under_construction = set()
 
     @property
     def generation(self) -> int | None:
