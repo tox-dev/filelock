@@ -18,9 +18,10 @@ pytest.importorskip("sqlite3")
 import sqlite3
 
 from filelock import ReadWriteLock, Timeout
+from filelock._read_write import _ForkSafeConnection
 from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.process_helpers import cleanup_processes
-from tests.read_write_helpers import assert_read_write_lock_state
+from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, interrupt_once
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
 # slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
@@ -795,3 +796,40 @@ def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acqui
         acquired_event.set()
         while True:  # pragma: win32 no cover
             time.sleep(0.1)
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    "step",
+    [
+        pytest.param("rollback", id="after-rollback"),
+        pytest.param("close", id="after-close"),
+        pytest.param("level-reset", id="at-level-reset"),
+    ],
+)
+def test_read_write_lock_after_an_interrupted_release_locks_again(
+    lock_file: str,
+    mocker: MockerFixture,
+    mode: Literal["read", "write"],
+    step: Literal["rollback", "close", "level-reset"],
+) -> None:
+    lock: Final = ReadWriteLock(lock_file, is_singleton=False)
+    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire()
+    if step == "level-reset":
+        reset = interrupt_once(ReadWriteLock._clear_lock_state, before=True)
+        mocker.patch.object(ReadWriteLock, "_clear_lock_state", new=reset)
+    else:
+        real = sqlite3.Connection.rollback if step == "rollback" else _ForkSafeConnection.close
+        mocker.patch.object(_ForkSafeConnection, step, new=interrupt_once(real, before=False))
+    with pytest.raises(Interrupt):
+        lock.release()
+
+    acquire()
+
+    contender: Final = ReadWriteLock(lock_file, is_singleton=False)
+    with pytest.raises(Timeout):
+        contender.acquire_write(blocking=False)
+    lock.release()
+    contender.close()
+    lock.close()

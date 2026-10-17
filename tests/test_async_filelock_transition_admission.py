@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock import AsyncFileLock, Timeout
+from filelock import AsyncFileLock, AsyncSoftFileLock, Timeout
+from filelock._async import _AsyncTransitionGate
 from tests.async_filelock_cancellation_helpers import (
     assert_cancellation_message,
     assert_file_lock_state,
@@ -16,8 +17,11 @@ from tests.async_filelock_cancellation_helpers import (
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future as ConcurrentFuture
     from pathlib import Path
     from typing import Literal
+
+    from pytest_mock import MockerFixture
 
 _UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform == "win32", reason="native flock semantics are Unix-only"
@@ -80,6 +84,63 @@ async def test_queued_acquire_honors_own_admission_policy(
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
+@pytest.mark.parametrize(
+    "lock_type", [pytest.param(AsyncFileLock, id="flock"), pytest.param(AsyncSoftFileLock, id="soft")]
+)
+@pytest.mark.asyncio
+async def test_acquire_interrupted_while_joining_the_gate_leaves_the_lock_usable(
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[AsyncFileLock | AsyncSoftFileLock]
+) -> None:
+    real_join: Final = _AsyncTransitionGate._join
+    interrupted = False
+
+    def join_then_interrupt(instance: _AsyncTransitionGate, ticket: ConcurrentFuture[None]) -> None:
+        nonlocal interrupted
+        real_join(instance, ticket)
+        if not interrupted:
+            interrupted = True
+            raise _Interrupt
+
+    mocker.patch.object(_AsyncTransitionGate, "_join", autospec=True, side_effect=join_then_interrupt)
+    lock = lock_type(tmp_path / "a")
+    with pytest.raises(_Interrupt):
+        await lock.acquire()
+
+    await asyncio.wait_for(lock.acquire(), 5)
+
+    assert lock.is_locked
+    await lock.release()
+
+
+@pytest.mark.asyncio
+async def test_acquires_giving_up_behind_a_waiter_leave_the_lock_releasable(tmp_path: Path) -> None:
+    first_polled = asyncio.Event()
+
+    def observe_first_poll() -> bool:
+        first_polled.set()
+        return False
+
+    holder, holder_started, finish_holder = start_file_lock_holder(str(tmp_path / "a"))
+    assert await asyncio.to_thread(holder_started.wait, 5)
+    lock = AsyncFileLock(tmp_path / "a")
+    waiter = asyncio.create_task(lock.acquire(cancel_check=observe_first_poll, poll_interval=0.001))
+    try:
+        await first_polled.wait()
+        # More callers than the recursion limit allows frames for, should they be settled one inside the other.
+        for _ in range(sys.getrecursionlimit()):
+            with pytest.raises(Timeout):
+                await lock.acquire(blocking=False)
+    finally:
+        finish_holder.set()
+        await asyncio.to_thread(holder.join, 5)
+    await waiter
+
+    await asyncio.wait_for(lock.release(), 5)
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
 @_UNIX_FLOCK_ONLY
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
@@ -124,3 +185,7 @@ def _start_signaled_acquire(lock: AsyncFileLock) -> tuple[asyncio.Task[None], as
         await lock.acquire()
 
     return asyncio.create_task(acquire()), started
+
+
+class _Interrupt(BaseException):
+    """Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt."""

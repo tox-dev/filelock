@@ -582,6 +582,7 @@ def test_double_check_read_reentrance(lock_file: str, mocker: MockerFixture) -> 
     def fake_acquire(blocking: bool = True, timeout: float = -1) -> bool:
         lock._lock_level = 1
         lock._current_mode = "read"
+        _fake_open_transaction(lock, mocker)
         return real_lock.acquire(blocking, timeout)
 
     mock_lock.acquire = fake_acquire
@@ -592,6 +593,7 @@ def test_double_check_read_reentrance(lock_file: str, mocker: MockerFixture) -> 
     assert proxy is not None
     lock._lock_level = 0
     lock._current_mode = None
+    lock._con, lock._connection_transaction_released = None, True
     lock.release(force=True)
 
 
@@ -604,6 +606,7 @@ def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) ->
         lock._lock_level = 1
         lock._current_mode = "write"
         lock._write_thread_id = threading.get_ident()
+        _fake_open_transaction(lock, mocker)
         return real_lock.acquire(blocking, timeout)
 
     mock_lock.acquire = fake_acquire
@@ -614,6 +617,7 @@ def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) ->
     assert proxy is not None
     lock._lock_level = 0
     lock._current_mode = None
+    lock._con, lock._connection_transaction_released = None, True
     lock._write_thread_id = None
     lock.release(force=True)
 
@@ -639,6 +643,7 @@ def test_double_check_wrong_mode_raises(
     def fake_acquire(blocking: bool = True, timeout: float = -1) -> bool:
         lock._lock_level = 1
         lock._current_mode = conflicting_mode
+        _fake_open_transaction(lock, mocker)
         return real_lock.acquire(blocking, timeout)
 
     mock_lock.acquire = fake_acquire
@@ -648,6 +653,13 @@ def test_double_check_wrong_mode_raises(
         (lock.acquire_read if acquire_mode == "read" else lock.acquire_write)()
     lock._lock_level = 0
     lock._current_mode = None
+    lock._con, lock._connection_transaction_released = None, True
+
+
+def _fake_open_transaction(lock: ReadWriteLock, mocker: MockerFixture) -> None:
+    # A level stands only while its transaction does, so a faked level needs a transaction behind it too.
+    lock._con = mocker.MagicMock(in_transaction=True)
+    lock._connection_transaction_released = False
 
 
 def test_write_lock_context_manager_overrides_defaults(lock_file: str) -> None:

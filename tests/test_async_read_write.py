@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, XFAIL_WITHOUT_COROUTINE_CANCELLATION
-from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS
+from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS, Interrupt, interrupt_once
 
 pytest.importorskip("sqlite3")
 
@@ -669,6 +669,52 @@ async def test_async_read_after_a_sync_forced_release_takes_the_lock_again(lock_
     await lock.close()
 
 
+@pytest.mark.parametrize("sync_end", [pytest.param("release", id="release"), pytest.param("close", id="close")])
+@pytest.mark.asyncio
+async def test_async_read_after_an_interrupted_sync_forced_release_takes_the_lock_again(
+    lock_file: str, mocker: MockerFixture, sync_end: str
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file)
+    await lock.acquire_read()
+    mocker.patch.object(
+        ReadWriteLock, "_clear_lock_state", new=interrupt_once(ReadWriteLock._clear_lock_state, before=True)
+    )
+    sync: Final = ReadWriteLock(lock_file)
+    with pytest.raises(Interrupt):
+        sync.close() if sync_end == "close" else sync.release(force=True)
+
+    writer_got_in = await asyncio.create_task(_read_and_probe(lock))
+
+    assert not writer_got_in
+    await lock.close()
+
+
+@pytest.mark.asyncio
+async def test_async_read_treats_a_level_whose_connection_closed_meanwhile_as_gone(
+    lock_file: str, mocker: MockerFixture
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file)
+    await lock.acquire_read()
+    real_ended: Final = ReadWriteLock._transaction_ended
+    closed = False
+
+    def close_between_checks(instance: ReadWriteLock) -> bool:
+        nonlocal closed
+        if not closed:
+            closed = True
+            raise sqlite3.ProgrammingError
+        return real_ended(instance)
+
+    mocker.patch.object(ReadWriteLock, "_transaction_ended", autospec=True, side_effect=close_between_checks)
+
+    writer_got_in = await asyncio.create_task(_read_and_probe(lock))
+
+    assert not writer_got_in
+    with pytest.raises(RuntimeError, match="not held by this task"):
+        await lock.release()
+    await lock.close()
+
+
 @pytest.mark.parametrize("is_singleton", [pytest.param(True, id="singleton"), pytest.param(False, id="owned")])
 @pytest.mark.asyncio
 async def test_async_read_arriving_during_close_is_refused(lock_file: str, is_singleton: bool) -> None:
@@ -851,3 +897,31 @@ def _writer_gets_in(lock_file: str) -> bool:
 async def _read_and_probe(lock: AsyncReadWriteLock) -> bool:
     async with lock.read_lock(timeout=_TASK_WAIT):
         return _writer_gets_in(lock.lock_file)
+
+
+@pytest.mark.asyncio
+async def test_async_reads_giving_up_behind_a_writer_leave_nothing_behind(lock_file: str) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
+    await lock.acquire_write()
+    await asyncio.create_task(_give_up_reading(lock))
+    before: Final = _live_asyncio_futures()
+    give_ups: Final = 200
+
+    for _ in range(give_ups):
+        await asyncio.create_task(_give_up_reading(lock))
+
+    # The interpreter and the test session keep a handful of futures that come and go. A leak keeps one per give-up,
+    # so it shows as growth near give_ups, far past that noise.
+    assert _live_asyncio_futures() - before < give_ups // 4
+    await lock.release()
+    await lock.close()
+
+
+async def _give_up_reading(lock: AsyncReadWriteLock) -> None:
+    with pytest.raises(Timeout):
+        await lock.acquire_read(timeout=0.001)
+
+
+def _live_asyncio_futures() -> int:
+    gc.collect()
+    return sum(isinstance(candidate, asyncio.Future) for candidate in gc.get_objects())

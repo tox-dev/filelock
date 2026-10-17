@@ -650,8 +650,15 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     def _holds_level_of(self, thread_id: int) -> bool:
         # Read without the internal lock. The async wrapper asks from its event loop, which must not wait out a release
-        # on another thread. A stale answer is what a caller asking a moment earlier would have had.
-        return thread_id == self._write_thread_id or thread_id in self._read_depths
+        # on another thread. A stale answer is what a caller asking a moment earlier would have had. A level whose
+        # transaction ended is one an interrupted release left behind; it counts as gone, as _holds_level() treats it.
+        if thread_id != self._write_thread_id and thread_id not in self._read_depths:
+            return False
+        try:
+            return not self._transaction_ended()
+        except sqlite3.ProgrammingError:
+            # The connection closed between the read of _con and the in_transaction call, so the transaction is over.
+            return False
 
     def _release(self, *, force: bool, close: bool, thread_id: int | None = None) -> None:
         thread_id = threading.get_ident() if thread_id is None else thread_id
@@ -671,13 +678,21 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 return
             try:
                 self._finish_connection()
-            except sqlite3.Error:
-                if self._connection_transaction_released:
+            except BaseException:
+                # Once the rollback ran, the level is gone whatever stopped the cleanup, a signal handler's exception
+                # included. Kept, it would let the next acquire nest into a transaction that no longer exists.
+                if self._transaction_ended():
                     self._clear_lock_state()
                 raise
             self._clear_lock_state()
             if close:
                 self._closed = True
+
+    def _transaction_ended(self) -> bool:
+        if self._connection_transaction_released or (connection := self._con) is None:
+            return True
+        # An interrupt can land between the rollback and the flag that records it.
+        return not connection.in_transaction
 
     def _raise_if_not_holder(self, thread_id: int) -> None:
         # The connection runs with check_same_thread=False, so a release from another thread would end the owner's
@@ -770,7 +785,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             operation_pid = _GETPID()
             thread_id = threading.get_ident()
             with self._internal_lock:
-                if self._lock_level > 0:
+                if self._holds_level():
                     return self._validate_reentrant(mode)
                 if thread_id in self._acquisition_thread_ids:  # pragma: no cover - exercised in an audit callback
                     msg = f"Cannot acquire ReadWriteLock on {self.lock_file} while acquisition is active in this thread"
@@ -805,7 +820,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     ) -> AcquireReturnProxy:
         # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
         with self._internal_lock:
-            if self._lock_level > 0:
+            if self._holds_level():
                 return self._validate_reentrant(mode)
         if self._con is not None:
             self._finish_connection()
@@ -963,6 +978,12 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._connection_identity = None
             if rollback_error is not None:
                 raise rollback_error
+
+    def _holds_level(self) -> bool:
+        # A release interrupted after its rollback, but before it recorded that, leaves a level with no transaction.
+        if self._lock_level > 0 and self._transaction_ended():
+            self._clear_lock_state()
+        return self._lock_level > 0
 
     def _validate_reentrant(self, mode: Literal["read", "write"]) -> AcquireReturnProxy:
         cur = threading.get_ident()
