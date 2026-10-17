@@ -59,15 +59,25 @@ _HOLDERS_DIRECTORY: Final[str] = "holders"
 _TEMPORARY_PREFIX: Final[str] = ".commit-"
 
 
+class TreeReplacedError(RuntimeError):
+    """
+    Raised by a ``Files`` implementation when a protocol directory is not a real directory (a symlink, a junction, a
+    file) or belongs to another account.
+    """
+
+
 class Files(Protocol):
     """The filesystem operations the protocol runs on; :mod:`._storage` implements them over :mod:`os`."""
 
     def read(self, path: str) -> bytes | None:
         """The file's bytes, ``None`` when it does not exist, or ``b""`` when it is not a regular file."""
 
-    def create(self, path: str, data: bytes, *, durable: bool = False) -> None:
+    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
         """
         Create the file exclusively with the whole record written; raise ``FileExistsError`` when it exists.
+
+        The returned device and inode (the kernel's identity for a file, independent of its name) let ``overwrite``
+        check that the name still leads to this file.
 
         *durable* flushes it to stable storage first, for a record that outlives the host that wrote it: a generation a
         crash left empty would wedge every other participant. A holder record dies with its writer, so it skips that.
@@ -79,8 +89,12 @@ class Files(Protocol):
     def replace(self, source: str, target: str) -> bool:
         """Rename *source* over *target* atomically; ``False`` when the platform refused because *target* is in use."""
 
-    def overwrite(self, path: str, data: bytes) -> bool:
-        """Rewrite the file in place from offset zero; ``False`` when it no longer exists."""
+    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:
+        """
+        Rewrite from offset zero the file ``create`` returned *identity* for.
+
+        ``False`` when *path* no longer leads to that file.
+        """
 
     def unlink(self, path: str) -> None:
         """Remove the file, tolerating one that is already gone."""
@@ -431,6 +445,7 @@ class Participant:
         self._ledger = ledger
         self._log = log
         self._holder = self._holder_path(self.token)
+        self._holder_identity: tuple[int, int] | None = None
         self._entered = False
         self._next_sweep = clock()
 
@@ -441,11 +456,11 @@ class Participant:
 
     def _create_holder(self) -> None:
         try:
-            self._files.create(self._holder, self._record())
+            self._holder_identity = self._files.create(self._holder, self._record())
         except FileNotFoundError:
             # Removing the whole log takes the directories with it.
             self._files.prepare(self._root, force=True)
-            self._files.create(self._holder, self._record())
+            self._holder_identity = self._files.create(self._holder, self._record())
 
     def _record(self) -> bytes:
         return encode_holder(self.token, new_token(), self._stale_threshold)
@@ -544,7 +559,9 @@ class Participant:
         return str(Path(self._root, _HOLDERS_DIRECTORY, token))
 
     def _refresh_nonce(self) -> bool:
-        return self._files.overwrite(self._holder, self._record())
+        if (identity := self._holder_identity) is None:
+            return False
+        return self._files.overwrite(self._holder, self._record(), identity)
 
     def heartbeat(self) -> tuple[HeartbeatOutcome, OSError | None]:
         """
@@ -558,12 +575,14 @@ class Participant:
         try:
             if not self._refresh_nonce():
                 return "lost", None
+        except TreeReplacedError:
+            return "lost", None
         except OSError as error:
             return "transient", error
         try:
             latest = self._log.latest()
             self._sweep(latest)
-        except OSError:
+        except (OSError, TreeReplacedError):
             return "ok", None
         return ("ok" if self.token in latest.members else "lost"), None
 
@@ -571,19 +590,21 @@ class Participant:
         """Commit this participant out of the latest snapshot, then remove its holder record."""
         # The record goes even when the log cannot be read: a contender that never entered then leaves nothing behind,
         # and a member still named ages out the same way with or without one.
-        try:
-            while self.token in (latest := self._log.latest()).members:
-                successor = Snapshot(
-                    generation=latest.generation + 1,
-                    writer=None if latest.writer == self.token else latest.writer,
-                    readers=latest.readers - {self.token},
-                )
-                if self._log.commit(successor):
-                    break
-        finally:
-            self._entered = False
-            self.generation = None
-            self._files.unlink(self._holder)
+        # A tree that was swapped out leaves no record this participant can reach, so there is nothing to commit out of.
+        with suppress(TreeReplacedError):
+            try:
+                while self.token in (latest := self._log.latest()).members:
+                    successor = Snapshot(
+                        generation=latest.generation + 1,
+                        writer=None if latest.writer == self.token else latest.writer,
+                        readers=latest.readers - {self.token},
+                    )
+                    if self._log.commit(successor):
+                        break
+            finally:
+                self._entered = False
+                self.generation = None
+                self._files.unlink(self._holder)
 
 
 __all__ = [
@@ -594,6 +615,7 @@ __all__ = [
     "Mode",
     "Participant",
     "Snapshot",
+    "TreeReplacedError",
     "encode_holder",
     "holder_lease",
     "is_token",
