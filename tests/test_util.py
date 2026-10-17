@@ -166,8 +166,9 @@ def test_stale_break_admits_no_third_holder_beside_a_recreated_marker(
 def test_break_lock_file_put_back_never_replaces_a_marker_at_the_path(  # pragma: win32 cover
     stale_lock: Path, mocker: MockerFixture
 ) -> None:
+    assert sys.platform == "win32"
     rename: Final = Path.rename
-    pin: Final = _util._pinned_for_rename
+    pin: Final = filelock._util._pinned_for_rename
 
     def peer_recreates_then_pin(path: str) -> AbstractContextManager[object]:
         _rewrite_in_place(Path(path))  # Windows refuses an in-place rewrite once the pin holds the marker

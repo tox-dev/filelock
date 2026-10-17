@@ -35,7 +35,6 @@ from filelock._util import (
     pin_inode,
     raise_on_not_writable_file,
     remove_own_file,
-    ensure_directory_exists,
     write_all,
 )
 

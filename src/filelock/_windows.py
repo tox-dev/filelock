@@ -85,8 +85,8 @@ if sys.platform == "win32":  # pragma: win32 cover
     _STATUS_OBJECT_PATH_NOT_FOUND: Final[int] = 0xC000003A
     _STATUS_SHARING_VIOLATION: Final[int] = 0xC0000043
     _STATUS_DELETE_PENDING: Final[int] = 0xC0000056
-    #: Probes, 2 ms apart, an open spends waiting out STATUS_ACCESS_DENIED or an oplock break. NTFS answers the former
-    #: briefly while a peer unlinks the name (#604). A count ensures every probe runs even when the process stalls.
+    #: Probes, 2 ms apart, for transient STATUS_ACCESS_DENIED while a peer unlinks the name (#604). A count ensures
+    #: every probe runs even when the process stalls; oplock breaks use the caller's wait instead.
     _ACCESS_DENIED_PROBES: Final[int] = 250
     _ACCESS_DENIED_GRACE: Final[float] = 0.5
     _ACCESS_DENIED_RETRY: Final[float] = 0.002
@@ -574,7 +574,6 @@ if sys.platform == "win32":  # pragma: win32 cover
         options: int = _CREATE_OPTIONS,
         *,
         descriptor: ctypes.c_void_p | None = None,
-        options: int = _CREATE_OPTIONS,
     ) -> tuple[int, int]:
         """
         Open *path* through ``NtCreateFile`` and return ``(handle, status)``.

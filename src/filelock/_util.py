@@ -8,7 +8,7 @@ import platform
 import secrets
 import stat
 import sys
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import contextmanager, suppress
 from errno import EACCES, EINVAL, EIO, EISDIR, ENOSYS, EXDEV
 from functools import cache
 from pathlib import Path
@@ -272,9 +272,6 @@ if sys.platform == "win32":  # pragma: win32 cover
         unlink_without_oplock_wait(path)
 
 else:  # pragma: win32 no cover
-
-    def _pinned_for_rename(_path: str) -> AbstractContextManager[object]:
-        return nullcontext()
 
     def unlink_path(path: str) -> None:
         Path(path).unlink()
