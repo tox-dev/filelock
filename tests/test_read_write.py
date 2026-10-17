@@ -27,7 +27,7 @@ from tests.read_write_helpers import assert_read_write_lock_state
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._identity import host_name
     from filelock._read_write import _host_digest, _remove_link_directory_on_windows
-    from filelock._windows import _advapi32, _make_private_directory
+    from filelock._windows import _advapi32, _directory_is_private, _make_private_directory
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
 # slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
@@ -1003,6 +1003,37 @@ def test_windows_directory_whose_acl_cannot_be_read_gets_a_private_link(  # prag
 
     opened = Path(connect.call_args_list[0].args[0])
     assert (opened.name, opened.parent.parent.parent) == ("lock.db", tmp_path)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+@pytest.mark.parametrize("right", [pytest.param("WDAC", id="write-dac"), pytest.param("WO", id="write-owner")])
+def test_windows_directory_whose_acl_can_be_rewritten_gets_a_private_link(  # pragma: win32 cover
+    tmp_path: Path, mocker: MockerFixture, right: str
+) -> None:
+    # An account that can rewrite a directory's ACL or take its ownership can grant itself the right to add names.
+    directory = tmp_path / "rewritable"
+    directory.mkdir()
+    icacls = Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe")
+    subprocess.run([icacls, directory, "/grant", f"*S-1-1-0:({right})"], capture_output=True, check=True)
+    connect = mocker.spy(sqlite3, "connect")
+    database = directory / "lock.db"
+
+    ReadWriteLock(database, is_singleton=False).close()
+
+    opened = Path(connect.call_args_list[0].args[0])
+    assert (_directory_is_private(os.fspath(directory)), opened.parent.parent.parent) == (False, directory)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_directory_only_the_account_can_write_connects_by_name(  # pragma: win32 cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    connect = mocker.spy(sqlite3, "connect")
+    database = tmp_path / "lock.db"
+
+    ReadWriteLock(database, is_singleton=False).close()
+
+    assert (_directory_is_private(os.fspath(tmp_path)), connect.call_args_list[0].args[0]) == (True, str(database))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")

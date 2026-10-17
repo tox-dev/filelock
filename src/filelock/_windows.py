@@ -465,7 +465,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             ctypes.byref(descriptor),
         )
         if error == _ERROR_ACCESS_DENIED:
-            # C:\Windows\Temp is one: its ACL hides from ordinary accounts, which says nothing good about who may write.
+            # C:\Windows\Temp is one. Anything that cannot be proven private is not.
             return False
         if error:  # pragma: no cover  # the directory was opened or listed an instant earlier
             raise ctypes.WinError(error)
@@ -488,9 +488,10 @@ if sys.platform == "win32":  # pragma: win32 cover
         offset = 8
         for _ in range(count):
             ace_type, _flags, ace_size, mask = struct.unpack("<BBHI", ctypes.string_at(dacl + offset, 8))
-            # Allowed and allowed-callback ACEs share a layout; object ACEs exist only in directory services. The mask
-            # is FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, GENERIC_WRITE or GENERIC_ALL.
-            if ace_type in {0, 9} and mask & (0x2 | 0x4 | 0x40 | 0x40000000 | 0x10000000):
+            # Allowed and allowed-callback ACEs share a layout; object ACEs exist only in directory services. The check
+            # is conservative: any right that can turn into creating a name counts, namely FILE_ADD_FILE,
+            # FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, WRITE_DAC, WRITE_OWNER, GENERIC_WRITE and GENERIC_ALL.
+            if ace_type in {0, 9} and mask & (0x2 | 0x4 | 0x40 | 0x40000 | 0x80000 | 0x40000000 | 0x10000000):
                 writers.add(_sid_at(dacl + offset + 8))
             offset += ace_size
         return writers
