@@ -434,12 +434,38 @@ Parameters are frozen when the singleton is first created. Requesting the same p
 
 When you have many readers and occasional writers, use :class:`ReadWriteLock <filelock.ReadWriteLock>` to allow readers
 to proceed concurrently. ``ReadWriteLock`` is backed by SQLite; a ``.db`` extension is a convention rather than a
-requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. A WAL-mode database
-raises :class:`ValueError`, because WAL never blocks readers behind a writer.
+requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. Two kinds of file
+raise :class:`ValueError`: a database in WAL mode (SQLite's write-ahead log, which never blocks readers behind a
+writer), and a database whose schema takes more than a few kilobytes to load, because the acquire timeout does not
+bound that load.
 
-On macOS, the database directory must be writable and the filesystem must support hard links. filelock opens SQLite
-through a private alias of the validated database to avoid the ``/dev/fd`` lookup implicated in the kernel panic in
-`issue #818 <https://github.com/tox-dev/filelock/issues/818>`_. Alias creation failure raises :class:`OSError`.
+On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
+``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
+names the database directly only when no process of another account can create names in its directory: the directory
+belongs to the locking account or root and is not writable by its group or by others. In any other directory, filelock
+opens SQLite through a hard link (a second name for the same file) inside a ``.filelock-*`` directory that only the
+locking account can read. That directory must be writable by the locking account, and the filesystem must support hard
+links; when the link cannot be made, the lock raises :class:`OSError`.
+
+Both routes assume that no process of another account can replace the database directory or any directory above it.
+That holds when every directory above belongs to the locking account or root and is either not writable by others or
+has the sticky bit (a directory flag that lets only a file's owner rename or remove it).
+
+A process that can rename an entry in a directory above owns every name below it, and can put a replacement at the
+database path between the lock's checks. filelock compares the name with the file it checked before it runs any SQL statement, and raises
+:class:`OSError` instead of reporting the lock held, and leaves the replacement's files as they were, except that
+SQLite's open creates an empty ``lock.db`` there when the name is missing, following a symlink at that name. A swap that lands after that
+comparison and before SQLite's first statement still makes SQLite look up ``-journal`` and ``-wal`` under the
+replacement: it deletes both, and beside a non-empty lock database it first replays the journal into that database and
+unlinks the file the journal names.
+
+On Windows the lock makes the same choice from the directory's access control list (ACL). It connects by the database
+name only when the directory's owner and every entry that allows adding files, adding subdirectories or deleting entries
+name the locking account, ``SYSTEM`` or ``Administrators``. Otherwise it links the database into a directory created
+with an ACL that grants only those accounts, and SQLite opens the link. The filesystem must support hard links, or the
+lock raises :class:`OSError`. Where it does not, as on FAT or some network shares, keep the database in a directory
+other accounts cannot create files in. The per-user temporary directory and ``%LOCALAPPDATA%`` qualify,
+``C:\Windows\Temp`` and ``C:\Users\Public`` do not.
 
 .. code-block:: python
 

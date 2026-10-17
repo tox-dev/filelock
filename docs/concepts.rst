@@ -458,8 +458,12 @@ The defense differs by platform:
   created and that file has no second name, and it opens the record without blocking. It leaves alone a hard link (a
   second name for the same file) or a FIFO (a named pipe) renamed over the record.
 
-:class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path and keeps SQLite on the file it
-checked, so a link planted in a shared directory cannot point the lock at another file.
+:class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path. In a directory that processes of
+other accounts can write, it opens SQLite through a hard link (a second name for the same file) in a directory only the
+locking account can read, so a link or journal file another process puts beside the database cannot point the lock at
+another file. On Windows the directory counts as writable by other accounts unless its owner and every entry of its
+access control list (ACL) that allows adding or removing names belong to the locking account, ``SYSTEM`` or
+``Administrators``.
 
 ***************************************
  What filelock doesn't protect against
@@ -1033,6 +1037,13 @@ When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock create
 ``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory. A soft lock's marker never
 gets the group or other write bits, whatever the ``mode`` or umask. Contenders only read and rename it, and they act on
 the record its owner wrote.
+
+Windows has no mode bits; a new file inherits the ACL of its directory. :class:`WindowsFileLock
+<filelock.WindowsFileLock>` honors the one request that has a Windows counterpart: a ``mode`` without group and other
+bits, such as ``0o600``, creates the lock file with a protected ACL that grants access to its owner, ``SYSTEM`` and
+``Administrators`` only, the ACL ``os.mkdir(mode=0o700)`` applies. The :class:`~filelock.ReadWriteLock` database, always
+``0o600``, gets the same ACL. A file that already exists keeps its own ACL. Every other ``mode``, and the files of the
+soft locks, which ``os.open`` creates, inherit the directory's ACL; restrict that ACL to keep other users out.
 
 An explicit ``mode`` must be an :class:`int` within ``0o000``-``0o777`` that grants the owner read and write;
 construction raises :class:`TypeError` for another type and :class:`ValueError` otherwise. A lock reopens, reads, and

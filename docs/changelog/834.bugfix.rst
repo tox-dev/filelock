@@ -1,0 +1,8 @@
+Fix :class:`~filelock.ReadWriteLock` acting on ``-journal``, ``-wal`` or ``-shm`` files another process puts beside its
+database: a write could land in another file, a reader could get in beside a writer, and an acquire could fail. SQLite
+now opens the database by name only in a directory no other account can write, and through a private hard link
+elsewhere. On Windows the directory's access control list decides. Where hard links are unavailable, keep the database
+in a directory other accounts cannot write, such as one under ``%LOCALAPPDATA%``. The lock removes link directories
+through a checked descriptor rather than by name, reads a link directory's name only when the locking account owns it,
+and leaves alone a directory with other content renamed onto a link directory's name. A database whose schema takes more
+than a few kilobytes to load raises :class:`ValueError` instead of running past the acquire timeout.
