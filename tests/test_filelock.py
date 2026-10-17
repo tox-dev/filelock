@@ -3213,6 +3213,26 @@ def test_each_acquisition_resolves_the_working_directory(
         assert (lock.lock_file, (second / "resource.lock").exists()) == ("resource.lock", True)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="a working directory in use cannot be removed"
+)  # pragma: win32 no cover
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_acquire_without_working_directory_leaves_no_hold(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+) -> None:
+    first, second = working_directories
+    lock = lock_type("resource.lock")
+    first.rmdir()
+
+    with pytest.raises(FileNotFoundError):
+        lock.acquire()
+    os.chdir(second)
+    with lock:
+        pass
+
+    assert (lock.lock_counter, lock.is_locked) == (0, False)
+
+
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_singleton_after_chdir_locks_the_requested_file(
     lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
