@@ -9,7 +9,6 @@ import time
 from contextlib import contextmanager, suppress
 from errno import ENOENT, ENOTDIR, EWOULDBLOCK
 from functools import cache
-from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
 from filelock._api import BaseFileLock
