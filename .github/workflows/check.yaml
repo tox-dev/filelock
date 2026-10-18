@@ -387,3 +387,19 @@ jobs:
           enable-cache: false
       - name: "📝 Require a news fragment"
         run: uvx towncrier check --compare-with "origin/${GITHUB_BASE_REF}"
+  gate:
+    name: "✅ Required checks pass"
+    if: always()
+    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux, changelog]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          jq -e '
+            all(
+              to_entries[];
+              .value.result == "success" or
+              ((.key == "graalpy" or .key == "changelog") and .value.result == "skipped")
+            )
+          ' <<< "$NEEDS_JSON"
