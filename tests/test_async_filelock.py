@@ -38,6 +38,7 @@ from tests.capability_marks import (
     NEEDS_PARENT_SYMLINK_COLLAPSE,
     NEEDS_PROMPT_FINALIZATION,
     NEEDS_PROMPT_SIGNAL_DELIVERY,
+    NEEDS_STALE_RECLAIM,
 )
 
 if TYPE_CHECKING:
@@ -1559,6 +1560,7 @@ def test_async_lock_on_a_daemon_loop_thread_held_at_interpreter_exit_releases_it
 
 @pytest.mark.filterwarnings("ignore::filelock.SoftFileLockLifetimeWarning")
 @pytest.mark.asyncio
+@NEEDS_STALE_RECLAIM
 async def test_executor_acquire_keeps_filesystem_calls_off_the_loop(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "a"
     lock_path.touch()

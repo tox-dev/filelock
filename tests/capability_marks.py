@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 import pytest
 from capabilities import CAPABILITIES
 
+from filelock._util import exchange_supported
+
 if TYPE_CHECKING:
     from typing import Final
 
@@ -73,6 +75,11 @@ NEEDS_UNLINK_OPEN_FILE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     reason="this runtime keeps an open marker undeletable, so no peer can take it from a live holder",
 )
 
+NEEDS_STALE_RECLAIM: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform != "win32" and not exchange_supported(),
+    reason="safe stale recovery needs an atomic exchange of two names",
+)
+
 NEEDS_POSIX_SIGNALS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["posix-signals"], reason="liveness is probed with os.kill only where POSIX signals exist"
 )
@@ -130,6 +137,7 @@ __all__ = [
     "NEEDS_PROMPT_FINALIZATION",
     "NEEDS_PROMPT_SIGNAL_DELIVERY",
     "NEEDS_REGISTER_AT_FORK",
+    "NEEDS_STALE_RECLAIM",
     "NEEDS_SYMLINK",
     "NEEDS_UNLINK_OPEN_FILE",
     "SKIP_ON_UNRELIABLE_PROCESS_SYNC",

@@ -16,7 +16,7 @@ import filelock._util
 from filelock import SoftFileLock, Timeout
 from filelock._identity import host_name
 from filelock._util import break_lock_file
-from tests.capability_marks import NEEDS_FILE_PERMISSIONS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.capability_marks import NEEDS_FILE_PERMISSIONS, NEEDS_STALE_RECLAIM, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.conftest import DEAD_HOLDER, STALE_BREAKERS
 from tests.process_helpers import call_within
 
@@ -42,9 +42,22 @@ def stale_lock(tmp_path: Path) -> Path:
     return path
 
 
+@NEEDS_STALE_RECLAIM
 def test_break_lock_file_unlinks_a_dead_holders_marker(stale_lock: Path) -> None:
     with SoftFileLock(stale_lock, timeout=1):
         assert list(stale_lock.parent.glob("test.lock.break.*")) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows can reclaim a pinned marker without exchange")
+@pytest.mark.usefixtures("break_route")
+@pytest.mark.parametrize("break_route", ["no-exchange"], indirect=True)
+def test_stale_marker_is_retained_without_exchange(stale_lock: Path) -> None:  # pragma: win32 no cover
+    with pytest.raises(Timeout):
+        SoftFileLock(stale_lock).acquire(blocking=False)
+    assert (stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("test.lock.break.*"))) == (
+        DEAD_HOLDER,
+        [],
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="oplocks exist only on Windows")
@@ -293,6 +306,7 @@ def test_stale_break_skips_a_marker_swapped_in_after_the_pin(  # pragma: win32 n
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot rename a file held open, so it pins nothing")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_reclaims_a_marker_it_cannot_pin(  # pragma: win32 no cover
     tmp_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock], record: str
 ) -> None:
@@ -348,6 +362,7 @@ def test_break_lock_file_lets_acquire_retry_after_the_marker_vanishes(
     "lifetime",
     [pytest.param(None, id="stale-take-over"), pytest.param(0.1, id="expiry-placeholder")],
 )
+@NEEDS_STALE_RECLAIM
 def test_stale_take_over_keeps_the_lock_when_a_rename_replaces_its_marker(  # pragma: win32 no cover
     stale_lock: Path, mocker: MockerFixture, lifetime: float | None
 ) -> None:
@@ -378,6 +393,7 @@ def test_stale_take_over_keeps_the_lock_when_a_rename_replaces_its_marker(  # pr
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_remove_own_file_placeholder_names_this_process(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: win32 no cover
@@ -398,6 +414,7 @@ def test_remove_own_file_placeholder_names_this_process(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_takes_the_lock_over_in_one_poll(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
@@ -476,6 +493,7 @@ def test_break_lock_file_leaves_the_marker_where_the_exchange_fails(  # pragma: 
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_stale_take_over_interrupted_before_the_check_puts_the_marker_back(  # pragma: win32 no cover
     stale_lock: Path, mocker: MockerFixture
 ) -> None:
@@ -507,6 +525,7 @@ def test_stale_take_over_interrupted_before_the_check_puts_the_marker_back(  # p
     )
 
 
+@NEEDS_STALE_RECLAIM
 def test_break_lock_file_break_name_is_unguessable(stale_lock: Path, mocker: MockerFixture) -> None:
     # A second breaker in this process could compute <lock>.break.<pid> and rename a recreated live lock onto it
     # between our lstat and unlink. Were that our break name, our unlink would delete the live lock.

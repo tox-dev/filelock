@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __lazy_modules__ = ["filelock._soft_rw._protocol", "filelock._strict", "filelock._util", "pathlib"]
 
+import errno
 import os
 import stat
 import sys
@@ -227,7 +228,8 @@ class OsFiles:
                 try:
                     fd = os.open(name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW, dir_fd=parent_fd)
                 except OSError as error:
-                    if error.errno not in {ELOOP, ENOTDIR}:
+                    # NetBSD reports EFTYPE rather than ELOOP when O_NOFOLLOW refuses a symlink.
+                    if error.errno not in {ELOOP, ENOTDIR, getattr(errno, "EFTYPE", ELOOP)}:
                         raise
                     msg = f"{path} is not a directory or is a symlink; refusing to use it"
                     raise TreeReplacedError(msg) from error

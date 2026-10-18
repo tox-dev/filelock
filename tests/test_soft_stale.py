@@ -20,7 +20,7 @@ from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, _read_lock_file
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import exchange_names
-from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_STALE_RECLAIM, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.conftest import DEAD_OWNER, STALE_BREAKERS, acquire_after_reclaim, held_after_reclaim
 from tests.pid_namespace_helpers import pin_pid_namespace
 from tests.process_helpers import break_then_hang_after_exchange, call_within, cleanup_processes
@@ -68,6 +68,7 @@ def test_lock_writes_pid_and_hostname(lock_path: Path) -> None:
         pytest.param(_holder(_DEAD_PID, start=123456789), id="three_line"),
     ],
 )
+@NEEDS_STALE_RECLAIM
 def test_stale_lock_broken_when_process_dead(lock_path: Path, mocker: MockerFixture, content: str) -> None:
     lock_path.write_text(content, encoding="utf-8")
     mocker.patch("filelock._identity.process_alive", return_value=False)
@@ -182,6 +183,7 @@ def test_empty_lock_not_evicted_when_old(lock_path: Path, lock_type: type[SoftFi
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_restores_a_stranded_empty_marker(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
@@ -210,6 +212,7 @@ def test_timeout_names_an_owner_that_recorded_no_pid(lock_path: Path) -> None:
     ],
 )
 @pytest.mark.usefixtures("unchanged_past_grace")
+@NEEDS_STALE_RECLAIM
 def test_unparseable_lock_evicted_when_old(lock_path: Path, content: bytes) -> None:
     lock_path.write_bytes(content)
     # An unreadable lock (bad line count, non-integer pid/start token, or oversized) must self-heal
@@ -264,6 +267,7 @@ def test_fresh_marker_with_truncated_start_token_not_evicted(lock_path: Path) ->
     ],
 )
 @pytest.mark.usefixtures("unchanged_past_grace")
+@NEEDS_STALE_RECLAIM
 def test_out_of_range_pid_self_heals_when_old(lock_path: Path, pid: int) -> None:
     lock_path.write_text(_holder(pid), encoding="utf-8")
     # pid 0 or -1 makes os.kill probe the caller's own process group (reads as alive), so the lock is never
@@ -307,6 +311,7 @@ def test_stale_break_racing_a_successor_admits_no_third_holder(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_stale_break_keeps_the_lock_when_a_peer_swaps_its_marker_aside(  # pragma: win32 no cover
     lock_path: Path, mocker: MockerFixture
 ) -> None:
@@ -343,6 +348,7 @@ def _live(record: str) -> str:  # pragma: win32 no cover
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_restores_a_live_marker_a_dead_breaker_left_under_its_break_name(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
@@ -356,6 +362,7 @@ def test_stale_break_restores_a_live_marker_a_dead_breaker_left_under_its_break_
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_restores_a_marker_of_another_host_with_the_breakers_pid(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
@@ -374,6 +381,7 @@ def _restore_name(lock: Path, pid: int) -> Path:  # pragma: win32 no cover
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_restores_under_an_exclusive_claim(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
@@ -431,6 +439,7 @@ def test_stale_break_restores_under_an_exclusive_claim(  # pragma: win32 no cove
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_waits_when_a_peer_claimed_the_record_first(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
@@ -470,6 +479,7 @@ def test_stale_break_waits_when_the_record_cannot_be_claimed(  # pragma: win32 n
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_reclaims_a_record_a_dead_recoverer_claimed(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
@@ -509,6 +519,7 @@ def _refuse_returning_a_claim(mocker: MockerFixture) -> None:  # pragma: win32 n
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_retries_a_claim_whose_return_failed(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
@@ -529,6 +540,7 @@ def test_stale_break_retries_a_claim_whose_return_failed(  # pragma: win32 no co
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_finishes_a_claim_an_unreadable_record_interrupted(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
@@ -556,6 +568,7 @@ def test_stale_break_finishes_a_claim_an_unreadable_record_interrupted(  # pragm
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_waits_for_a_claim_another_thread_is_working(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
@@ -598,6 +611,7 @@ def _acquire(lock_type: type[SoftFileLock], lock: Path) -> None:  # pragma: win3
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_claim_is_registered_before_it_is_visible(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
@@ -678,6 +692,7 @@ def test_stale_break_claim_identity_ignores_path_spelling(  # pragma: win32 no c
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @pytest.mark.parametrize("interrupted", ["rename", "read", "exchange"])
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_releases_the_registration_when_recovery_is_interrupted(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, interrupted: str, mocker: MockerFixture
 ) -> None:
@@ -718,6 +733,7 @@ def test_stale_break_releases_the_registration_when_recovery_is_interrupted(  # 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_undoes_an_exchange_that_took_a_peers_marker(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
@@ -745,6 +761,7 @@ def test_stale_break_undoes_an_exchange_that_took_a_peers_marker(  # pragma: win
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_removes_a_stale_marker_a_dead_breaker_left_under_its_break_name(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
@@ -759,6 +776,7 @@ def test_stale_break_removes_a_stale_marker_a_dead_breaker_left_under_its_break_
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_restores_a_strict_sentinel_a_dead_breaker_left_under_its_break_name(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
@@ -772,6 +790,7 @@ def test_stale_break_restores_a_strict_sentinel_a_dead_breaker_left_under_its_br
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @pytest.mark.parametrize("lock_type", [MarkerSoftFileLock, SoftFileLease])
+@NEEDS_STALE_RECLAIM
 def test_stale_break_restores_a_marker_of_an_unknown_contract_under_its_break_name(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[MarkerSoftFileLock]
 ) -> None:
@@ -787,6 +806,7 @@ def test_stale_break_restores_a_marker_of_an_unknown_contract_under_its_break_na
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @pytest.mark.usefixtures("unchanged_past_grace")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_restores_a_marker_a_dead_breaker_left_beside_its_placeholder(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
@@ -814,6 +834,7 @@ def test_stale_break_restores_a_marker_a_dead_breaker_left_beside_its_placeholde
         pytest.param(f"filelock/break\n{_DEAD_PID}", id="torn-pid"),
     ],
 )
+@NEEDS_STALE_RECLAIM
 def test_stale_break_evicts_a_placeholder_that_names_no_breaker(  # pragma: win32 no cover
     tmp_path: Path, placeholder: str
 ) -> None:
@@ -871,6 +892,7 @@ def test_stale_break_waits_when_a_break_name_cannot_be_read(  # pragma: win32 no
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @pytest.mark.timeout(_PROCESS_DEADLINE * 2)
+@NEEDS_STALE_RECLAIM
 def test_stale_break_after_a_breaker_was_killed_keeps_the_holder_alone(  # pragma: win32 no cover
     lock_path: Path,
 ) -> None:
@@ -914,6 +936,7 @@ def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
 
 
 @pytest.mark.usefixtures("unchanged_past_grace")
+@NEEDS_STALE_RECLAIM
 def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None:
     if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
         pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
@@ -930,6 +953,7 @@ def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None
 
 
 @pytest.mark.usefixtures("unchanged_past_grace")
+@NEEDS_STALE_RECLAIM
 def test_socket_lock_file_self_heals(lock_path: Path) -> None:
     if sys.platform == "win32":  # pragma: win32 cover
         pytest.skip("AF_UNIX sockets are unix-only")
@@ -1183,6 +1207,7 @@ def test_failed_acquire_spares_a_successor_on_the_freed_inode_number(  # pragma:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_failed_acquire_spares_a_file_that_replaced_its_placeholder(  # pragma: win32 no cover
     lock_path: Path, mocker: MockerFixture
 ) -> None:
@@ -1227,6 +1252,7 @@ def test_publication_without_identity_leaves_the_marker(lock_path: Path, mocker:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @pytest.mark.usefixtures("unchanged_past_grace")
+@NEEDS_STALE_RECLAIM
 def test_release_under_a_peers_exchange_leaves_no_marker_naming_this_process(  # pragma: win32 no cover
     lock_path: Path,
 ) -> None:
@@ -1246,6 +1272,7 @@ def test_release_under_a_peers_exchange_leaves_no_marker_naming_this_process(  #
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_release_under_a_peers_exchange_leaves_the_peers_marker(lock_path: Path) -> None:  # pragma: win32 no cover
     lock: Final = SoftFileLock(lock_path)
     lock.acquire()
