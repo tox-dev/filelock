@@ -30,6 +30,7 @@ from filelock._soft_rw._protocol import (
     Ledger,
     Participant,
     Snapshot,
+    TreeReplacedError,
     encode_holder,
     holder_lease,
     parse_snapshot,
@@ -884,13 +885,25 @@ def test_heartbeat_ignores_a_broken_successor_record(lock_file: str, files: OsFi
 
 
 @pytest.mark.requires_hard_links
-def test_heartbeat_reports_the_refresh_error(lock_file: str, files: OsFiles, mocker: MockerFixture) -> None:
-    writer = _participant(files, lock_file, "write")
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(OSError(EIO, "Input/output error"), "transient", id="filesystem-error"),
+        pytest.param(TreeReplacedError("tree replaced"), "lost", id="replaced-tree"),
+    ],
+)
+def test_heartbeat_reports_the_refresh_error(
+    lock_file: str,
+    files: OsFiles,
+    mocker: MockerFixture,
+    error: OSError | TreeReplacedError,
+    expected: Literal["transient", "lost"],
+) -> None:
+    writer: Final[Participant] = _participant(files, lock_file, "write")
     writer.publish()
     assert writer.advance()
-    error = OSError(EIO, "Input/output error")
-    mocker.patch.object(OsFiles, "overwrite", side_effect=error)
-    assert writer.heartbeat() == ("transient", error)
+    mocker.patch.object(OsFiles, "overwrite", autospec=True, side_effect=error)
+    assert writer.heartbeat() == (expected, error if isinstance(error, OSError) else None)
 
 
 def test_heartbeat_without_a_published_record_is_lost(lock_file: str, files: OsFiles) -> None:

@@ -1217,10 +1217,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             if _on_this_stack(self._context.releasing):
                 msg = f"lock '{self.lock_file}' is acquired again while this thread's release of it runs"
                 raise RuntimeError(msg)
-            # Bump the counter up front; _undo_acquire rolls it back if acquisition fails.
+            canonical = _canonical(self.lock_file)
             self._context.lock_counter += 1
 
-            canonical = _canonical(self.lock_file)
             self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
             if not self.is_locked:
                 self._pin_lock_path(canonical)
