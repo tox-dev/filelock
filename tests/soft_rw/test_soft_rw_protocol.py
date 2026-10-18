@@ -12,6 +12,7 @@ would leave on disk.
 
 from __future__ import annotations
 
+import errno
 import os
 import random
 import shutil
@@ -926,6 +927,44 @@ def test_heartbeat_with_the_tree_swapped_for_a_symlink_is_lost(  # pragma: needs
     target.mkdir()
 
     assert (writer.heartbeat(), list(target.iterdir())) == (("lost", None), [])
+
+
+@pytest.mark.skipif(
+    not (CAPABILITIES["symlink"] and CAPABILITIES["link-dir-fd"]),
+    reason="a swapped tree is refused only where records are reached through descriptors",
+)
+@pytest.mark.requires_hard_links
+@pytest.mark.parametrize("component", ["root", "holders"])
+def test_heartbeat_with_a_symlink_refused_by_eftype_is_lost(  # pragma: needs link-dir-fd
+    lock_file: str, files: OsFiles, root: str, tmp_path: Path, mocker: MockerFixture, component: str
+) -> None:
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    assert writer.advance()
+    directory = Path(root) if component == "root" else Path(root, component)
+    directory.rename(tmp_path / "aside")
+    directory.symlink_to(target := tmp_path / "target", target_is_directory=True)
+    target.mkdir()
+    eftype = getattr(errno, "EFTYPE", 79)
+    mocker.patch.object(errno, "EFTYPE", eftype, create=True)
+    real_open = os.open
+    refusals: list[tuple[int, int | None]] = []
+
+    def netbsd_open(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        try:
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+        except OSError as error:
+            # NetBSD uses EFTYPE for O_NOFOLLOW; keep the real traversal and translate only its symlink refusal.
+            refusals.append((flags, error.errno))
+            raise OSError(eftype, "Inappropriate file type or format", path) from error
+
+    mocker.patch.object(os, "open", side_effect=netbsd_open)
+
+    assert (writer.heartbeat(), list(target.iterdir())) == (("lost", None), [])
+    assert len(refusals) == 1
+    flags, native_errno = refusals[0]
+    assert flags & getattr(os, "O_NOFOLLOW", 0)
+    assert native_errno in {errno.ELOOP, errno.ENOTDIR, eftype}
 
 
 @pytest.mark.requires_hard_links
