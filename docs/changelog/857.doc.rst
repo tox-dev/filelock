@@ -1,1 +1,0 @@
-Require the aggregate CI check to cover the test jobs and pull request news fragment check.

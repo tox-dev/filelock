@@ -13,18 +13,27 @@ permissions:
 jobs:
   prepare-release:
     name: 📝 build changelog and tag
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # RELEASE_TOKEN is an environment-scoped secret; selecting the environment resolves it so the checkout can push.
     environment:
-      name: release
+      name: release-auth
     permissions:
-      contents: write
+      contents: read
     steps:
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
       - name: 📥 Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # full history so the version calculation sees the latest tag
-          token: ${{ secrets.RELEASE_TOKEN }} # zizmor: ignore[artipacked]
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: true # zizmor: ignore[artipacked] the release job pushes main and its tag
       - name: 📦 Setup uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -58,18 +67,23 @@ jobs:
       - name: 📝 Build changelog, commit, and tag
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
         run: |
           if git ls-remote --tags origin "refs/tags/$VERSION" | grep -q .; then
             echo "Tag $VERSION already exists, nothing to do"
             exit 1
           fi
-          git config user.name "${GITHUB_ACTOR}"
-          git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+          if ! compgen -G 'docs/changelog/*.*.rst' > /dev/null; then
+            echo "::error::no changelog fragments to release"
+            exit 1
+          fi
+          app_user_id=$(gh api "/users/${APP_SLUG}[bot]" --jq .id)
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${app_user_id}+${APP_SLUG}[bot]@users.noreply.github.com"
           uvx towncrier build --yes --version "$VERSION"
           git add docs/changelog docs/changelog.rst
           git commit -m "Release $VERSION"
           git tag "$VERSION"
-          # Push the branch first, then the tag. The tag is pushed with RELEASE_TOKEN (a PAT), so it triggers the
-          # release workflow on the tag ref, where the build is verified against the changelog and published to PyPI.
           git push origin HEAD:main
           git push origin "$VERSION"
