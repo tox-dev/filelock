@@ -7,6 +7,14 @@
 .. towncrier release notes start
 
 *******************
+ 4.2.2 (2026-10-18)
+*******************
+
+- Fix a lock on a relative path that stayed held after a later ``with lock:`` ended, when an earlier ``acquire()`` had
+  failed because the working directory no longer exists. That call still raises :class:`FileNotFoundError`, and it now
+  leaves the lock's hold count unchanged. :pr:`856`
+
+*******************
  4.2.1 (2026-10-17)
 *******************
 
