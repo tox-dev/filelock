@@ -83,6 +83,20 @@ def test_lazy_import_unknown_name_raises() -> None:
         _ = filelock.missing
 
 
+@pytest.mark.skipif(sys.version_info < (3, 15), reason="lazy imports start with Python 3.15")
+def test_lazy_import_missing_runtime_type_does_not_raise_at_exit() -> None:  # pragma: >=3.15 cover
+    assert not subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import types; types.__dict__.pop('LazyImportType', None); import filelock; filelock.FileLock('a')",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stderr
+
+
 _DAEMON_LOOP: Final = (
     "loop = asyncio.new_event_loop(); threading.Thread(target=loop.run_forever, daemon=True).start()\n"
 )
