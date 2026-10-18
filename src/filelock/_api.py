@@ -1951,7 +1951,7 @@ _SETTRACE_SURVIVES_AUDIT_HOOKS: Final[bool] = sys.implementation.name != "cpytho
 
 @cache
 def _resolve_lazy_imports_before_shutdown() -> None:
-    if sys.version_info >= (3, 15):  # pragma: >=3.15 cover
+    if hasattr(types, "LazyImportType"):  # pragma: >=3.15 cover
         atexit.register(_resolve_lazy_imports)
 
 
