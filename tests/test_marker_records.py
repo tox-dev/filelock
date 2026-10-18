@@ -13,6 +13,7 @@ from filelock import MarkerSoftFileLock, OwnerRecord, SoftFileLease, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._marker import encode_marker
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD
+from tests.capability_marks import NEEDS_STALE_RECLAIM
 from tests.process_helpers import cleanup_processes
 
 if TYPE_CHECKING:
@@ -162,6 +163,7 @@ def test_lease_never_ages_out_an_unknown_contract(tmp_path: Path) -> None:
     assert marker.exists()
 
 
+@NEEDS_STALE_RECLAIM
 def test_lease_ages_out_a_malformed_record(tmp_path: Path, mocker: MockerFixture) -> None:
     # The self-heal still applies to a record that states no contract at all, so corruption cannot wedge contenders.
     mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
@@ -246,6 +248,7 @@ def test_marker_lock_preserves_live_records(marker: Path, mode: str) -> None:
 
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 2)
+@NEEDS_STALE_RECLAIM
 def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
     process: Final[BaseProcess] = get_context("spawn").Process(target=_leave_marker, args=(marker,))
     with cleanup_processes([process]):
@@ -267,6 +270,7 @@ def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
         pytest.param("filelock/2\npid=1\nhost=h\nmode=exclu", id="truncated-mode"),
     ],
 )
+@NEEDS_STALE_RECLAIM
 def test_marker_lock_reclaims_malformed_record(marker: Path, record: str, mocker: MockerFixture) -> None:
     mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
     marker.write_text(record, encoding="utf-8")

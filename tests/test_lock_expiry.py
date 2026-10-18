@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import AsyncFileLock, AsyncSoftFileLock, FileLock, SoftFileLock, Timeout
+from tests.capability_marks import NEEDS_STALE_RECLAIM
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -20,6 +21,7 @@ _NATIVE_IGNORES: Final[str] = "lifetime is ignored"
 pytestmark: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings("ignore::filelock.SoftFileLockLifetimeWarning")
 
 
+@NEEDS_STALE_RECLAIM
 def test_expired_soft_lock_is_broken(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
@@ -183,6 +185,7 @@ def test_lock_file_missing_during_expiry_check(tmp_path: Path) -> None:
         assert lock.is_locked
 
 
+@NEEDS_STALE_RECLAIM
 def test_expired_lock_becomes_acquirable(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
@@ -195,6 +198,7 @@ def test_expired_lock_becomes_acquirable(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@NEEDS_STALE_RECLAIM
 async def test_async_expired_lock_is_broken(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()

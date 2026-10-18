@@ -29,7 +29,12 @@ from filelock import (
 from filelock._identity import host_name
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD
 from filelock._util import exchange_names
-from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, NEEDS_PROMPT_FINALIZATION, NEEDS_UNLINK_OPEN_FILE
+from tests.capability_marks import (
+    NEEDS_COLLECTED_FINALIZATION,
+    NEEDS_PROMPT_FINALIZATION,
+    NEEDS_STALE_RECLAIM,
+    NEEDS_UNLINK_OPEN_FILE,
+)
 from tests.conftest import held_after_reclaim
 
 if TYPE_CHECKING:
@@ -156,6 +161,7 @@ def test_lease_heartbeat_survives_directory_rename(
 
 
 @NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@NEEDS_STALE_RECLAIM
 def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) -> None:
     # A wedged holder: its marker stays on disk, but no refresh ever lands on it again, so the claim ages out.
     mocker.patch("filelock._lease.touch")
@@ -171,6 +177,7 @@ def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) 
         holder.release()
 
 
+@NEEDS_STALE_RECLAIM
 def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture) -> None:
     # The pytest timeout bounds recovery while the mocked clock controls marker expiry.
     clock: Final = mocker.patch("filelock._soft.time", autospec=True)
@@ -188,6 +195,7 @@ def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture
         pytest.param("mode=exclusive\n", id="exclusive"),
     ],
 )
+@NEEDS_STALE_RECLAIM
 def test_lease_reclaims_a_dead_same_host_holder(marker: Path, contract: str) -> None:
     marker.write_text(f"filelock/2\npid=999999\nhost={host_name()}\n{contract}", encoding="utf-8")
 
@@ -262,6 +270,7 @@ def test_lease_tolerates_a_transient_refresh_error(marker: Path, mocker: MockerF
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_lease_heartbeat_tolerates_one_refresh_under_a_peers_exchange(  # pragma: win32 no cover
     marker: Path, mocker: MockerFixture
 ) -> None:
@@ -288,6 +297,7 @@ def test_lease_heartbeat_tolerates_one_refresh_under_a_peers_exchange(  # pragma
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_lease_heartbeat_reports_an_owner_changed_that_persists(marker: Path) -> None:  # pragma: win32 no cover
     seen: list[LeaseCompromise] = []
     lease: Final = SoftFileLease(marker, lease_duration=2, heartbeat_interval=0.05, on_compromise=seen.append)
@@ -650,6 +660,7 @@ def test_lease_drops_lifetime_with_a_warning(marker: Path) -> None:
     assert lease.lifetime is None
 
 
+@NEEDS_STALE_RECLAIM
 def test_lease_supersedes_a_live_holder_once_its_claim_ages_out(marker: Path, mocker: MockerFixture) -> None:
     # A live holder whose refresh stalled keeps its marker, yet a contender takes it once it has watched the marker go
     # lease_duration without a refresh. Windows cannot delete a live holder's open marker, so drive the age branch with
@@ -952,6 +963,7 @@ def _lease_heartbeats() -> set[threading.Thread]:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_lease_takes_over_a_dead_owners_marker_with_its_own_lease_record(  # pragma: win32 no cover
     tmp_path: Path,
 ) -> None:

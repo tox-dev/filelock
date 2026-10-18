@@ -535,10 +535,17 @@ def _dropped_instances_script() -> str:  # pragma: needs fd-directory
 def _descriptors_on(path: Path) -> int:  # pragma: needs fd-directory
     database: Final[os.stat_result] = path.stat()
     count = 0
-    for entry in (Path("/dev/fd") if Path("/dev/fd").is_dir() else Path("/proc/self/fd")).iterdir():
-        # The descriptor that listed the directory is already closed.
+    descriptor_ids: Final = (
+        range(os.sysconf("SC_OPEN_MAX"))
+        if sys.platform == "netbsd"
+        else (
+            int(entry.name)
+            for entry in (Path("/dev/fd") if Path("/dev/fd").is_dir() else Path("/proc/self/fd")).iterdir()
+        )
+    )
+    for descriptor_id in descriptor_ids:
         with contextlib.suppress(OSError):
-            descriptor: Final[os.stat_result] = os.fstat(int(entry.name))
+            descriptor: Final[os.stat_result] = os.fstat(descriptor_id)
             count += (descriptor.st_dev, descriptor.st_ino) == (database.st_dev, database.st_ino)
     return count
 
