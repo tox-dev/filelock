@@ -7,6 +7,12 @@
 .. towncrier release notes start
 
 *******************
+ 4.2.4 (2026-10-19)
+*******************
+
+- Keep GitHub Release notes free of extra blank lines while retaining the PyPI and version comparison links. :pr:`863`
+
+*******************
  4.2.3 (2026-10-19)
 *******************
 

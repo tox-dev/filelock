@@ -1,1 +1,0 @@
-Keep GitHub Release notes free of extra blank lines while retaining the PyPI and version comparison links.
