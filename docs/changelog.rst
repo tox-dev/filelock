@@ -7,6 +7,15 @@
 .. towncrier release notes start
 
 *******************
+ 4.2.3 (2026-10-19)
+*******************
+
+- Creating a lock on a Python 3.15 interpreter without ``types.LazyImportType`` no longer triggers ``AttributeError`` at
+  exit. :pr:`860`
+- Handle ``EFTYPE`` when a no-follow open refuses a symlink in a soft reader/writer lock's protocol tree, so heartbeat
+  reports lost ownership rather than a transient refresh error.
+
+*******************
  4.2.2 (2026-10-18)
 *******************
 

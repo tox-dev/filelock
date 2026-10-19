@@ -1,2 +1,0 @@
-Creating a lock on a Python 3.15 interpreter without ``types.LazyImportType`` no longer triggers ``AttributeError`` at
-exit.
