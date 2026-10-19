@@ -97,11 +97,11 @@ jobs:
           from pathlib import Path
 
           path = Path(sys.argv[1])
-          body = path.read_text()
+          body = path.read_text().strip()
           body = re.sub(r":user:`([^`]+)`", r"\1", body)
           body = re.sub(r":(?:pr|issue):`(\d+)`", r"#\1", body)
           body = re.sub(r":[a-z]+:`~?([^`]+)`", lambda match: f"`{match.group(1).split('.')[-1]}`", body)
-          path.write_text(body.replace("``", "`"))
+          path.write_text(body.replace("``", "`") + "\n")
           PY
           test -s "$RUNNER_TEMP/release-notes.md"
           printf '\n[PyPI release](https://pypi.org/project/filelock/%s/)\n' "$VERSION" >> "$RUNNER_TEMP/release-notes.md"
