@@ -2169,6 +2169,26 @@ def test_blocking_setter_rejects_non_bool(tmp_path: Path) -> None:
     assert lock.blocking is True
 
 
+@pytest.mark.parametrize(
+    "blocking", [pytest.param("no", id="str"), pytest.param("false", id="truthy-word"), pytest.param(0, id="int")]
+)
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_acquire_rejects_non_bool_blocking(lock_type: type[BaseFileLock], blocking: str | int, tmp_path: Path) -> None:
+    # The constructor and the setter reject it already; a string such as "false" is truthy, so accepting it here would
+    # silently turn a single attempt into a blocking wait with the instance's default timeout.
+    lock: Final = lock_type(tmp_path / "a")
+    with pytest.raises(TypeError, match="blocking must be a bool"):
+        lock.acquire(blocking=blocking)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+    assert (lock.lock_counter, lock.is_locked) == (0, False)
+
+
+def test_acquire_takes_none_blocking_from_the_instance(tmp_path: Path) -> None:
+    lock: Final = FileLock(tmp_path / "a", blocking=False)
+    with lock.acquire(blocking=None) as held:
+        assert held is lock
+    assert not lock.is_locked
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize("nan", _NANS)
 def test_non_blocking_acquire_ignores_nan_timeout(lock_type: type[BaseFileLock], nan: float, tmp_path: Path) -> None:
