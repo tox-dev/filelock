@@ -76,7 +76,7 @@ jobs:
           tag: ${{ github.ref_name }}
           changelog: docs/changelog.rst
           repository: ${{ github.repository }}
-          issue-role: pull
+          issue-role: issue
           artifact-url: https://pypi.org/project/filelock/${{ github.ref_name }}/
           generated-notes: ${{ runner.temp }}/generated-notes.md
           output: ${{ runner.temp }}/release-notes.md

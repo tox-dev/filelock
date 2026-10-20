@@ -471,7 +471,7 @@ jobs:
           git checkout -B release-validation "$base_sha"
           git merge --squash "$head_sha"
           mkdir -p docs/changelog
-          printf 'Verify a user-visible release fix.\n' > "docs/changelog/+validation-${pr_number}.bugfix.rst"
+          printf 'Verify a user-visible release fix for :issue:`31`.\n' > "docs/changelog/+validation-${pr_number}.bugfix.rst"
           git add -A
           git -c user.name=release-validation -c user.email=release-validation@users.noreply.github.com commit -m "Validate release pipeline (#${pr_number})"
           git init --bare "$RUNNER_TEMP/rehearsal.git"
@@ -522,7 +522,7 @@ jobs:
           tag: ${{ steps.prepare.outputs.version }}
           changelog: docs/changelog.rst
           repository: ${{ github.repository }}
-          issue-role: pull
+          issue-role: issue
           artifact-url: https://pypi.org/project/filelock/${{ steps.prepare.outputs.version }}/
           generated-notes: ${{ runner.temp }}/generated-notes.md
           output: ${{ runner.temp }}/release-notes.md
@@ -536,6 +536,7 @@ jobs:
           test "$(grep -c '^\*\*Full Changelog\*\*:' "$RUNNER_TEMP/release-notes.md")" -eq 1
           grep -Fq '### Bug fixes' "$RUNNER_TEMP/release-notes.md"
           grep -Fq "[#${PR_NUMBER}](https://github.com/${GITHUB_REPOSITORY}/pull/${PR_NUMBER})" "$RUNNER_TEMP/release-notes.md"
+          grep -Fq "[#31](https://github.com/${GITHUB_REPOSITORY}/issues/31)" "$RUNNER_TEMP/release-notes.md"
           if [[ "$PR_AUTHOR_TYPE" == Bot ]]; then
             if grep -Fq "by @${PR_AUTHOR}" "$RUNNER_TEMP/release-notes.md"; then
               echo '::error::bot credit in release notes'
