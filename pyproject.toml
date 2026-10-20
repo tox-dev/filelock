@@ -8,13 +8,12 @@ requires = [
 
 [project]
 name = "filelock"
+import-names = [ "filelock" ]
 description = "A platform independent file lock."
 keywords = [
-  "application",
-  "cache",
-  "directory",
-  "log",
-  "user",
+  "file",
+  "lock",
+  "synchronization",
 ]
 license = "MIT"
 maintainers = [
@@ -24,7 +23,6 @@ requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3 :: Only",
@@ -33,7 +31,6 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: 3.15",
-  "Topic :: Internet",
   "Topic :: Software Development :: Libraries",
   "Topic :: System",
 ]
@@ -41,10 +38,11 @@ dynamic = [
   "readme",
   "version",
 ]
+urls.Changelog = "https://py-filelock.readthedocs.io/en/latest/changelog.html"
 urls.Documentation = "https://py-filelock.readthedocs.io"
-urls.Homepage = "https://github.com/tox-dev/py-filelock"
-urls.Source = "https://github.com/tox-dev/py-filelock"
-urls.Tracker = "https://github.com/tox-dev/py-filelock/issues"
+urls.Homepage = "https://github.com/tox-dev/filelock"
+urls.Source = "https://github.com/tox-dev/filelock"
+urls.Tracker = "https://github.com/tox-dev/filelock/issues"
 
 [dependency-groups]
 dev = [
