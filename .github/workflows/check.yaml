@@ -391,37 +391,7 @@ jobs:
           uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
           uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
           echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
-      - name: Require or validate a changelog fragment
-        env:
-          SKIP_NEWS: ${{ contains(github.event.pull_request.labels.*.name, 'skip news') }}
-          BOT_AUTHOR: ${{ github.event.pull_request.user.type == 'Bot' }}
-        run: |
-          set -euo pipefail
-          fragments=0
-          while IFS= read -r path; do
-            name=${path##*/}
-            case "$name" in
-              +*.*.rst|[0-9]*.*.rst) ;;
-              *) continue ;;
-            esac
-            category=${name%.rst}
-            category=${category##*.}
-            case "$category" in
-              feature|change|bugfix|doc|breaking|security|performance|deprecation|removal|packaging) ;;
-              *) echo "::error::unknown changelog category in $path"; exit 1 ;;
-            esac
-            if [[ -z $(tr -d '[:space:]' < "$path") ]]; then
-              echo "::error::empty changelog fragment: $path"
-              exit 1
-            fi
-            fragments=$((fragments + 1))
-          done < <(git diff --diff-filter=AM --name-only "origin/${GITHUB_BASE_REF}...HEAD" -- 'docs/changelog/*.rst')
-          if ((fragments)); then
-            towncrier check --compare-with "origin/${GITHUB_BASE_REF}"
-          elif [[ "$SKIP_NEWS" != true && "$BOT_AUTHOR" != true ]]; then
-            echo '::error::add a changelog fragment or apply the skip news label'
-            exit 1
-          fi
+      - uses: tox-dev/github-workflows/validate-news@d5089c6f370857700c96a10c2711cee9112f4852
   release-dry-run:
     name: Release without publishing
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')

@@ -1,36 +1,17 @@
 name: Label maintenance PRs
 on:
-  workflow_run: # zizmor: ignore[dangerous-triggers] Reads PR metadata without checkout, artifacts, caches, or PR code.
-    workflows: ["🛠️ check"]
-    types: [completed]
-permissions:
-  contents: read
-  issues: write
-  pull-requests: read
+  pull_request_target: # zizmor: ignore[dangerous-triggers] This workflow reads PR metadata without checkout or PR code.
+    types: [opened, reopened, synchronize]
+permissions: {}
 jobs:
   label:
-    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.pull_requests[0] != null
     runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
     steps:
-      - name: Set news exception when no fragment exists
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
-        run: |
-          set -euo pipefail
-          author=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .user.login)
-          case "$author" in
-            'dependabot[bot]'|'pre-commit-ci[bot]'|'github-actions[bot]') ;;
-            *) exit 0 ;;
-          esac
-          has_fragment=false
-          while IFS= read -r path; do
-            case "$path" in
-              docs/changelog/*.rst) has_fragment=true; break ;;
-            esac
-          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')
-          if [[ "$has_fragment" == false ]]; then
-            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" -f 'labels[]=skip news' > /dev/null
-          elif gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --jq '.[].name' | grep -Fxq 'skip news'; then
-            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels/skip%20news" > /dev/null
-          fi
+      - uses: tox-dev/github-workflows/label-bot-news@d5089c6f370857700c96a10c2711cee9112f4852
+        with:
+          fragments: docs/changelog
+          extension: rst
