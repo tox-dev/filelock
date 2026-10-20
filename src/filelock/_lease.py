@@ -235,6 +235,16 @@ class SoftFileLease(MarkerSoftFileLock):
         self._claim.token = None
         super()._release()
 
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+        # The base reset gives the child an unheld context, but it cannot touch lease_claim (a _LeaseClaim lives here,
+        # not in the api layer), so the child would otherwise inherit the parent's live token, its last compromise and
+        # a heartbeat whose thread the child does not have. token/compromise would then report a claim the child never
+        # holds, and stopping that heartbeat would join a thread that is not there. Start the child from an unheld
+        # claim exactly as __init__ does: eager for a shared context so concurrent child threads share one, lazy for a
+        # thread-local one.
+        super()._reset_after_fork_in_child()
+        self._context.lease_claim = None if self.is_thread_local() else _LeaseClaim()
+
     def _published_record(self) -> OwnerRecord:
         return super()._published_record()._replace(token=self._claim.token, lease_duration=self._lease_duration)
 
