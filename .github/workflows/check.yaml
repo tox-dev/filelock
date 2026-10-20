@@ -414,7 +414,7 @@ jobs:
     with:
       changelog: docs/changelog.rst
       fragments: docs/changelog
-      format: none
+      format: rst
       heading-prefix: ""
       fixture-issue: "31"
       artifact-base-url: https://pypi.org/project/filelock/

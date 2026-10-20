@@ -115,9 +115,9 @@ wheels = [
 
 [[packages]]
 name = "release-creator"
-version = "0.4.2.dev6+gff36c3565"
+version = "0.4.2.dev11+gb710d0913"
 marker = "python_full_version >= '3.15'"
-vcs = { type = "git", url = "https://github.com/tox-dev/release-creator", requested-revision = "ff36c3565032fb15240f11d793c9ca6040d49561", commit-id = "ff36c3565032fb15240f11d793c9ca6040d49561" }
+vcs = { type = "git", url = "https://github.com/tox-dev/release-creator", requested-revision = "b710d0913a8da770551efaf93c763432c01bec3d", commit-id = "b710d0913a8da770551efaf93c763432c01bec3d" }
 
 [[packages]]
 name = "towncrier"
