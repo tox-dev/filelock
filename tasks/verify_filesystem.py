@@ -33,7 +33,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Final
 
-from filelock import FileLock, SoftFileLock, StrictSoftFileLock
+from filelock import FileLock, SoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -115,6 +115,11 @@ def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str |
     intervals: list[tuple[float, float]] = []
     for _ in range(_HOLDS):
         if (reason := _resiliently(lambda: lock.acquire(timeout=_ACQUIRE_TIMEOUT))) is not None:
+            if isinstance(lock, StrictSoftFileLock):
+                try:
+                    reason = f"{reason}; claims={[(claim.state, claim.pid, claim.name) for claim in lock.claims]}"
+                except SoftFileLockProtocolError as error:
+                    reason = f"{reason}; claims unavailable: {error}"
             return intervals, reason
         enter = time.monotonic()
         # Hold briefly so a broken lock lets a second holder in during an observable window; a correct lock serializes
