@@ -680,8 +680,8 @@ visibility to every participating process. The table records where that has been
    * - NFS (v4 and v3)
      - Verified in CI
      - Mount every client that uses :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` with ``noac`` and
-       ``lookupcache=none``. With default caching, a client can still read a held or intent claim after the server
-       removes it, then time out waiting for a free lock. CI mounts one loopback export twice, with ``nosharecache``
+       ``lookupcache=none``. NFS can still serve a removed held or intent claim from a client cache; strict acquisition
+       checks its existence on the server before waiting. CI mounts one loopback export twice, with ``nosharecache``
        on the second mount, and requires every hold to finish without overlap on NFSv4 and NFSv3 (retrying transient
        ``ESTALE`` during NFSv3 claim churn). The other locks are unsafe or unreliable there: native ``flock`` does
        **not** exclude across NFS client caches, and the poll-based :class:`SoftFileLock <filelock.SoftFileLock>` can
