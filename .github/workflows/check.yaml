@@ -585,7 +585,7 @@ jobs:
   shared-release-dry-run:
     name: Shared release validation
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
-    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@56f832af95dfba2f283266ec0d8f1100d1e01950
+    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@be1ec2cc87824c16519329b292d8f1dfdee647f9
     permissions:
       contents: read
       pull-requests: read
