@@ -935,8 +935,9 @@ def test_heartbeat_with_the_tree_swapped_for_a_symlink_is_lost(  # pragma: needs
 )
 @pytest.mark.requires_hard_links
 @pytest.mark.parametrize("component", ["root", "holders"])
-def test_heartbeat_with_a_symlink_refused_by_eftype_is_lost(  # pragma: needs link-dir-fd
-    lock_file: str, files: OsFiles, root: str, tmp_path: Path, mocker: MockerFixture, component: str
+@pytest.mark.parametrize("refusal", ["EFTYPE", "EMLINK"])
+def test_heartbeat_with_a_symlink_refused_by_platform_errno_is_lost(  # pragma: needs link-dir-fd
+    lock_file: str, files: OsFiles, root: str, tmp_path: Path, mocker: MockerFixture, component: str, refusal: str
 ) -> None:
     writer = _participant(files, lock_file, "write")
     writer.publish()
@@ -947,24 +948,25 @@ def test_heartbeat_with_a_symlink_refused_by_eftype_is_lost(  # pragma: needs li
     target.mkdir()
     eftype = getattr(errno, "EFTYPE", 79)
     mocker.patch.object(errno, "EFTYPE", eftype, create=True)
+    refusal_errno = getattr(errno, refusal)
     real_open = os.open
     refusals: list[tuple[int, int | None]] = []
 
-    def netbsd_open(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+    def platform_open(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         try:
             return real_open(path, flags, mode, dir_fd=dir_fd)
         except OSError as error:
-            # NetBSD uses EFTYPE for O_NOFOLLOW; keep the real traversal and translate only its symlink refusal.
+            # NetBSD uses EFTYPE and FreeBSD uses EMLINK; translate only the real symlink refusal.
             refusals.append((flags, error.errno))
-            raise OSError(eftype, "Inappropriate file type or format", path) from error
+            raise OSError(refusal_errno, os.strerror(refusal_errno), path) from error
 
-    mocker.patch.object(os, "open", side_effect=netbsd_open)
+    mocker.patch.object(os, "open", side_effect=platform_open)
 
     assert (writer.heartbeat(), list(target.iterdir())) == (("lost", None), [])
     assert len(refusals) == 1
     flags, native_errno = refusals[0]
     assert flags & getattr(os, "O_NOFOLLOW", 0)
-    assert native_errno in {errno.ELOOP, errno.ENOTDIR, eftype}
+    assert native_errno in {errno.ELOOP, errno.ENOTDIR, errno.EMLINK, eftype}
 
 
 @pytest.mark.requires_hard_links
