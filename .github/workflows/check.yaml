@@ -375,33 +375,210 @@ jobs:
         run: docker compose run --rm termux
   changelog:
     name: "📝 News fragment"
-    runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip news')
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.15"
           enable-cache: false
-      - name: "📝 Require a news fragment"
-        run: uvx towncrier check --compare-with "origin/${GITHUB_BASE_REF}"
+      - name: Install locked release tools
+        run: |
+          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
+          echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
+      - name: Require or validate a changelog fragment
+        env:
+          SKIP_NEWS: ${{ contains(github.event.pull_request.labels.*.name, 'skip news') }}
+          BOT_AUTHOR: ${{ github.event.pull_request.user.type == 'Bot' }}
+        run: |
+          set -euo pipefail
+          fragments=0
+          while IFS= read -r path; do
+            name=${path##*/}
+            case "$name" in
+              +*.*.rst|[0-9]*.*.rst) ;;
+              *) continue ;;
+            esac
+            category=${name%.rst}
+            category=${category##*.}
+            case "$category" in
+              feature|change|bugfix|doc|breaking|security|performance|deprecation|removal|packaging) ;;
+              *) echo "::error::unknown changelog category in $path"; exit 1 ;;
+            esac
+            if [[ -z $(tr -d '[:space:]' < "$path") ]]; then
+              echo "::error::empty changelog fragment: $path"
+              exit 1
+            fi
+            fragments=$((fragments + 1))
+          done < <(git diff --diff-filter=AM --name-only "origin/${GITHUB_BASE_REF}...HEAD" -- 'docs/changelog/*.rst')
+          if ((fragments)); then
+            towncrier check --compare-with "origin/${GITHUB_BASE_REF}"
+          elif [[ "$SKIP_NEWS" != true && "$BOT_AUTHOR" != true ]]; then
+            echo '::error::add a changelog fragment or apply the skip news label'
+            exit 1
+          fi
+  release-dry-run:
+    name: Release without publishing
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install locked release tools
+        run: |
+          set -euo pipefail
+          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
+          uv pip sync \
+            --preview-features pylock \
+            --python "$RUNNER_TEMP/release-tools/bin/python" \
+            --group release \
+            pylock.toml
+          echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
+      - id: fixture
+        name: Create a local release candidate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          base_sha=${BASE_SHA:-$(git rev-parse origin/main)}
+          head_sha=${HEAD_SHA:-$GITHUB_SHA}
+          pr_number=$PR_NUMBER
+          if [[ -z "$pr_number" ]]; then
+            pr_number=$(gh pr list --head "$GITHUB_REF_NAME" --base main --state open --json number --jq '.[0].number')
+            if [[ -z "$pr_number" ]]; then
+              echo "::error::no open pull request for $GITHUB_REF_NAME"
+              exit 1
+            fi
+          fi
+          git checkout -B release-validation "$base_sha"
+          git merge --squash "$head_sha"
+          mkdir -p docs/changelog
+          printf 'Verify a user-visible release fix.\n' > "docs/changelog/+validation-${pr_number}.bugfix.rst"
+          git add -A
+          git -c user.name=release-validation -c user.email=release-validation@users.noreply.github.com commit -m "Validate release pipeline (#${pr_number})"
+          git init --bare "$RUNNER_TEMP/rehearsal.git"
+          git remote add rehearsal "$RUNNER_TEMP/rehearsal.git"
+          git push rehearsal HEAD:main
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "pr=$pr_number"
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number" \
+              --jq '"author=\(.user.login)\nauthor_type=\(.user.type)"'
+          } >> "$GITHUB_OUTPUT"
+      - id: prepare
+        uses: tox-dev/github-workflows/prepare-towncrier@662d014f87340ee1cb9d55ba27421abd35a34524
+        with:
+          changelog: docs/changelog.rst
+          fragments: docs/changelog
+          format: none
+          patch: ${{ runner.temp }}/release.patch
+      - name: Restore release candidate
+        run: git reset --hard HEAD
+      - uses: tox-dev/github-workflows/validate-release-patch@662d014f87340ee1cb9d55ba27421abd35a34524
+        with:
+          version: ${{ steps.prepare.outputs.version }}
+          patch: ${{ runner.temp }}/release.patch
+          changelog: docs/changelog.rst
+          fragments: docs/changelog
+          remote: rehearsal
+          expected-sha: ${{ steps.fixture.outputs.sha }}
+          heading-prefix: ""
+      - name: Commit and tag the local candidate
+        env:
+          VERSION: ${{ steps.prepare.outputs.version }}
+        run: |
+          git -c user.name=release-validation -c user.email=release-validation@users.noreply.github.com commit -m "release $VERSION"
+          git tag "$VERSION"
+      - uses: tox-dev/github-workflows/build-python-distribution@662d014f87340ee1cb9d55ba27421abd35a34524
+        with:
+          out-dir: ${{ runner.temp }}/dist
+      - name: Prepare generated notes fixture
+        env:
+          PR_NUMBER: ${{ steps.fixture.outputs.pr }}
+          PR_AUTHOR: ${{ steps.fixture.outputs.author }}
+        run: |
+          printf '* Validate release pipeline by @%s in https://github.com/%s/pull/%s\n' \
+            "$PR_AUTHOR" "$GITHUB_REPOSITORY" "$PR_NUMBER" >"$RUNNER_TEMP/generated-notes.md"
+      - uses: tox-dev/github-workflows/render-release-notes@662d014f87340ee1cb9d55ba27421abd35a34524
+        with:
+          tag: ${{ steps.prepare.outputs.version }}
+          changelog: docs/changelog.rst
+          repository: ${{ github.repository }}
+          issue-role: pull
+          artifact-url: https://pypi.org/project/filelock/${{ steps.prepare.outputs.version }}/
+          generated-notes: ${{ runner.temp }}/generated-notes.md
+          output: ${{ runner.temp }}/release-notes.md
+      - name: Inspect the rendered notes and artifacts
+        env:
+          PR_NUMBER: ${{ steps.fixture.outputs.pr }}
+          PR_AUTHOR: ${{ steps.fixture.outputs.author }}
+          PR_AUTHOR_TYPE: ${{ steps.fixture.outputs.author_type }}
+        run: |
+          set -euo pipefail
+          test "$(grep -c '^\*\*Full Changelog\*\*:' "$RUNNER_TEMP/release-notes.md")" -eq 1
+          grep -Fq '### Bug fixes' "$RUNNER_TEMP/release-notes.md"
+          grep -Fq "[#${PR_NUMBER}](https://github.com/${GITHUB_REPOSITORY}/pull/${PR_NUMBER})" "$RUNNER_TEMP/release-notes.md"
+          if [[ "$PR_AUTHOR_TYPE" == Bot ]]; then
+            if grep -Fq "by @${PR_AUTHOR}" "$RUNNER_TEMP/release-notes.md"; then
+              echo '::error::bot credit in release notes'
+              exit 1
+            fi
+          else
+            grep -Fq "by @${PR_AUTHOR}" "$RUNNER_TEMP/release-notes.md"
+          fi
+          if grep -Fq '<!-- Release notes generated' "$RUNNER_TEMP/release-notes.md"; then
+            echo '::error::generated-notes banner in release notes'
+            exit 1
+          fi
+          sha256sum "$RUNNER_TEMP"/dist/* >"$RUNNER_TEMP/dist.sha256"
+          cp docs/changelog.rst "$RUNNER_TEMP/changelog.rst"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dry-run
+          path: |
+            ${{ runner.temp }}/release.patch
+            ${{ runner.temp }}/release-notes.md
+            ${{ runner.temp }}/generated-notes.md
+            ${{ runner.temp }}/changelog.rst
+            ${{ runner.temp }}/dist.sha256
+            ${{ runner.temp }}/dist/*
+          if-no-files-found: error
   gate:
     name: "✅ Required checks pass"
     if: always()
-    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux, changelog]
+    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux, changelog, release-dry-run]
     runs-on: ubuntu-24.04
     steps:
       - env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
         run: |
-          jq -e '
+          jq -e --arg event "$EVENT_NAME" --arg ref "$REF" '
             all(
               to_entries[];
               .value.result == "success" or
-              ((.key == "graalpy" or .key == "changelog") and .value.result == "skipped")
+              (.key == "graalpy" and .value.result == "skipped") or
+              (.key == "changelog" and .value.result == "skipped" and $event != "pull_request") or
+              (.key == "release-dry-run" and .value.result == "skipped" and
+                ($event != "pull_request" and ($event != "workflow_dispatch" or $ref == "refs/heads/main")))
             )
           ' <<< "$NEEDS_JSON"

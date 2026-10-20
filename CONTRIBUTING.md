@@ -24,6 +24,39 @@ This page lists the steps needed to set up a development environment and contrib
    tox -e fix
    ```
 
+## Release notes
+
+Add a `docs/changelog/+short-name.<type>.rst` fragment for each change that affects library users. The name describes
+the change; it does not need an issue or pull request number. The release workflow links the fragment to its merged
+squash pull request and adds the verified human author. Pending fragments appear under Unreleased in documentation
+builds. They enter `docs/changelog.rst` only when a release is prepared.
+
+| Type          | Section          | Use for                                                    |
+| ------------- | ---------------- | ---------------------------------------------------------- |
+| `feature`     | Added            | New capabilities and Python support additions or removals  |
+| `change`      | Changes          | Changed behavior that remains available                    |
+| `bugfix`      | Fixed            | Corrected behavior                                         |
+| `doc`         | Documentation    | Documentation changes users need to know about             |
+| `breaking`    | Breaking changes | Changes that require users to update code or configuration |
+| `security`    | Security         | Security fixes users need to act on                        |
+| `performance` | Performance      | User-visible speed or resource improvements                |
+| `deprecation` | Deprecated       | Supported behavior scheduled for removal                   |
+| `removal`     | Removed          | Removed user-facing capabilities other than Python support |
+| `packaging`   | Packaging        | Install, wheel, or distribution changes                    |
+
+Apply `skip news` to a pull request with no user-facing change, including maintenance work. The label may be applied
+after the pull request opens. Dependabot, pre-commit.ci, and repository automation receive it when they supply no
+fragment. A bot pull request gets no release entry unless it supplies one.
+
+For a change by several people, put all human authors in one phrase:
+
+```rst
+by :user:`alice`, :user:`bob`, and :user:`carol`
+```
+
+Do not credit bots or reviewers. Existing historical entries can use Other changes when their original category cannot
+be established; new fragments use a specific category.
+
 ## Coverage
 
 Every environment in the matrix must reach 100%, and so must the combined report. Name the capability a line needs
