@@ -582,10 +582,24 @@ jobs:
             ${{ runner.temp }}/multiple-author-notes.md
             ${{ runner.temp }}/dist/*
           if-no-files-found: error
+  shared-release-dry-run:
+    name: Shared release validation
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
+    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@56f832af95dfba2f283266ec0d8f1100d1e01950
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      changelog: docs/changelog.rst
+      fragments: docs/changelog
+      format: none
+      heading-prefix: ""
+      artifact-base-url: https://pypi.org/project/filelock/
+      artifact-prefix: shared-
   gate:
     name: "✅ Required checks pass"
     if: always()
-    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux, changelog, release-dry-run]
+    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux, changelog, release-dry-run, shared-release-dry-run]
     runs-on: ubuntu-24.04
     steps:
       - env:
@@ -600,6 +614,8 @@ jobs:
               (.key == "graalpy" and .value.result == "skipped") or
               (.key == "changelog" and .value.result == "skipped" and $event != "pull_request") or
               (.key == "release-dry-run" and .value.result == "skipped" and
+                ($event != "pull_request" and ($event != "workflow_dispatch" or $ref == "refs/heads/main"))) or
+              (.key == "shared-release-dry-run" and .value.result == "skipped" and
                 ($event != "pull_request" and ($event != "workflow_dispatch" or $ref == "refs/heads/main")))
             )
           ' <<< "$NEEDS_JSON"
