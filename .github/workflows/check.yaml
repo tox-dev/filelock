@@ -570,7 +570,9 @@ jobs:
     if: github.event_name == 'pull_request'
     uses: tox-dev/github-workflows/.github/workflows/upgrade-release-tools.yaml@d5089c6f370857700c96a10c2711cee9112f4852
     permissions:
-      contents: read
+      actions: write
+      contents: write
+      pull-requests: write
     with:
       groups: release
       python-version: "3.15"
