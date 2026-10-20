@@ -230,7 +230,8 @@ class SoftFileLock(BaseFileLock):
     def _stranded_candidates(self, breaker_pid: int) -> list[tuple[str, bool]] | None:  # pragma: win32 no cover
         directory, name = os.path.split(self._lock_path)
         stranded: Final = re.compile(rf"{re.escape(name)}\.break\.{breaker_pid}\.[0-9a-f]{{32}}")
-        claimed: Final = re.compile(rf"{re.escape(name)}\.restore\.(\d+)\.[0-9a-f]{{32}}")
+        # [0-9], not \d: a str pattern's \d takes any Unicode digit, and int() reads fullwidth ones as another number.
+        claimed: Final = re.compile(rf"{re.escape(name)}\.restore\.([0-9]+)\.[0-9a-f]{{32}}")
         candidates: list[tuple[str, bool]] = []
         with os.scandir(directory or os.curdir) as entries:
             for entry in entries:
@@ -239,9 +240,10 @@ class SoftFileLock(BaseFileLock):
                 path = str(Path(directory) / entry.name)
                 if stranded.fullmatch(entry.name):
                     candidates.append((path, False))
-                elif found := claimed.fullmatch(entry.name):
-                    ours = int(found[1]) == os.getpid()
-                    if not (ours or owner_is_stale(int(found[1]), host_name(), None)):
+                elif (found := claimed.fullmatch(entry.name)) and 1 <= (recoverer := int(found[1])) <= 2**31 - 1:
+                    # No filelock writes a claim outside the pid range; os.kill would raise OverflowError on one.
+                    ours = recoverer == os.getpid()
+                    if not (ours or owner_is_stale(recoverer, host_name(), None)):
                         return None
                     candidates.append((path, ours))
         return sorted(candidates)
