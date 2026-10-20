@@ -391,7 +391,7 @@ jobs:
           uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
           uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
           echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
-      - uses: tox-dev/github-workflows/validate-news@d5089c6f370857700c96a10c2711cee9112f4852
+      - uses: tox-dev/github-workflows/validate-news@cc2680df515077c14581299f9c9f44c67481c139
   release-dry-run:
     name: Release without publishing
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
@@ -473,7 +473,7 @@ jobs:
               --jq '"author=\(.user.login)\nauthor_type=\(.user.type)"'
           } >> "$GITHUB_OUTPUT"
       - id: prepare
-        uses: tox-dev/github-workflows/prepare-towncrier@662d014f87340ee1cb9d55ba27421abd35a34524
+        uses: tox-dev/github-workflows/prepare-towncrier@cc2680df515077c14581299f9c9f44c67481c139
         with:
           changelog: docs/changelog.rst
           fragments: docs/changelog
@@ -481,7 +481,7 @@ jobs:
           patch: ${{ runner.temp }}/release.patch
       - name: Restore release candidate
         run: git reset --hard HEAD
-      - uses: tox-dev/github-workflows/validate-release-patch@662d014f87340ee1cb9d55ba27421abd35a34524
+      - uses: tox-dev/github-workflows/validate-release-patch@cc2680df515077c14581299f9c9f44c67481c139
         with:
           version: ${{ steps.prepare.outputs.version }}
           patch: ${{ runner.temp }}/release.patch
@@ -496,7 +496,7 @@ jobs:
         run: |
           git -c user.name=release-validation -c user.email=release-validation@users.noreply.github.com commit -m "release $VERSION"
           git tag "$VERSION"
-      - uses: tox-dev/github-workflows/build-python-distribution@662d014f87340ee1cb9d55ba27421abd35a34524
+      - uses: tox-dev/github-workflows/build-python-distribution@cc2680df515077c14581299f9c9f44c67481c139
         with:
           out-dir: ${{ runner.temp }}/dist
       - name: Prepare generated notes fixture
@@ -506,7 +506,7 @@ jobs:
         run: |
           printf '* Validate release pipeline by @%s in https://github.com/%s/pull/%s\n' \
             "$PR_AUTHOR" "$GITHUB_REPOSITORY" "$PR_NUMBER" >"$RUNNER_TEMP/generated-notes.md"
-      - uses: tox-dev/github-workflows/render-release-notes@662d014f87340ee1cb9d55ba27421abd35a34524
+      - uses: tox-dev/github-workflows/render-release-notes@cc2680df515077c14581299f9c9f44c67481c139
         with:
           tag: ${{ steps.prepare.outputs.version }}
           changelog: docs/changelog.rst
@@ -555,7 +555,7 @@ jobs:
   shared-release-dry-run:
     name: Shared release validation
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
-    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@be1ec2cc87824c16519329b292d8f1dfdee647f9
+    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@cc2680df515077c14581299f9c9f44c67481c139
     permissions:
       contents: read
       pull-requests: read
@@ -564,6 +564,7 @@ jobs:
       fragments: docs/changelog
       format: none
       heading-prefix: ""
+      fixture-issue: "31"
       artifact-base-url: https://pypi.org/project/filelock/
       artifact-prefix: shared-
   release-tools-preview:
@@ -580,7 +581,7 @@ jobs:
         with:
           python-version: "3.15"
           enable-cache: false
-      - uses: tox-dev/github-workflows/refresh-release-lock@d1ba52bb2e519f31fdbee09fc828980a0d5b3536
+      - uses: tox-dev/github-workflows/refresh-release-lock@cc2680df515077c14581299f9c9f44c67481c139
         with:
           groups: release
           python-version: "3.15"
