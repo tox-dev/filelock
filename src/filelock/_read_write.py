@@ -473,7 +473,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     """
 
-    _instances: WeakValueDictionary[pathlib.Path, ReadWriteLock] = WeakValueDictionary()
+    _instances: ClassVar[WeakValueDictionary[pathlib.Path, ReadWriteLock]] = WeakValueDictionary()
     _instances_lock = threading.RLock()
     _instances_pid = _GETPID()
     _instances_under_construction: ClassVar[set[pathlib.Path]] = set()
