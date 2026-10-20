@@ -8,130 +8,18 @@ concurrency:
   group: upgrade-release-tools
   cancel-in-progress: false
 jobs:
-  generate:
-    runs-on: ubuntu-26.04
-    permissions:
-      contents: read
-    outputs:
-      changed: ${{ steps.lock.outputs.changed }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          python-version: "3.15"
-          enable-cache: false
-      - name: Refresh release tool lock
-        run: |
-          set -euo pipefail
-          uv pip compile \
-            --preview-features pylock \
-            --group pyproject.toml:release \
-            --universal \
-            --python-version 3.15 \
-            --generate-hashes \
-            --upgrade \
-            --output-file pylock.toml
-      - name: Run prek with the refreshed tools
-        run: |
-          set -euo pipefail
-          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
-          uv pip sync \
-            --preview-features pylock \
-            --python "$RUNNER_TEMP/release-tools/bin/python" \
-            --group release \
-            pylock.toml
-          "$RUNNER_TEMP/release-tools/bin/prek" run --all-files
-          unexpected=$(
-            while IFS= read -r entry; do
-              path=${entry:3}
-              if [[ "$path" != pylock.toml ]]; then
-                printf '%s\n' "$path"
-              fi
-            done < <(git status --porcelain=v1 --untracked-files=all)
-          )
-          if [[ -n "$unexpected" ]]; then
-            echo "::error::prek changed files outside pylock.toml"
-            echo "$unexpected"
-            exit 1
-          fi
-      - id: lock
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- pylock.toml; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          git diff --binary -- pylock.toml > "$RUNNER_TEMP/lock.patch"
-          test -s "$RUNNER_TEMP/lock.patch"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: steps.lock.outputs.changed == 'true'
-        with:
-          name: release-tools-lock
-          path: ${{ runner.temp }}/lock.patch
-          if-no-files-found: error
-          retention-days: 1
-  publish:
-    needs: generate
-    if: needs.generate.outputs.changed == 'true' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-26.04
+  upgrade:
+    uses: tox-dev/github-workflows/.github/workflows/upgrade-release-tools.yaml@d5089c6f370857700c96a10c2711cee9112f4852
     permissions:
       actions: write
       contents: write
       pull-requests: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-tools-lock
-          path: ${{ runner.temp }}/release-tools-lock
-      - name: Validate and apply lock patch
-        run: |
-          set -euo pipefail
-          git apply --check "$RUNNER_TEMP/release-tools-lock/lock.patch"
-          git apply --index "$RUNNER_TEMP/release-tools-lock/lock.patch"
-          paths=$(git diff --cached --name-only)
-          if [[ "$paths" != pylock.toml ]]; then
-            echo "::error::unexpected lock paths: $paths"
-            exit 1
-          fi
-          git diff --cached --check
-      - name: Open or update dependency pull request
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BRANCH: automation/update-release-tools
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "build(deps): refresh release lock"
-          gh auth setup-git --hostname github.com --force
-          git push --force origin "HEAD:$BRANCH"
-          cat > "$RUNNER_TEMP/pull-request.md" <<'EOF'
-          Refresh the locked release tools to the latest versions allowed by the `release` dependency group.
-          `pylock.toml` records the exact versions used by release and changelog workflows.
-          EOF
-          pr_number=$(gh pr list --base main --head "$BRANCH" --state open --json number --jq '.[0].number')
-          if [[ -n "$pr_number" ]]; then
-            gh pr edit "$pr_number" \
-              --title "build(deps): refresh release tool lock" \
-              --body-file "$RUNNER_TEMP/pull-request.md" \
-              --add-label dependencies \
-              --add-label "skip news"
-          else
-            gh pr create \
-              --base main \
-              --head "$BRANCH" \
-              --title "build(deps): refresh release tool lock" \
-              --body-file "$RUNNER_TEMP/pull-request.md" \
-              --label dependencies \
-              --label "skip news"
-          fi
-          gh workflow run check.yaml --ref "$BRANCH"
+    with:
+      groups: release
+      python-version: "3.15"
+      check-workflow: check.yaml
+      commit-message: "build(deps): refresh release lock"
+      pull-request-title: "build(deps): refresh release tool lock"
+      pull-request-body: |-
+        Refresh the locked release tools to the latest versions allowed by the `release` dependency group.
+        `pylock.toml` records the exact versions used by release and changelog workflows.
