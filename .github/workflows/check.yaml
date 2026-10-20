@@ -449,6 +449,25 @@ jobs:
             --group release \
             pylock.toml
           echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
+      - name: Check historical multiple-author notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/tox-dev/filelock/pulls/213 --jq .user.login)" = jahrules
+          for author in jahrules gaborbernat; do
+            test "$(gh api "users/$author" --jq .type)" = User
+          done
+          release-creator notes \
+            --changelog docs/changelog.rst \
+            --tag 3.10.6 \
+            --repository tox-dev/filelock \
+            --previous 3.10.5 \
+            --issue-role pull > "$RUNNER_TEMP/multiple-author-notes.md"
+          grep -Fq '[#213](https://github.com/tox-dev/filelock/pull/213) by @jahrules and @gaborbernat.' \
+            "$RUNNER_TEMP/multiple-author-notes.md"
+          test "$(grep -oF 'https://github.com/tox-dev/filelock/pull/213' \
+            "$RUNNER_TEMP/multiple-author-notes.md" | wc -l)" -eq 1
       - id: fixture
         name: Create a local release candidate
         env:
@@ -560,6 +579,7 @@ jobs:
             ${{ runner.temp }}/generated-notes.md
             ${{ runner.temp }}/changelog.rst
             ${{ runner.temp }}/dist.sha256
+            ${{ runner.temp }}/multiple-author-notes.md
             ${{ runner.temp }}/dist/*
           if-no-files-found: error
   gate:
