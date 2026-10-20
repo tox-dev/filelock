@@ -98,7 +98,7 @@ pkg-meta = [
 ]
 release = [
   "prek>=0.5",
-  "release-creator @ git+https://github.com/tox-dev/release-creator@d48fb3c91b9c41d320c403f65ddedf5cd0384cea",
+  "release-creator @ git+https://github.com/tox-dev/release-creator@ff36c3565032fb15240f11d793c9ca6040d49561",
   "towncrier>=26.9",
 ]
 
