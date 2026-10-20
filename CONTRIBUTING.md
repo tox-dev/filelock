@@ -54,8 +54,7 @@ For a change by several people, put all human authors in one phrase:
 by :user:`alice`, :user:`bob`, and :user:`carol`
 ```
 
-Do not credit bots or reviewers. Existing historical entries can use Other changes when their original category cannot
-be established; new fragments use a specific category.
+Do not credit bots or reviewers.
 
 ## Coverage
 
