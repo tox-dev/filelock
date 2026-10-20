@@ -11,7 +11,7 @@ jobs:
       issues: write
       pull-requests: read
     steps:
-      - uses: tox-dev/github-workflows/label-bot-news@7d9f41c5731fe4484d12dc91779cb17705405e92
+      - uses: tox-dev/github-workflows/label-bot-news@5e8bf7d128a11823fb168415f22e3a9fac1614c8
         with:
           fragments: docs/changelog
           extension: rst
