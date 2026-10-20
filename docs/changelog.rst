@@ -1779,7 +1779,8 @@ Fixed
 Fixed
 -----
 
-- Enhance the robustness of the try/catch block in _soft.py. by :user:`jahrules`.
+- Raise unexpected file-opening errors from :class:`~filelock.SoftFileLock` instead of repeatedly waiting for a lock that
+  cannot be acquired. :pr:`213` - by :user:`jahrules` and :user:`gaborbernat`.
 
 .. _release-3-10-5:
 
@@ -1792,7 +1793,8 @@ Fixed
 Added
 -----
 
-- Add explicit error check as certain UNIX filesystems do not support flock. by :user:`jahrules`.
+- Raise :class:`NotImplementedError` when a Unix filesystem does not support ``flock`` instead of waiting indefinitely.
+  :pr:`212` - by :user:`jahrules`.
 
 .. _release-3-10-4:
 
@@ -1805,7 +1807,8 @@ Added
 Fixed
 -----
 
-- Update os.open to preserve mode= for certain edge cases. by :user:`jahrules`.
+- Apply the requested file mode when creating a Unix lock file, including when the file cannot later be changed with
+  ``chmod``. :pr:`211` - by :user:`jahrules`.
 
 .. _release-3-10-3:
 
@@ -2159,23 +2162,24 @@ Documentation
 Fixed
 -----
 
-- Fix python2 setup error
+- Fix package setup on Python 2 - by Benedikt Schmitt.
 
 .. _release-3-0-12-documentation:
 
 Documentation
 -------------
 
-- Fix documentation thanks to :user:`AnkurTank` :issue:`49`
+- Correct the timeout documentation: zero means no wait, while a negative value waits indefinitely.
+  :issue:`49` - by Benedikt Schmitt; reported by :user:`AnkurTank`.
 
 .. _release-3-0-12-packaging:
 
 Packaging
 ---------
 
-- Fix setuptools and twine/warehouse error by making the license only 1 line long
+- Fix package upload to PyPI by keeping the license summary on one line - by Benedikt Schmitt.
 
-- Update Trove classifiers for PyPI
+- Update the published PyPI classifiers - by :user:`hugovk`.
 
 .. _release-3-0-10:
 
@@ -2188,27 +2192,13 @@ Packaging
 Documentation
 -------------
 
-- Fix README rendering on PyPI
+- Fix README rendering on PyPI - by :user:`adamchainz`.
 
 .. _release-3-0-9:
 
 *********************
  v3.0.9 (2018-10-02)
 *********************
-
-.. _release-3-0-9-documentation:
-
-Documentation
--------------
-
-- Update docs config for older sphinx compatibility
-
-.. _release-3-0-9-packaging:
-
-Packaging
----------
-
-- Remove misleading shebang from module
 
 .. _release-3-0-8:
 
@@ -2221,7 +2211,7 @@ Packaging
 Fixed
 -----
 
-- Fix garbage collection (:issue:`37`)
+- Fix a memory leak when acquiring locks on Python 2. :issue:`37` - by Benedikt Schmitt.
 
 .. _release-3-0-6:
 
@@ -2229,25 +2219,11 @@ Fixed
  v3.0.6 (2018-08-22)
 *********************
 
-.. _release-3-0-6-documentation:
-
-Documentation
--------------
-
-- Corrected the prequel reference
-
 .. _release-3-0-4:
 
 *********************
  v3.0.4 (2018-02-01)
 *********************
-
-.. _release-3-0-4-documentation:
-
-Documentation
--------------
-
-- Update README
 
 .. _release-3-0-3:
 
@@ -2260,7 +2236,7 @@ Documentation
 Documentation
 -------------
 
-- Update readme
+- Render the animated README example through a raw image URL on PyPI - by Benedikt Schmitt.
 
 .. _release-3-0-2:
 
@@ -2273,16 +2249,16 @@ Documentation
 Fixed
 -----
 
-- Keep the Unix lock file after release to avoid a race with another process. :issue:`31`
+- Keep the Unix lock file after release to avoid a race between processes. :issue:`31` - by Benedikt Schmitt.
 
 .. _release-3-0-2-documentation:
 
 Documentation
 -------------
 
-- Update README (added navigation)
+- Add navigation to the README - by Benedikt Schmitt.
 
-- Update documentation :issue:`22`
+- Clarify when to use a separate lock file in the documentation. :issue:`22` - by Benedikt Schmitt.
 
 .. _release-3-0-0:
 
@@ -2295,14 +2271,14 @@ Documentation
 Changes
 -------
 
-- Attempting to clean up lock file on Unix after :meth:`~filelock.BaseFileLock.release`
+- Remove the Unix lock file after :meth:`~filelock.BaseFileLock.release` - by :user:`spokorski`.
 
 .. _release-3-0-0-fixed:
 
 Fixed
 -----
 
-- Fix use proper Python3 ``reraise`` method
+- Reraise lock errors correctly on Python 3 - by Benedikt Schmitt.
 
 .. _release-2-0-13:
 
@@ -2315,7 +2291,7 @@ Fixed
 Fixed
 -----
 
-- Change The logger is now acquired when first needed. :issue:`24`
+- Acquire the logger only when first needed. :issue:`24` - by Benedikt Schmitt.
 
 .. _release-2-0-12:
 
@@ -2334,20 +2310,13 @@ Fixed
 Added
 -----
 
-- Add official support for python 2 :issue:`20`
+- Add official Python 2 support. :issue:`20` - by Benedikt Schmitt.
 
 .. _release-2-0-10:
 
 **********************
  v2.0.10 (2017-06-07)
 **********************
-
-.. _release-2-0-10-documentation:
-
-Documentation
--------------
-
-- Update readme
 
 .. _release-2-0-9:
 
@@ -2369,9 +2338,9 @@ Fixed
 Documentation
 -------------
 
-- Update readme :issue:`19`
+- Explain why the protected file needs a separate lock path. :issue:`19` - by Benedikt Schmitt.
 
-- Update readthedocs url
+- Correct the Read the Docs URL - by Benedikt Schmitt.
 
 .. _release-2-0-8:
 
@@ -2384,7 +2353,7 @@ Documentation
 Added
 -----
 
-- Added logging
+- Add logging for lock operations - by :user:`expobrain`.
 
 .. _release-2-0-7:
 
@@ -2397,7 +2366,8 @@ Added
 Packaging
 ---------
 
-- Fix :issue:`14` (moved license and readme file to ``MANIFEST``)
+- Keep the README and license out of the installed environment root while including them in the source archive.
+  :issue:`14` - by Benedikt Schmitt.
 
 .. _release-2-0-6:
 
@@ -2410,7 +2380,7 @@ Packaging
 Fixed
 -----
 
-- Change unlocking sequence to fix transient test failures
+- Clear the lock descriptor before unlocking on Unix and Windows, avoiding a repeated release. - by :user:`cottsay`.
 
 .. _release-2-0-5:
 
@@ -2423,14 +2393,21 @@ Fixed
 Fixed
 -----
 
-- Don't remove file after releasing lock
+- Keep the lock file after release - by :user:`kramarz`.
+
+.. _release-2-0-5-added:
+
+Added
+-----
+
+- Export :class:`~filelock.BaseFileLock` as a public class - by Benedikt Schmitt.
 
 .. _release-2-0-5-documentation:
 
 Documentation
 -------------
 
-- Update docs
+- Show the complete public API in the reference page - by Benedikt Schmitt.
 
 .. _release-2-0-4:
 
@@ -2443,15 +2420,7 @@ Documentation
 Added
 -----
 
-- Add the new classes to ``__all__``
-
-.. _release-2-0-4-fixed:
-
-Fixed
------
-
-- The filelock classes are now always available and have been moved out of the ``if msvrct: ... elif fcntl ... else``
-  clauses.
+- Export the platform-specific lock classes consistently through ``__all__`` - by Benedikt Schmitt.
 
 .. _release-2-0-1:
 
@@ -2464,16 +2433,17 @@ Fixed
 Fixed
 -----
 
-- Fixed :issue:`5`
+- Treat Windows lock contention as a timeout instead of raising ``IOError``. :issue:`5` - by Benedikt Schmitt.
 
-- Fix :issue:`2` which has been introduced with the lock counter
+- Avoid an extra acquisition for ``with lock.acquire(timeout=...)``, so one release frees the lock.
+  :issue:`3` - by Benedikt Schmitt.
 
 .. _release-2-0-1-documentation:
 
 Documentation
 -------------
 
-- Update documentation
+- Add a documentation site with recursive locking examples and an API reference - by Benedikt Schmitt.
 
 .. _release-2-0-0:
 
@@ -2486,7 +2456,7 @@ Documentation
 Added
 -----
 
-- Add default timeout (fixes :issue:`2`)
+- Allow a default timeout at lock construction. :issue:`2` - by Benedikt Schmitt.
 
 .. _release-1-0-3:
 
@@ -2499,7 +2469,7 @@ Added
 Fixed
 -----
 
-- Fix an unhandled exception while acquiring a lock.
+- Handle an exception while acquiring a lock - by Benedikt Schmitt.
 
 .. _release-1-0-2:
 
@@ -2512,7 +2482,7 @@ Fixed
 Fixed
 -----
 
-- Fix a timeout could still be thrown if the lock is already acquired
+- Do not time out when the same lock object already holds the lock - by Benedikt Schmitt.
 
 .. _release-1-0-1:
 
@@ -2525,7 +2495,8 @@ Fixed
 Fixed
 -----
 
-- Fix :issue:`1`
+- Return immediately after a successful first acquire instead of waiting one poll interval.
+  :issue:`1` - by Benedikt Schmitt.
 
 .. _release-1-0-0:
 
@@ -2538,23 +2509,7 @@ Fixed
 Added
 -----
 
-- Add a lock counter.
-
-- Add a file lock that works on Unix and Windows.
-
-.. _release-1-0-0-fixed:
-
-Fixed
------
-
-- Change filenames
-
-.. _release-1-0-0-documentation:
-
-Documentation
--------------
-
-- Update README, LICENSE (changed format from md to rst)
+- Add a lock counter so the same lock object can acquire recursively - by Benedikt Schmitt.
 
 .. _release-0-2-2:
 
@@ -2567,7 +2522,7 @@ Documentation
 Packaging
 ---------
 
-- Include the renamed README and license files in the source distribution.
+- Include the renamed README and license files in the source distribution - by Benedikt Schmitt.
 
 .. _release-0-2-1:
 
@@ -2580,7 +2535,7 @@ Packaging
 Packaging
 ---------
 
-- Publish the README and license as reStructuredText so package metadata can render them.
+- Publish the README and license as reStructuredText so package metadata can render them - by Benedikt Schmitt.
 
 .. _release-0-2-0:
 
@@ -2593,4 +2548,4 @@ Packaging
 Added
 -----
 
-- Add file locks for Unix and Windows.
+- Add file locks for Unix and Windows - by Benedikt Schmitt.
