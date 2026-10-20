@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   upgrade:
-    uses: tox-dev/github-workflows/.github/workflows/upgrade-release-tools.yaml@cc2680df515077c14581299f9c9f44c67481c139
+    uses: tox-dev/github-workflows/.github/workflows/upgrade-release-tools.yaml@7d9f41c5731fe4484d12dc91779cb17705405e92
     permissions:
       actions: write
       contents: write
