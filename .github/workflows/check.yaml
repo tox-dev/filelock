@@ -399,7 +399,7 @@ jobs:
         run: |
           uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
           uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
-          echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/release-tools/bin" >>"$GITHUB_PATH"
       - uses: tox-dev/github-workflows/validate-news@8db87d4730353b61630d66cbc592d6bed0c85d2b
   hook-update-cooldown:
     if: github.event_name == 'pull_request'
@@ -433,4 +433,4 @@ jobs:
               (.key == "hook-update-cooldown" and .value.result == "skipped" and $event != "pull_request") or
               (.key == "graalpy" and .value.result == "skipped")
             )
-          ' <<< "$NEEDS_JSON"
+          ' <<<"$NEEDS_JSON"
