@@ -170,25 +170,12 @@ jobs:
         with:
           name: github-release-notes
           path: ${{ runner.temp }}
-      - name: Find GitHub Release
-        id: existing
-        continue-on-error: true
+      - uses: tox-dev/github-workflows/publish-github-release@d88002302950ed36200e62673f592acc40e6b151
+        with:
+          repository: ${{ github.repository }}
+          tag: ${{ github.ref_name }}
+          commit: ${{ github.sha }}
+          title: ${{ github.ref_name }}
+          notes-file: ${{ runner.temp }}/release-notes.md
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: gh release view "$TAG" --json tagName > /dev/null
-      - name: Update GitHub Release
-        if: steps.existing.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: gh release edit "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
-      - name: Create GitHub Release
-        if: steps.existing.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
