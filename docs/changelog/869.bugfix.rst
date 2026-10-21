@@ -1,0 +1,1 @@
+A SoftFileLock acquisition whose identity capture failed transiently left an empty marker on the path that nothing holds and no contender ever reclaims.

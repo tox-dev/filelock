@@ -132,7 +132,7 @@ def pin_inode(lock_file: str) -> Generator[int | None]:
             os.close(fd)
 
 
-def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
+def remove_own_file(lock_file: str, fd: int, identity: tuple[int, int] | None = None) -> None:  # pragma: win32 no cover
     """
     Remove *lock_file* while it still names the file open as *fd*; the caller closes the descriptor afterwards.
 
@@ -140,10 +140,15 @@ def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
     path goes back. Otherwise the path is unlinked by name if it still names this file. The open descriptor keeps the
     inode allocated, so a matching number cannot belong to a successor's marker.
 
-    :raises OSError: if the descriptor cannot be read or the unlink fails.
+    :param lock_file: the name to remove.
+    :param fd: the descriptor this attempt still owns the file through.
+    :param identity: the ``os.stat_result`` of that file, when the caller already read one. A first read can fail
+        transiently where a retry on the same owned descriptor answers, so passing it keeps this removal working.
+
+    :raises OSError: if the descriptor has to be read and cannot be, or the unlink fails.
 
     """
-    own: Final = os.fstat(fd)
+    own: Final = os.fstat(fd) if identity is None else identity
     with suppress(FileNotFoundError):
         break_lock_file(lock_file, own.st_mtime, own.st_ino)
         if os.path.samestat(os.lstat(lock_file), own):
