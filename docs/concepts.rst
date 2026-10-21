@@ -679,15 +679,14 @@ visibility to every participating process. The table records where that has been
      - Native and soft backends verified in CI.
    * - NFS (v4 and v3)
      - Verified in CI
-     - A CI lane exports a loopback NFS share, mounts it twice with ``nosharecache`` so the two mounts are independent
-       client caches over one server, then contends several processes across both caches and records every hold
-       interval. The gate enforces :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`, which finishes every
-       hold without overlap, though not in arrival order, on both NFSv4 and NFSv3 (retrying the transient
-       ``ESTALE`` that NFSv3 raises under claim churn). Use it on NFS. The other locks are unsafe or unreliable there
-       and the lane records why: native ``flock`` does **not** exclude across NFS client caches — the verifier catches
-       overlapping holders — and the poll-based :class:`SoftFileLock <filelock.SoftFileLock>` excludes but starves out
-       under NFS latency before finishing. POSIX advisory locking is unreliable across NFS, so also keep the
-       SQLite-backed :class:`ReadWriteLock <filelock.ReadWriteLock>` off it.
+     - Mount every client that uses :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` with ``noac`` and
+       ``lookupcache=none``. NFS can still serve a removed held or intent claim from a client cache; strict acquisition
+       checks its existence on the server before waiting. CI mounts one loopback export twice, with ``nosharecache``
+       on the second mount, and requires every hold to finish without overlap on NFSv4 and NFSv3 (retrying transient
+       ``ESTALE`` during NFSv3 claim churn). The other locks are unsafe or unreliable there: native ``flock`` does
+       **not** exclude across NFS client caches, and the poll-based :class:`SoftFileLock <filelock.SoftFileLock>` can
+       starve under contention. POSIX advisory locking is unreliable across NFS, so also keep the SQLite-backed
+       :class:`ReadWriteLock <filelock.ReadWriteLock>` off it.
    * - SMB / CIFS
      - Verified in CI
      - A CI lane mounts a loopback Samba share twice as independent client caches. CIFS byte-range locks are mandatory
@@ -696,8 +695,8 @@ visibility to every participating process. The table records where that has been
        poll-acquire can starve under contention. :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` is not
        supported on SMB: its claim protocol needs an atomic no-replace hard link that SMB does not provide.
 
-The CI lanes measure the default mount and server settings named above. Run ``tasks/verify_filesystem.py`` against your
-own mount to confirm the lock under your options, since cache and locking settings change the result.
+The CI lanes measure the mount and server settings named above. Run ``tasks/verify_filesystem.py`` against your own mount
+to confirm the lock under your options, since cache and locking settings change the result.
 
 Migrating from timed stale breaking
 ===================================

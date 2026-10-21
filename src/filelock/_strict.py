@@ -54,6 +54,7 @@ _TOKEN_HEX_LENGTH: Final[int] = 32
 _PRIVATE_RECORD_MARKER: Final[str] = ".private-v1-"
 _PRIVATE_RECORD_SUFFIX: Final[str] = ".tmp"
 _PRIVATE_RECORD_RANDOM_HEX_LENGTH: Final[int] = 32
+_CLAIM_PROBE_PREFIX: Final[str] = ".probe-v1-"
 _PRIVATE_RECORD_GRACE: Final[float] = 2.0
 _UNLINK_MAX_RETRIES: Final[int] = 10
 #: How long a scan waits out a claim held in Windows' delete-pending state before treating it as unreadable.
@@ -258,7 +259,7 @@ class StrictSoftFileLock(BaseFileLock):
     def claims(self) -> tuple[StrictSoftFileClaim, ...]:
         """Published claims that block acquisition."""
         # An inspection writes nothing, so it trusts no record's age rather than probe the filesystem clock.
-        return _read_existing_claims(self.lock_file, self._claim_directory, probe_clock=False)
+        return _read_existing_claims(self.lock_file, self._claim_directory, probe_clock=False, verify_server=False)
 
     @property
     def lock_path_occupant(self) -> str | None:
@@ -452,7 +453,7 @@ def _describe_soft_marker(content: str) -> tuple[_OccupantState, str]:
 
 
 def _read_claims(
-    lock_file: str, directory_ref: tuple[str, int | None], *, probe_clock: bool
+    lock_file: str, directory_ref: tuple[str, int | None], *, probe_clock: bool, verify_server: bool
 ) -> tuple[StrictSoftFileClaim, ...]:
     names: Final = _list_claim_names(lock_file, directory_ref, probe_clock=probe_clock)
     name_parts: dict[str, tuple[StrictSoftFileClaimState, str]] = {}
@@ -461,7 +462,34 @@ def _read_claims(
             raise SoftFileLockProtocolError(lock_file, name, "unknown claim name or protocol version")
         name_parts[name] = parts
     records: Final = _read_claim_records(lock_file, directory_ref, names, probe_clock=probe_clock)
-    return tuple(_parse_claim(lock_file, name, name_parts[name], records[name]) for name in names if name in records)
+    return tuple(
+        _parse_claim(lock_file, name, name_parts[name], records[name])
+        for name in names
+        if name in records and (not verify_server or _claim_exists_on_server(lock_file, directory_ref, name))
+    )
+
+
+def _claim_exists_on_server(lock_file: str, directory_ref: tuple[str, int | None], name: str) -> bool:
+    # Reading an NFS claim can succeed from a client cache after its server-side name is gone. LINK checks the source
+    # on the server; a private proof is reclaimed if this process exits before unlinking it.
+    proof = f"{_CLAIM_PROBE_PREFIX}{secrets.token_hex(_TOKEN_HEX_LENGTH // 2)}{_PRIVATE_RECORD_SUFFIX}"
+    try:
+        _link_or_find_committed(directory_ref, name, proof)
+    except OSError as error:
+        if error.errno in {ENOENT, ESTALE}:
+            return False
+        reason = f"cannot verify claim: {error.strerror or type(error).__name__}"
+        raise SoftFileLockProtocolError(lock_file, name, reason) from error
+    except NotImplementedError as error:
+        raise SoftFileLockProtocolError(lock_file, name, "cannot verify claim: hard links unavailable") from error
+    try:
+        _unlink_relative(directory_ref, proof)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        reason = f"cannot remove claim probe: {error.strerror or type(error).__name__}"
+        raise SoftFileLockProtocolError(lock_file, name, reason) from error
+    return True
 
 
 def _list_claim_names(lock_file: str, directory_ref: tuple[str, int | None], *, probe_clock: bool) -> list[str]:
@@ -553,15 +581,15 @@ def _public_claim_names(
     for entry in entries:
         if not entry.name.startswith("."):
             names.append(entry.name)
-        elif (public_name := _private_public_name(entry.name)) is not None and _parse_claim_name(
-            public_name
-        ) is not None:
+        elif _is_claim_probe_name(entry.name) or (
+            (public_name := _private_public_name(entry.name)) is not None and _parse_claim_name(public_name) is not None
+        ):
             _reclaim_private_record(directory_ref, entry.name, now)
     return sorted(names)
 
 
 def _read_existing_claims(
-    lock_file: str, directory: Path, *, probe_clock: bool = True
+    lock_file: str, directory: Path, *, probe_clock: bool = True, verify_server: bool = sys.platform != "win32"
 ) -> tuple[StrictSoftFileClaim, ...]:
     if not _OPEN_SUPPORTS_DIR_FD:  # pragma: lacks dir-fd
         try:
@@ -572,12 +600,16 @@ def _read_existing_claims(
             reason = f"cannot open claim directory: {error.strerror or type(error).__name__}"
             raise SoftFileLockProtocolError(lock_file, None, reason) from error
         with pinned:
-            return _read_claims(lock_file, (os.fspath(directory), None), probe_clock=probe_clock)
-    return _read_claims_through_descriptor(lock_file, directory, probe_clock=probe_clock)  # pragma: needs dir-fd
+            return _read_claims(
+                lock_file, (os.fspath(directory), None), probe_clock=probe_clock, verify_server=verify_server
+            )
+    return _read_claims_through_descriptor(  # pragma: needs dir-fd
+        lock_file, directory, probe_clock=probe_clock, verify_server=verify_server
+    )
 
 
 def _read_claims_through_descriptor(  # pragma: needs dir-fd
-    lock_file: str, directory: Path, *, probe_clock: bool
+    lock_file: str, directory: Path, *, probe_clock: bool, verify_server: bool
 ) -> tuple[StrictSoftFileClaim, ...]:
     try:
         directory_fd = _open_claim_directory(os.fspath(directory))
@@ -587,9 +619,11 @@ def _read_claims_through_descriptor(  # pragma: needs dir-fd
         reason = f"cannot open claim directory: {error.strerror or type(error).__name__}"
         raise SoftFileLockProtocolError(lock_file, None, reason) from error
     try:
-        return _read_claims(lock_file, (os.fspath(directory), directory_fd), probe_clock=probe_clock)
+        return _read_claims(
+            lock_file, (os.fspath(directory), directory_fd), probe_clock=probe_clock, verify_server=verify_server
+        )
     finally:
-        # The scan wrote nothing through the descriptor, so a failed close has no result to report.
+        # A failed close has no result to report after the scan and proof cleanup.
         with contextlib.suppress(OSError):
             os.close(directory_fd)
 
@@ -784,6 +818,13 @@ def _private_public_name(private_name: str) -> str | None:
     ):
         return None
     return public_name
+
+
+def _is_claim_probe_name(name: str) -> bool:
+    if not name.startswith(_CLAIM_PROBE_PREFIX) or not name.endswith(_PRIVATE_RECORD_SUFFIX):
+        return False
+    token = name[len(_CLAIM_PROBE_PREFIX) : -len(_PRIVATE_RECORD_SUFFIX)]
+    return len(token) == _TOKEN_HEX_LENGTH and all(character in "0123456789abcdef" for character in token)
 
 
 def _reclaim_sentinel_private_records(lock_file: str, path: Path) -> None:

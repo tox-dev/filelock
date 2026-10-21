@@ -519,9 +519,14 @@ def test_strict_soft_reaper_does_not_retry_sharing_error(
     abandoned_record: tuple[Path, Path], mocker: MockerFixture
 ) -> None:
     lock_path, private_path = abandoned_record
-    unlink = mocker.patch(
-        "filelock._strict.os.unlink", autospec=True, side_effect=PermissionError(EACCES, "sharing violation")
-    )
+    real_unlink: Final = os.unlink
+
+    def deny_abandoned_record(path: _PathValue, *, dir_fd: int | None = None) -> None:
+        if Path(os.fsdecode(path)).name == private_path.name:
+            raise PermissionError(EACCES, "sharing violation")
+        real_unlink(path, dir_fd=dir_fd)
+
+    unlink = mocker.patch("filelock._strict.os.unlink", autospec=True, side_effect=deny_abandoned_record)
     sleep = mocker.patch("filelock._strict.time.sleep", autospec=True)
     # A contender blocked by a foreign claim ages the record out in its scan without removing a claim of its own.
     _write_foreign_claim(Path(f"{lock_path}.filelock") / "claims", "f" * 32)
@@ -726,18 +731,20 @@ def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path,
     real_fstat = os.fstat
     real_scandir = os.scandir
     real_unlink = os.unlink
-    scans = 0
     cleanup_name: str | None = None
+    competitor_inserted = False
 
     def add_competitor_before_final_scan(path: int | str) -> Iterator[os.DirEntry[str]]:
-        nonlocal scans
-        scans += 1
-        if scans == 3:
-            Path(f"{lock_path}.filelock", "claims", competitor_name).write_text(
+        nonlocal competitor_inserted
+        claim_directory = Path(f"{lock_path}.filelock", "claims")
+        if not competitor_inserted and (claim_directory / f"held-v1-{owner_token}.claim").exists():
+            competitor_inserted = True
+            (claim_directory / competitor_name).write_text(
                 f"filelock-strict-v1\n{competitor_token}\n{os.getpid()}\n{socket.gethostname().encode().hex()}\n4242\n",
                 encoding="ascii",
                 newline="",
             )
+            return real_scandir(claim_directory)
         return real_scandir(path)
 
     def fail_held_unlink(path: _PathValue, *, dir_fd: int | None = None) -> None:
@@ -1235,6 +1242,79 @@ def test_strict_soft_stale_claim_read_is_skipped(tmp_path: Path, mocker: MockerF
     _open_raising_for(claim, OSError(ESTALE, "Stale file handle"), mocker)
 
     assert StrictSoftFileLock(lock_path).claims == ()
+
+
+def test_strict_soft_stale_cached_claim_is_skipped(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    mocker.patch("filelock._strict.os.link", autospec=True, side_effect=OSError(ESTALE, "Stale file handle"))
+
+    assert filelock._strict._read_existing_claims(str(lock_path), claim.parent, verify_server=True) == ()
+
+
+def test_strict_soft_live_claim_survives_server_probe(tmp_path: Path) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+
+    found = filelock._strict._read_existing_claims(str(lock_path), claim.parent, verify_server=True)
+
+    assert [item.name for item in found] == [claim.name]
+    assert [item.name for item in claim.parent.iterdir()] == [claim.name]
+
+
+def test_strict_soft_claim_probe_error_fails_closed(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    mocker.patch("filelock._strict.os.link", autospec=True, side_effect=OSError(EIO, "I/O error"))
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot verify claim"):
+        filelock._strict._read_existing_claims(str(lock_path), claim.parent, verify_server=True)
+
+
+def test_strict_soft_claim_probe_cleanup_error_fails_closed(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    mocker.patch("filelock._strict.os.unlink", autospec=True, side_effect=OSError(EIO, "I/O error"))
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot remove claim probe"):
+        filelock._strict._read_existing_claims(str(lock_path), claim.parent, verify_server=True)
+
+
+def test_strict_soft_claim_probe_removed_by_peer(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    real_unlink: Final = os.unlink
+
+    def remove_before_cleanup(path: _PathValue, *, dir_fd: int | None = None) -> NoReturn:
+        real_unlink(path, dir_fd=dir_fd)
+        raise FileNotFoundError(ENOENT, "already removed")
+
+    mocker.patch("filelock._strict.os.unlink", autospec=True, side_effect=remove_before_cleanup)
+
+    assert [
+        item.name for item in filelock._strict._read_existing_claims(str(lock_path), claim.parent, verify_server=True)
+    ] == [claim.name]
+
+
+def test_strict_soft_claim_probe_requires_hard_links(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    mocker.patch("filelock._strict.os.link", autospec=True, side_effect=NotImplementedError)
+
+    with pytest.raises(SoftFileLockProtocolError, match="hard links unavailable"):
+        filelock._strict._read_existing_claims(str(lock_path), claim.parent, verify_server=True)
+
+
+def test_strict_soft_abandoned_claim_probe_is_reclaimed(tmp_path: Path) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim_directory = Path(f"{lock_path}.filelock") / "claims"
+    claim_directory.mkdir(parents=True)
+    probe = claim_directory / f".probe-v1-{'0' * 32}.tmp"
+    probe.write_bytes(b"abandoned")
+    os.utime(probe, (time.time() - 10, time.time() - 10))
+
+    with StrictSoftFileLock(lock_path, timeout=0):
+        assert not probe.exists()
 
 
 def test_strict_soft_stale_claim_read_revalidates_to_gone(tmp_path: Path, mocker: MockerFixture) -> None:

@@ -180,7 +180,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     """
 
-    _instances: WeakValueDictionary[str, SoftReadWriteLock] = WeakValueDictionary()
+    _instances: ClassVar[WeakValueDictionary[str, SoftReadWriteLock]] = WeakValueDictionary()
     _instances_lock = threading.RLock()
     _instances_under_construction: ClassVar[set[str]] = set()
 
