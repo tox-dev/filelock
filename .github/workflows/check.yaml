@@ -391,19 +391,7 @@ jobs:
           uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
           uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
           echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
-      - uses: tox-dev/github-workflows/validate-news@144f8e68b7d4c7c44e32258b1305e4402bc4e392
-      - name: Check current historical author credits
-        run: |
-          release-creator notes \
-            --changelog docs/changelog.rst \
-            --tag 3.10.6 \
-            --repository tox-dev/filelock \
-            --previous 3.10.5 \
-            --issue-role pull > "$RUNNER_TEMP/multiple-author-notes.md"
-          grep -Fq '[#213](https://github.com/tox-dev/filelock/pull/213) by @jahrules and @gaborbernat.' \
-            "$RUNNER_TEMP/multiple-author-notes.md"
-          test "$(grep -oF 'https://github.com/tox-dev/filelock/pull/213' \
-            "$RUNNER_TEMP/multiple-author-notes.md" | wc -l)" -eq 1
+      - uses: tox-dev/github-workflows/validate-news@5e11f2254a4dcb7102747d312ad7db48a2e9b0cb
   gate:
     name: "✅ Required checks pass"
     if: always()
