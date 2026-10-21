@@ -924,4 +924,4 @@ async def _give_up_reading(lock: AsyncReadWriteLock) -> None:
 
 def _live_asyncio_futures() -> int:
     gc.collect()
-    return sum(isinstance(candidate, asyncio.Future) for candidate in gc.get_objects())
+    return sum(issubclass(type(candidate), asyncio.Future) for candidate in gc.get_objects())
