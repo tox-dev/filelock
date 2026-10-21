@@ -194,6 +194,30 @@ async def test_poll_interval_rejects_invalid_value(
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("blocking", [pytest.param("no", id="str"), pytest.param(1, id="int")])
+@pytest.mark.asyncio
+async def test_acquire_rejects_non_bool_blocking(
+    lock_type: type[BaseAsyncFileLock], blocking: str | int, tmp_path: Path
+) -> None:
+    # Parity with the sync acquire: a truthy non-bool must not reach the shared give-up checks.
+    lock = lock_type(str(tmp_path / "a"))
+    with pytest.raises(TypeError, match="blocking must be a bool"):
+        await lock.acquire(blocking=blocking)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+    assert (lock.lock_counter, lock.is_locked) == (0, False)
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_acquire_takes_none_blocking_from_the_instance(
+    lock_type: type[BaseAsyncFileLock], tmp_path: Path
+) -> None:
+    lock = lock_type(str(tmp_path / "a"), blocking=False)
+    async with await lock.acquire(blocking=None) as held:
+        assert held is lock
+    assert not lock.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("thread_local", [True, False])
 @pytest.mark.asyncio
 async def test_non_executor(lock_type: type[BaseAsyncFileLock], thread_local: bool, tmp_path: Path) -> None:
