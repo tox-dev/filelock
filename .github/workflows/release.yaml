@@ -144,8 +144,29 @@ jobs:
           name: github-release-notes
           path: ${{ runner.temp }}/release-notes.md
           if-no-files-found: error
-  stage-pypi:
+  stage-github-release:
     needs: [tag-build, github-notes]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: github-release-notes
+          path: ${{ runner.temp }}
+      - uses: tox-dev/github-workflows/publish-github-release@a250ca3524857236e288764651851010939b6f71
+        with:
+          repository: ${{ github.repository }}
+          tag: ${{ github.ref_name }}
+          commit: ${{ github.sha }}
+          title: ${{ github.ref_name }}
+          mode: stage
+          notes-file: ${{ runner.temp }}/release-notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+  stage-pypi:
+    needs: [tag-build, github-notes, stage-github-release]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-26.04
     permissions:
@@ -208,9 +229,9 @@ jobs:
           packages-dir: missing/
           skip-existing: true
   verify-pypi:
-    needs: [stage-pypi, publish]
+    needs: [stage-pypi, publish, stage-github-release]
     if: >-
-      always() && needs.stage-pypi.result == 'success' && (needs.publish.result == 'success' || (needs.publish.result == 'skipped' && needs.stage-pypi.outputs.missing_count == '0'))
+      always() && needs.stage-github-release.result == 'success' && needs.stage-pypi.result == 'success' && (needs.publish.result == 'success' || (needs.publish.result == 'skipped' && needs.stage-pypi.outputs.missing_count == '0'))
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -234,7 +255,7 @@ jobs:
           dist: dist
           mode: verify
   github-release:
-    needs: [verify-pypi, github-notes]
+    needs: [verify-pypi, github-notes, stage-github-release]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-26.04
     permissions:
@@ -250,6 +271,7 @@ jobs:
           tag: ${{ github.ref_name }}
           commit: ${{ github.sha }}
           title: ${{ github.ref_name }}
+          mode: publish
           notes-file: ${{ runner.temp }}/release-notes.md
         env:
           GH_TOKEN: ${{ github.token }}
