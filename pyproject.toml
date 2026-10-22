@@ -97,7 +97,7 @@ pkg-meta = [
 ]
 release = [
   "prek>=0.5",
-  "release-creator>=0.5",
+  "release-creator>=0.5.1",
   "towncrier>=26.9",
 ]
 
