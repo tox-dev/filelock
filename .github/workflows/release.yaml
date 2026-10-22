@@ -28,7 +28,7 @@ jobs:
           version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - uses: tox-dev/github-workflows/build-python-distribution@a32ce094895292b19eea422fc6500f1ef1ae8d5f
+      - uses: tox-dev/github-workflows/build-python-distribution@2b4ed19340a7ec97020f4fd0a403531845c49356
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.dists-artifact-name }}
@@ -37,7 +37,7 @@ jobs:
   tag-build:
     name: Validate tagged release
     if: startsWith(github.ref, 'refs/tags/')
-    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@a32ce094895292b19eea422fc6500f1ef1ae8d5f
+    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@2b4ed19340a7ec97020f4fd0a403531845c49356
     permissions:
       contents: read
     with:
@@ -126,7 +126,7 @@ jobs:
           uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
       - name: Add release tools to PATH
         run: echo "$RUNNER_TEMP/release-tools/bin" >>"$GITHUB_PATH"
-      - uses: tox-dev/github-workflows/render-release-notes@a32ce094895292b19eea422fc6500f1ef1ae8d5f
+      - uses: tox-dev/github-workflows/render-release-notes@2b4ed19340a7ec97020f4fd0a403531845c49356
         with:
           tag: ${{ github.ref_name }}
           changelog: docs/changelog.rst
@@ -151,7 +151,7 @@ jobs:
         with:
           name: github-release-notes
           path: ${{ runner.temp }}
-      - uses: tox-dev/github-workflows/publish-github-release@a32ce094895292b19eea422fc6500f1ef1ae8d5f
+      - uses: tox-dev/github-workflows/publish-github-release@2b4ed19340a7ec97020f4fd0a403531845c49356
         with:
           repository: ${{ github.repository }}
           tag: ${{ github.ref_name }}
@@ -182,7 +182,7 @@ jobs:
         with:
           name: ${{ env.dists-artifact-name }}
           path: dist/
-      - uses: tox-dev/github-workflows/reconcile-pypi-artifacts@a32ce094895292b19eea422fc6500f1ef1ae8d5f
+      - uses: tox-dev/github-workflows/reconcile-pypi-artifacts@2b4ed19340a7ec97020f4fd0a403531845c49356
         id: stage
         with:
           project: filelock
@@ -214,7 +214,7 @@ jobs:
         with:
           name: pypi-missing-manifest
           path: ${{ runner.temp }}/pypi-manifest
-      - uses: tox-dev/github-workflows/select-pypi-artifacts@a32ce094895292b19eea422fc6500f1ef1ae8d5f
+      - uses: tox-dev/github-workflows/select-pypi-artifacts@2b4ed19340a7ec97020f4fd0a403531845c49356
         with:
           dist: dist
           manifest: ${{ runner.temp }}/pypi-manifest/pypi-missing-names.txt
@@ -244,7 +244,7 @@ jobs:
         with:
           name: ${{ env.dists-artifact-name }}
           path: dist/
-      - uses: tox-dev/github-workflows/reconcile-pypi-artifacts@a32ce094895292b19eea422fc6500f1ef1ae8d5f
+      - uses: tox-dev/github-workflows/reconcile-pypi-artifacts@2b4ed19340a7ec97020f4fd0a403531845c49356
         with:
           project: filelock
           version: ${{ github.ref_name }}
@@ -261,7 +261,7 @@ jobs:
         with:
           name: github-release-notes
           path: ${{ runner.temp }}
-      - uses: tox-dev/github-workflows/publish-github-release@a32ce094895292b19eea422fc6500f1ef1ae8d5f
+      - uses: tox-dev/github-workflows/publish-github-release@2b4ed19340a7ec97020f4fd0a403531845c49356
         with:
           repository: ${{ github.repository }}
           tag: ${{ github.ref_name }}
