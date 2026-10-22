@@ -28,7 +28,9 @@ jobs:
           version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - uses: tox-dev/github-workflows/build-python-distribution@33db207c963ad07b8d2bff4099143593fd4100b2
+      - uses: tox-dev/github-workflows/build-python-distribution@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
+        with:
+          planner-group: release-notes
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.dists-artifact-name }}
@@ -37,10 +39,12 @@ jobs:
   tag-build:
     name: Validate tagged release
     if: startsWith(github.ref, 'refs/tags/')
-    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@33db207c963ad07b8d2bff4099143593fd4100b2
+    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
     permissions:
       contents: read
     with:
+      check-group: release-check
+      notes-group: release-notes
       changelog: docs/changelog.rst
       issue-role: issue
       artifact-base-url: https://pypi.org/project/filelock/
@@ -62,8 +66,9 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Install locked release tools
-        uses: tox-dev/github-workflows/install-locked-tools@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/install-locked-tools@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
+          groups: release-notes
           venv: ${{ runner.temp }}/release-tools
       - name: Select previous tag
         id: select
@@ -119,12 +124,13 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Install locked release tools
-        uses: tox-dev/github-workflows/install-locked-tools@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/install-locked-tools@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
+          groups: release-notes
           venv: ${{ runner.temp }}/release-tools
       - name: Add release tools to PATH
         run: echo "$RUNNER_TEMP/release-tools/bin" >>"$GITHUB_PATH"
-      - uses: tox-dev/github-workflows/render-release-notes@33db207c963ad07b8d2bff4099143593fd4100b2
+      - uses: tox-dev/github-workflows/render-release-notes@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
           tag: ${{ github.ref_name }}
           changelog: docs/changelog.rst
@@ -149,7 +155,7 @@ jobs:
         with:
           name: github-release-notes
           path: ${{ runner.temp }}
-      - uses: tox-dev/github-workflows/publish-github-release@33db207c963ad07b8d2bff4099143593fd4100b2
+      - uses: tox-dev/github-workflows/publish-github-release@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
           repository: ${{ github.repository }}
           tag: ${{ github.ref_name }}
@@ -160,7 +166,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
   stage-pypi:
-    needs: [tag-build, github-notes, stage-github-release]
+    needs: tag-build
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-26.04
     permissions:
@@ -180,9 +186,10 @@ jobs:
         with:
           name: ${{ env.dists-artifact-name }}
           path: dist/
-      - uses: tox-dev/github-workflows/reconcile-pypi-artifacts@33db207c963ad07b8d2bff4099143593fd4100b2
+      - uses: tox-dev/github-workflows/reconcile-pypi-artifacts@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         id: stage
         with:
+          tool-group: release-notes
           project: filelock
           version: ${{ github.ref_name }}
           dist: dist
@@ -195,7 +202,7 @@ jobs:
           if-no-files-found: error
   publish:
     name: 🚀 publish
-    needs: stage-pypi
+    needs: [stage-pypi, stage-github-release]
     if: needs.stage-pypi.outputs.missing_count != '0'
     runs-on: ubuntu-26.04
     environment:
@@ -212,7 +219,7 @@ jobs:
         with:
           name: pypi-missing-manifest
           path: ${{ runner.temp }}/pypi-manifest
-      - uses: tox-dev/github-workflows/select-pypi-artifacts@33db207c963ad07b8d2bff4099143593fd4100b2
+      - uses: tox-dev/github-workflows/select-pypi-artifacts@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
           dist: dist
           manifest: ${{ runner.temp }}/pypi-manifest/pypi-missing-names.txt
@@ -242,8 +249,9 @@ jobs:
         with:
           name: ${{ env.dists-artifact-name }}
           path: dist/
-      - uses: tox-dev/github-workflows/reconcile-pypi-artifacts@33db207c963ad07b8d2bff4099143593fd4100b2
+      - uses: tox-dev/github-workflows/reconcile-pypi-artifacts@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
+          tool-group: release-notes
           project: filelock
           version: ${{ github.ref_name }}
           dist: dist
@@ -259,7 +267,7 @@ jobs:
         with:
           name: github-release-notes
           path: ${{ runner.temp }}
-      - uses: tox-dev/github-workflows/publish-github-release@33db207c963ad07b8d2bff4099143593fd4100b2
+      - uses: tox-dev/github-workflows/publish-github-release@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
           repository: ${{ github.repository }}
           tag: ${{ github.ref_name }}
