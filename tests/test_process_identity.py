@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # an exited child that a Popen still references
 import sys
 from errno import EACCES, ENODEV, ENOENT, EPERM
 from pathlib import Path
@@ -110,6 +111,13 @@ def test_process_alive_true_for_self() -> None:
 
 def test_process_alive_false_for_dead() -> None:
     assert process_alive(_DEAD_PID) is False
+
+
+def test_process_alive_false_for_exited_child_still_referenced() -> None:
+    # After wait() the Popen still holds the child's handle, which on Windows keeps the exited process openable.
+    with subprocess.Popen([sys.executable, "-c", ""]) as child:
+        child.wait()
+        assert process_alive(child.pid) is False
 
 
 @_POSIX_ONLY

@@ -121,18 +121,24 @@ if sys.platform == "win32":  # pragma: win32 cover
         ctypes.POINTER(wintypes.FILETIME),
     ]
     _KERNEL32.GetProcessTimes.restype = wintypes.BOOL
+    _KERNEL32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _KERNEL32.WaitForSingleObject.restype = wintypes.DWORD
 
     _WIN_SYNCHRONIZE: Final[int] = 0x100000
     _WIN_PROCESS_QUERY_LIMITED_INFORMATION: Final[int] = 0x1000
     _WIN_ERROR_INVALID_PARAMETER: Final[int] = 87
     _WIN_INHERIT_HANDLE: Final[bool] = False
+    _WIN_WAIT_OBJECT_0: Final[int] = 0
 
     def process_alive(pid: int) -> bool:
-        """Whether a process with this PID exists, treating an access denial as proof it does."""
+        """Whether a process with this PID still runs, treating an access denial as proof it does."""
         handle = _KERNEL32.OpenProcess(_WIN_SYNCHRONIZE, _WIN_INHERIT_HANDLE, pid)
         if handle:
-            _KERNEL32.CloseHandle(handle)
-            return True
+            try:
+                # Any open handle keeps an exited process openable, but its process object is signaled once it exits.
+                return _KERNEL32.WaitForSingleObject(handle, 0) != _WIN_WAIT_OBJECT_0
+            finally:
+                _KERNEL32.CloseHandle(handle)
         return ctypes.get_last_error() != _WIN_ERROR_INVALID_PARAMETER
 
     def process_start_token(pid: int) -> int | None:
