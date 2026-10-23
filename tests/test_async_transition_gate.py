@@ -49,10 +49,12 @@ async def test_hold_for_acquire_deadline_preempts_long_poll() -> None:
     gate = _AsyncTransitionGate()
 
     async def wait_for_turn() -> None:
-        async with gate.hold_for_acquire(
-            blocking=True, cancel_check=None, deadline=time.perf_counter() + 0.05, poll_interval=1
-        ):
-            pass
+        async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(
+                gate.hold_for_acquire(
+                    blocking=True, cancel_check=None, deadline=time.perf_counter() + 0.05, poll_interval=1
+                )
+            )
 
     async with gate.hold():
         with pytest.raises(_AsyncTransitionUnavailableError):
