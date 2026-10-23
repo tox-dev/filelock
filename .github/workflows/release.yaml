@@ -62,8 +62,6 @@ jobs:
         with:
           groups: release-notes
           venv: ${{ runner.temp }}/release-tools
-      - name: Add release tools to PATH
-        run: echo "$RUNNER_TEMP/release-tools/bin" >>"$GITHUB_PATH"
       - name: Select previous tag
         id: select
         uses: tox-dev/github-workflows/select-previous-tag@1b7d58c3e744b505215e1cb11697a80737b0e94d # v1.0.1
@@ -119,8 +117,6 @@ jobs:
         with:
           groups: release-notes
           venv: ${{ runner.temp }}/release-tools
-      - name: Add release tools to PATH
-        run: echo "$RUNNER_TEMP/release-tools/bin" >>"$GITHUB_PATH"
       - uses: tox-dev/github-workflows/render-release-notes@1b7d58c3e744b505215e1cb11697a80737b0e94d # v1.0.1
         with:
           tag: ${{ github.ref_name }}
