@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from concurrent.futures import Future as ConcurrentFuture
 from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock._async import _AsyncTransitionGate
+from filelock._async import _AsyncTransitionGate, _AsyncTransitionUnavailableError
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
@@ -41,6 +42,21 @@ async def test_hold_waits_for_a_predecessor_before_entering() -> None:
     release_first.set()
     await asyncio.gather(first_task, second_task)
     assert order == ["first-in", "first-out", "second-in"]
+
+
+@pytest.mark.asyncio
+async def test_hold_for_acquire_deadline_preempts_long_poll() -> None:
+    gate = _AsyncTransitionGate()
+
+    async def wait_for_turn() -> None:
+        async with gate.hold_for_acquire(
+            blocking=True, cancel_check=None, deadline=time.perf_counter() + 0.05, poll_interval=1
+        ):
+            pass
+
+    async with gate.hold():
+        with pytest.raises(_AsyncTransitionUnavailableError):
+            await asyncio.wait_for(wait_for_turn(), timeout=0.2)
 
 
 @pytest.mark.asyncio
