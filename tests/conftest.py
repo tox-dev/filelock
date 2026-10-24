@@ -17,6 +17,7 @@ from capabilities import CAPABILITIES
 import filelock._identity
 from filelock import BaseFileLock, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name
+from tests.descriptor_helpers import descriptor_ids
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -191,9 +192,9 @@ def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]
 
 
 def _held_open(node: os.stat_result) -> bool:  # pragma: win32 no cover
-    for entry in Path("/dev/fd").iterdir():
+    for descriptor_id in descriptor_ids():
         with suppress(OSError):  # the descriptor the listing itself used is closed by now
-            if os.path.samestat(os.fstat(int(entry.name)), node):
+            if os.path.samestat(os.fstat(descriptor_id), node):
                 return True
     return False
 

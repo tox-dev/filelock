@@ -29,6 +29,7 @@ from tests.capability_marks import (
     NEEDS_SYMLINK,
     NEEDS_UNLINK_OPEN_FILE,
 )
+from tests.descriptor_helpers import descriptor_ids
 
 # These cases inject a failure into a directory-fd cleanup step or the reaper race, both of which only run where the
 # protocol uses dir_fd descriptors. Without dir_fd those branches never execute and the injected fault never fires; the
@@ -1929,10 +1930,10 @@ def _deny_claim_unlinks(mocker: MockerFixture) -> None:  # pragma: needs fd-dire
 def _descriptors_on(path: Path) -> int:  # pragma: needs fd-directory
     target: Final = path.stat()
     count = 0
-    for entry in (Path("/dev/fd") if Path("/dev/fd").is_dir() else Path("/proc/self/fd")).iterdir():
+    for descriptor_id in descriptor_ids():
         # The descriptor that listed the directory is already closed.
         with contextlib.suppress(OSError):
-            count += os.path.samestat(os.fstat(int(entry.name)), target)
+            count += os.path.samestat(os.fstat(descriptor_id), target)
     return count
 
 
