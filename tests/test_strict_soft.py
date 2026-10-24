@@ -379,10 +379,9 @@ def test_strict_soft_sentinel_inspection_failure_closes_descriptor(tmp_path: Pat
     with pytest.raises(OSError, match="sentinel inspection failed"):
         lock.acquire()
     assert inspected_fd is not None
-    # A closed descriptor reports EBADF on every platform, but the message differs (Windows says "handle is invalid").
-    with pytest.raises(OSError, match=r"Bad file descriptor|handle is invalid") as closed:
+    # The error message depends on the OS language; the closed-descriptor errno is stable.
+    with pytest.raises(OSError, check=lambda error: error.errno == EBADF):
         real_fstat(inspected_fd)
-    assert closed.value.errno == EBADF
     assert (lock.is_locked, lock.lock_counter, lock.claims) == (False, 0, ())
 
 
