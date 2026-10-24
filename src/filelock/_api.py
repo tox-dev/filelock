@@ -1465,9 +1465,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         attempt = 0
         self._context.acquiring = inspect.currentframe()
         try:
-            # Created once, so a directory that disappears while the acquisition waits fails it, not builds a second
-            # lock file beside the holder's.
-            ensure_directory_exists(self._lock_path)
+            # Only a fresh hold needs a directory. Re-entry joins the existing descriptor even if the parent was
+            # renamed. Create it once, so a directory that disappears while polling is not recreated beside a holder.
+            if not self.is_locked:
+                ensure_directory_exists(self._lock_path)
             while True:
                 self._raise_if_inherited()
                 if not self.is_locked:

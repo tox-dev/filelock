@@ -3199,6 +3199,29 @@ def test_waiter_after_directory_rename_does_not_lock_a_new_file(
         holder.release(force=True)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows refuses to rename a directory holding an open file"
+)  # pragma: win32 no cover
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize("replace_parent", [False, True])
+def test_reentrant_acquire_after_directory_rename(
+    lock_type: type[BaseFileLock], tmp_path: Path, *, replace_parent: bool
+) -> None:
+    parent = tmp_path / "original"
+    lock = lock_type(parent / "resource.lock")
+    with lock:
+        parent.rename(tmp_path / "renamed")
+        if replace_parent:
+            parent.write_text("replacement", encoding="utf-8")
+        with lock:
+            assert lock.lock_counter == 2
+            assert lock.is_locked
+        assert lock.lock_counter == 1
+        assert parent.is_file() if replace_parent else not parent.exists()
+    assert lock.lock_counter == 0
+    assert not lock.is_locked
+
+
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_each_acquisition_resolves_the_working_directory(
     lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
