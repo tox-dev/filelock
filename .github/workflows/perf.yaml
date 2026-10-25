@@ -1,4 +1,4 @@
-name: "📊 performance matrix"
+name: "⏱️ performance matrix"
 on:
   workflow_dispatch:
 concurrency:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 jobs:
   bench:
-    name: "📊 bench - ${{ matrix.os }}"
+    name: "⏱️ bench - ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -18,17 +18,19 @@ jobs:
           - windows-2025
           - macos-15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: "🐍 Install uv"
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: "🧪 Install tox"
+      - name: "📦 Install tox"
         run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
-      - name: "📊 Measure the performance matrix"
+      - name: "⏱️ Measure the performance matrix"
         run: tox run -e bench
         env:
           UV_PYTHON_PREFERENCE: only-managed

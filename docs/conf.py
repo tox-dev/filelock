@@ -80,6 +80,7 @@ autoclass_content, autodoc_member_order, autodoc_typehints = "both", "bysource",
 autodoc_mock_imports = ["_typeshed"]
 autodoc_default_options = {"member-order": "bysource", "undoc-members": True, "show-inheritance": True}
 autosectionlabel_prefix_document = True
+autosectionlabel_maxdepth = 2
 
 intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
 nitpicky = True

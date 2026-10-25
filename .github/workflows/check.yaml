@@ -1,11 +1,11 @@
-name: "🛠️ check"
+name: "🧪 check"
 on:
   workflow_dispatch:
   push:
     branches: ["main"]
     tags-ignore: ["**"]
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
   schedule:
     - cron: "0 8 * * *"
     - cron: "0 6 * * 1"
@@ -37,27 +37,29 @@ jobs:
         exclude:
           - {os: windows-2025, py: pypy3.11}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: "🐍 Install uv"
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: "🧪 Install tox"
+      - name: "📦 Install tox"
         run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
-      - name: "🐍 Install Python"
+      - name: "🐍 Install Python ${{ matrix.py }}"
         run: uv python install --python-preference only-managed ${{ matrix.py }}
-      - name: "⚙️ Setup test suite"
+      - name: "📦 Set up test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.py }}
         env:
           UV_PYTHON_PREFERENCE: only-managed
       # PyPy runs unmeasured: coverage has no JIT path there, so the suite takes 12m rather than 2m and roughly 60 of
       # its lock, heartbeat and poll deadlines lapse under the added latency, though they pass measured in isolation.
       # PyPy is not a coverage source either: the 100% gate stays CPython's.
-      - name: "✅ Run test suite"
+      - name: "🧪 Run test suite"
         run: |
           if [[ "${{ matrix.py }}" == pypy* ]]; then
             tox run --skip-pkg-install -e ${{ matrix.py }} --
@@ -69,13 +71,13 @@ jobs:
           PYTEST_ADDOPTS: "-vv --durations=20"
           UV_PYTHON_PREFERENCE: only-managed
           DIFF_AGAINST: HEAD
-      - name: "📝 Rename coverage report file"
+      - name: "📊 Rename coverage report file"
         if: ${{ !startsWith(matrix.py, 'pypy') }}
         run: |
           import os; import sys
           os.rename(f".tox/.coverage.${{ matrix.py }}", f".tox/.coverage.${{ matrix.py }}-{sys.platform}")
         shell: python
-      - name: "📦 Upload coverage data"
+      - name: "📤 Upload coverage data"
         if: ${{ !startsWith(matrix.py, 'pypy') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -84,32 +86,34 @@ jobs:
           path: ".tox/.coverage.*"
           retention-days: 3
   graalpy:
+    name: "🧪 Test graalpy3.13 - ubuntu-24.04 (weekly)"
     # GraalPy 25.4.4 can freeze every thread at once under the threaded lock tests, so it stays off pull requests and
     # pushes. A weekly run keeps the capability probes the suite gates on honest on a second runtime. It runs on one
     # Linux job because those probes are a per-OS answer, and unmeasured, so the 100% gate stays CPython's.
-    name: "🧪 Test graalpy3.13 - ubuntu-24.04 (weekly)"
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 * * 1'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: "🐍 Install uv"
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: "🧪 Install tox"
+      - name: "📦 Install tox"
         run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
       - name: "🐍 Install Python"
         run: uv python install --python-preference only-managed graalpy3.13
-      - name: "⚙️ Setup test suite"
+      - name: "📦 Set up test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e graalpy3.13
         env:
           UV_PYTHON_PREFERENCE: only-managed
-      - name: "✅ Run test suite"
+      - name: "🧪 Run test suite"
         run: tox run --skip-pkg-install -e graalpy3.13 --
         env:
           PYTEST_ADDOPTS: "-vv --durations=20"
@@ -119,11 +123,12 @@ jobs:
     runs-on: ubuntu-24.04
     needs: test
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: "⬇️ Download coverage data"
+      - name: "📩 Download coverage data"
         id: coverage-data
         background: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -131,20 +136,22 @@ jobs:
           path: .tox
           pattern: .coverage.*
           merge-multiple: true
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: "🐍 Install uv"
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: "🧪 Install tox"
+      - name: "📦 Install tox"
         run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
-      - name: "📦 Build package to generate version"
+      - name: "🏗️ Build package to generate version"
         run: uv build --python 3.15 --python-preference only-managed --wheel . --out-dir dist
-      - name: "⚙️ Setup coverage tool"
+      - name: "📦 Set up coverage tool"
         run: tox -e coverage --notest
         env:
           UV_PYTHON_PREFERENCE: only-managed
-      - wait: coverage-data
+      - name: "⏳ Wait for coverage data"
+        wait: coverage-data
       - name: "📊 Combine and report coverage"
         run: tox -e coverage --skip-pkg-install
         env:
@@ -155,7 +162,7 @@ jobs:
           name: html-report
           path: .tox/htmlcov
   check:
-    name: "🔎 ${{ matrix.tox_env }} - ${{ matrix.os }}"
+    name: "🔍 ${{ matrix.tox_env }} - ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -171,38 +178,42 @@ jobs:
         exclude:
           - {os: windows-2025, tox_env: pkg_meta}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: "🐍 Install uv"
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: "🧪 Install tox"
+      - name: "📦 Install tox"
         run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
-      - name: "⚙️ Setup test suite"
+      - name: "📦 Set up check suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e ${{ matrix.tox_env }}
         env:
           UV_PYTHON_PREFERENCE: only-managed
-      - name: "✅ Run test suite"
+      - name: "🧪 Run check for ${{ matrix.tox_env }}"
         run: tox run --skip-pkg-install -e ${{ matrix.tox_env }}
         env:
           UV_PYTHON_PREFERENCE: only-managed
   nfs:
-    name: "🗄️ NFS mutual exclusion"
+    name: "🧪 NFS mutual exclusion"
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: "🐍 Install uv"
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: "🗄️ Export and mount loopback NFS shares"
+      - name: "⚙️ Export and mount loopback NFS shares"
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-kernel-server nfs-common
@@ -224,7 +235,7 @@ jobs:
           sudo mount -t nfs -o vers=3,nosharecache,noac,lookupcache=none 127.0.0.1:/export/filelock /mnt/nfs3b
           for m in nfs4a nfs4b nfs3a nfs3b; do sudo chmod 1777 "/mnt/$m"; done
           mount | grep /mnt/nfs
-      - name: "🔒 Verify NFSv4 mutual exclusion across two client caches"
+      - name: "🧪 Verify NFSv4 mutual exclusion across two client caches"
         env:
           # StrictSoftFileLock is the lock the gate enforces on NFS: its claim queue hands off fairly, so it finishes
           # every hold with no overlap on both versions (the strict claim retries the transient ESTALE that NFSv3's
@@ -242,23 +253,25 @@ jobs:
             done
             exit 1
           fi
-      - name: "🔒 Verify NFSv3 mutual exclusion across two client caches"
+      - name: "🧪 Verify NFSv3 mutual exclusion across two client caches"
         env:
           FILELOCK_VERIFY_LOCKS: StrictSoftFileLock
         run: timeout 420 .venv/bin/python tasks/verify_filesystem.py /mnt/nfs3a /mnt/nfs3b
   smb:
-    name: "🗄️ SMB mutual exclusion"
+    name: "🧪 SMB mutual exclusion"
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: "🐍 Install uv"
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: "🗄️ Export and mount a loopback SMB share"
+      - name: "⚙️ Export and mount a loopback SMB share"
         run: |
           sudo apt-get update
           sudo apt-get install -y samba cifs-utils
@@ -281,7 +294,7 @@ jobs:
               -o "guest,uid=$(id -u),gid=$(id -g),file_mode=0777,dir_mode=0777,vers=3.0"
           done
           mount | grep /mnt/smb
-      - name: "🔒 Verify SMB mutual exclusion across two client caches"
+      - name: "🧪 Verify SMB mutual exclusion across two client caches"
         # CIFS byte-range locks are mandatory and server-enforced, so FileLock excludes and finishes every hold: it is
         # the lock the gate enforces here. SoftFileLock prints ungated (it excludes but its poll-acquire can starve
         # under contention), and the strict claim needs an atomic no-replace hard link SMB does not reliably provide.
@@ -292,7 +305,7 @@ jobs:
           uv pip install .
           timeout 240 .venv/bin/python tasks/verify_filesystem.py /mnt/smba /mnt/smbb
   capability:
-    name: "🧩 without ${{ matrix.block }}"
+    name: "🧪 without ${{ matrix.block }}"
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -301,15 +314,17 @@ jobs:
           - fcntl
           - sqlite3
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: "🐍 Install uv"
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: "🧩 Verify the fallback without ${{ matrix.block }}"
+      - name: "🧪 Verify the fallback without ${{ matrix.block }}"
         env:
           FILELOCK_BLOCK_MODULE: ${{ matrix.block }}
         run: |
@@ -319,89 +334,77 @@ jobs:
           .venv/bin/python tasks/capability/assert_fallback.py
           .venv/bin/python tasks/verify_filesystem.py
   symlink:
-    name: "🔗 Windows symlinks ${{ matrix.developer_mode == '1' && 'granted' || 'denied' }}"
+    name: "🧪 Windows symlinks ${{ matrix.developer_mode == '1' && 'granted' || 'denied' }}"
     runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
         developer_mode: ["0", "1"]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: "🐍 Install uv"
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: "🧪 Install tox"
+      - name: "📦 Install tox"
         run: uv tool install --python-preference only-managed --python 3.15 tox --with tox-uv
       # Windows grants symlink creation two ways, so both have to be closed to deny it: Developer Mode lets an
       # unprivileged process create them, and SeCreateSymbolicLinkPrivilege lets any holder create them regardless.
       # Clearing only the registry value left the runner's privilege intact and both variants probed identical.
-      - name: "🔗 Set Developer Mode to ${{ matrix.developer_mode }}"
+      - name: "⚙️ Set Developer Mode to ${{ matrix.developer_mode }}"
         run: >
           reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d ${{ matrix.developer_mode }}
 
-      - name: "⚙️ Setup test suite"
+      - name: "📦 Set up test suite"
         run: tox run -vv --notest --skip-missing-interpreters false -e 3.15
-      - name: "🔎 Report the probed capability"
+      - name: "📊 Report the probed capability"
         if: matrix.developer_mode == '1'
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
           uv run --no-project --python 3.15 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
-      - name: "✅ Run test suite with symlinks granted"
+      - name: "🧪 Run test suite with symlinks granted"
         if: matrix.developer_mode == '1'
         run: tox run --skip-pkg-install -e 3.15 --
       # deny_symlink reports the token privilege, the Developer Mode value, and whether a symlink still succeeds in
       # this process and in a child, so the log says which mechanism actually governs rather than assuming either.
-      - name: "🔎 Report the probed capability"
+      - name: "📊 Report the probed capability"
         if: matrix.developer_mode == '0'
         run: |
           $env:PYTHONPATH = "$PWD\tasks"
           uv run --no-project --python 3.15 python tasks\deny_symlink.py uv run --no-project --python 3.15 --with coverage python -c "import coverage_pragmas; print(coverage_pragmas.CAPABILITIES)"
-      - name: "✅ Run test suite with symlinks denied"
+      - name: "🧪 Run test suite with symlinks denied"
         if: matrix.developer_mode == '0'
         run: uv run --no-project --python 3.15 python tasks\deny_symlink.py tox run --skip-pkg-install -e 3.15 --
   termux:
-    name: "🤖 Termux (Android)"
+    name: "🧪 Termux (Android)"
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: "🧪 Run the suite in a real Termux userland via tox"
         run: docker compose run --rm termux
-  changelog:
-    name: "📝 News fragment"
-    runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip news')
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: "🔄 Install the latest version of uv"
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          python-version: "3.15"
-          enable-cache: false
-      - name: "📝 Require a news fragment"
-        run: uvx towncrier check --compare-with "origin/${GITHUB_BASE_REF}"
   gate:
-    name: "✅ Required checks pass"
-    if: always()
-    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux, changelog]
+    name: "🚦 ${{ github.event_name == 'pull_request' && 'Required checks pass' || 'Non-PR checks pass' }}"
+    if: ${{ !cancelled() }} # codespell:ignore cancelled
+    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux]
     runs-on: ubuntu-24.04
     steps:
-      - env:
+      - name: "🚦 Check all jobs passed"
+        env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           jq -e '
             all(
               to_entries[];
               .value.result == "success" or
-              ((.key == "graalpy" or .key == "changelog") and .value.result == "skipped")
+              (.key == "graalpy" and .value.result == "skipped")
             )
-          ' <<< "$NEEDS_JSON"
+          ' <<<"$NEEDS_JSON"
