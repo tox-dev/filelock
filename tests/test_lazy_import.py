@@ -65,6 +65,40 @@ def test_lazy_import_resolves_asyncio_submodule() -> None:
     assert _run("from filelock import asyncio; print(asyncio.__name__)") == "filelock.asyncio\n"
 
 
+@pytest.mark.parametrize(
+    ("missing_module", "attribute", "expected"),
+    [
+        pytest.param("filelock._read_write", "ReadWriteLock", "error:filelock._read_write\n", id="sync-module"),
+        pytest.param(
+            "filelock._async_read_write", "AsyncReadWriteLock", "error:filelock._async_read_write\n", id="async-module"
+        ),
+        pytest.param("sqlite3", "ReadWriteLock", "none\n", id="sync-sqlite-module"),
+        pytest.param("sqlite3", "AsyncReadWriteLock", "none\n", id="async-sqlite-module"),
+        pytest.param("_sqlite3", "ReadWriteLock", "none\n", id="sync-sqlite"),
+        pytest.param("_sqlite3", "AsyncReadWriteLock", "none\n", id="async-sqlite"),
+        pytest.param("filelock._soft", "SoftFileLock", "error:filelock._soft\n", id="other-lazy-module"),
+    ],
+)
+def test_lazy_import_only_uses_none_for_missing_sqlite(missing_module: str, attribute: str, expected: str) -> None:
+    script = f"""
+        import sys
+        class NotBundled:
+            def find_spec(self, name, path=None, target=None):
+                if name == {missing_module!r}:
+                    raise ModuleNotFoundError("No module named " + repr(name), name=name)
+                return None
+        sys.meta_path.insert(0, NotBundled())
+        import filelock
+        try:
+            value = getattr(filelock, {attribute!r})
+        except ImportError as error:
+            print("error:" + str(error.name))
+        else:
+            print("none" if value is None else "resolved")
+        """
+    assert _run(script, measured=False) == expected
+
+
 def test_lazy_import_async_file_lock_subclasses_file_lock() -> None:
     assert {filelock.FileLock, filelock.BaseAsyncFileLock} <= set(filelock.AsyncFileLock.__mro__)
 

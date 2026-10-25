@@ -112,8 +112,8 @@ def __getattr__(name: str) -> object:
         raise AttributeError(msg)
     try:
         module = import_module(module_name, __name__)
-    except ImportError:  # pragma: lacks sqlite3
-        if module_name not in {"._read_write", "._async_read_write"}:
+    except ImportError as error:  # pragma: lacks sqlite3
+        if module_name not in {"._read_write", "._async_read_write"} or error.name not in {"sqlite3", "_sqlite3"}:
             raise
         value = None
     else:
