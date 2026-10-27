@@ -239,6 +239,32 @@ def test_lock_file_it_cannot_write_stays_denied_where_flock_works(tmp_path: Path
         UnixFileLock(lock_path).acquire(timeout=0)
 
 
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_denied_lock_file_is_reopened_in_the_acquisition_directory(
+    working_directories: tuple[Path, Path], mocker: MockerFixture
+) -> None:
+    # The read-only reopen after a refused O_RDWR open must name the file the acquisition pinned. Resolved against the
+    # working directory of the moment, a chdir between the two opens probes a file in another directory, or none.
+    first, second = working_directories
+    (first / "test.lock").touch()
+    real_open = os.open
+    read_only_opens: list[str] = []
+
+    def deny_write_then_chdir(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if not flags & os.O_CREAT and "test.lock" in path:
+            if flags & os.O_RDWR:
+                os.chdir(second)
+                raise PermissionError(EACCES, "Permission denied", path)
+            read_only_opens.append(path)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    mocker.patch("os.open", side_effect=deny_write_then_chdir)
+    with pytest.raises(PermissionError):
+        UnixFileLock("test.lock").acquire(timeout=0)
+
+    assert read_only_opens == [str(first.resolve() / "test.lock")]
+
+
 @NEEDS_FCNTL
 @pytest.mark.parametrize("write_denied_lock_file", ["leased"], indirect=True)
 @pytest.mark.usefixtures("write_denied_lock_file")
