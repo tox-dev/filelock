@@ -534,6 +534,8 @@ of them deny direct access to the protected resource, and none of them defend ag
 cooperate. This section states, for each public lock, what it coordinates, what owns the claim, and what survives
 ``fork()``, descriptor duplication, task cancellation, and process exit.
 
+.. _concepts:the same-uid boundary:
+
 The same-UID boundary
 =====================
 
@@ -724,6 +726,8 @@ Why does SoftFileLock use a separate file instead of just checking a directory?
 
 A directory can't reliably be atomically created and deleted across platforms. A file can be created with ``O_EXCL``
 (atomic, all-or-nothing) to detect conflicts. This is why SoftFileLock uses files.
+
+.. _concepts:how does stale lock detection work across platforms?:
 
 How does stale lock detection work across platforms?
 ====================================================
