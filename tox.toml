@@ -104,7 +104,7 @@ depends = [ "3.11", "3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t" ]
 
 [env.docs]
 description = "build documentation"
-dependency_groups = [ "docs" ]
+dependency_groups = [ "docs", "release" ]
 commands = [
   [
     "sphinx-build",
@@ -199,7 +199,6 @@ set_env.PYTEST_ADDOPTS = "{env:PYTEST_ADDOPTS:} --timeout-method=thread --timeou
 set_env.GRAAL_PYTHON_VM_ARGS = "--experimental-options --engine.OSR=false"
 
 [env.release]
-description = "build the changelog from the news fragments for the given version, e.g. tox r -e release -- 3.30.0"
-skip_install = true
+description = "preview pending changelog fragments without selecting a release version"
 dependency_groups = [ "release" ]
-commands = [ [ "towncrier", "build", "--yes", "--version", "{posargs}" ] ]
+commands = [ [ "towncrier", "build", "--draft" ] ]
