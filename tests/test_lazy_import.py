@@ -26,10 +26,12 @@ def _run(script: str, *, measured: bool = True) -> str:
 
 
 def test_lazy_import_skips_asyncio_and_sqlite3() -> None:
+    # A site hook (a .pth file or sitecustomize) may load either module first; only what the import adds counts.
     script = """
         import sys
+        preloaded = set(sys.modules)
         import filelock
-        print(sorted({"asyncio", "sqlite3"} & sys.modules.keys()))
+        print(sorted({"asyncio", "sqlite3"} & sys.modules.keys() - preloaded))
         """
 
     assert _run(script, measured=False) == "[]\n"
@@ -66,8 +68,11 @@ def test_lazy_import_resolves_asyncio_submodule() -> None:
 
 
 def _hidden_module_script(blocked: str, missing: str, attribute: str) -> str:
+    # A finder only sees imports not yet cached, so a sqlite3 a site hook already loaded is evicted first.
     return f"""
         import sys
+        for name in [name for name in sys.modules if name.partition(".")[0] in {{"sqlite3", "_sqlite3"}}]:
+            del sys.modules[name]
         class Hide:
             def find_spec(self, name, path=None, target=None):
                 if name == {blocked!r}:
