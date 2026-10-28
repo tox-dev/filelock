@@ -391,10 +391,29 @@ jobs:
           persist-credentials: false
       - name: "🧪 Run the suite in a real Termux userland via tox"
         run: docker compose run --rm termux
+  freebsd:
+    name: "🧪 FreeBSD 15.1"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: "📥 Check out code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # FreeBSD refuses a no-follow open of a symlink with EMLINK, has no renameat2, and without fdescfs lists only the
+      # standard streams under /dev/fd, none of which a hosted runner shows (#864). It runs unmeasured, like PyPy.
+      - name: "🧪 Run the suite in a FreeBSD VM via tox"
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "15.1"
+          copyback: false
+          prepare: pkg install -y git python315 py315-sqlite3 py312-tox uv
+          run: tox run -e 3.15 --
   gate:
     name: "🚦 ${{ github.event_name == 'pull_request' && 'Required checks pass' || 'Non-PR checks pass' }}"
     if: ${{ !cancelled() }} # codespell:ignore cancelled
-    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux]
+    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux, freebsd]
     runs-on: ubuntu-24.04
     steps:
       - name: "🚦 Check all jobs passed"

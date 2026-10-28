@@ -79,3 +79,5 @@ PyPy runs unmeasured. Coverage has no JIT path there, so the suite takes 12m rat
 heartbeat and poll deadlines lapse under the added latency, though the same tests pass measured in isolation. Meeting
 the gate there would mean inflating those deadlines everywhere to satisfy an environment whose data is neither uploaded
 nor combined.
+
+FreeBSD runs unmeasured as well. Its job checks that the suite passes in a FreeBSD VM and feeds no coverage data.
