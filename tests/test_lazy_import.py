@@ -65,38 +65,47 @@ def test_lazy_import_resolves_asyncio_submodule() -> None:
     assert _run("from filelock import asyncio; print(asyncio.__name__)") == "filelock.asyncio\n"
 
 
-@pytest.mark.parametrize(
-    ("missing_module", "attribute", "expected"),
-    [
-        pytest.param("filelock._read_write", "ReadWriteLock", "error:filelock._read_write\n", id="sync-module"),
-        pytest.param(
-            "filelock._async_read_write", "AsyncReadWriteLock", "error:filelock._async_read_write\n", id="async-module"
-        ),
-        pytest.param("sqlite3", "ReadWriteLock", "none\n", id="sync-sqlite-module"),
-        pytest.param("sqlite3", "AsyncReadWriteLock", "none\n", id="async-sqlite-module"),
-        pytest.param("_sqlite3", "ReadWriteLock", "none\n", id="sync-sqlite"),
-        pytest.param("_sqlite3", "AsyncReadWriteLock", "none\n", id="async-sqlite"),
-        pytest.param("filelock._soft", "SoftFileLock", "error:filelock._soft\n", id="other-lazy-module"),
-    ],
-)
-def test_lazy_import_only_uses_none_for_missing_sqlite(missing_module: str, attribute: str, expected: str) -> None:
-    script = f"""
+def _hidden_module_script(blocked: str, missing: str, attribute: str) -> str:
+    return f"""
         import sys
-        class NotBundled:
+        class Hide:
             def find_spec(self, name, path=None, target=None):
-                if name == {missing_module!r}:
-                    raise ModuleNotFoundError("No module named " + repr(name), name=name)
-                return None
-        sys.meta_path.insert(0, NotBundled())
+                if name == {blocked!r}:
+                    raise ModuleNotFoundError(name={missing!r})
+        sys.meta_path.insert(0, Hide())
         import filelock
         try:
             value = getattr(filelock, {attribute!r})
         except ImportError as error:
-            print("error:" + str(error.name))
+            print(f"error:{{error.name}}")
         else:
             print("none" if value is None else "resolved")
         """
-    assert _run(script, measured=False) == expected
+
+
+@pytest.mark.parametrize(
+    ("blocked", "missing", "attribute"),
+    [
+        pytest.param("sqlite3", "sqlite3", "ReadWriteLock", id="package"),
+        pytest.param("_sqlite3", "_sqlite3", "AsyncReadWriteLock", id="cpython-binding"),
+        pytest.param("_sqlite3", "_sqlite3_cffi", "ReadWriteLock", id="pypy-binding"),
+    ],
+)
+def test_lazy_import_missing_sqlite3_leaves_read_write_lock_none(blocked: str, missing: str, attribute: str) -> None:
+    # coverage loads sqlite3 before filelock, so only an unmeasured child can miss it
+    assert _run(_hidden_module_script(blocked, missing, attribute), measured=False) == "none\n"
+
+
+@pytest.mark.parametrize(
+    ("module", "attribute"),
+    [
+        pytest.param("filelock._read_write", "ReadWriteLock", id="sync-read-write"),
+        pytest.param("filelock._async_read_write", "AsyncReadWriteLock", id="async-read-write"),
+        pytest.param("filelock._soft", "SoftFileLock", id="other-lazy-module"),
+    ],
+)
+def test_lazy_import_missing_filelock_module_raises(module: str, attribute: str) -> None:
+    assert _run(_hidden_module_script(module, module, attribute)) == f"error:{module}\n"
 
 
 def test_lazy_import_async_file_lock_subclasses_file_lock() -> None:

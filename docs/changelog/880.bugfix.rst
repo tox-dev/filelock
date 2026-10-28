@@ -1,1 +1,0 @@
-When the optional read/write lock modules cannot be imported, filelock now treats the failure as an unavailable SQLite dependency only when the missing module is ``sqlite3`` or ``_sqlite3``. Other import errors are raised immediately instead of returning ``None``.
