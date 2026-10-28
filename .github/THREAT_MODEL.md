@@ -32,12 +32,12 @@ which first needs a trusted element compromised is out of scope; the first triag
 [DOMPurify](https://github.com/cure53/DOMPurify/blob/main/SECURITY.md#what-we-consider-a-vulnerability) puts it, is what
 the attacker controls.
 
-| Project                                                                                                         | Language   | Where it draws the line                                                                                            |
-| --------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------ |
-| [gofrs/flock](https://github.com/gofrs/flock/security/policy)                                                   | Go         | Advisory `flock` wrapper; supports the latest release only and publishes no threat model.                          |
-| [Java `FileLock`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/channels/FileLock.html) | Java       | Documents that whether a lock stops another program is system-dependent: advisory, for cooperating processes.      |
-| [Qt `QLockFile`](https://doc.qt.io/qt-6/qlockfile.html)                                                         | C++        | Removes a stale lock only when the recorded owner is gone; filelock's soft locks follow the same fail-closed rule. |
-| [pnpm](https://github.com/pnpm/pnpm/security/policy)                                                            | JavaScript | Draws its boundary at filesystem permissions: an attacker who can already write the shared store is out of scope.  |
+| Project                                                                                                         | Language   | Where it draws the line                                                                                                                                                                                    |
+| --------------------------------------------------------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [gofrs/flock](https://github.com/gofrs/flock/security/policy)                                                   | Go         | Advisory `flock` wrapper; supports the latest release only and publishes no threat model.                                                                                                                  |
+| [Java `FileLock`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/channels/FileLock.html) | Java       | Documents that whether a lock stops another program is system-dependent: advisory, for cooperating processes.                                                                                              |
+| [Qt `QLockFile`](https://doc.qt.io/qt-6/qlockfile.html)                                                         | C++        | Treats a lock as stale when its recorded process is gone or, by default, once the file is 30 seconds old; filelock's soft locks break only on proof the owner is gone unless the caller sets a `lifetime`. |
+| [pnpm](https://github.com/pnpm/pnpm/security/policy)                                                            | JavaScript | Draws its boundary at filesystem permissions: the store, project, lockfile and configuration are trusted, and running it in a repository means trusting that repository.                                   |
 
 ## Trusted
 
@@ -53,23 +53,23 @@ An attacker who controls any of these already has what filelock could give them:
 | Input                                    | Comes from                                               | What filelock guarantees                                                                                                                                                                                            |
 | ---------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Nodes at the lock path and derived names | Another local user sharing the directory, such as `/tmp` | Opens use `O_NOFOLLOW` on Unix and refuse reparse points on Windows; `lstat` then `fstat` before reading a marker; `O_NONBLOCK` against FIFOs; the `ReadWriteLock` database refuses symlinks and non-regular files. |
-| Marker and claim contents                | Another local user, or a crashed holder                  | A holder is judged stale only on proof the recorded owner is gone (fail closed); marker and claim reads stop at 1024 bytes.                                                                                         |
+| Marker and claim contents                | Another local user, or a crashed holder                  | Unless the caller set a `lifetime`, a holder is judged stale only on proof the recorded owner is gone (fail closed); marker and claim reads stop at 1024 bytes.                                                     |
 | Timing                                   | Concurrent processes of any user                         | Markers and claims are created atomically with `O_EXCL` and hard links.                                                                                                                                             |
 
 ## Threats and controls
 
-| STRIDE                 | Threat                                                                    | Control                                                                                                          |
-| ---------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Spoofing               | A forged marker names a dead PID so a live holder looks stale.            | A marker is broken only when its owner is provably dead: same host, and the PID gone or its start token changed. |
-| Tampering              | A symlink at the lock path redirects truncate or `chmod` to another file. | `O_NOFOLLOW`, reparse-point checks and `fstat` on the opened descriptor.                                         |
-| Denial of service      | A planted FIFO or huge marker hangs or exhausts the holder.               | `O_NONBLOCK` opens and 1024-byte record reads; holding the lock itself is accepted (see below).                  |
-| Elevation of privilege | A planted `.filelock-*` directory steers a cleanup delete elsewhere.      | The sweep skips symlinked entries and removes only hard links to this lock database.                             |
+| STRIDE                 | Threat                                                                    | Control                                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Spoofing               | A forged marker names a dead PID so a live holder looks stale.            | A marker is broken only when its owner is provably dead: same host, and the PID gone or its start token changed.  |
+| Tampering              | A symlink at the lock path redirects truncate or `chmod` to another file. | `O_NOFOLLOW`, reparse-point checks and `fstat` on the opened descriptor.                                          |
+| Denial of service      | A planted FIFO or huge marker hangs or exhausts the holder.               | `O_NONBLOCK` opens and 1024-byte record reads; holding the lock itself is accepted (see below).                   |
+| Elevation of privilege | A planted `.filelock-*` directory steers a cleanup delete elsewhere.      | The sweep skips symlinks and directories another account owns, and removes only hard links to this lock database. |
 
 ## Release chain
 
 Releases run on the shared [tox-dev/github-workflows](https://github.com/tox-dev/github-workflows) pipeline. A release
-App, not a person, pushes the release commit and tag; the build installs its tools hash-checked from `pylock.toml` with
-a seven-day upload cooldown; PyPI receives the files through
+App, not a person, pushes the release commit and tag; the build installs its tools from a hash-checked `pylock.toml`
+resolved with a seven-day upload cooldown by default; PyPI receives the files through
 [trusted publishing](https://docs.pypi.org/trusted-publishers/) with attestations, and the GitHub Release is immutable.
 Every workflow pins third-party actions to a commit SHA.
 
@@ -81,11 +81,18 @@ Every workflow pins third-party actions to a commit SHA.
 | Two processes both hold `FileLock` without `lifetime`              | Vulnerability       | Mutual exclusion is the guarantee.                                     |
 | `SoftFileLock(lifetime=5)` lets a second holder in after 5 seconds | Bug or expected     | Documented overlap the caller opted into.                              |
 | A process of the same user deletes the lock file                   | Not a vulnerability | Same-user processes are trusted.                                       |
-| Another user holds the lock forever                                | Not a vulnerability | Expected of an advisory lock in a shared directory.                    |
+| Another user holds the lock forever                                | Vulnerability, Low  | Expected of an advisory lock in a shared directory.                    |
+
+## Severity
+
+- **High:** another local user makes the lock open, create, truncate, `chmod`, rename or delete a file other than the
+  lock file, or two processes hold the same exclusive lock with no `lifetime`, lease expiry or `on_compromise` signal.
+- **Medium:** another user reads data through the lock, a lock file ends up writable by others despite a restrictive
+  `mode`, or crafted contents or a planted node crash, hang or exhaust the holder.
+- **Low:** a local user who can write the lock directory holds or pre-creates the lock and delays others.
 
 ## Accepted risks
 
-- A local user who can write the lock directory can hold or pre-create the lock and delay others.
 - `StrictSoftFileLock` never reclaims a crashed holder's claim by itself; recovery needs `force_break`.
 - Network filesystems may not honor `flock` across clients.
 

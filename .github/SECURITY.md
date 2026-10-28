@@ -42,6 +42,10 @@ Classify by who supplies the dangerous input, not by how bad the outcome sounds.
   including a forged marker or claim that makes a live holder look stale.
 - A lock file created with wider permissions than the `mode` the caller asked for.
 - A crash, hang or unbounded resource use caused by crafted lock file contents or a planted FIFO.
+- Another user reading data from the victim's files through the lock, for example through an error message.
+- Denial of service by a local user who holds the lock, creates the lock file first, or leaves a claim behind; expected
+  of an advisory lock in a shared directory, so rated Low.
+- Windows-only issues, with the same ratings.
 
 **Out of scope**
 
@@ -49,7 +53,9 @@ Classify by who supplies the dangerous input, not by how bad the outcome sounds.
 - Processes that ignore the lock; advisory locks do not stop direct access to the protected resource.
 - Overlap the API documents: `SoftFileLock` with `lifetime`, `SoftFileLease` expiry, `SoftReadWriteLock` eviction,
   `break_lock()` and `force_break()`.
-- A local user who holds the lock, creates the lock file first, or leaves a claim behind, delaying others.
+- A lock file another user created first keeping that user's ownership and mode.
+- Misuse that filelock reports as an error: an instance used after `fork()`, a WAL-mode database, a directory at the
+  lock path.
 - Attacker-writable directories above the lock's parent, and network filesystem semantics such as `flock` over NFS.
 
 If you cannot tell which side a finding falls on, report it privately and we will decide.
