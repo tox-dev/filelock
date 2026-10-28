@@ -226,9 +226,6 @@ Probe first, and you can tell them:
 The first ``acquire`` returns immediately in the common uncontended case. Only when it raises do you log and settle in
 to wait, so the message appears exactly when it is useful and never otherwise.
 
-``blocking=False`` makes the probe a single attempt without polling. The subsequent ``acquire()`` uses the lock's
-configured timeout to wait for the holder.
-
 `virtualenv <https://github.com/pypa/virtualenv>`_, `pre-commit <https://github.com/pre-commit/pre-commit>`_, `uv
 <https://github.com/astral-sh/uv>`_, and `huggingface_hub <https://github.com/huggingface/huggingface_hub>`_ each
 arrived at this shape on their own, because a silent wait reads as a hang.
