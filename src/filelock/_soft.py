@@ -115,32 +115,33 @@ class SoftFileLock(BaseFileLock):
         # marker may sit at the same path. The guard starts at the open, so a signal handler that raises before
         # _mark_descriptor_owned leaves no marker behind.
         identity: tuple[int, int] | None = None
-        stat_result: os.stat_result | None = None
         try:
-            identity = _file_identity(stat_result := os.fstat(fd))
+            identity = _file_identity(os.fstat(fd))
             self._mark_descriptor_pending(fd)
             self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
             self._mark_descriptor_owned(fd, identity)
         except BaseException:
             self._mark_descriptor_released()
-            # A capture that failed transiently is retried here, while this attempt still owns the descriptor: the
-            # marker it created with O_EXCL was never published, so a cleanup that cannot recognize it leaves a name
-            # behind that no holder owns. Nothing ever reclaims one on Windows, so the path stays locked for good, and
-            # on Unix a marker that cannot even name its writer only ages out after MALFORMED_LOCK_AGE_THRESHOLD.
-            recovered: Final = _retry_file_stat(fd, stat_result)
             try:
+                if identity is None:
+                    # The first read failed, as a network mount reporting EIO or an interrupt landing mid-call does, and
+                    # this attempt still owns the descriptor it created the marker through, so a retry usually answers.
+                    # Without the identity the Windows unlink below cannot recognize the marker, and the empty marker it
+                    # leaves blocks the path for good, since no contender breaks one.
+                    with suppress(OSError):
+                        identity = _file_identity(os.fstat(fd))
                 if sys.platform != "win32":  # pragma: win32 no cover
                     # Before the close: our open descriptor keeps the inode allocated, so a successor's marker cannot
                     # carry its number.
                     with suppress(OSError):
-                        remove_own_file(self._lock_path, fd, recovered)
+                        remove_own_file(self._lock_path, fd)
             finally:
                 try:
                     os.close(fd)
                 finally:
                     if sys.platform == "win32":  # pragma: win32 cover
-                        self._unlink_held_marker(_file_identity(recovered) if recovered is not None else None)
+                        self._unlink_held_marker(identity)
             raise
 
     def _apply_explicit_mode(self, fd: int) -> None:
@@ -542,21 +543,6 @@ def _file_identity(st: os.stat_result) -> tuple[int, int]:
     # (st_dev, st_ino) names the concrete inode behind a path, so a marker recreated at the same pathname after an
     # expired lease reads as a different file. CPython populates both on Windows from the volume serial and file index.
     return st.st_dev, st.st_ino
-
-
-def _retry_file_stat(fd: int, stat_result: os.stat_result | None) -> os.stat_result | None:
-    """
-    Read *fd*'s stat result again when the first capture failed, so the marker still gets cleaned up.
-
-    The identity is what lets a cleanup recognize its own marker, and a capture that failed the first time - a transient
-    ``EIO`` from a network or FUSE mount - usually answers on a retry while this attempt still owns the descriptor.
-    Returning ``None`` is still better than unlinking a name this attempt can no longer prove it created.
-    """
-    if stat_result is not None:
-        return stat_result
-    with suppress(OSError):
-        return os.fstat(fd)
-    return None
 
 
 def _begin_claim(name: str | Path) -> bool:  # pragma: win32 no cover

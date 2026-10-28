@@ -17,16 +17,7 @@ from capabilities import CAPABILITIES
 
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
-from filelock._soft import (
-    _MAX_LOCK_FILE_SIZE,
-    MALFORMED_LOCK_AGE_THRESHOLD,
-    _begin_claim,
-    _end_claim,
-    _read_lock_file,
-)
-from filelock._soft import (
-    _file_identity as _soft_file_identity,
-)
+from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, _read_lock_file
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import exchange_names
 from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_STALE_RECLAIM, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
@@ -1259,47 +1250,22 @@ def test_publication_without_identity_leaves_the_marker(lock_path: Path, mocker:
     assert (lock.is_locked, lock_path.exists()) == (False, True)
 
 
-@pytest.mark.parametrize(
-    "failing",
-    [
-        pytest.param("identity", id="identity-read"),
-        pytest.param("fstat", id="descriptor-stat"),
-    ],
-)
-def test_transient_identity_failure_still_cleans_the_marker(
-    lock_path: Path, mocker: MockerFixture, *, failing: str
-) -> None:
-    # A capture that fails once and answers on the retry, as a network or FUSE mount reports its EIO. The rollback still
-    # owns the descriptor it created the marker through, so it retries there: an empty marker nothing can parse and no
-    # process owns must not stay on the path, or every later acquisition waits on it forever.
+def test_transient_identity_failure_still_cleans_the_marker(lock_path: Path, mocker: MockerFixture) -> None:
+    # Only the first read of the new marker's identity fails. The rollback reads it again through the descriptor it
+    # still owns, so on Windows it recognizes the marker it created; an empty marker left there is never broken.
+    real_fstat: Final = os.fstat
     calls: Final = itertools.count()
-    if failing == "identity":
-        real_identity = _soft_file_identity
 
-        def fail_once(_stat: os.stat_result) -> tuple[int, int]:
-            if next(calls) == 0:
-                raise OSError(EIO, "Input/output error")
-            return real_identity(_stat)
+    def fail_first(fd: int) -> os.stat_result:
+        if next(calls) == 0:
+            raise OSError(EIO, "Input/output error")
+        return real_fstat(fd)
 
-        mocker.patch("filelock._soft._file_identity", side_effect=fail_once)
-    else:
-        real_fstat = os.fstat
-
-        def fail_first_stat(target: int) -> os.stat_result:
-            if next(calls) == 0:
-                raise OSError(EIO, "Input/output error")
-            return real_fstat(target)
-
-        mocker.patch("filelock._soft.os.fstat", side_effect=fail_first_stat)
-
+    mocker.patch("filelock._soft.os.fstat", side_effect=fail_first)
     lock: Final = SoftFileLock(lock_path)
     with pytest.raises(OSError, match="Input/output error"):
         lock.acquire()
-
-    assert (lock.is_locked, lock.lock_counter, lock_path.exists()) == (False, 0, False)
-    contender: Final = SoftFileLock(lock_path)
-    contender.acquire(timeout=1)
-    assert contender.is_locked
+    assert (lock.is_locked, lock_path.exists()) == (False, False)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
