@@ -235,6 +235,12 @@ class SoftFileLease(MarkerSoftFileLock):
         self._claim.token = None
         super()._release()
 
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+        super()._reset_after_fork_in_child()
+        # As in __init__: two child threads lazily creating a shared claim could each get one.
+        if not self.is_thread_local():
+            self._context.lease_claim = _LeaseClaim()
+
     def _published_record(self) -> OwnerRecord:
         return super()._published_record()._replace(token=self._claim.token, lease_duration=self._lease_duration)
 

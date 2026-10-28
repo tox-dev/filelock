@@ -595,7 +595,8 @@ Ownership scope per lock
    * - :class:`SoftFileLease <filelock.SoftFileLease>`
      - A claim that *expires*; a peer may take it while the previous holder still runs
      - A heartbeat refreshes the claim; ``on_compromise`` fires when it is lost. Overlap is permitted by design, so a
-       lease is a hint about who *should* work, not a guarantee that only one worker does.
+       lease is a hint about who *should* work, not a guarantee that only one worker does. A forked child holds no
+       claim.
    * - :class:`ReadWriteLock <filelock.ReadWriteLock>`
      - The acquisition object; state lives in a local SQLite database
      - Requires a local filesystem the SQLite VFS supports. A forked child must build a fresh instance. Crash recovery
