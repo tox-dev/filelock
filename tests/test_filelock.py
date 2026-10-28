@@ -3215,6 +3215,32 @@ def test_waiter_after_directory_rename_does_not_lock_a_new_file(
         holder.release(force=True)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows refuses to rename a directory holding an open file"
+)  # pragma: win32 no cover
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize(
+    "occupy_old_name",
+    [
+        pytest.param(lambda _parent: None, id="old-name-absent"),
+        pytest.param(lambda parent: parent.write_text("replacement", encoding="utf-8"), id="old-name-is-a-file"),
+    ],
+)
+def test_reentrant_acquire_after_directory_rename(
+    lock_type: type[BaseFileLock], occupy_old_name: Callable[[Path], object], tmp_path: Path
+) -> None:
+    parent = tmp_path / "original"
+    lock = lock_type(parent / "resource.lock")
+    with lock:
+        parent.rename(tmp_path / "renamed")
+        occupy_old_name(parent)
+        with lock:
+            assert lock.lock_counter == 2
+        assert lock.lock_counter == 1
+        assert not parent.is_dir()
+    assert not lock.is_locked
+
+
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_each_acquisition_resolves_the_working_directory(
     lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
