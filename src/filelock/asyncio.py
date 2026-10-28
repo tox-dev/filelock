@@ -37,6 +37,7 @@ from filelock._api import (
     ThreadLocalFileContext,
     _append_exception_context,
     _canonical,
+    _check_blocking,
     _delegate_to_current,
     _ExtraValue,
     _fork_transition,
@@ -315,6 +316,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :returns: a context object that will unlock the file when the context is exited
 
         :raises Timeout: if fails to acquire lock within the timeout period
+        :raises TypeError: if *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` timeout, or *poll_interval* exceeds
             :data:`threading.TIMEOUT_MAX`
 
@@ -338,6 +340,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
         if blocking is None:
             blocking = self._context.blocking
+
+        _check_blocking(blocking)
 
         if poll_interval is None:
             poll_interval = self._context.poll_interval

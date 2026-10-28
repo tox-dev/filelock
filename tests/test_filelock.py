@@ -2169,6 +2169,15 @@ def test_blocking_setter_rejects_non_bool(tmp_path: Path) -> None:
     assert lock.blocking is True
 
 
+@pytest.mark.parametrize("blocking", [pytest.param("false", id="str"), pytest.param(0, id="int")])
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_acquire_rejects_non_bool_blocking(lock_type: type[BaseFileLock], blocking: str | int, tmp_path: Path) -> None:
+    lock: Final = lock_type(tmp_path / "a")
+    with pytest.raises(TypeError, match="blocking must be a bool"):
+        lock.acquire(blocking=blocking)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+    assert (lock.lock_counter, lock.is_locked) == (0, False)
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize("nan", _NANS)
 def test_non_blocking_acquire_ignores_nan_timeout(lock_type: type[BaseFileLock], nan: float, tmp_path: Path) -> None:

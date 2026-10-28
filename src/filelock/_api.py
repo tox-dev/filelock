@@ -1159,6 +1159,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         :returns: a context object that will unlock the file when the context is exited
 
         :raises Timeout: if fails to acquire lock within the timeout period
+        :raises TypeError: if *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` timeout, or *poll_interval* exceeds
             :data:`threading.TIMEOUT_MAX`
 
@@ -1187,6 +1188,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         if blocking is None:
             blocking = self._context.blocking
+
+        # A truthy non-bool such as the string "false" would otherwise turn a single attempt into a blocking wait.
+        _check_blocking(blocking)
 
         if poll_intervall is not None:
             msg = "use poll_interval instead of poll_intervall"

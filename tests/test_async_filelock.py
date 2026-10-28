@@ -194,6 +194,18 @@ async def test_poll_interval_rejects_invalid_value(
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("blocking", [pytest.param("false", id="str"), pytest.param(0, id="int")])
+@pytest.mark.asyncio
+async def test_acquire_rejects_non_bool_blocking(
+    lock_type: type[BaseAsyncFileLock], blocking: str | int, tmp_path: Path
+) -> None:
+    lock = lock_type(str(tmp_path / "a"))
+    with pytest.raises(TypeError, match="blocking must be a bool"):
+        await lock.acquire(blocking=blocking)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+    assert (lock.lock_counter, lock.is_locked) == (0, False)
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("thread_local", [True, False])
 @pytest.mark.asyncio
 async def test_non_executor(lock_type: type[BaseAsyncFileLock], thread_local: bool, tmp_path: Path) -> None:
