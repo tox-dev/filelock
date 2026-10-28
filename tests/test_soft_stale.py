@@ -375,7 +375,7 @@ def test_stale_break_restores_a_marker_of_another_host_with_the_breakers_pid(  #
     assert (lock.read_text(encoding="utf-8"), list(tmp_path.glob("test.lock.break.*"))) == (foreign, [])
 
 
-def _restore_name(lock: Path, pid: int) -> Path:  # pragma: win32 no cover
+def _restore_name(lock: Path, pid: int | str) -> Path:  # pragma: win32 no cover
     return lock.with_name(f"test.lock.restore.{pid}.{'0' * 32}")
 
 
@@ -504,6 +504,30 @@ def test_stale_break_skips_a_record_a_live_recoverer_claimed(  # pragma: win32 n
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), claimed.read_text(encoding="utf-8")) == (record, foreign)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+@pytest.mark.parametrize(
+    "recoverer",
+    [
+        pytest.param(str(2**64), id="oversized"),
+        pytest.param("0", id="zero"),
+        # This process's pid in fullwidth digits, which int() reads back as the same number.
+        pytest.param("".join(chr(0xFF10 + int(digit)) for digit in str(os.getpid())), id="wide"),
+    ],
+)
+def test_stale_break_ignores_a_claim_naming_no_valid_pid(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str, recoverer: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    foreign: Final = record.replace(_HOST, "elsewhere")
+    (planted := _restore_name(lock, recoverer)).write_text(foreign, encoding="utf-8")
+    with held_after_reclaim(lock_type(lock)) as held:
+        assert held.is_locked
+
+    assert planted.read_text(encoding="utf-8") == foreign
 
 
 def _refuse_returning_a_claim(mocker: MockerFixture) -> None:  # pragma: win32 no cover
