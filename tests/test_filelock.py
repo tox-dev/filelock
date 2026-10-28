@@ -3344,8 +3344,10 @@ def test_final_symlink_backend_refuses_to_lock(tmp_path: Path) -> None:
     (tmp_path / "target").write_text("")
     (tmp_path / "link").symlink_to(tmp_path / "target")
     # Keeping the final symlink a distinct key is safe because the backend still refuses to lock through it. O_NOFOLLOW
-    # reports the refusal as ELOOP on Linux and macOS, and as EFTYPE ("inappropriate file type") on NetBSD.
-    with pytest.raises(OSError, check=lambda error: error.errno in {errno.ELOOP, getattr(errno, "EFTYPE", None)}):
+    # reports ELOOP on Linux/macOS, EFTYPE on NetBSD, and EMLINK on FreeBSD.
+    with pytest.raises(
+        OSError, check=lambda error: error.errno in {errno.ELOOP, errno.EMLINK, getattr(errno, "EFTYPE", None)}
+    ):
         FileLock(str(tmp_path / "link")).acquire()
 
 
