@@ -1243,7 +1243,15 @@ def test_failed_acquire_cleanup_spares_a_replacement(lock_path: Path, mocker: Mo
 
 def test_publication_without_identity_leaves_the_marker(lock_path: Path, mocker: MockerFixture) -> None:
     # The rollback cannot prove the path still names the file it created, so it leaves the marker to stale handling.
-    mocker.patch("filelock._soft.os.fstat", autospec=True, side_effect=OSError(ENODEV, "no identity"))
+    open_spy: Final = mocker.spy(os, "open")
+    real_fstat: Final = os.fstat
+
+    def no_identity(fd: int) -> os.stat_result:
+        if fd == open_spy.spy_return:
+            raise OSError(ENODEV, "no identity")
+        return real_fstat(fd)
+
+    mocker.patch("filelock._soft.os.fstat", autospec=True, side_effect=no_identity)
     lock: Final = SoftFileLock(lock_path)
     with pytest.raises(OSError, match="no identity"):
         lock.acquire()
@@ -1289,9 +1297,17 @@ def test_release_under_a_peers_exchange_leaves_the_peers_marker(lock_path: Path)
 def test_release_without_identity_skips_unlink(lock_path: Path, mocker: MockerFixture) -> None:
     lock = SoftFileLock(lock_path)
     lock.acquire()
-    # The held descriptor can no longer be identified, so release cannot prove the path is still ours: it closes and
-    # clears held state without unlinking rather than risk deleting a successor's marker.
-    mocker.patch("filelock._soft.os.fstat", side_effect=OSError)
+    held: Final = lock_path.stat()
+    real_fstat: Final = os.fstat
+
+    def no_identity(fd: int) -> os.stat_result:
+        # The held descriptor can no longer be identified, so release cannot prove the path is still ours: it closes
+        # and clears held state without unlinking rather than risk deleting a successor's marker.
+        if os.path.samestat(found := real_fstat(fd), held):
+            raise OSError
+        return found
+
+    mocker.patch("filelock._soft.os.fstat", side_effect=no_identity)
     lock.release()
     assert not lock.is_locked
     assert lock_path.exists()
