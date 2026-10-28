@@ -150,7 +150,7 @@ else:  # pragma: win32 no cover
                 # A marker another account left is readable but not writable. Without flock, waiting on it only needs
                 # reading it; with flock the lock writes its file, so the denial stands.
                 try:
-                    fd = os.open(self.lock_file, open_flags & ~os.O_RDWR | os.O_RDONLY)
+                    fd = os.open(self._lock_path, open_flags & ~os.O_RDWR | os.O_RDONLY)
                 except (FileNotFoundError, BlockingIOError):
                     return None  # unlinked, or leased: the kernel checks permission before the lease
                 if _flock_is_missing(fd):
