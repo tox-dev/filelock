@@ -263,6 +263,20 @@ def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
         lock.release()
 
 
+@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
+@NEEDS_STALE_RECLAIM
+def test_marker_lock_reclaims_dead_owner_before_its_process_is_closed(marker: Path) -> None:
+    # Until close(), the joined Process holds the owner's handle, which on Windows keeps the exited owner openable.
+    process: Final[BaseProcess] = get_context("spawn").Process(target=_leave_marker, args=(marker,))
+    with cleanup_processes([process]):
+        process.start()
+        process.join(timeout=_PROCESS_DEADLINE)
+        assert process.exitcode == 0
+        lock = MarkerSoftFileLock(marker)
+        _acquire_after_reclaim(lock)
+        lock.release()
+
+
 @pytest.mark.parametrize(
     "record",
     [
