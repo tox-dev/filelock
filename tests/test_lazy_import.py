@@ -65,6 +65,49 @@ def test_lazy_import_resolves_asyncio_submodule() -> None:
     assert _run("from filelock import asyncio; print(asyncio.__name__)") == "filelock.asyncio\n"
 
 
+def _hidden_module_script(blocked: str, missing: str, attribute: str) -> str:
+    return f"""
+        import sys
+        class Hide:
+            def find_spec(self, name, path=None, target=None):
+                if name == {blocked!r}:
+                    raise ModuleNotFoundError(name={missing!r})
+        sys.meta_path.insert(0, Hide())
+        import filelock
+        try:
+            value = getattr(filelock, {attribute!r})
+        except ImportError as error:
+            print(f"error:{{error.name}}")
+        else:
+            print("none" if value is None else "resolved")
+        """
+
+
+@pytest.mark.parametrize(
+    ("blocked", "missing", "attribute"),
+    [
+        pytest.param("sqlite3", "sqlite3", "ReadWriteLock", id="package"),
+        pytest.param("_sqlite3", "_sqlite3", "AsyncReadWriteLock", id="cpython-binding"),
+        pytest.param("_sqlite3", "_sqlite3_cffi", "ReadWriteLock", id="pypy-binding"),
+    ],
+)
+def test_lazy_import_missing_sqlite3_leaves_read_write_lock_none(blocked: str, missing: str, attribute: str) -> None:
+    # coverage loads sqlite3 before filelock, so only an unmeasured child can miss it
+    assert _run(_hidden_module_script(blocked, missing, attribute), measured=False) == "none\n"
+
+
+@pytest.mark.parametrize(
+    ("module", "attribute"),
+    [
+        pytest.param("filelock._read_write", "ReadWriteLock", id="sync-read-write"),
+        pytest.param("filelock._async_read_write", "AsyncReadWriteLock", id="async-read-write"),
+        pytest.param("filelock._soft", "SoftFileLock", id="other-lazy-module"),
+    ],
+)
+def test_lazy_import_missing_filelock_module_raises(module: str, attribute: str) -> None:
+    assert _run(_hidden_module_script(module, module, attribute)) == f"error:{module}\n"
+
+
 def test_lazy_import_async_file_lock_subclasses_file_lock() -> None:
     assert {filelock.FileLock, filelock.BaseAsyncFileLock} <= set(filelock.AsyncFileLock.__mro__)
 

@@ -112,10 +112,13 @@ def __getattr__(name: str) -> object:
         raise AttributeError(msg)
     try:
         module = import_module(module_name, __name__)
-    except ImportError:  # pragma: lacks sqlite3
-        if module_name not in {"._read_write", "._async_read_write"}:
+    except ImportError as error:
+        # Only a missing sqlite3 module (the package, CPython's _sqlite3, PyPy's _sqlite3_cffi) leaves the read-write
+        # locks None; a frozen application that left out a filelock module gets the error that names it.
+        sqlite_missing = (error.name or "").startswith(("sqlite3", "_sqlite3"))
+        if module_name not in {"._read_write", "._async_read_write"} or not sqlite_missing:
             raise
-        value = None
+        value = None  # pragma: lacks sqlite3
     else:
         if name == "asyncio":
             value = module
