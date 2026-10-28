@@ -22,7 +22,7 @@ from tests.capability_marks import (
     NEEDS_FORK,
     NEEDS_FORK1,
 )
-from tests.descriptor_helpers import descriptor_ids
+from tests.descriptor_helpers import descriptors_on
 
 if TYPE_CHECKING:
     from _typeshed import StrOrBytesPath
@@ -82,7 +82,7 @@ def test_read_write_lock_keeps_its_probe_descriptor_while_held(tmp_path: Path) -
     with ReadWriteLock(lock_path, is_singleton=False).read_lock():
         # SQLite keeps its own descriptor, and the one that refused a symlink stays open with it: closing it would drop
         # this process's locks on the inode.
-        assert _descriptors_on(lock_path) == 2
+        assert descriptors_on(lock_path.stat()) == 2
 
 
 @_NEEDS_FD_DIRECTORY  # pragma: needs fd-directory
@@ -92,11 +92,11 @@ def test_read_write_lock_cycling_beside_a_holder_keeps_descriptors_flat(tmp_path
     with ReadWriteLock(lock_path, is_singleton=False).read_lock():
         with cycler.read_lock():
             pass
-        before: Final = _descriptors_on(lock_path)
+        before: Final = descriptors_on(lock_path.stat())
         for _ in range(20):
             with cycler.read_lock():
                 pass
-        assert _descriptors_on(lock_path) == before
+        assert descriptors_on(lock_path.stat()) == before
 
 
 @_NEEDS_FD_DIRECTORY
@@ -107,7 +107,7 @@ def test_read_write_locks_held_together_each_keep_their_own_probe(tmp_path: Path
         ReadWriteLock(lock_path, is_singleton=False).read_lock(),
         ReadWriteLock(lock_path, is_singleton=False).read_lock(),
     ):
-        assert _descriptors_on(lock_path) == 4
+        assert descriptors_on(lock_path.stat()) == 4
 
 
 @_NEEDS_FD_DIRECTORY
@@ -140,7 +140,7 @@ def test_read_write_lock_close_interrupted_among_its_probes_closes_the_rest_late
     with ReadWriteLock(tmp_path / next_database, is_singleton=False).read_lock():
         pass
 
-    assert _descriptors_on(lock_path) == 0
+    assert descriptors_on(lock_path.stat()) == 0
 
 
 @_NEEDS_PROBE_DESCRIPTORS  # pragma: win32 no cover
@@ -208,7 +208,7 @@ def test_read_write_lock_connect_interrupted_once_it_leases_a_probe_releases_it(
     mocker.stopall()
     holder.release()
 
-    assert _descriptors_on(lock_path) == 0
+    assert descriptors_on(lock_path.stat()) == 0
 
 
 @NEEDS_COLLECTED_FINALIZATION
@@ -531,16 +531,6 @@ def _dropped_instances_script() -> str:  # pragma: needs fd-directory
             pass
         """
     )
-
-
-def _descriptors_on(path: Path) -> int:  # pragma: needs fd-directory
-    database: Final[os.stat_result] = path.stat()
-    count = 0
-    for descriptor_id in descriptor_ids():
-        with contextlib.suppress(OSError):
-            descriptor: Final[os.stat_result] = os.fstat(descriptor_id)
-            count += (descriptor.st_dev, descriptor.st_ino) == (database.st_dev, database.st_ino)
-    return count
 
 
 _TRY_WRITE_SCRIPT: Final = textwrap.dedent(

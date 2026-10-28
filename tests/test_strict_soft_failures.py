@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import gc
 import os
 import pickle  # ruff:ignore[suspicious-pickle-import]  # round-trip uses bytes produced in this test
@@ -29,7 +28,7 @@ from tests.capability_marks import (
     NEEDS_SYMLINK,
     NEEDS_UNLINK_OPEN_FILE,
 )
-from tests.descriptor_helpers import descriptor_ids
+from tests.descriptor_helpers import descriptors_on
 
 # These cases inject a failure into a directory-fd cleanup step or the reaper race, both of which only run where the
 # protocol uses dir_fd descriptors. Without dir_fd those branches never execute and the injected fault never fires; the
@@ -1897,7 +1896,7 @@ def test_strict_soft_failed_doorway_cleanup_keeps_no_descriptor(lock_path: Path,
 
     with pytest.raises(BaseExceptionGroup, match="strict doorway claim cleanup failed"):
         lock.acquire()
-    assert (_descriptors_on(lock_path), lock.is_locked) == (0, False)
+    assert (descriptors_on(lock_path.stat()), lock.is_locked) == (0, False)
 
 
 @_NEEDS_FD_DIRECTORY  # pragma: needs fd-directory
@@ -1913,7 +1912,7 @@ def test_strict_soft_dropped_hold_with_stuck_claims_closes_its_descriptor(  # pr
     del lock
     gc.collect()
 
-    assert _descriptors_on(lock_path) == 0
+    assert descriptors_on(lock_path.stat()) == 0
 
 
 def _deny_claim_unlinks(mocker: MockerFixture) -> None:  # pragma: needs fd-directory
@@ -1925,16 +1924,6 @@ def _deny_claim_unlinks(mocker: MockerFixture) -> None:  # pragma: needs fd-dire
         real_unlink(path, dir_fd=dir_fd)
 
     mocker.patch("filelock._strict.os.unlink", autospec=True, side_effect=deny)
-
-
-def _descriptors_on(path: Path) -> int:  # pragma: needs fd-directory
-    target: Final = path.stat()
-    count = 0
-    for descriptor_id in descriptor_ids():
-        # The descriptor that listed the directory is already closed.
-        with contextlib.suppress(OSError):
-            count += os.path.samestat(os.fstat(descriptor_id), target)
-    return count
 
 
 def test_strict_soft_acquire_leaves_a_live_threads_pending_doorway_alone(
