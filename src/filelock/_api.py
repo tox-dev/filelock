@@ -1189,8 +1189,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         if blocking is None:
             blocking = self._context.blocking
 
-        # The constructor and the ``blocking`` setter both reject a non-bool, so a value passed to this call must not
-        # fall back to truthiness: a configuration string such as "false" would otherwise block instead of failing fast.
+        # A truthy non-bool such as the string "false" would otherwise turn a single attempt into a blocking wait.
         _check_blocking(blocking)
 
         if poll_intervall is not None:

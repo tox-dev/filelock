@@ -341,7 +341,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         if blocking is None:
             blocking = self._context.blocking
 
-        # The sync twin validates the same argument, so a non-bool must not reach the shared give-up checks as truthy.
         _check_blocking(blocking)
 
         if poll_interval is None:

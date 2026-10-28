@@ -1,4 +1,4 @@
-Fix ``acquire()`` silently accepting a non-``bool`` *blocking*: a truthy value such as the string ``"false"`` was taken as
-``True``, so a call that asked for a single attempt waited for the instance's ``timeout`` instead, and with the default
-``timeout=-1`` it waited without a limit. The sync and the async ``acquire()`` now raise the same :class:`TypeError` that
-the constructor and the ``blocking`` setter already raise.
+:meth:`~filelock.BaseFileLock.acquire` and :meth:`~filelock.BaseAsyncFileLock.acquire` raise :class:`TypeError` for a
+*blocking* that is not a :class:`bool`, as the constructor and the ``blocking`` setter already do. A truthy value such
+as the string ``"false"`` used to count as ``True``, so a call meant as a single attempt waited for the instance's
+``timeout``, and without a limit at the default ``-1``.
