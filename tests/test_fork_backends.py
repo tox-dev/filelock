@@ -292,8 +292,9 @@ def test_control_flow_registration_error_rolls_back_descriptor(tmp_path: Path, m
     real_fstat = os.fstat
 
     def interrupt_registration(fd: int) -> os.stat_result:
-        assert fd == descriptors[0]
-        raise StopAcquire
+        if fd == descriptors[0]:
+            raise StopAcquire
+        return real_fstat(fd)
 
     mocker.patch("os.fstat", side_effect=interrupt_registration)
     with pytest.raises(StopAcquire):
@@ -306,20 +307,21 @@ def test_control_flow_registration_error_rolls_back_descriptor(tmp_path: Path, m
 @pytest.mark.asyncio
 @NEEDS_FORK  # pragma: needs fork
 async def test_coroutine_registration_error_rolls_back_descriptor(tmp_path: Path, mocker: MockerFixture) -> None:
-    descriptors: list[int] = []
+    lock = _CoroutineDescriptorLock(str(tmp_path / "coroutine.lock"), is_singleton=False)
     real_fstat = os.fstat
 
     def fail_registration(fd: int) -> os.stat_result:
-        descriptors.append(fd)
-        msg = "registration failed"
-        raise OSError(msg)
+        if fd == lock.descriptor:
+            msg = "registration failed"
+            raise OSError(msg)
+        return real_fstat(fd)
 
     mocker.patch("os.fstat", side_effect=fail_registration)
     with pytest.raises(OSError, match="registration failed"):
-        await _CoroutineDescriptorLock(str(tmp_path / "coroutine.lock"), is_singleton=False).acquire(timeout=0)
+        await lock.acquire(timeout=0)
 
     with pytest.raises(OSError, match=rf"\[Errno {EBADF}\]"):
-        real_fstat(descriptors[0])
+        real_fstat(cast("int", lock.descriptor))
 
 
 @pytest.mark.asyncio

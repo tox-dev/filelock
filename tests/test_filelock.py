@@ -2440,9 +2440,16 @@ def test_contender_does_not_fchmod(held_lock_path: Path, mocker: MockerFixture) 
 @NEEDS_FCNTL  # pragma: needs fcntl
 @pytest.mark.parametrize("failing", [pytest.param("fchmod", id="fchmod"), pytest.param("fstat", id="fstat")])
 def test_post_open_failure_closes_fd(tmp_path: Path, mocker: MockerFixture, failing: str) -> None:
-    mocker.patch(f"os.{failing}", side_effect=OSError(EIO, "Input/output error"))
     open_spy = mocker.spy(os, "open")
     close_spy = mocker.spy(os, "close")
+    real: Final = getattr(os, failing)
+
+    def fail_for_the_lock_file(fd: int, *args: int) -> os.stat_result | None:
+        if fd == open_spy.spy_return:
+            raise OSError(EIO, "Input/output error")
+        return real(fd, *args)
+
+    mocker.patch(f"os.{failing}", side_effect=fail_for_the_lock_file)
 
     with pytest.raises(OSError, match="Input/output error"):
         FileLock(tmp_path / "resource.lock", timeout=0, mode=0o644).acquire()

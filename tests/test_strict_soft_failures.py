@@ -1692,13 +1692,22 @@ def test_strict_soft_private_inspection_failure_unlinks_vanished_record(tmp_path
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     real_fstat = os.fstat
+    real_open_relative = filelock._strict._open_relative
+    private_fd: int | None = None
+
+    def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
+        nonlocal private_fd
+        fd = real_open_relative(directory_ref, name, flags, mode)
+        if flags & os.O_CREAT:
+            private_fd = fd
+        return fd
 
     def fail_private_inspection(fd: int) -> os.stat_result:
-        # Only the private record is an empty regular file when the lock inspects it; the sentinel holds its record.
-        if stat.S_ISREG((found := real_fstat(fd)).st_mode) and found.st_size == 0:
+        if fd == private_fd:
             raise OSError(EIO, "private inspection failed")
-        return found
+        return real_fstat(fd)
 
+    mocker.patch("filelock._strict._open_relative", side_effect=capture_private_record)
     mocker.patch("filelock._strict.os.fstat", side_effect=fail_private_inspection)
     mocker.patch("filelock._strict._unlink_relative", side_effect=FileNotFoundError(ENOENT, "record gone"))
     lock = StrictSoftFileLock(lock_path)

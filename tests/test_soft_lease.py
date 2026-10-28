@@ -926,9 +926,12 @@ def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
         )
     ]
     before: Final = _lease_heartbeats()
+    open_spy: Final = mocker.spy(os, "open")
     leases[0].acquire()
     heartbeats: Final = _lease_heartbeats() - before
+    lease_fd: Final = open_spy.spy_return
     real_lstat: Final = os.lstat
+    real_fstat: Final = os.fstat
     misses: Final = itertools.count()
 
     def lstat(path: str) -> os.stat_result:
@@ -940,8 +943,9 @@ def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
             raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
         return real_lstat(path)
 
-    def fstat(_fd: int) -> SimpleNamespace:
-        return SimpleNamespace(st_nlink=0, st_dev=0, st_ino=0)
+    def fstat(fd: int) -> os.stat_result | SimpleNamespace:
+        # The collected lease has closed its descriptor by the time the heartbeat inspects it.
+        return SimpleNamespace(st_nlink=0, st_dev=0, st_ino=0) if fd == lease_fd else real_fstat(fd)
 
     mocker.patch("filelock._lease.os.lstat", autospec=True, side_effect=lstat)
     mocker.patch("filelock._lease.os.fstat", autospec=True, side_effect=fstat)
