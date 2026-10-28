@@ -213,7 +213,7 @@ Probe first, and you can tell them:
     lock = FileLock("py_info/5/a1b2c3.json.lock")
 
     try:
-        lock.acquire(timeout=0.0001)
+        lock.acquire(blocking=False)
     except Timeout:
         logging.info("lock held by another process, waiting for it to release %s", lock.lock_file)
         lock.acquire()  # now block for as long as it takes
