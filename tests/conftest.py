@@ -17,6 +17,7 @@ from capabilities import CAPABILITIES
 import filelock._identity
 from filelock import BaseFileLock, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name
+from tests.descriptor_helpers import descriptors_on
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -174,7 +175,7 @@ def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]
 
         def lstat_with_reuse(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
             found: Final = lstat(path, dir_fd=dir_fd)
-            if (found.st_dev, found.st_ino) != (created.st_dev, created.st_ino) or _held_open(freed):
+            if (found.st_dev, found.st_ino) != (created.st_dev, created.st_ino) or descriptors_on(freed):
                 return found
             # The tuple carries the integer fields up to st_size; the float and nanosecond times ride in the mapping.
             extra: Final = {
@@ -188,14 +189,6 @@ def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]
         mocker.patch("os.lstat", side_effect=lstat_with_reuse)
 
     return stand_in
-
-
-def _held_open(node: os.stat_result) -> bool:  # pragma: win32 no cover
-    for entry in Path("/dev/fd").iterdir():
-        with suppress(OSError):  # the descriptor the listing itself used is closed by now
-            if os.path.samestat(os.fstat(int(entry.name)), node):
-                return True
-    return False
 
 
 #: Linux and macOS cap PIDs below 2**22 + 1, and Windows answers OpenProcess for it with an invalid-parameter error, so

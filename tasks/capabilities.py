@@ -327,6 +327,14 @@ def _has_a_sticky_tmp_of_another_user() -> bool:
     return bool(tmp.st_mode & stat.S_ISVTX) and tmp.st_uid != os.geteuid()
 
 
+def _lists_every_open_descriptor() -> bool:
+    # FreeBSD's devfs and NetBSD provide only the standard streams under /dev/fd until fdescfs is mounted, so a listing
+    # there misses every descriptor a test opened.
+    view: Final = next((view for view in ("/dev/fd", "/proc/self/fd") if Path(view).is_dir()), None)
+    with Path(os.devnull).open("rb") as probe:
+        return view is not None and Path(view, str(probe.fileno())).exists()
+
+
 _LINK_FOLLOW_SYMLINKS: Final[bool] = _honors_link_follow_symlinks()
 
 
@@ -356,6 +364,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "settrace-safe-audit-hooks": _survives_settrace_inside_audit_hook(),
     "profile-interrupted-generator-finishes": _finishes_a_generator_a_profile_hook_interrupts_on_resume(),
     "fd-directory": any(Path(view).is_dir() for view in ("/dev/fd", "/proc/self/fd")),
+    "complete-fd-directory": _lists_every_open_descriptor(),
     "fifo": hasattr(os, "mkfifo"),
     "foreign-sticky-tmp": _has_a_sticky_tmp_of_another_user(),
     "af-unix": hasattr(socket, "AF_UNIX"),
