@@ -117,9 +117,7 @@ _FORK_WARNING: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings(
 @_FORK_WARNING
 @pytest.mark.parametrize("thread_local", [True, False], ids=["thread-local", "shared"])
 def test_lease_claim_does_not_survive_fork(marker: Path, *, thread_local: bool) -> None:
-    # The fork child inherits the parent's context, so without resetting the claim it would keep the parent's live
-    # token, its last compromise and a heartbeat whose thread the child does not have, and token/compromise would then
-    # report a claim the child never holds while is_locked says unheld.
+    # fork copies the parent's claim, token, compromise and heartbeat included, into a child that holds nothing.
     lease = SoftFileLease(
         str(marker),
         lease_duration=_DURATION,
@@ -138,7 +136,6 @@ def test_lease_claim_does_not_survive_fork(marker: Path, *, thread_local: bool) 
     _, status = os.waitpid(child_pid, 0)
 
     assert os.waitstatus_to_exitcode(status) == 0
-    # The parent still holds its claim.
     assert lease.token is not None
     lease.release()
 

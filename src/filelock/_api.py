@@ -1412,6 +1412,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.acquiring = None
         self._context.lock_file_key = None
         self._context.lock_file_registry = None
+        self._context.lease_claim = None
 
     def _descriptors_for_fork(self) -> tuple[tuple[int, tuple[int, int] | None], ...]:  # pragma: needs fork
         descriptors: list[tuple[int, tuple[int, int] | None]] = []

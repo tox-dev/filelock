@@ -1,4 +1,0 @@
-Reset a :class:`~filelock.SoftFileLease`'s claim in a ``fork()`` child. A child of a process holding a lease inherited
-the parent's live token, its last compromise and a heartbeat whose thread the child does not have, so
-:attr:`~filelock.SoftFileLease.token` and :attr:`~filelock.SoftFileLease.compromise` reported a claim the child never
-held while ``is_locked`` reported it unheld. The child now starts from a fresh, unheld claim.
