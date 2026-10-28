@@ -1258,6 +1258,24 @@ def test_publication_without_identity_leaves_the_marker(lock_path: Path, mocker:
     assert (lock.is_locked, lock_path.exists()) == (False, True)
 
 
+def test_transient_identity_failure_still_cleans_the_marker(lock_path: Path, mocker: MockerFixture) -> None:
+    # Only the first read of the new marker's identity fails. The rollback reads it again through the descriptor it
+    # still owns, so on Windows it recognizes the marker it created; an empty marker left there is never broken.
+    real_fstat: Final = os.fstat
+    calls: Final = itertools.count()
+
+    def fail_first(fd: int) -> os.stat_result:
+        if next(calls) == 0:
+            raise OSError(EIO, "Input/output error")
+        return real_fstat(fd)
+
+    mocker.patch("filelock._soft.os.fstat", side_effect=fail_first)
+    lock: Final = SoftFileLock(lock_path)
+    with pytest.raises(OSError, match="Input/output error"):
+        lock.acquire()
+    assert (lock.is_locked, lock_path.exists()) == (False, False)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @pytest.mark.usefixtures("unchanged_past_grace")
 @NEEDS_STALE_RECLAIM

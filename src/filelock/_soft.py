@@ -124,6 +124,13 @@ class SoftFileLock(BaseFileLock):
         except BaseException:
             self._mark_descriptor_released()
             try:
+                if identity is None:
+                    # The first read failed, as a network mount reporting EIO or an interrupt landing mid-call does, and
+                    # this attempt still owns the descriptor it created the marker through, so a retry usually answers.
+                    # Without the identity the Windows unlink below cannot recognize the marker, and the empty marker it
+                    # leaves blocks the path for good, since no contender breaks one.
+                    with suppress(OSError):
+                        identity = _file_identity(os.fstat(fd))
                 if sys.platform != "win32":  # pragma: win32 no cover
                     # Before the close: our open descriptor keeps the inode allocated, so a successor's marker cannot
                     # carry its number.
