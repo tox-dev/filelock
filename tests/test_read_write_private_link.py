@@ -167,6 +167,29 @@ def test_private_link_refuses_a_directory_swapped_in_before_it_opens(
     assert [(directory / "notes.txt").read_text() for directory in swapped_in] == ["keep"]
 
 
+def test_private_link_closes_a_mode_an_inherited_acl_opened(database: Path, loosened_directories: list[Path]) -> None:
+    lock: Final = ReadWriteLock(database, is_singleton=False)
+    with lock.read_lock():
+        assert [stat.S_IMODE(directory.stat().st_mode) for directory in loosened_directories[1:]] == [0o700]
+
+
+@pytest.mark.parametrize(
+    "fchmod_error",
+    [
+        pytest.param(None, id="ignored"),
+        pytest.param(PermissionError(errno.EPERM, "Operation not permitted"), id="refused"),
+    ],
+)
+def test_private_link_refuses_a_directory_chmod_cannot_close(
+    database: Path, loosened_directories: list[Path], mocker: MockerFixture, fchmod_error: PermissionError | None
+) -> None:
+    # ZFS with aclmode=restricted refuses a chmod on a directory carrying an inherited ACL.
+    mocker.patch("os.fchmod", autospec=True, side_effect=fchmod_error)
+    with pytest.raises(OSError, match="writable by its owner only"):
+        ReadWriteLock(database, is_singleton=False)
+    assert len(loosened_directories) == 1
+
+
 def test_private_link_opens_nothing_through_a_swapped_link_directory(
     database: Path, tmp_path: Path, mocker: MockerFixture, created_directories: list[Path]
 ) -> None:
@@ -412,4 +435,20 @@ def created_directories(mocker: MockerFixture) -> list[Path]:
         return directory
 
     mocker.patch("tempfile.mkdtemp", autospec=True, side_effect=create_directory)
+    return directories
+
+
+@pytest.fixture
+def loosened_directories(mocker: MockerFixture) -> list[Path]:
+    directories: Final[list[Path]] = []
+    mkdtemp: Final = tempfile.mkdtemp
+
+    def create_with_group_access(*, prefix: str, dir: Path) -> str:  # ruff:ignore[builtin-argument-shadowing]  # mirrors tempfile.mkdtemp
+        # Stands in for an inheritable ACL entry that grants the group access to every new directory.
+        directory: Final = Path(mkdtemp(prefix=prefix, dir=dir))
+        directory.chmod(0o770)
+        directories.append(directory)
+        return str(directory)
+
+    mocker.patch("tempfile.mkdtemp", autospec=True, side_effect=create_with_group_access)
     return directories
