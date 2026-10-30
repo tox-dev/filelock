@@ -1202,9 +1202,23 @@ def _link_beside(  # pragma: needs posix-hard-link
     try:
         made: Final = os.fstat(fd)
         # Whoever can rename in the parent can put another directory under the new name before it opens.
-        if made.st_uid != owner or made.st_mode & 0o077:
+        loose: Final = made.st_mode & 0o077
+        if made.st_uid != owner or (loose and os.listdir(fd)):  # ruff:ignore[os-listdir]  # pathlib cannot list a descriptor
             msg = f"link directory {os.fspath(path)!r} was replaced while opening"
             raise OSError(msg)
+        # An inherited ACL, such as an NFSv4 one on ZFS, overrides the mode mkdtemp asks for. Only an empty directory
+        # is tightened, so one swapped in with contents is still refused above.
+        if loose:
+            msg = (
+                f"link directory {os.fspath(path)!r} stays open to other accounts through an inherited ACL"
+                f" that chmod 0700 cannot close; make {os.fspath(parent)!r} writable by its owner only"
+            )
+            try:
+                os.fchmod(fd, 0o700)
+            except PermissionError as exc:  # ZFS with aclmode=restricted refuses a chmod on a non-trivial ACL
+                raise OSError(msg) from exc
+            if os.fstat(fd).st_mode & 0o077:
+                raise OSError(msg)
         link: Final = _LinkDirectory(path, (made.st_dev, made.st_ino), secrets.token_hex(8))
         try:
             os.mkdir(link.name, 0o700, dir_fd=fd)
