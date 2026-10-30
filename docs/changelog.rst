@@ -6,6 +6,72 @@
 
 .. towncrier release notes start
 
+.. _release-4-2-5:
+
+********************
+ 4.2.5 (2026-10-30)
+********************
+
+.. _release-4-2-5-fixed:
+
+Fixed
+=====
+
+- :meth:`~filelock.BaseFileLock.acquire` and :meth:`~filelock.BaseAsyncFileLock.acquire` raise :class:`TypeError` for a
+  *blocking* that is not a :class:`bool`, as the constructor and the ``blocking`` setter already do. A truthy value such
+  as the string ``"false"`` used to count as ``True``, so a call meant as a single attempt waited for the instance's
+  ``timeout``, and without a limit at the default ``-1`` (:pr:`870`) by :user:`simpleqt` and :user:`gaborbernat`.
+- A :class:`~filelock.SoftFileLock` acquisition whose first read of its new marker's identity failed reads it again
+  before rolling back. On Windows the rollback could otherwise not recognize the marker it had created, and the empty
+  marker it left blocked the path for every later acquisition, since no contender breaks an empty marker (:pr:`869`) by
+  :user:`simpleqt` and :user:`gaborbernat`.
+- A ``fork()`` child of a process holding a :class:`~filelock.SoftFileLease` starts from an unheld claim. It used to
+  inherit the parent's token, last compromise and heartbeat, so :attr:`~filelock.SoftFileLease.token` and
+  :attr:`~filelock.SoftFileLease.compromise` reported a claim the child never held while ``is_locked`` reported it
+  unheld (:pr:`868`) by :user:`dxbjavid` and :user:`gaborbernat`.
+- A nested acquire of a held :class:`~filelock.FileLock` or :class:`~filelock.SoftFileLock` no longer creates the lock
+  file's parent directory. After a rename of that directory during the hold, the nested acquire recreated the old name,
+  and when a file had taken the name it raised :class:`FileExistsError` and left the hold's recursion count incremented
+  (:pr:`878`) by :user:`0x5t4l1n` and :user:`gaborbernat`.
+- Fix :class:`ReadWriteLock <filelock.ReadWriteLock>` failing every acquire with "link directory ... was replaced while
+  opening" in a group-writable directory whose inherited ACL, such as an NFSv4 one on ZFS, opens the link directory to
+  the group. The lock now closes the empty link directory to its owner, and where the filesystem refuses that, such as
+  ZFS with ``aclmode=restricted``, it names the directory to make writable by its owner only (:pr:`898`) by
+  :user:`gaborbernat`.
+- Fix :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease`
+  raising ``OverflowError`` out of ``acquire()``, or never reclaiming a dead holder's lock, when a stranded restore
+  claim beside the lock names a process number outside ``1..2**31-1`` or spells it in non-ASCII digits. Such a claim is
+  now ignored, as no filelock writes one (:pr:`871`) by :user:`dxbjavid` and :user:`gaborbernat`.
+- Fix soft locks on Windows keeping the marker of a holder that has exited while another process still holds a handle to
+  it, such as a parent's ``subprocess.Popen`` after ``wait()`` or ``multiprocessing.Process`` after ``join()``.
+  Acquiring such a lock with the default ``timeout=-1`` waited forever (:pr:`874`) by :user:`nk-batman21`.
+- Fix the read-only reopen of a lock file this account cannot write resolving a relative path against the working
+  directory of the moment. A ``chdir`` between the refused ``O_RDWR`` open and the reopen made the acquisition wait on a
+  file that is not there, or probe one in another directory. The reopen now uses the path the acquisition pinned
+  (:pr:`889`) by :user:`dxbjavid` and :user:`gaborbernat`.
+- Handle ``EMLINK``, the error FreeBSD reports when a no-follow open refuses a symlink, in a soft reader/writer lock's
+  protocol tree, so heartbeat reports lost ownership there rather than a transient refresh error (:pr:`866`) by
+  :user:`pacocartones` and :user:`gaborbernat`.
+- Resolving :class:`~filelock.ReadWriteLock` or :class:`~filelock.AsyncReadWriteLock` raises the :exc:`ImportError` when
+  a module other than Python's :mod:`sqlite3` is missing, as in a frozen application that left out a filelock submodule.
+  The names are ``None`` only without SQLite (:pr:`880`) by :user:`pintu544` and :user:`gaborbernat`.
+
+.. _release-4-2-5-documentation:
+
+Documentation
+=============
+
+- The lock-probing recipe in the how-to guide probes with ``blocking=False`` instead of a tiny ``timeout`` (:pr:`873`)
+  by :user:`tongwentao` and :user:`gaborbernat`.
+
+.. _release-4-2-5-packaging:
+
+Packaging
+=========
+
+- Releases now run on the shared tox-dev/github-workflows pipeline, with a locked release toolchain and generated GitHub
+  Release notes (:pr:`885`) by :user:`gaborbernat`.
+
 .. _release-4-2-4:
 
 ********************
