@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from capabilities import CAPABILITIES
 
+import filelock._soft
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, _read_lock_file
@@ -781,6 +782,129 @@ def test_stale_break_undoes_an_exchange_that_took_a_peers_marker(  # pragma: win
         _break_contents(lock),
         list(tmp_path.glob("test.lock.restore.*")),
     ) == (_live(record), [foreign], [])
+
+
+def _lose_to_a_live_holder(  # pragma: win32 no cover
+    lock: Path, live: str, mocker: MockerFixture, then: Callable[[str, str], object]
+) -> None:
+    """Let a live holder win the race the next take-over is in, so its exchange takes that holder's marker."""
+    (holder := lock.with_name("holder")).write_text(live, encoding="utf-8")
+
+    def exchange_after_the_holder_won(aside: str, path: str) -> bool:
+        mocker.patch("filelock._soft.exchange_names", new=exchange_names)
+        holder.replace(lock)
+        exchange_names(aside, path)
+        then(aside, path)
+        return True
+
+    mocker.patch("filelock._soft.exchange_names", new=exchange_after_the_holder_won)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+def test_stale_break_exchanges_back_after_the_breaker_that_took_its_marker(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    (peer := tmp_path / "peer").write_text(record.replace(_HOST, "elsewhere"), encoding="utf-8")
+
+    def peer_exchanges_back(_seconds: float) -> None:
+        exchange_names(str(peer), str(lock))
+        peer.unlink()
+
+    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _, path: exchange_names(str(peer), path))
+    mocker.patch("filelock._util.time.sleep", side_effect=peer_exchanges_back)
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (_live(record), [lock])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+def test_stale_break_opens_a_ring_of_breakers_holding_each_others_markers(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    foreign: Final = record.replace(_HOST, "elsewhere")
+    (peer := tmp_path / "peer").write_text(foreign, encoding="utf-8")
+
+    def peer_then_our_exchange_out_of_turn(aside: str, path: str) -> None:
+        exchange_names(str(peer), path)
+        exchange_names(aside, path)
+
+    def peer_exchanges_back_once_it_stands_at_the_path(_seconds: float) -> None:
+        if lock.read_text(encoding="utf-8") == foreign:
+            exchange_names(str(peer), str(lock))
+            peer.unlink()
+
+    _lose_to_a_live_holder(lock, _live(record), mocker, peer_then_our_exchange_out_of_turn)
+    mocker.patch("filelock._util.time.sleep", side_effect=peer_exchanges_back_once_it_stands_at_the_path)
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (_live(record), [lock])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+def test_stale_break_keeps_every_name_when_the_path_never_comes_back(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    foreign: Final = record.replace(_HOST, "elsewhere")
+    (peer := tmp_path / "peer").write_text(foreign, encoding="utf-8")
+    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _, path: exchange_names(str(peer), path))
+    mocker.patch("filelock._util._EXCHANGE_BACK_GRACE", 0)
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (lock.read_text(encoding="utf-8"), _break_contents(lock)) == (foreign, [_live(record)])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+def test_stale_break_drops_what_it_took_when_the_holder_released_the_path(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _, path: Path(path).unlink())
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+def test_stale_break_leaves_a_marker_taken_since_its_first_look_on_the_path(  # pragma: win32 no cover
+    tmp_path: Path,
+    lock_type: type[SoftFileLock],
+    record: str,
+    mocker: MockerFixture,
+    on_break_recheck: Callable[[Path, Callable[[], None]], None],
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    (holder := tmp_path / "holder").write_text(_live(record), encoding="utf-8")
+    exchange: Final = mocker.spy(filelock._soft, "exchange_names")
+
+    def peer_takes_the_marker() -> None:
+        holder.replace(lock)
+
+    on_break_recheck(lock, peer_takes_the_marker)
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (exchange.call_count, lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (
+        0,
+        _live(record),
+        [lock],
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
