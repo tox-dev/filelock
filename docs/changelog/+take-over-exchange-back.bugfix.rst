@@ -1,5 +1,5 @@
-Fix :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease` wedging,
-or letting two processes hold the lock at once, when three or more contenders raced for a dead holder's marker. The lock
-path could end up naming a contender that held nothing, which every other contender then waited for, without end at the
-default ``timeout``, while the live holder's marker stayed under a break name. A contender now reads the marker again
-right before it exchanges, and contenders that lose the race exchange what they took back in reverse order.
+Fix a race in :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and
+:class:`~filelock.SoftFileLease` when three or more contenders reclaim a dead marker. The race could strand a live
+holder's marker under a break name, leaving the lock unusable or admitting a second holder. Contenders now recheck the
+marker before exchanging names and unwind nested exchanges in order. If the filesystem refuses a return exchange, the
+contender leaves its marker at the lock path for later recovery.

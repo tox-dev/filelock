@@ -323,14 +323,17 @@ class SoftFileLock(BaseFileLock):
 
     def _abandon_take_over(self, fd: int, aside: str, *, put_back: bool) -> None:  # pragma: win32 no cover
         self._mark_descriptor_released()
+        put_back_done = not put_back
         try:
             if put_back:
-                exchange_back(self._lock_path, aside, fd)
+                put_back_done = exchange_back(self._lock_path, aside, fd)
         finally:
             try:
                 # Whichever name still holds our marker loses it: the descriptor keeps its inode number ours.
                 own: Final = os.fstat(fd)
                 for name in (self._lock_path, aside):
+                    if name == self._lock_path and not put_back_done:
+                        continue
                     with suppress(FileNotFoundError):
                         if os.path.samestat(os.lstat(name), own):
                             Path(name).unlink()

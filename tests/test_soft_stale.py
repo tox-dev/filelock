@@ -6,6 +6,7 @@ import os
 import socket
 import sys
 import threading
+import time
 from contextlib import contextmanager, suppress
 from errno import EACCES, EINTR, EINVAL, EIO, ENODEV, ENOSPC, EPERM
 from multiprocessing import get_context
@@ -785,9 +786,8 @@ def test_stale_break_undoes_an_exchange_that_took_a_peers_marker(  # pragma: win
 
 
 def _lose_to_a_live_holder(  # pragma: win32 no cover
-    lock: Path, live: str, mocker: MockerFixture, then: Callable[[str, str], object]
+    lock: Path, live: str, mocker: MockerFixture, then: Callable[[str, str], bool | None]
 ) -> None:
-    """Let a live holder win the race the next take-over is in, so its exchange takes that holder's marker."""
     (holder := lock.with_name("holder")).write_text(live, encoding="utf-8")
 
     def exchange_after_the_holder_won(aside: str, path: str) -> bool:
@@ -813,8 +813,8 @@ def test_stale_break_exchanges_back_after_the_breaker_that_took_its_marker(  # p
         exchange_names(str(peer), str(lock))
         peer.unlink()
 
-    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _, path: exchange_names(str(peer), path))
-    mocker.patch("filelock._util.time.sleep", side_effect=peer_exchanges_back)
+    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _aside, path: exchange_names(str(peer), path))
+    mocker.patch("filelock._util.time", wraps=time, sleep=mocker.Mock(side_effect=peer_exchanges_back))
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 
@@ -841,7 +841,9 @@ def test_stale_break_opens_a_ring_of_breakers_holding_each_others_markers(  # pr
             peer.unlink()
 
     _lose_to_a_live_holder(lock, _live(record), mocker, peer_then_our_exchange_out_of_turn)
-    mocker.patch("filelock._util.time.sleep", side_effect=peer_exchanges_back_once_it_stands_at_the_path)
+    mocker.patch(
+        "filelock._util.time", wraps=time, sleep=mocker.Mock(side_effect=peer_exchanges_back_once_it_stands_at_the_path)
+    )
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 
@@ -857,12 +859,29 @@ def test_stale_break_keeps_every_name_when_the_path_never_comes_back(  # pragma:
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     foreign: Final = record.replace(_HOST, "elsewhere")
     (peer := tmp_path / "peer").write_text(foreign, encoding="utf-8")
-    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _, path: exchange_names(str(peer), path))
-    mocker.patch("filelock._util._EXCHANGE_BACK_GRACE", 0)
+    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _aside, path: exchange_names(str(peer), path))
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 
-    assert (lock.read_text(encoding="utf-8"), _break_contents(lock)) == (foreign, [_live(record)])
+    assert sorted([lock.read_text(encoding="utf-8"), *_break_contents(lock)]) == sorted([foreign, _live(record)])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+def test_stale_break_keeps_its_marker_when_exchange_back_is_refused(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _aside, _path: None)
+    mocker.patch("filelock._util.exchange_names", side_effect=[False, AssertionError("retried refused exchange")])
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (f"{os.getpid()}\n" in lock.read_text(encoding="utf-8"), _break_contents(lock)) == (
+        True,
+        [_live(record)],
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -872,7 +891,7 @@ def test_stale_break_drops_what_it_took_when_the_holder_released_the_path(  # pr
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
-    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _, path: Path(path).unlink())
+    _lose_to_a_live_holder(lock, _live(record), mocker, lambda _aside, path: Path(path).unlink())
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 

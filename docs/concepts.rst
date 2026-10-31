@@ -766,6 +766,7 @@ Otherwise a peer recreated the marker, and a second exchange puts the live marke
 Contenders that race for one marker nest, each holding what the one before it left at the path, so the exchanges back
 run in reverse: each contender exchanges when the path names its own marker, and one that stalls exchanges anyway to
 free a marker only it can move. It finishes once it holds its own marker again.
+If the filesystem refuses the return exchange, it leaves its marker at the lock path for a later contender to recover.
 
 The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID, then 32 random hex digits. A breaker killed
 between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under that name.

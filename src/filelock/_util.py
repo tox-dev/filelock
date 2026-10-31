@@ -240,49 +240,34 @@ def _swap_out(lock_file: str, break_path: str, mtime_before: float, ino_before: 
         os.close(fd)
 
 
-def exchange_back(lock_file: str, aside: str, fd: int) -> None:  # pragma: win32 no cover
-    """
-    Undo an exchange that put the file open as *fd* at *lock_file* and took what stood there to *aside*, then remove it.
-
-    Breakers that race for one marker nest. Each takes what the one before it left at the path, so a live holder's
-    marker can sit several names away and only the last breaker's own file stands at the path. A breaker that exchanges
-    out of turn takes a peer's file instead of its own: the path then names a process that holds nothing, which every
-    contender waits for, and the holder's marker stays under a break name. So we exchange when the path names our file,
-    and finish only once *aside* does, which our descriptor keeps from naming anything else. A peer can still move the
-    path between our look and our exchange, which leaves breakers holding each other's files in a ring no waiting can
-    open. Only the owner of a name can move what it holds, so a stalled breaker exchanges anyway to feed its file
-    through the path. Each breaker removes only its own file, so what the first one took ends up back at the path in
-    any order.
-
-    A path that never comes back to us keeps both names, as a contender recovers a marker left aside once the process it
-    names is gone. A path that stands empty was released, which leaves what we took to nobody.
-
-    :param lock_file: path to the lock file.
-    :param aside: the name the first exchange moved the lock file's occupant to.
-    :param fd: descriptor of the file the first exchange put at *lock_file*; the caller closes it.
-
-    """
+def exchange_back(lock_file: str, aside: str, fd: int) -> bool:  # pragma: win32 no cover
+    # Raced breakers nest: each aside holds the prior marker. Returning out of order can strand a live holder's marker.
+    # A peer may move the path between our check and exchange, so stalled breakers exchange to open any resulting ring.
     try:
         settled = _exchange_until_aside(lock_file, aside, os.fstat(fd))
     except FileNotFoundError:
         settled = True
     if settled:
         Path(aside).unlink(missing_ok=True)
+    return settled
 
 
 def _exchange_until_aside(lock_file: str, aside: str, own: os.stat_result) -> bool:  # pragma: win32 no cover
-    deadline: Final = time.monotonic() + _EXCHANGE_BACK_GRACE
-    feed_at = time.monotonic() + _EXCHANGE_BACK_STALL
+    # Peers need a few system calls to unwind; a paused or dead peer must not block the caller indefinitely.
+    deadline: Final = time.monotonic() + 2.0
+    stall: Final = 0.01
+    feed_at = time.monotonic() + stall
     while not os.path.samestat(os.lstat(aside), own):
         now = time.monotonic()
         ours = os.path.samestat(os.lstat(lock_file), own)
         if not ours and now >= deadline:
             return False
         if ours or now >= feed_at:
-            exchange_names(aside, lock_file)
-            feed_at = now + _EXCHANGE_BACK_STALL
+            if not exchange_names(aside, lock_file):
+                return False
+            feed_at = now + stall
         else:
-            time.sleep(_EXCHANGE_BACK_RETRY)
+            time.sleep(0.0005)
     return True
 
 
@@ -419,12 +404,6 @@ def touch(name: str, *, fd: int) -> None:
     os.utime(name, None, follow_symlinks=not _SUPPORTS_UTIME_NOFOLLOW)  # pragma: lacks utime-fd
 
 
-#: How long an exchange back waits for its file to return, in seconds. Peers need a few system calls each, so this runs
-#: out only when one is paused or was killed.
-_EXCHANGE_BACK_GRACE: Final[float] = 2.0
-#: How long it waits before it feeds what it holds through the path, and how often it looks meanwhile.
-_EXCHANGE_BACK_STALL: Final[float] = 0.01
-_EXCHANGE_BACK_RETRY: Final[float] = 0.0005
 # Windows refuses to rename a marker its live holder keeps open, so renaming aside only moves a marker nobody holds.
 # Elsewhere without an exchange a contender could take the emptied path beside a live holder, so the marker stays and
 # the lock counts as held.
