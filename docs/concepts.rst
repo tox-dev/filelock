@@ -763,6 +763,10 @@ If the file it took is the one judged stale, it removes that file and holds the 
 exchanges after that moves the holder's marker aside only while it checks what it took, and puts it back. A holder that
 releases while its marker is aside leaves a record no lock parses, so the put-back lands a marker that ages out.
 Otherwise a peer recreated the marker, and a second exchange puts the live marker back before its own is removed.
+Contenders that race for one marker nest, each holding what the one before it left at the path, so the exchanges back
+run in reverse: each contender exchanges when the path names its own marker, and one that stalls exchanges anyway to
+free a marker only it can move. It finishes once it holds its own marker again.
+If the filesystem refuses the return exchange, it leaves its marker at the lock path for a later contender to recover.
 
 The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID, then 32 random hex digits. A breaker killed
 between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under that name.

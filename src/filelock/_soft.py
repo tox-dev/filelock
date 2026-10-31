@@ -30,6 +30,7 @@ from filelock._identity import host_name, owner_is_current_process, owner_is_sta
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import (
     break_lock_file,
+    exchange_back,
     exchange_names,
     exchange_supported,
     pin_inode,
@@ -210,6 +211,10 @@ class SoftFileLock(BaseFileLock):
             identity: Final = _file_identity(os.fstat(fd))
             self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
+            # The scan and the write take long enough for a peer to have taken the marker since the check above, and an
+            # exchange now would move that peer's live marker aside.
+            if (current := os.lstat(self._lock_path)).st_mtime != marker.st_mtime or current.st_ino != marker.st_ino:
+                return
             if not exchange_names(aside, self._lock_path):
                 return  # NFS, SMB and the like refuse it; renaming the marker aside would empty the path
             exchanged = True
@@ -318,14 +323,17 @@ class SoftFileLock(BaseFileLock):
 
     def _abandon_take_over(self, fd: int, aside: str, *, put_back: bool) -> None:  # pragma: win32 no cover
         self._mark_descriptor_released()
+        put_back_done = not put_back
         try:
             if put_back:
-                exchange_names(aside, self._lock_path)
+                put_back_done = exchange_back(self._lock_path, aside, fd)
         finally:
             try:
                 # Whichever name still holds our marker loses it: the descriptor keeps its inode number ours.
                 own: Final = os.fstat(fd)
                 for name in (self._lock_path, aside):
+                    if name == self._lock_path and not put_back_done:
+                        continue
                     with suppress(FileNotFoundError):
                         if os.path.samestat(os.lstat(name), own):
                             Path(name).unlink()

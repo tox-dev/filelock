@@ -8,6 +8,7 @@ import platform
 import secrets
 import stat
 import sys
+import time
 from contextlib import contextmanager, suppress
 from errno import EACCES, EINVAL, EIO, EISDIR, ENOSYS, EXDEV
 from functools import cache
@@ -234,10 +235,40 @@ def _swap_out(lock_file: str, break_path: str, mtime_before: float, ino_before: 
             if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
                 Path(lock_file).unlink()
         else:
-            exchange_names(break_path, lock_file)
-            Path(break_path).unlink()
+            exchange_back(lock_file, break_path, fd)
     finally:
         os.close(fd)
+
+
+def exchange_back(lock_file: str, aside: str, fd: int) -> bool:  # pragma: win32 no cover
+    # Raced breakers nest: each aside holds the prior marker. Returning out of order can strand a live holder's marker.
+    # A peer may move the path between our check and exchange, so stalled breakers exchange to open any resulting ring.
+    try:
+        settled = _exchange_until_aside(lock_file, aside, os.fstat(fd))
+    except FileNotFoundError:
+        settled = True
+    if settled:
+        Path(aside).unlink(missing_ok=True)
+    return settled
+
+
+def _exchange_until_aside(lock_file: str, aside: str, own: os.stat_result) -> bool:  # pragma: win32 no cover
+    # Peers need a few system calls to unwind; a paused or dead peer must not block the caller indefinitely.
+    deadline: Final = time.monotonic() + 2.0
+    stall: Final = 0.01
+    feed_at = time.monotonic() + stall
+    while not os.path.samestat(os.lstat(aside), own):
+        now = time.monotonic()
+        ours = os.path.samestat(os.lstat(lock_file), own)
+        if not ours and now >= deadline:
+            return False
+        if ours or now >= feed_at:
+            if not exchange_names(aside, lock_file):
+                return False
+            feed_at = now + stall
+        else:
+            time.sleep(0.0005)
+    return True
 
 
 def _break_by_rename(
@@ -387,6 +418,7 @@ _SUPPORTS_UTIME_NOFOLLOW: Final[bool] = os.utime in os.supports_follow_symlinks
 __all__ = [
     "break_lock_file",
     "ensure_directory_exists",
+    "exchange_back",
     "exchange_names",
     "exchange_supported",
     "foreign_directory_owner",
