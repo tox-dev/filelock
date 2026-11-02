@@ -226,6 +226,7 @@ def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture
     "contract",
     [
         pytest.param(f"mode=lease\ntoken=abc\nduration={_DURATION!r}\n", id="lease"),
+        pytest.param(f"mode=lease\ntoken=abc\nduration={_DURATION * 3!r}\n", id="lease-other-duration"),
         pytest.param("mode=exclusive\n", id="exclusive"),
     ],
 )
