@@ -226,6 +226,7 @@ def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture
     "contract",
     [
         pytest.param(f"mode=lease\ntoken=abc\nduration={_DURATION!r}\n", id="lease"),
+        pytest.param(f"mode=lease\ntoken=abc\nduration={_DURATION * 3!r}\n", id="lease-other-duration"),
         pytest.param("mode=exclusive\n", id="exclusive"),
     ],
 )
@@ -588,18 +589,6 @@ def test_lease_rejects_a_peer_configured_with_another_duration(marker: Path) -> 
 
     with holder, pytest.raises(LeaseSettingsMismatch, match="must agree on lease_duration"):
         _lease(marker, lease_duration=_DURATION * 3).acquire()
-
-
-@NEEDS_STALE_RECLAIM
-def test_lease_reclaims_a_dead_holder_published_with_another_duration(marker: Path) -> None:
-    # A dead owner is no peer to disagree with, so a changed lease_duration must not wedge its marker.
-    marker.write_text(
-        f"filelock/2\npid=999999\nhost={host_name()}\nmode=lease\ntoken=abc\nduration={_DURATION * 3!r}\n",
-        encoding="utf-8",
-    )
-
-    with held_after_reclaim(_lease(marker)) as lease:
-        assert lease.is_lock_held_by_us
 
 
 class _LeaseSettings(TypedDict, total=False):

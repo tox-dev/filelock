@@ -261,8 +261,7 @@ class SoftFileLease(MarkerSoftFileLock):
         owner, marker = peer
         if pinned not in {None, marker.st_ino}:  # pragma: win32 no cover  # Windows pins nothing
             return  # replaced before the read, so nothing keeps the number read from reuse
-        # A dead or recycled owner is reclaimed at once, whether it held a lease or an exclusive marker, and whatever
-        # duration it published: reclaiming it applies no expiry, so there is no peer left to disagree with.
+        # Duration governs age-based expiry; a dead owner has no lease left to disagree with.
         if owner.mode != "unknown" and owner_is_stale(owner.pid, owner.hostname, owner.start):
             self._take_over(marker, owner.pid)
             return
@@ -275,7 +274,6 @@ class SoftFileLease(MarkerSoftFileLock):
                 f"{self._lease_duration!r}s; every contender for a path must agree on lease_duration"
             )
             raise LeaseSettingsMismatch(msg)
-        # A live lease owner whose marker stops being refreshed is superseded on the schedule every contender agreed to.
         if owner.mode == "lease" and self._marker_unchanged_for(marker) >= self._lease_duration:
             self._take_over(marker, None)
 
