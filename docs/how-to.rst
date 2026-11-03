@@ -1526,9 +1526,12 @@ would drop the callback without telling you. See :ref:`how-to:Fail closed instea
 *******************************************
 
 :func:`lock_descriptor <filelock.lock_descriptor>` and :func:`unlock_descriptor <filelock.unlock_descriptor>` take and
-release the same one-byte native lock :class:`FileLock <filelock.FileLock>` uses, but on a file descriptor you opened
+release the same native lock :class:`FileLock <filelock.FileLock>` uses, but on a file descriptor you opened
 and own. They add no path handling: no open, truncate, close, unlink, chmod, canonicalize, or fallback. A descriptor
-lock and a ``FileLock`` path lock on the same file contend with each other.
+lock and a native ``FileLock`` path lock on the same file contend with each other.
+
+On Unix this is a whole-file :func:`fcntl.flock` lock. On Windows it is a ``LockFileEx`` lock of one byte at offset 0.
+Neither function accepts an offset or length, and seeking the descriptor does not change the locked range.
 
 .. code-block:: python
 
@@ -1551,11 +1554,13 @@ Blocking calls require a positive ``poll_interval`` of at most :data:`threading.
 wrapper. Run it in an executor, or drive ``blocking=False`` from your own polling loop. On Windows *fd* must be a
 synchronous descriptor.
 
-This is the tool for interoperating with a lock protocol you did not define. `conda
-<https://github.com/conda/conda>`_ locks a specific byte of its repodata state file rather than a sidecar path, because
-the byte offset is an agreed constant that ``mamba`` also implements: the lock is part of a cross-tool contract, so the
-pathname conventions of ``FileLock`` would put it on the wrong rendezvous. When the protocol names a descriptor and an
-offset, take the descriptor.
+To interoperate with another tool, all participants must agree on the file, locking primitive, range, and protocol.
+For example, `conda's repodata lock
+<https://github.com/conda/conda/blob/main/conda/gateways/disk/lock.py>`_ locks one byte at offset 21 using
+:func:`fcntl.lockf` on Unix or :func:`msvcrt.locking` on Windows. ``lock_descriptor`` is not a portable replacement for
+that protocol: the Windows ranges do not overlap, and Unix ``flock`` and ``lockf`` are different primitives whose
+interaction depends on the operating system and filesystem. Use the primitive and range required by the existing
+protocol; sharing a file descriptor alone does not establish compatibility.
 
 Both functions raise ``OSError`` with :data:`errno.ENOSYS` when the Python build lacks the native locking primitive.
 The :class:`FileLock <filelock.FileLock>` and :class:`AsyncFileLock <filelock.AsyncFileLock>` aliases continue to select

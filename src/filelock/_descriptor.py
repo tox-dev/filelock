@@ -21,10 +21,14 @@ def lock_descriptor(fd: int, *, blocking: bool = True, poll_interval: float = 0.
     """
     Take the native OS lock on *fd*, a file descriptor the caller opened and owns.
 
-    This is the same one-byte exclusive lock :class:`FileLock` uses, so a descriptor lock and a path lock on the same
-    file contend with each other. Unlike :class:`FileLock` it adds no path handling: it never opens, truncates, closes,
-    unlinks, chmods, canonicalizes, or falls back. The caller owns *fd* before, during, and after the call, and must
-    close it. On Windows *fd* must be a synchronous descriptor (its handle not opened with ``FILE_FLAG_OVERLAPPED``).
+    This is the same exclusive lock the native :class:`FileLock` backend uses: a whole-file :func:`fcntl.flock` lock
+    on Unix, or a ``LockFileEx`` lock of one byte at offset 0 on Windows. A descriptor lock and a native path lock on
+    the same file contend with each other. There are no offset or length parameters; seeking *fd* does not change
+    the locked range. Interoperating with another tool requires agreement on the locking primitive, range, and protocol.
+
+    Unlike :class:`FileLock` it adds no path handling: it never opens, truncates, closes, unlinks, chmods,
+    canonicalizes, or falls back. The caller owns *fd* before, during, and after the call, and must close it.
+    On Windows *fd* must be a synchronous descriptor (its handle not opened with ``FILE_FLAG_OVERLAPPED``).
 
     For timeout, reentrancy, singleton, lifetime, or stale-break behavior, use :class:`FileLock`. There is no async
     wrapper. Run this in an executor, or drive ``blocking=False`` from your own polling loop.
