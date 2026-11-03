@@ -701,7 +701,13 @@ def test_lease_supersedes_a_live_holder_once_its_claim_ages_out(marker: Path, mo
     # lease_duration without a refresh. Windows cannot delete a live holder's open marker, so drive the age branch with
     # a non-stale owner and a clock that steps a full duration per look rather than a real second process.
     mocker.patch("filelock._lease.owner_is_stale", return_value=False)
-    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=_DURATION))
+    mocker.patch(
+        "filelock._soft.time",
+        new=SimpleNamespace(
+            monotonic=mocker.create_autospec(time.monotonic, side_effect=itertools.count(step=_DURATION)),
+            sleep=time.sleep,
+        ),
+    )
     marker.write_text(
         f"filelock/2\npid={os.getpid()}\nhost={host_name()}\nmode=lease\ntoken=stalled\nduration={_DURATION!r}\n",
         encoding="utf-8",
@@ -839,7 +845,13 @@ def test_native_lock_rejects_a_lease_duration(marker: Path) -> None:
 def test_lease_does_not_age_out_a_live_exclusive_owner(marker: Path, mocker: MockerFixture) -> None:
     # An exclusive owner never agreed to expire, so only proof of death may reclaim it, however long it sits unchanged.
     mocker.patch("filelock._lease.owner_is_stale", return_value=False)
-    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=_DURATION))
+    mocker.patch(
+        "filelock._soft.time",
+        new=SimpleNamespace(
+            monotonic=mocker.create_autospec(time.monotonic, side_effect=itertools.count(step=_DURATION)),
+            sleep=time.sleep,
+        ),
+    )
     marker.write_text(f"filelock/2\npid={os.getpid()}\nhost={socket.gethostname()}\nmode=exclusive\n", encoding="utf-8")
 
     with pytest.raises(Timeout):

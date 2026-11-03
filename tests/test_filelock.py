@@ -25,7 +25,7 @@ from pathlib import Path, PurePath
 from pkgutil import resolve_name
 from queue import Queue
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
-from types import CodeType, FrameType, TracebackType
+from types import CodeType, FrameType, SimpleNamespace, TracebackType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast, get_args
 from uuid import uuid4
 from weakref import WeakValueDictionary
@@ -64,6 +64,7 @@ from tests.process_helpers import call_within
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
+    from unittest.mock import Mock
 
     from _typeshed import Unused
     from pytest_mock import MockerFixture
@@ -729,48 +730,52 @@ def test_default_poll_interval(lock_type: type[BaseFileLock], tmp_path: Path) ->
 
 
 @pytest.fixture
-def steady_clock(mocker: MockerFixture) -> None:
+def steady_clock(mocker: MockerFixture) -> Mock:
     # These tests assert the sleep the lock asked for. The lock caps that sleep at the time left before its timeout, so
     # a stall on a loaded machine between the start and the first poll would shorten it. A clock that advances 10 ms
     # per reading keeps the first poll inside the timeout regardless of load.
-    mocker.patch("filelock._api.time.perf_counter", side_effect=(reading / 100 for reading in count()))
+    sleep_mock: Final = mocker.create_autospec(time.sleep)
+    mocker.patch(
+        "filelock._api.time",
+        new=SimpleNamespace(
+            perf_counter=mocker.create_autospec(time.perf_counter, side_effect=(reading / 100 for reading in count())),
+            sleep=sleep_mock,
+        ),
+    )
+    return sleep_mock
 
 
-@pytest.mark.usefixtures("steady_clock")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_poll_interval_used_by_context_manager(
-    lock_type: type[BaseFileLock], tmp_path: Path, mocker: MockerFixture
+    lock_type: type[BaseFileLock], tmp_path: Path, steady_clock: Mock
 ) -> None:
     lock_path = tmp_path / "a"
     lock_1 = lock_type(str(lock_path))
     lock_2 = lock_type(str(lock_path), timeout=0.2, poll_interval=0.05)
 
     lock_1.acquire()
-    sleep_mock = mocker.patch("filelock._api.time.sleep")
     with pytest.raises(Timeout):
         lock_2.acquire()
-    sleep_mock.assert_any_call(0.05)
+    steady_clock.assert_any_call(0.05)
 
-    sleep_mock.reset_mock()
+    steady_clock.reset_mock()
     lock_2.poll_interval = 0.1
     with pytest.raises(Timeout):
         lock_2.acquire()
-    sleep_mock.assert_any_call(0.1)
+    steady_clock.assert_any_call(0.1)
     lock_1.release()
 
 
-@pytest.mark.usefixtures("steady_clock")
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_poll_interval_acquire_override(lock_type: type[BaseFileLock], tmp_path: Path, mocker: MockerFixture) -> None:
+def test_poll_interval_acquire_override(lock_type: type[BaseFileLock], tmp_path: Path, steady_clock: Mock) -> None:
     lock_path = tmp_path / "a"
     lock_1 = lock_type(str(lock_path))
     lock_2 = lock_type(str(lock_path), timeout=0.2, poll_interval=0.05)
 
     lock_1.acquire()
-    sleep_mock = mocker.patch("filelock._api.time.sleep")
     with pytest.raises(Timeout):
         lock_2.acquire(poll_interval=0.15)
-    sleep_mock.assert_any_call(0.15)
+    steady_clock.assert_any_call(0.15)
     lock_1.release()
 
 
@@ -1969,7 +1974,10 @@ def test_cancel_check_after_n_polls(lock_type: type[BaseFileLock], tmp_path: Pat
         call_count += 1
         return call_count >= 2
 
-    mocker.patch("filelock._api.time.sleep")
+    mocker.patch(
+        "filelock._api.time",
+        new=SimpleNamespace(perf_counter=time.perf_counter, sleep=mocker.create_autospec(time.sleep)),
+    )
     with pytest.raises(Timeout):
         lock_2.acquire(timeout=10, cancel_check=cancel_after_two)
     assert call_count == 2
@@ -3536,7 +3544,8 @@ def test_lock_descriptor_blocking_retries_until_free(
     assert lock_descriptor(holder, blocking=False) is True
     # Drive the real blocking loop: the first attempt sees contention, the mocked sleep frees the holder, and the
     # second attempt wins. Only the clock is mocked, so a single sleep call proves exactly one retry happened.
-    sleep = mocker.patch("filelock._descriptor.time.sleep", side_effect=lambda _: unlock_descriptor(holder))
+    sleep: Final = mocker.create_autospec(time.sleep, side_effect=lambda _: unlock_descriptor(holder))
+    mocker.patch("filelock._descriptor.time", new=SimpleNamespace(sleep=sleep))
     try:
         assert lock_descriptor(fd, blocking=True, poll_interval=poll_interval) is True
         sleep.assert_called_once_with(poll_interval)
