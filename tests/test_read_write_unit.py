@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, closing
 from functools import partial
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
@@ -679,7 +680,12 @@ def test_busy_timeout_recomputed_after_journal_mode(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
     counter = iter([0.0, 0.0, 0.0, 0.5])
-    mocker.patch("filelock._read_write.time.perf_counter", side_effect=counter)
+    mocker.patch(
+        "filelock._read_write.time",
+        new=SimpleNamespace(
+            monotonic=time.monotonic, perf_counter=mocker.create_autospec(time.perf_counter, side_effect=counter)
+        ),
+    )
     lock = ReadWriteLock(lock_file, is_singleton=False)
     (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=2.0)
     lock.release()

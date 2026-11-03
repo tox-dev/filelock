@@ -14,6 +14,7 @@ from errno import EIO
 from functools import partial
 from multiprocessing import Event, Process
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import pytest
@@ -942,11 +943,10 @@ def test_writer_evicted_while_draining_queues_behind_its_evictor(
     reader = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
     reader.acquire_read(timeout=2)
     writer = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=40)
-    real_sleep = time.sleep
     swapped = threading.Event()
     peer: list[str] = []
 
-    def hook(seconds: float) -> None:  # ruff:ignore[unused-function-argument]  # replaces time.sleep; the duration is irrelevant to the swap
+    def hook(_seconds: float) -> None:
         if swapped.is_set():
             raise Timeout(lock_file)
         swapped.set()
@@ -959,14 +959,18 @@ def test_writer_evicted_while_draining_queues_behind_its_evictor(
         assert log.commit(Snapshot(generation=latest.generation + 1, writer=peer[0], readers=frozenset()))
         reader.release()
 
-    monkeypatch.setattr(sync_mod.time, "sleep", hook)
+    monkeypatch.setattr(
+        sync_mod,
+        "time",
+        SimpleNamespace(monotonic=time.monotonic, perf_counter=time.perf_counter, sleep=hook),
+    )
     try:
         with pytest.raises(Timeout):
             writer.acquire_write(timeout=30)
         assert swapped.is_set()
         assert _state(lock_file).writer == peer[0]
     finally:
-        monkeypatch.setattr(sync_mod.time, "sleep", real_sleep)
+        monkeypatch.setattr(sync_mod, "time", time)
         writer.close()
         reader.close()
 
@@ -1749,7 +1753,14 @@ def test_contention_obeys_acquisition_policy(
         assert 0 < seconds <= timeout
         real_sleep(seconds)
 
-    mocker.patch("time.sleep", autospec=True, side_effect=sleep)
+    mocker.patch(
+        "filelock._soft_rw._sync.time",
+        new=SimpleNamespace(
+            monotonic=time.monotonic,
+            perf_counter=time.perf_counter,
+            sleep=mocker.create_autospec(time.sleep, side_effect=sleep),
+        ),
+    )
     with closing(SoftReadWriteLock(lock_file, timeout=timeout, blocking=blocking, poll_interval=10)) as lock:
         acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
         with pytest.raises(Timeout) as caught:

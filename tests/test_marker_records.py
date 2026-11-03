@@ -5,6 +5,7 @@ import os
 import time
 from contextlib import suppress
 from multiprocessing import get_context
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -166,7 +167,15 @@ def test_lease_never_ages_out_an_unknown_contract(tmp_path: Path) -> None:
 @NEEDS_STALE_RECLAIM
 def test_lease_ages_out_a_malformed_record(tmp_path: Path, mocker: MockerFixture) -> None:
     # The self-heal still applies to a record that states no contract at all, so corruption cannot wedge contenders.
-    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
+    mocker.patch(
+        "filelock._soft.time",
+        new=SimpleNamespace(
+            monotonic=mocker.create_autospec(
+                time.monotonic, side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD)
+            ),
+            sleep=time.sleep,
+        ),
+    )
     marker = tmp_path / "a.lock"
     marker.write_text("filelock/2\nnot-a-record\n", encoding="utf-8")
 
@@ -286,7 +295,15 @@ def test_marker_lock_reclaims_dead_owner_before_its_process_is_closed(marker: Pa
 )
 @NEEDS_STALE_RECLAIM
 def test_marker_lock_reclaims_malformed_record(marker: Path, record: str, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
+    mocker.patch(
+        "filelock._soft.time",
+        new=SimpleNamespace(
+            monotonic=mocker.create_autospec(
+                time.monotonic, side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD)
+            ),
+            sleep=time.sleep,
+        ),
+    )
     marker.write_text(record, encoding="utf-8")
     lock = MarkerSoftFileLock(marker)
     _acquire_after_reclaim(lock)

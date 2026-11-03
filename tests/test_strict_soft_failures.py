@@ -13,6 +13,7 @@ import threading
 import time
 from errno import EACCES, EEXIST, EIO, ENOENT, ENOSPC, ESTALE, EXDEV
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, NoReturn
 
 import pytest
@@ -527,7 +528,8 @@ def test_strict_soft_reaper_does_not_retry_sharing_error(
         real_unlink(path, dir_fd=dir_fd)
 
     unlink = mocker.patch("filelock._strict.os.unlink", autospec=True, side_effect=deny_abandoned_record)
-    sleep = mocker.patch("filelock._strict.time.sleep", autospec=True)
+    sleep: Final = mocker.create_autospec(time.sleep)
+    _patch_strict_clock(mocker, sleep=sleep)
     # A contender blocked by a foreign claim ages the record out in its scan without removing a claim of its own.
     _write_foreign_claim(Path(f"{lock_path}.filelock") / "claims", "f" * 32)
 
@@ -549,7 +551,7 @@ def test_strict_soft_reaper_ages_records_by_filesystem_clock(
         private_path = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
     private_path.write_bytes(b"in-flight publication")
     # A client clock an hour ahead of the filesystem's would read the fresh record as abandoned.
-    mocker.patch("filelock._strict.time.time", return_value=time.time() + 3600)
+    _patch_strict_clock(mocker, wall=lambda: time.time() + 3600)
 
     with StrictSoftFileLock(lock_path, timeout=0):
         assert private_path.read_bytes() == b"in-flight publication"
@@ -919,7 +921,7 @@ def test_strict_soft_unparsable_lock_path_raises_once_unchanged(
 ) -> None:
     lock_path = tmp_path / "resource.lock"
     lock_path.write_bytes(content)
-    mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=[0.0, 2.0])
+    _patch_strict_clock(mocker, monotonic=mocker.create_autospec(time.monotonic, side_effect=[0.0, 2.0]))
     lock = StrictSoftFileLock(lock_path, poll_interval=0)
 
     with pytest.raises(SoftFileLockProtocolError, match="marker it can parse, unchanged for 2 seconds"):
@@ -954,7 +956,8 @@ def test_strict_soft_exited_soft_lock_owner_raises_without_waiting(tmp_path: Pat
     ).stdout.strip()
     lock_path.write_text(f"{pid}\n{host_name()}\n", encoding="ascii")
     found = f"a soft-lock marker left by pid {pid} on {host_name()}, which has exited"
-    sleep = mocker.patch("filelock._strict.time.sleep", autospec=True)
+    sleep: Final = mocker.create_autospec(time.sleep)
+    _patch_strict_clock(mocker, sleep=sleep)
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(SoftFileLockProtocolError, match=re.escape(f"found {found}")):
@@ -1024,7 +1027,9 @@ def test_strict_soft_sentinel_vanishing_before_open_is_republished(lock_path: Pa
 def test_strict_soft_rides_out_a_transient_non_sentinel(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     lock_path.mkdir()
-    mocker.patch("filelock._strict.time.sleep", autospec=True, side_effect=lambda _seconds: lock_path.rmdir())
+    _patch_strict_clock(
+        mocker, sleep=mocker.create_autospec(time.sleep, side_effect=lambda _seconds: lock_path.rmdir())
+    )
 
     with StrictSoftFileLock(lock_path, timeout=0) as lock:
         assert lock.is_locked
@@ -2007,8 +2012,11 @@ def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: Moc
             claim.unlink()
         return now
 
-    mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=tick)
-    mocker.patch("filelock._strict.time.sleep", autospec=True)
+    _patch_strict_clock(
+        mocker,
+        monotonic=mocker.create_autospec(time.monotonic, side_effect=tick),
+        sleep=mocker.create_autospec(time.sleep),
+    )
     _open_raising_for(claim, PermissionError(EACCES, "sharing violation"), mocker)
 
     if vanished:
@@ -2048,8 +2056,11 @@ def test_strict_soft_claims_removed_one_by_one_share_one_read_grace(tmp_path: Pa
             raise PermissionError(EACCES, "claim read denied")
         return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: needs dir-fd
 
-    mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=lambda: now)
-    mocker.patch("filelock._strict.time.sleep", autospec=True, side_effect=tick)
+    _patch_strict_clock(
+        mocker,
+        monotonic=mocker.create_autospec(time.monotonic, side_effect=lambda: now),
+        sleep=mocker.create_autospec(time.sleep, side_effect=tick),
+    )
     _route_claim_opens_through_os_open(mocker)
     mocker.patch("filelock._strict.os.open", autospec=True, side_effect=deny_claims)
 
@@ -2202,8 +2213,11 @@ def test_strict_soft_claims_recheck_after_a_denied_claim_creates_no_file(tmp_pat
     claim: Final = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
     (private_path := _private_claim_path(lock_path, "0" * 32)).write_bytes(b"abandoned")
     os.utime(private_path, (0, 0))
-    mocker.patch("filelock._strict.time.monotonic", autospec=True, side_effect=[0, 1])
-    mocker.patch("filelock._strict.time.sleep", autospec=True)
+    _patch_strict_clock(
+        mocker,
+        monotonic=mocker.create_autospec(time.monotonic, side_effect=[0, 1]),
+        sleep=mocker.create_autospec(time.sleep),
+    )
     opened: Final = _open_raising_for(claim, PermissionError(EACCES, "sharing violation"), mocker)
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
@@ -2366,7 +2380,8 @@ def test_strict_soft_release_rides_out_a_transient_unlink_denial(lock_path: Path
         real_unlink(path, dir_fd=dir_fd)
 
     mocker.patch("filelock._strict.os.unlink", side_effect=deny_once)
-    sleep: Final = mocker.patch("filelock._strict.time.sleep", autospec=True)
+    sleep: Final = mocker.create_autospec(time.sleep)
+    _patch_strict_clock(mocker, sleep=sleep)
     lock.release()
 
     assert (len(denied), sleep.call_args_list, lock.claims) == (1, [mocker.call(0.001)], ())
@@ -2376,3 +2391,13 @@ def _write_foreign_claim(claims: Path, token: str, state: str = "held") -> Path:
     claim = claims / f"{state}-v1-{token}.claim"
     claim.write_bytes(b"filelock-strict-v1\n" + token.encode() + f"\n{os.getpid()}\n686f7374\n4242\n".encode())
     return claim
+
+
+def _patch_strict_clock(
+    mocker: MockerFixture,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    wall: Callable[[], float] = time.time,
+) -> None:
+    mocker.patch("filelock._strict.time", new=SimpleNamespace(monotonic=monotonic, sleep=sleep, time=wall))

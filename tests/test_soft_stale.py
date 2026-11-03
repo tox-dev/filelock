@@ -11,6 +11,7 @@ from contextlib import contextmanager, suppress
 from errno import EACCES, EINTR, EINVAL, EIO, ENODEV, ENOSPC, EPERM
 from multiprocessing import get_context
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -1822,7 +1823,10 @@ def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Pa
     marker = tmp_path / "a"
     marker.write_text("x", encoding="utf-8")
     lock = SoftFileLock(marker)
-    mocker.patch("filelock._soft.time.sleep")
+    mocker.patch(
+        "filelock._soft.time",
+        new=SimpleNamespace(monotonic=time.monotonic, sleep=mocker.create_autospec(time.sleep)),
+    )
     unlink: Final = mocker.patch("filelock._soft.unlink_path", side_effect=PermissionError(EACCES, "handle still open"))
 
     lock._windows_unlink_if_ours(_file_identity(os.lstat(marker)))
@@ -1838,7 +1842,15 @@ def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Pa
 def unchanged_past_grace(mocker: MockerFixture) -> None:
     # Each look at the marker lands a full grace window after the previous one on the observer's clock, so an unchanged
     # malformed marker ages out on the second look without the test sleeping through the window.
-    mocker.patch("filelock._soft.time.monotonic", side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD))
+    mocker.patch(
+        "filelock._soft.time",
+        new=SimpleNamespace(
+            monotonic=mocker.create_autospec(
+                time.monotonic, side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD)
+            ),
+            sleep=time.sleep,
+        ),
+    )
 
 
 def test_unparseable_lock_with_an_ancient_mtime_not_evicted_on_first_sight(lock_path: Path) -> None:
