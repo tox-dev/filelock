@@ -377,13 +377,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: "🚦 Check all jobs passed"
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          jq -e '
-            all(
-              to_entries[];
-              .value.result == "success" or
-              (.key == "graalpy" and .value.result == "skipped")
-            )
-          ' <<<"$NEEDS_JSON"
+        uses: tox-dev/github-workflows/required-checks@bceb5c005e19823dc8835f536f53f172ae223927 # 6.5.0
+        with:
+          needs: ${{ toJSON(needs) }}
+          allow-skipped: graalpy
