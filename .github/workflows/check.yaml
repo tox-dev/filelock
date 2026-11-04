@@ -7,11 +7,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   schedule:
-    - cron: "0 8 * * *"
-    - cron: "0 6 * * 1"
+    - cron: "11 7 * * *"
+    - cron: "51 11 * * 1"
 concurrency:
   group: check-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
@@ -34,8 +34,8 @@ jobs:
           - ubuntu-24.04
           - windows-2025
           - macos-15
-        exclude:
-          - {os: windows-2025, py: pypy3.11}
+        # macOS keeps 3.15 and 3.15t on every event; the rest run only on the Monday cron.
+        exclude: ${{ fromJSON(github.event.schedule == '51 11 * * 1' && '[{"os":"windows-2025","py":"pypy3.11"}]' || '[{"os":"windows-2025","py":"pypy3.11"},{"os":"macos-15","py":"3.14t"},{"os":"macos-15","py":"3.14"},{"os":"macos-15","py":"3.13"},{"os":"macos-15","py":"3.12"},{"os":"macos-15","py":"3.11"},{"os":"macos-15","py":"pypy3.11"}]') }}
     steps:
       - name: "📥 Check out code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,7 +90,7 @@ jobs:
     # GraalPy 25.4.4 can freeze every thread at once under the threaded lock tests, so it stays off pull requests and
     # pushes. A weekly run keeps the capability probes the suite gates on honest on a second runtime. It runs on one
     # Linux job because those probes are a per-OS answer, and unmeasured, so the 100% gate stays CPython's.
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 * * 1'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '51 11 * * 1'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
