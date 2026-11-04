@@ -6,6 +6,20 @@
 
 .. towncrier release notes start
 
+.. _release-4-2-8:
+
+********************
+ 4.2.8 (2026-11-04)
+********************
+
+.. _release-4-2-8-documentation:
+
+Documentation
+=============
+
+- Clarify the platform-specific locking primitive and range used by descriptor locks, and correct the guidance on
+  interoperating with byte-range lock protocols such as conda's repodata lock (:pr:`905`) by :user:`boyfeiyu`.
+
 .. _release-4-2-7:
 
 ********************
