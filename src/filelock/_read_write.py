@@ -33,6 +33,7 @@ from filelock._api import (
     AcquireReturnProxy,
     _acquire_thread_lock,
     _canonical,
+    _check_blocking,
     _ensure_current_process,
     _fork_transition,
     _raise_chained_errors,
@@ -394,6 +395,8 @@ class _ReadWriteLockMeta(type):
     ) -> ReadWriteLock:
         _ensure_current_process()
         _resolve_lazy_imports_before_shutdown()
+        # Validate before building the instance, as FileLock does, so a bad default can't wait out its timeout later.
+        _check_blocking(blocking)
         timeout = _seconds("timeout", timeout)
         if cls._instances_pid != _GETPID():
             cls._reset_class_after_fork()

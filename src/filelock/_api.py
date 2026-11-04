@@ -1711,6 +1711,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
 def _resolve_read_write_timeout(timeout: float, *, blocking: bool) -> float:
     """Validate a read-write lock's acquire ``timeout``: ``-1`` or a non-negative number, ``inf`` meaning ``-1``."""
+    # Every read-write acquire path resolves its timeout here, so this is where a non-bool *blocking* is caught. Left
+    # through, ``0`` waits the full timeout on SQLite and a truthy string like ``"false"`` turns into a blocking wait.
+    _check_blocking(blocking)
     if (timeout := _resolve_timeout(timeout, blocking=blocking)) < 0 and timeout != -1 and blocking:
         msg = f"timeout must be a non-negative number or -1, not {timeout!r}"
         raise ValueError(msg)
@@ -2251,6 +2254,7 @@ __all__ = [
     "_acquire_thread_lock",
     "_append_exception_context",
     "_canonical",
+    "_check_blocking",
     "_check_timeout_max",
     "_delegate_to_current",
     "_ensure_current_process",

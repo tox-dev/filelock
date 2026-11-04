@@ -24,6 +24,7 @@ from filelock._api import (
     AcquireReturnProxy,
     _acquire_thread_lock,
     _canonical,
+    _check_blocking,
     _check_timeout_max,
     _ensure_current_process,
     _register_fork_class,
@@ -64,6 +65,8 @@ class _SoftRWMeta(type):
         on_compromise: Callable[[LeaseCompromise], None] | None = None,
     ) -> SoftReadWriteLock:
         _ensure_current_process()
+        # Validate before building the instance, as FileLock does, so a bad default can't wait out its timeout later.
+        _check_blocking(blocking)
         timeout = _seconds("timeout", timeout)
         # Passed through only when set, so a subclass that declares its own constructor without it keeps working.
         extra = {} if on_compromise is None else {"on_compromise": on_compromise}

@@ -568,6 +568,23 @@ async def test_async_acquire_rejects_invalid_timeout(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize("blocking", [pytest.param("false", id="str"), pytest.param(0, id="int")])
+async def test_async_acquire_rejects_a_blocking_that_is_not_a_bool(
+    lock_file: str, mode: Literal["read", "write"], blocking: str | int
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
+    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    try:
+        with pytest.raises(TypeError, match="blocking must be a bool"):
+            await asyncio.create_task(
+                acquire(blocking=blocking)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+            )
+    finally:
+        await lock.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.parametrize(
     "timeout",
     [pytest.param(-2, id="integer"), pytest.param(float("inf"), id="infinite"), pytest.param(float("nan"), id="nan")],
