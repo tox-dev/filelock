@@ -65,7 +65,7 @@ class _SoftRWMeta(type):
         on_compromise: Callable[[LeaseCompromise], None] | None = None,
     ) -> SoftReadWriteLock:
         _ensure_current_process()
-        # Validate before building the instance, as FileLock does, so a bad default can't wait out its timeout later.
+        # Reject a bad default at construction, as FileLock does, rather than at its first acquire.
         _check_blocking(blocking)
         timeout = _seconds("timeout", timeout)
         # Passed through only when set, so a subclass that declares its own constructor without it keeps working.
@@ -286,7 +286,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
@@ -308,7 +308,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
@@ -338,7 +338,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :raises RuntimeError: if a write lock is already held on this instance, if this instance was invalidated by
             :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
         :raises SoftFileLockProtocolError: if a snapshot cannot be read without risking overlap, or the filesystem
             refuses the no-replace hard links the protocol commits with
@@ -369,7 +369,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :raises RuntimeError: if a read lock is already held, if a write lock is held by a different thread, if this
             instance was invalidated by :func:`os.fork`, or if :meth:`close` was called
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
         :raises SoftFileLockProtocolError: if a snapshot cannot be read without risking overlap, or the filesystem
             refuses the no-replace hard links the protocol commits with

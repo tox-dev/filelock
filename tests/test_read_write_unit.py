@@ -986,7 +986,7 @@ def test_acquire_rejects_a_blocking_that_is_not_a_bool(
     mode: Literal["read", "write"],
     blocking: str | int,
 ) -> None:
-    # Contended, so a 0 taken as "blocking" would sit out the contender's 30 s timeout instead of failing fast.
+    # Contended, so a 0 read as blocking would wait out the contender's timeout instead of failing fast.
     holder, contender = timeout_locks
     acquire: Final = contender.acquire_read if mode == "read" else contender.acquire_write
     with holder.acquire_write(blocking=False):

@@ -395,7 +395,7 @@ class _ReadWriteLockMeta(type):
     ) -> ReadWriteLock:
         _ensure_current_process()
         _resolve_lazy_imports_before_shutdown()
-        # Validate before building the instance, as FileLock does, so a bad default can't wait out its timeout later.
+        # Reject a bad default at construction, as FileLock does, rather than at its first acquire.
         _check_blocking(blocking)
         timeout = _seconds("timeout", timeout)
         if cls._instances_pid != _GETPID():
@@ -554,7 +554,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
@@ -582,7 +582,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
