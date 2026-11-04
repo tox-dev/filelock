@@ -33,6 +33,7 @@ from filelock._api import (
     AcquireReturnProxy,
     _acquire_thread_lock,
     _canonical,
+    _check_blocking,
     _ensure_current_process,
     _fork_transition,
     _raise_chained_errors,
@@ -394,6 +395,8 @@ class _ReadWriteLockMeta(type):
     ) -> ReadWriteLock:
         _ensure_current_process()
         _resolve_lazy_imports_before_shutdown()
+        # Reject a bad default at construction, as FileLock does, rather than at its first acquire.
+        _check_blocking(blocking)
         timeout = _seconds("timeout", timeout)
         if cls._instances_pid != _GETPID():
             cls._reset_class_after_fork()
@@ -551,7 +554,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
@@ -579,7 +582,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
 
         """
