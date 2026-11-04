@@ -7,7 +7,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   schedule:
-    - cron: "0 8 * * *"
+    - cron: "17 0 * * *"
     - cron: "0 6 * * 1"
 concurrency:
   group: check-${{ github.ref }}
@@ -34,8 +34,8 @@ jobs:
           - ubuntu-24.04
           - windows-2025
           - macos-15
-        exclude:
-          - {os: windows-2025, py: pypy3.11}
+        # macOS keeps 3.15 and 3.15t on every event; the rest run only on the Monday cron.
+        exclude: ${{ fromJSON(github.event.schedule == '0 6 * * 1' && '[{"os":"windows-2025","py":"pypy3.11"}]' || '[{"os":"windows-2025","py":"pypy3.11"},{"os":"macos-15","py":"3.14t"},{"os":"macos-15","py":"3.14"},{"os":"macos-15","py":"3.13"},{"os":"macos-15","py":"3.12"},{"os":"macos-15","py":"3.11"},{"os":"macos-15","py":"pypy3.11"}]') }}
     steps:
       - name: "📥 Check out code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
