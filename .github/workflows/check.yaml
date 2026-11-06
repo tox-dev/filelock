@@ -370,10 +370,18 @@ jobs:
           persist-credentials: false
       - name: "🧪 Run the suite in a real Termux userland via tox"
         run: docker compose run --rm termux
+  release:
+    name: "🏷️ Release dry run"
+    uses: $/.github/workflows/prepare-release.yaml
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      dry-run: true
   gate:
     name: "🚦 ${{ github.event_name == 'pull_request' && 'Required checks pass' || 'Non-PR checks pass' }}"
     if: ${{ !cancelled() }} # codespell:ignore cancelled
-    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux]
+    needs: [test, graalpy, coverage, check, nfs, smb, capability, symlink, termux, release]
     runs-on: ubuntu-24.04
     steps:
       - name: "🚦 Check all jobs passed"
