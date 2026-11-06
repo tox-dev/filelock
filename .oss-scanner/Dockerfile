@@ -1,6 +1,6 @@
 # filelock installed from source with its test dependency group, the way the tox test environments install it. The
 # python image ships git and a C toolchain; 3.14 is the newest CPython the project supports with a stable image.
-FROM python:3.14-bookworm
+FROM python:3.14-bookworm@sha256:a8cf203c684b61fd2676ec5a17159cf68ed38ad471481e1f4ebc4679825250bd
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -16,14 +16,16 @@ ENV PATH=/opt/venv/bin:$PATH
 COPY . /src
 WORKDIR /src
 
-# hatch-vcs takes the version from git tags; a checkout without them gets a placeholder version instead of failing.
-RUN pip install --upgrade pip \
+# requirements.txt pins pip and the test dependency group by hash (its header holds the command that regenerates it), so
+# the package itself goes in without them. hatch-vcs takes the version from git tags; a checkout without them gets a
+# placeholder version instead of failing.
+RUN pip install --require-hashes -r .oss-scanner/requirements.txt \
     && { git describe --tags >/dev/null 2>&1 || export SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0; } \
-    && pip install -e . --group test
+    && pip install --no-deps -e .
 
 # The oldest legacy client the StrictSoftFileLock compatibility tests run against, fetched now because the scan has no
-# network. The tox 3.15 environment installs it the same way.
-RUN pip install --no-deps --target /opt/filelock-3.20.0 filelock==3.20.0
+# network. The tox 3.15 environment installs it the same way; legacy-client.txt pins it by hash.
+RUN pip install --no-deps --require-hashes --target /opt/filelock-3.20.0 -r .oss-scanner/legacy-client.txt
 ENV FILELOCK_OLD_CLIENT_PATH=/opt/filelock-3.20.0
 
 # The source tree must stay readable to the unprivileged accounts above.
