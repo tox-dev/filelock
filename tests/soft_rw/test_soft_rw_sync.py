@@ -1396,7 +1396,11 @@ def test_protocol_tree_stays_in_place_while_a_record_is_written(  # pragma: win3
             refused.append(True)
         real_write(fd, data)
 
-    mocker.patch.object(storage_mod, "write_all", side_effect=try_to_move_the_tree_aside, autospec=True)
+    mocker.patch.object(
+        storage_mod,
+        "write_all",
+        new=mocker.create_autospec(storage_mod.write_all, side_effect=try_to_move_the_tree_aside),
+    )
     with lock.write_lock(timeout=2):
         pass
 

@@ -59,7 +59,9 @@ def test_read_non_regular_file_is_empty(tmp_path: Path) -> None:
 
 
 def test_create_rolls_back_a_failed_write(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(storage_mod, "write_all", side_effect=OSError("write boom"), autospec=True)
+    mocker.patch.object(
+        storage_mod, "write_all", new=mocker.create_autospec(storage_mod.write_all, side_effect=OSError("write boom"))
+    )
     with pytest.raises(OSError, match="write boom"):
         OsFiles(str(tmp_path / "x.lock")).create(str(tmp_path / "record"), b"data")
     assert not (tmp_path / "record").exists()
@@ -82,14 +84,22 @@ def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixtur
         real_link(source, target, **dir_fds)
         raise OSError(EIO, "Input/output error")
 
-    mocker.patch.object(storage_mod, "_link_no_follow", side_effect=link_then_fail, autospec=True)
+    mocker.patch.object(
+        storage_mod,
+        "_link_no_follow",
+        new=mocker.create_autospec(storage_mod._link_no_follow, side_effect=link_then_fail),
+    )
     source = tmp_path / "source"
     source.write_bytes(b"data")
     assert OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
 def test_link_reports_an_unsupported_filesystem(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(storage_mod, "_link_no_follow", side_effect=NotImplementedError("no os.link"), autospec=True)
+    mocker.patch.object(
+        storage_mod,
+        "_link_no_follow",
+        new=mocker.create_autospec(storage_mod._link_no_follow, side_effect=NotImplementedError("no os.link")),
+    )
     source = tmp_path / "source"
     source.write_bytes(b"data")
     with pytest.raises(SoftFileLockProtocolError, match="hard-link"):
@@ -103,7 +113,11 @@ def test_link_from_a_missing_source_raises(tmp_path: Path) -> None:
 
 def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFixture) -> None:
     # A persistent EPERM or EIO is not a peer winning the race; reporting it as one would spin forever.
-    mocker.patch.object(storage_mod, "_link_no_follow", side_effect=OSError(EIO, "Input/output error"), autospec=True)
+    mocker.patch.object(
+        storage_mod,
+        "_link_no_follow",
+        new=mocker.create_autospec(storage_mod._link_no_follow, side_effect=OSError(EIO, "Input/output error")),
+    )
     source = tmp_path / "source"
     source.write_bytes(b"data")
     with pytest.raises(OSError, match="Input/output error"):
