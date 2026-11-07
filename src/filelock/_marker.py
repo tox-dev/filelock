@@ -115,16 +115,7 @@ class MarkerSoftFileLock(SoftFileLock):
 
 
 class OwnerRecord(NamedTuple):
-    """
-    Keep optional metadata when reading unknown lock modes.
-
-    :param pid:
-    :param hostname:
-    :param mode:
-    :param token:
-    :param lease_duration:
-    :param start:
-    """
+    """Keep optional metadata when reading unknown lock modes."""
 
     pid: int
     hostname: str

@@ -314,11 +314,7 @@ class StrictSoftFileLock(BaseFileLock):
         return remaining, errors
 
     def force_break(self, claim_name: str) -> None:
-        """
-        Remove one named claim, allowing overlap if its owner still holds the protected resource.
-
-        :param claim_name:
-        """
+        """Remove one named claim, allowing overlap if its owner still holds the protected resource."""
         _validate_force_break_name(claim_name)
         with _pin_claim_directory(directory := self._claim_directory):
             _require_exact_name(directory, claim_name)
@@ -354,18 +350,9 @@ class StrictSoftFileLock(BaseFileLock):
             _raise_recorded_errors("strict release cleanup failed", errors)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class StrictSoftFileClaim:
-    """
-    One parsed strict soft-lock claim.
-
-    :param name:
-    :param state:
-    :param token:
-    :param pid:
-    :param hostname:
-    :param start:
-    """
+    """One parsed strict soft-lock claim."""
 
     name: str
     state: StrictSoftFileClaimState

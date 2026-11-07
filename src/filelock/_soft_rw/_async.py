@@ -142,7 +142,6 @@ class AsyncSoftReadWriteLock:
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
 
-        :yields:
         :raises RuntimeError: if the calling task already holds the write lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
         :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
@@ -293,7 +292,6 @@ class AsyncSoftReadWriteLock:
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
 
-        :yields:
         :raises RuntimeError: if the calling task already holds the read lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
         :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
@@ -360,11 +358,7 @@ class AsyncSoftReadWriteLock:
 
 
 class AsyncAcquireSoftReadWriteReturnProxy:
-    """
-    Async context-aware object that releases an :class:`AsyncSoftReadWriteLock` on exit.
-
-    :param lock:
-    """
+    """Async context-aware object that releases an :class:`AsyncSoftReadWriteLock` on exit."""
 
     def __init__(self, lock: AsyncSoftReadWriteLock) -> None:
         self.lock = lock

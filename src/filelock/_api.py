@@ -100,22 +100,7 @@ _LockInitValue = float | int | bool | str | None | Callable[[int], None]
 
 
 class LockOptions(TypedDict, total=False):
-    """
-    Every option the metaclass forwards, so a subclass adding its own can still type what it passes through.
-
-    :ivar timeout:
-    :ivar mode:
-    :ivar thread_local:
-    :ivar blocking:
-    :ivar is_singleton:
-    :ivar poll_interval:
-    :ivar lifetime:
-    :ivar context_error_policy:
-    :ivar close_error_policy:
-    :ivar fallback_to_soft:
-    :ivar preserve_lock_file:
-    :ivar on_acquired:
-    """
+    """Every option the metaclass forwards, so a subclass adding its own can still type what it passes through."""
 
     timeout: float
     mode: int
@@ -869,7 +854,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         :raises TypeError: if *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` timeout, or *poll_interval* exceeds
             :data:`threading.TIMEOUT_MAX`
-        :raises RuntimeError:
 
         .. code-block:: python
 
@@ -1793,11 +1777,7 @@ def _on_this_stack(frame: FrameType | None) -> bool:
 # acquire() returns this wrapper instead of self so entering the with-statement does not call __enter__ a second
 # time; returning self would re-acquire the lock in BaseFileLock.__enter__ without a matching release (issue #37).
 class AcquireReturnProxy(Generic[_LockT]):
-    """
-    A context-aware object that will release the lock file when exiting.
-
-    :param lock:
-    """
+    """A context-aware object that will release the lock file when exiting."""
 
     def __init__(self, lock: _LockT) -> None:
         self.lock: _LockT = lock

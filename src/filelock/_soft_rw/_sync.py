@@ -307,7 +307,6 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
 
-        :yields:
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
         :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
@@ -615,7 +614,6 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
 
-        :yields:
         :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
         :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`

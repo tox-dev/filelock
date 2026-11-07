@@ -45,16 +45,9 @@ _RefreshOutcome = Literal["ok", "transient", "marker-missing", "owner-changed"]
 _DEFAULT_LEASE_DURATION: Final[float] = 30.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class LeaseCompromise:
-    """
-    Why a held lease stopped being this process's to hold, and the error that ended its refresh, if any.
-
-    :param lock_file:
-    :param token:
-    :param reason:
-    :param error:
-    """
+    """Why a held lease stopped being this process's to hold, and the error that ended its refresh, if any."""
 
     lock_file: str
     token: str
@@ -127,7 +120,6 @@ class SoftFileLease(MarkerSoftFileLock):
         """
         Create a lease.
 
-        :param lock_file:
         :param lease_duration: seconds a contender must see the marker go unrefreshed before it may take the claim.
             Every contender for the path must pass the same value.
         :param heartbeat_interval: seconds between refreshes. Defaults to a third of ``lease_duration``, leaving room

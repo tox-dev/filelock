@@ -131,7 +131,6 @@ class AsyncReadWriteLock:
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-        :yields:
 
         """
         await self.acquire_read(timeout, blocking=blocking)
@@ -307,7 +306,6 @@ class AsyncReadWriteLock:
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-        :yields:
 
         """
         await self.acquire_write(timeout, blocking=blocking)
@@ -401,11 +399,7 @@ class AsyncReadWriteLock:
 
 
 class AsyncAcquireReadWriteReturnProxy:
-    """
-    Context-aware object that releases the async read/write lock on exit.
-
-    :param lock:
-    """
+    """Context-aware object that releases the async read/write lock on exit."""
 
     def __init__(self, lock: AsyncReadWriteLock) -> None:
         self.lock = lock

@@ -566,7 +566,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-        :yields:
 
         """
         self.acquire_read(timeout, blocking=blocking)
@@ -1009,7 +1008,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-        :yields:
 
         """
         self.acquire_write(timeout, blocking=blocking)
