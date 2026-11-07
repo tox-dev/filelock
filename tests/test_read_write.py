@@ -40,7 +40,7 @@ _PROCESS_DEADLINE: Final[int] = 30
 # per-test timeout so the guard still reports the hang it was put there for.
 _REAP_DEADLINE: Final[int] = 5
 
-pytestmark = SKIP_ON_UNRELIABLE_PROCESS_SYNC
+pytestmark: Final[pytest.MarkDecorator] = SKIP_ON_UNRELIABLE_PROCESS_SYNC
 
 if sys.implementation.name == "pypy":
     set_start_method(
@@ -177,13 +177,21 @@ def test_write_non_starvation(lock_file: str) -> None:
 
     release_count = Value("i", 0)
 
+    next_readers: Final = [*chain_forward[1:], None]
+    prev_or_writers: Final = [writer_ready, *chain_backward[:-1]]
     readers = []
     for idx in range(NUM_READERS):
-        next_reader = chain_forward[idx + 1] if idx < NUM_READERS - 1 else None
-        prev_or_writer = chain_backward[idx - 1] if idx > 0 else writer_ready
         reader = Process(
             target=chain_reader,
-            args=(idx, lock_file, release_count, chain_forward[idx], chain_backward[idx], next_reader, prev_or_writer),
+            args=(
+                idx,
+                lock_file,
+                release_count,
+                chain_forward[idx],
+                chain_backward[idx],
+                next_readers[idx],
+                prev_or_writers[idx],
+            ),
         )
         readers.append(reader)
 
@@ -360,8 +368,7 @@ def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read
 )
 @pytest.mark.timeout(15)
 def test_single_lock_reentrant(lock_file: str, mode: Literal["read", "write"]) -> None:
-    lock = ReadWriteLock(lock_file)
-    acquire = getattr(lock, f"{mode}_lock")
+    acquire = getattr(ReadWriteLock(lock_file), f"{mode}_lock")
 
     with acquire(), acquire():
         pass
@@ -443,11 +450,13 @@ def _hard_link(path: Path) -> Path:  # pragma: needs hard-link
     return alias
 
 
+_DESCRIPTOR_DIRECTORY: Final[Path] = Path("/proc/self/fd" if sys.platform == "linux" else "/dev/fd")
+
+
 @pytest.mark.usefixtures("connect_route")
+@pytest.mark.skipif(sys.platform == "win32", reason="the descriptor table is not listable on Windows")
 def test_closing_every_instance_closes_its_descriptors(lock_file: str) -> None:
-    if sys.platform == "win32":  # pragma: win32 cover
-        pytest.skip("the descriptor table is not listable on Windows")
-    descriptor_directory = Path("/proc/self/fd" if sys.platform == "linux" else "/dev/fd")  # pragma: win32 no cover
+    descriptor_directory = _DESCRIPTOR_DIRECTORY  # pragma: win32 no cover
     before = len(list(descriptor_directory.iterdir()))  # pragma: win32 no cover
     holder = ReadWriteLock(lock_file, is_singleton=False)  # pragma: win32 no cover
     holder.acquire_read()  # pragma: win32 no cover
@@ -737,9 +746,8 @@ def lock_file(tmp_path: Path) -> str:
 def test_acquire_proxy_releases_the_read_write_lock_on_exit(lock_file: str, mode: Literal["read", "write"]) -> None:
     # acquire_read/acquire_write hand back the shared AcquireReturnProxy; a read/write lock is not a BaseFileLock, so
     # exiting the proxy must route through the lock's own release() rather than a context-error policy.
-    lock = ReadWriteLock(lock_file, is_singleton=False)
 
-    with getattr(lock, f"acquire_{mode}")():
+    with getattr(ReadWriteLock(lock_file, is_singleton=False), f"acquire_{mode}")():
         assert_read_write_lock_state(lock_file, "write", available=False)
 
     assert_read_write_lock_state(lock_file, "write", available=True)
