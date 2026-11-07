@@ -361,7 +361,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         return os.fdopen(open_for_delete_without_oplock_wait(path), "rb")
 
     def unlink_path(path: str) -> None:
-        from ._windows import unlink_without_oplock_wait  # ruff:ignore[import-outside-top-level]
+        from ._windows import unlink_without_oplock_wait  # ruff:ignore[import-outside-top-level]  # _windows binds Windows-only APIs on import
 
         unlink_without_oplock_wait(path)
 

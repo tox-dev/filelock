@@ -127,7 +127,7 @@ def _remove_privilege() -> str:
         return f"LookupPrivilegeValue failed with {ctypes.get_last_error()}"
 
     privileges = _TokenPrivileges(1, (_LuidAndAttributes * 1)(_LuidAndAttributes(luid, _SE_PRIVILEGE_REMOVED)))
-    if not advapi32.AdjustTokenPrivileges(token, False, ctypes.byref(privileges), 0, None, None):  # ruff:ignore[boolean-positional-value-in-call]
+    if not advapi32.AdjustTokenPrivileges(token, False, ctypes.byref(privileges), 0, None, None):  # ruff:ignore[boolean-positional-value-in-call]  # the Win32 signature takes a plain BOOL
         return f"AdjustTokenPrivileges failed with {ctypes.get_last_error()}"
     # The call reports success even when the token never held the privilege, so read the code it leaves behind.
     if (code := ctypes.get_last_error()) == _ERROR_NOT_ALL_ASSIGNED:

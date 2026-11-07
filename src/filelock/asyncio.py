@@ -270,7 +270,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         await self.acquire()
         return self
 
-    async def acquire(  # ty: ignore[invalid-method-override]
+    async def acquire(  # ty: ignore[invalid-method-override]  # the async signature differs from the base class
         self,
         timeout: float | None = None,
         poll_interval: float | None = None,
@@ -642,7 +642,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """
         await self._release_in_context(exc_value)
 
-    async def _release_in_context(  # ty: ignore[invalid-method-override]
+    async def _release_in_context(  # ty: ignore[invalid-method-override]  # the async signature differs from the base class
         self, body_error: BaseException | None
     ) -> None:
         # The async counterpart of BaseFileLock._release_in_context: await release, then apply the same policy.

@@ -1,4 +1,4 @@
-# ruff:ignore[implicit-namespace-package]
+# ruff:ignore[implicit-namespace-package]  # Sphinx runs conf.py as a script, not as a package
 """Configuration for Sphinx."""
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 name, company = "filelock", "tox-dev"
 now = datetime.now(tz=UTC)
 version, release = ".".join(__version__.split(".")[:2]), __version__
-copyright: Final[str] = f"2014-{now.date().year}, {company}"  # ruff:ignore[builtin-variable-shadowing]
+copyright: Final[str] = f"2014-{now.date().year}, {company}"  # ruff:ignore[builtin-variable-shadowing]  # Sphinx reads the module-level copyright name
 extensions = [
     "sphinx_llm.txt",
     "sphinx.ext.autodoc",
@@ -102,12 +102,12 @@ def setup(app: Sphinx) -> None:
     #
     # :param app: the app
     class PatchedPythonDomain(PythonDomain):
-        def resolve_xref(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]
+        def resolve_xref(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]  # overrides Sphinx's signature
             self,
             env: BuildEnvironment,
             fromdocname: str,
             builder: Builder,
-            type: str,  # ruff:ignore[builtin-argument-shadowing]
+            type: str,  # ruff:ignore[builtin-argument-shadowing]  # Sphinx's resolve_xref names this parameter type
             target: str,
             node: pending_xref,
             contnode: Element,

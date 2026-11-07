@@ -724,7 +724,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     def _identity_of(handle: int) -> tuple[int, int]:
         info = _BY_HANDLE_FILE_INFORMATION()
-        if not _KERNEL32.GetFileInformationByHandle(handle, ctypes.byref(info)):  # pragma: no cover
+        if not _KERNEL32.GetFileInformationByHandle(handle, ctypes.byref(info)):  # pragma: no cover  # API failure
             raise ctypes.WinError(ctypes.get_last_error())
         return info.dwVolumeSerialNumber, info.nFileIndexHigh << 32 | info.nFileIndexLow
 

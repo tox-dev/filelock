@@ -198,7 +198,7 @@ else:  # pragma: win32 no cover
             from ._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]
 
             warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
-            from .asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # ruff:ignore[import-outside-top-level]
+            from .asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # ruff:ignore[import-outside-top-level]  # asyncio imports this module
 
             self.__class__ = AsyncSoftFileLock if isinstance(self, BaseAsyncFileLock) else SoftFileLock
 
