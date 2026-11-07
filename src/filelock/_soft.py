@@ -97,7 +97,7 @@ class SoftFileLock(BaseFileLock):
         """
         The PID of the process holding this lock, read from the lock file.
 
-        :returns: the PID as an integer, or ``None`` if the lock file does not exist or cannot be parsed
+        The PID as an integer, or ``None`` if the lock file does not exist or cannot be parsed.
 
         """
         with suppress(OSError, ValueError):
@@ -110,8 +110,8 @@ class SoftFileLock(BaseFileLock):
         """
         Whether this lock is held by the current process.
 
-        :returns: ``True`` if the lock file exists and names the current process's PID, hostname and, when recorded,
-            start token
+        ``True`` if the lock file exists and names the current process's PID, hostname and, when recorded, start
+        token.
 
         """
         with suppress(OSError, ValueError):

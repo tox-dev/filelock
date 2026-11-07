@@ -160,7 +160,7 @@ class SoftFileLease(MarkerSoftFileLock):
         """
         The token naming the claim this process published.
 
-        :returns: the token while the lease is held, ``None`` otherwise. It identifies a claim; it does not fence one.
+        The token while the lease is held, ``None`` otherwise. It identifies a claim; it does not fence one.
 
         """
         return self._claim.token
@@ -182,8 +182,7 @@ class SoftFileLease(MarkerSoftFileLock):
         have overlapped a successor; the next acquisition resets it, as :attr:`SoftReadWriteLock.compromise
         <filelock.SoftReadWriteLock.compromise>` does.
 
-        :returns: the :class:`LeaseCompromise` of the latest claim, or ``None`` while that claim holds or held to its
-            release
+        The :class:`LeaseCompromise` of the latest claim, or ``None`` while that claim holds or held to its release.
 
         """
         return self._claim.compromise

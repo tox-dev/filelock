@@ -122,6 +122,7 @@ class AsyncReadWriteLock:
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the shared read lock is held
 
         """
         await self.acquire_read(timeout, blocking=blocking)
@@ -297,6 +298,7 @@ class AsyncReadWriteLock:
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the exclusive write lock is held
 
         """
         await self.acquire_write(timeout, blocking=blocking)

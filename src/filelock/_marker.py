@@ -36,7 +36,7 @@ class MarkerSoftFileLock(SoftFileLock):
         """
         The owner named by the marker on disk.
 
-        :returns: the published record, or ``None`` when no marker exists or its record is malformed or protocol 1
+        The published record, or ``None`` when no marker exists or its record is malformed or protocol 1.
 
         """
         return self._read_owner()
@@ -51,7 +51,7 @@ class MarkerSoftFileLock(SoftFileLock):
         """
         The PID of the process holding this lock, read from the marker.
 
-        :returns: the PID, or ``None`` when no marker exists or its record is unreadable
+        The PID, or ``None`` when no marker exists or its record is unreadable.
 
         """
         return None if (owner := self._read_owner()) is None else owner.pid
@@ -61,7 +61,7 @@ class MarkerSoftFileLock(SoftFileLock):
         """
         Whether the marker on disk names this process.
 
-        :returns: ``True`` when the marker names this process's PID, hostname and, when recorded, start token
+        ``True`` when the marker names this process's PID, hostname and, when recorded, start token.
 
         """
         owner = self._read_owner()

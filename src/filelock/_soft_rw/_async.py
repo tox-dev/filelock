@@ -134,6 +134,7 @@ class AsyncSoftReadWriteLock:
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the shared read lock is held
 
         :raises RuntimeError: if the calling task already holds the write lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
@@ -284,6 +285,7 @@ class AsyncSoftReadWriteLock:
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the exclusive write lock is held
 
         :raises RuntimeError: if the calling task already holds the read lock
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
