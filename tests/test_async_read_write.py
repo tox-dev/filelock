@@ -572,6 +572,30 @@ async def test_async_acquire_respects_settings(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize("shared", [pytest.param(False, id="sqlite"), pytest.param(True, id="task-owner")])
+@pytest.mark.parametrize(
+    ("instance_timeout", "instance_blocking", "minimum"),
+    [
+        pytest.param(0.2, True, 0.1, id="instance-timeout"),
+        pytest.param(30, False, 0, id="instance-nonblocking"),
+    ],
+)
+async def test_async_acquire_without_arguments_uses_instance_settings(
+    async_locks: tuple[AsyncReadWriteLock, AsyncReadWriteLock],
+    mode: Literal["read", "write"],
+    minimum: float,
+) -> None:
+    contender: Final[AsyncReadWriteLock] = async_locks[1]
+    acquire: Final = getattr(contender, f"acquire_{mode}")
+    async with async_locks[0].write_lock():
+        started: Final[float] = time.perf_counter()
+        with pytest.raises(Timeout):
+            await asyncio.create_task(acquire())
+        assert minimum <= time.perf_counter() - started < 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @INVALID_TIMEOUTS
 async def test_async_instance_timeout_rejects_invalid_value(
     lock_file: str, mode: Literal["read", "write"], timeout: float, message: str

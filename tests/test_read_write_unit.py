@@ -918,6 +918,32 @@ def test_acquire_respects_settings(
         assert minimum <= time.perf_counter() - started < 5
 
 
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    ("instance_timeout", "instance_blocking", "minimum"),
+    [
+        pytest.param(0.2, True, 0.1, id="instance-timeout"),
+        pytest.param(30, False, 0, id="instance-nonblocking"),
+    ],
+)
+def test_acquire_without_arguments_uses_instance_settings(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock],
+    mode: Literal["read", "write"],
+    instance_timeout: float,
+    instance_blocking: bool,
+    minimum: float,
+) -> None:
+    contender: Final[ReadWriteLock] = sync_locks[1]
+    contender.timeout = instance_timeout
+    contender.blocking = instance_blocking
+    acquire: Final = getattr(contender, f"acquire_{mode}")
+    with sync_locks[0].write_lock():
+        started: Final[float] = time.perf_counter()
+        with pytest.raises(Timeout):
+            acquire()
+        assert minimum <= time.perf_counter() - started < 5
+
+
 def test_contended_acquire_beside_another_thread_times_out_on_time(
     sync_locks: tuple[ReadWriteLock, ReadWriteLock],
 ) -> None:
