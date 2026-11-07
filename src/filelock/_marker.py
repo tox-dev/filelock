@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "math", f"{__spec__.parent}._identity", f"{__spec__.parent}._util"]
+__lazy_modules__ = ["contextlib", "filelock._identity", "filelock._util", "math"]
 
 import math
 import os

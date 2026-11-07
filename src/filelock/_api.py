@@ -3,14 +3,14 @@ from __future__ import annotations
 __lazy_modules__ = [
     "atexit",
     "decimal",
+    "filelock._error",
+    "filelock._util",
     "inspect",
     "math",
     "numbers",
     "secrets",
     "types",
     "warnings",
-    f"{__spec__.parent}._error",
-    f"{__spec__.parent}._util",
 ]
 
 import atexit

@@ -2,14 +2,13 @@ from __future__ import annotations
 
 __lazy_modules__ = [
     "collections",
+    "filelock._error",
+    "filelock._identity",
     "hashlib",
     "itertools",
     "pathlib",
     "secrets",
     "tempfile",
-    f"{__spec__.parent}._error",
-    f"{__spec__.parent}._identity",
-    f"{__spec__.parent}._windows",
 ]
 
 import hashlib

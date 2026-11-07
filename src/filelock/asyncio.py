@@ -6,12 +6,12 @@ __lazy_modules__ = [
     "asyncio",
     "concurrent",
     "contextlib",
+    "filelock._async",
+    "filelock._error",
+    "filelock._util",
     "functools",
     "inspect",
     "threading",
-    f"{__spec__.parent}._async",
-    f"{__spec__.parent}._error",
-    f"{__spec__.parent}._util",
 ]
 
 import asyncio

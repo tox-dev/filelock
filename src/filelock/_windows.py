@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["msvcrt", "struct", f"{__spec__.parent}._util"]
+__lazy_modules__ = ["filelock._util", "msvcrt", "struct"]
 
 import os
 import struct

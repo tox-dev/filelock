@@ -12,12 +12,7 @@ A platform independent file lock that supports the with-statement.
 
 from __future__ import annotations
 
-__lazy_modules__ = [
-    "importlib",
-    f"{__spec__.parent}._api",
-    f"{__spec__.parent}._descriptor",
-    f"{__spec__.parent}._error",
-]
+__lazy_modules__ = ["filelock._descriptor", "filelock._error", "importlib"]
 
 import sys
 import warnings

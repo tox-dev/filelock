@@ -2,16 +2,7 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = [
-    "asyncio",
-    "concurrent.futures",
-    "functools",
-    "threading",
-    f"{__spec__.parent}._api",
-    f"{__spec__.parent}._async",
-    f"{__spec__.parent}._error",
-    f"{__spec__.parent}._read_write",
-]
+__lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._async", "filelock._error", "functools", "threading"]
 
 import asyncio
 import functools

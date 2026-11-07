@@ -5,9 +5,9 @@ from __future__ import annotations
 __lazy_modules__ = [
     "filelock._error",
     "filelock._lease",
+    "filelock._soft_rw._protocol",
+    "filelock._soft_rw._storage",
     "math",
-    f"{__spec__.parent}._protocol",
-    f"{__spec__.parent}._storage",
 ]
 
 import atexit

@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = [
-    "asyncio",
-    "collections",
-    "concurrent.futures",
-    f"{__spec__.parent}._api",
-    f"{__spec__.parent}._error",
-]
+__lazy_modules__ = ["asyncio", "collections", "concurrent.futures", "filelock._error"]
 
 import asyncio
 import contextlib

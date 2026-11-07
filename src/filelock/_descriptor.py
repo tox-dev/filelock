@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = [
-    "threading",
-    "typing",
-    f"{__spec__.parent}._api",
-    f"{__spec__.parent}._unix",
-    f"{__spec__.parent}._windows",
-]
+__lazy_modules__ = ["filelock._unix", "threading", "typing"]
 
 import sys
 import time

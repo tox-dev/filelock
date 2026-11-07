@@ -2,16 +2,15 @@ from __future__ import annotations
 
 __lazy_modules__ = [
     "contextlib",
+    "filelock._error",
+    "filelock._identity",
+    "filelock._marker",
+    "filelock._soft",
+    "filelock._util",
     "functools",
     "pathlib",
     "secrets",
     "tempfile",
-    f"{__spec__.parent}._error",
-    f"{__spec__.parent}._identity",
-    f"{__spec__.parent}._marker",
-    f"{__spec__.parent}._soft",
-    f"{__spec__.parent}._util",
-    f"{__spec__.parent}._windows",
 ]
 
 import contextlib

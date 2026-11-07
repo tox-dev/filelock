@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["filelock._strict", "filelock._util", "pathlib", f"{__spec__.parent}._protocol"]
+__lazy_modules__ = ["filelock._soft_rw._protocol", "filelock._strict", "filelock._util", "pathlib"]
 
 import errno
 import os
