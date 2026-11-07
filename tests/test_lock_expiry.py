@@ -140,7 +140,16 @@ def test_lifetime_setter_rejects_negative_number(bad_value: float, tmp_path: Pat
         lock.lifetime = bad_value
 
 
-@pytest.mark.parametrize("bad_value", ["5", b"5", [1], {1: 2}, complex(1, 0)])
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        pytest.param("5", id="str"),
+        pytest.param(b"5", id="bytes"),
+        pytest.param([1], id="list"),
+        pytest.param({1: 2}, id="dict"),
+        pytest.param(complex(1, 0), id="complex"),
+    ],
+)
 def test_lifetime_setter_rejects_non_numeric(
     bad_value: str | bytes | list[int] | dict[int, int] | complex, tmp_path: Path
 ) -> None:

@@ -1586,11 +1586,11 @@ def _interrupted_at_call(
 @pytest.mark.parametrize(
     "lock_type",
     [
-        FileLock,
-        SoftFileLock,
-        MarkerSoftFileLock,
-        SoftFileLease,
-        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links),
+        pytest.param(FileLock, id="FileLock"),
+        pytest.param(SoftFileLock, id="SoftFileLock"),
+        pytest.param(MarkerSoftFileLock, id="MarkerSoftFileLock"),
+        pytest.param(SoftFileLease, id="SoftFileLease"),
+        pytest.param(StrictSoftFileLock, id="StrictSoftFileLock", marks=pytest.mark.requires_hard_links),
     ],
 )
 @pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
@@ -1621,11 +1621,11 @@ def test_interrupted_at_any_call_reports_whether_it_holds(
 @pytest.mark.parametrize(
     "lock_type",
     [
-        FileLock,
-        SoftFileLock,
-        MarkerSoftFileLock,
-        SoftFileLease,
-        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links),
+        pytest.param(FileLock, id="FileLock"),
+        pytest.param(SoftFileLock, id="SoftFileLock"),
+        pytest.param(MarkerSoftFileLock, id="MarkerSoftFileLock"),
+        pytest.param(SoftFileLease, id="SoftFileLease"),
+        pytest.param(StrictSoftFileLock, id="StrictSoftFileLock", marks=pytest.mark.requires_hard_links),
     ],
 )
 @pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])

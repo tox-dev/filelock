@@ -270,8 +270,18 @@ def test_owner_is_stale_owner_running_in_another_namespace_held(
 
 
 @_LINUX_ONLY  # pragma: linux cover
-@pytest.mark.parametrize("forged", ["x", str(_DEAD_PID)])
-@pytest.mark.parametrize("separator", ["\r", "\v", "\f", "\x1c", "\x1d", "\x1e"])
+@pytest.mark.parametrize("forged", [pytest.param("x", id="text"), pytest.param(str(_DEAD_PID), id="dead-pid")])
+@pytest.mark.parametrize(
+    "separator",
+    [
+        pytest.param("\r", id="CR"),
+        pytest.param("\v", id="VT"),
+        pytest.param("\f", id="FF"),
+        pytest.param("\x1c", id="FS"),
+        pytest.param("\x1d", id="GS"),
+        pytest.param("\x1e", id="RS"),
+    ],
+)
 def test_owner_is_stale_task_name_shaped_like_a_namespace_line_reclaimed(
     separator: str, forged: str, mocker: MockerFixture
 ) -> None:

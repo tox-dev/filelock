@@ -220,7 +220,10 @@ def test_singleton_returns_same_instance(lock_file: str) -> None:
         first.close()
 
 
-@pytest.mark.parametrize("order", [(0, 1, 2), (1, 2, 0), (2, 0, 1)])
+@pytest.mark.parametrize(
+    "order",
+    [pytest.param((0, 1, 2), id="012"), pytest.param((1, 2, 0), id="120"), pytest.param((2, 0, 1), id="201")],
+)
 def test_singletons_are_distinct_per_subclass(lock_file: str, order: tuple[int, int, int]) -> None:
     class FirstLock(SoftReadWriteLock):
         pass
