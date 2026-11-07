@@ -361,7 +361,7 @@ def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read
 @pytest.mark.timeout(15)
 def test_single_lock_reentrant(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file)
-    acquire = lock.read_lock if mode == "read" else lock.write_lock
+    acquire = getattr(lock, f"{mode}_lock")
 
     with acquire(), acquire():
         pass
@@ -385,7 +385,7 @@ def test_sequential_lock_modes(
 ) -> None:
     lock = ReadWriteLock(lock_file)
     for mode in (first, second):
-        with (lock.read_lock if mode == "read" else lock.write_lock)():
+        with getattr(lock, f"{mode}_lock")():
             pass
 
 
@@ -431,7 +431,7 @@ def test_another_instance_on_the_database_keeps_the_held_lock(
     # peer process can see that the holder kept its lock.
     lock_file = tmp_path / "lock.db"
     holder = ReadWriteLock(lock_file, is_singleton=False)
-    (holder.acquire_read if held_mode == "read" else holder.acquire_write)()
+    getattr(holder, f"acquire_{held_mode}")()
     open_other(lock_file).close()
     assert_read_write_lock_state(str(lock_file), "write", available=False)
     holder.close()
@@ -659,7 +659,7 @@ def test_release_rollback_failure_reconciles_lock_state(
 ) -> None:
     rollback_error = _patch_rollback_failure(mocker, after_rollback=after_rollback)
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    (lock.acquire_read if held_mode == "read" else lock.acquire_write)()
+    getattr(lock, f"acquire_{held_mode}")()
 
     with pytest.raises(sqlite3.OperationalError, match="rollback failed") as info:
         lock.release()
@@ -739,7 +739,7 @@ def test_acquire_proxy_releases_the_read_write_lock_on_exit(lock_file: str, mode
     # exiting the proxy must route through the lock's own release() rather than a context-error policy.
     lock = ReadWriteLock(lock_file, is_singleton=False)
 
-    with (lock.acquire_read if mode == "read" else lock.acquire_write)():
+    with getattr(lock, f"acquire_{mode}")():
         assert_read_write_lock_state(lock_file, "write", available=False)
 
     assert_read_write_lock_state(lock_file, "write", available=True)
@@ -761,7 +761,7 @@ def acquire_lock(
     lock = ReadWriteLock(lock_file, timeout=timeout, blocking=blocking)
     if contending_event:
         contending_event.set()  # interpreter start-up is over, so a caller can time the contention itself
-    with lock.read_lock() if mode == "read" else lock.write_lock():
+    with getattr(lock, f"{mode}_lock")():
         acquired_event.set()
         if release_event:
             release_event.wait(timeout=_PROCESS_DEADLINE)
@@ -823,7 +823,7 @@ def chain_reader(
 
 def try_illegal_transition(lock_file: str, hold_mode: Literal["read", "write"], result: Synchronized[int]) -> None:
     lock = ReadWriteLock(lock_file)
-    with lock.read_lock() if hold_mode == "read" else lock.write_lock():
+    with getattr(lock, f"{hold_mode}_lock")():
         try:
             if hold_mode == "read":
                 lock.acquire_write()
@@ -835,7 +835,7 @@ def try_illegal_transition(lock_file: str, hold_mode: Literal["read", "write"], 
 
 def recursive_lock(lock_file: str, mode: Literal["read", "write"], success_flag: Synchronized[int]) -> None:
     lock = ReadWriteLock(lock_file)
-    acquire = lock.read_lock if mode == "read" else lock.write_lock
+    acquire = getattr(lock, f"{mode}_lock")
     with acquire():
         assert lock._lock_level == 1
         assert lock._current_mode == mode
@@ -862,7 +862,7 @@ def recursive_lock(lock_file: str, mode: Literal["read", "write"], success_flag:
 
 def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acquired_event: EventType) -> None:
     lock = ReadWriteLock(lock_file)  # pragma: win32 no cover
-    with lock.read_lock() if mode == "read" else lock.write_lock():  # pragma: win32 no cover
+    with getattr(lock, f"{mode}_lock")():  # pragma: win32 no cover
         acquired_event.set()
         while True:  # pragma: win32 no cover
             time.sleep(0.1)
@@ -884,7 +884,7 @@ def test_read_write_lock_after_an_interrupted_release_locks_again(
     step: Literal["rollback", "close", "level-reset"],
 ) -> None:
     lock: Final = ReadWriteLock(lock_file, is_singleton=False)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     acquire()
     if step == "level-reset":
         reset = interrupt_once(ReadWriteLock._clear_lock_state, before=True)
@@ -928,7 +928,7 @@ def test_read_write_lock_refuses_a_schema_that_never_finishes_loading(
     lock = ReadWriteLock(database, is_singleton=False)
 
     with pytest.raises(ValueError, match="schema"):
-        (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=1)
+        getattr(lock, f"acquire_{mode}")(timeout=1)
 
 
 def _btree_page(kind: int, cell: bytes, cell_count: int, *, right_child: bytes = b"", header_at: int = 0) -> bytearray:
@@ -982,7 +982,7 @@ def test_read_write_lock_refuses_a_schema_row_longer_than_a_lock_needs(
     lock = ReadWriteLock(database, is_singleton=False)
 
     with pytest.raises(ValueError, match="schema"):
-        (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=1)
+        getattr(lock, f"acquire_{mode}")(timeout=1)
 
 
 def _varint(value: int) -> bytes:
