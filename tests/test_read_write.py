@@ -30,7 +30,7 @@ from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, in
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._identity import host_name
     from filelock._read_write import _host_digest, _remove_link_directory_on_windows
-    from filelock._windows import _advapi32, _directory_is_private, _make_private_directory
+    from filelock._windows import _ADVAPI32, _directory_is_private, _make_private_directory
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
 # slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
@@ -1072,10 +1072,10 @@ def test_windows_directory_whose_acl_cannot_be_read_gets_a_private_link(  # prag
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
     # An account without read access to a directory's ACL, as with C:\Windows\Temp, cannot tell who may write there.
-    read_acl = _advapi32.GetNamedSecurityInfoW
+    read_acl = _ADVAPI32.GetNamedSecurityInfoW
     denials = [5]
     mocker.patch.object(
-        _advapi32,
+        _ADVAPI32,
         "GetNamedSecurityInfoW",
         side_effect=lambda *args: denials.pop() if denials else read_acl(*args),
     )

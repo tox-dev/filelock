@@ -92,7 +92,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     _NTDLL: Final[ctypes.WinDLL] = ctypes.WinDLL("ntdll")
     _KERNEL32: Final[ctypes.WinDLL] = ctypes.WinDLL("kernel32", use_last_error=True)
-    _advapi32: Final[ctypes.WinDLL] = ctypes.WinDLL("advapi32", use_last_error=True)
+    _ADVAPI32: Final[ctypes.WinDLL] = ctypes.WinDLL("advapi32", use_last_error=True)
 
     class _UNICODE_STRING(ctypes.Structure):  # ruff:ignore[invalid-class-name]  # mirrors the Win32 struct name
         _fields_ = (
@@ -194,14 +194,14 @@ if sys.platform == "win32":  # pragma: win32 cover
         ctypes.POINTER(_OVERLAPPED),
     ]
     _KERNEL32.UnlockFileEx.restype = wintypes.BOOL
-    _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+    _ADVAPI32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
         wintypes.LPCWSTR,
         wintypes.DWORD,
         ctypes.POINTER(ctypes.c_void_p),
         ctypes.POINTER(wintypes.ULONG),
     ]
-    _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
-    _advapi32.GetNamedSecurityInfoW.argtypes = [
+    _ADVAPI32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    _ADVAPI32.GetNamedSecurityInfoW.argtypes = [
         wintypes.LPCWSTR,
         ctypes.c_int,
         wintypes.DWORD,
@@ -211,24 +211,24 @@ if sys.platform == "win32":  # pragma: win32 cover
         ctypes.POINTER(ctypes.c_void_p),
         ctypes.POINTER(ctypes.c_void_p),
     ]
-    _advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
-    _advapi32.OpenThreadToken.argtypes = [
+    _ADVAPI32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    _ADVAPI32.OpenThreadToken.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
         wintypes.BOOL,
         ctypes.POINTER(wintypes.HANDLE),
     ]
-    _advapi32.OpenThreadToken.restype = wintypes.BOOL
-    _advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
-    _advapi32.OpenProcessToken.restype = wintypes.BOOL
-    _advapi32.GetTokenInformation.argtypes = [
+    _ADVAPI32.OpenThreadToken.restype = wintypes.BOOL
+    _ADVAPI32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    _ADVAPI32.OpenProcessToken.restype = wintypes.BOOL
+    _ADVAPI32.GetTokenInformation.argtypes = [
         wintypes.HANDLE,
         ctypes.c_int,
         ctypes.c_void_p,
         wintypes.DWORD,
         ctypes.POINTER(wintypes.DWORD),
     ]
-    _advapi32.GetTokenInformation.restype = wintypes.BOOL
+    _ADVAPI32.GetTokenInformation.restype = wintypes.BOOL
     _KERNEL32.GetCurrentProcess.restype = wintypes.HANDLE
     _KERNEL32.GetCurrentThread.restype = wintypes.HANDLE
     _KERNEL32.LocalFree.argtypes = [ctypes.c_void_p]
@@ -540,7 +540,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         # directory's inheritable entries stay out, with full access (FA) for SYSTEM, Administrators and the owner.
         # Converted once and never freed: the open retries every few milliseconds while it waits.
         descriptor = ctypes.c_void_p()
-        if not _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        if not _ADVAPI32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
             "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)", 1, ctypes.byref(descriptor), None
         ):  # pragma: no cover  # a constant string converts
             raise ctypes.WinError(ctypes.get_last_error())
@@ -605,7 +605,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         # A directory whose owner is anyone else can have its ACL rewritten by that owner. Entries that only a child
         # inherits count too, since the DACL says nothing more precise about who may write.
         owner, dacl, descriptor = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
-        error = _advapi32.GetNamedSecurityInfoW(
+        error = _ADVAPI32.GetNamedSecurityInfoW(
             path,
             1,  # SE_FILE_OBJECT
             0x1 | 0x4,  # OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
@@ -653,15 +653,15 @@ if sys.platform == "win32":  # pragma: win32 cover
         open_as_self: Final = True
         # An impersonating thread acts as the account it impersonates, which is the one whose names the lock creates.
         if not (
-            _advapi32.OpenThreadToken(_KERNEL32.GetCurrentThread(), token_query, open_as_self, ctypes.byref(token))
-            or _advapi32.OpenProcessToken(_KERNEL32.GetCurrentProcess(), token_query, ctypes.byref(token))
+            _ADVAPI32.OpenThreadToken(_KERNEL32.GetCurrentThread(), token_query, open_as_self, ctypes.byref(token))
+            or _ADVAPI32.OpenProcessToken(_KERNEL32.GetCurrentProcess(), token_query, ctypes.byref(token))
         ):  # pragma: no cover  # every process may query its own token
             raise ctypes.WinError(ctypes.get_last_error())
         try:
             size = wintypes.DWORD()
-            _advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+            _ADVAPI32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
             buffer = ctypes.create_string_buffer(size.value)
-            if not _advapi32.GetTokenInformation(
+            if not _ADVAPI32.GetTokenInformation(
                 token, 1, buffer, size, ctypes.byref(size)
             ):  # pragma: no cover  # the buffer has the size the first call asked for
                 raise ctypes.WinError(ctypes.get_last_error())

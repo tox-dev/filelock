@@ -338,7 +338,7 @@ class _ThreadLocalRegistry(local):
         self.held: dict[Hashable, int] = {}
 
 
-_registry: Final[_ThreadLocalRegistry] = _ThreadLocalRegistry()
+_REGISTRY: Final[_ThreadLocalRegistry] = _ThreadLocalRegistry()
 
 
 _T = TypeVar("_T", bound="BaseFileLock")
@@ -995,7 +995,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         # Only the first, indefinitely-blocking acquire can self-deadlock this way: waiting in the OS primitive would
         # block on a lock this flow already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
         would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
-        if would_block and _registry.held.get(self._registry_key(canonical)) not in {None, self._holder_id}:
+        if would_block and _REGISTRY.held.get(self._registry_key(canonical)) not in {None, self._holder_id}:
             self._context.lock_counter -= 1
             msg = (
                 f"Deadlock: lock '{self.lock_file}' is already held by a different {self._deadlock_holder_desc}. "
@@ -1264,8 +1264,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             self._context.lock_file_key = key
             # A shared instance may be released from another thread, which must clear the entry in the acquirer's
             # registry: the releaser's own thread-local registry never held it.
-            self._context.lock_file_registry = _registry.held
-            _registry.held[key] = self._holder_id
+            self._context.lock_file_registry = _REGISTRY.held
+            _REGISTRY.held[key] = self._holder_id
 
     def __exit__(
         self,
@@ -1935,7 +1935,7 @@ _FORK_CLASSES: Final[WeakValueDictionary[int, _ForkResettableClass]] = WeakValue
 _OWNED_DESCRIPTORS: Final[dict[int, _OwnedDescriptor]] = {}
 _DESCRIPTOR_TOKENS: Final[count[int]] = count()
 _TRANSITION_TOKENS: Final[count[int]] = count()
-_FORK_STATE: Final = _ForkState()
+_FORK_STATE: Final[_ForkState] = _ForkState()
 _FORK_AUDIT_EVENTS: Final[frozenset[str]] = frozenset({"os.fork", "os.forkpty"})
 # CPython before 3.12 guards sys.settrace with one process-wide flag that stays set while audit hooks run, so a thread
 # switch inside a Python hook makes a concurrent settrace raise. Coverage and debuggers call it on every thread start.
@@ -2187,7 +2187,7 @@ def _detach_child_state(  # pragma: forked child
         instance._reset_after_fork_in_child()  # ruff:ignore[private-member-access]  # resets each pinned instance in the fork child
     for cls in pinned_classes:
         cls._reset_class_after_fork()
-    _registry.held.clear()
+    _REGISTRY.held.clear()
 
 
 def _refresh_owner_pins() -> None:  # pragma: needs fork

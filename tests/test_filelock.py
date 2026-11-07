@@ -50,7 +50,7 @@ from filelock import (
     lock_descriptor,
     unlock_descriptor,
 )
-from filelock._api import _append_exception_context, _raise_grouped_errors, _registry
+from filelock._api import _REGISTRY, _append_exception_context, _raise_grouped_errors
 from tests.capability_marks import (
     NEEDS_FCNTL,
     NEEDS_FILE_MODE,
@@ -3948,7 +3948,7 @@ def test_undo_acquire_keeps_registry_entry_while_still_held(tmp_path: Path, mock
     lock = FileLock(str(tmp_path / "a"), is_singleton=False)
     lock.acquire()
     key = lock._context.lock_file_key
-    assert _registry.held.get(key) == id(lock)
+    assert _REGISTRY.held.get(key) == id(lock)
 
     # A reentrant acquire that fails while the lock reports unheld routes through _undo_acquire with the counter
     # still above zero, so the registry entry the outer hold owns must survive.
@@ -3959,7 +3959,7 @@ def test_undo_acquire_keeps_registry_entry_while_still_held(tmp_path: Path, mock
         lock.acquire(timeout=0)
 
     assert lock._context.lock_counter == 1  # decremented from 2, the deeper hold remains
-    assert _registry.held.get(key) == id(lock)  # entry preserved because the counter did not reach zero
+    assert _REGISTRY.held.get(key) == id(lock)  # entry preserved because the counter did not reach zero
 
     lock._context.lock_file_fd = held_fd
     lock.release()

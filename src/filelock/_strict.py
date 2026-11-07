@@ -44,19 +44,15 @@ if TYPE_CHECKING:
 StrictSoftFileClaimState = Literal["intent", "held"]
 _OccupantState = Literal["sentinel", "held", "exited", "damaged", "unparsable"]
 
-_CLAIM_STATES: Final[frozenset[str]] = frozenset({"intent", "held"})
 _COORDINATION_SUFFIX: Final[str] = ".filelock"
 _CLAIM_DIRECTORY_NAME: Final[str] = "claims"
 _CLAIM_MAGIC: Final[str] = "filelock-strict-v1"
 _CLAIM_RECORD_LIMIT: Final[int] = 1024
-_CLAIM_NAME_PART_COUNT: Final[int] = 3
 _TOKEN_HEX_LENGTH: Final[int] = 32
 _PRIVATE_RECORD_MARKER: Final[str] = ".private-v1-"
 _PRIVATE_RECORD_SUFFIX: Final[str] = ".tmp"
 _PRIVATE_RECORD_RANDOM_HEX_LENGTH: Final[int] = 32
 _CLAIM_PROBE_PREFIX: Final[str] = ".probe-v1-"
-_PRIVATE_RECORD_GRACE: Final[float] = 2.0
-_UNLINK_MAX_RETRIES: Final[int] = 10
 #: How long a scan waits out a claim held in Windows' delete-pending state before treating it as unreadable.
 _CLAIM_READ_GRACE: Final[float] = 0.5
 _CLAIM_READ_RETRY: Final[float] = 0.002
@@ -67,7 +63,6 @@ _NODE_DESCRIPTIONS: Final[dict[int, str]] = {stat.S_IFDIR: "a directory", stat.S
 #: The claim and sentinel records are exact binary, so every record descriptor must be binary; POSIX ignores the flag.
 _O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
 _LEGACY_SENTINEL: Final[bytes] = STRICT_SOFT_SENTINEL_RECORD.encode()
-_WINDOWS_HARD_LINK_UNSUPPORTED: Final[frozenset[int]] = frozenset({1, 17, 50})
 
 # Termux/Android CPython ships without os.link (bionic long had only linkat), so the strict backend's whole hard-link
 # mechanism is absent there. Probe once and gate every os.link reference on it, so importing filelock still works and
@@ -659,7 +654,9 @@ def _parse_claim_name(name: str) -> tuple[StrictSoftFileClaimState, str] | None:
     if not name.endswith(".claim"):
         return None
     parts = name.removesuffix(".claim").split("-")
-    if len(parts) != _CLAIM_NAME_PART_COUNT or parts[0] not in _CLAIM_STATES or parts[1] != "v1":
+    claim_states: Final = frozenset({"intent", "held"})
+    claim_name_part_count: Final = 3
+    if len(parts) != claim_name_part_count or parts[0] not in claim_states or parts[1] != "v1":
         return None
     token = parts[2]
     if len(token) != _TOKEN_HEX_LENGTH or any(character not in "0123456789abcdef" for character in token):
@@ -854,8 +851,9 @@ def _reclaim_private_record(
     if not stat.S_ISREG(private_stat.st_mode):
         msg = f"{Path(directory, private_name)} is not a regular private record"
         raise OSError(msg)
+    private_record_grace: Final = 2.0
     if private_stat.st_nlink == 1 and (
-        (current := now()) is None or current - private_stat.st_mtime < _PRIVATE_RECORD_GRACE
+        (current := now()) is None or current - private_stat.st_mtime < private_record_grace
     ):
         return
     try:
@@ -1055,10 +1053,11 @@ def _unlink_in_directory(directory: Path, name: str) -> BaseException | None:
         Path(directory / name).unlink()
         return None
     retry_delay = 0.001  # pragma: win32 cover
-    for attempt in range(_UNLINK_MAX_RETRIES):  # pragma: win32 cover
+    max_retries: Final = 10  # pragma: win32 cover
+    for attempt in range(max_retries):  # pragma: win32 cover
         if (error := _unlink_error(directory / name)) is None:
             return None
-        if error.errno not in {EACCES, EPERM} or attempt == _UNLINK_MAX_RETRIES - 1:
+        if error.errno not in {EACCES, EPERM} or attempt == max_retries - 1:
             raise error
         time.sleep(retry_delay)
         retry_delay *= 2
@@ -1262,10 +1261,11 @@ def _require_exact_name(directory: Path, name: str) -> None:
 
 
 def _raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:
+    windows_hard_link_unsupported: Final = frozenset({1, 17, 50})
     unsupported = (
         isinstance(error, NotImplementedError)
         or error.errno in _HARD_LINK_UNSUPPORTED_ERRNOS
-        or (getattr(error, "winerror", None) in _WINDOWS_HARD_LINK_UNSUPPORTED)
+        or (getattr(error, "winerror", None) in windows_hard_link_unsupported)
     )
     if unsupported:
         reason = "filesystem does not support atomic no-replace hard-link publication"

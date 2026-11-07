@@ -80,7 +80,6 @@ _DatabaseIdentity: TypeAlias = tuple[int, int]
 _MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
 # How long a wait that its caller may abandon runs before it checks whether it should stop.
 _CANCEL_POLL_INTERVAL: Final[float] = 0.1
-_UNSAFE_FORK_EXIT_STATUS: Final[int] = 70
 #: The longest a contended acquisition waits for the database inside one fork transition, in seconds.
 _MAX_TRANSITION_WAIT: Final[float] = 0.05
 # O_NONBLOCK keeps an open from blocking on a FIFO planted at the path; the regular-file check then rejects it.
@@ -89,15 +88,13 @@ _DIRECTORY_FLAGS: Final[int] = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | get
 # Header bytes 18 and 19 hold the file format versions, 2 in WAL mode: https://www.sqlite.org/fileformat.html
 _SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
 _FORMAT_VERSIONS: Final[slice] = slice(18, 20)
-_HEADER_SIZE: Final[int] = 20
-_WAL_FORMAT_VERSION: Final[int] = 2
 
 
 class _SQLiteTransitionContext(threading.local):
     depth: int = 0
 
 
-_SQLITE_TRANSITION_CONTEXT: Final = _SQLiteTransitionContext()
+_SQLITE_TRANSITION_CONTEXT: Final[_SQLiteTransitionContext] = _SQLiteTransitionContext()
 
 
 class _ConnectionEscrow:
@@ -130,7 +127,7 @@ class _ConnectionEscrow:
         self._lock = threading.RLock()
 
 
-_CONNECTION_ESCROW: Final = _ConnectionEscrow()
+_CONNECTION_ESCROW: Final[_ConnectionEscrow] = _ConnectionEscrow()
 
 
 class _ForkedDatabaseRegistry:
@@ -180,7 +177,7 @@ class _ForkedDatabaseRegistry:
         self._sqlite_used = False
 
 
-_FORKED_DATABASES: Final = _ForkedDatabaseRegistry()
+_FORKED_DATABASES: Final[_ForkedDatabaseRegistry] = _ForkedDatabaseRegistry()
 
 _LINK_PREFIX: Final[str] = ".filelock-"
 _LINK_NAME: Final[str] = "lock.db"
@@ -288,7 +285,7 @@ class _InodeProbes:
     idle: list[int] = field(default_factory=list)
 
 
-_PROBE_DESCRIPTORS: Final = _ProbeDescriptors()
+_PROBE_DESCRIPTORS: Final[_ProbeDescriptors] = _ProbeDescriptors()
 
 
 class _ForkSafeConnection(sqlite3.Connection):
@@ -1432,8 +1429,10 @@ def _raise_if_wal(fd: int, database: str) -> None:
     # SQLite derives the -wal name from the path it connects through, a descriptor name on POSIX, and WAL never blocks
     # readers behind a writer, so the lock cannot work on such a database.
     # pread: an adopted probe is shared, so its file offset is not this connect's to move.
-    header: Final = os.pread(fd, _HEADER_SIZE, 0) if hasattr(os, "pread") else os.read(fd, _HEADER_SIZE)
-    if header.startswith(_SQLITE_MAGIC) and _WAL_FORMAT_VERSION in header[_FORMAT_VERSIONS]:
+    header_size: Final = 20
+    wal_format_version: Final = 2
+    header: Final = os.pread(fd, header_size, 0) if hasattr(os, "pread") else os.read(fd, header_size)
+    if header.startswith(_SQLITE_MAGIC) and wal_format_version in header[_FORMAT_VERSIONS]:
         msg = f"refusing a WAL-mode lock database: {database!r}; give ReadWriteLock a file of its own"
         raise ValueError(msg)
 
@@ -1472,7 +1471,8 @@ def _sqlite_transition() -> Generator[None]:
 
 def _abort_forked_sqlite_transition() -> None:  # pragma: forked child
     if _SQLITE_TRANSITION_CONTEXT.depth:
-        os._exit(_UNSAFE_FORK_EXIT_STATUS)  # inherited SQLite handles cannot be used or closed safely
+        unsafe_fork_exit_status: Final = 70
+        os._exit(unsafe_fork_exit_status)  # inherited SQLite handles cannot be used or closed safely
 
 
 def _track_sqlite_use(event: str, _args: Unused) -> None:

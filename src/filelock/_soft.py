@@ -47,8 +47,6 @@ else:  # pragma: win32 no cover
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
-_UNLINK_MAX_RETRIES: Final[int] = 10
-_MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
 #: Contenders act on the record in the marker, so no other account may write it, whatever the mode or umask.
 _OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
 #: All a SoftFileLock before 3.22 writes, and what a current one shows between creating its marker and writing it.
@@ -196,8 +194,9 @@ class SoftFileLock(BaseFileLock):
                 raise
 
     def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:  # pragma: win32 cover
+        max_retries: Final = 10
         retry_delay = 0.001
-        for attempt in range(_UNLINK_MAX_RETRIES):
+        for attempt in range(max_retries):
             # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck
             # identity each attempt: a failed unlink leaves a window for a successor to replace the marker at this path.
             try:
@@ -213,7 +212,7 @@ class SoftFileLock(BaseFileLock):
                 if exc.errno in {EACCES, EPERM}:
                     # The file is still ours, so the next acquire or release tries again if these attempts run out.
                     self._marker_cleanup = identity
-                    if attempt < _UNLINK_MAX_RETRIES - 1:
+                    if attempt < max_retries - 1:
                         time.sleep(retry_delay)
                         retry_delay *= 2
                     continue
@@ -557,9 +556,10 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
     # a holder it would name a foreign host no one reclaims, or a start token that lets a contender break a live lock.
     if not content or not content.endswith("\n") or len(lines := content.strip().splitlines()) not in {2, 3}:
         return None
+    start_token_line_count: Final = 3
     try:
         pid = parse_decimal(lines[0])
-        start_token = parse_decimal(lines[2]) if len(lines) == _MARKER_WITH_START_TOKEN_LINE_COUNT else None
+        start_token = parse_decimal(lines[2]) if len(lines) == start_token_line_count else None
     except ValueError:
         return None
     # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid
