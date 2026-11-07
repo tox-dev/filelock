@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 # coverage passes the config's plugin options; this plugin takes none.
-def _coverage_init(reg: Plugins, options: dict[str, str]) -> None:  # ruff:ignore[unused-function-argument]
+def coverage_init(reg: Plugins, options: dict[str, str]) -> None:  # ruff:ignore[unused-function-argument]
     reg.add_configurer(CapabilityPragmas())
 
 
@@ -80,4 +80,7 @@ _ALWAYS_EXCLUDED: Final[tuple[str, ...]] = (r"# pragma: forked child\b",)
 
 _CAPABILITY_PRAGMA: Final[str] = rf"# pragma: (needs|lacks) ({'|'.join(sorted(CAPABILITIES))})\b"
 
-__all__ = []
+__all__ = [
+    "CAPABILITIES",
+    "coverage_init",
+]
