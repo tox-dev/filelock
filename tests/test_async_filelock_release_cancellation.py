@@ -36,7 +36,7 @@ async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: Mo
         loop.call_soon_threadsafe(release_started.set)
         assert finish_release.wait(timeout=5)
 
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=block_unlock)
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=block_unlock, autospec=True)
     task = asyncio.create_task(lock.release())
     await release_started.wait()
     task.cancel("cancel release")
@@ -68,7 +68,7 @@ async def test_acquire_proceeds_after_queued_release_is_canceled(tmp_path: Path,
             assert finish_release.wait(timeout=5)
         real_flock(fd, operation)
 
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=block_first_unlock)
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=block_first_unlock, autospec=True)
     first_release = asyncio.create_task(lock.release())
     await release_started.wait()
     second_release = asyncio.create_task(lock.release())
@@ -169,7 +169,7 @@ async def test_release_cancellation_surfaces_backend_error(  # pragma: needs fcn
             assert finish_release.wait(timeout=5)
             raise release_error
 
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock)
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
     task = asyncio.create_task(lock.release())
     await release_started.wait()
     task.cancel("cancel release")

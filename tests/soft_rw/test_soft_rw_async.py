@@ -231,7 +231,7 @@ async def test_async_release_and_close_skip_when_pid_differs(tmp_path: Path, moc
     lock = _make(tmp_path)
     await lock.acquire_write(timeout=2)
     try:
-        mocker.patch("filelock._soft_rw._async.os.getpid", return_value=os.getpid() + 1)
+        mocker.patch("filelock._soft_rw._async.os.getpid", return_value=os.getpid() + 1, autospec=True)
         await lock.release(force=True)
         await lock.close()
         mocker.stopall()
@@ -415,7 +415,7 @@ async def test_async_acquire_cancellation_surfaces_a_failed_acquire(tmp_path: Pa
 async def test_async_acquire_cancellation_surfaces_a_failed_release(tmp_path: Path, mocker: MockerFixture) -> None:
     gate = _Gate(mocker, "_acquire_level_of")
     release_error = RuntimeError("release failed")
-    mocker.patch.object(SoftReadWriteLock, "_release_level_of", side_effect=release_error)
+    mocker.patch.object(SoftReadWriteLock, "_release_level_of", side_effect=release_error, autospec=True)
     lock = _make(tmp_path)
     task = asyncio.create_task(lock.acquire_write(timeout=5))
     await gate.started.wait()

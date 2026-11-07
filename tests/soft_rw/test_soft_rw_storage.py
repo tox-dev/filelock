@@ -47,7 +47,7 @@ def test_missing_path_returns_default(tmp_path: Path, call: Callable[[OsFiles, s
 def test_open_other_errors_propagate(
     tmp_path: Path, mocker: MockerFixture, call: Callable[[OsFiles, str], object]
 ) -> None:
-    mocker.patch.object(storage_mod.os, "open", side_effect=OSError(EIO, "Input/output error"))
+    mocker.patch.object(storage_mod.os, "open", side_effect=OSError(EIO, "Input/output error"), autospec=True)
     with pytest.raises(OSError, match="Input/output error"):
         call(OsFiles(str(tmp_path / "x.lock")), str(tmp_path / "absent"))
 
@@ -59,7 +59,7 @@ def test_read_non_regular_file_is_empty(tmp_path: Path) -> None:
 
 
 def test_create_rolls_back_a_failed_write(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(storage_mod, "write_all", side_effect=OSError("write boom"))
+    mocker.patch.object(storage_mod, "write_all", side_effect=OSError("write boom"), autospec=True)
     with pytest.raises(OSError, match="write boom"):
         OsFiles(str(tmp_path / "x.lock")).create(str(tmp_path / "record"), b"data")
     assert not (tmp_path / "record").exists()
@@ -82,14 +82,14 @@ def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixtur
         real_link(source, target, **dir_fds)
         raise OSError(EIO, "Input/output error")
 
-    mocker.patch.object(storage_mod, "_link_no_follow", side_effect=link_then_fail)
+    mocker.patch.object(storage_mod, "_link_no_follow", side_effect=link_then_fail, autospec=True)
     source = tmp_path / "source"
     source.write_bytes(b"data")
     assert OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
 def test_link_reports_an_unsupported_filesystem(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(storage_mod, "_link_no_follow", side_effect=NotImplementedError("no os.link"))
+    mocker.patch.object(storage_mod, "_link_no_follow", side_effect=NotImplementedError("no os.link"), autospec=True)
     source = tmp_path / "source"
     source.write_bytes(b"data")
     with pytest.raises(SoftFileLockProtocolError, match="hard-link"):
@@ -103,7 +103,7 @@ def test_link_from_a_missing_source_raises(tmp_path: Path) -> None:
 
 def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFixture) -> None:
     # A persistent EPERM or EIO is not a peer winning the race; reporting it as one would spin forever.
-    mocker.patch.object(storage_mod, "_link_no_follow", side_effect=OSError(EIO, "Input/output error"))
+    mocker.patch.object(storage_mod, "_link_no_follow", side_effect=OSError(EIO, "Input/output error"), autospec=True)
     source = tmp_path / "source"
     source.write_bytes(b"data")
     with pytest.raises(OSError, match="Input/output error"):
@@ -164,12 +164,12 @@ def test_overwrite_does_not_block_on_a_fifo(tmp_path: Path, *, reader: bool) -> 
 
 
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(storage_mod.os, "unlink", side_effect=PermissionError("held open"))
+    mocker.patch.object(storage_mod.os, "unlink", side_effect=PermissionError("held open"), autospec=True)
     OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
 
 
 def test_unlink_other_errors_propagate(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(storage_mod.os, "unlink", side_effect=OSError(EIO, "Input/output error"))
+    mocker.patch.object(storage_mod.os, "unlink", side_effect=OSError(EIO, "Input/output error"), autospec=True)
     with pytest.raises(OSError, match="Input/output error"):
         OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
 
@@ -177,7 +177,7 @@ def test_unlink_other_errors_propagate(tmp_path: Path, mocker: MockerFixture) ->
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows retries a refused open as a sharing race")
 def test_read_refused_on_posix_raises(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
     # Reading a peer's record as missing when it is unreadable would age it as a constant and evict a holder.
-    mocker.patch.object(storage_mod.os, "open", side_effect=PermissionError("denied"))
+    mocker.patch.object(storage_mod.os, "open", side_effect=PermissionError("denied"), autospec=True)
     with pytest.raises(PermissionError):
         OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "record"))
 
@@ -187,7 +187,7 @@ def test_read_refused_on_windows_is_missing_after_the_grace(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: win32 cover
     # A file still refusing after the grace has been delete-pending longer than any deletion takes: on its way out.
-    mocker.patch.object(storage_mod.os, "open", side_effect=PermissionError("sharing violation"))
+    mocker.patch.object(storage_mod.os, "open", side_effect=PermissionError("sharing violation"), autospec=True)
     started = time.monotonic()
     assert OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "record")) is None
     assert time.monotonic() - started >= storage_mod._WINDOWS_OPEN_GRACE - 0.05

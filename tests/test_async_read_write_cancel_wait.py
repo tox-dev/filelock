@@ -133,7 +133,7 @@ async def test_async_acquire_behind_a_sync_acquire_of_the_same_instance_times_ou
     tmp_path: Path, make: _Make, mocker: MockerFixture
 ) -> None:
     # With one thread alive the wait is not sliced, so the thread lock is polled across several intervals.
-    mocker.patch.object(threading, "active_count", return_value=1)
+    mocker.patch.object(threading, "active_count", return_value=1, autospec=True)
     holder, lock = make(tmp_path, is_singleton=False)
     shared, _ = make(tmp_path, is_singleton=True)
     holder.acquire_write()

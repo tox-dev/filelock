@@ -559,7 +559,7 @@ def test_lease_hands_back_the_claim_when_the_heartbeat_cannot_start(marker: Path
     # A heartbeat thread the OS refuses (an rlimit reached) must not leave the claim behind: a peer would evict the
     # unrefreshed marker and acquire while this instance still believed it held the lease, and the acquire rollback
     # would raise joining a thread that never started.
-    mocker.patch.object(Thread, "start", side_effect=RuntimeError("can't start new thread"))
+    mocker.patch.object(Thread, "start", side_effect=RuntimeError("can't start new thread"), autospec=True)
     lease = _lease(marker)
     with pytest.raises(RuntimeError, match="can't start new thread"):
         lease.acquire()
@@ -574,7 +574,7 @@ def test_lease_release_stops_a_heartbeat_recorded_before_its_thread_starts(marke
     # started the thread. Stubbing start() as a no-op freezes that window: release() must stop the heartbeat without
     # raising on a join of the unstarted thread, and must still unlink the marker so a peer cannot take a claim we
     # let go.
-    mocker.patch.object(Thread, "start")
+    mocker.patch.object(Thread, "start", autospec=True)
     lease = SoftFileLease(
         str(marker), timeout=0.3, lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT, thread_local=False
     )
@@ -824,7 +824,7 @@ def test_lease_reports_owner_changed_when_the_marker_identity_shifts(marker: Pat
             return SimpleNamespace(st_dev=st.st_dev, st_ino=st.st_ino + 1)
         return st
 
-    mocker.patch("filelock._lease.os.lstat", side_effect=lstat)
+    mocker.patch("filelock._lease.os.lstat", side_effect=lstat, autospec=True)
     try:
         shifted = True
         _wait_until(lambda: bool(seen))

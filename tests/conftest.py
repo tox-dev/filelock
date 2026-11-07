@@ -110,7 +110,7 @@ def close_failure(
     def capture(fd: int) -> None:
         nonlocal locked_fd
         locked_fd = fd
-        mocker.patch("filelock._api.os.close", side_effect=close)
+        mocker.patch("filelock._api.os.close", side_effect=close, autospec=True)
 
     def close(fd: int) -> None:
         # filelock._api.os is the os module, so this patches os.close process-wide. Raise only for the descriptor
@@ -128,7 +128,7 @@ def close_failure(
 def break_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
     # Run the test with the platform's own stale break, then as where no atomic exchange of two names exists.
     if request.param == "no-exchange":
-        mocker.patch("filelock._util._rename_call", return_value=None)
+        mocker.patch("filelock._util._rename_call", return_value=None, autospec=True)
 
 
 @pytest.fixture
@@ -151,7 +151,7 @@ def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None
                 action()
             return found
 
-        mocker.patch("filelock._identity.process_alive", side_effect=judged)
+        mocker.patch("filelock._identity.process_alive", side_effect=judged, autospec=True)
         mocker.patch.object(os, "lstat", new=lstat_then_act)
 
     return schedule
@@ -180,7 +180,7 @@ def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]
             }
             return os.stat_result((found.st_mode, freed.st_ino, *found[2:10]), extra)
 
-        mocker.patch("os.lstat", side_effect=lstat_with_reuse)
+        mocker.patch("os.lstat", side_effect=lstat_with_reuse, autospec=True)
 
     return stand_in
 

@@ -701,6 +701,7 @@ def test_acquire_converts_connect_lock_error_to_timeout(lock_file: str, mocker: 
     mocker.patch(
         "filelock._read_write._connect",
         side_effect=sqlite3.OperationalError("database is locked"),
+        autospec=True,
     )
 
     with pytest.raises(Timeout):
@@ -730,13 +731,13 @@ def test_poison_after_fork_records_path_and_identity(identity: tuple[int, int] |
 
 
 def test_track_sqlite_use_forwards_connect_event(mocker: MockerFixture) -> None:
-    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use")
+    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use", autospec=True)
     _track_sqlite_use("sqlite3.connect", ())
     note.assert_called_once_with()
 
 
 def test_track_sqlite_use_ignores_other_events(mocker: MockerFixture) -> None:
-    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use")
+    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use", autospec=True)
     _track_sqlite_use("open", ())
     note.assert_not_called()
 
@@ -759,7 +760,7 @@ def test_meta_raises_when_pid_changes_during_singleton_construction(lock_file: s
         pass
 
     pid_box = [os.getpid()]
-    mocker.patch("filelock._read_write._GETPID", side_effect=lambda: pid_box[0])
+    mocker.patch("filelock._read_write._GETPID", side_effect=lambda: pid_box[0], autospec=True)
     original_init = _Sub.__init__
 
     def _init_then_fork(
@@ -835,7 +836,7 @@ def test_read_lock_avoids_sqlite_schema_alias(lock_file: str, mocker: MockerFixt
         connection.set_trace_callback(statements.append)
         return connection
 
-    mocker.patch("sqlite3.connect", side_effect=connect)
+    mocker.patch("sqlite3.connect", side_effect=connect, autospec=True)
     with ReadWriteLock(lock_file, is_singleton=False).read_lock():
         pass
 
@@ -885,7 +886,7 @@ def test_connection_close_from_another_process_leaves_it_open(lock_file: str, mo
     lock.acquire_read()
     connection = lock._con
     assert connection is not None
-    mocker.patch("filelock._read_write._GETPID", return_value=-1)
+    mocker.patch("filelock._read_write._GETPID", return_value=-1, autospec=True)
 
     connection.close()
 

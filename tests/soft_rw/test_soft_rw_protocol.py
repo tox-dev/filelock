@@ -317,7 +317,7 @@ def test_waiting_contender_keeps_an_undeletable_record(
     # Windows can leave the record in place while refusing the rewrite; the contender carries on.
     reader = _participant(files, lock_file, "read", stale_threshold=100)
     reader.publish()
-    mocker.patch.object(OsFiles, "overwrite", return_value=False)
+    mocker.patch.object(OsFiles, "overwrite", return_value=False, autospec=True)
     assert reader.advance()
     assert Path(root, "holders", reader.token).exists()
 
@@ -412,7 +412,7 @@ def test_a_listing_naming_only_compacted_generations_fails_closed(
     # A client that can see names but read none of them is behind the log by more than the retained window; treating
     # that as an empty log would restart the sequence and fork it.
     files.prepare(root)
-    mocker.patch.object(OsFiles, "listdir", return_value=[f"{generation:020d}" for generation in (4, 5)])
+    mocker.patch.object(OsFiles, "listdir", return_value=[f"{generation:020d}" for generation in (4, 5)], autospec=True)
     with pytest.raises(SoftFileLockProtocolError, match="names no readable snapshot"):
         GenerationLog(files, lock_file, root).latest()
 
@@ -946,7 +946,7 @@ def test_heartbeat_with_a_symlink_refused_by_platform_errno_is_lost(  # pragma: 
             refusals.append((flags, error.errno))
             raise OSError(refusal_errno, os.strerror(refusal_errno), path) from error
 
-    mocker.patch.object(os, "open", side_effect=platform_open)
+    mocker.patch.object(os, "open", side_effect=platform_open, autospec=True)
 
     assert (writer.heartbeat(), list(target.iterdir())) == (("lost", None), [])
     assert len(refusals) == 1

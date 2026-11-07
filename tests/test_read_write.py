@@ -561,7 +561,7 @@ def test_read_write_lock_refuses_a_database_moved_after_connect(
             lock_path.unlink()
         return connection
 
-    mocker.patch("sqlite3.connect", side_effect=connect_then_move)  # pragma: win32 no cover
+    mocker.patch("sqlite3.connect", side_effect=connect_then_move, autospec=True)  # pragma: win32 no cover
     with pytest.raises(OSError, match="unlinked or replaced"):  # pragma: win32 no cover
         lock.acquire_write()
     lock.close()  # pragma: win32 no cover
@@ -614,7 +614,9 @@ def test_read_write_lock_waits_for_an_oplock_holder_that_answers(
 
 def test_read_write_lock_open_blocked_by_an_oplock_is_a_timeout(tmp_path: Path, mocker: MockerFixture) -> None:
     with closing(ReadWriteLock(tmp_path / "lock.db", is_singleton=False)) as lock:
-        mocker.patch("filelock._read_write._connect", side_effect=BlockingIOError(EWOULDBLOCK, "oplock break"))
+        mocker.patch(
+            "filelock._read_write._connect", side_effect=BlockingIOError(EWOULDBLOCK, "oplock break"), autospec=True
+        )
 
         with pytest.raises(Timeout):
             lock.acquire_read(timeout=0)
@@ -722,7 +724,7 @@ def _patch_rollback_failure(mocker: MockerFixture, *, after_rollback: bool) -> s
         )
         return cast("sqlite3.Connection", connection)
 
-    mocker.patch("filelock._read_write._connect", side_effect=connect)
+    mocker.patch("filelock._read_write._connect", side_effect=connect, autospec=True)
     return rollback_error
 
 
@@ -1078,6 +1080,7 @@ def test_windows_directory_whose_acl_cannot_be_read_gets_a_private_link(  # prag
         _ADVAPI32,
         "GetNamedSecurityInfoW",
         side_effect=lambda *args: denials.pop() if denials else read_acl(*args),
+        autospec=True,
     )
     connect = mocker.spy(sqlite3, "connect")
 

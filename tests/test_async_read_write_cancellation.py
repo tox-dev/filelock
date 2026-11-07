@@ -127,7 +127,7 @@ def _patch_async_connection(
         )
         return cast("sqlite3.Connection", connection)
 
-    mocker.patch("filelock._read_write._connect", side_effect=connect)
+    mocker.patch("filelock._read_write._connect", side_effect=connect, autospec=True)
 
 
 def _block_executor(executor_started: threading.Event, release_executor: threading.Event) -> None:
@@ -558,7 +558,7 @@ async def test_read_retried_after_its_select_waited_starts_a_fresh_transaction(
 
     _patch_async_connection(mocker, executescript=executescript)
     # With other threads alive the acquire waits in short slices that never reach the in-place retry under test.
-    mocker.patch.object(threading, "active_count", return_value=1)
+    mocker.patch.object(threading, "active_count", return_value=1, autospec=True)
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
 
     async with lock.read_lock():
@@ -580,7 +580,7 @@ async def test_write_retried_after_its_begin_waited_is_acquired(lock_file: str, 
         return real_connection.executescript(statement)
 
     _patch_async_connection(mocker, executescript=executescript)
-    mocker.patch.object(threading, "active_count", return_value=1)
+    mocker.patch.object(threading, "active_count", return_value=1, autospec=True)
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
 
     async with lock.write_lock():

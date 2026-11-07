@@ -70,13 +70,15 @@ def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:  # prag
 )
 def test_host_name_escapes_out_of_grammar_bytes(raw: str, expected: str, mocker: MockerFixture) -> None:
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
-    mocker.patch("filelock._identity.socket.gethostname", return_value=raw)
+    mocker.patch("filelock._identity.socket.gethostname", return_value=raw, autospec=True)
     assert host_name() == expected
 
 
 def test_host_name_keeps_over_long_names_apart_past_the_limit(mocker: MockerFixture) -> None:
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
-    mocker.patch("filelock._identity.socket.gethostname", side_effect=[f"{'a' * 253}-alpha", f"{'a' * 253}-bravo"])
+    mocker.patch(
+        "filelock._identity.socket.gethostname", side_effect=[f"{'a' * 253}-alpha", f"{'a' * 253}-bravo"], autospec=True
+    )
     alpha, bravo = host_name(), host_name()
 
     assert (alpha != bravo, len(alpha), len(bravo)) == (True, 253, 253)
@@ -92,12 +94,12 @@ def test_host_name_keeps_over_long_names_apart_past_the_limit(mocker: MockerFixt
 )
 def test_host_name_names_the_pid_namespace(namespace: int | OSError, expected: str, mocker: MockerFixture) -> None:
     pin_pid_namespace(mocker, namespace)
-    mocker.patch("filelock._identity.socket.gethostname", return_value="build-01")
+    mocker.patch("filelock._identity.socket.gethostname", return_value="build-01", autospec=True)
     assert host_name() == expected
 
 
 def test_host_name_keeps_a_namespace_apart_from_a_lookalike_host(mocker: MockerFixture) -> None:
-    mocker.patch("filelock._identity.socket.gethostname", side_effect=["a", "a?pidns-f0000001"])
+    mocker.patch("filelock._identity.socket.gethostname", side_effect=["a", "a?pidns-f0000001"], autospec=True)
     pin_pid_namespace(mocker, 0xF0000001)
     in_namespace: Final[str] = host_name()
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
@@ -121,13 +123,13 @@ def test_process_alive_false_for_exited_child_still_referenced() -> None:
 
 @_POSIX_ONLY
 def test_process_alive_reads_permission_denied_as_alive(mocker: MockerFixture) -> None:  # pragma: win32 no cover
-    mocker.patch("filelock._identity.os.kill", side_effect=OSError(EPERM, "operation not permitted"))
+    mocker.patch("filelock._identity.os.kill", side_effect=OSError(EPERM, "operation not permitted"), autospec=True)
     assert process_alive(_DEAD_PID) is True
 
 
 @_POSIX_ONLY
 def test_process_alive_reraises_unexpected_errno(mocker: MockerFixture) -> None:  # pragma: win32 no cover
-    mocker.patch("filelock._identity.os.kill", side_effect=OSError(ENODEV, "no such device"))
+    mocker.patch("filelock._identity.os.kill", side_effect=OSError(ENODEV, "no such device"), autospec=True)
     with pytest.raises(OSError, match="no such device"):  # pragma: win32 no cover
         process_alive(_DEAD_PID)
 
@@ -165,7 +167,7 @@ def test_process_start_token_read_only_without_a_boottime_offset(
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS sysctl probe")
 def test_darwin_sysctl_probe_failure_reads_no_token(mocker: MockerFixture) -> None:  # pragma: darwin cover
-    mocker.patch("filelock._identity._LIBC.sysctl", return_value=-1)
+    mocker.patch("filelock._identity._LIBC.sysctl", return_value=-1, autospec=True)
     assert process_start_token(os.getpid()) is None
 
 
@@ -321,5 +323,5 @@ def test_owner_is_stale_sibling_pid_namespace_never_reclaimed(mocker: MockerFixt
 
 def test_owner_is_stale_live_process_unreadable_token_held(mocker: MockerFixture) -> None:
     # A live PID whose current start token cannot be read is indistinguishable from the recorded owner, so it holds.
-    mocker.patch("filelock._identity.process_start_token", return_value=None)
+    mocker.patch("filelock._identity.process_start_token", return_value=None, autospec=True)
     assert owner_is_stale(os.getpid(), host_name(), 987654) is False

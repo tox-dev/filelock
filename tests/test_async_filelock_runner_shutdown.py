@@ -111,7 +111,7 @@ def test_runner_shutdown_preserves_body_cancellation_and_release_errors(  # prag
             raise release_error
         real_flock(fd, operation)
 
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock)
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
     lock = AsyncFileLock(tmp_path / "a", thread_local=False, context_error_policy=policy)
     runner, task, cancellation_seen = _start_unawaited_context_failure(
         lock,

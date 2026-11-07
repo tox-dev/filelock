@@ -967,7 +967,9 @@ def test_heartbeat_survives_a_transient_refresh_error(lock_file: str, mocker: Mo
     try:
         hold = lock._hold
         assert hold is not None
-        mocker.patch.object(storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"))
+        mocker.patch.object(
+            storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"), autospec=True
+        )
         time.sleep(0.2)  # ~10 ticks, every one failing the refresh
         assert hold.heartbeat_thread.is_alive()
         assert not hold.heartbeat_stop.is_set()
@@ -987,7 +989,9 @@ def test_heartbeat_reports_refresh_failures_that_outlast_the_margin(lock_file: s
     try:
         hold = lock._hold
         assert hold is not None
-        mocker.patch.object(storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"))
+        mocker.patch.object(
+            storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"), autospec=True
+        )
         assert hold.heartbeat_stop.wait(timeout=_PROCESS_DEADLINE)
         assert [compromise.reason for compromise in seen] == ["refresh-failed"]
     finally:
@@ -1003,7 +1007,9 @@ def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
     # A heartbeat thread the OS refuses (an rlimit reached) must not leave a hold behind: a peer would evict the
     # unrefreshed record and acquire while this instance still believed it held the lock, and release() would raise
     # joining a thread that never started.
-    mocker.patch.object(sync_mod._HeartbeatThread, "start", side_effect=RuntimeError("can't start new thread"))
+    mocker.patch.object(
+        sync_mod._HeartbeatThread, "start", side_effect=RuntimeError("can't start new thread"), autospec=True
+    )
     acquire = lock.acquire_write if mode == "write" else lock.acquire_read
     with pytest.raises(RuntimeError, match="can't start new thread"):
         acquire(timeout=2)
@@ -1387,7 +1393,7 @@ def test_protocol_tree_stays_in_place_while_a_record_is_written(  # pragma: win3
             refused.append(True)
         real_write(fd, data)
 
-    mocker.patch.object(storage_mod, "write_all", side_effect=try_to_move_the_tree_aside)
+    mocker.patch.object(storage_mod, "write_all", side_effect=try_to_move_the_tree_aside, autospec=True)
     with lock.write_lock(timeout=2):
         pass
 
@@ -1716,7 +1722,7 @@ def test_cleanup_closes_the_process() -> None:
 
 
 def test_record_zero_write_rolls_back(lock_file: str, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._util.os.write", return_value=0)
+    mocker.patch("filelock._util.os.write", return_value=0, autospec=True)
 
     lock = SoftReadWriteLock(lock_file, is_singleton=False)
     with pytest.raises(OSError, match="0 bytes"):

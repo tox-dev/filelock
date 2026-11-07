@@ -170,7 +170,7 @@ def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFi
             proceed.wait()
         return real_fstat(fd)
 
-    mocker.patch("os.fstat", side_effect=delayed_fstat)
+    mocker.patch("os.fstat", side_effect=delayed_fstat, autospec=True)
 
     def acquire_lock() -> None:
         lock.acquire()
@@ -206,7 +206,7 @@ def test_unrelated_acquisitions_reach_filesystem_boundary_concurrently(  # pragm
             boundary.wait()
         return real_fstat(fd)
 
-    mocker.patch("os.fstat", side_effect=wait_at_boundary)
+    mocker.patch("os.fstat", side_effect=wait_at_boundary, autospec=True)
 
     def acquire_lock(path: str) -> None:
         with FileLock(path, is_singleton=False):

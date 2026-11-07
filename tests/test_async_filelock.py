@@ -879,7 +879,7 @@ async def test_force_release_clears_registry(tmp_path: Path, lock_type: type[Bas
 async def test_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(str(tmp_path / "a"))
     await lock.acquire()
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None])
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
     with pytest.raises(OSError, match="unlock failed"):
         await lock.release()
     assert lock.is_locked
@@ -890,7 +890,7 @@ async def test_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker:
 
 @pytest.mark.asyncio
 async def test_async_zero_write_rolls_back_acquire(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._util.os.write", return_value=0)
+    mocker.patch("filelock._util.os.write", return_value=0, autospec=True)
 
     lock = AsyncSoftFileLock(str(tmp_path / "a"))
     with pytest.raises(OSError, match="0 bytes"):
@@ -946,8 +946,8 @@ def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Gener
         attempts.append(fd)
         raise close_error
 
-    mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_released)
-    close_mock = mocker.patch("filelock._soft.os.close", side_effect=close)
+    mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_released, autospec=True)
+    close_mock = mocker.patch("filelock._soft.os.close", side_effect=close, autospec=True)
     try:
         yield close_error, attempts
     finally:
@@ -1268,7 +1268,7 @@ def _fail_close_of(mocker: MockerFixture, lock: BaseAsyncFileLock, error: OSErro
             raise error
         real_close(target)  # pragma: no cover  # only an unrelated __del__ close during the mock window reaches here
 
-    mocker.patch("filelock._api.os.close", side_effect=close)
+    mocker.patch("filelock._api.os.close", side_effect=close, autospec=True)
 
 
 @NEEDS_FCNTL
@@ -1284,7 +1284,7 @@ async def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: Mo
 @NEEDS_FCNTL
 @pytest.mark.asyncio  # pragma: needs fcntl
 async def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"))
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
     lock = AsyncFileLock(str(tmp_path / "a"), fallback_to_soft=False)
     with pytest.raises(OSError, match="no flock"):
         await lock.acquire()
@@ -1378,7 +1378,9 @@ async def test_on_acquired_rollback_group_detaches_release_context(
 def test_async_del_without_any_loop_returns(tmp_path: Path, mocker: MockerFixture) -> None:
     # GC can finalize a lock with no loop running and none remembered, where releasing is impossible. Raise the lookup
     # rather than rely on no loop running here, which the surrounding tests decide.
-    get_running_loop = mocker.patch("filelock.asyncio.asyncio.get_running_loop", side_effect=RuntimeError)
+    get_running_loop = mocker.patch(
+        "filelock.asyncio.asyncio.get_running_loop", side_effect=RuntimeError, autospec=True
+    )
     lock = AsyncSoftFileLock(str(tmp_path / "a"))
     release = mocker.patch.object(lock, "release", autospec=True)
     # Any lock another test dropped reaches the same patched lookup, so only calls from here on count.
@@ -1582,7 +1584,7 @@ async def test_executor_acquire_keeps_filesystem_calls_off_the_loop(tmp_path: Pa
             lstat_threads.add(threading.get_ident())
         return real_lstat(path, dir_fd=dir_fd)
 
-    mocker.patch("os.lstat", side_effect=lstat)
+    mocker.patch("os.lstat", side_effect=lstat, autospec=True)
     await lock.acquire()
     mocker.stopall()
     await lock.release()

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 def out_of_grammar_host(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
     # Kernel hostnames that every marker format used to publish verbatim and then read back as malformed. The
     # surrogate is how Python surfaces a hostname that is not valid UTF-8.
-    mocker.patch("filelock._identity.socket.gethostname", return_value=request.param)
+    mocker.patch("filelock._identity.socket.gethostname", return_value=request.param, autospec=True)
 
 
 @pytest.mark.usefixtures("out_of_grammar_host")

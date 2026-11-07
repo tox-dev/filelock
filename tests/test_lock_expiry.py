@@ -80,7 +80,7 @@ def test_expired_lock_race_rename_fails(tmp_path: Path, mocker: MockerFixture) -
     lock_path.touch()
     os.utime(lock_path, (0, 0))
 
-    mocker.patch("filelock._util.Path.rename", side_effect=FileNotFoundError)
+    mocker.patch("filelock._util.Path.rename", side_effect=FileNotFoundError, autospec=True)
 
     with pytest.raises(TimeoutError):
         SoftFileLock(lock_path, lifetime=0.1, timeout=0.5).acquire()

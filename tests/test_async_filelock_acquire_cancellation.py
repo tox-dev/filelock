@@ -275,7 +275,7 @@ async def test_acquire_repeated_cancellation_waits_for_rollback(tmp_path: Path, 
     lock = AsyncFileLock(tmp_path / "a", on_acquired=block_hook)
     task = asyncio.create_task(lock.acquire())
     await hook_started.wait()
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=block_rollback)
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=block_rollback, autospec=True)
     task.cancel("first cancellation")
     finish_hook.set()
     await rollback_started.wait()
@@ -409,7 +409,7 @@ async def test_acquire_cancellation_surfaces_rollback_error(  # pragma: needs fc
     lock = AsyncFileLock(tmp_path / "a", context_error_policy=policy, on_acquired=block_hook)
     task = asyncio.create_task(lock.acquire())
     await hook_started.wait()
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=[rollback_error, None])
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=[rollback_error, None], autospec=True)
     task.cancel("cancel acquire")
     finish_hook.set()
     if policy == "chain":
@@ -461,6 +461,7 @@ async def test_acquire_cancellation_surfaces_attempt_and_rollback_errors(  # pra
     mocker.patch(
         "filelock._unix.fcntl.flock",
         side_effect=[first_rollback_error, second_rollback_error, None],
+        autospec=True,
     )
     task.cancel("cancel acquire")
     finish_hook.set()

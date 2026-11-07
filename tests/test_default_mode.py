@@ -74,7 +74,7 @@ def test_default_mode_respects_umask(lock_type: type[BaseFileLock], tmp_path: Pa
 def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:  # pragma: win32 no cover
     lock = FileLock(str(tmp_path / "a.lock"))
 
-    fchmod_spy = mocker.patch("os.fchmod")
+    fchmod_spy = mocker.patch("os.fchmod", autospec=True)
     lock.acquire()
     assert lock.is_locked
     fchmod_spy.assert_not_called()

@@ -139,7 +139,7 @@ def test_acquisition_and_registration_errors_are_grouped(
         msg = "registration failed"
         raise OSError(msg)
 
-    fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration)
+    fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration, autospec=True)
     with pytest.raises(BaseExceptionGroup) as info:
         lock.acquire(timeout=0)
     descriptor = cast("int", lock.descriptor)
@@ -166,7 +166,7 @@ def test_registration_failure_tracks_descriptor_when_rollback_fails(tmp_path: Pa
         msg = "registration failed"
         raise OSError(msg)
 
-    fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration)
+    fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration, autospec=True)
     with pytest.raises(BaseExceptionGroup) as info:
         lock.acquire(timeout=0)
     descriptor = cast("int", lock.descriptor)
@@ -283,7 +283,7 @@ def test_control_flow_registration_error_rolls_back_descriptor(tmp_path: Path, m
             raise StopAcquire
         return real_fstat(fd)
 
-    mocker.patch("os.fstat", side_effect=interrupt_registration)
+    mocker.patch("os.fstat", side_effect=interrupt_registration, autospec=True)
     with pytest.raises(StopAcquire):
         CapturingLock(str(tmp_path / "interrupt.lock"), is_singleton=False).acquire(timeout=0)
 
@@ -303,7 +303,7 @@ async def test_coroutine_registration_error_rolls_back_descriptor(tmp_path: Path
             raise OSError(msg)
         return real_fstat(fd)
 
-    mocker.patch("os.fstat", side_effect=fail_registration)
+    mocker.patch("os.fstat", side_effect=fail_registration, autospec=True)
     with pytest.raises(OSError, match="registration failed"):
         await lock.acquire(timeout=0)
 
@@ -405,7 +405,7 @@ async def test_coroutine_acquisition_and_registration_errors_are_grouped(
         msg = "registration failed"
         raise OSError(msg)
 
-    fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration)
+    fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration, autospec=True)
     with pytest.raises(BaseExceptionGroup) as info:
         await lock.acquire(timeout=0)
     descriptor = cast("int", lock.descriptor)
@@ -437,7 +437,7 @@ async def test_coroutine_registration_failure_tracks_descriptor_when_rollback_fa
         msg = "registration failed"
         raise OSError(msg)
 
-    fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration)
+    fstat_mock = mocker.patch("os.fstat", side_effect=fail_registration, autospec=True)
     with pytest.raises(BaseExceptionGroup) as info:
         await lock.acquire(timeout=0)
     descriptor = cast("int", lock.descriptor)
