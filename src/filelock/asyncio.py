@@ -27,7 +27,7 @@ from inspect import iscoroutinefunction
 from threading import RLock
 from typing import TYPE_CHECKING, Final, NoReturn, TypeVar, cast
 
-from ._api import (
+from filelock._api import (
     _UNSET_FILE_MODE,
     BaseFileLock,
     CloseErrorPolicy,
@@ -51,7 +51,7 @@ from ._api import (
     _resolve_poll_interval,
     _resolve_timeout,
 )
-from ._async import (
+from filelock._async import (
     _AsyncTransitionGate,
     _AsyncTransitionUnavailableError,
     _BackendOutcome,
@@ -62,13 +62,13 @@ from ._async import (
     _run_in_executor,
     _wait_until_done,
 )
-from ._error import Timeout
-from ._lease import SoftFileLease
-from ._soft import SoftFileLock
-from ._strict import StrictSoftFileLock
-from ._unix import UnixFileLock
-from ._util import ensure_directory_exists
-from ._windows import WindowsFileLock
+from filelock._error import Timeout
+from filelock._lease import SoftFileLease
+from filelock._soft import SoftFileLock
+from filelock._strict import StrictSoftFileLock
+from filelock._unix import UnixFileLock
+from filelock._util import ensure_directory_exists
+from filelock._windows import WindowsFileLock
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Hashable, Mapping

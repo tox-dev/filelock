@@ -23,18 +23,18 @@ from threading import Event, Thread, current_thread
 from typing import TYPE_CHECKING, Final, Literal, cast
 from weakref import WeakMethod
 
-from ._api import _check_timeout_max, _seconds
-from ._error import LeaseSettingsMismatch
-from ._identity import owner_is_stale
-from ._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord, parse_marker
-from ._soft import _read_lock_file
-from ._util import pin_inode, touch
+from filelock._api import _check_timeout_max, _seconds
+from filelock._error import LeaseSettingsMismatch
+from filelock._identity import owner_is_stale
+from filelock._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord, parse_marker
+from filelock._soft import _read_lock_file
+from filelock._util import pin_inode, touch
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from typing import Unpack
 
-    from ._api import LockOptions, _ExtraValue
+    from filelock._api import LockOptions, _ExtraValue
 
 #: ``evicted`` is a :class:`~filelock.SoftReadWriteLock` loss: a peer waited out the stale threshold and committed a
 #: generation without this holder.

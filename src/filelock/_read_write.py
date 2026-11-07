@@ -29,7 +29,7 @@ from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
 from weakref import WeakValueDictionary
 
-from ._api import (
+from filelock._api import (
     AcquireReturnProxy,
     _acquire_thread_lock,
     _canonical,
@@ -46,11 +46,11 @@ from ._api import (
     _timeout_behavior,
     _unregister_owned_descriptor,
 )
-from ._error import Timeout
-from ._identity import host_name, owner_is_stale, process_start_token
+from filelock._error import Timeout
+from filelock._identity import host_name, owner_is_stale, process_start_token
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from ._windows import (
+    from filelock._windows import (
         _directory_is_private,
         _identity_at,
         _identity_of_fd,

@@ -11,8 +11,8 @@ from errno import ENOENT, ENOTDIR, EWOULDBLOCK
 from functools import cache
 from typing import TYPE_CHECKING, Final, cast
 
-from ._api import BaseFileLock
-from ._util import raise_on_not_writable_file
+from filelock._api import BaseFileLock
+from filelock._util import raise_on_not_writable_file
 
 if TYPE_CHECKING:
     from collections.abc import Generator

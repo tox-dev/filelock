@@ -27,16 +27,16 @@ from errno import EACCES, EEXIST, ENOENT, ENOSYS, EPERM, ESTALE, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
-from ._api import BaseFileLock, ThreadLocalFileContext, _canonical, _raise_cleanup_errors
-from ._error import SoftFileLockProtocolError
-from ._identity import host_name, owner_is_stale, process_start_token
-from ._marker import parse_marker
-from ._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
-from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from ._util import foreign_directory_owner, write_all
+from filelock._api import BaseFileLock, ThreadLocalFileContext, _canonical, _raise_cleanup_errors
+from filelock._error import SoftFileLockProtocolError
+from filelock._identity import host_name, owner_is_stale, process_start_token
+from filelock._marker import parse_marker
+from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
+from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
+from filelock._util import foreign_directory_owner, write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from ._windows import _is_unlinked, _open_deletable_for_reading, _pin_directory, _unpin_directory
+    from filelock._windows import _is_unlinked, _open_deletable_for_reading, _pin_directory, _unpin_directory
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

@@ -9,12 +9,12 @@ import time
 from threading import TIMEOUT_MAX
 from typing import Final
 
-from ._api import _seconds
+from filelock._api import _seconds
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from ._windows import _lock_fd_nonblocking, _unlock_fd
+    from filelock._windows import _lock_fd_nonblocking, _unlock_fd
 else:  # pragma: win32 no cover
-    from ._unix import _lock_fd_nonblocking, _unlock_fd
+    from filelock._unix import _lock_fd_nonblocking, _unlock_fd
 
 
 def lock_descriptor(fd: int, *, blocking: bool = True, poll_interval: float = 0.05) -> bool:

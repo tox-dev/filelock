@@ -356,12 +356,12 @@ if sys.platform == "win32":  # pragma: win32 cover
         # A rename by path waits on a Level 1 or batch oplock holder until it answers or closes. Opening first with
         # FILE_COMPLETE_IF_OPLOCKED turns that wait into BlockingIOError, and the open handle shares delete, so the
         # rename then proceeds. Imported here because _windows imports this module.
-        from ._windows import open_for_delete_without_oplock_wait  # ruff:ignore[import-outside-top-level]
+        from filelock._windows import open_for_delete_without_oplock_wait  # ruff:ignore[import-outside-top-level]
 
         return os.fdopen(open_for_delete_without_oplock_wait(path), "rb")
 
     def unlink_path(path: str) -> None:
-        from ._windows import unlink_without_oplock_wait  # ruff:ignore[import-outside-top-level]  # _windows binds Windows-only APIs on import
+        from filelock._windows import unlink_without_oplock_wait  # ruff:ignore[import-outside-top-level]  # _windows binds Windows-only APIs on import
 
         unlink_without_oplock_wait(path)
 

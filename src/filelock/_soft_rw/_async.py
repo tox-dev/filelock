@@ -22,8 +22,7 @@ from filelock._async import (
     _wait_until_done,
 )
 from filelock._error import Timeout
-
-from ._sync import SoftReadWriteLock, _lost_hold_error
+from filelock._soft_rw._sync import SoftReadWriteLock, _lost_hold_error
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable

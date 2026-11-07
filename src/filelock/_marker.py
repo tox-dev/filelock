@@ -8,9 +8,9 @@ import re
 from contextlib import suppress
 from typing import Final, Literal, NamedTuple
 
-from ._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
-from ._soft import SoftFileLock, _read_lock_file, parse_decimal
-from ._util import pin_inode, write_all
+from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
+from filelock._soft import SoftFileLock, _read_lock_file, parse_decimal
+from filelock._util import pin_inode, write_all
 
 #: Protocol 1 is the legacy ``<pid>\n<hostname>\n[<start_token>\n]`` marker that :class:`SoftFileLock` still writes.
 #: Protocol 2 carries the owner mode and the lease claim. A protocol 1 reader treats a protocol 2 marker as malformed

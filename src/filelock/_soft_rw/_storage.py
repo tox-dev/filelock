@@ -14,15 +14,14 @@ from errno import ELOOP, EMLINK, ENOENT, ENOTDIR, ENXIO, ESTALE
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from filelock._strict import _link_no_follow, _pin_directories, _raise_if_hard_links_unsupported
-from filelock._util import ensure_directory_exists, foreign_directory_owner, write_all
-
-from ._protocol import (
+from filelock._soft_rw._protocol import (
     _GENERATIONS_DIRECTORY,
     _HOLDERS_DIRECTORY,
     _MAX_RECORD_SIZE,
     TreeReplacedError,
 )
+from filelock._strict import _link_no_follow, _pin_directories, _raise_if_hard_links_unsupported
+from filelock._util import ensure_directory_exists, foreign_directory_owner, write_all
 
 if TYPE_CHECKING:
     from collections.abc import Generator

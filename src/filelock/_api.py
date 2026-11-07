@@ -37,8 +37,8 @@ from threading import TIMEOUT_MAX, Condition, RLock, Thread, current_thread, get
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary, ref
 
-from ._error import SoftFileLockLifetimeWarning, Timeout
-from ._util import ensure_directory_exists
+from filelock._error import SoftFileLockLifetimeWarning, Timeout
+from filelock._util import ensure_directory_exists
 
 #: No explicit file permission mode was passed. Lock files then open with 0o666 so umask and default ACLs pick
 #: the final permissions, and fchmod is skipped to preserve POSIX default ACL inheritance.
@@ -63,9 +63,9 @@ if TYPE_CHECKING:
 
     from _typeshed import Unused
 
-    from ._lease import _LeaseClaim
-    from ._read_write import ReadWriteLock
-    from ._soft_rw import SoftReadWriteLock
+    from filelock._lease import _LeaseClaim
+    from filelock._read_write import ReadWriteLock
+    from filelock._soft_rw import SoftReadWriteLock
 
     class _ForkResettable(Protocol):
         def _reset_after_fork_in_child(self) -> None: ...

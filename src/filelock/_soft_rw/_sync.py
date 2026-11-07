@@ -35,9 +35,8 @@ from filelock._api import (
 )
 from filelock._error import Timeout
 from filelock._lease import LeaseCompromise
-
-from ._protocol import GenerationLog, Ledger, Mode, Participant
-from ._storage import OsFiles
+from filelock._soft_rw._protocol import GenerationLog, Ledger, Mode, Participant
+from filelock._soft_rw._storage import OsFiles
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator

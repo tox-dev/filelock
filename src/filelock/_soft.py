@@ -25,10 +25,10 @@ from itertools import islice
 from pathlib import Path
 from typing import Final
 
-from ._api import BaseFileLock, _raise_grouped_errors
-from ._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
-from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from ._util import (
+from filelock._api import BaseFileLock, _raise_grouped_errors
+from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
+from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
+from filelock._util import (
     break_lock_file,
     exchange_back,
     exchange_names,
@@ -40,10 +40,10 @@ from ._util import (
 )
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from ._windows import open_read_without_oplock_wait
-    from ._windows import unlink_without_oplock_wait as unlink_path
+    from filelock._windows import open_read_without_oplock_wait
+    from filelock._windows import unlink_without_oplock_wait as unlink_path
 else:  # pragma: win32 no cover
-    from ._util import unlink_path
+    from filelock._util import unlink_path
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
