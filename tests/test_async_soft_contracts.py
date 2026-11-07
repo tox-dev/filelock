@@ -4,7 +4,7 @@ import asyncio
 import os
 import sys
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
@@ -13,8 +13,8 @@ from filelock import AsyncSoftFileLease, AsyncStrictSoftFileLock, LeaseCompromis
 if TYPE_CHECKING:
     from pathlib import Path
 
-_DURATION: float = 0.9
-_HEARTBEAT: float = 0.1
+_DURATION: Final[float] = 0.9
+_HEARTBEAT: Final[float] = 0.1
 
 
 @pytest.fixture

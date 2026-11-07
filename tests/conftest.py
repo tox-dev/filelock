@@ -34,13 +34,11 @@ _LockT = TypeVar("_LockT", bound=BaseFileLock)
 
 
 def acquire_after_reclaim(lock: BaseFileLock) -> None:
-    """
-    Take a path whose stale marker the lock has to break first, without a wall-clock budget.
-
-    A try finds the marker and breaks it, or first watches an unreadable one age; the last creates its own. A deadline
-    would test how fast the machine is: a first try that outlasts it times out after the marker is gone and before the
-    lock is held.
-    """
+    # Take a path whose stale marker the lock has to break first, without a wall-clock budget.
+    #
+    # A try finds the marker and breaks it, or first watches an unreadable one age; the last creates its own. A deadline
+    # would test how fast the machine is: a first try that outlasts it times out after the marker is gone and before the
+    # lock is held.
     for _ in range(3):
         with suppress(Timeout):
             lock.acquire(blocking=False)
@@ -50,7 +48,7 @@ def acquire_after_reclaim(lock: BaseFileLock) -> None:
 
 @contextmanager
 def held_after_reclaim(lock: _LockT) -> Generator[_LockT]:
-    """Hold *lock* through :func:`acquire_after_reclaim` and release it on exit."""
+    # Hold *lock* through :func:`acquire_after_reclaim` and release it on exit.
     acquire_after_reclaim(lock)
     try:
         yield lock
@@ -128,15 +126,14 @@ def close_failure(
 
 @pytest.fixture(params=[pytest.param("native", id="native"), pytest.param("no-exchange", id="no-exchange")])
 def break_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
-    """Run the test with the platform's own stale break, then as where no atomic exchange of two names exists."""
+    # Run the test with the platform's own stale break, then as where no atomic exchange of two names exists.
     if request.param == "no-exchange":
         mocker.patch("filelock._util._rename_call", return_value=None)
 
 
 @pytest.fixture
 def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None]], None]:
-    """Schedule an action for right after the stale break re-reads the lock file and before it takes the marker."""
-
+    # Schedule an action for right after the stale break re-reads the lock file and before it takes the marker.
     def schedule(lock: Path, action: Callable[[], None]) -> None:
         alive: Final = filelock._identity.process_alive
         lstat: Final = os.lstat
@@ -162,13 +159,10 @@ def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None
 
 @pytest.fixture
 def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]:  # pragma: win32 no cover
-    """
-    Stand in for ext4, which hands a freed inode number to the next file created.
-
-    A tmpfs test directory never reuses a number. The stand-in makes ``os.lstat`` report a successor under the number of
-    the unlinked file it is given, once no descriptor in this process keeps that inode allocated.
-    """
-
+    # Stand in for ext4, which hands a freed inode number to the next file created.
+    #
+    # A tmpfs test directory never reuses a number. The stand-in makes ``os.lstat`` report a successor under the number
+    # of the unlinked file it is given, once no descriptor in this process keeps that inode allocated.
     def stand_in(successor: Path, freed: os.stat_result) -> None:
         created: Final = successor.lstat()
         lstat: Final = os.lstat
@@ -193,9 +187,9 @@ def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]
 
 #: Linux and macOS cap PIDs below 2**22 + 1, and Windows answers OpenProcess for it with an invalid-parameter error, so
 #: the marker names a holder every platform reads as dead.
-DEAD_PID: Final[int] = 2**22 + 1
-DEAD_HOLDER: Final[str] = f"{DEAD_PID}\n{host_name()}\n"
-DEAD_OWNER: Final[str] = f"filelock/2\npid={DEAD_PID}\nhost={host_name()}\nmode=exclusive\n"
+_DEAD_PID: Final[int] = 2**22 + 1
+DEAD_HOLDER: Final[str] = f"{_DEAD_PID}\n{host_name()}\n"
+DEAD_OWNER: Final[str] = f"filelock/2\npid={_DEAD_PID}\nhost={host_name()}\nmode=exclusive\n"
 
 #: Every soft lock that breaks a stale marker, with a record naming a dead owner in the format it reads.
 STALE_BREAKERS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(

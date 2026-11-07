@@ -163,11 +163,10 @@ def test_lock_excludes_opposite_mode(
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 8)
 def test_write_non_starvation(lock_file: str) -> None:
-    """A writer that joins after the first reader must acquire before the reader chain drains.
-
-    Seven readers overlap in a chain and the writer contends mid-chain. It should win the lock while readers still
-    hold it, so it is not starved.
-    """
+    # A writer that joins after the first reader must acquire before the reader chain drains.
+    #
+    # Seven readers overlap in a chain and the writer contends mid-chain. It should win the lock while readers still
+    # hold it, so it is not starved.
     NUM_READERS: Final[int] = 7
 
     chain_forward = [Event() for _ in range(NUM_READERS)]
@@ -386,8 +385,7 @@ def test_sequential_lock_modes(
 ) -> None:
     lock = ReadWriteLock(lock_file)
     for mode in (first, second):
-        acquire = lock.read_lock if mode == "read" else lock.write_lock
-        with acquire():
+        with (lock.read_lock if mode == "read" else lock.write_lock)():
             pass
 
 
@@ -482,6 +480,11 @@ def connect_route(request: pytest.FixtureRequest, tmp_path: Path) -> None:
         tmp_path.chmod(0o777)
 
 
+def _grant_everyone_write(directory: Path) -> None:  # pragma: win32 cover
+    icacls = Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe")
+    subprocess.run([icacls, directory, "/grant", "*S-1-1-0:(OI)(CI)(M)"], capture_output=True, check=True)
+
+
 def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:
     # Following it would let anyone who can create names in the lock directory make the victim create the target.
     target = tmp_path / "target.db"
@@ -512,17 +515,17 @@ def test_read_write_lock_refuses_a_wal_database(lock_file: str) -> None:
         ReadWriteLock(lock_file, is_singleton=False)
 
 
+def _convert_to_wal(path: str) -> None:
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executescript("PRAGMA journal_mode=WAL; CREATE TABLE application (value);").close()
+
+
 def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     _convert_to_wal(lock_file)
     with pytest.raises(ValueError, match="WAL-mode"):
         lock.acquire_read()
     lock.close()
-
-
-def _convert_to_wal(path: str) -> None:
-    with closing(sqlite3.connect(path)) as connection:
-        connection.executescript("PRAGMA journal_mode=WAL; CREATE TABLE application (value);").close()
 
 
 @pytest.mark.parametrize("replace", [pytest.param(False, id="unlinked"), pytest.param(True, id="replaced")])
@@ -733,9 +736,8 @@ def test_acquire_proxy_releases_the_read_write_lock_on_exit(lock_file: str, mode
     # acquire_read/acquire_write hand back the shared AcquireReturnProxy; a read/write lock is not a BaseFileLock, so
     # exiting the proxy must route through the lock's own release() rather than a context-error policy.
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
 
-    with acquire():
+    with (lock.acquire_read if mode == "read" else lock.acquire_write)():
         assert_read_write_lock_state(lock_file, "write", available=False)
 
     assert_read_write_lock_state(lock_file, "write", available=True)
@@ -799,8 +801,7 @@ def chain_reader(
 ) -> None:
     start_signal.wait(timeout=_PROCESS_DEADLINE)
 
-    lock = ReadWriteLock(lock_file)
-    with lock.read_lock():
+    with ReadWriteLock(lock_file).read_lock():
         if reader_index > 0:
             time.sleep(2)  # overlap with earlier readers so the writer contends mid-chain
 
@@ -928,6 +929,31 @@ def test_read_write_lock_refuses_a_schema_that_never_finishes_loading(
         (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=1)
 
 
+def _btree_page(kind: int, cell: bytes, cell_count: int, *, right_child: bytes = b"", header_at: int = 0) -> bytearray:
+    page = bytearray(_PAGE_SIZE)
+    cell_at = _PAGE_SIZE - len(cell)
+    page[cell_at:] = cell
+    # Every slot of the cell pointer array names the one cell.
+    header = struct.pack(">BHHHB", kind, 0, cell_count, cell_at, 0) + right_child
+    pointers = struct.pack(">H", cell_at) * cell_count
+    page[header_at : header_at + len(header) + len(pointers)] = header + pointers
+    return page
+
+
+def _file_header(page_count: int) -> bytes:
+    # Rollback journal format, a matching change counter and version-valid-for, so SQLite trusts the page count.
+    return struct.pack(
+        ">16sH6B12I20s2I",
+        b"SQLite format 3\0",
+        _PAGE_SIZE,
+        *(1, 1, 0, 64, 32, 32),
+        *(1, page_count, 0, 0, 1, 4, 0, 0, 1, 0, 0, 0),
+        b"",
+        1,
+        3040001,
+    )
+
+
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 def test_read_write_lock_refuses_a_schema_row_longer_than_a_lock_needs(
     tmp_path: Path, mode: Literal["read", "write"]
@@ -957,41 +983,18 @@ def test_read_write_lock_refuses_a_schema_row_longer_than_a_lock_needs(
         (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=1)
 
 
-# https://www.sqlite.org/fileformat.html
-_PAGE_SIZE: Final[int] = 4096
-_TABLE_LEAF_PAGE: Final[int] = 0x0D
-
-
-def _btree_page(kind: int, cell: bytes, cell_count: int, *, right_child: bytes = b"", header_at: int = 0) -> bytearray:
-    page = bytearray(_PAGE_SIZE)
-    cell_at = _PAGE_SIZE - len(cell)
-    page[cell_at:] = cell
-    # Every slot of the cell pointer array names the one cell.
-    header = struct.pack(">BHHHB", kind, 0, cell_count, cell_at, 0) + right_child
-    pointers = struct.pack(">H", cell_at) * cell_count
-    page[header_at : header_at + len(header) + len(pointers)] = header + pointers
-    return page
-
-
-def _file_header(page_count: int) -> bytes:
-    # Rollback journal format, a matching change counter and version-valid-for, so SQLite trusts the page count.
-    return struct.pack(
-        ">16sH6B12I20s2I",
-        b"SQLite format 3\0",
-        _PAGE_SIZE,
-        *(1, 1, 0, 64, 32, 32),
-        *(1, page_count, 0, 0, 1, 4, 0, 0, 1, 0, 0, 0),
-        b"",
-        1,
-        3040001,
-    )
-
-
 def _varint(value: int) -> bytes:
     groups = [value & 0x7F]
     while value := value >> 7:
         groups.insert(0, value & 0x7F | 0x80)
     return bytes(groups)
+
+
+# https://www.sqlite.org/fileformat.html
+_PAGE_SIZE: Final[int] = 4096
+
+
+_TABLE_LEAF_PAGE: Final[int] = 0x0D
 
 
 _NEEDS_POSIX_HARD_LINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
@@ -1077,9 +1080,8 @@ def test_windows_directory_whose_acl_cannot_be_read_gets_a_private_link(  # prag
         side_effect=lambda *args: denials.pop() if denials else read_acl(*args),
     )
     connect = mocker.spy(sqlite3, "connect")
-    database = tmp_path / "lock.db"
 
-    ReadWriteLock(database, is_singleton=False).close()
+    ReadWriteLock(tmp_path / "lock.db", is_singleton=False).close()
 
     opened = Path(connect.call_args_list[0].args[0])
     assert (opened.name, opened.parent.parent.parent) == ("lock.db", tmp_path)
@@ -1096,9 +1098,8 @@ def test_windows_directory_whose_acl_can_be_rewritten_gets_a_private_link(  # pr
     icacls = Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe")
     subprocess.run([icacls, directory, "/grant", f"*S-1-1-0:({right})"], capture_output=True, check=True)
     connect = mocker.spy(sqlite3, "connect")
-    database = directory / "lock.db"
 
-    ReadWriteLock(database, is_singleton=False).close()
+    ReadWriteLock(directory / "lock.db", is_singleton=False).close()
 
     opened = Path(connect.call_args_list[0].args[0])
     assert (_directory_is_private(os.fspath(directory)), opened.parent.parent.parent) == (False, directory)
@@ -1190,6 +1191,10 @@ def test_windows_shared_directory_sweeps_the_link_of_a_dead_holder(  # pragma: w
         pass
 
     assert (_link_directories(everyone_writable_database), everyone_writable_database.stat().st_nlink) == ([], 1)
+
+
+def _link_directories(database: Path) -> list[Path]:  # pragma: win32 cover
+    return sorted(path for path in database.parent.iterdir() if path.name.startswith(".filelock-"))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
@@ -1357,11 +1362,6 @@ def everyone_writable_database(tmp_path: Path) -> Path:  # pragma: win32 cover
     return shared / "lock.db"
 
 
-def _grant_everyone_write(directory: Path) -> None:  # pragma: win32 cover
-    icacls = Path(os.environ["SYSTEMROOT"], "System32", "icacls.exe")
-    subprocess.run([icacls, directory, "/grant", "*S-1-1-0:(OI)(CI)(M)"], capture_output=True, check=True)
-
-
 @pytest.fixture
 def holder(everyone_writable_database: Path) -> Generator[subprocess.Popen[str]]:  # pragma: win32 cover
     script = (
@@ -1381,7 +1381,3 @@ def holder(everyone_writable_database: Path) -> Generator[subprocess.Popen[str]]
         finally:
             process.kill()
             process.wait(timeout=_PROCESS_DEADLINE)
-
-
-def _link_directories(database: Path) -> list[Path]:  # pragma: win32 cover
-    return sorted(path for path in database.parent.iterdir() if path.name.startswith(".filelock-"))

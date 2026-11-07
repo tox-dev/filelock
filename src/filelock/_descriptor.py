@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["filelock._unix", "threading", "typing"]
+__lazy_modules__ = [
+    "threading",
+    "typing",
+    f"{__spec__.parent}._api",
+    f"{__spec__.parent}._unix",
+    f"{__spec__.parent}._windows",
+]
 
 import sys
 import time
 from threading import TIMEOUT_MAX
 from typing import Final
 
-from filelock._api import _seconds
+from ._api import _seconds
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._windows import _lock_fd_nonblocking, _unlock_fd
+    from ._windows import _lock_fd_nonblocking, _unlock_fd
 else:  # pragma: win32 no cover
-    from filelock._unix import _lock_fd_nonblocking, _unlock_fd
+    from ._unix import _lock_fd_nonblocking, _unlock_fd
 
 
 def lock_descriptor(fd: int, *, blocking: bool = True, poll_interval: float = 0.05) -> bool:

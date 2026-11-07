@@ -26,16 +26,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from multiprocessing.synchronize import Event as EventType
 
-_ITERATIONS: Final[int] = 200
-_WARMUP: Final[int] = 20
-_CONTENTION_PROCESSES: Final[int] = 8
 _CONTENTION_ACQUISITIONS: Final[int] = 500
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Sample:
-    """One measured metric, in the unit named by ``unit``."""
-
+    # One measured metric, in the unit named by ``unit``.
     name: str
     median: float
     p95: float
@@ -104,7 +100,7 @@ def _timeout_cpu(root: Path) -> Sample:
         cpu = time.process_time() - started
     finally:
         holder.release()
-    return Sample("timeout cpu (0.25s wall, poll=0)", cpu * 1e3, cpu * 1e3, "ms cpu")
+    return Sample(name="timeout cpu (0.25s wall, poll=0)", median=cpu * 1e3, p95=cpu * 1e3, unit="ms cpu")
 
 
 def _descriptor_growth(root: Path) -> Sample:
@@ -115,7 +111,7 @@ def _descriptor_growth(root: Path) -> Sample:
         lock.acquire()
         lock.release()
     grew = _open_descriptors() - before
-    return Sample("descriptor growth over 100 cycles", float(grew), float(grew), "fds")
+    return Sample(name="descriptor growth over 100 cycles", median=float(grew), p95=float(grew), unit="fds")
 
 
 def _cancellation_latency(root: Path) -> list[Sample]:
@@ -144,10 +140,10 @@ def _cancellation_latency(root: Path) -> list[Sample]:
         holder.join(timeout=5)
     return [
         Sample(
-            "async acquire cancellation latency",
-            statistics.median(latencies) * 1e3,
-            _percentile(latencies, 95) * 1e3,
-            "ms",
+            name="async acquire cancellation latency",
+            median=statistics.median(latencies) * 1e3,
+            p95=_percentile(latencies, 95) * 1e3,
+            unit="ms",
         )
     ]
 
@@ -162,17 +158,18 @@ def _hold_until(path: str, acquired: EventType, release: EventType) -> None:
 
 def _contention(root: Path) -> list[Sample]:
     samples: list[Sample] = []
+    contention_processes: int = 8
     for name, path in (("FileLock", root / "c-file.lock"), ("StrictSoftFileLock", root / "c-strict.lock")):
         started = time.perf_counter()
-        workers = [Process(target=_hammer, args=(name, str(path))) for _ in range(_CONTENTION_PROCESSES)]
+        workers = [Process(target=_hammer, args=(name, str(path))) for _ in range(contention_processes)]
         for worker in workers:
             worker.start()
         for worker in workers:
             worker.join()
         elapsed = time.perf_counter() - started
-        total = _CONTENTION_PROCESSES * _CONTENTION_ACQUISITIONS
+        total = contention_processes * _CONTENTION_ACQUISITIONS
         per = elapsed * 1e3 / total
-        samples.append(Sample(f"contention {name} ({total} acquisitions)", per, per, "ms/acq"))
+        samples.append(Sample(name=f"contention {name} ({total} acquisitions)", median=per, p95=per, unit="ms/acq"))
     return samples
 
 
@@ -184,10 +181,14 @@ def _hammer(backend: str, path: str) -> None:
 
 
 def _timed(name: str, run: Callable[[], object], *, unit: str, scale: float) -> Sample:
-    for _ in range(_WARMUP):
+    warmup: int = 20
+    for _ in range(warmup):
         run()
-    durations = [_one(run) for _ in range(_ITERATIONS)]
-    return Sample(name, statistics.median(durations) * scale, _percentile(durations, 95) * scale, unit)
+    iterations: int = 200
+    durations = [_one(run) for _ in range(iterations)]
+    return Sample(
+        name=name, median=statistics.median(durations) * scale, p95=_percentile(durations, 95) * scale, unit=unit
+    )
 
 
 def _one(run: Callable[[], object]) -> float:

@@ -40,11 +40,6 @@ if TYPE_CHECKING:
 
 _PROCESSES: Final[int] = 4
 _HOLDS: Final[int] = 100
-_ACQUIRE_TIMEOUT: Final[float] = 60.0
-_HOLD_SECONDS: Final[float] = 0.004
-_GAP_MAX_SECONDS: Final[float] = 0.008
-_TRANSIENT_RETRIES: Final[int] = 16
-_RETRY_BACKOFF: Final[float] = 0.01
 _TRANSIENT_ERRNOS: Final[frozenset[int]] = frozenset({EACCES, ENOENT, ESTALE})
 _ALL_LOCKS: Final[tuple[str, ...]] = ("FileLock", "SoftFileLock", "StrictSoftFileLock")
 
@@ -72,10 +67,8 @@ def _verify_across(mounts: list[Path]) -> int:
         # A correct lock never overlaps, finishes every hold, and raises no error the retries could not clear.
         ok = overlaps == 0 and sum(counts) == expected and reason is None
         failures += (not ok) and name in gated
-        note = "" if name in gated else " (ungated)"
-        tail = f"{note}{f' {reason}' if reason else ''}"
-        stats = f"held={sum(counts)}/{expected} overlaps={overlaps}"
-        print(f"  {name:20} {'PASS' if ok else 'FAIL'}  {stats}{tail}")
+        tail = f"{('' if name in gated else ' (ungated)')}{f' {reason}' if reason else ''}"
+        print(f"  {name:20} {'PASS' if ok else 'FAIL'}  {f'held={sum(counts)}/{expected} overlaps={overlaps}'}{tail}")
     return 1 if failures else 0
 
 
@@ -113,8 +106,11 @@ def _count_overlaps(per_process: list[list[tuple[float, float]]]) -> int:
 def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str | None]:
     lock = _build(name, lock_path)
     intervals: list[tuple[float, float]] = []
+    acquire_timeout: float = 60.0
+    hold_seconds: float = 0.004
+    gap_max_seconds: float = 0.008
     for _ in range(_HOLDS):
-        if (reason := _resiliently(lambda: lock.acquire(timeout=_ACQUIRE_TIMEOUT))) is not None:
+        if (reason := _resiliently(lambda: lock.acquire(timeout=acquire_timeout))) is not None:
             if isinstance(lock, StrictSoftFileLock):
                 try:
                     reason = f"{reason}; claims={[(claim.state, claim.pid, claim.name) for claim in lock.claims]}"
@@ -125,7 +121,7 @@ def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str |
         # Hold briefly so a broken lock lets a second holder in during an observable window; a correct lock serializes
         # the holds regardless. enter is stamped after acquire and leave before release, so a correct hand-off can never
         # look like an overlap even though release and the next acquire race.
-        time.sleep(_HOLD_SECONDS)
+        time.sleep(hold_seconds)
         leave = time.monotonic()
         if (reason := _resiliently(lock.release)) is not None:
             intervals.append((enter, leave))
@@ -133,7 +129,7 @@ def _hammer(name: str, lock_path: str) -> tuple[list[tuple[float, float]], str |
         intervals.append((enter, leave))
         # A randomized gap outside the lock breaks the lock-step herd, so a poll-based lock hands off fairly and no
         # contender is starved out of finishing its holds.
-        time.sleep(random.uniform(0, _GAP_MAX_SECONDS))  # ruff:ignore[suspicious-non-cryptographic-random-usage] - test dispersion, not cryptographic
+        time.sleep(random.uniform(0, gap_max_seconds))  # ruff:ignore[suspicious-non-cryptographic-random-usage] - test dispersion, not cryptographic
     return intervals, None
 
 
@@ -141,12 +137,14 @@ def _resiliently(action: Callable[[], object]) -> str | None:
     # Retry the genuinely transient NFS errors (a stale handle, a create/unlink permission race under contention) that
     # a robust client retries, so one hiccup never aborts a hold. A Timeout from starvation or a rejection the
     # filesystem always makes (EINVAL for the strict claim on CIFS) is not transient and ends this process's run.
-    for attempt in range(_TRANSIENT_RETRIES):
+    transient_retries: int = 16
+    retry_backoff: float = 0.01
+    for attempt in range(transient_retries):
         if (error := _attempt(action)) is None:
             return None
-        if not _has_transient(error) or attempt == _TRANSIENT_RETRIES - 1:
+        if not _has_transient(error) or attempt == transient_retries - 1:
             return _describe(error)
-        time.sleep(_RETRY_BACKOFF * (attempt + 1))
+        time.sleep(retry_backoff * (attempt + 1))
     return "transient errors exhausted retries"
 
 

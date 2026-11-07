@@ -11,5 +11,5 @@ from __future__ import annotations
 import os
 import sys
 
-if _blocked := os.environ.get("FILELOCK_BLOCK_MODULE"):
-    sys.modules[_blocked] = None  # ty: ignore[invalid-assignment]  # a None entry is the documented unimportable marker
+if _BLOCKED := os.environ.get("FILELOCK_BLOCK_MODULE"):
+    sys.modules[_BLOCKED] = None  # ty: ignore[invalid-assignment]  # a None entry is the documented unimportable marker

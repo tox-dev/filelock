@@ -65,9 +65,8 @@ def test_strict_soft_is_reentrant(tmp_path: Path) -> None:
 
 def test_strict_soft_contender_times_out(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
-    holder = StrictSoftFileLock(lock_path)
 
-    with holder, pytest.raises(Timeout):
+    with StrictSoftFileLock(lock_path), pytest.raises(Timeout):
         StrictSoftFileLock(lock_path, timeout=0).acquire()
     with StrictSoftFileLock(lock_path, timeout=0) as acquired:
         assert acquired.is_locked
@@ -299,8 +298,7 @@ def test_strict_soft_symlink_claim_fails_closed(tmp_path: Path) -> None:  # prag
     claims.mkdir(parents=True)
     target = tmp_path / "claim-target"
     target.write_bytes(b"filelock-strict-v1\n" + b"0" * 32 + b"\n1\n686f7374\n")
-    claim = claims / f"held-v1-{'0' * 32}.claim"
-    claim.symlink_to(target)
+    (claims / f"held-v1-{'0' * 32}.claim").symlink_to(target)
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
         StrictSoftFileLock(lock_path).acquire()

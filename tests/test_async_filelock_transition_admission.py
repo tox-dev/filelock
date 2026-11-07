@@ -112,6 +112,11 @@ async def test_acquire_interrupted_while_joining_the_gate_leaves_the_lock_usable
     await lock.release()
 
 
+class _Interrupt(BaseException):
+    # Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt.
+    ...
+
+
 @pytest.mark.asyncio
 async def test_acquires_giving_up_behind_a_waiter_leave_the_lock_releasable(tmp_path: Path) -> None:
     first_polled = asyncio.Event()
@@ -213,7 +218,3 @@ async def test_thread_local_lock_releases_while_another_thread_waits_for_it(
 
     await waiter
     assert not lock.is_locked
-
-
-class _Interrupt(BaseException):
-    """Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt."""

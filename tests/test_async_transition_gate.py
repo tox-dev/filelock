@@ -127,6 +127,11 @@ async def test_hold_interrupted_while_waiting_takes_its_ticket_out() -> None:
     await asyncio.wait_for(third(), timeout=1)
 
 
+class _Interrupt(BaseException):
+    # Stands in for a KeyboardInterrupt delivered while a waiter is parked, without pytest treating it as one.
+    ...
+
+
 @pytest.mark.parametrize("joined", [pytest.param(True, id="after-join"), pytest.param(False, id="before-join")])
 @pytest.mark.parametrize("entry", [pytest.param("hold", id="hold"), pytest.param("hold_for_acquire", id="acquire")])
 @pytest.mark.asyncio
@@ -208,7 +213,3 @@ async def test_wait_for_turn_returns_immediately_when_already_done() -> None:
     )
 
     assert ticket.done()
-
-
-class _Interrupt(BaseException):
-    """Stands in for a KeyboardInterrupt delivered while a waiter is parked, without pytest treating it as one."""

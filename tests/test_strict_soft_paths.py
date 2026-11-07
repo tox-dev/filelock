@@ -6,7 +6,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from functools import partial
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -15,8 +15,6 @@ from tests.capability_marks import NEEDS_PARENT_SYMLINK_COLLAPSE, NEEDS_SYMLINK
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-_STRICT_SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
 
 
 # Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
@@ -87,6 +85,19 @@ def test_strict_soft_waiter_keeps_acquisition_directory(
         holder.release(force=True)
 
 
+def _hold_relative_lock(polling: threading.Event, acquired: threading.Event, release: threading.Event) -> None:
+    with StrictSoftFileLock("resource.lock", timeout=2, poll_interval=0.001).acquire(
+        cancel_check=partial(_signal_thread_poll, polling)
+    ):
+        acquired.set()
+        assert release.wait(timeout=2)
+
+
+def _signal_thread_poll(polling: threading.Event) -> bool:
+    polling.set()
+    return False
+
+
 @pytest.mark.asyncio
 async def test_async_strict_soft_waiter_keeps_acquisition_directory(
     working_directories: tuple[Path, Path],
@@ -113,6 +124,11 @@ async def test_async_strict_soft_waiter_keeps_acquisition_directory(
                 await task
         await holder.release(force=True)
         await contender.release(force=True)
+
+
+def _signal_async_poll(polling: asyncio.Event) -> bool:
+    polling.set()
+    return False
 
 
 @NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
@@ -144,7 +160,8 @@ def test_strict_soft_release_uses_original_symlink_parent(tmp_path: Path) -> Non
 @NEEDS_SYMLINK  # pragma: needs symlink
 def test_strict_soft_final_symlink_fails_closed_without_touching_target(tmp_path: Path) -> None:
     target = tmp_path / "target"
-    target.write_bytes(_STRICT_SENTINEL)
+    strict_sentinel: bytes = b"1\nfilelock-strict-v1\x00\n0\n"
+    target.write_bytes(strict_sentinel)
     lock_path = tmp_path / "resource.lock"
     lock_path.symlink_to(target)
     lock = StrictSoftFileLock(lock_path, timeout=0)
@@ -152,22 +169,4 @@ def test_strict_soft_final_symlink_fails_closed_without_touching_target(tmp_path
     with pytest.raises(SoftFileLockProtocolError, match="found a symlink"):
         lock.acquire()
 
-    assert (target.read_bytes(), lock_path.is_symlink(), lock.claims) == (_STRICT_SENTINEL, True, ())
-
-
-def _hold_relative_lock(polling: threading.Event, acquired: threading.Event, release: threading.Event) -> None:
-    with StrictSoftFileLock("resource.lock", timeout=2, poll_interval=0.001).acquire(
-        cancel_check=partial(_signal_thread_poll, polling)
-    ):
-        acquired.set()
-        assert release.wait(timeout=2)
-
-
-def _signal_thread_poll(polling: threading.Event) -> bool:
-    polling.set()
-    return False
-
-
-def _signal_async_poll(polling: asyncio.Event) -> bool:
-    polling.set()
-    return False
+    assert (target.read_bytes(), lock_path.is_symlink(), lock.claims) == (strict_sentinel, True, ())

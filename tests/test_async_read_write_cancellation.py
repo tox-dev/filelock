@@ -41,15 +41,13 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(
     release_executor = threading.Event()
     rollback_started = asyncio.Event()
     finish_rollback = threading.Event()
-    loop = asyncio.get_running_loop()
-    _patch_async_rollback(mocker, loop, rollback_started, finish_rollback)
+    _patch_async_rollback(mocker, asyncio.get_running_loop(), rollback_started, finish_rollback)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         blocker = executor.submit(_block_executor, executor_started, release_executor)
         assert executor_started.wait(timeout=5)
         lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
-        acquire = lock.acquire_read if mode == "read" else lock.acquire_write
-        task = asyncio.create_task(acquire())
+        task = asyncio.create_task((lock.acquire_read if mode == "read" else lock.acquire_write)())
         await asyncio.sleep(0)
         task.cancel("first cancellation")
         release_executor.set()
@@ -67,6 +65,74 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(
         with pytest.raises(RuntimeError, match="not held"):
             await lock.release()
         await lock.close()
+
+
+def _patch_async_rollback(
+    mocker: MockerFixture,
+    loop: asyncio.AbstractEventLoop,
+    rollback_started: asyncio.Event,
+    finish_rollback: threading.Event,
+) -> None:
+    def rollback(real_connection: sqlite3.Connection) -> None:
+        loop.call_soon_threadsafe(rollback_started.set)
+        finish_rollback.wait()
+        real_connection.rollback()
+
+    _patch_async_connection(mocker, rollback=rollback)
+
+
+def _patch_async_connection(
+    mocker: MockerFixture,
+    *,
+    executescript: Callable[[sqlite3.Connection, str], sqlite3.Cursor] | None = None,
+    rollback: Callable[[sqlite3.Connection], None] | None = None,
+) -> None:
+    real_connect = sqlite3.connect
+    connection_count = 0
+
+    def connect(
+        database: str,
+        *,
+        factory: type[sqlite3.Connection],
+        timeout: float,
+    ) -> sqlite3.Connection:
+        nonlocal connection_count
+        real_connection = real_connect(
+            database,
+            check_same_thread=False,
+            factory=factory,
+            cached_statements=0,
+            timeout=timeout,
+        )
+        connection_count += 1
+        if connection_count < 2:
+            return real_connection
+        configuration: dict[str, Callable[[str], sqlite3.Cursor] | Callable[[], None]] = {}
+        if executescript is not None:
+            configuration["executescript.side_effect"] = functools.partial(executescript, real_connection)
+        if rollback is not None:
+            configuration["rollback.side_effect"] = functools.partial(rollback, real_connection)
+        connection = mocker.MagicMock(
+            spec_set=type(real_connection),
+            wraps=real_connection,
+            database_identity=None,
+            **configuration,
+        )
+        mocker.patch.object(
+            type(connection),
+            "in_transaction",
+            new_callable=mocker.PropertyMock,
+            create=True,
+            side_effect=lambda: real_connection.in_transaction,
+        )
+        return cast("sqlite3.Connection", connection)
+
+    mocker.patch("filelock._read_write._connect", side_effect=connect)
+
+
+def _block_executor(executor_started: threading.Event, release_executor: threading.Event) -> None:
+    executor_started.set()
+    assert release_executor.wait(timeout=5)
 
 
 @pytest.mark.parametrize(
@@ -87,6 +153,37 @@ def test_executor_cancels_queued_acquire_without_compensation(lock_file: str, *,
             process.terminate()
             process.join(timeout=5)
         process.close()
+
+
+def _cancel_queued_read_write_acquire(lock_file: str, cancel_caller: bool, canceled: Synchronized[bool]) -> None:
+    async def cancel_queued_acquire() -> None:
+        executor_started = threading.Event()
+        release_executor = threading.Event()
+        executor = ThreadPoolExecutor(max_workers=1)
+        blocker = executor.submit(_block_executor, executor_started, release_executor)
+        assert executor_started.wait(timeout=5)
+        task = asyncio.create_task(AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor).acquire_write())
+        await asyncio.sleep(0)
+        if cancel_caller:
+            task.cancel("caller canceled")
+            await asyncio.sleep(0)
+        executor.shutdown(wait=False, cancel_futures=True)
+        release_executor.set()
+        blocker.result(timeout=5)
+        try:
+            await task
+        except asyncio.CancelledError as error:
+            context = error.__context__
+            if cancel_caller:
+                canceled.value = isinstance(context, asyncio.CancelledError) and context.args == ("caller canceled",)
+            else:
+                canceled.value = True
+        contender = ReadWriteLock(lock_file, is_singleton=False)
+        with contender.write_lock(blocking=False):
+            pass
+        contender.close()
+
+    asyncio.run(cancel_queued_acquire())
 
 
 @pytest.mark.asyncio
@@ -157,6 +254,32 @@ async def test_acquire_cancellation_surfaces_compensation_failure(lock_file: str
         assert_read_write_lock_state(lock_file, "read", available=True)
 
 
+def _patch_async_rollback_failure(
+    mocker: MockerFixture,
+    loop: asyncio.AbstractEventLoop,
+    rollback_started: asyncio.Event,
+    finish_rollback: threading.Event,
+    *,
+    prior_context: BaseException | None = None,
+) -> sqlite3.OperationalError:
+    rollback_error = sqlite3.OperationalError("rollback failed")
+    rollback_error.__context__ = prior_context
+    rollback_failed = False
+
+    def rollback(real_connection: sqlite3.Connection) -> None:
+        nonlocal rollback_failed
+        if rollback_failed:
+            real_connection.rollback()
+            return
+        rollback_failed = True
+        loop.call_soon_threadsafe(rollback_started.set)
+        assert finish_rollback.wait(timeout=5)
+        raise rollback_error
+
+    _patch_async_connection(mocker, rollback=rollback)
+    return rollback_error
+
+
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
 async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
@@ -181,6 +304,19 @@ async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
         await lock.close()
     finally:
         holder.close()
+
+
+def _patch_async_execute_signal(
+    mocker: MockerFixture,
+    loop: asyncio.AbstractEventLoop,
+    execute_started: asyncio.Event,
+) -> None:
+    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+        if "PRAGMA journal_mode" in statement:
+            loop.call_soon_threadsafe(execute_started.set)
+        return real_connection.executescript(statement)
+
+    _patch_async_connection(mocker, executescript=executescript)
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -218,6 +354,45 @@ async def test_acquire_cancellation_surfaces_acquire_and_rollback_errors(
     await lock.release()
     assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=True)
     await lock.close()
+
+
+def _patch_async_acquire_and_rollback_failure(
+    mocker: MockerFixture,
+    loop: asyncio.AbstractEventLoop,
+    acquire_started: asyncio.Event,
+    finish_acquire: threading.Event,
+    mode: Literal["read", "write"],
+) -> tuple[sqlite3.OperationalError, sqlite3.OperationalError, LookupError]:
+    acquire_error = sqlite3.OperationalError("acquire failed")
+    rollback_error = sqlite3.OperationalError("rollback failed")
+    prior_rollback_error = LookupError("prior rollback failure")
+    rollback_error.__context__ = prior_rollback_error
+    acquire_failed = False
+    rollback_failed = False
+
+    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+        nonlocal acquire_failed
+        cursor = real_connection.executescript(statement)
+        if ("SELECT name" in statement if mode == "read" else "BEGIN EXCLUSIVE" in statement) and not acquire_failed:
+            acquire_failed = True
+            loop.call_soon_threadsafe(acquire_started.set)
+            assert finish_acquire.wait(timeout=5)
+            cursor.close()
+            raise acquire_error
+        return cursor
+
+    def rollback(real_connection: sqlite3.Connection) -> None:
+        nonlocal rollback_failed
+        if not rollback_failed:
+            rollback_failed = True
+            try:
+                raise prior_rollback_error
+            except LookupError:
+                raise rollback_error  # ruff:ignore[raise-without-from-inside-except]  # exercise implicit backend context preservation
+        real_connection.rollback()
+
+    _patch_async_connection(mocker, executescript=executescript, rollback=rollback)
+    return acquire_error, rollback_error, prior_rollback_error
 
 
 @pytest.mark.parametrize("supplied", [pytest.param(False, id="owned"), pytest.param(True, id="supplied")])
@@ -412,182 +587,3 @@ async def test_write_retried_after_its_begin_waited_is_acquired(lock_file: str, 
         assert_read_write_lock_state(lock_file, "read", available=False)
     await lock.close()
     assert not busy_once
-
-
-def _patch_async_rollback(
-    mocker: MockerFixture,
-    loop: asyncio.AbstractEventLoop,
-    rollback_started: asyncio.Event,
-    finish_rollback: threading.Event,
-) -> None:
-    def rollback(real_connection: sqlite3.Connection) -> None:
-        loop.call_soon_threadsafe(rollback_started.set)
-        finish_rollback.wait()
-        real_connection.rollback()
-
-    _patch_async_connection(mocker, rollback=rollback)
-
-
-def _cancel_queued_read_write_acquire(lock_file: str, cancel_caller: bool, canceled: Synchronized[bool]) -> None:
-    async def cancel_queued_acquire() -> None:
-        executor_started = threading.Event()
-        release_executor = threading.Event()
-        executor = ThreadPoolExecutor(max_workers=1)
-        blocker = executor.submit(_block_executor, executor_started, release_executor)
-        assert executor_started.wait(timeout=5)
-        lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
-        task = asyncio.create_task(lock.acquire_write())
-        await asyncio.sleep(0)
-        if cancel_caller:
-            task.cancel("caller canceled")
-            await asyncio.sleep(0)
-        executor.shutdown(wait=False, cancel_futures=True)
-        release_executor.set()
-        blocker.result(timeout=5)
-        try:
-            await task
-        except asyncio.CancelledError as error:
-            context = error.__context__
-            if cancel_caller:
-                canceled.value = isinstance(context, asyncio.CancelledError) and context.args == ("caller canceled",)
-            else:
-                canceled.value = True
-        contender = ReadWriteLock(lock_file, is_singleton=False)
-        with contender.write_lock(blocking=False):
-            pass
-        contender.close()
-
-    asyncio.run(cancel_queued_acquire())
-
-
-def _patch_async_execute_signal(
-    mocker: MockerFixture,
-    loop: asyncio.AbstractEventLoop,
-    execute_started: asyncio.Event,
-) -> None:
-    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
-        if "PRAGMA journal_mode" in statement:
-            loop.call_soon_threadsafe(execute_started.set)
-        return real_connection.executescript(statement)
-
-    _patch_async_connection(mocker, executescript=executescript)
-
-
-def _patch_async_rollback_failure(
-    mocker: MockerFixture,
-    loop: asyncio.AbstractEventLoop,
-    rollback_started: asyncio.Event,
-    finish_rollback: threading.Event,
-    *,
-    prior_context: BaseException | None = None,
-) -> sqlite3.OperationalError:
-    rollback_error = sqlite3.OperationalError("rollback failed")
-    rollback_error.__context__ = prior_context
-    rollback_failed = False
-
-    def rollback(real_connection: sqlite3.Connection) -> None:
-        nonlocal rollback_failed
-        if rollback_failed:
-            real_connection.rollback()
-            return
-        rollback_failed = True
-        loop.call_soon_threadsafe(rollback_started.set)
-        assert finish_rollback.wait(timeout=5)
-        raise rollback_error
-
-    _patch_async_connection(mocker, rollback=rollback)
-    return rollback_error
-
-
-def _patch_async_acquire_and_rollback_failure(
-    mocker: MockerFixture,
-    loop: asyncio.AbstractEventLoop,
-    acquire_started: asyncio.Event,
-    finish_acquire: threading.Event,
-    mode: Literal["read", "write"],
-) -> tuple[sqlite3.OperationalError, sqlite3.OperationalError, LookupError]:
-    acquire_error = sqlite3.OperationalError("acquire failed")
-    rollback_error = sqlite3.OperationalError("rollback failed")
-    prior_rollback_error = LookupError("prior rollback failure")
-    rollback_error.__context__ = prior_rollback_error
-    acquire_failed = False
-    rollback_failed = False
-
-    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
-        nonlocal acquire_failed
-        cursor = real_connection.executescript(statement)
-        target = "SELECT name" in statement if mode == "read" else "BEGIN EXCLUSIVE" in statement
-        if target and not acquire_failed:
-            acquire_failed = True
-            loop.call_soon_threadsafe(acquire_started.set)
-            assert finish_acquire.wait(timeout=5)
-            cursor.close()
-            raise acquire_error
-        return cursor
-
-    def rollback(real_connection: sqlite3.Connection) -> None:
-        nonlocal rollback_failed
-        if not rollback_failed:
-            rollback_failed = True
-            try:
-                raise prior_rollback_error
-            except LookupError:
-                raise rollback_error  # ruff:ignore[raise-without-from-inside-except]  # exercise implicit backend context preservation
-        real_connection.rollback()
-
-    _patch_async_connection(mocker, executescript=executescript, rollback=rollback)
-    return acquire_error, rollback_error, prior_rollback_error
-
-
-def _patch_async_connection(
-    mocker: MockerFixture,
-    *,
-    executescript: Callable[[sqlite3.Connection, str], sqlite3.Cursor] | None = None,
-    rollback: Callable[[sqlite3.Connection], None] | None = None,
-) -> None:
-    real_connect = sqlite3.connect
-    connection_count = 0
-
-    def connect(
-        database: str,
-        *,
-        factory: type[sqlite3.Connection],
-        timeout: float,
-    ) -> sqlite3.Connection:
-        nonlocal connection_count
-        real_connection = real_connect(
-            database,
-            check_same_thread=False,
-            factory=factory,
-            cached_statements=0,
-            timeout=timeout,
-        )
-        connection_count += 1
-        if connection_count < 2:
-            return real_connection
-        configuration: dict[str, Callable[[str], sqlite3.Cursor] | Callable[[], None]] = {}
-        if executescript is not None:
-            configuration["executescript.side_effect"] = functools.partial(executescript, real_connection)
-        if rollback is not None:
-            configuration["rollback.side_effect"] = functools.partial(rollback, real_connection)
-        connection = mocker.MagicMock(
-            spec_set=type(real_connection),
-            wraps=real_connection,
-            database_identity=None,
-            **configuration,
-        )
-        mocker.patch.object(
-            type(connection),
-            "in_transaction",
-            new_callable=mocker.PropertyMock,
-            create=True,
-            side_effect=lambda: real_connection.in_transaction,
-        )
-        return cast("sqlite3.Connection", connection)
-
-    mocker.patch("filelock._read_write._connect", side_effect=connect)
-
-
-def _block_executor(executor_started: threading.Event, release_executor: threading.Event) -> None:
-    executor_started.set()
-    assert release_executor.wait(timeout=5)

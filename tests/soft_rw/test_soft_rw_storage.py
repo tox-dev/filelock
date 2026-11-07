@@ -1,5 +1,3 @@
-"""The :class:`~filelock._soft_rw._storage.OsFiles` implementation of the protocol's filesystem operations."""
-
 from __future__ import annotations
 
 import contextlib

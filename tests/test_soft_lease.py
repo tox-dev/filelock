@@ -46,8 +46,8 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 #: Short enough to keep the suite quick, long enough that a loaded runner still refreshes twice before expiry.
-_DURATION: float = 0.9
-_HEARTBEAT: float = 0.1
+_DURATION: Final[float] = 0.9
+_HEARTBEAT: Final[float] = 0.1
 
 #: Taking a claim from a live holder means removing its marker while the holder still has it open. Where that is
 #: refused, a lease only reclaims once the holder exits and its handle closes.
@@ -129,11 +129,9 @@ def test_lease_claim_does_not_survive_fork(marker: Path, *, thread_local: bool) 
     assert lease.token is not None
 
     def child() -> NoReturn:
-        unheld = lease.token is None and not lease.is_locked and lease.compromise is None
-        exit_child(0 if unheld else 1)
+        exit_child(0 if (lease.token is None and not lease.is_locked and lease.compromise is None) else 1)
 
-    child_pid = fork_process(child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(child), 0)
 
     assert os.waitstatus_to_exitcode(status) == 0
     assert lease.token is not None
@@ -152,9 +150,8 @@ def test_lease_token_names_no_claim_after_an_acquire_that_raises(tmp_path: Path)
 
 
 def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> None:
-    holder = _lease(marker)
 
-    with holder:
+    with _lease(marker):
         time.sleep(_DURATION * 1.5)  # only a refreshing heartbeat keeps the claim past this
         with pytest.raises(Timeout):
             _lease(marker).acquire()
@@ -249,6 +246,13 @@ def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None
         _wait_until(lambda: bool(seen))
 
     assert [(c.reason, c.token, c.lock_file) for c in seen] == [("marker-missing", token, str(marker))]
+
+
+def _wait_until(condition: Callable[[], bool]) -> None:
+    # Bounded, so a heartbeat that never gets there fails the assertion after it instead of hanging the run.
+    deadline: Final = time.monotonic() + _DURATION * 20
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(_HEARTBEAT / 2)
 
 
 @NEEDS_UNLINK_OPEN_FILE
@@ -350,9 +354,8 @@ def test_lease_heartbeat_reports_an_owner_changed_that_persists(marker: Path) ->
 @NEEDS_UNLINK_OPEN_FILE
 def test_lease_reports_one_compromise_per_claim(marker: Path) -> None:  # pragma: needs unlink-open-file
     seen: list[LeaseCompromise] = []
-    lease = _lease(marker, on_compromise=seen.append)
 
-    with lease:
+    with _lease(marker, on_compromise=seen.append):
         marker.unlink()
         _wait_until(lambda: bool(seen))
         time.sleep(_HEARTBEAT * 4)  # later refreshes fail too, but the holder is told once
@@ -585,9 +588,8 @@ def test_lease_release_stops_a_heartbeat_recorded_before_its_thread_starts(marke
 
 
 def test_lease_rejects_a_peer_configured_with_another_duration(marker: Path) -> None:
-    holder = _lease(marker)
 
-    with holder, pytest.raises(LeaseSettingsMismatch, match="must agree on lease_duration"):
+    with _lease(marker), pytest.raises(LeaseSettingsMismatch, match="must agree on lease_duration"):
         _lease(marker, lease_duration=_DURATION * 3).acquire()
 
 
@@ -928,6 +930,10 @@ def test_lease_dropped_where_it_cannot_be_released_stops_its_heartbeat(marker: P
     assert not any(heartbeat.is_alive() for heartbeat in heartbeats)
 
 
+def _lease_heartbeats() -> set[threading.Thread]:
+    return {thread for thread in threading.enumerate() if thread.name.startswith("filelock-lease-")}
+
+
 # Interpreter exit finalizes module globals by dropping their references, which only a refcounting collector turns into
 # __del__ calls. A release from another finalizer runs while the heartbeat thread is frozen, so joining it would raise.
 @NEEDS_PROMPT_FINALIZATION
@@ -1000,17 +1006,6 @@ def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
         heartbeat.join(timeout=_DURATION * 20)
 
     assert (leases, seen, any(heartbeat.is_alive() for heartbeat in heartbeats)) == ([], [], False)
-
-
-def _wait_until(condition: Callable[[], bool]) -> None:
-    # Bounded, so a heartbeat that never gets there fails the assertion after it instead of hanging the run.
-    deadline: Final = time.monotonic() + _DURATION * 20
-    while not condition() and time.monotonic() < deadline:
-        time.sleep(_HEARTBEAT / 2)
-
-
-def _lease_heartbeats() -> set[threading.Thread]:
-    return {thread for thread in threading.enumerate() if thread.name.startswith("filelock-lease-")}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")

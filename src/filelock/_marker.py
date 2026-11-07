@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._identity", "filelock._util", "math"]
+__lazy_modules__ = ["contextlib", "math", f"{__spec__.parent}._identity", f"{__spec__.parent}._util"]
 
 import math
 import os
@@ -8,16 +8,14 @@ import re
 from contextlib import suppress
 from typing import Final, Literal, NamedTuple
 
-from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
-from filelock._soft import SoftFileLock, _read_lock_file, parse_decimal
-from filelock._util import pin_inode, write_all
+from ._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
+from ._soft import SoftFileLock, _read_lock_file, parse_decimal
+from ._util import pin_inode, write_all
 
 #: Protocol 1 is the legacy ``<pid>\n<hostname>\n[<start_token>\n]`` marker that :class:`SoftFileLock` still writes.
 #: Protocol 2 carries the owner mode and the lease claim. A protocol 1 reader treats a protocol 2 marker as malformed
 #: and evicts it after its grace period, so the two never guarantee mutual exclusion against each other.
 _PROTOCOL: Final[str] = "filelock/2"
-
-_MAX_PID: Final[int] = 2**31 - 1
 
 #: The forms ``repr`` gives a non-negative finite float or int; ``float()`` would also accept whitespace, underscores
 #: and non-ASCII digits.
@@ -42,6 +40,11 @@ class MarkerSoftFileLock(SoftFileLock):
 
         """
         return self._read_owner()
+
+    def _read_owner(self) -> OwnerRecord | None:
+        with suppress(OSError, ValueError):
+            return parse_marker(_read_lock_file(self._lock_path)[0])
+        return None
 
     @property
     def pid(self) -> int | None:
@@ -99,11 +102,6 @@ class MarkerSoftFileLock(SoftFileLock):
             and not owner_is_stale(owner.pid, owner.hostname, owner.start)
         )
 
-    def _read_owner(self) -> OwnerRecord | None:
-        with suppress(OSError, ValueError):
-            return parse_marker(_read_lock_file(self._lock_path)[0])
-        return None
-
     def _write_lock_info(self, fd: int) -> None:
         write_all(fd, encode_marker(self._published_record()))
 
@@ -117,7 +115,16 @@ class MarkerSoftFileLock(SoftFileLock):
 
 
 class OwnerRecord(NamedTuple):
-    """Keep optional metadata when reading unknown lock modes."""
+    """
+    Keep optional metadata when reading unknown lock modes.
+
+    :param pid:
+    :param hostname:
+    :param mode:
+    :param token:
+    :param lease_duration:
+    :param start:
+    """
 
     pid: int
     hostname: str
@@ -128,7 +135,7 @@ class OwnerRecord(NamedTuple):
 
 
 def encode_marker(record: OwnerRecord) -> bytes:
-    """Render an owner record as the bytes a protocol 2 marker holds."""
+    # Render an owner record as the bytes a protocol 2 marker holds.
     lines = [_PROTOCOL, f"pid={record.pid}", f"host={record.hostname}", f"mode={record.mode}"]
     if record.token is not None:
         lines.append(f"token={record.token}")
@@ -140,7 +147,7 @@ def encode_marker(record: OwnerRecord) -> bytes:
 
 
 def parse_marker(content: str | None) -> OwnerRecord | None:
-    """Return the owner a protocol 2 marker names, or ``None`` when the record is malformed or protocol 1."""
+    # Return the owner a protocol 2 marker names, or ``None`` when the record is malformed or protocol 1.
     # A torn write may end in a prefix like "mode=exclu", an unknown contract nobody reclaims; malformed, it ages out.
     if not content or content[-1] != "\n" or not (lines := content.strip().splitlines()) or lines[0] != _PROTOCOL:
         return None
@@ -170,7 +177,7 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
         start = parse_decimal(fields["start"]) if "start" in fields else None
     except ValueError:
         return None
-    if not 1 <= pid <= _MAX_PID:
+    if not 1 <= pid <= (2**31 - 1):
         return None
     token = fields.get("token")
     # "1e400" passes the grammar but overflows to inf, which mismatches every configured duration and so wedges reclaim,

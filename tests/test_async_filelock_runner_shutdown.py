@@ -67,6 +67,25 @@ def test_runner_shutdown_waits_for_executor_acquire_rollback(tmp_path: Path) -> 
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
+def _run_unawaited_acquire(  # pragma: needs fcntl
+    lock: AsyncFileLock,
+    hook_started: threading.Event,
+    cancellation_seen: threading.Event,
+    tasks: Queue[asyncio.Task[AsyncAcquireReturnProxy]],
+) -> None:
+    async def start_acquire() -> None:
+        tasks.put(
+            _CancellationObservedTask(
+                lock.acquire(),
+                cancellation_seen,
+                loop=asyncio.get_running_loop(),
+            )
+        )
+        assert await asyncio.to_thread(hook_started.wait, 5)
+
+    asyncio.run(start_acquire())
+
+
 @NEEDS_FCNTL
 @pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
@@ -129,25 +148,6 @@ def test_runner_shutdown_preserves_body_cancellation_and_release_errors(  # prag
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-def _run_unawaited_acquire(  # pragma: needs fcntl
-    lock: AsyncFileLock,
-    hook_started: threading.Event,
-    cancellation_seen: threading.Event,
-    tasks: Queue[asyncio.Task[AsyncAcquireReturnProxy]],
-) -> None:
-    async def start_acquire() -> None:
-        tasks.put(
-            _CancellationObservedTask(
-                lock.acquire(),
-                cancellation_seen,
-                loop=asyncio.get_running_loop(),
-            )
-        )
-        assert await asyncio.to_thread(hook_started.wait, 5)
-
-    asyncio.run(start_acquire())
-
-
 def _start_unawaited_context_failure(  # pragma: needs fcntl
     lock: AsyncFileLock,
     body_error: BaseException,
@@ -160,8 +160,7 @@ def _start_unawaited_context_failure(  # pragma: needs fcntl
         args=(lock, body_error, release_started, cancellation_seen, tasks),
     )
     runner.start()
-    task = tasks.get(timeout=5)
-    return runner, task, cancellation_seen
+    return runner, tasks.get(timeout=5), cancellation_seen
 
 
 def _run_unawaited_context_failure(  # pragma: needs fcntl

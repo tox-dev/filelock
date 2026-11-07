@@ -105,7 +105,14 @@ def interrupt_once(real: Callable[[_T], None], *, before: bool) -> Callable[[_T]
 
 
 class Interrupt(BaseException):
-    """Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt."""
+    # Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt.
+    ...
 
 
-__all__ = ["ACQUIRE_SETTINGS", "INVALID_TIMEOUTS", "Interrupt", "assert_read_write_lock_state", "interrupt_once"]
+__all__ = [
+    "ACQUIRE_SETTINGS",
+    "INVALID_TIMEOUTS",
+    "Interrupt",
+    "assert_read_write_lock_state",
+    "interrupt_once",
+]

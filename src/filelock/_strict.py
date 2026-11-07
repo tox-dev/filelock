@@ -2,15 +2,16 @@ from __future__ import annotations
 
 __lazy_modules__ = [
     "contextlib",
-    "filelock._error",
-    "filelock._identity",
-    "filelock._marker",
-    "filelock._soft",
-    "filelock._util",
     "functools",
     "pathlib",
     "secrets",
     "tempfile",
+    f"{__spec__.parent}._error",
+    f"{__spec__.parent}._identity",
+    f"{__spec__.parent}._marker",
+    f"{__spec__.parent}._soft",
+    f"{__spec__.parent}._util",
+    f"{__spec__.parent}._windows",
 ]
 
 import contextlib
@@ -27,16 +28,16 @@ from errno import EACCES, EEXIST, ENOENT, ENOSYS, EPERM, ESTALE, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
-from filelock._api import BaseFileLock, ThreadLocalFileContext, _canonical, _raise_cleanup_errors
-from filelock._error import SoftFileLockProtocolError
-from filelock._identity import host_name, owner_is_stale, process_start_token
-from filelock._marker import parse_marker
-from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
-from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import foreign_directory_owner, write_all
+from ._api import BaseFileLock, ThreadLocalFileContext, _canonical, _raise_cleanup_errors
+from ._error import SoftFileLockProtocolError
+from ._identity import host_name, owner_is_stale, process_start_token
+from ._marker import parse_marker
+from ._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
+from ._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
+from ._util import foreign_directory_owner, write_all
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._windows import _is_unlinked, _open_deletable_for_reading, _pin_directory, _unpin_directory
+    from ._windows import _is_unlinked, _open_deletable_for_reading, _pin_directory, _unpin_directory
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -133,6 +134,37 @@ class StrictSoftFileLock(BaseFileLock):
     _occupant_seen: tuple[tuple[float, int, int], float] | None = None
     #: Set by the finalizer, after which no retry of a failed cleanup can run.
     _finalizing: bool = False
+
+    @property
+    def claims(self) -> tuple[StrictSoftFileClaim, ...]:
+        """Published claims that block acquisition."""
+        # An inspection writes nothing, so it trusts no record's age rather than probe the filesystem clock.
+        return _read_existing_claims(self.lock_file, self._claim_directory, probe_clock=False, verify_server=False)
+
+    @property
+    def _claim_directory(self) -> Path:
+        if self._context.owner_claim_paths:
+            return Path(self._context.owner_claim_paths[0]).parent
+        return Path(f"{_canonical(self.lock_file)}{_COORDINATION_SUFFIX}") / _CLAIM_DIRECTORY_NAME
+
+    @property
+    def lock_path_occupant(self) -> str | None:
+        """
+        What sits at the lock path in place of the strict sentinel, or ``None`` when the sentinel or nothing is there.
+
+        A soft-lock owner's marker blocks acquisition without appearing in :attr:`~filelock.StrictSoftFileLock.claims`;
+        this describes it, naming the PID and host when the marker records them. A directory, a symlink, a marker whose
+        owner on this host has exited, or a file it cannot parse that stays unchanged for two seconds makes acquisition
+        raise :class:`~filelock.SoftFileLockProtocolError` instead and needs an operator to remove it.
+        """
+        try:
+            fd, _, occupant = _inspect_lock_path(Path(_canonical(self.lock_file)))
+        except FileNotFoundError:
+            return None
+        if fd is None:
+            return occupant
+        os.close(fd)
+        return None
 
     def _acquire(self) -> None:
         # Finish a doorway whose claim cleanup failed before publishing, so this owner never contends with leftovers.
@@ -232,8 +264,7 @@ class StrictSoftFileLock(BaseFileLock):
             return False
 
         held_name = _claim_name("held", token)
-        held_path = str(claim_directory / held_name)
-        self._context.owner_claim_paths = (held_path, intent_path)
+        self._context.owner_claim_paths = (str(claim_directory / held_name), intent_path)
         try:
             link_cleanup_error = _link_no_replace(claim_directory, intent_name, held_name)
         except (NotImplementedError, OSError) as error:
@@ -255,33 +286,39 @@ class StrictSoftFileLock(BaseFileLock):
             _claim_token_key(claim.name) for claim in claims
         ) == f"v1-{token}.claim"
 
-    @property
-    def claims(self) -> tuple[StrictSoftFileClaim, ...]:
-        """Published claims that block acquisition."""
-        # An inspection writes nothing, so it trusts no record's age rather than probe the filesystem clock.
-        return _read_existing_claims(self.lock_file, self._claim_directory, probe_clock=False, verify_server=False)
+    def _discard_doorway(self) -> None:
+        remaining, errors = self._unlink_owner_claims()
+        # The pending descriptor holds no lock and a retry needs the claim paths alone. A dropped instance does not
+        # retry, so close it now.
+        if (fd := self._context.pending_lock_file_fd) is not None:
+            self._context.pending_lock_file_fd = self._context.pending_lock_file_fd_identity = None
+            try:
+                self._close_released_fd(fd, default_suppresses=False)
+            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
+                errors.append(close_error)
+        if remaining:
+            # Stay pending, not owned: is_locked reports only a held claim that passed the final rescan. The next
+            # acquire retries this cleanup.
+            _raise_recorded_errors("strict doorway claim cleanup failed", errors)
+        self._mark_descriptor_released()
+        if errors:
+            _raise_recorded_errors("strict doorway cleanup failed", errors)
 
-    @property
-    def lock_path_occupant(self) -> str | None:
-        """
-        What sits at the lock path in place of the strict sentinel, or ``None`` when the sentinel or nothing is there.
-
-        A soft-lock owner's marker blocks acquisition without appearing in :attr:`~filelock.StrictSoftFileLock.claims`;
-        this describes it, naming the PID and host when the marker records them. A directory, a symlink, a marker whose
-        owner on this host has exited, or a file it cannot parse that stays unchanged for two seconds makes acquisition
-        raise :class:`~filelock.SoftFileLockProtocolError` instead and needs an operator to remove it.
-        """
-        try:
-            fd, _, occupant = _inspect_lock_path(Path(_canonical(self.lock_file)))
-        except FileNotFoundError:
-            return None
-        if fd is None:
-            return occupant
-        os.close(fd)
-        return None
+    def _unlink_owner_claims(self) -> tuple[list[str], list[BaseException]]:
+        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
+        self._context.owner_claim_paths = tuple(remaining)
+        if self._finalizing:
+            # No retry runs after the finalizer and no caller sees its errors, so report success and let it close the
+            # descriptor even when claims remain.
+            return [], []  # pragma: needs collected-finalization
+        return remaining, errors
 
     def force_break(self, claim_name: str) -> None:
-        """Remove one named claim, allowing overlap if its owner still holds the protected resource."""
+        """
+        Remove one named claim, allowing overlap if its owner still holds the protected resource.
+
+        :param claim_name:
+        """
         _validate_force_break_name(claim_name)
         with _pin_claim_directory(directory := self._claim_directory):
             _require_exact_name(directory, claim_name)
@@ -316,43 +353,19 @@ class StrictSoftFileLock(BaseFileLock):
         if errors:
             _raise_recorded_errors("strict release cleanup failed", errors)
 
-    def _discard_doorway(self) -> None:
-        remaining, errors = self._unlink_owner_claims()
-        # The pending descriptor holds no lock and a retry needs the claim paths alone. A dropped instance does not
-        # retry, so close it now.
-        if (fd := self._context.pending_lock_file_fd) is not None:
-            self._context.pending_lock_file_fd = self._context.pending_lock_file_fd_identity = None
-            try:
-                self._close_released_fd(fd, default_suppresses=False)
-            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
-                errors.append(close_error)
-        if remaining:
-            # Stay pending, not owned: is_locked reports only a held claim that passed the final rescan. The next
-            # acquire retries this cleanup.
-            _raise_recorded_errors("strict doorway claim cleanup failed", errors)
-        self._mark_descriptor_released()
-        if errors:
-            _raise_recorded_errors("strict doorway cleanup failed", errors)
 
-    def _unlink_owner_claims(self) -> tuple[list[str], list[BaseException]]:
-        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
-        self._context.owner_claim_paths = tuple(remaining)
-        if self._finalizing:
-            # No retry runs after the finalizer and no caller sees its errors, so report success and let it close the
-            # descriptor even when claims remain.
-            return [], []  # pragma: needs collected-finalization
-        return remaining, errors
-
-    @property
-    def _claim_directory(self) -> Path:
-        if self._context.owner_claim_paths:
-            return Path(self._context.owner_claim_paths[0]).parent
-        return Path(f"{_canonical(self.lock_file)}{_COORDINATION_SUFFIX}") / _CLAIM_DIRECTORY_NAME
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StrictSoftFileClaim:
-    """One parsed strict soft-lock claim."""
+    """
+    One parsed strict soft-lock claim.
+
+    :param name:
+    :param state:
+    :param token:
+    :param pid:
+    :param hostname:
+    :param start:
+    """
 
     name: str
     state: StrictSoftFileClaimState

@@ -164,6 +164,11 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(tmp_path: P
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
+def _block_executor(executor_started: threading.Event, release_executor: threading.Event) -> None:
+    executor_started.set()
+    assert release_executor.wait(timeout=5)
+
+
 @pytest.mark.parametrize("held", [pytest.param(False, id="acquire"), pytest.param(True, id="release")])
 @pytest.mark.asyncio
 async def test_executor_shutdown_drops_queued_call_with_runtime_error(tmp_path: Path, *, held: bool) -> None:
@@ -512,8 +517,3 @@ async def test_non_executor_immediate_acquire_precedes_scheduled_callback(tmp_pa
     await lock.release()
     await asyncio.sleep(0)
     assert callbacks == ["callback"]
-
-
-def _block_executor(executor_started: threading.Event, release_executor: threading.Event) -> None:
-    executor_started.set()
-    assert release_executor.wait(timeout=5)

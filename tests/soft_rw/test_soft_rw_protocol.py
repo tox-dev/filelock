@@ -1,15 +1,3 @@
-"""
-The generation-log protocol: record formats, the ledger, and ``GenerationLog``/``Participant`` behavior, plus a model
-check of the whole protocol under an adversarial scheduler.
-
-The direct tests below exercise ``Snapshot``, ``Ledger``, ``GenerationLog``, and ``Participant`` against a real
-filesystem. The model check that follows runs every participant on its own thread over an in-memory filesystem, and
-every filesystem call hands the turn back to a seeded scheduler that picks which participant runs next, advances a fake
-clock, and sometimes kills the participant it picked. That interleaves the protocol at the granularity of single
-filesystem operations, including inside a commit, and a crash at any of those points leaves exactly what a dead process
-would leave on disk.
-"""
-
 from __future__ import annotations
 
 import errno
@@ -44,31 +32,10 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-_FIRST = "0123456789abcdef0123456789abcdef"
-_SECOND = "fedcba9876543210fedcba9876543210"
+_FIRST: Final[str] = "0123456789abcdef0123456789abcdef"
+_SECOND: Final[str] = "fedcba9876543210fedcba9876543210"
 
 pytestmark = pytest.mark.usefixtures("flushes")
-
-
-def _participant(
-    files: OsFiles,
-    lock_file: str,
-    mode: Literal["read", "write"],
-    *,
-    stale_threshold: float = 100,
-    clock: Callable[[], float] = lambda: 0.0,
-) -> Participant:
-    # Each participant gets its own ledger and log, the way separate processes do.
-    root = f"{lock_file}.rw"
-    return Participant(
-        files,
-        root,
-        mode,
-        stale_threshold=stale_threshold,
-        clock=clock,
-        ledger=Ledger(clock),
-        log=GenerationLog(files, lock_file, root),
-    )
 
 
 @pytest.fixture
@@ -283,6 +250,27 @@ def test_leave_without_entering_only_drops_the_record(lock_file: str, files: OsF
     assert participant.generation is None
 
 
+def _participant(
+    files: OsFiles,
+    lock_file: str,
+    mode: Literal["read", "write"],
+    *,
+    stale_threshold: float = 100,
+    clock: Callable[[], float] = lambda: 0.0,
+) -> Participant:
+    # Each participant gets its own ledger and log, the way separate processes do.
+    root = f"{lock_file}.rw"
+    return Participant(
+        files,
+        root,
+        mode,
+        stale_threshold=stale_threshold,
+        clock=clock,
+        ledger=Ledger(clock),
+        log=GenerationLog(files, lock_file, root),
+    )
+
+
 @pytest.mark.requires_hard_links
 def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root: str, mocker: MockerFixture) -> None:
     # A peer can publish the next generation between leave() reading the latest one and linking its successor; the
@@ -304,8 +292,7 @@ def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root:
     mocker.patch.object(GenerationLog, "commit", autospec=True, side_effect=commit_after_a_peer)
     reader.leave()
     latest = GenerationLog(files, lock_file, root).latest()
-    assert latest.members == frozenset()
-    assert latest.generation == lost[0].generation + 1
+    assert (latest.members, latest.generation) == (frozenset(), lost[0].generation + 1)
 
 
 @pytest.mark.requires_hard_links
@@ -352,8 +339,7 @@ def test_blocked_contender_still_evicts_stale_readers(lock_file: str, files: OsF
     assert writer.heartbeat() == ("ok", None)  # keeps its own nonce fresh, so only the dead reader goes stale
     assert not contender.advance()
     latest = GenerationLog(files, lock_file, root).latest()
-    assert latest.writer == writer.token
-    assert latest.readers == frozenset()
+    assert (latest.writer, latest.readers) == (writer.token, frozenset())
 
 
 def test_advance_hands_back_the_poll_after_losing_every_race(
@@ -599,6 +585,10 @@ def test_a_commit_overtaken_by_a_wipe_leaves_the_new_heads_alone(
     )
 
 
+def _published(head: Path) -> Snapshot | None:
+    return parse_snapshot(head.read_bytes().partition(b"\n")[2])
+
+
 @pytest.mark.requires_hard_links
 def test_a_commit_that_lands_in_a_compacted_slot_counts_as_lost(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
@@ -764,10 +754,6 @@ def test_a_torn_head_still_refuses_a_first_generation(lock_file: str, files: OsF
 @pytest.fixture
 def head(root: str) -> Path:
     return Path(root, "gen", "HEAD")
-
-
-def _published(head: Path) -> Snapshot | None:
-    return parse_snapshot(head.read_bytes().partition(b"\n")[2])
 
 
 @pytest.mark.requires_hard_links
@@ -982,30 +968,57 @@ def test_heartbeat_leaves_a_file_linked_over_the_holder_record_alone(lock_file: 
     assert (writer.heartbeat(), private.read_bytes()) == (("lost", None), b"private")
 
 
-_STALE_THRESHOLD: Final[float] = 1.0
 _HEARTBEAT: Final[float] = 0.3
-_POLL: Final[float] = 0.1
+
+
 #: What one filesystem operation costs. Small against the heartbeat so a live participant's refreshes stay well inside
 #: the stale threshold however the scheduler orders its operations, as they do on a real filesystem.
 _STEP: Final[float] = 0.001
+
+
 #: A runnable participant is scheduled again before this much fake time passes, so only a crashed one goes stale.
 _FAIRNESS: Final[float] = 8 * _STEP
-_ACQUIRE_BUDGET: Final[float] = 120.0
+
+
 _ROOT: Final[str] = "/lock.rw"
 
 
-class _Crashed(BaseException):
-    """Raised inside a participant the scheduler killed; it exits at once and never touches the filesystem again."""
+@pytest.mark.parametrize(
+    ("seed", "crash_probability", "stale_listings"),
+    [
+        pytest.param(
+            seed,
+            probability,
+            stale,
+            id=f"seed{seed}-{'crashes' if probability else 'clean'}-{'stale-listings' if stale else 'fresh-listings'}",
+        )
+        for seed in range(24)
+        for probability in (0.0 if seed % 3 == 0 else 0.02,)
+        for stale in (0.3 if seed % 2 else 0.0,)
+    ],
+)
+@pytest.mark.timeout(120)
+def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability: float, stale_listings: float) -> None:
+    scheduler = _Scheduler(seed=seed, crash_probability=crash_probability, max_crashes=3)
+    model = _Model(scheduler, stale_listings=stale_listings)
+    rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded mix of hold lengths, not entropy
+    for index in range(8):
+        model.add("write" if index % 3 == 0 else "read", hold_beats=rng.randint(1, 4))
+    model.run()
+
+    assert model.violations == []
+    survivors = [outcome for outcome in model.outcomes if not outcome.crashed]
+    assert [outcome for outcome in survivors if outcome.stuck] == []
+    assert [outcome for outcome in survivors if outcome.lost] == []
+    assert all(outcome.granted_at is not None for outcome in survivors)
+    assert scheduler.crashes == sum(outcome.crashed for outcome in model.outcomes)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class _Scheduler:
-    """
-    Discrete-event scheduler: a parked participant is runnable once its wake time has passed, the clock only jumps when
-    nothing is runnable, and every scheduled operation costs one step. A runnable participant waits at most
-    ``_FAIRNESS`` before it is picked, so only a crashed participant can ever look stale.
-    """
-
+    # Discrete-event scheduler: a parked participant is runnable once its wake time has passed, the clock only jumps
+    # when nothing is runnable, and every scheduled operation costs one step. A runnable participant waits at most
+    # ``_FAIRNESS`` before it is picked, so only a crashed participant can ever look stale.
     seed: int
     crash_probability: float
     max_crashes: int
@@ -1033,6 +1046,9 @@ class _Scheduler:
             self._live.add(threading.get_ident())
             self._condition.notify_all()
 
+    def sleep(self, seconds: float) -> None:
+        self.yield_turn(wake_at=self.clock + seconds)
+
     def yield_turn(self, wake_at: float | None = None) -> None:
         me = threading.get_ident()
         with self._condition:
@@ -1045,9 +1061,6 @@ class _Scheduler:
         if crashed:
             raise _Crashed
 
-    def sleep(self, seconds: float) -> None:
-        self.yield_turn(wake_at=self.clock + seconds)
-
     def finish(self) -> None:
         with self._condition:
             self._live.discard(threading.get_ident())
@@ -1055,7 +1068,7 @@ class _Scheduler:
             self._condition.notify_all()
 
     def step(self) -> bool:
-        """Run one participant for one filesystem operation; ``False`` once every participant has finished."""
+        # Run one participant for one filesystem operation; ``False`` once every participant has finished.
         with self._condition:
             while self._expected or self._turn is not None or set(self._parked) != self._live:
                 self._condition.wait()
@@ -1076,86 +1089,9 @@ class _Scheduler:
         return True
 
 
-class _MemoryFiles:
-    """An in-memory :class:`~filelock._soft_rw._protocol.Files` whose every call is one scheduler step."""
-
-    def __init__(self, scheduler: _Scheduler, *, stale_listings: float = 0.0) -> None:
-        self._scheduler = scheduler
-        self.files: dict[str, bytes] = {}
-        # An NFS client can serve a directory listing that predates a peer's commit; with this probability a listing
-        # comes from some earlier point in the tree's history rather than from now.
-        self._stale_listings = stale_listings
-        self._random = random.Random(scheduler.seed + 1)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded schedule, not entropy
-        self._history: list[list[str]] = [[]]
-
-    def _record(self) -> None:
-        self._history.append(sorted(self.files))
-        del self._history[:-128]
-
-    def read(self, path: str) -> bytes | None:
-        self._scheduler.yield_turn()
-        return self.files.get(_key(path))
-
-    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:  # ruff:ignore[unused-method-argument]  # memory has no storage to flush
-        self._scheduler.yield_turn()
-        if _key(path) in self.files:  # pragma: no cover  # every name created here is a fresh token
-            raise FileExistsError(path)
-        self.files[_key(path)] = data
-        self._record()
-        return 0, 0
-
-    def link(self, source: str, target: str) -> bool:
-        self._scheduler.yield_turn()
-        if _key(target) in self.files or _key(source) not in self.files:
-            return False
-        self.files[_key(target)] = self.files[_key(source)]
-        self._record()
-        return True
-
-    def replace(self, source: str, target: str) -> bool:
-        self._scheduler.yield_turn()
-        self.files[_key(target)] = self.files.pop(_key(source))
-        self._record()
-        return True
-
-    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:  # ruff:ignore[unused-method-argument]  # nothing here swaps one file for another
-        self._scheduler.yield_turn()
-        if (
-            _key(path) not in self.files
-        ):  # pragma: no cover  # only a crashed participant loses its record, and it never writes again
-            return False
-        self.files[_key(path)] = data
-        self._record()
-        return True
-
-    def unlink(self, path: str) -> None:
-        self._scheduler.yield_turn()
-        self.files.pop(_key(path), None)
-        self._record()
-
-    def listdir(self, path: str) -> list[str]:
-        self._scheduler.yield_turn()
-        names = (
-            self._random.choice(self._history) if self._random.random() < self._stale_listings else sorted(self.files)
-        )
-        return [PurePosixPath(name).name for name in names if str(PurePosixPath(name).parent) == _key(path)]
-
-    def prepare(self, root: str, *, force: bool = False) -> None:  # ruff:ignore[unused-method-argument]  # nothing to create in memory
-        self._scheduler.yield_turn()
-
-
-def _key(path: str) -> str:
-    # The protocol joins paths with the host separator; the in-memory tree keys them the POSIX way on every platform.
-    return path.replace("\\", "/")
-
-
-@dataclass
-class _Outcome:
-    mode: Literal["read", "write"]
-    granted_at: int | None = None
-    crashed: bool = False
-    lost: bool = False
-    stuck: bool = False
+class _Crashed(BaseException):
+    # Raised inside a participant the scheduler killed; it exits at once and never touches the filesystem again.
+    ...
 
 
 class _Model:
@@ -1170,7 +1106,7 @@ class _Model:
         self.violations: list[str] = []
 
     def add(self, mode: Literal["read", "write"], hold_beats: int) -> None:
-        outcome = _Outcome(mode)
+        outcome = _Outcome(mode=mode)
         self.outcomes.append(outcome)
         self.scheduler.expect()
         self.threads.append(threading.Thread(target=self._run, args=(outcome, hold_beats), daemon=True))
@@ -1181,21 +1117,22 @@ class _Model:
             self.files,
             _ROOT,
             outcome.mode,
-            stale_threshold=_STALE_THRESHOLD,
+            stale_threshold=1.0,
             clock=lambda: self.scheduler.clock,
             ledger=Ledger(lambda: self.scheduler.clock),
             log=GenerationLog(self.files, "/lock", _ROOT),
         )
+        poll: float = 0.1
         try:
             participant.publish()
-            deadline = self.scheduler.clock + _ACQUIRE_BUDGET
+            deadline = self.scheduler.clock + 120.0
             while not participant.advance():
                 if (
                     self.scheduler.clock >= deadline
                 ):  # pragma: no cover  # a liveness regression, reported by the assertion
                     outcome.stuck = True
                     return
-                self.scheduler.sleep(_POLL)
+                self.scheduler.sleep(poll)
             outcome.granted_at = participant.generation
             self._enter(participant.token, outcome.mode, outcome.granted_at)
             for _ in range(hold_beats):
@@ -1242,35 +1179,85 @@ class _Model:
             assert not thread.is_alive()
 
 
-@pytest.mark.parametrize(
-    ("seed", "crash_probability", "stale_listings"),
-    [
-        pytest.param(
-            seed,
-            probability,
-            stale,
-            id=f"seed{seed}-{'crashes' if probability else 'clean'}-{'stale-listings' if stale else 'fresh-listings'}",
-        )
-        for seed in range(24)
-        for probability in (0.0 if seed % 3 == 0 else 0.02,)
-        for stale in (0.3 if seed % 2 else 0.0,)
-    ],
-)
-@pytest.mark.timeout(120)
-def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability: float, stale_listings: float) -> None:
-    scheduler = _Scheduler(seed=seed, crash_probability=crash_probability, max_crashes=3)
-    model = _Model(scheduler, stale_listings=stale_listings)
-    rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded mix of hold lengths, not entropy
-    for index in range(8):
-        model.add("write" if index % 3 == 0 else "read", hold_beats=rng.randint(1, 4))
-    model.run()
+class _MemoryFiles:
+    # An in-memory :class:`~filelock._soft_rw._protocol.Files` whose every call is one scheduler step.
+    def __init__(self, scheduler: _Scheduler, *, stale_listings: float = 0.0) -> None:
+        self._scheduler = scheduler
+        self.files: dict[str, bytes] = {}
+        # An NFS client can serve a directory listing that predates a peer's commit; with this probability a listing
+        # comes from some earlier point in the tree's history rather than from now.
+        self._stale_listings = stale_listings
+        self._random = random.Random(scheduler.seed + 1)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded schedule, not entropy
+        self._history: list[list[str]] = [[]]
 
-    assert model.violations == []
-    survivors = [outcome for outcome in model.outcomes if not outcome.crashed]
-    assert [outcome for outcome in survivors if outcome.stuck] == []
-    assert [outcome for outcome in survivors if outcome.lost] == []
-    assert all(outcome.granted_at is not None for outcome in survivors)
-    assert scheduler.crashes == sum(outcome.crashed for outcome in model.outcomes)
+    def read(self, path: str) -> bytes | None:
+        self._scheduler.yield_turn()
+        return self.files.get(_key(path))
+
+    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:  # ruff:ignore[unused-method-argument]  # memory has no storage to flush
+        self._scheduler.yield_turn()
+        if _key(path) in self.files:  # pragma: no cover  # every name created here is a fresh token
+            raise FileExistsError(path)
+        self.files[_key(path)] = data
+        self._record()
+        return 0, 0
+
+    def _record(self) -> None:
+        self._history.append(sorted(self.files))
+        del self._history[:-128]
+
+    def link(self, source: str, target: str) -> bool:
+        self._scheduler.yield_turn()
+        if _key(target) in self.files or _key(source) not in self.files:
+            return False
+        self.files[_key(target)] = self.files[_key(source)]
+        self._record()
+        return True
+
+    def replace(self, source: str, target: str) -> bool:
+        self._scheduler.yield_turn()
+        self.files[_key(target)] = self.files.pop(_key(source))
+        self._record()
+        return True
+
+    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:  # ruff:ignore[unused-method-argument]  # nothing here swaps one file for another
+        self._scheduler.yield_turn()
+        if (
+            _key(path) not in self.files
+        ):  # pragma: no cover  # only a crashed participant loses its record, and it never writes again
+            return False
+        self.files[_key(path)] = data
+        self._record()
+        return True
+
+    def unlink(self, path: str) -> None:
+        self._scheduler.yield_turn()
+        self.files.pop(_key(path), None)
+        self._record()
+
+    def listdir(self, path: str) -> list[str]:
+        self._scheduler.yield_turn()
+        names = (
+            self._random.choice(self._history) if self._random.random() < self._stale_listings else sorted(self.files)
+        )
+        return [PurePosixPath(name).name for name in names if str(PurePosixPath(name).parent) == _key(path)]
+
+    def prepare(self, root: str, *, force: bool = False) -> None:  # ruff:ignore[unused-method-argument]  # nothing to create in memory
+        self._scheduler.yield_turn()
+
+
+def _key(path: str) -> str:
+    # The protocol joins paths with the host separator; the in-memory tree keys them the POSIX way on every platform.
+    return path.replace("\\", "/")
+
+
+@dataclass(kw_only=True)
+class _Outcome:
+    mode: Literal["read", "write"]
+    granted_at: int | None = None
+    crashed: bool = False
+    lost: bool = False
+    stuck: bool = False
 
 
 @pytest.mark.parametrize("seed", range(6))
@@ -1278,8 +1265,7 @@ def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability
 def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
     # After the crashes, one more writer must be able to enter by evicting whatever the dead left behind, and leave the
     # log naming nobody and the holders directory holding nobody.
-    scheduler = _Scheduler(seed=seed, crash_probability=0.05, max_crashes=4)
-    model = _Model(scheduler)
+    model = _Model(_Scheduler(seed=seed, crash_probability=0.05, max_crashes=4))
     for index in range(6):
         model.add("write" if index % 2 else "read", hold_beats=2)
     model.run()
@@ -1304,8 +1290,7 @@ def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
 
 @pytest.mark.timeout(120)
 def test_fencing_generations_are_strictly_increasing_across_grants() -> None:
-    scheduler = _Scheduler(seed=7, crash_probability=0.0, max_crashes=0)
-    model = _Model(scheduler)
+    model = _Model(_Scheduler(seed=7, crash_probability=0.0, max_crashes=0))
     for index in range(9):
         model.add("write" if index % 3 == 0 else "read", hold_beats=1)
     model.run()

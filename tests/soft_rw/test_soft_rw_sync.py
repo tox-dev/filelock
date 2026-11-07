@@ -79,36 +79,6 @@ def _state(lock_file: str) -> Snapshot:
     return GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw").latest()
 
 
-def _remove_log(lock_file: str) -> None:
-    # The documented recovery: a rename takes the whole log away at once, so no participant reads it half deleted.
-    Path(f"{lock_file}.rw").rename(removed := Path(f"{lock_file}.rw.removed"))
-    shutil.rmtree(removed)
-
-
-def _holders(lock_file: str) -> list[str]:
-    holders = Path(f"{lock_file}.rw", "holders")
-    return sorted(entry.name for entry in holders.iterdir()) if holders.is_dir() else []
-
-
-def _generations(lock_file: str) -> list[str]:
-    return sorted(entry.name for entry in Path(f"{lock_file}.rw", "gen").iterdir() if entry.name.isdigit())
-
-
-def _plant_holder(lock_file: str, *, mode: Literal["read", "write"], host: str = "terminated-pod") -> str:
-    # What a process on another host leaves behind when it dies holding the lock: its record and the snapshot naming it.
-    files = OsFiles(lock_file)
-    root = f"{lock_file}.rw"
-    files.prepare(root)
-    token = new_token()
-    record = encode_holder(token, new_token(), 0.5).replace(b"host=", f"host={host}?".encode("ascii"), 1)
-    files.create(str(Path(root, "holders", token)), record)
-    log = GenerationLog(files, lock_file, root)
-    latest = log.latest()
-    writer, readers = (token, latest.readers) if mode == "write" else (latest.writer, latest.readers | {token})
-    assert log.commit(Snapshot(generation=latest.generation + 1, writer=writer, readers=readers))
-    return token
-
-
 def test_release_interrupted_while_joining_the_heartbeat_still_leaves(lock_file: str, mocker: MockerFixture) -> None:
     lock = _make_lock(lock_file)
     lock.acquire_write(timeout=2)
@@ -226,12 +196,9 @@ def test_public_attributes(lock_file: str) -> None:
         is_singleton=False,
     )
     try:
-        assert lock.lock_file == lock_file
-        assert lock.timeout == 5
+        assert (lock.lock_file, lock.timeout) == (lock_file, 5)
         assert lock.blocking is False
-        assert lock.heartbeat_interval == 10
-        assert lock.stale_threshold == 45
-        assert lock.poll_interval == pytest.approx(0.5)
+        assert (lock.heartbeat_interval, lock.stale_threshold, lock.poll_interval) == (10, 45, pytest.approx(0.5))
     finally:
         lock.close()
 
@@ -407,8 +374,7 @@ def test_get_lock_returns_singleton(lock_file: str) -> None:
 
 def test_leaked_acquired_singleton_is_closed_on_teardown(lock_file: str) -> None:
     # A live heartbeat thread keeps the singleton reachable, so the autouse teardown finds and closes it.
-    lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.5)
-    lock.acquire_write(timeout=2)
+    SoftReadWriteLock(lock_file, heartbeat_interval=0.5).acquire_write(timeout=2)
     assert _state(lock_file).writer is not None
 
 
@@ -575,6 +541,11 @@ def test_close_during_acquire_leaves_no_hold(lock_file: str, mocker: MockerFixtu
     assert victim.generation is None
     assert _state(lock_file).members == frozenset()
     assert _holders(lock_file) == []
+
+
+def _holders(lock_file: str) -> list[str]:
+    holders = Path(f"{lock_file}.rw", "holders")
+    return sorted(entry.name for entry in holders.iterdir()) if holders.is_dir() else []
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
@@ -791,8 +762,7 @@ def test_dead_holder_evicted_by_contender(
         os.kill(pid, getattr(signal, "SIGKILL"))  # ruff:ignore[get-attr-with-constant] - signal.SIGKILL is POSIX-only
         holder.join(timeout=_PROCESS_DEADLINE)
         time.sleep(0.8)
-        contender = lock.read_lock if contender_mode == "read" else lock.write_lock
-        with contender(timeout=5):
+        with (lock.read_lock if contender_mode == "read" else lock.write_lock)(timeout=5):
             pass
         if contender_mode == "read":
             # A write lock's success already proves no live reader or writer remained; a read lock's does not.
@@ -861,14 +831,6 @@ def test_heartbeat_reports_a_removed_holder_record(lock_file: str) -> None:
         lock.close()
 
 
-def _wait_for_compromise(lock: SoftReadWriteLock) -> LeaseCompromise:
-    deadline = time.monotonic() + 2
-    while (compromise := lock.compromise) is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert compromise is not None
-    return compromise
-
-
 @pytest.mark.skipif(
     not (CAPABILITIES["symlink"] and CAPABILITIES["link-dir-fd"]),
     reason="a swapped tree is refused only where records are reached through descriptors",
@@ -887,6 +849,14 @@ def test_heartbeat_reports_a_symlinked_tree_as_lost(
     finally:
         lock.release(force=True)
         lock.close()
+
+
+def _wait_for_compromise(lock: SoftReadWriteLock) -> LeaseCompromise:
+    deadline = time.monotonic() + 2
+    while (compromise := lock.compromise) is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert compromise is not None
+    return compromise
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name, through junctions")
@@ -935,6 +905,21 @@ def test_release_leaves_a_peers_claim_alone(lock_file: str) -> None:
         lock.close()
 
 
+def _plant_holder(lock_file: str, *, mode: Literal["read", "write"], host: str = "terminated-pod") -> str:
+    # What a process on another host leaves behind when it dies holding the lock: its record and the snapshot naming it.
+    files = OsFiles(lock_file)
+    root = f"{lock_file}.rw"
+    files.prepare(root)
+    token = new_token()
+    record = encode_holder(token, new_token(), 0.5).replace(b"host=", f"host={host}?".encode("ascii"), 1)
+    files.create(str(Path(root, "holders", token)), record)
+    log = GenerationLog(files, lock_file, root)
+    latest = log.latest()
+    writer, readers = (token, latest.readers) if mode == "write" else (latest.writer, latest.readers | {token})
+    assert log.commit(Snapshot(generation=latest.generation + 1, writer=writer, readers=readers))
+    return token
+
+
 def test_writer_evicted_while_draining_queues_behind_its_evictor(
     lock_file: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -951,8 +936,7 @@ def test_writer_evicted_while_draining_queues_behind_its_evictor(
             raise Timeout(lock_file)
         swapped.set()
         # The peer evicts the draining writer and takes the slot; the reader leaves so only the slot blocks the writer.
-        files = OsFiles(lock_file)
-        log = GenerationLog(files, lock_file, f"{lock_file}.rw")
+        log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
         latest = log.latest()
         peer.append(_plant_holder(lock_file, mode="read"))
         latest = log.latest()
@@ -1219,10 +1203,13 @@ def test_release_never_blocks_on_an_abandoned_claim(lock_file: str) -> None:
 def test_malformed_generation_record_fails_closed(lock_file: str, lock: SoftReadWriteLock) -> None:
     with lock.write_lock(timeout=2):
         pass
-    latest = _generations(lock_file)[-1]
-    Path(f"{lock_file}.rw", "gen", f"{int(latest) + 1:020d}").write_bytes(b"garbage\n")
+    Path(f"{lock_file}.rw", "gen", f"{int(_generations(lock_file)[-1]) + 1:020d}").write_bytes(b"garbage\n")
     with pytest.raises(SoftFileLockProtocolError, match="malformed generation record"):
         lock.acquire_write(timeout=1)
+
+
+def _generations(lock_file: str) -> list[str]:
+    return sorted(entry.name for entry in Path(f"{lock_file}.rw", "gen").iterdir() if entry.name.isdigit())
 
 
 def test_removing_the_log_recovers_without_admitting_a_second_writer(lock_file: str, lock: SoftReadWriteLock) -> None:
@@ -1241,6 +1228,12 @@ def test_removing_the_log_recovers_without_admitting_a_second_writer(lock_file: 
             assert lock.generation == 3
     finally:
         peer.close()
+
+
+def _remove_log(lock_file: str) -> None:
+    # The documented recovery: a rename takes the whole log away at once, so no participant reads it half deleted.
+    Path(f"{lock_file}.rw").rename(removed := Path(f"{lock_file}.rw.removed"))
+    shutil.rmtree(removed)
 
 
 def test_a_contender_waiting_when_the_log_is_removed_starts_over(
@@ -1268,8 +1261,7 @@ def test_a_contender_waiting_when_the_log_is_removed_starts_over(
 
 def test_malformed_holder_record_is_evicted(lock_file: str) -> None:
     # A record that cannot be parsed still identifies nobody who refreshes it, so it ages out like any other.
-    token = _plant_holder(lock_file, mode="write")
-    Path(f"{lock_file}.rw", "holders", token).write_bytes(b"\x00garbage")
+    Path(f"{lock_file}.rw", "holders", _plant_holder(lock_file, mode="write")).write_bytes(b"\x00garbage")
     lock = _make_lock(lock_file, heartbeat_interval=0.1, stale_threshold=0.3)
     try:
         with lock.write_lock(timeout=5):
@@ -1812,6 +1804,11 @@ def test_soft_read_on_a_lost_hold_raises(lost_lock: SoftReadWriteLock, lost: thr
     lost_lock.release()
 
 
+def _evict_every_holder(lock_file: str) -> None:
+    log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
+    assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=None, readers=frozenset()))
+
+
 def test_soft_read_after_the_lost_hold_drains_asks_the_log(lost_lock: SoftReadWriteLock, lost: threading.Event) -> None:
     lost_lock.acquire_read(timeout=2)
     _evict_every_holder(lost_lock.lock_file)
@@ -1840,11 +1837,6 @@ def lost_lock(lock_file: str, lost: threading.Event) -> Generator[SoftReadWriteL
         instance.close()
 
 
-def _evict_every_holder(lock_file: str) -> None:
-    log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
-    assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=None, readers=frozenset()))
-
-
 def test_soft_read_release_from_a_thread_without_a_read_level_raises(
     lock: SoftReadWriteLock, other_thread: ThreadPoolExecutor
 ) -> None:
@@ -1855,6 +1847,15 @@ def test_soft_read_release_from_a_thread_without_a_read_level_raises(
 
     assert not _writer_gets_in(lock.lock_file)
     lock.release()
+
+
+def _writer_gets_in(lock_file: str) -> bool:
+    with closing(_make_lock(lock_file)) as contender:
+        try:
+            contender.acquire_write(blocking=False)
+        except Timeout:
+            return False
+    return True
 
 
 def test_soft_read_release_of_a_dropped_hold_leaves_a_newer_one_held(
@@ -1890,12 +1891,3 @@ def test_soft_read_release_gives_back_only_the_callers_levels(
 def other_thread() -> Generator[ThreadPoolExecutor]:
     with ThreadPoolExecutor(max_workers=1) as executor:
         yield executor
-
-
-def _writer_gets_in(lock_file: str) -> bool:
-    with closing(_make_lock(lock_file)) as contender:
-        try:
-            contender.acquire_write(blocking=False)
-        except Timeout:
-            return False
-    return True

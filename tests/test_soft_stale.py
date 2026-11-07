@@ -341,14 +341,6 @@ def _break_name(lock: Path, pid: int = _DEAD_PID) -> Path:  # pragma: win32 no c
     return lock.with_name(f"test.lock.break.{pid}.{'0' * 32}")
 
 
-def _break_contents(lock: Path) -> list[str]:  # pragma: win32 no cover
-    return [path.read_text(encoding="utf-8") for path in lock.parent.glob(f"{lock.name}.break.*")]
-
-
-def _live(record: str) -> str:  # pragma: win32 no cover
-    return record.replace(str(_DEAD_PID), str(os.getpid()))
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
@@ -361,6 +353,10 @@ def test_stale_break_restores_a_live_marker_a_dead_breaker_left_under_its_break_
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), list(tmp_path.glob("test.lock.break.*"))) == (_live(record), [])
+
+
+def _live(record: str) -> str:  # pragma: win32 no cover
+    return record.replace(str(_DEAD_PID), str(os.getpid()))
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -376,10 +372,6 @@ def test_stale_break_restores_a_marker_of_another_host_with_the_breakers_pid(  #
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), list(tmp_path.glob("test.lock.break.*"))) == (foreign, [])
-
-
-def _restore_name(lock: Path, pid: int | str) -> Path:  # pragma: win32 no cover
-    return lock.with_name(f"test.lock.restore.{pid}.{'0' * 32}")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -465,6 +457,10 @@ def test_stale_break_waits_when_a_peer_claimed_the_record_first(  # pragma: win3
     )
 
 
+def _restore_name(lock: Path, pid: int | str) -> Path:  # pragma: win32 no cover
+    return lock.with_name(f"test.lock.restore.{pid}.{'0' * 32}")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 def test_stale_break_waits_when_the_record_cannot_be_claimed(  # pragma: win32 no cover
@@ -478,6 +474,10 @@ def test_stale_break_waits_when_the_record_cannot_be_claimed(  # pragma: win32 n
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), _break_contents(lock)) == (record, [foreign])
+
+
+def _break_contents(lock: Path) -> list[str]:  # pragma: win32 no cover
+    return [path.read_text(encoding="utf-8") for path in lock.parent.glob(f"{lock.name}.break.*")]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -533,17 +533,6 @@ def test_stale_break_ignores_a_claim_naming_no_valid_pid(  # pragma: win32 no co
     assert planted.read_text(encoding="utf-8") == foreign
 
 
-def _refuse_returning_a_claim(mocker: MockerFixture) -> None:  # pragma: win32 no cover
-    rename: Final = Path.rename
-
-    def rename_unless_returning(path: Path, target: str | Path) -> Path:
-        if ".break." in str(target):
-            raise OSError(EACCES, "denied")
-        return rename(path, target)
-
-    mocker.patch.object(Path, "rename", new=rename_unless_returning)
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
@@ -563,6 +552,17 @@ def test_stale_break_retries_a_claim_whose_return_failed(  # pragma: win32 no co
         lock_type(lock).acquire(blocking=False)
 
     assert (len(left), lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (1, foreign, [lock])
+
+
+def _refuse_returning_a_claim(mocker: MockerFixture) -> None:  # pragma: win32 no cover
+    rename: Final = Path.rename
+
+    def rename_unless_returning(path: Path, target: str | Path) -> Path:
+        if ".break." in str(target):
+            raise OSError(EACCES, "denied")
+        return rename(path, target)
+
+    mocker.patch.object(Path, "rename", new=rename_unless_returning)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -623,14 +623,6 @@ def test_stale_break_waits_for_a_claim_another_thread_is_working(  # pragma: win
     assert (len(claims_while_working), untouched == claims_while_working) == (1, True)
 
 
-def _acquire_timing_out(  # pragma: win32 no cover
-    lock_type: type[SoftFileLock], lock: Path, outcomes: list[bool]
-) -> None:
-    with pytest.raises(Timeout):
-        lock_type(lock).acquire(blocking=False)
-    outcomes.append(True)
-
-
 def _acquire(lock_type: type[SoftFileLock], lock: Path) -> None:  # pragma: win32 no cover
     with suppress(Timeout):
         lock_type(lock).acquire(blocking=False)
@@ -675,6 +667,14 @@ def test_stale_break_claim_is_registered_before_it_is_visible(  # pragma: win32 
     )
 
 
+def _acquire_timing_out(  # pragma: win32 no cover
+    lock_type: type[SoftFileLock], lock: Path, outcomes: list[bool]
+) -> None:
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+    outcomes.append(True)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 def test_stale_break_stops_when_the_claim_is_already_registered(  # pragma: win32 no cover
@@ -684,7 +684,7 @@ def test_stale_break_stops_when_the_claim_is_already_registered(  # pragma: win3
     foreign: Final = record.replace(_HOST, "elsewhere")
     _break_name(lock).write_text(foreign, encoding="utf-8")
     mocker.patch("filelock._soft.secrets.token_hex", return_value="a" * 32)
-    registered: Final = str(lock) + f".restore.{os.getpid()}." + "a" * 32
+    registered: Final = f"{lock!s}.restore.{os.getpid()}.{'a' * 32}"
     assert _begin_claim(registered)
     try:
         with pytest.raises(Timeout):
@@ -786,21 +786,6 @@ def test_stale_break_undoes_an_exchange_that_took_a_peers_marker(  # pragma: win
     ) == (_live(record), [foreign], [])
 
 
-def _lose_to_a_live_holder(  # pragma: win32 no cover
-    lock: Path, live: str, mocker: MockerFixture, then: Callable[[str, str], bool | None]
-) -> None:
-    (holder := lock.with_name("holder")).write_text(live, encoding="utf-8")
-
-    def exchange_after_the_holder_won(aside: str, path: str) -> bool:
-        mocker.patch("filelock._soft.exchange_names", new=exchange_names)
-        holder.replace(lock)
-        exchange_names(aside, path)
-        then(aside, path)
-        return True
-
-    mocker.patch("filelock._soft.exchange_names", new=exchange_after_the_holder_won)
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
@@ -820,6 +805,21 @@ def test_stale_break_exchanges_back_after_the_breaker_that_took_its_marker(  # p
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (_live(record), [lock])
+
+
+def _lose_to_a_live_holder(  # pragma: win32 no cover
+    lock: Path, live: str, mocker: MockerFixture, then: Callable[[str, str], bool | None]
+) -> None:
+    (holder := lock.with_name("holder")).write_text(live, encoding="utf-8")
+
+    def exchange_after_the_holder_won(aside: str, path: str) -> bool:
+        mocker.patch("filelock._soft.exchange_names", new=exchange_names)
+        holder.replace(lock)
+        exchange_names(aside, path)
+        then(aside, path)
+        return True
+
+    mocker.patch("filelock._soft.exchange_names", new=exchange_after_the_holder_won)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -1339,8 +1339,7 @@ def test_short_writes_still_write_the_whole_record(lock_path: Path, mocker: Mock
 
     with SoftFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").splitlines()
-    assert lines[0] == str(os.getpid())
-    assert lines[1] == _HOST
+    assert (lines[0], lines[1]) == (str(os.getpid()), _HOST)
 
 
 def test_zero_write_rolls_back_acquire(lock_path: Path, mocker: MockerFixture) -> None:
@@ -1565,6 +1564,38 @@ def test_close_error_policy_cleans_marker(
     assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
+@contextmanager
+def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[tuple[OSError, list[int]]]:
+    real_close = os.close
+    close_error = OSError(EINTR, "close failed")
+    attempts: list[int] = []
+    # close is an attribute of the shared os module, so this patch binds for every close in the process while the
+    # window is open, including one a GC-run finalizer (a multiprocessing pipe from an earlier test, say) makes on this
+    # very thread. Fail only the descriptor this lock lets go of: it clears its bookkeeping right before the one close
+    # attempt, so record the descriptor as it does.
+    released: list[int | None] = []
+    real_mark_released = lock._mark_descriptor_released
+
+    def mark_released() -> None:
+        context: Final = lock._context
+        released.append(context.pending_lock_file_fd if context.lock_file_fd is None else context.lock_file_fd)
+        real_mark_released()
+
+    def close(fd: int) -> None:
+        real_close(fd)
+        if fd not in released:
+            return
+        attempts.append(fd)
+        raise close_error
+
+    mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_released)
+    close_mock = mocker.patch("filelock._soft.os.close", side_effect=close)
+    try:
+        yield close_error, attempts
+    finally:
+        mocker.stop(close_mock)
+
+
 @pytest.mark.parametrize(
     ("depth", "force"),
     [pytest.param(2, False, id="nested"), pytest.param(2, True, id="forced")],
@@ -1781,38 +1812,6 @@ def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: M
             lock.release()
 
     assert (len(closed), len(attempts), attempts[0] in closed) == (4, 1, False)
-
-
-@contextmanager
-def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[tuple[OSError, list[int]]]:
-    real_close = os.close
-    close_error = OSError(EINTR, "close failed")
-    attempts: list[int] = []
-    # close is an attribute of the shared os module, so this patch binds for every close in the process while the
-    # window is open, including one a GC-run finalizer (a multiprocessing pipe from an earlier test, say) makes on this
-    # very thread. Fail only the descriptor this lock lets go of: it clears its bookkeeping right before the one close
-    # attempt, so record the descriptor as it does.
-    released: list[int | None] = []
-    real_mark_released = lock._mark_descriptor_released
-
-    def mark_released() -> None:
-        context: Final = lock._context
-        released.append(context.pending_lock_file_fd if context.lock_file_fd is None else context.lock_file_fd)
-        real_mark_released()
-
-    def close(fd: int) -> None:
-        real_close(fd)
-        if fd not in released:
-            return
-        attempts.append(fd)
-        raise close_error
-
-    mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_released)
-    close_mock = mocker.patch("filelock._soft.os.close", side_effect=close)
-    try:
-        yield close_error, attempts
-    finally:
-        mocker.stop(close_mock)
 
 
 def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Path, mocker: MockerFixture) -> None:

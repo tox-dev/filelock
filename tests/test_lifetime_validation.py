@@ -67,6 +67,18 @@ def test_lifetime_rejects_invalid_value(
     assert (lock.lifetime, lock_path.exists()) == (None, False)
 
 
+def _set_lifetime(
+    lock_type: type[FileLock | AsyncFileLock],
+    entry_point: Literal["constructor", "setter"],
+    lock: FileLock | AsyncFileLock,
+    value: float,
+) -> None:
+    if entry_point == "constructor":
+        lock_type(lock.lock_file, lifetime=value)
+    else:
+        lock.lifetime = value
+
+
 @pytest.mark.parametrize(
     "lock_type",
     [pytest.param(SoftFileLock, id="sync"), pytest.param(AsyncSoftFileLock, id="async")],
@@ -118,15 +130,3 @@ def test_lifetime_singleton_rejection_preserves_instance(bad_value: float, tmp_p
         SoftFileLock(lock_path, is_singleton=True, lifetime=bad_value)
 
     assert SoftFileLock(lock_path, is_singleton=True, lifetime=10) is lock
-
-
-def _set_lifetime(
-    lock_type: type[FileLock | AsyncFileLock],
-    entry_point: Literal["constructor", "setter"],
-    lock: FileLock | AsyncFileLock,
-    value: float,
-) -> None:
-    if entry_point == "constructor":
-        lock_type(lock.lock_file, lifetime=value)
-    else:
-        lock.lifetime = value

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._util", "pathlib", "typing", "warnings"]
+__lazy_modules__ = ["contextlib", "pathlib", "typing", "warnings", f"{__spec__.parent}._util"]
 
 import os
 import sys
@@ -10,8 +10,8 @@ from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
 from typing import Final, cast
 
-from filelock._api import BaseFileLock
-from filelock._util import remove_own_file
+from ._api import BaseFileLock
+from ._util import remove_own_file
 
 has_fcntl = False
 if sys.platform == "win32":  # pragma: win32 cover
@@ -158,6 +158,20 @@ else:  # pragma: win32 no cover
                 os.close(fd)
                 raise
 
+        def _apply_explicit_mode(self, fd: int) -> None:
+            if self.has_explicit_mode:
+                with suppress(PermissionError):
+                    os.fchmod(fd, self._context.mode)
+
+        def _finalize_locked_fd(self, fd: int) -> bool:
+            # Runs with the flock held; the caller closes fd on failure. A concurrent _release() may have unlinked
+            # the file between our open() and flock(), which st_nlink 0 shows. That lock guards no name, so report
+            # it and let the retry loop start over.
+            if (stat_result := os.fstat(fd)).st_nlink == 0:
+                return False
+            self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
+            return True
+
         def _switch_to_soft_lock(self, fd: int, missing_flock: OSError, *, created: bool) -> None:
             # The filesystem does not implement flock. Fail closed when the caller opted out of existence-lock
             # semantics (#603), asked to preserve the pathname (#605), or set an on_acquired hook (#607), none of which
@@ -178,27 +192,13 @@ else:  # pragma: win32 no cover
             self._fallback_to_soft_lock()
             self._acquire()
 
-        def _finalize_locked_fd(self, fd: int) -> bool:
-            # Runs with the flock held; the caller closes fd on failure. A concurrent _release() may have unlinked
-            # the file between our open() and flock(), which st_nlink 0 shows. That lock guards no name, so report
-            # it and let the retry loop start over.
-            if (stat_result := os.fstat(fd)).st_nlink == 0:
-                return False
-            self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
-            return True
-
-        def _apply_explicit_mode(self, fd: int) -> None:
-            if self.has_explicit_mode:
-                with suppress(PermissionError):
-                    os.fchmod(fd, self._context.mode)
-
         def _fallback_to_soft_lock(self: BaseFileLock) -> None:
             # Import lazily: this runs only on the rare flock fallback, and asyncio imports _unix, so a
             # module-level import of it here would cycle.
-            from filelock._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]
+            from ._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]
 
             warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
-            from filelock.asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # ruff:ignore[import-outside-top-level]
+            from .asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # ruff:ignore[import-outside-top-level]
 
             self.__class__ = AsyncSoftFileLock if isinstance(self, BaseAsyncFileLock) else SoftFileLock
 

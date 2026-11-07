@@ -17,14 +17,6 @@ if TYPE_CHECKING:
     from typing import Final
 
 
-def _run(script: str, *, measured: bool = True) -> str:
-    # A measured child has asyncio and sqlite3 loaded by coverage before filelock, hiding what the import itself loads.
-    env = os.environ if measured else {k: v for k, v in os.environ.items() if k != "COVERAGE_PROCESS_CONFIG"}
-    return subprocess.run(
-        [sys.executable, "-c", dedent(script)], check=True, capture_output=True, text=True, env=env
-    ).stdout
-
-
 def test_lazy_import_skips_asyncio_and_sqlite3() -> None:
     # A site hook (a .pth file or sitecustomize) may load either module first; only what the import adds counts.
     script = """
@@ -35,6 +27,14 @@ def test_lazy_import_skips_asyncio_and_sqlite3() -> None:
         """
 
     assert _run(script, measured=False) == "[]\n"
+
+
+def _run(script: str, *, measured: bool = True) -> str:
+    # A measured child has asyncio and sqlite3 loaded by coverage before filelock, hiding what the import itself loads.
+    env = os.environ if measured else {k: v for k, v in os.environ.items() if k != "COVERAGE_PROCESS_CONFIG"}
+    return subprocess.run(
+        [sys.executable, "-c", dedent(script)], check=True, capture_output=True, text=True, env=env
+    ).stdout
 
 
 @pytest.mark.parametrize(
@@ -67,6 +67,19 @@ def test_lazy_import_resolves_asyncio_submodule() -> None:
     assert _run("from filelock import asyncio; print(asyncio.__name__)") == "filelock.asyncio\n"
 
 
+@pytest.mark.parametrize(
+    ("blocked", "missing", "attribute"),
+    [
+        pytest.param("sqlite3", "sqlite3", "ReadWriteLock", id="package"),
+        pytest.param("_sqlite3", "_sqlite3", "AsyncReadWriteLock", id="cpython-binding"),
+        pytest.param("_sqlite3", "_sqlite3_cffi", "ReadWriteLock", id="pypy-binding"),
+    ],
+)
+def test_lazy_import_missing_sqlite3_leaves_read_write_lock_none(blocked: str, missing: str, attribute: str) -> None:
+    # coverage loads sqlite3 before filelock, so only an unmeasured child can miss it
+    assert _run(_hidden_module_script(blocked, missing, attribute), measured=False) == "none\n"
+
+
 def _hidden_module_script(blocked: str, missing: str, attribute: str) -> str:
     # A finder only sees imports not yet cached, so a sqlite3 a site hook already loaded is evicted first.
     return f"""
@@ -86,19 +99,6 @@ def _hidden_module_script(blocked: str, missing: str, attribute: str) -> str:
         else:
             print("none" if value is None else "resolved")
         """
-
-
-@pytest.mark.parametrize(
-    ("blocked", "missing", "attribute"),
-    [
-        pytest.param("sqlite3", "sqlite3", "ReadWriteLock", id="package"),
-        pytest.param("_sqlite3", "_sqlite3", "AsyncReadWriteLock", id="cpython-binding"),
-        pytest.param("_sqlite3", "_sqlite3_cffi", "ReadWriteLock", id="pypy-binding"),
-    ],
-)
-def test_lazy_import_missing_sqlite3_leaves_read_write_lock_none(blocked: str, missing: str, attribute: str) -> None:
-    # coverage loads sqlite3 before filelock, so only an unmeasured child can miss it
-    assert _run(_hidden_module_script(blocked, missing, attribute), measured=False) == "none\n"
 
 
 @pytest.mark.parametrize(
@@ -145,7 +145,7 @@ def test_lazy_import_missing_runtime_type_does_not_raise_at_exit() -> None:  # p
     ).stderr
 
 
-_DAEMON_LOOP: Final = (
+_DAEMON_LOOP: Final[str] = (
     "loop = asyncio.new_event_loop(); threading.Thread(target=loop.run_forever, daemon=True).start()\n"
 )
 

@@ -152,8 +152,7 @@ def test_non_singleton_creates_new_instance(lock_file: str) -> None:
 
 def test_init_sets_attributes(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, timeout=5.0, blocking=False, is_singleton=False)
-    assert lock.lock_file == lock_file
-    assert lock.timeout == pytest.approx(5.0)
+    assert (lock.lock_file, lock.timeout) == (lock_file, pytest.approx(5.0))
     assert lock.blocking is False
     assert lock._lock_level == 0
     assert lock._current_mode is None
@@ -164,8 +163,7 @@ def test_init_sets_attributes(lock_file: str) -> None:
 def test_acquire_release_read(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     proxy = lock.acquire_read()
-    assert lock._lock_level == 1
-    assert lock._current_mode == "read"
+    assert (lock._lock_level, lock._current_mode) == (1, "read")
     lock.release()
     assert lock._lock_level == 0
     assert lock._current_mode is None
@@ -175,9 +173,7 @@ def test_acquire_release_read(lock_file: str) -> None:
 def test_acquire_release_write(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock.acquire_write()
-    assert lock._lock_level == 1
-    assert lock._current_mode == "write"
-    assert lock._write_thread_id == threading.get_ident()
+    assert (lock._lock_level, lock._current_mode, lock._write_thread_id) == (1, "write", threading.get_ident())
     lock.release()
     assert lock._lock_level == 0
     assert lock._current_mode is None
@@ -198,8 +194,7 @@ def test_reentrant_lock(lock_file: str, mode: Literal["read", "write"]) -> None:
     acquire()
     assert lock._lock_level == 2
     lock.release()
-    assert lock._lock_level == 1
-    assert lock._current_mode == mode
+    assert (lock._lock_level, lock._current_mode) == (1, mode)
     lock.release()
     assert lock._lock_level == 0
 
@@ -227,8 +222,7 @@ def test_release_unheld_lock_raises(lock_file: str) -> None:
 
 
 def test_release_force_unheld_is_noop(lock_file: str) -> None:
-    lock = ReadWriteLock(lock_file, is_singleton=False)
-    lock.release(force=True)
+    ReadWriteLock(lock_file, is_singleton=False).release(force=True)
 
 
 def test_release_force_resets_level(lock_file: str) -> None:
@@ -260,8 +254,7 @@ def test_release_force_closes_lingering_connection_at_zero_level(lock_file: str)
 def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     with lock.read_lock() if mode == "read" else lock.write_lock():
-        assert lock._lock_level == 1
-        assert lock._current_mode == mode
+        assert (lock._lock_level, lock._current_mode) == (1, mode)
     assert lock._lock_level == 0
     assert lock._current_mode is None
 
@@ -610,6 +603,12 @@ def test_double_check_read_reentrance(lock_file: str, mocker: MockerFixture) -> 
     lock.release(force=True)
 
 
+def _fake_open_transaction(lock: ReadWriteLock, mocker: MockerFixture) -> None:
+    # A level stands only while its transaction does, so a faked level needs a transaction behind it too.
+    lock._con = mocker.MagicMock(in_transaction=True)
+    lock._connection_transaction_released = False
+
+
 def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     real_lock = lock._transaction_lock
@@ -667,12 +666,6 @@ def test_double_check_wrong_mode_raises(
     lock._lock_level = 0
     lock._current_mode = None
     lock._con, lock._connection_transaction_released = None, True
-
-
-def _fake_open_transaction(lock: ReadWriteLock, mocker: MockerFixture) -> None:
-    # A level stands only while its transaction does, so a faked level needs a transaction behind it too.
-    lock._con = mocker.MagicMock(in_transaction=True)
-    lock._connection_transaction_released = False
 
 
 def test_write_lock_context_manager_overrides_defaults(lock_file: str) -> None:

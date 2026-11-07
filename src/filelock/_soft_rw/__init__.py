@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["filelock._soft_rw._async"]
+__lazy_modules__ = [f"{__spec__.parent}._async", f"{__spec__.parent}._sync"]
 
-from filelock._soft_rw._async import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock
-from filelock._soft_rw._sync import SoftReadWriteLock
+from ._async import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock
+from ._sync import SoftReadWriteLock
 
 __all__ = [
     "AsyncAcquireSoftReadWriteReturnProxy",

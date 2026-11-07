@@ -40,8 +40,7 @@ _BOOTTIME_UNSHIFTED: Final[str] = "monotonic           0         0\nboottime    
 
 @pytest.fixture
 def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:  # pragma: linux cover
-    """Re-import the identity module as a process that cannot read the boot id, as under systemd's ProcSubset=pid."""
-
+    # Re-import the identity module as a process that cannot read the boot id, as under systemd's ProcSubset=pid.
     def hide() -> None:
         # The boot id is the only text file the module reads at import.
         hidden: Final = mocker.patch.object(
@@ -64,8 +63,8 @@ def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:  # prag
         pytest.param("who?", "who?3f", id="escape-character"),
         pytest.param("b\udcffd", "b?ffd", id="undecodable-byte"),
         pytest.param("x" * 253, "x" * 253, id="at-limit"),
-        pytest.param("x" * 300, "x" * 244 + "-04c26261", id="over-long"),
-        pytest.param("ä" * 200, "?c3?a4" * 40 + "?c3?-de6b44df", id="over-long-escaped"),
+        pytest.param("x" * 300, f"{'x' * 244}-04c26261", id="over-long"),
+        pytest.param("ä" * 200, f"{'?c3?a4' * 40}?c3?-de6b44df", id="over-long-escaped"),
         pytest.param("", "?", id="empty"),
     ],
 )
@@ -77,7 +76,7 @@ def test_host_name_escapes_out_of_grammar_bytes(raw: str, expected: str, mocker:
 
 def test_host_name_keeps_over_long_names_apart_past_the_limit(mocker: MockerFixture) -> None:
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
-    mocker.patch("filelock._identity.socket.gethostname", side_effect=["a" * 253 + "-alpha", "a" * 253 + "-bravo"])
+    mocker.patch("filelock._identity.socket.gethostname", side_effect=[f"{'a' * 253}-alpha", f"{'a' * 253}-bravo"])
     alpha, bravo = host_name(), host_name()
 
     assert (alpha != bravo, len(alpha), len(bravo)) == (True, 253, 253)

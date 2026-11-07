@@ -68,4 +68,7 @@ if _REGISTER_AT_FORK is not None and CAPABILITIES["coverage"]:  # pragma: win32 
     _REGISTER_AT_FORK(after_in_child=_restart_coverage_after_fork)
 
 
-__all__ = ["exit_child", "fork_process"]
+__all__ = [
+    "exit_child",
+    "fork_process",
+]

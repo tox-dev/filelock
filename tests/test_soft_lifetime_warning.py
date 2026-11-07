@@ -80,8 +80,7 @@ def test_soft_lifetime_none_does_not_warn(
         if entry_point == "constructor":
             lock_type(tmp_path / "test.lock", lifetime=None)
         else:
-            lock = lock_type(tmp_path / "test.lock")
-            lock.lifetime = None
+            lock_type(tmp_path / "test.lock").lifetime = None
 
     assert caught == []
 
@@ -103,6 +102,17 @@ def test_invalid_soft_lifetime_does_not_warn(
             _set_invalid_lifetime(lock_type, entry_point, tmp_path / "test.lock")
 
     assert caught == []
+
+
+def _set_invalid_lifetime(
+    lock_type: type[SoftFileLock | AsyncSoftFileLock],
+    entry_point: Literal["constructor", "setter"],
+    lock_path: Path,
+) -> None:
+    if entry_point == "constructor":
+        lock_type(lock_path, lifetime=-1)
+    else:
+        lock_type(lock_path).lifetime = -1
 
 
 @pytest.mark.parametrize(
@@ -236,15 +246,3 @@ def test_soft_lifetime_warning_shows_under_default_filters(tmp_path: Path) -> No
     )
 
     assert "SoftFileLockLifetimeWarning" in result.stderr
-
-
-def _set_invalid_lifetime(
-    lock_type: type[SoftFileLock | AsyncSoftFileLock],
-    entry_point: Literal["constructor", "setter"],
-    lock_path: Path,
-) -> None:
-    if entry_point == "constructor":
-        lock_type(lock_path, lifetime=-1)
-    else:
-        lock = lock_type(lock_path)
-        lock.lifetime = -1

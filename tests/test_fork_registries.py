@@ -44,8 +44,7 @@ def test_equal_unhashable_locks_reset_independently(tmp_path: Path) -> None:  # 
         state = first.is_locked, first.lock_counter, second.is_locked, second.lock_counter
         exit_child(0 if state == (False, 0, False, 0) else 1)
 
-    child_pid = fork_process(reset_child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(reset_child), 0)
     first.release()
     second.release()
 
@@ -66,8 +65,7 @@ def test_soft_read_write_subclass_singleton_is_fresh_after_fork(tmp_path: Path) 
         exit_child(0 if fresh else 1)
 
     try:
-        child_pid = fork_process(reset_child)
-        _, status = os.waitpid(child_pid, 0)
+        _, status = os.waitpid(fork_process(reset_child), 0)
         assert os.waitstatus_to_exitcode(status) == 0
         assert CustomLock(parent_lock.lock_file) is parent_lock
     finally:
@@ -117,8 +115,7 @@ def test_soft_read_write_subclass_construction_state_is_reset_after_fork(tmp_pat
             pending = pool.submit(CustomLock, path)
             try:
                 assert entered.wait(timeout=5)
-                child_pid = fork_process(reset_child)
-                _, status = os.waitpid(child_pid, 0)
+                _, status = os.waitpid(fork_process(reset_child), 0)
                 assert os.waitstatus_to_exitcode(status) == 0
             finally:
                 release.set()
@@ -134,6 +131,7 @@ def test_soft_read_write_subclass_construction_state_is_reset_after_fork(tmp_pat
 def test_equal_unhashable_soft_read_write_locks_survive_atexit_registry(
     tmp_path: Path,
 ) -> None:  # pragma: needs hard-link
+    paths = [tmp_path / "first.lock", tmp_path / "second.lock"]
     script = """
 from __future__ import annotations
 
@@ -150,7 +148,6 @@ locks = [EqualLock(path, is_singleton=False, heartbeat_interval=1, stale_thresho
 for lock in locks:
     lock.acquire_write()
 """
-    paths = [tmp_path / "first.lock", tmp_path / "second.lock"]
     result = subprocess.run(
         [sys.executable, "-c", script, *(str(path) for path in paths)],
         check=False,

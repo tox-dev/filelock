@@ -6,7 +6,12 @@ from typing import Final
 
 
 class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # public exception name; renaming breaks the API
-    """Raised when the lock could not be acquired in *timeout* seconds."""
+    """
+    Raised when the lock could not be acquired in *timeout* seconds.
+
+    :param lock_file:
+    :param holder:
+    """
 
     def __init__(self, lock_file: str, holder: str | None = None) -> None:
         super().__init__()
@@ -47,7 +52,13 @@ class LeaseSettingsMismatch(ValueError):  # ruff:ignore[error-suffix-on-exceptio
 
 
 class SoftFileLockProtocolError(OSError):
-    """Raised when strict soft-lock state cannot be interpreted without risking overlap."""
+    """
+    Raised when strict soft-lock state cannot be interpreted without risking overlap.
+
+    :param lock_file:
+    :param claim_name:
+    :param reason:
+    """
 
     def __init__(self, lock_file: str, claim_name: str | None, reason: str) -> None:
         self._lock_file = lock_file
@@ -55,16 +66,16 @@ class SoftFileLockProtocolError(OSError):
         self._reason = reason
         super().__init__(self.__str__())
 
+    def __str__(self) -> str:
+        location = self._lock_file if self._claim_name is None else f"{self._lock_file}: claim {self._claim_name!r}"
+        return f"Invalid strict soft-lock state at {location}: {self._reason}"
+
     def __reduce__(
         self,
     ) -> tuple[
         type[SoftFileLockProtocolError], tuple[str, str | None, str], dict[str, object]
     ]:  # pragma: needs hard-link
         return self.__class__, (self._lock_file, self._claim_name, self._reason), self.__dict__
-
-    def __str__(self) -> str:
-        location = self._lock_file if self._claim_name is None else f"{self._lock_file}: claim {self._claim_name!r}"
-        return f"Invalid strict soft-lock state at {location}: {self._reason}"
 
     @property
     def lock_file(self) -> str:  # pragma: needs hard-link

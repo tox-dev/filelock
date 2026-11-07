@@ -123,8 +123,7 @@ def test_record_with_an_unknown_mode_names_its_owner(tmp_path: Path, published: 
 
 
 def test_held_lease_records_the_process_start_token(tmp_path: Path) -> None:
-    marker = tmp_path / "a.lock"
-    with SoftFileLease(str(marker), lease_duration=5) as lease:
+    with SoftFileLease(str(tmp_path / "a.lock"), lease_duration=5) as lease:
         assert lease.owner is not None
         assert lease.owner.start == process_start_token(os.getpid())
 
@@ -250,7 +249,7 @@ def test_marker_lock_excludes_contenders(marker: Path, contender_type: type[Mark
 def test_marker_lock_preserves_live_records(marker: Path, mode: str) -> None:
     with MarkerSoftFileLock(marker):
         record: Final[str] = marker.read_text(encoding="utf-8").replace("mode=exclusive", f"mode={mode}")
-    marker.write_text(record + "token=t\nduration=1\n", encoding="utf-8")
+    marker.write_text(f"{record}token=t\nduration=1\n", encoding="utf-8")
     os.utime(marker, (0, 0))
     with pytest.raises(Timeout):
         MarkerSoftFileLock(marker, timeout=0.1).acquire()

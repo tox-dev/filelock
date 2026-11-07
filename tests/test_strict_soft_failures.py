@@ -170,6 +170,12 @@ def test_strict_soft_held_collision_does_not_delete_foreign_claim(tmp_path: Path
     assert ([(claim.state, claim.start) for claim in lock.claims], lock.is_locked) == ([("held", 4242)], False)
 
 
+def _write_foreign_claim(claims: Path, token: str, state: str = "held") -> Path:
+    claim = claims / f"{state}-v1-{token}.claim"
+    claim.write_bytes(b"filelock-strict-v1\n" + token.encode() + f"\n{os.getpid()}\n686f7374\n4242\n".encode())
+    return claim
+
+
 @pytest.mark.parametrize("state", ["intent", "held"])
 def test_strict_soft_lost_link_reply_counts_as_committed(lock_path: Path, mocker: MockerFixture, state: str) -> None:
     real_link = os.link
@@ -633,8 +639,7 @@ def test_strict_soft_failed_clock_probe_does_not_fail_the_scan(
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
 def test_strict_soft_release_error_keeps_remaining_claim(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "resource.lock"
-    lock = StrictSoftFileLock(lock_path)
+    lock = StrictSoftFileLock(tmp_path / "resource.lock")
     lock.acquire()
     claim_name = lock.claims[0].name
     real_unlink = Path.unlink
@@ -675,8 +680,7 @@ def test_strict_soft_release_commits_before_directory_close_error(tmp_path: Path
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
 def test_strict_soft_release_preserves_unlink_and_directory_close_errors(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "resource.lock"
-    lock = StrictSoftFileLock(lock_path)
+    lock = StrictSoftFileLock(tmp_path / "resource.lock")
     lock.acquire()
     real_close = os.close
     real_fstat = os.fstat
@@ -949,6 +953,15 @@ def test_strict_soft_unreadable_lock_path_blocks(tmp_path: Path, mocker: MockerF
     assert lock.lock_path_occupant == "a file it cannot read (sharing violation)"
 
 
+def _route_claim_opens_through_os_open(mocker: MockerFixture) -> None:
+    # Windows opens a claim through NtCreateFile so its owner can still unlink it, which an os.open fault would miss.
+    if sys.platform == "win32":  # pragma: win32 cover
+        mocker.patch(
+            "filelock._strict._open_deletable_for_reading",
+            side_effect=lambda path: os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)),
+        )
+
+
 def test_strict_soft_exited_soft_lock_owner_raises_without_waiting(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     pid = subprocess.run(
@@ -1209,20 +1222,22 @@ def test_strict_soft_claim_replaced_while_opening_fails_closed(
         StrictSoftFileLock(lock_path).acquire()
 
 
-def _route_claim_opens_through_os_open(mocker: MockerFixture) -> None:
-    # Windows opens a claim through NtCreateFile so its owner can still unlink it, which an os.open fault would miss.
-    if sys.platform == "win32":  # pragma: win32 cover
-        mocker.patch(
-            "filelock._strict._open_deletable_for_reading",
-            side_effect=lambda path: os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)),
-        )
-
-
 def _write_held_claim(claims: Path) -> Path:
     claims.mkdir(parents=True)
     claim = claims / f"held-v1-{'0' * 32}.claim"
     claim.write_bytes(b"filelock-strict-v1\n" + b"0" * 32 + b"\n1\n686f7374\n\n")
     return claim
+
+
+def test_strict_soft_stale_claim_read_is_skipped(tmp_path: Path, mocker: MockerFixture) -> None:
+    # An NFS peer that unlinks its own claim leaves this client's cached filehandle stale, so the open returns ESTALE
+    # rather than ENOENT. A stale handle that outlives revalidation is a vanished claim, not an unreadable one.
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    mocker.patch("filelock._strict._CLAIM_READ_GRACE", 0.02)
+    _open_raising_for(claim, OSError(ESTALE, "Stale file handle"), mocker)
+
+    assert StrictSoftFileLock(lock_path).claims == ()
 
 
 def _open_raising_for(claim: Path, error: OSError, mocker: MockerFixture) -> MagicMock:
@@ -1236,17 +1251,6 @@ def _open_raising_for(claim: Path, error: OSError, mocker: MockerFixture) -> Mag
 
     _route_claim_opens_through_os_open(mocker)
     return mocker.patch("filelock._strict.os.open", side_effect=failing_open)
-
-
-def test_strict_soft_stale_claim_read_is_skipped(tmp_path: Path, mocker: MockerFixture) -> None:
-    # An NFS peer that unlinks its own claim leaves this client's cached filehandle stale, so the open returns ESTALE
-    # rather than ENOENT. A stale handle that outlives revalidation is a vanished claim, not an unreadable one.
-    lock_path = tmp_path / "resource.lock"
-    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
-    mocker.patch("filelock._strict._CLAIM_READ_GRACE", 0.02)
-    _open_raising_for(claim, OSError(ESTALE, "Stale file handle"), mocker)
-
-    assert StrictSoftFileLock(lock_path).claims == ()
 
 
 def test_strict_soft_stale_cached_claim_is_skipped(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -1346,8 +1350,7 @@ def test_strict_soft_stale_claim_read_revalidates_to_gone(tmp_path: Path, mocker
 
 def test_strict_soft_io_error_claim_read_fails_closed(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
-    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
-    _open_raising_for(claim, OSError(EIO, "I/O error"), mocker)
+    _open_raising_for(_write_held_claim(Path(f"{lock_path}.filelock") / "claims"), OSError(EIO, "I/O error"), mocker)
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
         _ = StrictSoftFileLock(lock_path).claims
@@ -1597,8 +1600,7 @@ def test_strict_soft_publication_directory_close_failure(
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
 def test_strict_soft_force_break_directory_close_failure(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "resource.lock"
-    lock = StrictSoftFileLock(lock_path)
+    lock = StrictSoftFileLock(tmp_path / "resource.lock")
     lock.acquire()
     claim_name = lock.claims[0].name
     _fail_directory_close_after(mocker, "unlink", claim_name, "force break directory close failed")
@@ -1610,8 +1612,7 @@ def test_strict_soft_force_break_directory_close_failure(tmp_path: Path, mocker:
 
 
 def test_strict_soft_release_sentinel_close_failure(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "resource.lock"
-    lock = StrictSoftFileLock(lock_path)
+    lock = StrictSoftFileLock(tmp_path / "resource.lock")
     lock.acquire()
     sentinel_fd = lock._context.lock_file_fd
     real_close = os.close
@@ -1785,8 +1786,7 @@ def test_strict_soft_record_finalization_close_and_unlink_failures_group(tmp_pat
 
 
 def test_strict_soft_release_claim_unlink_failures_group(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "resource.lock"
-    lock = StrictSoftFileLock(lock_path)
+    lock = StrictSoftFileLock(tmp_path / "resource.lock")
     lock.acquire()
     unlink_mock = mocker.patch(
         "filelock._strict._unlink_in_directory",
@@ -2357,8 +2357,7 @@ def test_strict_soft_opened_record_non_regular_fails_closed(tmp_path: Path, mock
     real_fstat = os.fstat
 
     def non_regular_fstat(fd: int) -> os.stat_result:
-        original = real_fstat(fd)
-        return os.stat_result((stat.S_IFIFO | 0o644, *original[1:]))
+        return os.stat_result((stat.S_IFIFO | 0o644, *real_fstat(fd)[1:]))
 
     mocker.patch("filelock._strict.os.fstat", side_effect=non_regular_fstat)
 
@@ -2385,12 +2384,6 @@ def test_strict_soft_release_rides_out_a_transient_unlink_denial(lock_path: Path
     lock.release()
 
     assert (len(denied), sleep.call_args_list, lock.claims) == (1, [mocker.call(0.001)], ())
-
-
-def _write_foreign_claim(claims: Path, token: str, state: str = "held") -> Path:
-    claim = claims / f"{state}-v1-{token}.claim"
-    claim.write_bytes(b"filelock-strict-v1\n" + token.encode() + f"\n{os.getpid()}\n686f7374\n4242\n".encode())
-    return claim
 
 
 def _patch_strict_clock(

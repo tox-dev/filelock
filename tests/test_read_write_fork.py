@@ -249,302 +249,6 @@ def test_async_read_write_lock_allows_finalizer_reentry(tmp_path: Path) -> None:
     assert result == (0, "", "")
 
 
-def test_read_write_lock_subclass_has_independent_singletons(tmp_path: Path) -> None:
-    class DerivedReadWriteLock(ReadWriteLock):
-        pass
-
-    lock_path = tmp_path / "subclass.db"
-    base_lock = ReadWriteLock(lock_path)
-    derived_lock = DerivedReadWriteLock(lock_path)
-
-    assert (derived_lock is DerivedReadWriteLock(lock_path), derived_lock is not base_lock) == (True, True)
-
-
-@pytest.mark.parametrize(
-    "audit_event",
-    [
-        pytest.param("sqlite3.connect", marks=NEEDS_AUDIT_EVENTS, id="sqlite-connect"),
-        pytest.param(
-            "ctypes.dlsym",
-            marks=pytest.mark.skipif(
-                sys.implementation.name != "cpython" or sys.version_info >= (3, 12) or sys.platform == "win32",
-                reason="connection escrow uses this audit event only on POSIX CPython before 3.12",
-            ),
-            id="ctypes-dlsym",
-        ),
-    ],
-)
-def test_read_write_lock_rejects_recursive_singleton_construction(tmp_path: Path, audit_event: str) -> None:
-    result = subprocess.run(  # executes this test's fixed interpreter and source
-        [sys.executable, "-c", _recursive_construction_script(), str(tmp_path / "construction.db"), audit_event],
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=10,
-    )
-
-    assert (result.returncode, result.stderr) == (0, "")
-
-
-@pytest.mark.skipif(
-    sys.implementation.name != "cpython" or sys.version_info >= (3, 12),
-    reason="connection escrow uses CPython reference functions before 3.12",
-)
-def test_read_write_lock_escrow_ignores_shared_ctypes_signatures(tmp_path: Path) -> None:  # pragma: <3.12 cover
-    result = subprocess.run(  # executes this test's fixed interpreter and source
-        [sys.executable, "-c", _ctypes_signature_script(), str(tmp_path / "ctypes.db")],
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=10,
-    )
-
-    assert (result.returncode, result.stderr) == (0, "")
-
-
-@pytest.mark.parametrize(
-    "operation",
-    [
-        pytest.param("acquire", id="acquire"),
-        pytest.param("release", id="release"),
-        pytest.param("close", id="close"),
-    ],
-)
-@NEEDS_AUDIT_EVENTS
-def test_read_write_lock_rejects_same_thread_operation_during_acquisition(
-    tmp_path: Path, operation: Literal["acquire", "release", "close"]
-) -> None:
-    result = subprocess.run(  # executes this test's fixed interpreter and source
-        [sys.executable, "-c", _recursive_acquisition_script(), str(tmp_path / "acquisition.db"), operation],
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=10,
-    )
-
-    assert (result.returncode, result.stderr) == (0, "")
-
-
-@pytest.mark.parametrize(
-    "operation",
-    [
-        pytest.param("release", id="release"),
-        pytest.param("close", id="close"),
-    ],
-)
-@NEEDS_AUDIT_EVENTS
-def test_read_write_lock_serializes_other_thread_operation_during_acquisition(
-    tmp_path: Path, operation: Literal["release", "close"]
-) -> None:
-    result = subprocess.run(  # executes this test's fixed interpreter and source
-        [sys.executable, "-c", _concurrent_operation_script(), str(tmp_path / "concurrent.db"), operation],
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=10,
-    )
-
-    assert (result.returncode, result.stderr) == (0, "")
-
-
-@NEEDS_FORK  # pragma: needs fork
-@pytest.mark.parametrize(
-    ("mode", "fork_name", "reject_audit_hook"),
-    [
-        pytest.param("read", "fork", False, id="read-fork"),
-        pytest.param("write", "fork", False, id="write-fork"),
-        pytest.param("write", "fork", True, id="write-fork-rejected-audit-hook"),
-        pytest.param(
-            "read",
-            "fork1",
-            False,
-            marks=NEEDS_FORK1,
-            id="read-fork1",
-        ),
-        pytest.param(
-            "write",
-            "fork1",
-            False,
-            marks=NEEDS_FORK1,
-            id="write-fork1",
-        ),
-    ],
-)
-def test_read_write_lock_survives_normal_fork_child_exit(
-    tmp_path: Path,
-    mode: Literal["read", "write"],
-    fork_name: Literal["fork", "fork1"],
-    reject_audit_hook: bool,
-) -> None:
-    result = _run_fork_script(
-        _fork_script(),
-        [
-            str(tmp_path / "fork.db"),
-            mode,
-            fork_name,
-            "reject" if reject_audit_hook else "allow",
-        ],
-        timeout=15,
-    )
-
-    assert result == (0, "", "")
-
-
-@NEEDS_FORK  # pragma: needs fork
-def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None:
-    result = _run_fork_script(_fork_during_sqlite_script(), [str(tmp_path / "fork-gate.db")], timeout=15)
-
-    assert result == (0, "", "")
-
-
-@NEEDS_FORK  # pragma: needs fork
-def test_read_write_lock_fork_beside_a_waiting_acquire_returns(tmp_path: Path) -> None:
-    result = _run_fork_script(_fork_beside_waiter_script(), [str(tmp_path / "fork-waiter.db")], timeout=15)
-
-    assert result == (0, "", "")
-
-
-@pytest.mark.skipif(
-    sys.implementation.name != "cpython" or not hasattr(os, "fork"),
-    reason="requires CPython profile events and os.fork",
-)
-@pytest.mark.parametrize(
-    "boundary",
-    [
-        pytest.param("executescript", id="execute"),
-        pytest.param("rollback", id="rollback"),
-        pytest.param("close", id="close"),
-        pytest.param("connection-return", id="connection-return"),
-    ],
-)
-def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: needs fork
-    tmp_path: Path, boundary: Literal["executescript", "rollback", "close", "connection-return"]
-) -> None:
-    result = _run_fork_script(
-        _fork_at_sqlite_boundary_script(),
-        [str(tmp_path / "fork-boundary.db"), boundary],
-        timeout=10,
-    )
-
-    assert result == (0, "", "")
-
-
-@NEEDS_FORK  # pragma: needs fork
-def test_read_write_lock_idle_fork_handles_fresh_child_lock(tmp_path: Path) -> None:
-    result = _run_fork_script(_idle_fork_script(), [str(tmp_path / "idle-fork.db")], timeout=10)
-
-    assert result == (0, "", "")
-
-
-@pytest.mark.skipif(sys.implementation.name != "pypy" or not hasattr(os, "fork"), reason="requires fork on PyPy")
-def test_read_write_lock_pypy_child_allows_without_known_sqlite_use(tmp_path: Path) -> None:  # pragma: pypy cover
-    result = _run_fork_script(
-        _pypy_fork_script(),
-        [str(tmp_path / "child.db")],
-        timeout=10,
-    )
-
-    assert result == (0, "", "")
-
-
-@pytest.mark.skipif(sys.implementation.name != "pypy" or not hasattr(os, "fork"), reason="requires fork on PyPy")
-def test_read_write_lock_pypy_child_rejects_after_external_sqlite_use(tmp_path: Path) -> None:  # pragma: pypy cover
-    result = _run_fork_script(
-        _pypy_external_sqlite_script(),
-        [str(tmp_path / "external.db"), str(tmp_path / "child.db")],
-        timeout=10,
-    )
-
-    assert result == (0, "", "")
-
-
-def test_fork_script_terminates_timed_out_process_group() -> None:
-    with pytest.raises(AssertionError, match="fork script exceeded"):
-        _run_fork_script("import time; time.sleep(10)", [], timeout=0.01)
-
-
-@NEEDS_FORK  # pragma: needs fork
-def test_read_write_lock_subclass_cache_resets_after_fork(tmp_path: Path) -> None:
-    result = _run_fork_script(_subclass_fork_script(), [str(tmp_path / "subclass-fork.db")], timeout=10)
-
-    assert result == (0, "", "")
-
-
-@NEEDS_FORK  # pragma: needs fork
-@pytest.mark.parametrize("held", [pytest.param(False, id="idle"), pytest.param(True, id="held")])
-def test_async_read_write_lock_fork_behavior(tmp_path: Path, held: bool) -> None:
-    result = _run_fork_script(
-        _async_fork_script(),
-        [str(tmp_path / "async-fork.db"), "held" if held else "idle"],
-        timeout=15,
-    )
-
-    assert result == (0, "", "")
-
-
-def _run_fork_script(script: str, arguments: list[str], *, timeout: float) -> tuple[int, str, str]:
-    process = subprocess.Popen(  # executes this test's fixed interpreter and source
-        [sys.executable, "-c", script, *arguments],
-        start_new_session=True,
-        stderr=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        process_output, process_error = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        with contextlib.suppress(ProcessLookupError):
-            if sys.platform == "win32":  # pragma: win32 cover
-                process.kill()
-            else:  # pragma: win32 no cover
-                os.killpg(process.pid, signal.SIGKILL)
-        process_output, process_error = process.communicate()
-        msg = f"fork script exceeded {timeout} seconds: stdout={process_output!r}, stderr={process_error!r}"
-        raise AssertionError(msg) from error
-    assert process.returncode is not None  # pragma: needs fork
-    return process.returncode, process_output, process_error  # pragma: needs fork
-
-
-def _dropped_instances_script() -> str:  # pragma: needs fd-directory
-    return textwrap.dedent(
-        """
-        from __future__ import annotations
-
-        import gc
-        import sys
-        from pathlib import Path
-
-        from filelock import ReadWriteLock
-
-        root = Path(sys.argv[1])
-        descriptor_path = Path("/dev/fd") if Path("/dev/fd").is_dir() else Path("/proc/self/fd")
-        gc.collect()
-        initial_count = sum(1 for _ in descriptor_path.iterdir())
-        for index in range(100):
-            lock = ReadWriteLock(root / f"dropped-{index}.db", is_singleton=False)
-            lock.acquire_write()
-            del lock
-        gc.collect()
-
-        assert sum(1 for _ in descriptor_path.iterdir()) == initial_count
-        with ReadWriteLock(root / "dropped-0.db", is_singleton=False).read_lock():
-            pass
-        """
-    )
-
-
-_TRY_WRITE_SCRIPT: Final = textwrap.dedent(
-    """
-    import sys
-    from filelock import ReadWriteLock, Timeout
-    try:
-        ReadWriteLock(sys.argv[1], is_singleton=False).acquire_write(timeout=0)
-    except Timeout:
-        print("Timeout")
-    """
-)
-
-
 def _reentrant_finalizer_script() -> str:  # pragma: needs fork
     return textwrap.dedent(
         """
@@ -591,6 +295,43 @@ def _reentrant_finalizer_script() -> str:  # pragma: needs fork
     )
 
 
+def test_read_write_lock_subclass_has_independent_singletons(tmp_path: Path) -> None:
+    class DerivedReadWriteLock(ReadWriteLock):
+        pass
+
+    lock_path = tmp_path / "subclass.db"
+    base_lock = ReadWriteLock(lock_path)
+    derived_lock = DerivedReadWriteLock(lock_path)
+
+    assert (derived_lock is DerivedReadWriteLock(lock_path), derived_lock is not base_lock) == (True, True)
+
+
+@pytest.mark.parametrize(
+    "audit_event",
+    [
+        pytest.param("sqlite3.connect", marks=NEEDS_AUDIT_EVENTS, id="sqlite-connect"),
+        pytest.param(
+            "ctypes.dlsym",
+            marks=pytest.mark.skipif(
+                sys.implementation.name != "cpython" or sys.version_info >= (3, 12) or sys.platform == "win32",
+                reason="connection escrow uses this audit event only on POSIX CPython before 3.12",
+            ),
+            id="ctypes-dlsym",
+        ),
+    ],
+)
+def test_read_write_lock_rejects_recursive_singleton_construction(tmp_path: Path, audit_event: str) -> None:
+    result = subprocess.run(  # executes this test's fixed interpreter and source
+        [sys.executable, "-c", _recursive_construction_script(), str(tmp_path / "construction.db"), audit_event],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+
+    assert (result.returncode, result.stderr) == (0, "")
+
+
 def _recursive_construction_script() -> str:
     return textwrap.dedent(
         """
@@ -625,6 +366,66 @@ def _recursive_construction_script() -> str:
             pass
         """
     )
+
+
+@pytest.mark.skipif(
+    sys.implementation.name != "cpython" or sys.version_info >= (3, 12),
+    reason="connection escrow uses CPython reference functions before 3.12",
+)
+def test_read_write_lock_escrow_ignores_shared_ctypes_signatures(tmp_path: Path) -> None:  # pragma: <3.12 cover
+    result = subprocess.run(  # executes this test's fixed interpreter and source
+        [sys.executable, "-c", _ctypes_signature_script(), str(tmp_path / "ctypes.db")],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+
+    assert (result.returncode, result.stderr) == (0, "")
+
+
+def _ctypes_signature_script() -> str:  # pragma: <3.12 cover
+    return textwrap.dedent(
+        """
+        from __future__ import annotations
+
+        import ctypes
+        import sys
+
+        ctypes.pythonapi.Py_IncRef.argtypes = (ctypes.c_void_p,)
+        from filelock import ReadWriteLock
+
+        lock = ReadWriteLock(sys.argv[1], is_singleton=False)
+        lock.acquire_read()
+        ctypes.pythonapi.Py_DecRef.argtypes = (ctypes.c_void_p,)
+        lock.release()
+        with ReadWriteLock(sys.argv[1], is_singleton=False).write_lock():
+            pass
+        """
+    )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        pytest.param("acquire", id="acquire"),
+        pytest.param("release", id="release"),
+        pytest.param("close", id="close"),
+    ],
+)
+@NEEDS_AUDIT_EVENTS
+def test_read_write_lock_rejects_same_thread_operation_during_acquisition(
+    tmp_path: Path, operation: Literal["acquire", "release", "close"]
+) -> None:
+    result = subprocess.run(  # executes this test's fixed interpreter and source
+        [sys.executable, "-c", _recursive_acquisition_script(), str(tmp_path / "acquisition.db"), operation],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+
+    assert (result.returncode, result.stderr) == (0, "")
 
 
 def _recursive_acquisition_script() -> str:
@@ -671,25 +472,26 @@ def _recursive_acquisition_script() -> str:
     )
 
 
-def _ctypes_signature_script() -> str:  # pragma: <3.12 cover
-    return textwrap.dedent(
-        """
-        from __future__ import annotations
-
-        import ctypes
-        import sys
-
-        ctypes.pythonapi.Py_IncRef.argtypes = (ctypes.c_void_p,)
-        from filelock import ReadWriteLock
-
-        lock = ReadWriteLock(sys.argv[1], is_singleton=False)
-        lock.acquire_read()
-        ctypes.pythonapi.Py_DecRef.argtypes = (ctypes.c_void_p,)
-        lock.release()
-        with ReadWriteLock(sys.argv[1], is_singleton=False).write_lock():
-            pass
-        """
+@pytest.mark.parametrize(
+    "operation",
+    [
+        pytest.param("release", id="release"),
+        pytest.param("close", id="close"),
+    ],
+)
+@NEEDS_AUDIT_EVENTS
+def test_read_write_lock_serializes_other_thread_operation_during_acquisition(
+    tmp_path: Path, operation: Literal["release", "close"]
+) -> None:
+    result = subprocess.run(  # executes this test's fixed interpreter and source
+        [sys.executable, "-c", _concurrent_operation_script(), str(tmp_path / "concurrent.db"), operation],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
     )
+
+    assert (result.returncode, result.stderr) == (0, "")
 
 
 def _concurrent_operation_script() -> str:
@@ -764,6 +566,49 @@ def _concurrent_operation_script() -> str:
                 raise AssertionError("concurrent acquisition reopened a closed lock")
         """
     )
+
+
+@NEEDS_FORK  # pragma: needs fork
+@pytest.mark.parametrize(
+    ("mode", "fork_name", "reject_audit_hook"),
+    [
+        pytest.param("read", "fork", False, id="read-fork"),
+        pytest.param("write", "fork", False, id="write-fork"),
+        pytest.param("write", "fork", True, id="write-fork-rejected-audit-hook"),
+        pytest.param(
+            "read",
+            "fork1",
+            False,
+            marks=NEEDS_FORK1,
+            id="read-fork1",
+        ),
+        pytest.param(
+            "write",
+            "fork1",
+            False,
+            marks=NEEDS_FORK1,
+            id="write-fork1",
+        ),
+    ],
+)
+def test_read_write_lock_survives_normal_fork_child_exit(
+    tmp_path: Path,
+    mode: Literal["read", "write"],
+    fork_name: Literal["fork", "fork1"],
+    reject_audit_hook: bool,
+) -> None:
+    result = _run_fork_script(
+        _fork_script(),
+        [
+            str(tmp_path / "fork.db"),
+            mode,
+            fork_name,
+            "reject" if reject_audit_hook else "allow",
+        ],
+        timeout=15,
+    )
+
+    assert result == (0, "", "")
 
 
 def _fork_script() -> str:
@@ -864,45 +709,11 @@ def _fork_script() -> str:
     )
 
 
-def _fork_beside_waiter_script() -> str:  # pragma: needs fork
-    return textwrap.dedent(
-        r"""
-        from __future__ import annotations
+@NEEDS_FORK  # pragma: needs fork
+def test_read_write_lock_fork_waits_for_sqlite_operation(tmp_path: Path) -> None:
+    result = _run_fork_script(_fork_during_sqlite_script(), [str(tmp_path / "fork-gate.db")], timeout=15)
 
-        import os
-        import sys
-        import threading
-        import warnings
-
-        from filelock import ReadWriteLock
-
-        warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*fork\(\).*")
-
-        lock_path = sys.argv[1]
-        holder = ReadWriteLock(lock_path, is_singleton=False)
-        waiter = ReadWriteLock(lock_path, is_singleton=False)
-        acquired = threading.Event()
-
-        def acquire() -> None:
-            with waiter.write_lock():
-                acquired.set()
-
-        holder.acquire_write()
-        waiter_thread = threading.Thread(target=acquire, daemon=True)
-        waiter_thread.start()
-        assert not acquired.wait(0.2)
-        # Only this thread can end the waiter's wait, so a fork that waited for it would not return.
-        child_pid = os.fork()
-        if child_pid == 0:
-            os._exit(0)
-        _, status = os.waitpid(child_pid, 0)
-        holder.release()
-        assert acquired.wait(5)
-        waiter_thread.join(5)
-        assert os.waitstatus_to_exitcode(status) == 0
-        assert not waiter_thread.is_alive()
-        """
-    )
+    assert result == (0, "", "")
 
 
 def _fork_during_sqlite_script() -> str:  # pragma: needs fork
@@ -986,6 +797,79 @@ def _fork_during_sqlite_script() -> str:  # pragma: needs fork
     )
 
 
+@NEEDS_FORK  # pragma: needs fork
+def test_read_write_lock_fork_beside_a_waiting_acquire_returns(tmp_path: Path) -> None:
+    result = _run_fork_script(_fork_beside_waiter_script(), [str(tmp_path / "fork-waiter.db")], timeout=15)
+
+    assert result == (0, "", "")
+
+
+def _fork_beside_waiter_script() -> str:  # pragma: needs fork
+    return textwrap.dedent(
+        r"""
+        from __future__ import annotations
+
+        import os
+        import sys
+        import threading
+        import warnings
+
+        from filelock import ReadWriteLock
+
+        warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*fork\(\).*")
+
+        lock_path = sys.argv[1]
+        holder = ReadWriteLock(lock_path, is_singleton=False)
+        waiter = ReadWriteLock(lock_path, is_singleton=False)
+        acquired = threading.Event()
+
+        def acquire() -> None:
+            with waiter.write_lock():
+                acquired.set()
+
+        holder.acquire_write()
+        waiter_thread = threading.Thread(target=acquire, daemon=True)
+        waiter_thread.start()
+        assert not acquired.wait(0.2)
+        # Only this thread can end the waiter's wait, so a fork that waited for it would not return.
+        child_pid = os.fork()
+        if child_pid == 0:
+            os._exit(0)
+        _, status = os.waitpid(child_pid, 0)
+        holder.release()
+        assert acquired.wait(5)
+        waiter_thread.join(5)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert not waiter_thread.is_alive()
+        """
+    )
+
+
+@pytest.mark.skipif(
+    sys.implementation.name != "cpython" or not hasattr(os, "fork"),
+    reason="requires CPython profile events and os.fork",
+)
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        pytest.param("executescript", id="execute"),
+        pytest.param("rollback", id="rollback"),
+        pytest.param("close", id="close"),
+        pytest.param("connection-return", id="connection-return"),
+    ],
+)
+def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: needs fork
+    tmp_path: Path, boundary: Literal["executescript", "rollback", "close", "connection-return"]
+) -> None:
+    result = _run_fork_script(
+        _fork_at_sqlite_boundary_script(),
+        [str(tmp_path / "fork-boundary.db"), boundary],
+        timeout=10,
+    )
+
+    assert result == (0, "", "")
+
+
 def _fork_at_sqlite_boundary_script() -> str:
     return textwrap.dedent(
         """
@@ -1047,6 +931,13 @@ def _fork_at_sqlite_boundary_script() -> str:
     )
 
 
+@NEEDS_FORK  # pragma: needs fork
+def test_read_write_lock_idle_fork_handles_fresh_child_lock(tmp_path: Path) -> None:
+    result = _run_fork_script(_idle_fork_script(), [str(tmp_path / "idle-fork.db")], timeout=10)
+
+    assert result == (0, "", "")
+
+
 def _idle_fork_script() -> str:
     return textwrap.dedent(
         """
@@ -1086,6 +977,17 @@ def _idle_fork_script() -> str:
     )
 
 
+@pytest.mark.skipif(sys.implementation.name != "pypy" or not hasattr(os, "fork"), reason="requires fork on PyPy")
+def test_read_write_lock_pypy_child_allows_without_known_sqlite_use(tmp_path: Path) -> None:  # pragma: pypy cover
+    result = _run_fork_script(
+        _pypy_fork_script(),
+        [str(tmp_path / "child.db")],
+        timeout=10,
+    )
+
+    assert result == (0, "", "")
+
+
 def _pypy_fork_script() -> str:  # pragma: pypy cover
     return textwrap.dedent(
         """
@@ -1106,6 +1008,17 @@ def _pypy_fork_script() -> str:  # pragma: pypy cover
         assert os.waitstatus_to_exitcode(status) == 0
         """
     )
+
+
+@pytest.mark.skipif(sys.implementation.name != "pypy" or not hasattr(os, "fork"), reason="requires fork on PyPy")
+def test_read_write_lock_pypy_child_rejects_after_external_sqlite_use(tmp_path: Path) -> None:  # pragma: pypy cover
+    result = _run_fork_script(
+        _pypy_external_sqlite_script(),
+        [str(tmp_path / "external.db"), str(tmp_path / "child.db")],
+        timeout=10,
+    )
+
+    assert result == (0, "", "")
 
 
 def _pypy_external_sqlite_script() -> str:  # pragma: pypy cover
@@ -1136,6 +1049,18 @@ def _pypy_external_sqlite_script() -> str:  # pragma: pypy cover
         assert os.waitstatus_to_exitcode(status) == 0
         """
     )
+
+
+def test_fork_script_terminates_timed_out_process_group() -> None:
+    with pytest.raises(AssertionError, match="fork script exceeded"):
+        _run_fork_script("import time; time.sleep(10)", [], timeout=0.01)
+
+
+@NEEDS_FORK  # pragma: needs fork
+def test_read_write_lock_subclass_cache_resets_after_fork(tmp_path: Path) -> None:
+    result = _run_fork_script(_subclass_fork_script(), [str(tmp_path / "subclass-fork.db")], timeout=10)
+
+    assert result == (0, "", "")
 
 
 def _subclass_fork_script() -> str:
@@ -1174,6 +1099,18 @@ def _subclass_fork_script() -> str:
         assert os.waitstatus_to_exitcode(status) == 0
         """
     )
+
+
+@NEEDS_FORK  # pragma: needs fork
+@pytest.mark.parametrize("held", [pytest.param(False, id="idle"), pytest.param(True, id="held")])
+def test_async_read_write_lock_fork_behavior(tmp_path: Path, held: bool) -> None:
+    result = _run_fork_script(
+        _async_fork_script(),
+        [str(tmp_path / "async-fork.db"), "held" if held else "idle"],
+        timeout=15,
+    )
+
+    assert result == (0, "", "")
 
 
 def _async_fork_script() -> str:
@@ -1261,3 +1198,66 @@ def _async_fork_script() -> str:
             assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         """
     )
+
+
+def _run_fork_script(script: str, arguments: list[str], *, timeout: float) -> tuple[int, str, str]:
+    process = subprocess.Popen(  # executes this test's fixed interpreter and source
+        [sys.executable, "-c", script, *arguments],
+        start_new_session=True,
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        process_output, process_error = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        with contextlib.suppress(ProcessLookupError):
+            if sys.platform == "win32":  # pragma: win32 cover
+                process.kill()
+            else:  # pragma: win32 no cover
+                os.killpg(process.pid, signal.SIGKILL)
+        process_output, process_error = process.communicate()
+        msg = f"fork script exceeded {timeout} seconds: stdout={process_output!r}, stderr={process_error!r}"
+        raise AssertionError(msg) from error
+    assert process.returncode is not None  # pragma: needs fork
+    return process.returncode, process_output, process_error  # pragma: needs fork
+
+
+def _dropped_instances_script() -> str:  # pragma: needs fd-directory
+    return textwrap.dedent(
+        """
+        from __future__ import annotations
+
+        import gc
+        import sys
+        from pathlib import Path
+
+        from filelock import ReadWriteLock
+
+        root = Path(sys.argv[1])
+        descriptor_path = Path("/dev/fd") if Path("/dev/fd").is_dir() else Path("/proc/self/fd")
+        gc.collect()
+        initial_count = sum(1 for _ in descriptor_path.iterdir())
+        for index in range(100):
+            lock = ReadWriteLock(root / f"dropped-{index}.db", is_singleton=False)
+            lock.acquire_write()
+            del lock
+        gc.collect()
+
+        assert sum(1 for _ in descriptor_path.iterdir()) == initial_count
+        with ReadWriteLock(root / "dropped-0.db", is_singleton=False).read_lock():
+            pass
+        """
+    )
+
+
+_TRY_WRITE_SCRIPT: Final = textwrap.dedent(
+    """
+    import sys
+    from filelock import ReadWriteLock, Timeout
+    try:
+        ReadWriteLock(sys.argv[1], is_singleton=False).acquire_write(timeout=0)
+    except Timeout:
+        print("Timeout")
+    """
+)

@@ -234,6 +234,10 @@ def test_private_link_release_keeps_a_directory_renamed_onto_the_link(database: 
     assert (link_directory / "notes.txt").read_text() == "keep"
 
 
+def _link_directories(database: Path) -> list[Path]:
+    return sorted(path for path in database.parent.iterdir() if path.name.startswith(".filelock-"))
+
+
 def test_private_link_sweeps_the_link_of_a_killed_holder(database: Path, holder: subprocess.Popen[str]) -> None:
     holder.kill()
     holder.wait(timeout=_PROCESS_DEADLINE)
@@ -254,6 +258,15 @@ def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: 
         pass
 
     assert (_link_directories(database), database.stat().st_nlink) == ([], 1)
+
+
+def _host_digest(database: Path) -> str:
+    # Taken from a link of another database, so the sweep for this one has not run yet.
+    seed: Final = database.parent.with_name("seed")
+    seed.mkdir(mode=0o777)
+    seed.chmod(0o777)
+    with ReadWriteLock(seed / "lock.db", is_singleton=False).read_lock():
+        return next(seed.glob(".filelock-*")).name.rsplit("-", 2)[1]
 
 
 @pytest.mark.parametrize(
@@ -379,7 +392,7 @@ def test_private_link_in_a_directory_it_cannot_list(database: Path) -> None:
         database.parent.chmod(0o777)
 
 
-_PROCESS_DEADLINE: Final = 30
+_PROCESS_DEADLINE: Final[int] = 30
 
 
 @pytest.fixture
@@ -400,19 +413,6 @@ def holder(database: Path) -> Generator[subprocess.Popen[str]]:
         finally:
             holder.kill()
             holder.wait(timeout=_PROCESS_DEADLINE)
-
-
-def _link_directories(database: Path) -> list[Path]:
-    return sorted(path for path in database.parent.iterdir() if path.name.startswith(".filelock-"))
-
-
-def _host_digest(database: Path) -> str:
-    # Taken from a link of another database, so the sweep for this one has not run yet.
-    seed: Final = database.parent.with_name("seed")
-    seed.mkdir(mode=0o777)
-    seed.chmod(0o777)
-    with ReadWriteLock(seed / "lock.db", is_singleton=False).read_lock():
-        return next(seed.glob(".filelock-*")).name.rsplit("-", 2)[1]
 
 
 @pytest.fixture

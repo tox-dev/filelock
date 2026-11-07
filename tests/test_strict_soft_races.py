@@ -84,6 +84,17 @@ def test_strict_soft_lower_intent_delayed_until_higher_selects(tmp_path: Path, m
     assert (acquisition_order, inside) == (["lower", "higher"], 0)
 
 
+def _initialize_protocol(lock_path: Path) -> None:
+    with StrictSoftFileLock(lock_path):
+        pass
+
+
+def _join_threads(*threads: threading.Thread) -> None:
+    for thread in threads:
+        thread.join(timeout=3)
+    assert [thread.name for thread in threads if thread.is_alive()] == []
+
+
 def test_strict_soft_lower_intent_delayed_until_higher_enters(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -297,14 +308,3 @@ def _acquire_during_transition(
         lock.acquire(blocking=False)
     else:
         lock.acquire(cancel_check=lambda: True)
-
-
-def _initialize_protocol(lock_path: Path) -> None:
-    with StrictSoftFileLock(lock_path):
-        pass
-
-
-def _join_threads(*threads: threading.Thread) -> None:
-    for thread in threads:
-        thread.join(timeout=3)
-    assert [thread.name for thread in threads if thread.is_alive()] == []

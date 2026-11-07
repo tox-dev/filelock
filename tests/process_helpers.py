@@ -20,7 +20,7 @@ _REAP_DEADLINE: Final[int] = 5
 
 @contextmanager
 def cleanup_processes(processes: list[BaseProcess]) -> Generator[None]:
-    """Reap every process on the way out, whatever the block did."""
+    # Reap every process on the way out, whatever the block did.
     try:
         yield
     finally:
@@ -39,7 +39,7 @@ def cleanup_processes(processes: list[BaseProcess]) -> Generator[None]:
 def break_then_hang_after_exchange(
     lock_file: str, ready: Event, go: Event, exchanged: Event
 ) -> None:  # pragma: win32 no cover
-    """Break a stale marker, pausing right before the exchange and hanging right after it, until the test kills it."""
+    # Break a stale marker, pausing right before the exchange and hanging right after it, until the test kills it.
     exchange: Final = filelock._soft.exchange_names
 
     def exchange_then_hang(source: str, target: str) -> bool:
@@ -55,7 +55,7 @@ def break_then_hang_after_exchange(
 
 
 def call_within(call: Callable[[], object], seconds: float) -> tuple[bool, BaseException | None]:  # pragma: win32 cover
-    """Run *call* on a daemon thread and report whether it returned within *seconds* and what it raised."""
+    # Run *call* on a daemon thread and report whether it returned within *seconds* and what it raised.
     raised: list[BaseException] = []
 
     def run() -> None:
@@ -70,4 +70,8 @@ def call_within(call: Callable[[], object], seconds: float) -> tuple[bool, BaseE
     return not thread.is_alive(), next(iter(raised), None)
 
 
-__all__ = ["break_then_hang_after_exchange", "call_within", "cleanup_processes"]
+__all__ = [
+    "break_then_hang_after_exchange",
+    "call_within",
+    "cleanup_processes",
+]

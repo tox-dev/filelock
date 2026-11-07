@@ -53,47 +53,6 @@ def test_strict_soft_recovers_every_claim_for_crashed_token(tmp_path: Path) -> N
         assert lock.is_locked
 
 
-def test_strict_soft_reclaims_crash_before_private_publication(tmp_path: Path) -> None:
-    lock_path = tmp_path / "resource.lock"
-    result = subprocess.run(
-        [sys.executable, "-c", _crash_during_private_publication("before-link"), os.fspath(lock_path)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    private_records = tuple(tmp_path.glob("**/.*.private-v1-*.tmp"))
-
-    assert (result.returncode, result.stdout, result.stderr, len(private_records)) == (_CRASH_STATUS, "", "", 1)
-    os.utime(private_records[0], (0, 0))
-    with StrictSoftFileLock(lock_path, timeout=0):
-        assert tuple(tmp_path.glob("**/.*.private-v1-*.tmp")) == ()
-
-
-def test_strict_soft_reclaims_crash_after_private_publication(tmp_path: Path) -> None:
-    lock_path = tmp_path / "resource.lock"
-    result = subprocess.run(
-        [sys.executable, "-c", _crash_during_private_publication("after-link"), os.fspath(lock_path)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    private_records = tuple(tmp_path.glob("**/.*.private-v1-*.tmp"))
-    lock = StrictSoftFileLock(lock_path, timeout=0)
-    claims = lock.claims
-
-    assert (result.returncode, result.stdout, result.stderr, len(private_records), len(claims)) == (
-        _CRASH_STATUS,
-        "",
-        "",
-        1,
-        1,
-    )
-    assert tuple(tmp_path.glob("**/.*.private-v1-*.tmp")) == ()
-    lock.force_break(claims[0].name)
-    with lock:
-        assert lock.is_locked
-
-
 def _crash_while_holding() -> str:
     # A strict holder keeps both its held and intent claims for the whole hold, so a hard crash mid-hold leaves the
     # pair behind. os._exit skips every finalizer, reproducing a killed process that never releases.
@@ -111,6 +70,22 @@ def _crash_while_holding() -> str:
         os._exit({_CRASH_STATUS})
         """
     )
+
+
+def test_strict_soft_reclaims_crash_before_private_publication(tmp_path: Path) -> None:
+    lock_path = tmp_path / "resource.lock"
+    result = subprocess.run(
+        [sys.executable, "-c", _crash_during_private_publication("before-link"), os.fspath(lock_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    private_records = tuple(tmp_path.glob("**/.*.private-v1-*.tmp"))
+
+    assert (result.returncode, result.stdout, result.stderr, len(private_records)) == (_CRASH_STATUS, "", "", 1)
+    os.utime(private_records[0], (0, 0))
+    with StrictSoftFileLock(lock_path, timeout=0):
+        assert tuple(tmp_path.glob("**/.*.private-v1-*.tmp")) == ()
 
 
 def _crash_during_private_publication(stage: str) -> str:
@@ -142,3 +117,28 @@ def _crash_during_private_publication(stage: str) -> str:
         StrictSoftFileLock(sys.argv[1]).acquire()
         """
     )
+
+
+def test_strict_soft_reclaims_crash_after_private_publication(tmp_path: Path) -> None:
+    lock_path = tmp_path / "resource.lock"
+    result = subprocess.run(
+        [sys.executable, "-c", _crash_during_private_publication("after-link"), os.fspath(lock_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    private_records = tuple(tmp_path.glob("**/.*.private-v1-*.tmp"))
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+    claims = lock.claims
+
+    assert (result.returncode, result.stdout, result.stderr, len(private_records), len(claims)) == (
+        _CRASH_STATUS,
+        "",
+        "",
+        1,
+        1,
+    )
+    assert tuple(tmp_path.glob("**/.*.private-v1-*.tmp")) == ()
+    lock.force_break(claims[0].name)
+    with lock:
+        assert lock.is_locked

@@ -132,8 +132,7 @@ def _preserves_context_thrown_into_a_generator() -> bool:
 
 
 class _Suspend:
-    """An awaitable that parks its coroutine once, so a probe can throw into a suspended frame without a loop."""
-
+    # An awaitable that parks its coroutine once, so a probe can throw into a suspended frame without a loop.
     def __await__(self) -> Generator[None, None, None]:
         yield
 
@@ -208,14 +207,12 @@ def _runs_a_raised_signal_handler_at_once() -> bool:
     return at_once
 
 
-_AUDIT_PROBE_EVENT: Final[str] = "filelock.capability-probe"
-
-
 def _delivers_audit_events() -> bool:
     # GraalPy accepts a hook and never calls it. The hook is a permanent no-op; tests install their own anyway.
     delivered: list[bool] = []
-    sys.addaudithook(lambda event, _args: delivered.append(True) if event == _AUDIT_PROBE_EVENT else None)
-    sys.audit(_AUDIT_PROBE_EVENT)
+    audit_probe_event: str = "filelock.capability-probe"
+    sys.addaudithook(lambda event, _args: delivered.append(True) if event == audit_probe_event else None)
+    sys.audit(audit_probe_event)
     return bool(delivered)
 
 

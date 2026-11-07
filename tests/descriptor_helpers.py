@@ -1,5 +1,3 @@
-"""Counts the descriptors this process holds on an inode."""
-
 from __future__ import annotations
 
 import os
