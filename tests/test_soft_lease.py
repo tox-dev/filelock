@@ -94,8 +94,8 @@ def _count_refreshes(mocker: MockerFixture) -> Semaphore:
     refreshes: Final = Semaphore(0)
     real: Final = lease_mod.touch
 
-    def touch_and_count(path: str, *args: object, **kwargs: object) -> None:
-        real(path, *args, **kwargs)
+    def touch_and_count(name: str, *, fd: int) -> None:
+        real(name, fd=fd)
         refreshes.release()
 
     mocker.patch("filelock._lease.touch", side_effect=touch_and_count, autospec=True)
