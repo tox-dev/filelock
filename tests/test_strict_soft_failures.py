@@ -473,53 +473,51 @@ def test_strict_soft_held_directory_close_failure_removes_both_claims(tmp_path: 
     assert (lock.claims, lock.is_locked) == ((), False)
 
 
-@pytest.mark.parametrize(
-    "node",
-    [
-        pytest.param("directory", id="directory"),
-        pytest.param(
-            "symlink",
-            id="symlink",
-            marks=pytest.mark.skipif(not CAPABILITIES["symlink"], reason="stages the private record as a symlink"),
-        ),
-    ],
-)
-def test_strict_soft_reaper_leaves_non_regular_private_node(tmp_path: Path, node: str) -> None:
+def _stage_claim_record(lock_path: Path) -> Path:
+    _initialize_protocol(lock_path)
+    return _private_claim_path(lock_path, "0" * 32)
+
+
+def _stage_sentinel_record(lock_path: Path) -> Path:
+    return lock_path.parent / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
+
+
+_NON_REGULAR_NODES: Final = [
+    pytest.param(Path.mkdir, Path.is_dir, id="directory"),
+    pytest.param(
+        lambda path: path.symlink_to(path.parent / "missing"),
+        Path.is_symlink,
+        id="symlink",
+        marks=pytest.mark.skipif(not CAPABILITIES["symlink"], reason="stages the private record as a symlink"),
+    ),
+]
+
+
+@pytest.mark.parametrize(("make_node", "is_node"), _NON_REGULAR_NODES)
+def test_strict_soft_reaper_leaves_non_regular_private_node(
+    tmp_path: Path, make_node: Callable[[Path], object], is_node: Callable[[Path], bool]
+) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     private_path = _private_claim_path(lock_path, "0" * 32)
-    if node == "directory":
-        private_path.mkdir()
-    else:
-        private_path.symlink_to(tmp_path / "missing")  # pragma: needs symlink
+    make_node(private_path)  # pragma: needs symlink
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot list claim directory"):
         _ = StrictSoftFileLock(lock_path).claims
-    assert private_path.is_dir() if node == "directory" else private_path.is_symlink()
+    assert is_node(private_path)
 
 
-@pytest.mark.parametrize(
-    "node",
-    [
-        pytest.param("directory", id="directory"),
-        pytest.param(
-            "symlink",
-            id="symlink",
-            marks=pytest.mark.skipif(not CAPABILITIES["symlink"], reason="stages the private record as a symlink"),
-        ),
-    ],
-)
-def test_strict_soft_non_regular_sentinel_private_node_fails_closed(tmp_path: Path, node: str) -> None:
+@pytest.mark.parametrize(("make_node", "is_node"), _NON_REGULAR_NODES)
+def test_strict_soft_non_regular_sentinel_private_node_fails_closed(
+    tmp_path: Path, make_node: Callable[[Path], object], is_node: Callable[[Path], bool]
+) -> None:
     lock_path = tmp_path / "resource.lock"
     private_path = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
-    if node == "directory":
-        private_path.mkdir()
-    else:
-        private_path.symlink_to(tmp_path / "missing")  # pragma: needs symlink
+    make_node(private_path)  # pragma: needs symlink
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot reclaim sentinel private records"):
         StrictSoftFileLock(lock_path, timeout=0).acquire()
-    assert private_path.is_dir() if node == "directory" else private_path.is_symlink()
+    assert is_node(private_path)
 
 
 def test_strict_soft_reaper_does_not_retry_sharing_error(
@@ -545,16 +543,15 @@ def test_strict_soft_reaper_does_not_retry_sharing_error(
     assert (reaper_unlinks, sleep.call_count, private_path.exists()) == (1, 0, True)
 
 
-@pytest.mark.parametrize("record", ["claim", "sentinel"])
+@pytest.mark.parametrize(
+    "stage_record",
+    [pytest.param(_stage_claim_record, id="claim"), pytest.param(_stage_sentinel_record, id="sentinel")],
+)
 def test_strict_soft_reaper_ages_records_by_filesystem_clock(
-    tmp_path: Path, mocker: MockerFixture, record: str
+    tmp_path: Path, mocker: MockerFixture, stage_record: Callable[[Path], Path]
 ) -> None:
     lock_path = tmp_path / "resource.lock"
-    if record == "claim":
-        _initialize_protocol(lock_path)
-        private_path = _private_claim_path(lock_path, "0" * 32)
-    else:
-        private_path = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
+    private_path = stage_record(lock_path)
     private_path.write_bytes(b"in-flight publication")
     # A client clock an hour ahead of the filesystem's would read the fresh record as abandoned.
     _patch_strict_clock(mocker, wall=lambda: time.time() + 3600)
@@ -803,17 +800,7 @@ def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path,
         assert len(lock.claims) == 2
 
 
-@pytest.mark.parametrize(
-    ("sentinel", "acquires"),
-    [
-        pytest.param(b"1\nfilelock-strict-v1\x00\n0\n", True, id="strict-winner"),
-        pytest.param(f"{os.getpid()}\n{host_name()}\n".encode(), False, id="legacy-winner"),
-    ],
-)
-def test_strict_soft_sentinel_publication_race(
-    tmp_path: Path, mocker: MockerFixture, sentinel: bytes, *, acquires: bool
-) -> None:
-    lock_path = tmp_path / "resource.lock"
+def _race_sentinel_publication(lock_path: Path, mocker: MockerFixture, sentinel: bytes) -> StrictSoftFileLock:
     real_link = os.link
     raced = False
 
@@ -839,14 +826,30 @@ def test_strict_soft_sentinel_publication_race(
         )
 
     mocker.patch("filelock._strict.os.link", side_effect=publish_competitor, autospec=True)
-    lock = StrictSoftFileLock(lock_path, timeout=0)
+    return StrictSoftFileLock(lock_path, timeout=0)
 
-    if acquires:
-        with lock:
-            assert lock.is_locked
-    else:
-        with pytest.raises(Timeout):
-            lock.acquire()
+
+def test_strict_soft_sentinel_publication_race_acquires_over_strict_winner(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    sentinel = b"1\nfilelock-strict-v1\x00\n0\n"
+    lock = _race_sentinel_publication(lock_path, mocker, sentinel)
+
+    with lock:
+        assert lock.is_locked
+    assert lock_path.read_bytes() == sentinel
+
+
+def test_strict_soft_sentinel_publication_race_times_out_over_legacy_winner(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    sentinel = f"{os.getpid()}\n{host_name()}\n".encode()
+    lock = _race_sentinel_publication(lock_path, mocker, sentinel)
+
+    with pytest.raises(Timeout):
+        lock.acquire()
     assert lock_path.read_bytes() == sentinel
 
 
@@ -871,31 +874,29 @@ def test_strict_soft_sentinel_uses_unique_private_names(tmp_path: Path, mocker: 
 
 
 @pytest.mark.parametrize(
-    ("occupant", "found"),
+    ("make_occupant", "found"),
     [
-        pytest.param("directory", "a directory", id="directory"),
-        pytest.param("symlink", "a symlink", id="symlink", marks=NEEDS_SYMLINK),
+        pytest.param(Path.mkdir, "a directory", id="directory"),
         pytest.param(
-            "fifo",
+            lambda path: path.symlink_to(path.parent / "missing"),
+            "a symlink",
+            id="symlink",
+            marks=NEEDS_SYMLINK,
+        ),
+        pytest.param(
+            os.mkfifo,
             "a special file",
             id="fifo",
             marks=pytest.mark.skipif(not CAPABILITIES["fifo"], reason="needs os.mkfifo"),
         ),
-        pytest.param("oversized", "a file it cannot read", id="oversized"),
+        pytest.param(lambda path: path.write_bytes(b"x" * 4096), "a file it cannot read", id="oversized"),
     ],
 )
-def test_strict_soft_damaged_lock_path_names_occupant(tmp_path: Path, occupant: str, found: str) -> None:
+def test_strict_soft_damaged_lock_path_names_occupant(
+    tmp_path: Path, make_occupant: Callable[[Path], object], found: str
+) -> None:
     lock_path = tmp_path / "resource.lock"
-    match occupant:
-        case "directory":
-            lock_path.mkdir()
-        case "symlink":
-            lock_path.symlink_to(tmp_path / "missing")  # pragma: needs symlink
-        case "fifo":
-            assert sys.platform != "win32"  # pragma: needs fifo  # narrows os.mkfifo for ty
-            os.mkfifo(lock_path)  # pragma: needs fifo
-        case _:
-            lock_path.write_bytes(b"x" * 4096)
+    make_occupant(lock_path)
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(
@@ -1160,21 +1161,17 @@ def test_strict_soft_rejects_noncanonical_owner_record(tmp_path: Path, pid: str,
 
 
 @pytest.mark.parametrize(
-    "node",
+    "make_claim",
     [
-        pytest.param("directory", id="non-regular"),
-        pytest.param("oversized", id="oversized"),
+        pytest.param(Path.mkdir, id="non-regular"),
+        pytest.param(lambda path: path.write_bytes(b"x" * 1025), id="oversized"),
     ],
 )
-def test_strict_soft_invalid_record_node_fails_closed(tmp_path: Path, node: str) -> None:
+def test_strict_soft_invalid_record_node_fails_closed(tmp_path: Path, make_claim: Callable[[Path], object]) -> None:
     lock_path = tmp_path / "resource.lock"
     claims = Path(f"{lock_path}.filelock") / "claims"
     claims.mkdir(parents=True)
-    claim = claims / f"held-v1-{'0' * 32}.claim"
-    if node == "directory":
-        claim.mkdir()
-    else:
-        claim.write_bytes(b"x" * 1025)
+    make_claim(claims / f"held-v1-{'0' * 32}.claim")
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
         StrictSoftFileLock(lock_path).acquire()
@@ -1432,20 +1429,31 @@ def test_strict_soft_release_keeps_claims_while_coordination_directory_is_a_syml
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
 @NEEDS_SYMLINK  # pragma: needs symlink
-@pytest.mark.parametrize("symlink", ["resource.lock.filelock", "claims"])
-def test_strict_soft_symlinked_protocol_directory_is_neither_listed_nor_broken(tmp_path: Path, symlink: str) -> None:
+def test_strict_soft_symlinked_claims_directory_is_neither_listed_nor_broken(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     claim = _write_held_claim(tmp_path / "target" / "claims")
-    if symlink == "claims":
-        Path(f"{lock_path}.filelock").mkdir()
-        Path(f"{lock_path}.filelock", "claims").symlink_to(claim.parent, target_is_directory=True)
-    else:
-        Path(f"{lock_path}.filelock").symlink_to(claim.parent.parent, target_is_directory=True)
+    Path(f"{lock_path}.filelock").mkdir()
+    Path(f"{lock_path}.filelock", "claims").symlink_to(claim.parent, target_is_directory=True)
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot open claim directory"):
         _ = lock.claims
-    with pytest.raises(OSError, match=re.escape(f"{symlink}'")):
+    with pytest.raises(OSError, match=re.escape("claims'")):
+        lock.force_break(claim.name)
+    assert claim.exists()
+
+
+@_NEEDS_DIR_FD  # pragma: needs dir-fd
+@NEEDS_SYMLINK  # pragma: needs symlink
+def test_strict_soft_symlinked_protocol_directory_is_neither_listed_nor_broken(tmp_path: Path) -> None:
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(tmp_path / "target" / "claims")
+    Path(f"{lock_path}.filelock").symlink_to(claim.parent.parent, target_is_directory=True)
+    lock = StrictSoftFileLock(lock_path)
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot open claim directory"):
+        _ = lock.claims
+    with pytest.raises(OSError, match=re.escape("resource.lock.filelock'")):
         lock.force_break(claim.name)
     assert claim.exists()
 
@@ -1583,14 +1591,18 @@ def test_strict_soft_sentinel_inspection_and_close_failure_group(tmp_path: Path,
 
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
-@pytest.mark.parametrize("initialized", [pytest.param(False, id="sentinel"), pytest.param(True, id="intent")])
+@pytest.mark.parametrize(
+    ("initialize", "published"),
+    [
+        pytest.param(lambda _lock_path: None, "resource.lock", id="sentinel"),
+        pytest.param(_initialize_protocol, "intent-", id="intent"),
+    ],
+)
 def test_strict_soft_publication_directory_close_failure(
-    tmp_path: Path, mocker: MockerFixture, initialized: bool
+    tmp_path: Path, mocker: MockerFixture, initialize: Callable[[Path], None], published: str
 ) -> None:
     lock_path = tmp_path / "resource.lock"
-    if initialized:
-        _initialize_protocol(lock_path)
-    published = "intent-" if initialized else lock_path.name
+    initialize(lock_path)
     _fail_directory_close_after(mocker, "link", published, "publication directory close failed")
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
@@ -1652,13 +1664,18 @@ def test_strict_soft_discard_sentinel_close_failure(tmp_path: Path, mocker: Mock
     assert (lock.is_locked, [claim.state for claim in lock.claims]) == (False, ["held"])
 
 
-@pytest.mark.parametrize("initialized", [pytest.param(False, id="sentinel"), pytest.param(True, id="intent")])
+@pytest.mark.parametrize(
+    "initialize",
+    [
+        pytest.param(lambda _lock_path: None, id="sentinel"),
+        pytest.param(_initialize_protocol, id="intent"),
+    ],
+)
 def test_strict_soft_publication_record_replaced_aborts(
-    tmp_path: Path, mocker: MockerFixture, initialized: bool
+    tmp_path: Path, mocker: MockerFixture, initialize: Callable[[Path], None]
 ) -> None:
     lock_path = tmp_path / "resource.lock"
-    if initialized:
-        _initialize_protocol(lock_path)
+    initialize(lock_path)
     real_identity = _relative_identity
 
     def mismatch_public(directory_ref: tuple[str, int | None], name: str) -> tuple[int, int] | None:
@@ -2012,15 +2029,14 @@ def _fail_the_doorway(mocker: MockerFixture) -> None:
     mocker.patch("filelock._strict._unlink_in_directory", autospec=True, side_effect=deny_intent_unlink)
 
 
-@pytest.mark.parametrize("vanished", [pytest.param(True, id="removed"), pytest.param(False, id="still-listed")])
-def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: MockerFixture, *, vanished: bool) -> None:
+def test_strict_soft_denied_claim_removed_during_grace_is_skipped(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path: Final = tmp_path / "resource.lock"
     claim: Final = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
     clock: Final = iter([0, 1])
 
     def tick() -> int:
         # Remove the claim as the grace runs out, after the last denied open, so only the listing recheck sees it go.
-        if (now := next(clock)) and vanished:
+        if now := next(clock):
             claim.unlink()
         return now
 
@@ -2031,11 +2047,22 @@ def test_strict_soft_denied_claim_rechecks_directory(tmp_path: Path, mocker: Moc
     )
     _open_raising_for(claim, PermissionError(EACCES, "sharing violation"), mocker)
 
-    if vanished:
-        assert StrictSoftFileLock(lock_path).claims == ()
-    else:
-        with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
-            _ = StrictSoftFileLock(lock_path).claims
+    assert StrictSoftFileLock(lock_path).claims == ()
+
+
+def test_strict_soft_denied_claim_still_listed_after_grace_fails_closed(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path: Final = tmp_path / "resource.lock"
+    claim: Final = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    clock: Final = iter([0, 1])
+    _patch_strict_clock(
+        mocker,
+        monotonic=mocker.create_autospec(time.monotonic, side_effect=lambda: next(clock)),
+        sleep=mocker.create_autospec(time.sleep),
+    )
+    _open_raising_for(claim, PermissionError(EACCES, "sharing violation"), mocker)
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
+        _ = StrictSoftFileLock(lock_path).claims
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
