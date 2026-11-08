@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
 import sys
@@ -124,15 +123,20 @@ def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFix
         OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
-@pytest.mark.parametrize("refused", [pytest.param(False, id="renamed"), pytest.param(True, id="refused")])
-def test_replace_renames_unless_refused(tmp_path: Path, mocker: MockerFixture, *, refused: bool) -> None:
+def test_replace_renames_the_source_over_the_target(tmp_path: Path) -> None:
+    (source := tmp_path / "source").write_bytes(b"new")
+    (target := tmp_path / "target").write_bytes(b"old")
+    replaced = OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
+    assert (replaced, target.read_bytes(), source.exists()) == (True, b"new", False)
+
+
+def test_replace_keeps_the_target_when_refused(tmp_path: Path, mocker: MockerFixture) -> None:
     # Windows refuses to rename over a file a reader holds open; the caller keeps the older target.
     (source := tmp_path / "source").write_bytes(b"new")
     (target := tmp_path / "target").write_bytes(b"old")
-    if refused:
-        mocker.patch.object(storage_mod.os, "replace", autospec=True, side_effect=PermissionError("in use"))
+    mocker.patch.object(storage_mod.os, "replace", autospec=True, side_effect=PermissionError("in use"))
     replaced = OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
-    assert (replaced, target.read_bytes(), source.exists()) == (not refused, b"old" if refused else b"new", refused)
+    assert (replaced, target.read_bytes(), source.exists()) == (False, b"old", True)
 
 
 def test_overwrite_rewrites_the_record_it_created(tmp_path: Path) -> None:
@@ -164,17 +168,27 @@ def test_overwrite_spares_a_record_with_a_second_name(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not CAPABILITIES["fifo"], reason="needs os.mkfifo")
-@pytest.mark.parametrize("reader", [pytest.param(False, id="no-reader"), pytest.param(True, id="reader")])
-def test_overwrite_does_not_block_on_a_fifo(tmp_path: Path, *, reader: bool) -> None:  # pragma: needs fifo
+def test_overwrite_does_not_block_on_a_fifo(tmp_path: Path) -> None:  # pragma: needs fifo
     files = OsFiles(str(tmp_path / "x.lock"))
     identity = files.create(str(record := tmp_path / "record"), b"old")
     record.unlink()
     assert sys.platform != "win32"  # skipped there; narrows os.mkfifo and os.O_NONBLOCK for the type checker
     os.mkfifo(record)
-    with contextlib.ExitStack() as stack:
-        if reader:
-            stack.callback(os.close, os.open(record, os.O_RDONLY | os.O_NONBLOCK))
+    assert files.overwrite(str(record), b"new", identity) is False
+
+
+@pytest.mark.skipif(not CAPABILITIES["fifo"], reason="needs os.mkfifo")
+def test_overwrite_does_not_block_on_a_fifo_with_a_reader(tmp_path: Path) -> None:  # pragma: needs fifo
+    files = OsFiles(str(tmp_path / "x.lock"))
+    identity = files.create(str(record := tmp_path / "record"), b"old")
+    record.unlink()
+    assert sys.platform != "win32"  # skipped there; narrows os.mkfifo and os.O_NONBLOCK for the type checker
+    os.mkfifo(record)
+    reader = os.open(record, os.O_RDONLY | os.O_NONBLOCK)
+    try:
         assert files.overwrite(str(record), b"new", identity) is False
+    finally:
+        os.close(reader)
 
 
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:

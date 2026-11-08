@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, suppress
+from contextlib import closing, nullcontext, suppress
 from errno import EIO
 from functools import partial
 from multiprocessing import Event, Process
@@ -39,6 +39,7 @@ from tests.process_helpers import cleanup_processes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
+    from contextlib import AbstractContextManager
     from multiprocessing.synchronize import Event as EventType
 
     from pytest_mock import MockerFixture
@@ -131,7 +132,13 @@ def test_rejects_an_interval_it_cannot_use(
     "lock_type",
     [pytest.param(SoftReadWriteLock, id="sync"), pytest.param(AsyncSoftReadWriteLock, id="async")],
 )
-@pytest.mark.parametrize("cached", [pytest.param(False, id="new"), pytest.param(True, id="cached")])
+@pytest.mark.parametrize(
+    "keep",
+    [
+        pytest.param(lambda _path: nullcontext(), id="new"),
+        pytest.param(lambda path: closing(SoftReadWriteLock(path)), id="cached"),
+    ],
+)
 @pytest.mark.parametrize(
     ("settings", "message"),
     [
@@ -143,24 +150,19 @@ def test_rejects_an_interval_it_cannot_use(
 def test_rejects_invalid_intervals(
     tmp_path: Path,
     lock_type: type[SoftReadWriteLock | AsyncSoftReadWriteLock],
-    cached: bool,
+    keep: Callable[[Path], AbstractContextManager[object]],
     settings: dict[str, float],
     message: str,
 ) -> None:
     path: Final = tmp_path / "timing.lock"
     # Keep the weakly cached instance alive through the second construction.
-    existing: Final = SoftReadWriteLock(path) if cached else None
-    try:
-        with pytest.raises(ValueError, match=rf"{message} must .*finite"):
-            lock_type(
-                path,
-                heartbeat_interval=settings.get("heartbeat_interval", 30),
-                stale_threshold=settings.get("stale_threshold"),
-                poll_interval=settings.get("poll_interval", 0.25),
-            )
-    finally:
-        if existing is not None:
-            existing.close()
+    with keep(path), pytest.raises(ValueError, match=rf"{message} must .*finite"):
+        lock_type(
+            path,
+            heartbeat_interval=settings.get("heartbeat_interval", 30),
+            stale_threshold=settings.get("stale_threshold"),
+            poll_interval=settings.get("poll_interval", 0.25),
+        )
 
 
 @pytest.mark.parametrize(
@@ -520,13 +522,19 @@ def test_acquire_on_closed_raises(lock_file: str) -> None:
         lock.acquire_write(timeout=1)
 
 
-@pytest.mark.parametrize("blocked", [pytest.param(True, id="while-blocked"), pytest.param(False, id="as-granted")])
-def test_close_during_acquire_leaves_no_hold(lock_file: str, mocker: MockerFixture, *, blocked: bool) -> None:
+@pytest.mark.parametrize(
+    "blocking",
+    [
+        pytest.param(lambda lock: lock.write_lock(timeout=2), id="while-blocked"),
+        pytest.param(lambda _lock: nullcontext(), id="as-granted"),
+    ],
+)
+def test_close_during_acquire_leaves_no_hold(
+    lock_file: str, mocker: MockerFixture, blocking: Callable[[SoftReadWriteLock], AbstractContextManager[object]]
+) -> None:
     # A close() that lands while an acquire polls, or between the grant and publishing the hold, must not leave a
     # heartbeat holding the slot on an instance nobody can release through any more.
     blocker = _make_lock(lock_file)
-    if blocked:
-        blocker.acquire_write(timeout=2)
     victim = _make_lock(lock_file)
     real_advance = Participant.advance
 
@@ -537,7 +545,7 @@ def test_close_during_acquire_leaves_no_hold(lock_file: str, mocker: MockerFixtu
 
     mocker.patch.object(Participant, "advance", autospec=True, side_effect=close_during)
     try:
-        with pytest.raises(RuntimeError, match="has been closed"):
+        with blocking(blocker), pytest.raises(RuntimeError, match="has been closed"):
             victim.acquire_write(timeout=2)
     finally:
         blocker.close()
@@ -767,9 +775,8 @@ def test_dead_holder_evicted_by_contender(
         time.sleep(0.8)
         with getattr(lock, f"{contender_mode}_lock")(timeout=5):
             pass
-        if contender_mode == "read":
-            # A write lock's success already proves no live reader or writer remained; a read lock's does not.
-            assert _state(lock_file).writer is None
+        # A write lock's success already proves no live writer remained, so this check is for the read contender.
+        assert _state(lock_file).writer is None
 
 
 def test_heartbeat_reports_eviction_and_stops(lock_file: str) -> None:
@@ -1355,27 +1362,35 @@ def test_protocol_tree_swapped_after_an_acquire_is_refused(  # pragma: needs lin
     assert list(target.iterdir()) == []
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name, through junctions")
-@pytest.mark.parametrize("when", ["before-first-acquire", "after-first-acquire"])
-@pytest.mark.parametrize("swapped", ["gen", "holders"])
-def test_protocol_tree_with_a_junction_is_refused(  # pragma: win32 cover
-    lock_file: str,
-    tmp_path: Path,
-    lock: SoftReadWriteLock,
-    create_junction: Callable[[Path, Path], None],
-    when: str,
-    swapped: str,
-) -> None:
-    root = Path(f"{lock_file}.rw")
-    if when == "after-first-acquire":
-        with lock.write_lock(timeout=2):
-            pass
-        root.rename(tmp_path / "aside")
-    for name in ("gen", "holders"):
-        if name != swapped:
-            (root / name).mkdir(parents=True)
-    (target := tmp_path / "target").mkdir()
+def _junction_the_tree(root: Path, swapped: str, target: Path, create_junction: Callable[[Path, Path], None]) -> None:
+    for name in {"gen", "holders"} - {swapped}:
+        (root / name).mkdir(parents=True)
+    target.mkdir()
     create_junction(root / swapped, target)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name, through junctions")
+@pytest.mark.parametrize("swapped", ["gen", "holders"])
+def test_protocol_tree_with_a_junction_is_refused_before_first_acquire(  # pragma: win32 cover
+    lock_file: str, tmp_path: Path, lock: SoftReadWriteLock, create_junction: Callable[[Path, Path], None], swapped: str
+) -> None:
+    _junction_the_tree(Path(f"{lock_file}.rw"), swapped, target := tmp_path / "target", create_junction)
+
+    with pytest.raises(RuntimeError, match="is not a directory or is a symlink"):
+        lock.acquire_write(timeout=0.5)
+    assert list(target.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name, through junctions")
+@pytest.mark.parametrize("swapped", ["gen", "holders"])
+def test_protocol_tree_with_a_junction_is_refused_after_first_acquire(  # pragma: win32 cover
+    lock_file: str, tmp_path: Path, lock: SoftReadWriteLock, create_junction: Callable[[Path, Path], None], swapped: str
+) -> None:
+    with lock.write_lock(timeout=2):
+        pass
+    root = Path(f"{lock_file}.rw")
+    root.rename(tmp_path / "aside")
+    _junction_the_tree(root, swapped, target := tmp_path / "target", create_junction)
 
     with pytest.raises(RuntimeError, match="is not a directory or is a symlink"):
         lock.acquire_write(timeout=0.5)
