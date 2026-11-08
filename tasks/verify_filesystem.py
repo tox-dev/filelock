@@ -41,7 +41,6 @@ if TYPE_CHECKING:
 _PROCESSES: Final[int] = 4
 _HOLDS: Final[int] = 100
 _TRANSIENT_ERRNOS: Final[frozenset[int]] = frozenset({EACCES, ENOENT, ESTALE})
-_ALL_LOCKS: Final[tuple[str, ...]] = ("FileLock", "SoftFileLock", "StrictSoftFileLock")
 
 
 def main() -> int:
@@ -59,9 +58,13 @@ def main() -> int:
 def _verify_across(mounts: list[Path]) -> int:
     where = str(mounts[0]) if len(mounts) == 1 else f"{len(mounts)} mounts of {mounts[0]} .. {mounts[-1]}"
     print(f"verifying mutual exclusion across {where} ({_PROCESSES} processes x {_HOLDS} holds)")
-    gated = _gated_locks()
+    locks: Final[tuple[str, ...]] = ("FileLock", "SoftFileLock", "StrictSoftFileLock")
+    if requested := os.environ.get("FILELOCK_VERIFY_LOCKS"):
+        gated = frozenset(requested.split(","))
+    else:
+        gated = frozenset(locks)
     failures = 0
-    for name in _ALL_LOCKS:
+    for name in locks:
         counts, overlaps, reason = _run_one(name, mounts)
         expected = _PROCESSES * _HOLDS
         # A correct lock never overlaps, finishes every hold, and raises no error the retries could not clear.
@@ -70,12 +73,6 @@ def _verify_across(mounts: list[Path]) -> int:
         tail = f"{('' if name in gated else ' (ungated)')}{f' {reason}' if reason else ''}"
         print(f"  {name:20} {'PASS' if ok else 'FAIL'}  {f'held={sum(counts)}/{expected} overlaps={overlaps}'}{tail}")
     return 1 if failures else 0
-
-
-def _gated_locks() -> frozenset[str]:
-    if not (requested := os.environ.get("FILELOCK_VERIFY_LOCKS")):
-        return frozenset(_ALL_LOCKS)
-    return frozenset(requested.split(","))
 
 
 def _run_one(name: str, mounts: list[Path]) -> tuple[list[int], int, str | None]:

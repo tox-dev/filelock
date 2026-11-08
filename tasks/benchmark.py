@@ -43,7 +43,7 @@ def main() -> None:
     samples: list[Sample] = []
     with TemporaryDirectory(prefix="filelock-bench-") as directory:
         root = Path(directory)
-        samples += _construction(root)
+        samples += [_timed(f"construct {name}", build, unit="us", scale=1e6) for name, build in _backends(root)]
         samples += _uncontended(root)
         samples.append(_timeout_cpu(root))
         samples.append(_descriptor_growth(root))
@@ -68,10 +68,6 @@ def _backends(root: Path) -> Iterator[tuple[str, Callable[[], filelock.BaseFileL
     yield "SoftFileLock", lambda: SoftFileLock(str(root / "soft.lock"))
     yield "StrictSoftFileLock", lambda: StrictSoftFileLock(str(root / "strict.lock"))
     yield "SoftFileLease", lambda: SoftFileLease(str(root / "lease.lock"), lease_duration=30)
-
-
-def _construction(root: Path) -> list[Sample]:
-    return [_timed(f"construct {name}", build, unit="us", scale=1e6) for name, build in _backends(root)]
 
 
 def _uncontended(root: Path) -> list[Sample]:
