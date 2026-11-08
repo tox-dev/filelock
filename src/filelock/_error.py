@@ -6,7 +6,12 @@ from typing import Final
 
 
 class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # public exception name; renaming breaks the API
-    """Raised when the lock could not be acquired in *timeout* seconds."""
+    """
+    Raised when the lock could not be acquired in *timeout* seconds.
+
+    :param lock_file: the path of the file lock
+    :param holder: a description of the lock's holder, when one is recorded and this host cannot probe it
+    """
 
     def __init__(self, lock_file: str, holder: str | None = None) -> None:
         super().__init__()
@@ -47,7 +52,13 @@ class LeaseSettingsMismatch(ValueError):  # ruff:ignore[error-suffix-on-exceptio
 
 
 class SoftFileLockProtocolError(OSError):
-    """Raised when strict soft-lock state cannot be interpreted without risking overlap."""
+    """
+    Raised when strict soft-lock state cannot be interpreted without risking overlap.
+
+    :param lock_file: the path of the lock
+    :param claim_name: the name of the claim the state belongs to, or ``None`` when it concerns the lock as a whole
+    :param reason: why the state cannot be interpreted
+    """
 
     def __init__(self, lock_file: str, claim_name: str | None, reason: str) -> None:
         self._lock_file = lock_file

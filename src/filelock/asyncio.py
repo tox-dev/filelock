@@ -876,7 +876,11 @@ for _field in fields(AsyncFileLockContext):
 
 
 class AsyncAcquireReturnProxy:
-    """A context-aware object that will release the lock file when exiting."""
+    """
+    A context-aware object that will release the lock file when exiting.
+
+    :param lock: the lock to release on exit
+    """
 
     def __init__(self, lock: BaseAsyncFileLock) -> None:  # trivial release-on-exit proxy
         self.lock = lock

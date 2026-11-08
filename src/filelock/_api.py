@@ -100,7 +100,22 @@ _LockInitValue = float | int | bool | str | None | Callable[[int], None]
 
 
 class LockOptions(TypedDict, total=False):
-    """Every option the metaclass forwards, so a subclass adding its own can still type what it passes through."""
+    """
+    Every option the metaclass forwards, so a subclass adding its own can still type what it passes through.
+
+    :ivar timeout: default acquire timeout in seconds; a negative value or ``inf`` waits without a limit
+    :ivar mode: file permissions for the lock file, as in :class:`BaseFileLock`
+    :ivar thread_local: whether the lock's internal context is per thread, so a reentrant lock is not shared
+    :ivar blocking: whether acquiring the lock waits for it
+    :ivar is_singleton: whether one instance is shared per lock file
+    :ivar poll_interval: default interval in seconds for polling the lock file
+    :ivar lifetime: for :class:`SoftFileLock`, the age in seconds after which a waiting process may delete the marker
+    :ivar context_error_policy: how a context manager reconciles a body failure with a release failure
+    :ivar close_error_policy: what to do with an ``os.close`` failure after the descriptor is relinquished
+    :ivar fallback_to_soft: for :class:`UnixFileLock`, whether ``ENOSYS`` falls back to :class:`SoftFileLock`
+    :ivar preserve_lock_file: for native locks, whether the lock pathname is kept on release
+    :ivar on_acquired: for native locks, a callable invoked with the borrowed lock descriptor on each acquisition
+    """
 
     timeout: float
     mode: int
@@ -1777,7 +1792,11 @@ def _on_this_stack(frame: FrameType | None) -> bool:
 # acquire() returns this wrapper instead of self so entering the with-statement does not call __enter__ a second
 # time; returning self would re-acquire the lock in BaseFileLock.__enter__ without a matching release (issue #37).
 class AcquireReturnProxy(Generic[_LockT]):
-    """A context-aware object that will release the lock file when exiting."""
+    """
+    A context-aware object that will release the lock file when exiting.
+
+    :param lock: the lock to release on exit
+    """
 
     def __init__(self, lock: _LockT) -> None:
         self.lock: _LockT = lock

@@ -46,7 +46,14 @@ _DEFAULT_LEASE_DURATION: Final[float] = 30.0
 
 @dataclass(frozen=True)
 class LeaseCompromise:
-    """Why a held lease stopped being this process's to hold, and the error that ended its refresh, if any."""
+    """
+    Why a held lease stopped being this process's to hold, and the error that ended its refresh, if any.
+
+    :param lock_file: the path of the lock the lease was held on
+    :param token: the token of the claim that was lost
+    :param reason: what took the claim away: the marker vanished, its owner changed, a refresh failed, or it was evicted
+    :param error: the error that ended the refresh, when a refresh failed with one
+    """
 
     lock_file: str
     token: str
@@ -98,6 +105,8 @@ class SoftFileLease(MarkerSoftFileLock):
     Signal the acquiring thread instead when the context stays thread-local.
 
     .. versionadded:: 3.30.0
+
+    :param lock_file: the path of the lock file
 
     """
 

@@ -352,7 +352,11 @@ class AsyncSoftReadWriteLock:
 
 
 class AsyncAcquireSoftReadWriteReturnProxy:
-    """Async context-aware object that releases an :class:`AsyncSoftReadWriteLock` on exit."""
+    """
+    Async context-aware object that releases an :class:`AsyncSoftReadWriteLock` on exit.
+
+    :param lock: the lock to release on exit
+    """
 
     def __init__(self, lock: AsyncSoftReadWriteLock) -> None:
         self.lock = lock

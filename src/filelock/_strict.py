@@ -313,6 +313,7 @@ class StrictSoftFileLock(BaseFileLock):
         """
         Remove one named claim, allowing overlap if its owner still holds the protected resource.
 
+        :param claim_name: the file name of the claim to remove, as listed by :meth:`claims`
         :raises ValueError: if *claim_name* is not one public claim basename
         :raises FileNotFoundError: if no claim with that name is in the claim directory
         """
@@ -364,7 +365,16 @@ class StrictSoftFileLock(BaseFileLock):
 
 @dataclass(frozen=True)
 class StrictSoftFileClaim:
-    """One parsed strict soft-lock claim."""
+    """
+    One parsed strict soft-lock claim.
+
+    :param name: the claim's file name in the claim directory
+    :param state: whether the claim is an ``intent`` or a ``held`` record
+    :param token: the random token that identifies the claim
+    :param pid: the PID of the process that wrote the claim
+    :param hostname: the host name of the process that wrote the claim
+    :param start: the owner's process start token, or ``None`` when the platform exposes no proven start time
+    """
 
     name: str
     state: StrictSoftFileClaimState
