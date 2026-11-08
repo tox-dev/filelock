@@ -84,6 +84,7 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
         _kill_processes(processes)
         pytest.fail(f"strict soft-lock stress workers exceeded {_WORKER_DEADLINE} seconds")
 
+    assert counter_path.exists(), outputs
     recorded = int(counter_path.read_text())
     assert ([process.returncode for process in processes], recorded) == (
         [0] * process_count,
