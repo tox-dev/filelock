@@ -418,7 +418,6 @@ def test_stale_break_restores_under_an_exclusive_claim(  # pragma: win32 no cove
             rival.join(0.001)
 
     def exchange_with_a_rival_between_check_and_exchange(first: str, second: str) -> bool:
-        # The rival reaches its own exchange only when recovery lets two contenders act on one record.
         if threading.current_thread() is main:
             rival.start()
             settle(first_has_checked)
