@@ -205,26 +205,34 @@ def test_owner_is_stale_live_process_across_time_namespaces_held(mocker: MockerF
 
 
 @_LINUX_ONLY  # pragma: linux cover
-@pytest.mark.parametrize("hidden_from", ["holder", "contender"])
-def test_owner_is_stale_live_process_boot_id_hidden_from_one_side_held(
-    hidden_from: str, hide_boot_id: Callable[[], None]
-) -> None:
+def test_owner_is_stale_live_process_boot_id_hidden_from_holder_held() -> None:
     token: Final = process_start_token(os.getpid())
     assert token is not None
-    if hidden_from == "contender":
-        hide_boot_id()
-    assert owner_is_stale(os.getpid(), host_name(), token if hidden_from == "contender" else token % 2**64) is False
+    assert owner_is_stale(os.getpid(), host_name(), token % 2**64) is False
 
 
 @_LINUX_ONLY  # pragma: linux cover
-@pytest.mark.parametrize("hidden_from", ["holder", "contender"])
-def test_owner_is_stale_recycled_pid_boot_id_hidden_from_one_side_reclaimed(
-    hidden_from: str, hide_boot_id: Callable[[], None]
+def test_owner_is_stale_live_process_boot_id_hidden_from_contender_held(hide_boot_id: Callable[[], None]) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    hide_boot_id()
+    assert owner_is_stale(os.getpid(), host_name(), token) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+def test_owner_is_stale_recycled_pid_boot_id_hidden_from_holder_reclaimed() -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    assert owner_is_stale(os.getpid(), host_name(), token % 2**64 + 10**9) is True
+
+
+@_LINUX_ONLY  # pragma: linux cover
+def test_owner_is_stale_recycled_pid_boot_id_hidden_from_contender_reclaimed(
+    hide_boot_id: Callable[[], None],
 ) -> None:
     token: Final = process_start_token(os.getpid())
     assert token is not None
-    if hidden_from == "contender":
-        hide_boot_id()
+    hide_boot_id()
     assert owner_is_stale(os.getpid(), host_name(), token % 2**64 + 10**9) is True
 
 
@@ -248,25 +256,38 @@ def owner_in_another_namespace(mocker: MockerFixture) -> None:  # pragma: linux 
 @_LINUX_ONLY  # pragma: linux cover
 @pytest.mark.usefixtures("owner_in_another_namespace")
 @pytest.mark.parametrize(
-    "view",
+    "recorded",
     [
-        pytest.param("same-token", id="start-token-matches"),
-        pytest.param("recorded-without-boot-id", id="holder-without-boot-id"),
-        pytest.param("read-without-boot-id", id="contender-without-boot-id"),
-        pytest.param("time-namespace", id="contender-with-boottime-offset"),
+        pytest.param(lambda token: token, id="start-token-matches"),
+        pytest.param(lambda token: token % 2**64, id="holder-without-boot-id"),
     ],
 )
-def test_owner_is_stale_owner_running_in_another_namespace_held(
-    view: str, hide_boot_id: Callable[[], None], mocker: MockerFixture
+def test_owner_is_stale_owner_running_in_another_namespace_held(recorded: Callable[[int], int]) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    assert owner_is_stale(_DEAD_PID, host_name(), recorded(token)) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.usefixtures("owner_in_another_namespace")
+def test_owner_is_stale_owner_running_in_another_namespace_contender_without_boot_id_held(
+    hide_boot_id: Callable[[], None],
 ) -> None:
     token: Final = process_start_token(os.getpid())
     assert token is not None
-    if view == "read-without-boot-id":
-        hide_boot_id()
-    if view == "time-namespace":
-        pin_time_namespace(mocker, _ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED)
-    recorded: Final = token % 2**64 if view == "recorded-without-boot-id" else token
-    assert owner_is_stale(_DEAD_PID, host_name(), recorded) is False
+    hide_boot_id()
+    assert owner_is_stale(_DEAD_PID, host_name(), token) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.usefixtures("owner_in_another_namespace")
+def test_owner_is_stale_owner_running_in_another_namespace_contender_with_boottime_offset_held(
+    mocker: MockerFixture,
+) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    pin_time_namespace(mocker, _ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED)
+    assert owner_is_stale(_DEAD_PID, host_name(), token) is False
 
 
 @_LINUX_ONLY  # pragma: linux cover
