@@ -651,37 +651,23 @@ def test_read_write_lock_database_keeps_out_the_directory_acl(
         pytest.param("write", "read", id="write"),
     ],
 )
-@pytest.mark.parametrize(
-    ("after_rollback", "available_after_failure"),
-    [
-        pytest.param(False, False, id="transaction-open"),
-        pytest.param(True, True, id="transaction-ended"),
-    ],
-)
-def test_release_rollback_failure_reconciles_lock_state(
+def test_release_rollback_failure_with_open_transaction_keeps_the_lock(
     lock_file: str,
     mocker: MockerFixture,
     held_mode: Literal["read", "write"],
     probe_mode: Literal["read", "write"],
-    *,
-    after_rollback: bool,
-    available_after_failure: bool,
 ) -> None:
-    rollback_error = _patch_rollback_failure(mocker, after_rollback=after_rollback)
+    rollback_error = _patch_rollback_failure(mocker, after_rollback=False)
     lock = ReadWriteLock(lock_file, is_singleton=False)
     getattr(lock, f"acquire_{held_mode}")()
 
     with pytest.raises(sqlite3.OperationalError, match="rollback failed") as info:
         lock.release()
     assert info.value is rollback_error
-    assert_read_write_lock_state(lock_file, probe_mode, available=available_after_failure)
+    assert_read_write_lock_state(lock_file, probe_mode, available=False)
 
-    if available_after_failure:
-        with pytest.raises(RuntimeError, match="not held"):
-            lock.release()
-    else:
-        lock.release()
-        assert_read_write_lock_state(lock_file, probe_mode, available=True)
+    lock.release()
+    assert_read_write_lock_state(lock_file, probe_mode, available=True)
     lock.close()
 
 
@@ -736,6 +722,33 @@ def _patch_rollback_failure(mocker: MockerFixture, *, after_rollback: bool) -> s
 
     mocker.patch("filelock._read_write._connect", side_effect=connect, autospec=True)
     return rollback_error
+
+
+@pytest.mark.parametrize(
+    ("held_mode", "probe_mode"),
+    [
+        pytest.param("read", "write", id="read"),
+        pytest.param("write", "read", id="write"),
+    ],
+)
+def test_release_rollback_failure_after_transaction_end_reports_not_held(
+    lock_file: str,
+    mocker: MockerFixture,
+    held_mode: Literal["read", "write"],
+    probe_mode: Literal["read", "write"],
+) -> None:
+    rollback_error = _patch_rollback_failure(mocker, after_rollback=True)
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    getattr(lock, f"acquire_{held_mode}")()
+
+    with pytest.raises(sqlite3.OperationalError, match="rollback failed") as info:
+        lock.release()
+    assert info.value is rollback_error
+    assert_read_write_lock_state(lock_file, probe_mode, available=True)
+
+    with pytest.raises(RuntimeError, match="not held"):
+        lock.release()
+    lock.close()
 
 
 @pytest.fixture
