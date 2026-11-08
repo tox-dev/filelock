@@ -328,11 +328,15 @@ def _has_a_sticky_tmp_of_another_user() -> bool:
 
 
 def _lists_every_open_descriptor() -> bool:
-    # FreeBSD's devfs and NetBSD provide only the standard streams under /dev/fd until fdescfs is mounted, so a listing
-    # there misses every descriptor a test opened.
     view: Final = next((view for view in ("/dev/fd", "/proc/self/fd") if Path(view).is_dir()), None)
+    if view is None:
+        return False
     with Path(os.devnull).open("rb") as probe:
-        return view is not None and Path(view, str(probe.fileno())).exists()
+        probe_path: Final = Path(view, str(probe.fileno()))
+        if not probe_path.exists():
+            return False
+    # Static /dev/fd nodes can exist even after their descriptors close.
+    return not probe_path.exists()
 
 
 _LINK_FOLLOW_SYMLINKS: Final[bool] = _honors_link_follow_symlinks()
