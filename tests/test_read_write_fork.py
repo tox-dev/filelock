@@ -23,6 +23,7 @@ from tests.capability_marks import (
     NEEDS_FORK1,
 )
 from tests.descriptor_helpers import descriptors_on
+from tests.read_write_helpers import OPPOSITE_MODE
 
 if TYPE_CHECKING:
     from _typeshed import StrOrBytesPath
@@ -602,6 +603,7 @@ def test_read_write_lock_survives_normal_fork_child_exit(
         [
             str(tmp_path / "fork.db"),
             mode,
+            OPPOSITE_MODE[mode],
             fork_name,
             "reject" if reject_audit_hook else "allow",
         ],
@@ -625,7 +627,7 @@ def _fork_script() -> str:
         if TYPE_CHECKING:
             from _typeshed import Unused
 
-        lock_path, mode, fork_name, audit_hook_mode = sys.argv[1:]
+        lock_path, mode, opposite_mode, fork_name, audit_hook_mode = sys.argv[1:]
         if audit_hook_mode == "reject":
             def reject_filelock_audit_hook(event: str, _args: Unused) -> None:
                 if event == "sys.addaudithook":
@@ -636,7 +638,7 @@ def _fork_script() -> str:
         from filelock import ReadWriteLock, Timeout
 
         lock = ReadWriteLock(lock_path, is_singleton=False)
-        acquire = lock.acquire_read if mode == "read" else lock.acquire_write
+        acquire = getattr(lock, f"acquire_{mode}")
         proxy = acquire()
         parent_to_child_read, parent_to_child_write = os.pipe()
         child_to_parent_read, child_to_parent_write = os.pipe()
@@ -692,7 +694,7 @@ def _fork_script() -> str:
         os.close(child_to_parent_write)
         assert os.read(child_to_parent_read, 1) == b"1"
         contender = ReadWriteLock(lock_path, is_singleton=False)
-        conflicting_acquire = contender.acquire_write if mode == "read" else contender.acquire_read
+        conflicting_acquire = getattr(contender, f"acquire_{opposite_mode}")
         try:
             conflicting_acquire(blocking=False)
         except Timeout:

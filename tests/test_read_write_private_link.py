@@ -44,7 +44,7 @@ async def test_private_link_connects_through_the_validated_inode(
     connect: Final = mocker.spy(sqlite3, "connect")
     lock: Final = AsyncReadWriteLock(database, is_singleton=False)
     try:
-        async with (lock.read_lock if mode == "read" else lock.write_lock)():
+        async with getattr(lock, f"{mode}_lock")():
             opened: Final = Path(connect.call_args.args[0])
             link_directory: Final = opened.parent.parent
             assert (
@@ -61,7 +61,7 @@ async def test_private_link_connects_through_the_validated_inode(
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 def test_private_link_preserves_contention(database: Path, mode: Literal["read", "write"]) -> None:
     lock: Final = ReadWriteLock(database, is_singleton=False)
-    with (lock.read_lock if mode == "read" else lock.write_lock)():
+    with getattr(lock, f"{mode}_lock")():
         assert_read_write_lock_state(str(database), "write", available=False)
 
 
@@ -81,7 +81,7 @@ def test_private_link_failure_preserves_a_peer_lock(database: Path, mocker: Mock
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 async def test_private_link_preserves_async_contention(database: Path, mode: Literal["read", "write"]) -> None:
     lock: Final = AsyncReadWriteLock(database, is_singleton=False)
-    async with (lock.read_lock if mode == "read" else lock.write_lock)():
+    async with getattr(lock, f"{mode}_lock")():
         assert_read_write_lock_state(str(database), "write", available=False)
     await lock.close()
 

@@ -83,7 +83,7 @@ async def test_async_hold_refuses_a_sync_release_on_the_entering_worker(
     mode: Literal["read", "write"],
 ) -> None:
     lock, sync = make(tmp_path, worker)
-    await (lock.acquire_read() if mode == "read" else lock.acquire_write())
+    await getattr(lock, f"acquire_{mode}")()
 
     with pytest.raises(RuntimeError, match="Cannot release"):
         await asyncio.get_running_loop().run_in_executor(worker, sync.release)

@@ -17,6 +17,11 @@ if TYPE_CHECKING:
         from multiprocessing.connection import Connection
 
 
+OPPOSITE_MODE: Final[dict[Literal["read", "write"], Literal["read", "write"]]] = {
+    "read": "write",
+    "write": "read",
+}
+
 ACQUIRE_SETTINGS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
     ("instance_timeout", "instance_blocking", "call_timeout", "call_blocking", "minimum"),
     [

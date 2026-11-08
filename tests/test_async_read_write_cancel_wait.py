@@ -70,7 +70,7 @@ async def _acquire_within_deadline(
     start = time.perf_counter()
     with pytest.raises(TimeoutError) as info:
         async with asyncio.timeout(_DEADLINE):
-            await (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout)
+            await getattr(lock, f"acquire_{mode}")(timeout)
     assert not isinstance(info.value, Timeout)
     return time.perf_counter() - start
 
@@ -93,7 +93,7 @@ async def test_async_acquire_behind_another_process_honors_the_callers_deadline(
     assert elapsed < _HOLD
     ending.cancel()
     holder.release()
-    await (lock.acquire_read if mode == "read" else lock.acquire_write)(_HOLD * 2)
+    await getattr(lock, f"acquire_{mode}")(_HOLD * 2)
     await lock.release()
     await lock.close()
 

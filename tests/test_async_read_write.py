@@ -12,7 +12,7 @@ import pytest
 import pytest_asyncio
 
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, XFAIL_WITHOUT_COROUTINE_CANCELLATION
-from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS, Interrupt, interrupt_once
+from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS, OPPOSITE_MODE, Interrupt, interrupt_once
 
 pytest.importorskip("sqlite3")
 
@@ -81,7 +81,7 @@ async def test_lock_context_manager(lock_file: str, mode: Literal["read", "write
 
 def assert_mode_held(lock_file: str, mode: Literal["read", "write"]) -> None:
     contender = ReadWriteLock(lock_file, is_singleton=False)
-    acquire = contender.acquire_write if mode == "read" else contender.acquire_read
+    acquire = getattr(contender, f"acquire_{OPPOSITE_MODE[mode]}")
     with pytest.raises(Timeout):
         acquire(blocking=False)
     contender.close()

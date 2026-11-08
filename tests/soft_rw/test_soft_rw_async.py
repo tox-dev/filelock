@@ -47,7 +47,7 @@ def _clear_singletons() -> Generator[None]:
 async def test_async_lock_context_manager(tmp_path: Path, mode: Literal["read", "write"]) -> None:
     lock = _make(tmp_path)
     try:
-        async with (lock.write_lock if mode == "write" else lock.read_lock)(timeout=2):
+        async with getattr(lock, f"{mode}_lock")(timeout=2):
             pass
     finally:
         await lock.close()
@@ -133,7 +133,7 @@ async def test_async_acquire_rejects_invalid_timeout(
     contended: bool,
 ) -> None:
     lock: Final = _make(tmp_path, timeout=timeout if configured else -1)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
         async with AsyncExitStack() as stack:
             if contended:
@@ -155,7 +155,7 @@ async def test_async_nonblocking_ignores_invalid_timeout(
     tmp_path: Path, mode: Literal["read", "write"], timeout: float, *, configured: bool
 ) -> None:
     lock: Final = _make(tmp_path, timeout=timeout, blocking=not configured)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
         async with await (acquire() if configured else acquire(timeout=timeout, blocking=False)):
             with pytest.raises(Timeout):
@@ -168,7 +168,7 @@ async def test_async_nonblocking_ignores_invalid_timeout(
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 async def test_async_acquire_accepts_infinite_timeout(tmp_path: Path, mode: Literal["read", "write"]) -> None:
     lock: Final = _make(tmp_path)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
         async with await acquire(timeout=float("inf")):
             with pytest.raises(Timeout):
@@ -338,7 +338,7 @@ async def test_async_acquire_cancellation_hands_the_claim_back(
 ) -> None:
     gate = _Gate(mocker, "_acquire_level_of")
     lock = _make(tmp_path)
-    task = asyncio.create_task((lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=5))
+    task = asyncio.create_task(getattr(lock, f"acquire_{mode}")(timeout=5))
     await gate.started.wait()
     task.cancel("cancel acquire")
     gate.resume()
@@ -452,7 +452,7 @@ async def test_async_release_cancellation_drains_the_release(tmp_path: Path, moc
 
 async def _acquire_then_release(lock: AsyncSoftReadWriteLock, mode: Literal["read", "write"]) -> None:
     # A hold belongs to the task that took it, so the task whose release gets canceled has to acquire first.
-    await (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=5)
+    await getattr(lock, f"acquire_{mode}")(timeout=5)
     await lock.release()
 
 
@@ -615,7 +615,7 @@ async def test_async_soft_close_keeps_the_hold_taken_through_another_wrapper(
     tmp_path: Path, mode: Literal["read", "write"]
 ) -> None:
     holder, closing = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)
-    await (holder.acquire_read if mode == "read" else holder.acquire_write)(timeout=_TASK_WAIT)
+    await getattr(holder, f"acquire_{mode}")(timeout=_TASK_WAIT)
 
     await asyncio.create_task(closing.close())
 

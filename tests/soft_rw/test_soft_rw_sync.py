@@ -404,8 +404,8 @@ def test_reentrant_write_holds_and_releases(lock_file: str, lock: SoftReadWriteL
 def test_change_of_mode_while_held_raises(
     lock: SoftReadWriteLock, first_mode: Literal["read", "write"], second_mode: Literal["read", "write"], direction: str
 ) -> None:
-    first_lock = lock.read_lock if first_mode == "read" else lock.write_lock
-    second_acquire = lock.acquire_read if second_mode == "read" else lock.acquire_write
+    first_lock = getattr(lock, f"{first_mode}_lock")
+    second_acquire = getattr(lock, f"acquire_{second_mode}")
     with first_lock(timeout=2), pytest.raises(RuntimeError, match=f"{direction} not allowed"):
         second_acquire(timeout=1)
 
@@ -765,7 +765,7 @@ def test_dead_holder_evicted_by_contender(
         os.kill(pid, getattr(signal, "SIGKILL"))  # ruff:ignore[get-attr-with-constant] - signal.SIGKILL is POSIX-only
         holder.join(timeout=_PROCESS_DEADLINE)
         time.sleep(0.8)
-        with (lock.read_lock if contender_mode == "read" else lock.write_lock)(timeout=5):
+        with getattr(lock, f"{contender_mode}_lock")(timeout=5):
             pass
         if contender_mode == "read":
             # A write lock's success already proves no live reader or writer remained; a read lock's does not.
@@ -1013,7 +1013,7 @@ def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
     mocker.patch.object(
         sync_mod._HeartbeatThread, "start", side_effect=RuntimeError("can't start new thread"), autospec=True
     )
-    acquire = lock.acquire_write if mode == "write" else lock.acquire_read
+    acquire = getattr(lock, f"acquire_{mode}")
     with pytest.raises(RuntimeError, match="can't start new thread"):
         acquire(timeout=2)
 
@@ -1095,7 +1095,7 @@ def test_release_from_on_compromise_leaves_cleanly(lock_file: str, force: bool, 
         poll_interval=0.02,
         on_compromise=lambda _compromise: lock.release(force=force),
     )
-    (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=2)
+    getattr(lock, f"acquire_{mode}")(timeout=2)
     hold = lock._hold
     assert hold is not None
     try:
@@ -1767,7 +1767,7 @@ def test_contention_obeys_acquisition_policy(
         ),
     )
     with closing(SoftReadWriteLock(lock_file, timeout=timeout, blocking=blocking, poll_interval=10)) as lock:
-        acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+        acquire: Final = getattr(lock, f"acquire_{mode}")
         with pytest.raises(Timeout) as caught:
             acquire()
         assert caught.value.lock_file == lock_file
@@ -1780,7 +1780,7 @@ async def test_async_contention_reports_public_path(lock_file: str, mode: Litera
     _plant_holder(lock_file, mode="write")
     lock: Final = AsyncSoftReadWriteLock(lock_file, timeout=0.02)
     try:
-        acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+        acquire: Final = getattr(lock, f"acquire_{mode}")
         with pytest.raises(Timeout) as caught:
             await acquire()
         assert caught.value.lock_file == lock_file

@@ -13,7 +13,7 @@ import pytest
 from filelock import AsyncReadWriteLock, ReadWriteLock
 from tests.async_filelock_cancellation_helpers import assert_cancellation_message
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
-from tests.read_write_helpers import assert_read_write_lock_state
+from tests.read_write_helpers import OPPOSITE_MODE, assert_read_write_lock_state
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -47,13 +47,13 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(
         blocker = executor.submit(_block_executor, executor_started, release_executor)
         assert executor_started.wait(timeout=5)
         lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
-        task = asyncio.create_task((lock.acquire_read if mode == "read" else lock.acquire_write)())
+        task = asyncio.create_task(getattr(lock, f"acquire_{mode}")())
         await asyncio.sleep(0)
         task.cancel("first cancellation")
         release_executor.set()
         await rollback_started.wait()
         try:
-            assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=False)
+            assert_read_write_lock_state(lock_file, OPPOSITE_MODE[mode], available=False)
             task.cancel("second cancellation")
         finally:
             finish_rollback.set()
@@ -61,7 +61,7 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(
             await task
         blocker.result(timeout=5)
         assert_cancellation_message(info.value, "first cancellation")
-        assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=True)
+        assert_read_write_lock_state(lock_file, OPPOSITE_MODE[mode], available=True)
         with pytest.raises(RuntimeError, match="not held"):
             await lock.release()
         await lock.close()
@@ -287,18 +287,18 @@ async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
 ) -> None:
     holder: Final = ReadWriteLock(lock_file, is_singleton=False)
     try:
-        (holder.acquire_write if mode == "read" else holder.acquire_read)(blocking=False)
+        getattr(holder, f"acquire_{OPPOSITE_MODE[mode]}")(blocking=False)
         execute_started: Final = asyncio.Event()
         _patch_async_execute_signal(mocker, asyncio.get_running_loop(), execute_started)
         lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
-        task: Final = asyncio.create_task((lock.acquire_read if mode == "read" else lock.acquire_write)())
+        task: Final = asyncio.create_task(getattr(lock, f"acquire_{mode}")())
         await execute_started.wait()
         task.cancel("cancel blocked acquire")
         holder.release()
         with pytest.raises(asyncio.CancelledError) as info:
             await task
         assert_cancellation_message(info.value, "cancel blocked acquire")
-        assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=True)
+        assert_read_write_lock_state(lock_file, OPPOSITE_MODE[mode], available=True)
         with pytest.raises(RuntimeError, match="not held"):
             await lock.release()
         await lock.close()
@@ -332,7 +332,7 @@ async def test_acquire_cancellation_surfaces_acquire_and_rollback_errors(
         mocker, loop, acquire_started, finish_acquire, mode
     )
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    task = asyncio.create_task((lock.acquire_read if mode == "read" else lock.acquire_write)())
+    task = asyncio.create_task(getattr(lock, f"acquire_{mode}")())
     await acquire_started.wait()
     task.cancel("cancel acquire")
     finish_acquire.set()
@@ -347,12 +347,12 @@ async def test_acquire_cancellation_surfaces_acquire_and_rollback_errors(
         acquire_error,
         prior_rollback_error,
     )
-    assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=False)
+    assert_read_write_lock_state(lock_file, OPPOSITE_MODE[mode], available=False)
 
-    await (lock.acquire_read if mode == "read" else lock.acquire_write)()
-    assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=False)
+    await getattr(lock, f"acquire_{mode}")()
+    assert_read_write_lock_state(lock_file, OPPOSITE_MODE[mode], available=False)
     await lock.release()
-    assert_read_write_lock_state(lock_file, "write" if mode == "read" else "read", available=True)
+    assert_read_write_lock_state(lock_file, OPPOSITE_MODE[mode], available=True)
     await lock.close()
 
 
@@ -437,7 +437,7 @@ async def test_release_cancellation_hands_the_lock_to_the_next_task(
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
 
     async def acquire_then_release() -> None:
-        await (lock.acquire_read if mode == "read" else lock.acquire_write)()
+        await getattr(lock, f"acquire_{mode}")()
         await lock.release()
 
     task = asyncio.create_task(acquire_then_release())
@@ -530,7 +530,7 @@ async def test_context_cancellation_preserves_body_and_rollback_contexts(
         prior_error,
         body_error,
     )
-    probe_mode: Literal["read", "write"] = "write" if mode == "read" else "read"
+    probe_mode: Literal["read", "write"] = OPPOSITE_MODE[mode]
     assert_read_write_lock_state(lock_file, probe_mode, available=False)
 
     await lock.close()
