@@ -774,9 +774,9 @@ def test_dead_holder_evicted_by_contender(
         holder.join(timeout=_PROCESS_DEADLINE)
         time.sleep(0.8)
         with getattr(lock, f"{contender_mode}_lock")(timeout=5):
-            pass
-        # A write lock's success already proves no live writer remained, so this check is for the read contender.
-        assert _state(lock_file).writer is None
+            hold = lock._hold
+            assert hold is not None
+            assert _state(lock_file).members == {hold.participant.token}
 
 
 def test_heartbeat_reports_eviction_and_stops(lock_file: str) -> None:
