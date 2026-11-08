@@ -146,31 +146,6 @@ async def test_release_returns_while_acquire_waits_for_external_holder(tmp_path:
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-async def _cancel_release_after_failed_unlock(
-    lock: AsyncFileLock, mocker: MockerFixture
-) -> tuple[asyncio.Task[None], OSError]:
-    release_started = asyncio.Event()
-    finish_release = threading.Event()
-    loop = asyncio.get_running_loop()
-    release_error = OSError(EIO, "release failed")
-    release_count = 0
-
-    def fail_first_unlock(_fd: int, _operation: int) -> None:
-        nonlocal release_count
-        release_count += 1
-        if release_count == 1:
-            loop.call_soon_threadsafe(release_started.set)
-            assert finish_release.wait(timeout=5)
-            raise release_error
-
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
-    task = asyncio.create_task(lock.release())
-    await release_started.wait()
-    task.cancel("cancel release")
-    finish_release.set()
-    return task, release_error
-
-
 @NEEDS_FCNTL
 @pytest.mark.asyncio  # pragma: needs fcntl
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
@@ -195,6 +170,31 @@ async def test_release_cancellation_chains_backend_error(
     assert (lock.is_locked, lock.lock_counter) == (True, 1)
     assert_file_lock_state(str(tmp_path / "a"), available=False)
     await lock.release()
+
+
+async def _cancel_release_after_failed_unlock(
+    lock: AsyncFileLock, mocker: MockerFixture
+) -> tuple[asyncio.Task[None], OSError]:
+    release_started = asyncio.Event()
+    finish_release = threading.Event()
+    loop = asyncio.get_running_loop()
+    release_error = OSError(EIO, "release failed")
+    release_count = 0
+
+    def fail_first_unlock(_fd: int, _operation: int) -> None:
+        nonlocal release_count
+        release_count += 1
+        if release_count == 1:
+            loop.call_soon_threadsafe(release_started.set)
+            assert finish_release.wait(timeout=5)
+            raise release_error
+
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
+    task = asyncio.create_task(lock.release())
+    await release_started.wait()
+    task.cancel("cancel release")
+    finish_release.set()
+    return task, release_error
 
 
 @NEEDS_FCNTL
