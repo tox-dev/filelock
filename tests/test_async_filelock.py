@@ -502,6 +502,19 @@ def test_del_after_loop_close_does_not_raise(lock_type: type[BaseAsyncFileLock],
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+def test_del_with_stopped_loop_releases_on_that_loop(lock_type: type[BaseAsyncFileLock], tmp_path: Path) -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        lock = lock_type(str(tmp_path / "test.lock"), loop=loop)
+        loop.run_until_complete(lock.acquire())
+        assert lock.is_locked
+        lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+        assert not lock.is_locked
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("timeout", [pytest.param(-1, id="unlimited"), pytest.param(float("inf"), id="infinite")])
 @pytest.mark.asyncio
 async def test_same_task_different_instances_raises(

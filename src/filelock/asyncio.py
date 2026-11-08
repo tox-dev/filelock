@@ -792,7 +792,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 if (loop := self._async_context.loop) is None or loop.is_closed() or sys.is_finalizing():
                     self._release_without_loop()
                     return
-                if not loop.is_running():  # pragma: no cover
+                if not loop.is_running():
                     loop.run_until_complete(self.release(force=True))
                     return
                 # Off the deadlock registry, a new lock in this task waits for the scheduled release instead of failing.
