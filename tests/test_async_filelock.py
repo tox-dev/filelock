@@ -62,7 +62,10 @@ async def _enter_proxy(
     return await lock.acquire()
 
 
-_ENTER: Final = [pytest.param(_enter_lock, id="direct"), pytest.param(_enter_proxy, id="proxy")]
+_ENTER: Final[list[pytest.ParameterSet]] = [
+    pytest.param(_enter_lock, id="direct"),
+    pytest.param(_enter_proxy, id="proxy"),
+]
 
 
 # Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
@@ -829,21 +832,6 @@ async def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Pat
         assert successor.is_locked
 
 
-@NEEDS_FCNTL
-@pytest.mark.asyncio  # pragma: needs fcntl
-async def test_forced_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path) -> None:
-    lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
-    lock = AsyncFileLock(lock_path, run_in_executor=False)
-    await lock.acquire()
-    await lock.acquire()
-    _retarget_parent(lock_path, replacement_path)
-
-    await lock.release(force=True)
-
-    async with AsyncFileLock(original_path, run_in_executor=False) as successor:
-        assert successor.is_locked
-
-
 def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:  # pragma: needs fcntl
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
@@ -858,6 +846,21 @@ def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:  # pragma
     link = lock_path.parent
     link.unlink()
     link.symlink_to(replacement_path.parent, target_is_directory=True)
+
+
+@NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
+async def test_forced_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path) -> None:
+    lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
+    lock = AsyncFileLock(lock_path, run_in_executor=False)
+    await lock.acquire()
+    await lock.acquire()
+    _retarget_parent(lock_path, replacement_path)
+
+    await lock.release(force=True)
+
+    async with AsyncFileLock(original_path, run_in_executor=False) as successor:
+        assert successor.is_locked
 
 
 @NEEDS_FCNTL

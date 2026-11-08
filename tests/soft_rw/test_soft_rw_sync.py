@@ -1362,13 +1362,6 @@ def test_protocol_tree_swapped_after_an_acquire_is_refused(  # pragma: needs lin
     assert list(target.iterdir()) == []
 
 
-def _junction_the_tree(root: Path, swapped: str, target: Path, create_junction: Callable[[Path, Path], None]) -> None:
-    for name in {"gen", "holders"} - {swapped}:
-        (root / name).mkdir(parents=True)
-    target.mkdir()
-    create_junction(root / swapped, target)
-
-
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name, through junctions")
 @pytest.mark.parametrize("swapped", ["gen", "holders"])
 def test_protocol_tree_with_a_junction_is_refused_before_first_acquire(  # pragma: win32 cover
@@ -1379,6 +1372,13 @@ def test_protocol_tree_with_a_junction_is_refused_before_first_acquire(  # pragm
     with pytest.raises(RuntimeError, match="is not a directory or is a symlink"):
         lock.acquire_write(timeout=0.5)
     assert list(target.iterdir()) == []
+
+
+def _junction_the_tree(root: Path, swapped: str, target: Path, create_junction: Callable[[Path, Path], None]) -> None:
+    for name in {"gen", "holders"} - {swapped}:
+        (root / name).mkdir(parents=True)
+    target.mkdir()
+    create_junction(root / swapped, target)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name, through junctions")
