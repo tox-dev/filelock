@@ -614,7 +614,7 @@ def test_writability_uses_open_credentials(
 
     supported: Final = effective_ids
     probe: Final = mocker.patch("os.access", autospec=True, side_effect=access)
-    mocker.patch("os.supports_effective_ids", {probe} if effective_ids else set())
+    mocker.patch("os.supports_effective_ids", {True: {probe}, False: set()}[effective_ids])
     with pytest.raises(Timeout):
         SoftFileLock(readonly_marker).acquire(timeout=0)
 
