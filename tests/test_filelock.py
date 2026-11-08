@@ -679,12 +679,16 @@ def test_concurrent_force_releases_free_an_exited_threads_hold_once(
     lock: Final = lock_type(str(tmp_path / "a"))
     _acquire_in_exited_thread(lock)
     first_inside: Final = threading.Event()
+    second_arrived: Final = threading.Event()
 
     def stall_the_first_release(record: logging.LogRecord) -> bool:
-        # A slow log handler holds the first releaser inside the release while the second one arrives.
-        if record.getMessage().startswith("Attempting to release") and not first_inside.is_set():
-            first_inside.set()
-            time.sleep(0.2)
+        # A slow log handler holds the first releaser inside the release until the second one arrives.
+        if record.getMessage().startswith("Attempting to release"):
+            if first_inside.is_set():
+                second_arrived.set()
+            else:
+                first_inside.set()
+                second_arrived.wait(_SHARED_WAIT)
         return True
 
     def record_close(fd: int) -> None:
