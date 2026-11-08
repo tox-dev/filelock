@@ -928,6 +928,11 @@ class AsyncWindowsFileLock(WindowsFileLock, BaseAsyncFileLock):
     """Uses ``LockFileEx`` to hard lock a byte range of the lock file on Windows systems."""
 
 
+def __dir__() -> list[str]:
+    # Hide the sync bases and helpers imported at top level.
+    return list(__all__)
+
+
 __all__ = [
     "AsyncAcquireReturnProxy",
     "AsyncSoftFileLease",
@@ -937,8 +942,3 @@ __all__ = [
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",
 ]
-
-
-def __dir__() -> list[str]:
-    # Hide the sync bases and helpers imported at top level.
-    return list(__all__)
