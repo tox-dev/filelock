@@ -9,7 +9,6 @@ __lazy_modules__ = [
     "pathlib",
     "re",
     "secrets",
-    "typing",
 ]
 
 import os
@@ -23,7 +22,7 @@ from contextlib import suppress
 from errno import EACCES, EEXIST, EPERM
 from itertools import islice
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 from filelock._api import BaseFileLock, _raise_grouped_errors
 from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
@@ -552,7 +551,13 @@ class SoftFileLock(BaseFileLock):
         return True
 
 
-def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | None:
+class _LockHolder(NamedTuple):
+    pid: int
+    hostname: str
+    start_token: int | None
+
+
+def _parse_lock_holder(content: str | None) -> _LockHolder | None:
     # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<start_token>\n" third line naming the
     # holder's process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now).
     # Anything else (wrong line count, a non-integer PID or start token, empty or unreadable content) is unparsable;
@@ -573,7 +578,7 @@ def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | Non
     # (not OSError/ValueError) out of the self-heal path. _parse_marker_bytes already enforces this range.
     if not 1 <= pid <= 2**31 - 1:
         return None
-    return pid, lines[1], start_token
+    return _LockHolder(pid, lines[1], start_token)
 
 
 def parse_decimal(text: str) -> int:

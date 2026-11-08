@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from errno import EACCES, EEXIST, ENOENT, ENOSYS, EPERM, ESTALE, EXDEV
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, cast
 
 from filelock._api import BaseFileLock, ThreadLocalFileContext, _canonical, _raise_cleanup_errors
 from filelock._error import SoftFileLockProtocolError
@@ -439,11 +439,17 @@ def _open_sentinel(lock_file: str, path: Path, unchanged_for: Callable[[os.stat_
         time.sleep(_CLAIM_READ_RETRY)
 
 
-def _inspect_lock_path(path: Path) -> tuple[int | None, _OccupantState, str]:
+class _LockPathInspection(NamedTuple):
+    fd: int | None
+    state: _OccupantState
+    occupant: str
+
+
+def _inspect_lock_path(path: Path) -> _LockPathInspection:
     # "held" may be a soft-lock owner that still runs, "exited" is one this host proves gone, "unparsable" is content no
     # lock parses, and "damaged" is a node no lock writes.
     if not stat.S_ISREG(mode := path.lstat().st_mode):
-        return None, "damaged", _NODE_DESCRIPTIONS.get(stat.S_IFMT(mode), "a special file")
+        return _LockPathInspection(None, "damaged", _NODE_DESCRIPTIONS.get(stat.S_IFMT(mode), "a special file"))
     try:
         fd, record = _open_record((os.fspath(path.parent), None), path.name, _CLAIM_RECORD_LIMIT)
     except FileNotFoundError:
@@ -451,13 +457,13 @@ def _inspect_lock_path(path: Path) -> tuple[int | None, _OccupantState, str]:
     except PermissionError as error:
         # Windows denies the read while a legacy holder keeps its marker open, and a holder running as another user
         # may leave it unreadable here, so a marker that cannot be read may still be held.
-        return None, "held", f"a file it cannot read ({error.strerror or error})"
+        return _LockPathInspection(None, "held", f"a file it cannot read ({error.strerror or error})")
     except OSError as error:
-        return None, "damaged", f"a file it cannot read ({error.strerror or error})"
+        return _LockPathInspection(None, "damaged", f"a file it cannot read ({error.strerror or error})")
     if record == _LEGACY_SENTINEL:
-        return fd, "sentinel", "the strict sentinel"
+        return _LockPathInspection(fd, "sentinel", "the strict sentinel")
     os.close(fd)
-    return None, *_describe_soft_marker(record.decode("utf-8", errors="replace"))
+    return _LockPathInspection(None, *_describe_soft_marker(record.decode("utf-8", errors="replace")))
 
 
 def _describe_soft_marker(content: str) -> tuple[_OccupantState, str]:

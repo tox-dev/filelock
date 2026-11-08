@@ -17,7 +17,7 @@ import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from math import isfinite
-from typing import TYPE_CHECKING, ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar, Final, NamedTuple
 from weakref import WeakValueDictionary
 
 from filelock._api import (
@@ -724,9 +724,13 @@ def _lost_hold_error(lock_file: str, mode: Mode, compromise: LeaseCompromise) ->
     )
 
 
-def _validate_intervals(
-    heartbeat_interval: float, stale_threshold: float | None, poll_interval: float
-) -> tuple[float, float, float]:
+class _Intervals(NamedTuple):
+    heartbeat_interval: float
+    stale_threshold: float
+    poll_interval: float
+
+
+def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None, poll_interval: float) -> _Intervals:
     heartbeat_interval = _seconds("heartbeat_interval", heartbeat_interval)
     if not isfinite(heartbeat_interval) or heartbeat_interval <= 0:
         msg = f"heartbeat_interval must be positive and finite, got {heartbeat_interval}"
@@ -750,7 +754,7 @@ def _validate_intervals(
     if poll_interval >= stale_threshold:
         msg = f"poll_interval must be below stale_threshold ({stale_threshold}), got {poll_interval}"
         raise ValueError(msg)
-    return heartbeat_interval, stale_threshold, poll_interval
+    return _Intervals(heartbeat_interval, stale_threshold, poll_interval)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
