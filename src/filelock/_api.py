@@ -1792,7 +1792,7 @@ def _resolve_timeout(timeout: float, *, blocking: bool) -> float:
 )
 class _FinalizerState:
     # A finalized lock's state, held for the release that runs once the lock is unreachable.
-    state: dict[str, object] | None
+    state: dict[str, object] | None  # simplint: ignore[SMP602]  # the instance __dict__ holds any value
 
 
 #: Weak references whose callback finishes a singleton's finalizer once the cache no longer finds it.

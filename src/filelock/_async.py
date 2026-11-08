@@ -23,7 +23,7 @@ from filelock._api import (
 from filelock._error import Timeout
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Hashable
     from concurrent.futures import Executor
 
     from filelock._read_write import ReadWriteLock
@@ -163,7 +163,7 @@ class _TaskOwners:
     def __init__(self) -> None:
         self._lock: Final[Lock] = Lock()
         self._mode: Literal["read", "write"] | None = None
-        self._holds: dict[asyncio.Task[object], _TaskHold] = {}
+        self._holds: dict[asyncio.Task[object], _TaskHold] = {}  # simplint: ignore[SMP602]  # tasks carry any type
         self._transitioning = False
         self._waiting_writers = 0
         #: One ticket per waiting call, settled on the next state change. A call that stops waiting takes its own out,
@@ -177,7 +177,7 @@ class _TaskOwners:
         timeout: float,
         blocking: bool,
         lock_file: str,
-        via: object,
+        via: Hashable,
         enter: Callable[[float], Awaitable[None]],
         joinable: Callable[[], bool],
     ) -> None:
@@ -219,11 +219,11 @@ class _TaskOwners:
 
     def _admit(  # ruff:ignore[too-many-arguments]  # the acquire's state, passed through under the table lock
         self,
-        task: asyncio.Task[object],
+        task: asyncio.Task[object],  # simplint: ignore[SMP602]  # tasks carry any result type
         mode: Literal["read", "write"],
         lock_file: str,
         *,
-        via: object,
+        via: Hashable,
         joinable: Callable[[], bool],
         waiting_writer: bool,
     ) -> Literal["held", "enter"] | ConcurrentFuture[None]:
@@ -269,7 +269,10 @@ class _TaskOwners:
             ticket.set_result(None)
 
     def _finish_transition(
-        self, *, mode: Literal["read", "write"] | None, holds: dict[asyncio.Task[object], _TaskHold] | None = None
+        self,
+        *,
+        mode: Literal["read", "write"] | None,
+        holds: dict[asyncio.Task[object], _TaskHold] | None = None,  # simplint: ignore[SMP602]  # tasks carry any type
     ) -> None:
         with self._lock:
             self._transitioning, self._mode = False, mode
@@ -283,7 +286,7 @@ class _TaskOwners:
         *,
         force: bool,
         lock_file: str,
-        via: object,
+        via: Hashable,
         leave: Callable[[], asyncio.Future[_BackendOutcome[None]]],
         still_held: Callable[[], bool],
     ) -> None:
@@ -324,7 +327,7 @@ class _TaskOwners:
 
     async def retire(
         self,
-        via: object | None,
+        via: Hashable | None,
         *,
         leave: Callable[[], asyncio.Future[_BackendOutcome[None]]],
         still_held: Callable[[], bool],
@@ -360,8 +363,14 @@ class _TaskOwners:
             raise cancellation
 
     def _drop_holds_via(
-        self, via: object | None
-    ) -> tuple[Literal["read", "write"] | None, dict[asyncio.Task[object], _TaskHold]] | ConcurrentFuture[None]:
+        self, via: Hashable | None
+    ) -> (
+        tuple[
+            Literal["read", "write"] | None,
+            dict[asyncio.Task[object], _TaskHold],  # simplint: ignore[SMP602]  # tasks carry any type
+        ]
+        | ConcurrentFuture[None]
+    ):
         # Returns the future a running transition settles, or else the mode to leave (None when other holds keep the
         # backend level) and the dropped holds. The table stays transitioning while that mode is left.
         with self._lock:
@@ -384,7 +393,7 @@ class _TaskOwners:
             return mode, dropped
 
 
-def _current_task() -> asyncio.Task[object]:
+def _current_task() -> asyncio.Task[object]:  # simplint: ignore[SMP602]  # tasks carry any result type
     if (task := asyncio.current_task()) is None:
         msg = "an async reader/writer lock must be used from inside an asyncio task"
         raise RuntimeError(msg)
@@ -397,7 +406,7 @@ class _TaskHold:
     #
     # A task's hold ends when its last wrapper level is released or closed. Closing one wrapper ends only the levels
     # taken through it.
-    depths: dict[object, int]
+    depths: dict[Hashable, int]
 
 
 async def _drain_cancellation(future: asyncio.Future[_BackendOutcome[None]]) -> asyncio.CancelledError | None:

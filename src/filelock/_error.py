@@ -18,7 +18,9 @@ class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # p
         self._lock_file = lock_file
         self._holder = holder
 
-    def __reduce__(self) -> tuple[type[Timeout], tuple[str], dict[str, object]]:
+    def __reduce__(
+        self,
+    ) -> tuple[type[Timeout], tuple[str], dict[str, object]]:  # simplint: ignore[SMP602]  # __dict__ holds any value
         # holder rides in the state so a subclass taking only lock_file, and a 4.0.12 reader, can still unpickle it.
         return self.__class__, (self._lock_file,), self.__dict__
 
@@ -73,7 +75,9 @@ class SoftFileLockProtocolError(OSError):
     def __reduce__(
         self,
     ) -> tuple[
-        type[SoftFileLockProtocolError], tuple[str, str | None, str], dict[str, object]
+        type[SoftFileLockProtocolError],
+        tuple[str, str | None, str],
+        dict[str, object],  # simplint: ignore[SMP602]  # __dict__ holds any value
     ]:  # pragma: needs hard-link
         return self.__class__, (self._lock_file, self._claim_name, self._reason), self.__dict__
 

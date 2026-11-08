@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     import ctypes
     from collections.abc import Callable, Generator
     from contextlib import AbstractContextManager
+    from io import BufferedReader
 
 
 def raise_on_not_writable_file(filename: str) -> None:
@@ -344,7 +345,7 @@ def foreign_directory_owner(directory: os.stat_result, parent: os.stat_result) -
 
 if sys.platform == "win32":  # pragma: win32 cover
 
-    def _pinned_for_rename(path: str) -> AbstractContextManager[object]:
+    def _pinned_for_rename(path: str) -> AbstractContextManager[BufferedReader]:
         # A rename by path waits on a Level 1 or batch oplock holder until it answers or closes. Opening first with
         # FILE_COMPLETE_IF_OPLOCKED turns that wait into BlockingIOError, and the open handle shares delete, so the
         # rename then proceeds. Imported here because _windows imports this module.
