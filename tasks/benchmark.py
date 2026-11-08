@@ -53,8 +53,7 @@ def main() -> None:
 
 
 def _environment() -> str:
-    gil = getattr(sys, "_is_gil_enabled", lambda: True)()
-    build = "gil" if gil else "free-threaded"
+    build = "gil" if getattr(sys, "_is_gil_enabled", lambda: True)() else "free-threaded"
     return (
         f"filelock {filelock.__version__} | {platform.python_implementation()} {platform.python_version()} ({build}) | "
         f"{platform.system()} {platform.machine()} | {os.cpu_count()} cpus"
@@ -119,8 +118,7 @@ def _cancellation_latency(root: Path) -> list[Sample]:
     holder.start()
 
     async def measure() -> float:
-        waiter = AsyncFileLock(path)
-        task = asyncio.ensure_future(waiter.acquire(poll_interval=0.01))
+        task = asyncio.ensure_future(AsyncFileLock(path).acquire(poll_interval=0.01))
         await asyncio.sleep(0.02)
         started = time.perf_counter()
         task.cancel()
@@ -195,8 +193,7 @@ def _one(run: Callable[[], object]) -> float:
 
 def _percentile(values: list[float], percentile: int) -> float:
     ordered = sorted(values)
-    index = min(len(ordered) - 1, round(percentile / 100 * len(ordered)))
-    return ordered[index]
+    return ordered[min(len(ordered) - 1, round(percentile / 100 * len(ordered)))]
 
 
 def _open_descriptors() -> int:
