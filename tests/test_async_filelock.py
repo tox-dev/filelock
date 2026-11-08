@@ -11,7 +11,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from errno import EINTR, EIO, ENOSYS
 from functools import partial
 from itertools import count
@@ -42,24 +42,28 @@ from tests.capability_marks import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Generator, Iterator
+    from collections.abc import AsyncGenerator, Callable, Generator, Iterator
     from contextlib import AbstractAsyncContextManager
     from types import FrameType
 
     from _typeshed import Unused
     from pytest_mock import MockerFixture, MockType
 
-    _Enter = Callable[[filelock.asyncio.BaseAsyncFileLock], Awaitable[AbstractAsyncContextManager[object]]]
+    _Enter = Callable[
+        [filelock.asyncio.BaseAsyncFileLock], AbstractAsyncContextManager[filelock.asyncio.BaseAsyncFileLock]
+    ]
 
 
-def _enter_lock(lock: filelock.asyncio.BaseAsyncFileLock) -> Awaitable[filelock.asyncio.BaseAsyncFileLock]:
-    return asyncio.sleep(0, lock)
-
-
-async def _enter_proxy(
+def _enter_lock(
     lock: filelock.asyncio.BaseAsyncFileLock,
-) -> AbstractAsyncContextManager[object]:
-    return await lock.acquire()
+) -> AbstractAsyncContextManager[filelock.asyncio.BaseAsyncFileLock]:
+    return lock
+
+
+@asynccontextmanager
+async def _enter_proxy(lock: filelock.asyncio.BaseAsyncFileLock) -> AsyncGenerator[filelock.asyncio.BaseAsyncFileLock]:
+    async with await lock.acquire() as locked:
+        yield locked
 
 
 _ENTER: Final[list[pytest.ParameterSet]] = [
@@ -89,7 +93,7 @@ async def test_simple(
 
     lock_path = tmp_path / filename
     lock = lock_type(path_type(lock_path))
-    async with await enter(lock) as locked:
+    async with enter(lock) as locked:
         assert lock.is_locked
         assert lock is locked
     assert not lock.is_locked
@@ -1023,7 +1027,7 @@ async def test_soft_context_surfaces_close_error_after_cleanup(
         _close_after_commit(mocker, lock) as (close_error, attempts),
         pytest.raises(OSError, match="close failed") as info,
     ):
-        async with await enter(lock):
+        async with enter(lock):
             pass
     assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, False)
 
@@ -1095,7 +1099,7 @@ async def test_context_group_detaches_release_context(
         on_acquired=capture,
     )
     with pytest.raises(ExceptionGroup) as info:
-        async with await enter(lock):
+        async with enter(lock):
             raise body_error from body_cause
     assert (
         info.value.exceptions,
@@ -1128,7 +1132,7 @@ async def test_context_group_renders_independent_leaves(
         on_acquired=capture,
     )
     with pytest.raises(ExceptionGroup) as info:
-        async with await enter(lock):
+        async with enter(lock):
             raise body_error
     group_rendering = "".join(traceback.format_exception(info.value))
     release_rendering = "".join(traceback.format_exception(release_error))
@@ -1158,7 +1162,7 @@ async def test_context_chain_keeps_release_error_with_body_in_context(
         on_acquired=capture,
     )
     with pytest.raises(OSError, match="release failed") as info:
-        async with await enter(lock):
+        async with enter(lock):
             raise body_error
     assert (info.value, release_error.__context__) == (release_error, body_error)
 
@@ -1175,7 +1179,7 @@ async def test_context_body_only_failure_propagates_body(
     lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy=policy)
     body = ValueError("body failed")
     with pytest.raises(ValueError, match="body failed") as info:
-        async with await enter(lock):
+        async with enter(lock):
             raise body
     assert info.value is body
 
@@ -1202,7 +1206,7 @@ async def test_context_release_only_failure_propagates_release(
         on_acquired=capture,
     )
     with pytest.raises(OSError, match="release failed") as info:
-        async with await enter(lock):
+        async with enter(lock):
             pass
     assert (info.value, release_error.__context__, release_error.__cause__) == (release_error, None, release_cause)
 
