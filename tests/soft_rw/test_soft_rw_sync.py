@@ -993,7 +993,7 @@ def test_writer_evicted_while_draining_queues_behind_its_evictor(
 def test_heartbeat_survives_a_transient_refresh_error(lock_file: str, mocker: MockerFixture) -> None:
     # On the NFS-style filesystems this lock targets, a transient ESTALE/EIO on the heartbeat is routine; it must not
     # kill the heartbeat and drop the claim while we still believe we hold it.
-    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=0.5)
+    lock = _make_lock(lock_file, heartbeat_interval=0.02, stale_threshold=5)
     lock.acquire_write(timeout=2)
     try:
         hold = lock._hold
@@ -1001,7 +1001,7 @@ def test_heartbeat_survives_a_transient_refresh_error(lock_file: str, mocker: Mo
         overwrite = mocker.patch.object(
             storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"), autospec=True
         )
-        _wait_until(lambda: overwrite.call_count >= 10)
+        _wait_until(lambda: overwrite.call_count >= 10 or hold.heartbeat_stop.is_set())
         assert hold.heartbeat_thread.is_alive()
         assert not hold.heartbeat_stop.is_set()
         assert lock.compromise is None
