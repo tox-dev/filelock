@@ -512,6 +512,7 @@ def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:
 def test_read_write_lock_refuses_a_non_regular_path(tmp_path: Path) -> None:
     # A FIFO planted at the lock path opens without blocking (O_NONBLOCK) but is not a database to hand SQLite.
     lock_path = tmp_path / "lock.db"  # pragma: win32 no cover
+    assert sys.platform != "win32"  # narrows os.mkfifo for the type checker  # pragma: win32 no cover
     os.mkfifo(lock_path)  # pragma: win32 no cover
     with pytest.raises(OSError, match="non-regular"):  # pragma: win32 no cover
         ReadWriteLock(lock_path, is_singleton=False)

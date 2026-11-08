@@ -1135,6 +1135,7 @@ def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) ->
 @NEEDS_FIFO
 def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
     # An attacker-placed FIFO must not stall the open; O_NONBLOCK makes the read bail instead of hang.
+    assert sys.platform != "win32"  # narrows os.mkfifo for the type checker  # pragma: win32 no cover
     os.mkfifo(lock_path)  # pragma: win32 no cover
     assert SoftFileLock(lock_path).pid is None  # pragma: win32 no cover
 
@@ -1145,6 +1146,7 @@ def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
 def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None:
     # A same-UID peer can plant a FIFO with a writer attached so a non-blocking read would raise EAGAIN. The lstat
     # guard classifies it as a malformed lock before any open, so an aged FIFO self-heals like any other node.
+    assert sys.platform != "win32"  # narrows os.mkfifo and O_NONBLOCK for the type checker  # pragma: win32 no cover
     os.mkfifo(lock_path)  # pragma: win32 no cover
     reader = os.open(lock_path, os.O_RDONLY | os.O_NONBLOCK)  # pragma: win32 no cover
     writer = os.open(lock_path, os.O_WRONLY | os.O_NONBLOCK)  # pragma: win32 no cover
@@ -1159,6 +1161,7 @@ def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None
 @NEEDS_STALE_RECLAIM
 @pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX sockets are unix-only")
 def test_socket_lock_file_self_heals(lock_path: Path) -> None:
+    assert sys.platform != "win32"  # narrows socket.AF_UNIX for the type checker  # pragma: win32 no cover
     sock = socket.socket(socket.AF_UNIX)  # pragma: win32 no cover
     try:  # pragma: win32 no cover
         sock.bind(str(lock_path))
