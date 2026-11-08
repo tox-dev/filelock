@@ -7,7 +7,7 @@ import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -21,6 +21,7 @@ from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
+    from contextlib import AbstractAsyncContextManager
     from concurrent.futures import Executor
 
     from pytest_mock import MockerFixture
@@ -121,25 +122,36 @@ async def test_async_raw_acquire_release_round_trip(tmp_path: Path) -> None:
         pytest.param(float("nan"), "timeout must be a number of seconds, not nan", id="nan"),
     ],
 )
-@pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
-@pytest.mark.parametrize("contended", [pytest.param(True, id="contended"), pytest.param(False, id="free")])
+@pytest.mark.parametrize(
+    "form",
+    [
+        pytest.param(lambda timeout: (timeout, {}), id="instance"),
+        pytest.param(lambda timeout: (-1, {"timeout": timeout}), id="call"),
+    ],
+)
+@pytest.mark.parametrize(
+    "holder",
+    [
+        pytest.param(lambda lock: lock.write_lock(timeout=0), id="contended"),
+        pytest.param(lambda lock: nullcontext(), id="free"),
+    ],
+)
 async def test_async_acquire_rejects_invalid_timeout(
     tmp_path: Path,
     mode: Literal["read", "write"],
     timeout: float,
     message: str,
-    *,
-    configured: bool,
-    contended: bool,
+    form: Callable[[float], tuple[float, dict[str, float]]],
+    holder: Callable[[AsyncSoftReadWriteLock], AbstractAsyncContextManager[object]],
 ) -> None:
-    lock: Final = _make(tmp_path, timeout=timeout if configured else -1)
+    lock_timeout, call_kwargs = form(timeout)
+    lock: Final = _make(tmp_path, timeout=lock_timeout)
     acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
         async with AsyncExitStack() as stack:
-            if contended:
-                await stack.enter_async_context(lock.write_lock(timeout=0))
+            await stack.enter_async_context(holder(lock))
             with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
-                await asyncio.create_task(acquire() if configured else acquire(timeout=timeout))
+                await asyncio.create_task(acquire(**call_kwargs))
     finally:
         await lock.close()
 
@@ -150,14 +162,24 @@ async def test_async_acquire_rejects_invalid_timeout(
     "timeout",
     [pytest.param(-2, id="integer"), pytest.param(float("inf"), id="infinite"), pytest.param(float("nan"), id="nan")],
 )
-@pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
+@pytest.mark.parametrize(
+    "form",
+    [
+        pytest.param(lambda timeout: (timeout, False, {}), id="instance"),
+        pytest.param(lambda timeout: (timeout, True, {"timeout": timeout, "blocking": False}), id="call"),
+    ],
+)
 async def test_async_nonblocking_ignores_invalid_timeout(
-    tmp_path: Path, mode: Literal["read", "write"], timeout: float, *, configured: bool
+    tmp_path: Path,
+    mode: Literal["read", "write"],
+    timeout: float,
+    form: Callable[[float], tuple[float, bool, dict[str, float | bool]]],
 ) -> None:
-    lock: Final = _make(tmp_path, timeout=timeout, blocking=not configured)
+    lock_timeout, lock_blocking, call_kwargs = form(timeout)
+    lock: Final = _make(tmp_path, timeout=lock_timeout, blocking=lock_blocking)
     acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
-        async with await (acquire() if configured else acquire(timeout=timeout, blocking=False)):
+        async with await acquire(**call_kwargs):
             with pytest.raises(Timeout):
                 await asyncio.create_task(lock.acquire_write(timeout=timeout, blocking=False))
     finally:
