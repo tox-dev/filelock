@@ -482,27 +482,42 @@ async def test_async_release_cancellation_hands_the_lock_to_the_next_task(
     await lock.close()
 
 
-@pytest.mark.parametrize("fail", [pytest.param(False, id="closed"), pytest.param(True, id="failed")])
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
-async def test_async_close_cancellation_drains_the_close(tmp_path: Path, mocker: MockerFixture, *, fail: bool) -> None:
+async def test_async_close_cancellation_drains_the_close(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _make(tmp_path)
     await lock.acquire_write(timeout=5)
-    close_error = RuntimeError("close failed")
-    gate = _Gate(mocker, "close", fail_with=close_error if fail else None)
+    gate = _Gate(mocker, "close")
     task = asyncio.create_task(lock.close())
     await gate.started.wait()
     task.cancel("cancel close")
     gate.resume()
-    with pytest.raises(RuntimeError if fail else asyncio.CancelledError) as info:
+    with pytest.raises(asyncio.CancelledError):
         await task
 
     assert gate.finished.is_set()
-    if fail:
-        assert info.value is close_error
-        assert isinstance(close_error.__context__, asyncio.CancelledError)
-        mocker.stopall()
-        await lock.close()
+    assert _members(tmp_path) == []
+
+
+@pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_async_close_cancellation_surfaces_a_failed_close(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = _make(tmp_path)
+    await lock.acquire_write(timeout=5)
+    close_error = RuntimeError("close failed")
+    gate = _Gate(mocker, "close", fail_with=close_error)
+    task = asyncio.create_task(lock.close())
+    await gate.started.wait()
+    task.cancel("cancel close")
+    gate.resume()
+    with pytest.raises(RuntimeError) as info:
+        await task
+
+    assert gate.finished.is_set()
+    assert info.value is close_error
+    assert isinstance(close_error.__context__, asyncio.CancelledError)
+    mocker.stopall()
+    await lock.close()
     assert _members(tmp_path) == []
 
 
@@ -538,13 +553,21 @@ async def test_async_soft_read_after_a_sync_close_of_the_shared_singleton_raises
     await lock.close()
 
 
-@pytest.mark.parametrize("sync_end", [pytest.param("release", id="release"), pytest.param("close", id="close")])
+@pytest.mark.parametrize(
+    "sync_end",
+    [
+        pytest.param(SoftReadWriteLock.close, id="close"),
+        pytest.param(functools.partial(SoftReadWriteLock.release, force=True), id="release"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_async_soft_close_after_a_sync_end_of_the_shared_singleton_returns(tmp_path: Path, sync_end: str) -> None:
+async def test_async_soft_close_after_a_sync_end_of_the_shared_singleton_returns(
+    tmp_path: Path, sync_end: Callable[[SoftReadWriteLock], object]
+) -> None:
     lock: Final = _make(tmp_path, is_singleton=True)
     await lock.acquire_read(timeout=_TASK_WAIT)
     sync: Final = SoftReadWriteLock(str(tmp_path / "foo.lock"))
-    await asyncio.to_thread(sync.close if sync_end == "close" else functools.partial(sync.release, force=True))
+    await asyncio.to_thread(sync_end, sync)
 
     await lock.close()
 
