@@ -362,6 +362,10 @@ def _break_name(lock: Path, pid: int = _DEAD_PID) -> Path:  # pragma: win32 no c
     return lock.with_name(f"test.lock.break.{pid}.{'0' * 32}")
 
 
+def _exchange_call(source: bytes, target: bytes, flags: int) -> int:
+    raise NotImplementedError  # pragma: no cover  # the autospec answers the call, so only the signature matters
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
@@ -820,7 +824,9 @@ def test_stale_break_exchanges_back_after_the_breaker_that_took_its_marker(  # p
         peer.unlink()
 
     _lose_to_a_live_holder(lock, _live(record), mocker, lambda _aside, path: exchange_names(str(peer), path))
-    mocker.patch("filelock._util.time", wraps=time, sleep=mocker.Mock(side_effect=peer_exchanges_back))
+    mocker.patch(
+        "filelock._util.time", wraps=time, sleep=mocker.create_autospec(time.sleep, side_effect=peer_exchanges_back)
+    )
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 
@@ -863,7 +869,9 @@ def test_stale_break_opens_a_ring_of_breakers_holding_each_others_markers(  # pr
 
     _lose_to_a_live_holder(lock, _live(record), mocker, peer_then_our_exchange_out_of_turn)
     mocker.patch(
-        "filelock._util.time", wraps=time, sleep=mocker.Mock(side_effect=peer_exchanges_back_once_it_stands_at_the_path)
+        "filelock._util.time",
+        wraps=time,
+        sleep=mocker.create_autospec(time.sleep, side_effect=peer_exchanges_back_once_it_stands_at_the_path),
     )
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
@@ -1046,7 +1054,11 @@ def test_stale_break_leaves_a_break_name_it_cannot_exchange(  # pragma: win32 no
 ) -> None:
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
     _break_name(lock_path).write_text(_holder(os.getpid()), encoding="utf-8")
-    mocker.patch("filelock._util._rename_call", return_value=(mocker.MagicMock(return_value=error), 2), autospec=True)
+    mocker.patch(
+        "filelock._util._rename_call",
+        return_value=(mocker.create_autospec(_exchange_call, return_value=error), 2),
+        autospec=True,
+    )
     with pytest.raises(Timeout):
         SoftFileLock(lock_path).acquire(blocking=False)
 
@@ -1353,7 +1365,9 @@ def _current_process_handle_count() -> int:  # pragma: win32 cover
 def _hold_reports_foreign_identity(mocker: MockerFixture) -> None:
     # Make the held descriptor report a different inode than the file on disk, as if a peer replaced the marker at the
     # path. fstat runs only on our own lock fd, so nothing else in acquire or release is disturbed.
-    mocker.patch("filelock._soft.os.fstat", return_value=mocker.Mock(st_dev=1, st_ino=999), autospec=True)
+    mocker.patch(
+        "filelock._soft.os.fstat", return_value=os.stat_result((0, 999, 1, 0, 0, 0, 0, 0, 0, 0)), autospec=True
+    )
 
 
 def test_short_writes_still_write_the_whole_record(lock_path: Path, mocker: MockerFixture) -> None:
@@ -1838,7 +1852,12 @@ def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Pa
         "filelock._soft.time",
         new=SimpleNamespace(monotonic=time.monotonic, sleep=mocker.create_autospec(time.sleep)),
     )
-    unlink: Final = mocker.patch("filelock._soft.unlink_path", side_effect=PermissionError(EACCES, "handle still open"))
+    unlink: Final = mocker.patch(
+        "filelock._soft.unlink_path",
+        new=mocker.create_autospec(
+            filelock._soft.unlink_path, side_effect=PermissionError(EACCES, "handle still open")
+        ),
+    )
 
     lock._windows_unlink_if_ours(_file_identity(os.lstat(marker)))
     denied: Final = marker.exists()

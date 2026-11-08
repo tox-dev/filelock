@@ -3,7 +3,8 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
-from unittest.mock import patch
+
+import pytest
 
 import filelock._soft
 from filelock import SoftFileLock
@@ -49,7 +50,8 @@ def break_then_hang_after_exchange(
         while True:
             threading.Event().wait()
 
-    with patch.object(filelock._soft, "exchange_names", new=exchange_then_hang):
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(filelock._soft, "exchange_names", exchange_then_hang)
         SoftFileLock(lock_file).acquire(blocking=False)
 
 

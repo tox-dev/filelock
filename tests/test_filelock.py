@@ -34,6 +34,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 import filelock
+import filelock._soft
 import filelock.version
 from filelock import (
     BaseFileLock,
@@ -4019,7 +4020,10 @@ def test_soft_windows_unlink_stops_on_non_permission_error(tmp_path: Path, mocke
     path.write_bytes(b"x")
     lock = SoftFileLock(str(path))
     st = os.lstat(path)
-    mocker.patch("filelock._soft.unlink_path", side_effect=OSError(ENOSYS, "boom"))
+    mocker.patch(
+        "filelock._soft.unlink_path",
+        new=mocker.create_autospec(filelock._soft.unlink_path, side_effect=OSError(ENOSYS, "boom")),
+    )
 
     lock._windows_unlink_if_ours((st.st_dev, st.st_ino))
 

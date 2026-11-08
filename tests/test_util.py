@@ -464,6 +464,10 @@ def test_break_lock_file_leaves_a_recreated_marker_aside_where_links_are_refused
     assert [path.read_text(encoding="utf-8") for path in stale_lock.parent.glob("test.lock.break.*")] == ["live"]
 
 
+def _exchange_call(source: bytes, target: bytes, flags: int) -> int:
+    raise NotImplementedError  # pragma: no cover  # the autospec answers the call, so only the signature matters
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @pytest.mark.parametrize(
     "error",
@@ -476,7 +480,7 @@ def test_break_lock_file_leaves_the_marker_where_the_exchange_fails(  # pragma: 
     stale_lock: Path, mocker: MockerFixture, error: int
 ) -> None:
     # NFS and SMB refuse the exchange; renaming the marker aside instead would empty the path beside a live holder.
-    renamer: Final = mocker.MagicMock(return_value=error)
+    renamer: Final = mocker.create_autospec(_exchange_call, return_value=error)
     mocker.patch("filelock._util._rename_call", return_value=(renamer, 2), autospec=True)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
