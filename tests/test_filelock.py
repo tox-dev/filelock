@@ -382,7 +382,7 @@ class ExThread(threading.Thread):
             id="FileLock",
             marks=pytest.mark.skipif(
                 sys.platform == "win32" and hasattr(sys, "pypy_version_info"),
-                reason="FileLock on Windows under PyPy has race conditions under heavy threading",
+                reason="deadlocks randomly",
             ),
         ),
         pytest.param(
