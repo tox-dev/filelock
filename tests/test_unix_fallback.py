@@ -100,6 +100,11 @@ def test_fallback_swaps_to_soft(tmp_path: Path) -> None:  # pragma: needs fcntl
         assert isinstance(lock, SoftFileLock)
 
 
+def _expected_pid_lines() -> list[str]:
+    token = process_start_token(os.getpid())
+    return [str(os.getpid()), host_name()] if token is None else [str(os.getpid()), host_name(), str(token)]
+
+
 @NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
@@ -108,10 +113,7 @@ def test_fallback_writes_pid_and_hostname(tmp_path: Path) -> None:  # pragma: ne
 
     with UnixFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").splitlines()
-    expected = [str(os.getpid()), host_name()]
-    if (token := process_start_token(os.getpid())) is not None:  # pragma: no branch  # CI always exposes a start time
-        expected.append(str(token))
-    assert lines == expected
+    assert lines == _expected_pid_lines()
 
 
 @NEEDS_FCNTL

@@ -337,18 +337,19 @@ class _ForwardingAsyncFileLock(BaseAsyncFileLock):
 
 
 @pytest.mark.parametrize(
-    "option",
-    [pytest.param("hook", id="hook"), pytest.param("policy", id="policy")],
+    ("option", "message"),
+    [pytest.param("hook", "on_acquired", id="hook"), pytest.param("policy", "context_error_policy", id="policy")],
 )
 def test_forwarding_subclass_singleton_rejects_changed_option(
     option: Literal["hook", "policy"],
+    message: str,
     tmp_path: Path,
 ) -> None:
     hook: Callable[[int], None] = list[int]().append
     lock_path = str(tmp_path / "lock")
     first = _ForwardingFileLock(lock_path, is_singleton=True, on_acquired=hook)
 
-    with pytest.raises(ValueError, match="on_acquired" if option == "hook" else "context_error_policy"):
+    with pytest.raises(ValueError, match=message):
         _change_singleton_option(option, lock_path, hook)
     assert first.on_acquired is hook
 

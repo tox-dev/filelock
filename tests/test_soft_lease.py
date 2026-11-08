@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypedDict, cast
 
 import pytest
 
+import filelock._lease as lease_mod
 from filelock import (
     AsyncSoftFileLease,
     FileLock,
@@ -284,14 +285,16 @@ def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: Moc
     assert [(c.reason, c.error) for c in seen] == [("refresh-failed", failure)]
 
 
-@pytest.mark.parametrize("target", [pytest.param("touch", id="touch"), pytest.param("os.lstat", id="lstat")])
-def test_lease_tolerates_a_transient_refresh_error(marker: Path, mocker: MockerFixture, target: str) -> None:
+@pytest.mark.parametrize(
+    ("target", "real"),
+    [pytest.param("touch", lease_mod.touch, id="touch"), pytest.param("os.lstat", os.lstat, id="lstat")],
+)
+def test_lease_tolerates_a_transient_refresh_error(
+    marker: Path, mocker: MockerFixture, target: str, real: Callable[..., object]
+) -> None:
     # A transient ESTALE/EIO on the refresh path that recovers before the lease could lapse must not raise a
     # compromise: the marker was ours last tick, so retry rather than tell the holder to abandon its work.
-    import filelock._lease as lease_mod
-
     ticks = itertools.count()
-    real = cast("Callable[..., object]", lease_mod.touch if target == "touch" else os.lstat)
 
     def flaky(path: str, *args: object, **kwargs: object) -> object:
         if path.endswith(marker.name) and next(ticks) < 2:

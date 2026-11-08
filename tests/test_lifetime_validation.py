@@ -84,10 +84,6 @@ def _set_lifetime(
     [pytest.param(SoftFileLock, id="sync"), pytest.param(AsyncSoftFileLock, id="async")],
 )
 @pytest.mark.parametrize(
-    "entry_point",
-    [pytest.param("constructor", id="constructor"), pytest.param("setter", id="setter")],
-)
-@pytest.mark.parametrize(
     "value",
     [
         pytest.param(None, id="none"),
@@ -101,17 +97,14 @@ def _set_lifetime(
 )
 def test_lifetime_accepts_supported_value(
     lock_type: type[SoftFileLock | AsyncSoftFileLock],
-    entry_point: Literal["constructor", "setter"],
     value: float | None,
     tmp_path: Path,
 ) -> None:
     lock_path = tmp_path / "test.lock"
-    if entry_point == "constructor":
-        lock = lock_type(lock_path, lifetime=value)
-    else:
-        lock = lock_type(lock_path)
-        lock.lifetime = value
-    assert lock.lifetime == value
+    assert lock_type(lock_path, lifetime=value).lifetime == value
+    assigned = lock_type(lock_path)
+    assigned.lifetime = value
+    assert assigned.lifetime == value
 
 
 @pytest.mark.parametrize(

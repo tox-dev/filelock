@@ -4,7 +4,6 @@ import asyncio
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Final
 
@@ -118,10 +117,8 @@ async def test_async_strict_soft_waiter_keeps_acquisition_directory(
             StrictSoftFileLock(second / "resource.lock").claims,
         ) == (("held", "intent"), ())
     finally:
-        if not task.done():  # pragma: no cover  # the contender wins before teardown, so cancellation cleanup is rare
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await holder.release(force=True)
         await contender.release(force=True)
 

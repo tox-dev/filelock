@@ -53,15 +53,16 @@ def _holder(pid: int, *, host: str = _HOST, start: int | None = None) -> str:
     return "\n".join([str(pid), host, *([] if start is None else [str(start)])]) + "\n"
 
 
+def _expected_lock_lines() -> list[str]:
+    # Every platform with a proven start time writes it as an integer third line; one without writes two lines.
+    token = process_start_token(os.getpid())
+    return [str(os.getpid()), _HOST] if token is None else [str(os.getpid()), _HOST, str(token)]
+
+
 def test_lock_writes_pid_and_hostname(lock_path: Path) -> None:
     with SoftFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").strip().splitlines()
-        assert lines[:2] == [str(os.getpid()), _HOST]
-        # Every platform with a proven start time writes it as an integer third line; one without writes two lines.
-        if (token := process_start_token(os.getpid())) is not None:
-            assert lines == [str(os.getpid()), _HOST, str(token)]
-        else:  # pragma: no cover  # every CI platform exposes a start time
-            assert lines == [str(os.getpid()), _HOST]
+        assert lines == _expected_lock_lines()
 
 
 @pytest.mark.parametrize(

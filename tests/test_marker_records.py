@@ -18,6 +18,8 @@ from tests.capability_marks import NEEDS_STALE_RECLAIM
 from tests.process_helpers import cleanup_processes
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
     from multiprocessing.process import BaseProcess
     from pathlib import Path
 
@@ -217,10 +219,15 @@ def test_marker_force_break_removes_the_marker(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
-@pytest.mark.parametrize("acquire", [pytest.param(True, id="acquire"), pytest.param(False, id="context")])
-def test_marker_lock_publishes_exclusive(marker: Path, *, acquire: bool) -> None:
+@pytest.mark.parametrize(
+    "enter",
+    [pytest.param(lambda lock: lock.acquire(), id="acquire"), pytest.param(lambda lock: lock, id="context")],
+)
+def test_marker_lock_publishes_exclusive(
+    marker: Path, enter: Callable[[MarkerSoftFileLock], AbstractContextManager[MarkerSoftFileLock]]
+) -> None:
     lock: Final[MarkerSoftFileLock] = MarkerSoftFileLock(marker)
-    with lock.acquire() if acquire else lock:
+    with enter(lock):
         owner: Final[OwnerRecord | None]
         assert (owner := MarkerSoftFileLock(lock.lock_file).owner) is not None
         assert (lock.is_locked, lock.is_lock_held_by_us, lock.pid, owner.mode) == (True, True, os.getpid(), "exclusive")
