@@ -26,7 +26,7 @@ from pkgutil import resolve_name
 from queue import Queue
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import CodeType, FrameType, SimpleNamespace, TracebackType
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast, get_args
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, TypedDict, cast, get_args
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -1374,28 +1374,41 @@ def test_singleton_locks_are_distinct_per_lock_file(lock_type: type[BaseFileLock
     assert lock_1 is not lock_2
 
 
+class _SingletonArgs(TypedDict):
+    timeout: float
+    mode: int
+    thread_local: bool
+    blocking: bool
+    poll_interval: float
+
+
+_SINGLETON_ARGS: Final = _SingletonArgs(timeout=-1, mode=0o644, thread_local=True, blocking=True, poll_interval=0.05)
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_singleton_locks_must_be_initialized_with_the_same_args(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("arg_name", "alternate"),
+    [
+        pytest.param("timeout", 10, id="timeout"),
+        pytest.param("mode", 0o600, id="mode"),
+        pytest.param("thread_local", False, id="thread-local"),
+        pytest.param("blocking", False, id="blocking"),
+        pytest.param("poll_interval", 0.1, id="poll-interval"),
+    ],
+)
+def test_singleton_locks_must_be_initialized_with_the_same_args(
+    lock_type: type[BaseFileLock], tmp_path: Path, arg_name: str, alternate: float | bool
+) -> None:
     lock_path = tmp_path / "a"
-    args: dict[str, Any] = {"timeout": -1, "mode": 0o644, "thread_local": True, "blocking": True, "poll_interval": 0.05}
-    alternate_args: dict[str, Any] = {
-        "timeout": 10,
-        "mode": 0o600,
-        "thread_local": False,
-        "blocking": False,
-        "poll_interval": 0.1,
-    }
+    lock = lock_type(str(lock_path), is_singleton=True, **_SINGLETON_ARGS)
 
-    lock = lock_type(str(lock_path), is_singleton=True, **args)
-
-    general_msg = "Singleton lock instances cannot be initialized with differing arguments"
-    for arg_name in args:
-        altered_args = args.copy()
-        altered_args[arg_name] = alternate_args[arg_name]
-        with pytest.raises(ValueError, match=general_msg) as exc_info:
-            lock_type(str(lock_path), is_singleton=True, **altered_args)
-        exc_info.match(arg_name)  # ensure specific non-matching argument is included in exception text
-    del lock, exc_info
+    altered_args = _SINGLETON_ARGS | {arg_name: alternate}
+    with pytest.raises(
+        ValueError, match="Singleton lock instances cannot be initialized with differing arguments"
+    ) as exc_info:
+        lock_type(str(lock_path), is_singleton=True, **altered_args)
+    exc_info.match(arg_name)  # ensure specific non-matching argument is included in exception text
+    del lock
 
 
 @pytest.mark.parametrize(
