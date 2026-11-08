@@ -24,7 +24,6 @@ import time
 from concurrent import futures
 from dataclasses import dataclass, field, fields
 from inspect import iscoroutinefunction
-from threading import RLock
 from typing import TYPE_CHECKING, Final, NoReturn, TypeVar, cast
 
 from filelock._api import (
@@ -43,6 +42,7 @@ from filelock._api import (
     _fork_transition,
     _grouped_errors,
     _is_system_call_failure,
+    _LockSettings,
     _raise_body_and_release,
     _raise_chained_errors,
     _raise_cleanup_errors,
@@ -225,17 +225,18 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param executor: The executor to use. If not specified, the default executor will be used.
 
         """
-        self._creator_pid = os.getpid()
-        self._holder_id = id(self)
-        self._is_thread_local = thread_local
-        self._is_singleton = is_singleton
-        self._context_error_policy = context_error_policy  # already validated by the metaclass
-        self._close_error_policy = close_error_policy  # already validated by the metaclass
-        self._fallback_to_soft = fallback_to_soft
-        self._preserve_lock_file = preserve_lock_file  # already validated by the metaclass
-        self._on_acquired = on_acquired  # already validated by the metaclass
+        self._adopt_settings(
+            _LockSettings(
+                thread_local=thread_local,
+                is_singleton=is_singleton,
+                context_error_policy=context_error_policy,
+                close_error_policy=close_error_policy,
+                fallback_to_soft=fallback_to_soft,
+                preserve_lock_file=preserve_lock_file,
+                on_acquired=on_acquired,
+            )
+        )
         # BaseFileLock.__init__ never runs here, and the finalizer releases thread-local holds through these.
-        self._transition_lock = RLock()
         self._thread_holds = {}
         self._thread_pending = {}
 

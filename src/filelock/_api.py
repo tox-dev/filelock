@@ -669,6 +669,17 @@ class _InitParameterModel:
     default_params: dict[str, inspect.Parameter]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _LockSettings:
+    thread_local: bool
+    is_singleton: bool
+    context_error_policy: ContextErrorPolicy
+    close_error_policy: CloseErrorPolicy
+    fallback_to_soft: bool
+    preserve_lock_file: bool
+    on_acquired: Callable[[int], None] | None
+
+
 class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff:ignore[too-many-public-methods]  # public config properties
     """
     Abstract base class for a file lock object.
@@ -813,17 +824,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             denies the owner read and write
 
         """
-        self._creator_pid = os.getpid()
-        #: Holder id in the deadlock registry; a stand-in that finishes the finalizer has another id(self).
-        self._holder_id = id(self)
-        self._transition_lock = RLock()
-        self._is_thread_local = thread_local
-        self._is_singleton = is_singleton
-        self._context_error_policy = context_error_policy  # already validated by the metaclass
-        self._close_error_policy = close_error_policy  # already validated by the metaclass
-        self._fallback_to_soft = fallback_to_soft
-        self._preserve_lock_file = preserve_lock_file  # already validated by the metaclass
-        self._on_acquired = on_acquired  # already validated by the metaclass
+        self._adopt_settings(
+            _LockSettings(
+                thread_local=thread_local,
+                is_singleton=is_singleton,
+                context_error_policy=context_error_policy,
+                close_error_policy=close_error_policy,
+                fallback_to_soft=fallback_to_soft,
+                preserve_lock_file=preserve_lock_file,
+                on_acquired=on_acquired,
+            )
+        )
 
         self._context: FileLockContext = (ThreadLocalFileContext if thread_local else FileLockContext)(
             lock_file=os.fspath(lock_file),
@@ -838,6 +849,19 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         #: Each thread's uncommitted acquisition, so a backend can finish it for an exited thread.
         self._thread_pending: dict[int, tuple[FileLockContext, Thread]] = {}
         _register_fork_object(self)
+
+    def _adopt_settings(self, settings: _LockSettings) -> None:
+        self._creator_pid = os.getpid()
+        #: Holder id in the deadlock registry; a stand-in that finishes the finalizer has another id(self).
+        self._holder_id = id(self)
+        self._transition_lock = RLock()
+        self._is_thread_local = settings.thread_local
+        self._is_singleton = settings.is_singleton
+        self._context_error_policy = settings.context_error_policy  # already validated by the metaclass
+        self._close_error_policy = settings.close_error_policy  # already validated by the metaclass
+        self._fallback_to_soft = settings.fallback_to_soft
+        self._preserve_lock_file = settings.preserve_lock_file  # already validated by the metaclass
+        self._on_acquired = settings.on_acquired  # already validated by the metaclass
 
     def __enter__(self) -> Self:
         """
