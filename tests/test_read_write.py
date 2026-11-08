@@ -12,7 +12,7 @@ from contextlib import closing
 from errno import EWOULDBLOCK
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pytest
 from capabilities import CAPABILITIES
@@ -574,9 +574,10 @@ def test_read_write_lock_refuses_a_database_moved_after_connect(
     lock.close()  # pragma: win32 no cover
 
 
-def test_read_write_lock_refuses_a_database_held_without_sharing(tmp_path: Path) -> None:
-    if sys.platform != "win32":  # pragma: win32 no cover
-        pytest.skip("share modes exist only on Windows")  # the platform arm also narrows so ty resolves ctypes.WinDLL
+@pytest.mark.skipif(sys.platform != "win32", reason="share modes exist only on Windows")
+def test_read_write_lock_refuses_a_database_held_without_sharing(tmp_path: Path) -> None:  # pragma: win32 cover
+    # The marker skips the run off Windows; the assert narrows ctypes.WinDLL for ty.
+    assert sys.platform == "win32"
     # Another process holding the database with no sharing blocks the handle that pins its name, so construction fails.
     lock_path = tmp_path / "lock.db"  # pragma: win32 cover
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # pragma: win32 cover
@@ -901,7 +902,7 @@ def test_read_write_lock_after_an_interrupted_release_locks_again(
     mode: Literal["read", "write"],
     owner: type,
     name: str,
-    real: Callable[[Any], None],
+    real: Callable[[sqlite3.Connection | ReadWriteLock], None],
     before: bool,
 ) -> None:
     lock: Final = ReadWriteLock(lock_file, is_singleton=False)
