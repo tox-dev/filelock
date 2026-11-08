@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 # Three probes can each spend 25 seconds on startup, acquisition and shutdown, before executor and GC cleanup.
-pytestmark = pytest.mark.timeout(120)
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.timeout(120)
 
 
 @pytest.fixture

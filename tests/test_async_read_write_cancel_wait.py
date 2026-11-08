@@ -26,7 +26,7 @@ _HOLD: Final[float] = 3
 # The caller's own deadline, far below _HOLD.
 _DEADLINE: Final[float] = 0.2
 
-pytestmark = XFAIL_WITHOUT_COROUTINE_CANCELLATION
+pytestmark: Final[pytest.MarkDecorator] = XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 
 @pytest.fixture(autouse=True)
@@ -58,10 +58,12 @@ def _soft(  # pragma: needs hard-link
 
 
 _Make = Callable[..., tuple[ReadWriteLock | SoftReadWriteLock, AsyncReadWriteLock | AsyncSoftReadWriteLock]]
-_FAMILIES: Final = pytest.mark.parametrize(
+_FAMILIES: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
     "make", [pytest.param(_sqlite, id="sqlite"), pytest.param(_soft, id="soft", marks=pytest.mark.requires_hard_links)]
 )
-_MODES: Final = pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+_MODES: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
+    "mode", [pytest.param("read", id="read"), pytest.param("write", id="write")]
+)
 
 
 async def _acquire_within_deadline(

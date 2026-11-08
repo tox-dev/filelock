@@ -6,7 +6,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 # Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
 
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 
 def test_strict_soft_relative_release_uses_acquisition_directory(

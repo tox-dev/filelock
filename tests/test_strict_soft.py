@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 _SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
 
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 
 def test_strict_soft_acquire_publishes_owner_claim(tmp_path: Path) -> None:

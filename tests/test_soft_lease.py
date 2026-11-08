@@ -599,7 +599,10 @@ class _LeaseSettings(TypedDict, total=False):
     on_compromise: Callable[[LeaseCompromise], None]
 
 
-_LEASE_TYPES: Final = [pytest.param(SoftFileLease, id="sync"), pytest.param(AsyncSoftFileLease, id="async")]
+_LEASE_TYPES: Final[list[pytest.ParameterSet]] = [
+    pytest.param(SoftFileLease, id="sync"),
+    pytest.param(AsyncSoftFileLease, id="async"),
+]
 
 
 @pytest.fixture

@@ -44,7 +44,7 @@ for _ in range(int(sys.argv[5])):
 """
 
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 
 @pytest.mark.timeout(_WORKER_DEADLINE + 60)

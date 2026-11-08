@@ -7,7 +7,7 @@ import sys
 import time
 from errno import EIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 from capabilities import CAPABILITIES
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 
 @pytest.mark.parametrize(

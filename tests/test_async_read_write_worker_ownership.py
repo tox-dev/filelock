@@ -45,7 +45,7 @@ def _soft(  # pragma: needs hard-link
     return AsyncSoftReadWriteLock(path / "lock", executor=worker), SoftReadWriteLock(path / "lock")
 
 
-_FAMILIES: Final = pytest.mark.parametrize(
+_FAMILIES: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
     "make",
     [pytest.param(_sqlite, id="sqlite"), pytest.param(_soft, id="soft", marks=pytest.mark.requires_hard_links)],
 )

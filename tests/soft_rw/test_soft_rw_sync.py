@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 
 # Bounds how long a spawned process or thread may take to reach the lock, not how fast it must be: an interpreter

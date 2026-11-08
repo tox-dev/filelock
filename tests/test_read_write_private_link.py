@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-pytestmark: Final = [
+pytestmark: Final[list[pytest.MarkDecorator]] = [
     pytest.mark.requires_hard_links,
     pytest.mark.skipif(
         not CAPABILITIES["posix-hard-link"],

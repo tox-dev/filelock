@@ -616,7 +616,7 @@ class _AsyncOptions(TypedDict, total=False):
     run_in_executor: bool
 
 
-_ASYNC_SINGLETON_TYPES: Final = [
+_ASYNC_SINGLETON_TYPES: Final[list[pytest.ParameterSet]] = [
     pytest.param(AsyncFileLock, id="native"),
     pytest.param(AsyncSoftFileLock, id="soft"),
     pytest.param(AsyncSoftFileLease, id="lease"),

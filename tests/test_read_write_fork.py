@@ -1253,7 +1253,7 @@ def _dropped_instances_script() -> str:  # pragma: needs fd-directory
     )
 
 
-_TRY_WRITE_SCRIPT: Final = textwrap.dedent(
+_TRY_WRITE_SCRIPT: Final[str] = textwrap.dedent(
     """
     import sys
     from filelock import ReadWriteLock, Timeout

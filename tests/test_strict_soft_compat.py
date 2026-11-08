@@ -29,7 +29,7 @@ print("released", flush=True)
 """
 
 
-pytestmark = [
+pytestmark: Final[list[pytest.MarkDecorator]] = [
     pytest.mark.requires_hard_links,
     pytest.mark.skipif(
         not CAPABILITIES["old-client"],

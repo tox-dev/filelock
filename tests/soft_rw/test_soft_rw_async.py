@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     from filelock._lease import LeaseCompromise
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 # Bounds every wait on another task, so a lock that never admits it fails the test instead of hanging the suite.
 _TASK_WAIT: Final[float] = 10

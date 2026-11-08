@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 _FIRST: Final[str] = "0123456789abcdef0123456789abcdef"
 _SECOND: Final[str] = "fedcba9876543210fedcba9876543210"
 
-pytestmark = pytest.mark.usefixtures("flushes")
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.usefixtures("flushes")
 
 
 @pytest.fixture

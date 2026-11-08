@@ -60,10 +60,13 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 _PathValue = str | bytes | os.PathLike[str] | os.PathLike[bytes]
-_UNPARSABLE_CONTENTS: Final = [pytest.param(b"", id="pre-3.22-empty"), pytest.param(b"4242\nhost", id="cut")]
+_UNPARSABLE_CONTENTS: Final[list[pytest.ParameterSet]] = [
+    pytest.param(b"", id="pre-3.22-empty"),
+    pytest.param(b"4242\nhost", id="cut"),
+]
 
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 
 def test_strict_soft_protocol_error_pickles() -> None:
@@ -482,7 +485,7 @@ def _stage_sentinel_record(lock_path: Path) -> Path:
     return lock_path.parent / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
 
 
-_NON_REGULAR_NODES: Final = [
+_NON_REGULAR_NODES: Final[list[pytest.ParameterSet]] = [
     pytest.param(Path.mkdir, Path.is_dir, id="directory"),
     pytest.param(
         lambda path: path.symlink_to(path.parent / "missing"),

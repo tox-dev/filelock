@@ -161,7 +161,7 @@ def test_ro_file(lock_type: type[BaseFileLock], tmp_file_ro: Path) -> None:
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 
 
-_INVALID_DESCRIPTOR_POLL_INTERVALS: Final = (
+_INVALID_DESCRIPTOR_POLL_INTERVALS: Final[tuple[pytest.ParameterSet, ...]] = (
     pytest.param(0.0, id="zero"),
     pytest.param(-0.01, id="negative"),
     pytest.param(float("nan"), id="nan"),
@@ -2118,7 +2118,7 @@ def test_infinite_timeout_gives_deadlock_not_hang(tmp_path: Path, lock_type: typ
             lock.acquire()
 
 
-_NANS: Final = [
+_NANS: Final[list[pytest.ParameterSet]] = [
     pytest.param(math.nan, id="nan"),
     pytest.param(Decimal("sNaN"), id="signaling-nan"),
 ]
@@ -3201,7 +3201,7 @@ def test_final_symlink_stays_a_distinct_key(tmp_path: Path) -> None:
         on_target.release(force=True)
 
 
-_RELATIVE_LOCK_TYPES: Final = [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease]
+_RELATIVE_LOCK_TYPES: Final[list[type[BaseFileLock]]] = [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease]
 
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)

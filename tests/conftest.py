@@ -79,7 +79,7 @@ def _tracemalloc_lookup_without_support() -> Iterator[None]:
 
 
 _HOST_COLLECTION_INTERVAL: Final[int] = 20
-_HOST_COLLECTION_DUE: Final = itertools.cycle((False,) * (_HOST_COLLECTION_INTERVAL - 1) + (True,))
+_HOST_COLLECTION_DUE: Final[Iterator[bool]] = itertools.cycle((False,) * (_HOST_COLLECTION_INTERVAL - 1) + (True,))
 
 
 @pytest.fixture(autouse=True)
