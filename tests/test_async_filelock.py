@@ -787,7 +787,9 @@ async def test_cross_task_blocking_acquire_queues(tmp_path: Path, lock_type: typ
         async with lock_type(lock_path):
             events.append("holder:acquired")
             holding.set()
-            await asyncio.sleep(0.05)  # the waiter polls while the lock is held
+            await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a queued-acquire signal
+                0.05
+            )  # the waiter polls while the lock is held
             events.append("holder:released")
 
     async def waiter() -> None:

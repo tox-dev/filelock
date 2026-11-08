@@ -26,7 +26,9 @@ if TYPE_CHECKING:
 
 @NEEDS_FORK
 def test_equal_unhashable_locks_reset_independently(tmp_path: Path) -> None:  # pragma: win32 no cover
-    @dataclass(eq=True, init=False, slots=True, kw_only=True)  # pragma: win32 no cover
+    @dataclass(  # simplint: ignore[SMP701]  # BaseFileLock init writes attributes
+        eq=True, init=False, slots=True, kw_only=True
+    )  # pragma: win32 no cover
     class EqualLock(BaseFileLock):  # pragma: win32 no cover
         def _acquire(self) -> None:  # pragma: win32 no cover
             self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)

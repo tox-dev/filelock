@@ -684,7 +684,7 @@ def test_concurrent_force_releases_free_an_exited_threads_hold_once(
         # A slow log handler holds the first releaser inside the release while the second one arrives.
         if record.getMessage().startswith("Attempting to release") and not first_inside.is_set():
             first_inside.set()
-            time.sleep(0.2)
+            time.sleep(0.2)  # simplint: ignore[SMP808]  # needs a release-arrival signal
         return True
 
     def record_close(fd: int) -> None:
@@ -1347,7 +1347,7 @@ def test_singleton_locks_survive_concurrent_first_construction(tmp_path: Path) -
 
     class _SlowLock(SoftFileLock):
         def __init__(self, lock_file: str, *, is_singleton: bool = True) -> None:
-            time.sleep(0.05)
+            time.sleep(0.05)  # simplint: ignore[SMP808]  # needs a construction-start hook
             super().__init__(lock_file, is_singleton=is_singleton)
 
     results: list[BaseFileLock] = []
@@ -3677,7 +3677,7 @@ def test_lock_descriptor_blocking_wait_does_not_spin(tmp_path: Path) -> None:
             future = executor.submit(acquire)
             try:
                 assert started.wait(timeout=1)
-                time.sleep(0.2)
+                time.sleep(0.2)  # simplint: ignore[SMP808]  # needs a poll-entered signal
             finally:
                 unlock_descriptor(holder)
             assert future.result(timeout=2) < 0.05

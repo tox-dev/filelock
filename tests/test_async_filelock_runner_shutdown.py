@@ -30,7 +30,7 @@ class _CancellationObservedTask(asyncio.Task[_T]):  # pragma: needs fcntl
         self._cancellation_seen = cancellation_seen
         super().__init__(coroutine, loop=loop)
 
-    def cancel(self, msg: object | None = None) -> bool:
+    def cancel(self, msg: object | None = None) -> bool:  # simplint: ignore[SMP602]  # typeshed: Task.cancel msg is Any
         # Task.cancel accepts arbitrary payloads; object is the narrowest accurate type for its public contract.
         self._cancellation_seen.set()
         return super().cancel(msg)

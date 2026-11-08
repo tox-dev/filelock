@@ -150,7 +150,7 @@ def test_lock_excludes_opposite_mode(
         contender.start()
         contender_started.set()
 
-        time.sleep(2)  # confirm the contender stays blocked
+        time.sleep(2)  # confirm the contender stays blocked  # simplint: ignore[SMP808]  # needs a blocked-poll signal
         assert not contender_acquired.is_set(), f"{contender_mode} lock should not be acquired while {holder_mode} held"
 
         release_holder.set()
@@ -810,7 +810,7 @@ def _write_intent_pending(prober: ReadWriteLock, deadline: float) -> bool:
         return False
     prober.release()
     assert time.monotonic() < deadline, "Writer never registered its write intent"
-    time.sleep(0.05)
+    time.sleep(0.05)  # simplint: ignore[SMP808]  # needs a write-intent signal
     return True
 
 
@@ -827,13 +827,17 @@ def chain_reader(
 
     with ReadWriteLock(lock_file).read_lock():
         if reader_index > 0:
-            time.sleep(2)  # overlap with earlier readers so the writer contends mid-chain
+            time.sleep(  # simplint: ignore[SMP808]  # needs a write-intent signal
+                2
+            )  # overlap with earlier readers so the writer contends mid-chain
 
         if next_reader_signal is not None:
             next_reader_signal.set()
 
         if reader_index == 0:
-            time.sleep(1)  # hold briefly before releasing the writer
+            time.sleep(  # simplint: ignore[SMP808]  # needs a write-intent signal
+                1
+            )  # hold briefly before releasing the writer
 
         writer_or_prev_signal.set()
 

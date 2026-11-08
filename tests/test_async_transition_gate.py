@@ -36,7 +36,9 @@ async def test_hold_waits_for_a_predecessor_before_entering() -> None:
     first_task = asyncio.create_task(first())
     await first_holding.wait()
     second_task = asyncio.create_task(second())
-    await asyncio.sleep(0.05)  # second parks on the predecessor instead of entering
+    await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a parked-waiter signal
+        0.05
+    )  # second parks on the predecessor instead of entering
     assert order == ["first-in"]
 
     release_first.set()
@@ -80,7 +82,9 @@ async def test_hold_canceled_while_waiting_takes_its_ticket_out() -> None:
     first_task = asyncio.create_task(first())
     await first_holding.wait()
     second_task = asyncio.create_task(second())
-    await asyncio.sleep(0.05)  # second is parked on the predecessor
+    await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a parked-waiter signal
+        0.05
+    )  # second is parked on the predecessor
     second_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await second_task

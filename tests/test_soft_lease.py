@@ -167,7 +167,9 @@ def test_lease_token_names_no_claim_after_an_acquire_that_raises(tmp_path: Path)
 def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> None:
 
     with _lease(marker):
-        time.sleep(_DURATION * 1.5)  # only a refreshing heartbeat keeps the claim past this
+        time.sleep(  # simplint: ignore[SMP808]  # needs a clock hook for lease duration
+            _DURATION * 1.5
+        )  # only a refreshing heartbeat keeps the claim past this
         with pytest.raises(Timeout):
             _lease(marker).acquire()
 
@@ -400,7 +402,7 @@ def _wait_until(condition: Callable[[], bool]) -> None:
     # Bounded, so a heartbeat that never gets there fails the assertion after it instead of hanging the run.
     deadline: Final = time.monotonic() + _DURATION * 20
     while not condition() and time.monotonic() < deadline:
-        time.sleep(_HEARTBEAT / 2)
+        time.sleep(_HEARTBEAT / 2)  # simplint: ignore[SMP808]  # needs a compromise signal
 
 
 def test_lease_holds_an_uncompromised_claim(marker: Path, mocker: MockerFixture) -> None:
@@ -556,7 +558,9 @@ def test_lease_keeps_its_claim_when_another_thread_fails_to_acquire(marker: Path
         contender.join()
 
         assert holder.token == token
-        time.sleep(_DURATION * 1.5)  # only a surviving heartbeat keeps the claim past this
+        time.sleep(  # simplint: ignore[SMP808]  # needs a thread-exit signal
+            _DURATION * 1.5
+        )  # only a surviving heartbeat keeps the claim past this
         with pytest.raises(Timeout):
             _lease(marker).acquire()
 
@@ -602,7 +606,7 @@ def test_lease_force_released_for_an_exited_thread_stops_that_holds_heartbeat(ma
     holder.join()
 
     lease.release(force=True)
-    time.sleep(_HEARTBEAT * 3)
+    time.sleep(_HEARTBEAT * 3)  # simplint: ignore[SMP808]  # needs a thread-exit signal
     assert (reports, marker.exists()) == ([], False)
 
 

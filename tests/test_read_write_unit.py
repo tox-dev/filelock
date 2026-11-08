@@ -782,7 +782,9 @@ def test_meta_raises_when_pid_changes_during_singleton_construction(lock_file: s
 def test_finish_connection_chains_rollback_then_close_error(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     con = mocker.create_autospec(sqlite3.Connection, instance=True)
-    type(con).in_transaction = mocker.PropertyMock(side_effect=[True, False])
+    type(con).in_transaction = mocker.PropertyMock(  # simplint: ignore[SMP806]  # read-only C property, no autospec
+        side_effect=[True, False]
+    )
     con.rollback.side_effect = sqlite3.OperationalError("rollback boom")
     con.close.side_effect = sqlite3.OperationalError("close boom")
     lock._con = con

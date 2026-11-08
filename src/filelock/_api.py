@@ -1787,7 +1787,9 @@ def _resolve_timeout(timeout: float, *, blocking: bool) -> float:
     return -1 if timeout == math.inf else timeout
 
 
-@dataclass(slots=True, weakref_slot=True, kw_only=True)
+@dataclass(  # simplint: ignore[SMP701]  # state is reset to None on finalize
+    slots=True, weakref_slot=True, kw_only=True
+)
 class _FinalizerState:
     # A finalized lock's state, held for the release that runs once the lock is unreachable.
     state: dict[str, object] | None
@@ -1855,7 +1857,7 @@ class AcquireReturnProxy(Generic[_LockT]):
             lock.release()
 
 
-@dataclass
+@dataclass  # simplint: ignore[SMP702, SMP703]  # local base rejects slots; public async context signature
 class FileLockContext:
     # Holds the context for a ``BaseFileLock`` object.
     # A separate class so ThreadLocalFileContext can make the whole context thread-local.

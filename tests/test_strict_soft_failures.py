@@ -2292,7 +2292,7 @@ def test_strict_soft_claim_read_retries_after_a_slow_denied_attempt(tmp_path: Pa
         nonlocal denied
         if not denied and Path(os.fsdecode(path)).name == claim.name:
             denied = True
-            time.sleep(0.05)
+            time.sleep(0.05)  # simplint: ignore[SMP808]  # needs a clock hook for grace window
             raise PermissionError(EACCES, "sharing violation")
         return real_open(path, flags, mode, dir_fd=dir_fd)
 

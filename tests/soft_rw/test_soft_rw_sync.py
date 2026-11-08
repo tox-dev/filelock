@@ -661,7 +661,7 @@ def _wait_until(condition: Callable[[], bool]) -> None:
     deadline = time.monotonic() + _PROCESS_DEADLINE
     while not condition():
         assert time.monotonic() < deadline
-        time.sleep(0.01)
+        time.sleep(0.01)  # simplint: ignore[SMP808]  # polls on-disk state; needs a library hook
 
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 4)
@@ -1175,7 +1175,7 @@ def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) ->
     with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
-        time.sleep(stale * 2)
+        time.sleep(stale * 2)  # simplint: ignore[SMP808]  # needs a clock hook in soft rw
         lock = _make_lock(lock_file, heartbeat_interval=heartbeat, stale_threshold=stale)
         try:
             with pytest.raises(Timeout):
