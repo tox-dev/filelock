@@ -935,9 +935,11 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "AsyncAcquireReturnProxy",
+    "AsyncFileLockMeta",
     "AsyncSoftFileLease",
     "AsyncSoftFileLock",
     "AsyncStrictSoftFileLock",
+    "AsyncThreadLocalFileContext",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",
