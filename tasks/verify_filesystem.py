@@ -31,7 +31,7 @@ from concurrent.futures import ProcessPoolExecutor
 from errno import EACCES, ENOENT, ESTALE
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 from filelock import FileLock, SoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock
 
@@ -75,14 +75,20 @@ def _verify_across(mounts: list[Path]) -> int:
     return 1 if failures else 0
 
 
-def _run_one(name: str, mounts: list[Path]) -> tuple[list[int], int, str | None]:
+def _run_one(name: str, mounts: list[Path]) -> _MountRun:
     # Same basename on every mount, so the mounts contend on one server file through their independent caches.
     lock_paths = [str(mounts[index % len(mounts)] / f"{name}.lock") for index in range(_PROCESSES)]
     with ProcessPoolExecutor(max_workers=_PROCESSES) as pool:
         results = list(pool.map(_hammer, [name] * _PROCESSES, lock_paths))
     counts = [len(intervals) for intervals, _ in results]
     reason = next((reason for _, reason in results if reason is not None), None)
-    return counts, _count_overlaps([intervals for intervals, _ in results]), reason
+    return _MountRun(counts, _count_overlaps([intervals for intervals, _ in results]), reason)
+
+
+class _MountRun(NamedTuple):
+    counts: list[int]
+    overlaps: int
+    reason: str | None
 
 
 def _count_overlaps(per_process: list[list[tuple[float, float]]]) -> int:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._util", "pathlib", "typing", "warnings"]
+__lazy_modules__ = ["contextlib", "filelock._util", "pathlib", "warnings"]
 
 import os
 import sys
@@ -8,7 +8,7 @@ import warnings
 from contextlib import suppress
 from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, NamedTuple, cast
 
 from filelock._api import BaseFileLock
 from filelock._util import remove_own_file
@@ -66,6 +66,11 @@ else:  # pragma: win32 no cover
             return exception.errno == ENOSYS
         return False  # a flock the probe won is released when the caller closes fd
 
+    class _MissingFlock(NamedTuple):
+        fd: int
+        exception: OSError
+        created: bool
+
     class UnixFileLock(BaseFileLock):
         """
         Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems.
@@ -80,7 +85,7 @@ else:  # pragma: win32 no cover
                 fd, exception, created = missing_flock
                 self._switch_to_soft_lock(fd, exception, created=created)
 
-        def _acquire_native(self) -> tuple[int, OSError, bool] | None:
+        def _acquire_native(self) -> _MissingFlock | None:
             if (opened := self._open_lock_file()) is None:
                 return None
             fd, created = opened
@@ -103,7 +108,7 @@ else:  # pragma: win32 no cover
                     return None
             except BaseException as exception:
                 if not locked and isinstance(exception, OSError) and exception.errno == ENOSYS:
-                    return fd, exception, created
+                    return _MissingFlock(fd, exception, created)
                 # Contention returns False from _lock_fd_nonblocking, so a raise here is a failure.
                 self._mark_descriptor_released()
                 os.close(fd)

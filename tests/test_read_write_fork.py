@@ -9,7 +9,7 @@ import sys
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Final, Literal, NoReturn
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, NoReturn
 
 import pytest
 from capabilities import CAPABILITIES
@@ -1191,7 +1191,7 @@ def test_async_read_write_lock_fork_behavior(tmp_path: Path, state: Literal["idl
     assert result == (0, "", "")
 
 
-def _run_fork_script(script: str, arguments: list[str], *, timeout: float) -> tuple[int, str, str]:
+def _run_fork_script(script: str, arguments: list[str], *, timeout: float) -> _ForkResult:
     process = subprocess.Popen(  # executes this test's fixed interpreter and source
         [sys.executable, "-c", script, *arguments],
         start_new_session=True,
@@ -1211,7 +1211,13 @@ def _run_fork_script(script: str, arguments: list[str], *, timeout: float) -> tu
         msg = f"fork script exceeded {timeout} seconds: stdout={process_output!r}, stderr={process_error!r}"
         raise AssertionError(msg) from error
     assert process.returncode is not None  # pragma: needs fork
-    return process.returncode, process_output, process_error  # pragma: needs fork
+    return _ForkResult(process.returncode, process_output, process_error)  # pragma: needs fork
+
+
+class _ForkResult(NamedTuple):
+    returncode: int
+    output: str
+    error: str
 
 
 _TRY_WRITE_SCRIPT: Final[str] = textwrap.dedent(

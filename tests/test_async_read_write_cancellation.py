@@ -6,7 +6,7 @@ import multiprocessing
 import sqlite3
 import threading
 from concurrent.futures import Executor, ThreadPoolExecutor
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, cast
 
 import pytest
 
@@ -355,7 +355,7 @@ def _patch_async_acquire_and_rollback_failure(
     acquire_started: asyncio.Event,
     finish_acquire: threading.Event,
     mode: Literal["read", "write"],
-) -> tuple[sqlite3.OperationalError, sqlite3.OperationalError, LookupError]:
+) -> _RollbackFailures:
     acquire_error = sqlite3.OperationalError("acquire failed")
     rollback_error = sqlite3.OperationalError("rollback failed")
     prior_rollback_error = LookupError("prior rollback failure")
@@ -385,7 +385,13 @@ def _patch_async_acquire_and_rollback_failure(
         real_connection.rollback()
 
     _patch_async_connection(mocker, executescript=executescript, rollback=rollback)
-    return acquire_error, rollback_error, prior_rollback_error
+    return _RollbackFailures(acquire_error, rollback_error, prior_rollback_error)
+
+
+class _RollbackFailures(NamedTuple):
+    acquire_error: sqlite3.OperationalError
+    rollback_error: sqlite3.OperationalError
+    prior_rollback_error: LookupError
 
 
 @pytest.mark.asyncio

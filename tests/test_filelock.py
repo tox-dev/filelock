@@ -26,7 +26,7 @@ from pkgutil import resolve_name
 from queue import Queue
 from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import CodeType, FrameType, SimpleNamespace, TracebackType
-from typing import TYPE_CHECKING, Any, Final, Literal, cast, get_args
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast, get_args
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -2371,14 +2371,20 @@ def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, dep
         assert successor.is_locked
 
 
-def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:  # pragma: win32 no cover
+def _symlinked_lock_paths(tmp_path: Path) -> _SymlinkedPaths:  # pragma: win32 no cover
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
     original.mkdir()
     replacement.mkdir()
     link = tmp_path / "link"
     link.symlink_to(original, target_is_directory=True)
-    return link / "test.lock", original / "test.lock", replacement / "test.lock"
+    return _SymlinkedPaths(link / "test.lock", original / "test.lock", replacement / "test.lock")
+
+
+class _SymlinkedPaths(NamedTuple):
+    lock_path: Path
+    original_path: Path
+    replacement_path: Path
 
 
 def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:  # pragma: win32 no cover

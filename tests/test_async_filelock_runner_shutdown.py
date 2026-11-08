@@ -4,7 +4,7 @@ import asyncio
 import threading
 from errno import EIO
 from queue import Queue
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, NamedTuple, TypeVar
 
 from filelock import AsyncAcquireReturnProxy, AsyncFileLock
 from tests.async_filelock_cancellation_helpers import assert_file_lock_state, get_fcntl
@@ -140,7 +140,7 @@ def _start_unawaited_context_failure(  # pragma: needs fcntl
     lock: AsyncFileLock,
     body_error: BaseException,
     release_started: threading.Event,
-) -> tuple[threading.Thread, asyncio.Task[None], threading.Event]:
+) -> _UnawaitedFailure:
     tasks: Queue[asyncio.Task[None]] = Queue()
     cancellation_seen = threading.Event()
     runner = threading.Thread(
@@ -148,7 +148,13 @@ def _start_unawaited_context_failure(  # pragma: needs fcntl
         args=(lock, body_error, release_started, cancellation_seen, tasks),
     )
     runner.start()
-    return runner, tasks.get(timeout=5), cancellation_seen
+    return _UnawaitedFailure(runner, tasks.get(timeout=5), cancellation_seen)
+
+
+class _UnawaitedFailure(NamedTuple):
+    runner: threading.Thread
+    task: asyncio.Task[None]
+    cancellation_seen: threading.Event
 
 
 def _run_unawaited_context_failure(  # pragma: needs fcntl

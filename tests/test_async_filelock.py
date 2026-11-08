@@ -16,7 +16,7 @@ from errno import EINTR, EIO, ENOSYS
 from functools import partial
 from itertools import count
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypedDict, cast
 
 import pytest
 import pytest_asyncio
@@ -836,14 +836,20 @@ async def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Pat
         assert successor.is_locked
 
 
-def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:  # pragma: needs fcntl
+def _symlinked_lock_paths(tmp_path: Path) -> _SymlinkedPaths:  # pragma: needs fcntl
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
     original.mkdir()
     replacement.mkdir()
     link = tmp_path / "link"
     link.symlink_to(original, target_is_directory=True)
-    return link / "test.lock", original / "test.lock", replacement / "test.lock"
+    return _SymlinkedPaths(link / "test.lock", original / "test.lock", replacement / "test.lock")
+
+
+class _SymlinkedPaths(NamedTuple):
+    lock_path: Path
+    original_path: Path
+    replacement_path: Path
 
 
 def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:  # pragma: needs fcntl
