@@ -802,6 +802,18 @@ def test_strict_soft_doorway_preserves_every_claim_cleanup_error(tmp_path: Path,
         assert len(lock.claims) == 2
 
 
+def test_strict_soft_sentinel_publication_race_acquires_over_strict_winner(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    sentinel = b"1\nfilelock-strict-v1\x00\n0\n"
+    lock = _race_sentinel_publication(lock_path, mocker, sentinel)
+
+    with lock:
+        assert lock.is_locked
+    assert lock_path.read_bytes() == sentinel
+
+
 def _race_sentinel_publication(lock_path: Path, mocker: MockerFixture, sentinel: bytes) -> StrictSoftFileLock:
     real_link = os.link
     raced = False
@@ -829,18 +841,6 @@ def _race_sentinel_publication(lock_path: Path, mocker: MockerFixture, sentinel:
 
     mocker.patch("filelock._strict.os.link", side_effect=publish_competitor, autospec=True)
     return StrictSoftFileLock(lock_path, timeout=0)
-
-
-def test_strict_soft_sentinel_publication_race_acquires_over_strict_winner(
-    tmp_path: Path, mocker: MockerFixture
-) -> None:
-    lock_path = tmp_path / "resource.lock"
-    sentinel = b"1\nfilelock-strict-v1\x00\n0\n"
-    lock = _race_sentinel_publication(lock_path, mocker, sentinel)
-
-    with lock:
-        assert lock.is_locked
-    assert lock_path.read_bytes() == sentinel
 
 
 def test_strict_soft_sentinel_publication_race_times_out_over_legacy_winner(

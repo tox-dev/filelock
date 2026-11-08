@@ -2370,20 +2370,6 @@ def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, dep
         assert successor.is_locked
 
 
-@NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
-def test_forced_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path) -> None:
-    lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
-    lock = FileLock(lock_path)
-    lock.acquire()
-    lock.acquire()
-    _retarget_parent(lock_path, replacement_path)
-
-    lock.release(force=True)
-
-    with FileLock(original_path) as successor:
-        assert successor.is_locked
-
-
 def _symlinked_lock_paths(tmp_path: Path) -> tuple[Path, Path, Path]:  # pragma: win32 no cover
     original = tmp_path / "original"
     replacement = tmp_path / "replacement"
@@ -2398,6 +2384,20 @@ def _retarget_parent(lock_path: Path, replacement_path: Path) -> None:  # pragma
     link = lock_path.parent
     link.unlink()
     link.symlink_to(replacement_path.parent, target_is_directory=True)
+
+
+@NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
+def test_forced_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path) -> None:
+    lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
+    lock = FileLock(lock_path)
+    lock.acquire()
+    lock.acquire()
+    _retarget_parent(lock_path, replacement_path)
+
+    lock.release(force=True)
+
+    with FileLock(original_path) as successor:
+        assert successor.is_locked
 
 
 @NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
