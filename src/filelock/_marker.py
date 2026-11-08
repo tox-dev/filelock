@@ -19,7 +19,14 @@ _PROTOCOL: Final[str] = "filelock/2"
 
 #: The forms ``repr`` gives a non-negative finite float or int; ``float()`` would also accept whitespace, underscores
 #: and non-ASCII digits.
-_DURATION: Final[re.Pattern[str]] = re.compile(r"[0-9]+(?:\.[0-9]+)?(?:e[+-][0-9]+)?", re.ASCII)
+_DURATION: Final[re.Pattern[str]] = re.compile(
+    r"""
+    [0-9]+              # the integer digits
+    (?:\.[0-9]+)?       # the fraction, when the value is not whole
+    (?:e[+-][0-9]+)?    # the exponent repr writes for very large or very small values
+    """,
+    re.ASCII | re.VERBOSE,
+)
 
 #: Preserve unknown contracts so contenders cannot mistake them for malformed, reclaimable markers.
 OwnerMode = Literal["lease", "exclusive", "unknown"]
