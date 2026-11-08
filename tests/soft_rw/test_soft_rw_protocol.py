@@ -980,9 +980,6 @@ def test_heartbeat_leaves_a_file_linked_over_the_holder_record_alone(lock_file: 
     assert (writer.heartbeat(), private.read_bytes()) == (("lost", None), b"private")
 
 
-_HEARTBEAT: Final[float] = 0.3
-
-
 #: What one filesystem operation costs. Small against the heartbeat so a live participant's refreshes stay well inside
 #: the stale threshold however the scheduler orders its operations, as they do on a real filesystem.
 _STEP: Final[float] = 0.001
@@ -1148,8 +1145,9 @@ class _Model:
                 self.scheduler.sleep(poll)
             outcome.granted_at = participant.generation
             self._enter(participant.token, outcome.mode, outcome.granted_at)
+            heartbeat: float = 0.3
             for _ in range(hold_beats):
-                self.scheduler.sleep(_HEARTBEAT)
+                self.scheduler.sleep(heartbeat)
                 if (
                     participant.heartbeat()[0] != "ok"
                 ):  # pragma: no cover  # a live holder evicted: a regression the test reports
