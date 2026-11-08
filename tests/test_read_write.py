@@ -889,7 +889,8 @@ def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acqui
     lock = ReadWriteLock(lock_file)  # pragma: win32 no cover
     with getattr(lock, f"{mode}_lock")():  # pragma: win32 no cover
         acquired_event.set()
-        threading.Event().wait()  # pragma: win32 no cover
+        while True:  # pragma: win32 no cover
+            time.sleep(0.1)  # simplint: ignore[SMP808]  # a blocked lock wait can swallow SIGTERM
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
