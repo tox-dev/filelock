@@ -185,7 +185,7 @@ class SoftFileLock(BaseFileLock):
         # Popping and closing is one chain of C calls that no signal handler can split, so a retried release closes the
         # descriptor at most once; a second close could hit an unrelated file that reused the number.
         try:
-            list(map(os.close, islice(iter(vars(self).setdefault("_marker_fds", []).pop, None), 1)))
+            list(map(os.close, islice(iter(self.__dict__.setdefault("_marker_fds", []).pop, None), 1)))
         except IndexError:
             return
         except OSError:

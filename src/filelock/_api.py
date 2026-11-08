@@ -1400,7 +1400,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def __del__(self) -> None:
         """Force-release so a dropped reference never leaks a held lock, including every thread's hold."""
-        if vars(self).get("_creator_pid") != os.getpid():
+        if self.__dict__.get("_creator_pid") != os.getpid():
             return  # pragma: forked child
         # CPython runs __del__ before it clears weak references. Until then the singleton cache still hands this lock
         # out, and a thread that takes a hold through it would lose that hold to a release here. The cycle collector
@@ -1413,7 +1413,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def _release_once_unreachable(self) -> None:
         # The callback runs once the lock is gone, so it reads the state through a holder. The state alone keeps the
         # holder alive: a reference from the callback would keep the state, and through it the lock, alive.
-        self._finalizer_state = _FinalizerState(state=vars(self))
+        self._finalizer_state = _FinalizerState(state=self.__dict__)
         _UNREACHABLE_LOCKS.add(ref(self, partial(_finalize_unreachable, ref(self._finalizer_state), type(self))))
 
     def _release_abandoned_holds(self) -> None:
@@ -1972,7 +1972,7 @@ def _resolve_lazy_imports() -> None:  # pragma: >=3.15 cover
     # lazy import (PEP 810) that the release path in __del__ reaches first can no longer load. Load them while it can.
     for name, module in list(sys.modules.items()):
         if name == "filelock" or name.startswith("filelock."):
-            for attribute, value in list(vars(module).items()):
+            for attribute, value in list(module.__dict__.items()):
                 if type(value) is types.LazyImportType:
                     getattr(module, attribute)
 
