@@ -776,7 +776,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._raise_if_process_changed(operation_pid)
         except BaseException as error:
             acquisition_error: BaseException
-            if isinstance(error, sqlite3.OperationalError) and "database is locked" in str(error):
+            if isinstance(error, sqlite3.OperationalError) and error.sqlite_errorcode == sqlite3.SQLITE_BUSY:
                 acquisition_error = Timeout(self.lock_file)
             else:
                 acquisition_error = error
@@ -907,7 +907,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     f"PRAGMA busy_timeout={busy_ms if cancel_check is None else slice_ms}; {statements}"
                 ).close()
             except sqlite3.OperationalError as error:
-                if cancel_check is None or "database is locked" not in str(error) or cancel_check():
+                if cancel_check is None or error.sqlite_errorcode != sqlite3.SQLITE_BUSY or cancel_check():
                     raise
                 # A read's BEGIN succeeds before its SELECT waits, so the retry has to start a fresh transaction.
                 if connection.in_transaction:

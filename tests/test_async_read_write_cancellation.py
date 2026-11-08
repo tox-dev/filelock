@@ -554,8 +554,7 @@ async def test_read_retried_after_its_select_waited_starts_a_fresh_transaction(
                 # A writer can take the lock between the deferred BEGIN and the SELECT that needs the shared lock.
                 busy_once = False
                 real_connection.execute("BEGIN TRANSACTION")
-                msg = "database is locked"
-                raise sqlite3.OperationalError(msg)
+                raise _busy_error()
             seen_in_transaction.append(real_connection.in_transaction)
         return real_connection.executescript(statement)
 
@@ -570,6 +569,12 @@ async def test_read_retried_after_its_select_waited_starts_a_fresh_transaction(
     assert seen_in_transaction == [False]
 
 
+def _busy_error() -> sqlite3.OperationalError:
+    error = sqlite3.OperationalError("database is locked")
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    return error
+
+
 @pytest.mark.asyncio
 async def test_write_retried_after_its_begin_waited_is_acquired(lock_file: str, mocker: MockerFixture) -> None:
     busy_once = True
@@ -578,8 +583,7 @@ async def test_write_retried_after_its_begin_waited_is_acquired(lock_file: str, 
         nonlocal busy_once
         if "BEGIN EXCLUSIVE" in statement and busy_once:
             busy_once = False
-            msg = "database is locked"
-            raise sqlite3.OperationalError(msg)
+            raise _busy_error()
         return real_connection.executescript(statement)
 
     _patch_async_connection(mocker, executescript=executescript)

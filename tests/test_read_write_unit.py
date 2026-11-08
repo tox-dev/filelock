@@ -698,11 +698,9 @@ def test_busy_timeout_recomputed_after_journal_mode(
 
 def test_acquire_converts_connect_lock_error_to_timeout(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    mocker.patch(
-        "filelock._read_write._connect",
-        side_effect=sqlite3.OperationalError("database is locked"),
-        autospec=True,
-    )
+    busy = sqlite3.OperationalError("database is locked")
+    busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    mocker.patch("filelock._read_write._connect", side_effect=busy, autospec=True)
 
     with pytest.raises(Timeout):
         lock.acquire_read(timeout=0.1)
