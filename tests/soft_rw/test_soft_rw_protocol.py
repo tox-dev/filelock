@@ -470,17 +470,24 @@ def test_a_remembered_head_gone_from_the_same_log_fails_closed(lock_file: str, f
 
 
 @pytest.mark.requires_hard_links
-@pytest.mark.parametrize("remembered", [pytest.param(True, id="memory"), pytest.param(False, id="head")])
-def test_an_empty_listing_past_compaction_still_finds_the_head(
-    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture, *, remembered: bool
+def test_an_empty_listing_past_compaction_still_finds_the_remembered_head(
+    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture
 ) -> None:
     # Compaction leaves nothing within the probe window of generation 0, so only the head this client remembers or
     # gen/HEAD names, read by name, finds the log; a cached empty listing would make it look new and fork it at gen/1.
     log = _committed(files, lock_file, root, [None] * 140 + [_FIRST])
-    if remembered:
-        head.unlink()
+    head.unlink()
     mocker.patch.object(OsFiles, "listdir", autospec=True, return_value=[])
-    reader = log if remembered else GenerationLog(files, lock_file, root)
+    assert log.latest() == Snapshot(generation=141, writer=_FIRST, readers=frozenset())
+
+
+@pytest.mark.requires_hard_links
+def test_an_empty_listing_past_compaction_still_finds_the_head_by_name(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    _committed(files, lock_file, root, [None] * 140 + [_FIRST])
+    mocker.patch.object(OsFiles, "listdir", autospec=True, return_value=[])
+    reader = GenerationLog(files, lock_file, root)
     assert reader.latest() == Snapshot(generation=141, writer=_FIRST, readers=frozenset())
 
 
@@ -871,25 +878,21 @@ def test_heartbeat_ignores_a_broken_successor_record(lock_file: str, files: OsFi
 
 
 @pytest.mark.requires_hard_links
-@pytest.mark.parametrize(
-    ("error", "expected"),
-    [
-        pytest.param(OSError(EIO, "Input/output error"), "transient", id="filesystem-error"),
-        pytest.param(TreeReplacedError("tree replaced"), "lost", id="replaced-tree"),
-    ],
-)
-def test_heartbeat_reports_the_refresh_error(
-    lock_file: str,
-    files: OsFiles,
-    mocker: MockerFixture,
-    error: OSError | TreeReplacedError,
-    expected: Literal["transient", "lost"],
-) -> None:
+def test_heartbeat_reports_the_refresh_filesystem_error(lock_file: str, files: OsFiles, mocker: MockerFixture) -> None:
     writer: Final[Participant] = _participant(files, lock_file, "write")
     writer.publish()
     assert writer.advance()
+    error = OSError(EIO, "Input/output error")
     mocker.patch.object(OsFiles, "overwrite", autospec=True, side_effect=error)
-    assert writer.heartbeat() == (expected, error if isinstance(error, OSError) else None)
+    assert writer.heartbeat() == ("transient", error)
+
+
+def test_heartbeat_reports_a_replaced_tree_as_lost(lock_file: str, files: OsFiles, mocker: MockerFixture) -> None:
+    writer: Final[Participant] = _participant(files, lock_file, "write")
+    writer.publish()
+    assert writer.advance()
+    mocker.patch.object(OsFiles, "overwrite", autospec=True, side_effect=TreeReplacedError("tree replaced"))
+    assert writer.heartbeat() == ("lost", None)
 
 
 def test_heartbeat_without_a_published_record_is_lost(lock_file: str, files: OsFiles) -> None:
@@ -919,15 +922,24 @@ def test_heartbeat_with_the_tree_swapped_for_a_symlink_is_lost(  # pragma: needs
     reason="a swapped tree is refused only where records are reached through descriptors",
 )
 @pytest.mark.requires_hard_links
-@pytest.mark.parametrize("component", ["root", "holders"])
+@pytest.mark.parametrize(
+    "component",
+    [pytest.param(Path, id="root"), pytest.param(lambda root: Path(root, "holders"), id="holders")],
+)
 @pytest.mark.parametrize("refusal", ["EFTYPE", "EMLINK"])
 def test_heartbeat_with_a_symlink_refused_by_platform_errno_is_lost(  # pragma: needs link-dir-fd
-    lock_file: str, files: OsFiles, root: str, tmp_path: Path, mocker: MockerFixture, component: str, refusal: str
+    lock_file: str,
+    files: OsFiles,
+    root: str,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    component: Callable[[str], Path],
+    refusal: str,
 ) -> None:
     writer = _participant(files, lock_file, "write")
     writer.publish()
     assert writer.advance()
-    directory = Path(root) if component == "root" else Path(root, component)
+    directory = component(root)
     directory.rename(tmp_path / "aside")
     directory.symlink_to(target := tmp_path / "target", target_is_directory=True)
     target.mkdir()
@@ -1002,7 +1014,7 @@ def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability
     model = _Model(scheduler, stale_listings=stale_listings)
     rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded mix of hold lengths, not entropy
     for index in range(8):
-        model.add("write" if index % 3 == 0 else "read", hold_beats=rng.randint(1, 4))
+        model.add(("write", "read", "read")[index % 3], hold_beats=rng.randint(1, 4))
     model.run()
 
     assert model.violations == []
@@ -1266,7 +1278,7 @@ def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
     # log naming nobody and the holders directory holding nobody.
     model = _Model(_Scheduler(seed=seed, crash_probability=0.05, max_crashes=4))
     for index in range(6):
-        model.add("write" if index % 2 else "read", hold_beats=2)
+        model.add(("read", "write")[index % 2], hold_beats=2)
     model.run()
     assert model.violations == []
 
@@ -1291,12 +1303,10 @@ def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
 def test_fencing_generations_are_strictly_increasing_across_grants() -> None:
     model = _Model(_Scheduler(seed=7, crash_probability=0.0, max_crashes=0))
     for index in range(9):
-        model.add("write" if index % 3 == 0 else "read", hold_beats=1)
+        model.add(("write", "read", "read")[index % 3], hold_beats=1)
     model.run()
     assert model.violations == []
     writers = sorted(outcome.granted_at or 0 for outcome in model.outcomes if outcome.mode == "write")
     assert len(set(writers)) == len(writers)
-    for outcome in model.outcomes:
-        assert outcome.granted_at is not None
-        if outcome.mode == "read":
-            assert outcome.granted_at not in writers
+    assert all(outcome.granted_at is not None for outcome in model.outcomes)
+    assert [outcome for outcome in model.outcomes if outcome.mode == "read" and outcome.granted_at in writers] == []
