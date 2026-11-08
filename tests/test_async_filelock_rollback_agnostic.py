@@ -138,8 +138,10 @@ async def test_registration_failure_rolls_back_and_surfaces_cleanup(tmp_path: Pa
     lock = Lock(tmp_path / "a", run_in_executor=False)
     with pytest.raises(ExceptionGroup) as info:
         await lock.acquire()
-    assert info.value.message == "descriptor registration cleanup failed"
-    assert info.value.exceptions == (registration_error, rollback_error)
+    assert (info.value.message, info.value.exceptions) == (
+        "descriptor registration cleanup failed",
+        (registration_error, rollback_error),
+    )
     assert (lock.is_locked, lock.lock_counter) == (True, 1)  # rollback failed before unlocking, so state is kept
 
     fail_release = False
