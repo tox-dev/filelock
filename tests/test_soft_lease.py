@@ -856,10 +856,9 @@ def test_lease_rides_out_a_marker_missing_for_one_refresh(marker: Path, mocker: 
     refreshes: Final = Semaphore(0)
 
     def lstat(path: str) -> os.stat_result:
-        if path.endswith(marker.name):
-            refreshes.release()
-            if next(misses, False):
-                raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
+        refreshes.release()
+        if path.endswith(marker.name) and next(misses, False):
+            raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
         return real_lstat(path)
 
     with lease:
