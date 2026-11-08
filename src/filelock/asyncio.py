@@ -11,7 +11,6 @@ __lazy_modules__ = [
     "filelock._util",
     "functools",
     "inspect",
-    "threading",
 ]
 
 import asyncio
