@@ -887,6 +887,7 @@ def test_heartbeat_reports_the_refresh_filesystem_error(lock_file: str, files: O
     assert writer.heartbeat() == ("transient", error)
 
 
+@pytest.mark.requires_hard_links
 def test_heartbeat_reports_a_replaced_tree_as_lost(lock_file: str, files: OsFiles, mocker: MockerFixture) -> None:
     writer: Final[Participant] = _participant(files, lock_file, "write")
     writer.publish()
