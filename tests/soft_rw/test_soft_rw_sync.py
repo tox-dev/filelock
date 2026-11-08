@@ -644,10 +644,7 @@ def test_writer_preference_blocks_new_readers(lock_file: str) -> None:
         writer.start()
         # Start reader2 only once the writer is named in the latest snapshot: a fixed sleep undershoots on a Windows
         # runner still spawning the writer's interpreter, and reader2 then slips in ahead of the writer's intent.
-        deadline = time.monotonic() + _PROCESS_DEADLINE
-        while _state(lock_file).writer is None:
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
+        _wait_until(lambda: _state(lock_file).writer is not None)
         reader2.start()
         assert not r2_held.wait(timeout=0.5)
         r1_release.set()
@@ -658,6 +655,13 @@ def test_writer_preference_blocks_new_readers(lock_file: str) -> None:
         reader1.join(timeout=_PROCESS_DEADLINE)
         writer.join(timeout=_PROCESS_DEADLINE)
         reader2.join(timeout=_PROCESS_DEADLINE)
+
+
+def _wait_until(condition: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + _PROCESS_DEADLINE
+    while not condition():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
 
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 4)
@@ -697,7 +701,7 @@ def test_transaction_lock_timeout_across_threads(lock_file: str) -> None:
             thread_a.start()
             try:
                 thread_ready.wait(timeout=_PROCESS_DEADLINE)
-                time.sleep(0.05)
+                _wait_until(lambda: _state(lock_file).writer is not None)
                 with pytest.raises(Timeout):
                     lock.acquire_write(timeout=0.1)
             finally:
@@ -723,11 +727,12 @@ def test_two_readers_in_same_process_share_slot(lock_file: str) -> None:
     )
     try:
         barrier = threading.Barrier(8)
+        overlap = threading.Barrier(8)
 
         def target() -> None:
             barrier.wait(timeout=_PROCESS_DEADLINE)
             with lock.read_lock(timeout=5):
-                time.sleep(0.05)
+                overlap.wait(timeout=_PROCESS_DEADLINE)
 
         threads = [threading.Thread(target=target) for _ in range(8)]
         for thread in threads:
@@ -790,7 +795,6 @@ def test_dead_holder_evicted_by_contender(
         assert pid is not None
         os.kill(pid, getattr(signal, "SIGKILL"))  # ruff:ignore[get-attr-with-constant] - signal.SIGKILL is POSIX-only
         holder.join(timeout=_PROCESS_DEADLINE)
-        time.sleep(0.8)
         with getattr(lock, f"{contender_mode}_lock")(timeout=5):
             hold = lock._hold
             assert hold is not None
@@ -880,9 +884,8 @@ def test_heartbeat_reports_a_symlinked_tree_as_lost(
 
 
 def _wait_for_compromise(lock: SoftReadWriteLock) -> LeaseCompromise:
-    deadline = time.monotonic() + 2
-    while (compromise := lock.compromise) is None and time.monotonic() < deadline:
-        time.sleep(0.01)
+    _wait_until(lambda: lock.compromise is not None)
+    compromise = lock.compromise
     assert compromise is not None
     return compromise
 
@@ -995,10 +998,10 @@ def test_heartbeat_survives_a_transient_refresh_error(lock_file: str, mocker: Mo
     try:
         hold = lock._hold
         assert hold is not None
-        mocker.patch.object(
+        overwrite = mocker.patch.object(
             storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"), autospec=True
         )
-        time.sleep(0.2)  # ~10 ticks, every one failing the refresh
+        _wait_until(lambda: overwrite.call_count >= 10)
         assert hold.heartbeat_thread.is_alive()
         assert not hold.heartbeat_stop.is_set()
         assert lock.compromise is None
@@ -1062,10 +1065,7 @@ def test_short_attempts_still_evict_a_dead_holder(lock_file: str) -> None:
                 return False
             return True
 
-        deadline = time.monotonic() + 5
-        while not attempt():
-            assert time.monotonic() < deadline
-            time.sleep(0.02)
+        _wait_until(attempt)
         lock.release()
     finally:
         lock.close()
@@ -1312,7 +1312,7 @@ def test_temporary_commit_files_are_swept(lock_file: str) -> None:
             pass
         orphan.write_bytes(b"left by a crash between create and link")
         with lock.write_lock(timeout=2):
-            time.sleep(0.6)
+            _wait_until(lambda: not orphan.exists())
         assert not orphan.exists()
     finally:
         lock.close()
@@ -1641,7 +1641,7 @@ def _sigkill_worker(  # pragma: forked child
     else:
         lock.acquire_write()
     acquired_event.set()
-    time.sleep(60)
+    threading.Event().wait()
 
 
 def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:  # pragma: needs fork
