@@ -311,14 +311,14 @@ def test_lease_tolerates_a_transient_refresh_error(
     refreshes: Final = Semaphore(0)
 
     def flaky(path: str, *args: object, **kwargs: object) -> os.stat_result | None:
-        if not path.endswith(marker.name):
-            return real(path, *args, **kwargs)
+        marked = path.endswith(marker.name)
         try:
-            if next(ticks) < 2:
+            if marked and next(ticks) < 2:
                 raise OSError(EIO, "Input/output error")
             return real(path, *args, **kwargs)
         finally:
-            refreshes.release()
+            if marked:
+                refreshes.release()
 
     mocker.patch(f"filelock._lease.{target}", side_effect=flaky, autospec=True)
     reports = _Reports()
