@@ -105,7 +105,7 @@ def test_runner_shutdown_chains_body_cancellation_and_release_errors(  # pragma:
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-def _shutdown_with_failed_release(
+def _shutdown_with_failed_release(  # pragma: needs fcntl
     lock: AsyncFileLock, mocker: MockerFixture, body_error: ValueError, release_error: OSError
 ) -> BaseException | None:
     release_started = threading.Event()

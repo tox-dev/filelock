@@ -1169,7 +1169,7 @@ def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixtur
 
 def _fail_open_process(mocker: MockerFixture, captured_error: int, ambient_error: int) -> None:  # pragma: win32 cover
     if sys.platform != "win32":  # pragma: win32 cover  # narrows ctypes.windll for the type checker
-        pytest.skip("windows-only")
+        pytest.skip("windows-only")  # pragma: win32 no cover
     import ctypes
 
     def fail_open_process(_access: int, _inherit_handle: bool, _pid: int) -> None:

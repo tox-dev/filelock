@@ -172,7 +172,7 @@ async def test_release_cancellation_chains_backend_error(
     await lock.release()
 
 
-async def _cancel_release_after_failed_unlock(
+async def _cancel_release_after_failed_unlock(  # pragma: needs fcntl
     lock: AsyncFileLock, mocker: MockerFixture
 ) -> tuple[asyncio.Task[None], OSError]:
     release_started = asyncio.Event()

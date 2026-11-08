@@ -362,7 +362,7 @@ async def test_acquire_cancellation_chains_attempt_error_after_rollback(tmp_path
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-async def _cancel_acquire_in_hook(
+async def _cancel_acquire_in_hook(  # pragma: needs fcntl
     tmp_path: Path,
     policy: ContextErrorPolicy,
     hook_error: BaseException | None,
