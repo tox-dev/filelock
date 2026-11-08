@@ -367,15 +367,6 @@ def _change_singleton_option(
 
 @NEEDS_CLASS_COLLECTION
 def test_constructor_model_does_not_retain_dynamic_subclass(tmp_path: Path) -> None:
-    lock_type = _dynamic_constructor()
-    class_ref = ref(lock_type)
-    lock_type(str(tmp_path / "lock"))
-    del lock_type
-    gc.collect()
-    assert class_ref() is None
-
-
-def _dynamic_constructor() -> type[BaseFileLock]:
     class DynamicFileLock(BaseFileLock):
         def _acquire(self) -> None:
             raise NotImplementedError
@@ -383,7 +374,11 @@ def _dynamic_constructor() -> type[BaseFileLock]:
         def _release(self) -> None:
             raise NotImplementedError
 
-    return DynamicFileLock
+    class_ref = ref(DynamicFileLock)
+    DynamicFileLock(str(tmp_path / "lock"))
+    del DynamicFileLock
+    gc.collect()
+    assert class_ref() is None
 
 
 class _FileLockOptions(TypedDict, total=False):
