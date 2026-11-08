@@ -551,12 +551,6 @@ class SoftFileLock(BaseFileLock):
         return True
 
 
-class _LockHolder(NamedTuple):
-    pid: int
-    hostname: str
-    start_token: int | None
-
-
 def _parse_lock_holder(content: str | None) -> _LockHolder | None:
     # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<start_token>\n" third line naming the
     # holder's process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now).
@@ -590,6 +584,12 @@ def parse_decimal(text: str) -> int:
         msg = f"not a decimal integer: {text!r}"
         raise ValueError(msg)
     return int(text)
+
+
+class _LockHolder(NamedTuple):
+    pid: int
+    hostname: str
+    start_token: int | None
 
 
 def _read_lock_file(path: str) -> tuple[str | None, os.stat_result]:
