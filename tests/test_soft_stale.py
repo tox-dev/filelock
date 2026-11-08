@@ -60,16 +60,16 @@ def _holder(pid: int, *, host: str = _HOST, start: int | None = None) -> str:
             [str(os.getpid()), _HOST, str(process_start_token(os.getpid()))],
             id="start_token",
             marks=pytest.mark.skipif(
-                sys.platform not in {"win32", "darwin", "linux", "android"},
-                reason="only platforms with a proven start-time source write the third line",
+                process_start_token(os.getpid()) is None,
+                reason="the start token is unreadable here, e.g. under a time namespace with a boottime offset",
             ),
         ),
         pytest.param(
             [str(os.getpid()), _HOST],
             id="no_start_token",
             marks=pytest.mark.skipif(
-                sys.platform in {"win32", "darwin", "linux", "android"},
-                reason="platforms with a proven start-time source write the third line",
+                process_start_token(os.getpid()) is not None,
+                reason="the start token is readable here, so the lock writes it as a third line",
             ),
         ),
     ],

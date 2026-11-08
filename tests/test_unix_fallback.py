@@ -110,16 +110,16 @@ def test_fallback_swaps_to_soft(tmp_path: Path) -> None:  # pragma: needs fcntl
             [str(os.getpid()), host_name(), str(process_start_token(os.getpid()))],
             id="start_token",
             marks=pytest.mark.skipif(
-                sys.platform not in {"win32", "darwin", "linux", "android"},
-                reason="only platforms with a proven start-time source write the third line",
+                process_start_token(os.getpid()) is None,
+                reason="the start token is unreadable here, e.g. under a time namespace with a boottime offset",
             ),
         ),
         pytest.param(
             [str(os.getpid()), host_name()],
             id="no_start_token",
             marks=pytest.mark.skipif(
-                sys.platform in {"win32", "darwin", "linux", "android"},
-                reason="platforms with a proven start-time source write the third line",
+                process_start_token(os.getpid()) is not None,
+                reason="the start token is readable here, so the lock writes it as a third line",
             ),
         ),
     ],
