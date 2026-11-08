@@ -301,12 +301,13 @@ class SoftFileLock(BaseFileLock):
                 self._abandon_take_over(fd, aside, put_back=exchanged)
 
     def _restore_stranded_marker(self, breaker_pid: int, marker: os.stat_result) -> bool:  # pragma: win32 no cover
-        # A breaker killed between its exchange and the put-back leaves its own marker at the path and the live
-        # holder's marker under its break name. A recoverer first renames that record to a name of its own. Only one
-        # contender wins the rename, so two of them never exchange the same record and reverse each other. A record
-        # a dead recoverer holds is claimable again. A claim of this process that no thread is working on was
-        # abandoned by a failed put-back, and the next poll takes it up again. Where the marker cannot be put back
-        # the lock counts as held, as it does wherever no exchange is possible.
+        # A breaker killed between its exchange and the put-back leaves its own marker at the path and the live holder's
+        # marker under its break name. A recoverer first renames that record to a name of its own. Only one contender
+        # wins the rename, so two of them never exchange the same record and reverse each other.
+        #
+        # A record a dead recoverer holds is claimable again. A claim of this process that no thread is working on was
+        # abandoned by a failed put-back, and the next poll takes it up again. Where the marker cannot be put back the
+        # lock counts as held, as it does wherever no exchange is possible.
         if (candidates := self._stranded_candidates(breaker_pid)) is None:
             return True
         return any(self._recover_claimed(path, breaker_pid, marker, adopt=abandoned) for path, abandoned in candidates)
@@ -552,10 +553,11 @@ class SoftFileLock(BaseFileLock):
 
 
 def _parse_lock_holder(content: str | None) -> _LockHolder | None:
-    # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<start_token>\n" third line naming the
-    # holder's process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now).
-    # Anything else (wrong line count, a non-integer PID or start token, empty or unreadable content) is unparsable;
-    # returning None lets the caller treat it as a malformed lock to self-heal rather than a holder.
+    # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<start_token>\n" third line naming the holder's
+    # process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now). Anything
+    # else (wrong line count, a non-integer PID or start token, empty or unreadable content) is unparsable; returning
+    # None lets the caller treat it as a malformed lock to self-heal rather than a holder.
+    #
     # Every writer since 3.22 ends each line with "\n", so a record without one was cut by a crash or read mid-write. As
     # a holder it would name a foreign host no one reclaims, or a start token that lets a contender break a live lock.
     if not content or not content.endswith("\n") or len(lines := content.strip().splitlines()) not in {2, 3}:

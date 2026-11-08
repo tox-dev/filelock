@@ -140,11 +140,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     The lock's state is a log of immutable snapshots under ``foo.lock.rw/gen/<N>``, each naming the writer and the
     readers holding the lock at generation ``N``. Every acquire, release, and eviction publishes the next snapshot with
-    one atomic no-replace hard link, so no transition can be left half done by a crash on any host. Each participant
-    also keeps ``foo.lock.rw/holders/<token>``, a record whose nonce a daemon heartbeat thread rewrites every
-    ``heartbeat_interval`` seconds. A contender evicts a member whose record has not changed for ``stale_threshold``
-    seconds of the contender's own monotonic clock; no clock is ever compared across hosts, so skew between hosts or
-    against the file server cannot make a live holder look dead.
+    one atomic no-replace hard link, so no transition can be left half done by a crash on any host.
+
+    Each participant also keeps ``foo.lock.rw/holders/<token>``, a record whose nonce a daemon heartbeat thread rewrites
+    every ``heartbeat_interval`` seconds. A contender evicts a member whose record has not changed for
+    ``stale_threshold`` seconds of the contender's own monotonic clock; no clock is ever compared across hosts, so skew
+    between hosts or against the file server cannot make a live holder look dead.
 
     Writer acquire is writer-preferring: a writer enters the snapshot as soon as no live writer is named, which blocks
     any new reader, then waits for the named readers to leave. Writer starvation is impossible.
@@ -168,9 +169,10 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately on contention
     :param is_singleton: if ``True``, reuse existing instances for the same canonical path
+
     :param heartbeat_interval: seconds between heartbeat refreshes; default 30 s
-    :param stale_threshold: seconds a holder record may stay unchanged before a contender evicts it; defaults to
-        ``3 * heartbeat_interval``, matching etcd's ``LeaseKeepAlive`` convention
+    :param stale_threshold: seconds a holder record may stay unchanged before a contender evicts it; defaults to ``3 *
+        heartbeat_interval``, matching etcd's ``LeaseKeepAlive`` convention
     :param poll_interval: seconds between acquire retries under contention; default 0.25 s
     :param on_compromise: called from the heartbeat thread with a :class:`~filelock.LeaseCompromise` when the hold is
         lost: a peer evicted it, or refreshes failed for long enough that a peer could have

@@ -210,12 +210,15 @@ class GenerationLog:
         #
         # Starts from the newest readable generation among those ``gen/HEAD``, the listing, or memory name, then probes
         # forward by name across the retained window. ``HEAD`` only names a generation, and that generation must still
-        # read back: a committer stalled before its rename can leave ``HEAD`` on a generation compacted since. A
-        # generation compacted between the listing and the read, and a hole left by a committer that died before it
+        # read back: a committer stalled before its rename can leave ``HEAD`` on a generation compacted since.
+        #
+        # A generation compacted between the listing and the read, and a hole left by a committer that died before it
         # compacted, are covered by the probe. Memory and ``HEAD`` are bound to the log's epoch, so a log wiped and
-        # restarted is never continued from a generation it no longer holds. Only a log that names generations, now or
-        # as remembered, of which none can be read is refused, because that is a client so far behind the log that
-        # nothing it reads can be trusted.
+        # restarted is never continued from a generation it no longer holds.
+        #
+        # Only a log that names generations, now or as remembered, of which none can be read is refused, because that is
+        # a client so far behind the log that nothing it reads can be trusted.
+        #
         # When everything the first pass named is gone, peers compacted past it while this client looked, or the log was
         # replaced; one more pass settles whether this client cannot see the head at all.
         if (latest := self._find()) is None and (latest := self._find()) is None:
@@ -321,15 +324,19 @@ class GenerationLog:
         #
         # The record is complete before it gets its public name, and a no-replace hard link is the compare-and-swap:
         # only one link to ``gen/<N+1>`` can ever succeed. The link's return code is not trusted, because an NFS retry
-        # can report a link that did land as failed; the file's identity after the call is what decides. A log whose
-        # epoch changed since the snapshot was read is a different log, so the commit is refused as lost and the caller
-        # re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the link. A slot
-        # compaction freed is refused the same way, before the link and again after it, since a committer can stall in
-        # between. After the link a surviving predecessor proves little: it may be a record another stalled committer
-        # linked into its own freed slot and has yet to remove. A slot comes free once the log is a whole window past
-        # it, and the head stays, so a record the listing or ``HEAD`` leads by a window is refused as well. A record
-        # refused after it landed is removed when nothing was built on it. One that peers lead by less than a window
-        # stays, or its slot would come free early.
+        # can report a link that did land as failed; the file's identity after the call is what decides.
+        #
+        # A log whose epoch changed since the snapshot was read is a different log, so the commit is refused as lost and
+        # the caller re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the
+        # link. A slot compaction freed is refused the same way, before the link and again after it, since a committer
+        # can stall in between.
+        #
+        # After the link a surviving predecessor proves little: it may be a record another stalled committer linked into
+        # its own freed slot and has yet to remove.
+        #
+        # A slot comes free once the log is a whole window past it, and the head stays, so a record the listing or
+        # ``HEAD`` leads by a window is refused as well. A record refused after it landed is removed when nothing was
+        # built on it. One that peers lead by less than a window stays, or its slot would come free early.
         if self._files.read(self._epoch_path) != self._epoch or not self._extends_the_log(successor.generation):
             return False
         if not self._publish(

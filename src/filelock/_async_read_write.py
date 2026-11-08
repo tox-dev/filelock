@@ -59,6 +59,7 @@ class AsyncReadWriteLock:
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
     :param is_singleton: if ``True``, reuse existing :class:`ReadWriteLock` instances for the same resolved path
+
     :param loop: event loop for ``run_in_executor``; ``None`` uses the running loop
     :param executor: executor for ``run_in_executor``. When ``None`` this lock creates and owns a dedicated
         single-thread executor so every operation runs on the same thread (SQLite affinity requires this) and shuts it

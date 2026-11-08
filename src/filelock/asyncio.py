@@ -170,25 +170,31 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in the
             acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it to a
             negative value. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
+
         :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask and
             default ACLs, preserving POSIX default ACL inheritance in shared directories.
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set to
             ``False`` (the default) then the lock will be reentrant across threads. When ``True``, **all fields of the
             lock's internal context are per-thread**, including the configuration values ``poll_interval``, ``timeout``,
-            ``blocking``, ``mode``, and ``lifetime``. Setting one of these properties from one thread does not change
-            the value seen by another thread; threads that did not perform the write continue to see the value supplied
-            at construction time. ``mode`` has no setter, so construction is the only place it is ever set. If you need
-            configuration values to be visible across threads, construct the lock with ``thread_local=False``.
+            ``blocking``, ``mode``, and ``lifetime``.
+
+            Setting one of these properties from one thread does not change the value seen by another thread; threads
+            that did not perform the write continue to see the value supplied at construction time. ``mode`` has no
+            setter, so construction is the only place it is ever set. If you need configuration values to be visible
+            across threads, construct the lock with ``thread_local=False``.
+
         :param blocking: whether the lock should be blocking or not
         :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per lock
             file. This is useful if you want to use the lock object for reentrant locking without needing to pass the
             same object around.
         :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback value
             in the acquire method, if no poll_interval value (``None``) is given.
-        :param lifetime: for :class:`AsyncSoftFileLock`, the age in seconds after which a waiting process may delete
-            the marker, even while its holder remains alive. This legacy expiry mode does not provide strict mutual
-            exclusion. ``None`` (the default) disables age-based expiry. Native OS locks (:class:`AsyncFileLock`)
-            cannot be revoked by file age and ignore a non-``None`` ``lifetime`` with a warning.
+
+        :param lifetime: for :class:`AsyncSoftFileLock`, the age in seconds after which a waiting process may delete the
+            marker, even while its holder remains alive. This legacy expiry mode does not provide strict mutual
+            exclusion. ``None`` (the default) disables age-based expiry. Native OS locks (:class:`AsyncFileLock`) cannot
+            be revoked by file age and ignore a non-``None`` ``lifetime`` with a warning.
+
         :param context_error_policy: how a context manager reconciles a failure in its body with a failure while
             releasing on exit. ``"chain"`` (the default) keeps Python's behavior: the release error propagates with the
             body error in its ``__context__``. ``"group"`` raises a :class:`BaseExceptionGroup` holding the body error
@@ -196,20 +202,23 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :param close_error_policy: for native locks (:class:`AsyncFileLock`), what to do with an ``os.close`` failure
             after the OS unlock has already committed. ``"default"`` keeps each platform's historical behavior,
             ``"raise"`` always propagates the ``OSError``, and ``"suppress"`` always ignores it.
+
         :param fallback_to_soft: for :class:`AsyncFileLock`, whether to fall back to soft existence locking when
             ``flock`` returns ``ENOSYS``. ``True`` (default) keeps the fallback; ``False`` propagates the error.
         :param preserve_lock_file: for native locks (:class:`AsyncFileLock`), whether filelock promises not to unlink
             the lock pathname on release. ``False`` (default) keeps each backend's cleanup; ``True`` keeps a stable file
             identity (Windows skips its unlink, Unix refuses the ``ENOSYS`` soft fallback). :class:`AsyncSoftFileLock`
             rejects ``True``.
+
         :param on_acquired: for native locks (:class:`AsyncFileLock`), a callable invoked with the borrowed lock
             descriptor once per physical acquisition, after the lock is held but before
             :meth:`~BaseAsyncFileLock.acquire` returns. With ``run_in_executor=True`` (the default) it runs in the
             backend executor. It must not close or unlock the descriptor; a raise rolls the acquisition back.
             :class:`AsyncSoftFileLock` rejects it.
+
         :param loop: the event loop a garbage-collected lock schedules its release on when no loop runs in the
-            collecting thread. :meth:`~BaseAsyncFileLock.acquire` and :meth:`~BaseAsyncFileLock.release` always run
-            on the loop that awaits them.
+            collecting thread. :meth:`~BaseAsyncFileLock.acquire` and :meth:`~BaseAsyncFileLock.release` always run on
+            the loop that awaits them.
         :param run_in_executor: If this is set to ``True`` then the lock will be acquired in an executor.
         :param executor: The executor to use. If not specified, the default executor will be used.
 
@@ -286,9 +295,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             until the lock could be acquired
         :param poll_interval: interval of trying to acquire the lock file, ``None`` means use the default
             :attr:`~BaseFileLock.poll_interval`
-        :param blocking: whether to retry until this call holds the lock or the timeout expires, ``None`` means use
-            the default :attr:`~BaseFileLock.blocking`. ``False`` makes one attempt and raises :class:`~Timeout` on
-            failure.
+        :param blocking: whether to retry until this call holds the lock or the timeout expires, ``None`` means use the
+            default :attr:`~BaseFileLock.blocking`. ``False`` makes one attempt and raises :class:`~Timeout` on failure.
+
         :param cancel_check: a callable returning ``True`` when the acquisition should be canceled. Checked on each poll
             iteration. When triggered, raises :class:`~Timeout` just like an expired timeout.
 

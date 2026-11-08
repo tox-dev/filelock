@@ -274,8 +274,10 @@ class StrictSoftFileLock(BaseFileLock):
         # since this owner published it, so a contender's os.scandir is guaranteed to return it (POSIX only leaves the
         # visibility of entries created or removed *during* a scan unspecified). The freshly linked held claim carries
         # no such guarantee: a scan that races its creation can miss it. Were the intent removed here, that scan could
-        # observe neither claim and let a larger-token contender win over this owner. The stable intent is the witness
-        # that keeps the phase-five min-token decision computed over the true set. Release unlinks both.
+        # observe neither claim and let a larger-token contender win over this owner.
+        #
+        # The stable intent is the witness that keeps the phase-five min-token decision computed over the true set.
+        # Release unlinks both.
         return {intent_name, held_name}.issubset(claim.name for claim in claims) and min(
             _claim_token_key(claim.name) for claim in claims
         ) == f"v1-{token}.claim"
@@ -535,13 +537,15 @@ def _read_claim_records(
     # A contended scan can list a claim that is not yet cleanly readable, in two ways that both resolve on a brief
     # retry. Windows fails an open with EACCES while a peer's unlink holds the claim; once the deletion is pending,
     # _attempt_claim_read skips the claim outright, as another process's handle can keep the name listed for seconds.
+    #
     # On NFS, a peer that unlinks its own claim leaves this client's cached filehandle stale, so the next open returns
     # ESTALE rather than a clean ENOENT until the lookup revalidates against the server. Retrying re-runs the path
     # lookup, which turns the vanished claim into ENOENT (skip) or reads it if it still exists. A genuinely unreadable
-    # record (a locked-down file, an EIO fault) still fails closed. The grace starts at the first pending result rather
-    # than before the first attempt, so a slow first read cannot use up the window and leave no retry. One deadline
-    # covers the scan: a deadline per claim let claims that clear one after another stretch a scan, and the caller's
-    # timeout with it, by a grace each.
+    # record (a locked-down file, an EIO fault) still fails closed.
+    #
+    # The grace starts at the first pending result rather than before the first attempt, so a slow first read cannot use
+    # up the window and leave no retry. One deadline covers the scan: a deadline per claim let claims that clear one
+    # after another stretch a scan, and the caller's timeout with it, by a grace each.
     records: dict[str, bytes] = {}
     deadline: float | None = None
     while True:

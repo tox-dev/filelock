@@ -46,9 +46,11 @@ def host_name() -> str:
     # Marker formats here hold the field to printable non-space ASCII, while ``socket.gethostname()`` reports whatever
     # the kernel stores: a space, a newline that forges an extra marker line, or a byte no codec encodes, which Python
     # hands back as a surrogate. A holder that publishes one raw writes a marker it cannot read back, and loses the lock
-    # to the first peer that ages it out as malformed. ``?`` is illegal in a hostname, so escaping it along with every
-    # out-of-grammar byte as ``?<hex>`` leaves a real name untouched and still keeps two hosts apart, which
-    # :func:`owner_is_stale` relies on to refuse to probe a foreign PID.
+    # to the first peer that ages it out as malformed.
+    #
+    # ``?`` is illegal in a hostname, so escaping it along with every out-of-grammar byte as ``?<hex>`` leaves a real
+    # name untouched and still keeps two hosts apart, which :func:`owner_is_stale` relies on to refuse to probe a
+    # foreign PID.
     #
     # Linux appends the PID namespace, as Mercurial's lock prefix does. Two containers in one pod share the hostname and
     # the boot id but not the PID namespace, so a PID recorded in one names another process, or none, in the other. The

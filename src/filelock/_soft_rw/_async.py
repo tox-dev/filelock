@@ -50,9 +50,10 @@ class AsyncSoftReadWriteLock:
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately on contention
     :param is_singleton: if ``True``, reuse existing :class:`SoftReadWriteLock` instances per resolved path
+
     :param heartbeat_interval: seconds between heartbeat refreshes; default 30 s
-    :param stale_threshold: seconds a holder record may stay unchanged before a contender evicts it; defaults to
-        ``3 * heartbeat_interval``
+    :param stale_threshold: seconds a holder record may stay unchanged before a contender evicts it; defaults to ``3 *
+        heartbeat_interval``
     :param poll_interval: seconds between acquire retries under contention; default 0.25 s
     :param on_compromise: called from the heartbeat thread with a :class:`~filelock.LeaseCompromise` when the hold is
         lost

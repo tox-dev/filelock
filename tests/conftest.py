@@ -84,13 +84,15 @@ _HOST_COLLECTION_DUE: Final[Iterator[bool]] = itertools.cycle((False,) * (_HOST_
 
 @pytest.fixture(autouse=True)
 def _collect_garbage() -> Iterator[None]:
-    # Multiprocessing objects register finalizers that close pipes, unlink semaphores and write to the resource
-    # tracker; when cyclic garbage from one test is collected during a later one, those run against whatever that
-    # later test has patched onto os.close or os.write. Collect after every test so finalizers fire in the test that
-    # created the objects, before any such patch is in place. This runs after mocker's undo, since autouse fixtures
-    # set up first and tear down last. Where a collection runs no finalizers (GraalPy queues them on the host
-    # collector), it cannot do that, and a full host collection after every test was nearly all of the suite's runtime.
-    # It still needs one now and then: with none at all, GraalPy CI runs stalled past the timeout inside trivial tests.
+    # Multiprocessing objects register finalizers that close pipes, unlink semaphores and write to the resource tracker;
+    # when cyclic garbage from one test is collected during a later one, those run against whatever that later test has
+    # patched onto os.close or os.write. Collect after every test so finalizers fire in the test that created the
+    # objects, before any such patch is in place.
+    #
+    # This runs after mocker's undo, since autouse fixtures set up first and tear down last. Where a collection runs no
+    # finalizers (GraalPy queues them on the host collector), it cannot do that, and a full host collection after every
+    # test was nearly all of the suite's runtime. It still needs one now and then: with none at all, GraalPy CI runs
+    # stalled past the timeout inside trivial tests.
     yield
     if CAPABILITIES["collected-finalization"] or next(_HOST_COLLECTION_DUE):  # pragma: needs collected-finalization
         gc.collect()

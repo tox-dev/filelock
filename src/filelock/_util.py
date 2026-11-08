@@ -326,11 +326,12 @@ def foreign_directory_owner(directory: os.stat_result, parent: os.stat_result) -
     #
     # A lock that keeps its ownership records in a directory relies on them staying in place. The sticky bit (a
     # directory flag that lets only a file's owner remove it) on a parent such as ``/tmp`` stops other accounts from
-    # renaming the directory away. A directory that this account or the parent's owner owns is therefore safe there. One
-    # that another account owns is outside the lock's control. Without the sticky bit, any process that can create the
-    # directory can also rename this account's own one away, so a refusal there would change nothing. Linux applies the
-    # same rule for
-    # ``fs.protected_regular``.
+    # renaming the directory away. A directory that this account or the parent's owner owns is therefore safe there.
+    #
+    # One that another account owns is outside the lock's control. Without the sticky bit, any process that can create
+    # the directory can also rename this account's own one away, so a refusal there would change nothing.
+    #
+    # Linux applies the same rule for ``fs.protected_regular``.
     #
     # :param directory: ``lstat`` of the directory found in place.
     # :param parent: ``stat`` of the directory that holds it.

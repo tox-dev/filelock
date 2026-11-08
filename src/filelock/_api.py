@@ -109,6 +109,7 @@ class LockOptions(TypedDict, total=False):
     :ivar blocking: whether acquiring the lock waits for it
     :ivar is_singleton: whether one instance is shared per lock file
     :ivar poll_interval: default interval in seconds for polling the lock file
+
     :ivar lifetime: for :class:`SoftFileLock`, the age in seconds after which a waiting process may delete the marker
     :ivar context_error_policy: how a context manager reconciles a body failure with a release failure
     :ivar close_error_policy: what to do with an ``os.close`` failure after the descriptor is relinquished
@@ -745,48 +746,59 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         :param timeout: default timeout when acquiring the lock, in seconds. It will be used as fallback value in the
             acquire method, if no timeout value (``None``) is given. If you want to disable the timeout, set it to a
             negative value or ``inf``. A timeout of 0 means that there is exactly one attempt to acquire the file lock.
+
         :param mode: file permissions for the lockfile. When not specified, the OS controls permissions via umask and
             default ACLs, preserving POSIX default ACL inheritance in shared directories. Construction raises
             :class:`ValueError` unless it grants the owner read and write, which the lock needs for its own files. On
             Windows a native lock creates its file with an owner-only ACL when the mode has no group and other bits; any
             other mode, and a soft lock, leave the file the ACL its directory hands down. A Unix lock file that already
             exists keeps its permissions.
+
         :param thread_local: Whether this object's internal context should be thread local or not. If this is set to
             ``False`` then the lock will be reentrant across threads. When ``True`` (the default), **all fields of the
             lock's internal context are per-thread**, including the configuration values ``poll_interval``, ``timeout``,
-            ``blocking``, ``mode``, and ``lifetime``. Setting one of these properties from one thread does not change
-            the value seen by another thread; threads that did not perform the write continue to see the value supplied
-            at construction time. ``mode`` has no setter, so construction is the only place it is ever set. If you need
-            configuration values to be visible across threads, construct the lock with ``thread_local=False``.
+            ``blocking``, ``mode``, and ``lifetime``.
+
+            Setting one of these properties from one thread does not change the value seen by another thread; threads
+            that did not perform the write continue to see the value supplied at construction time. ``mode`` has no
+            setter, so construction is the only place it is ever set. If you need configuration values to be visible
+            across threads, construct the lock with ``thread_local=False``.
+
         :param blocking: whether the lock should be blocking or not
         :param is_singleton: If this is set to ``True`` then only one instance of this class will be created per lock
             file. This is useful if you want to use the lock object for reentrant locking without needing to pass the
             same object around.
         :param poll_interval: default interval for polling the lock file, in seconds. It will be used as fallback value
             in the acquire method, if no poll_interval value (``None``) is given.
+
         :param lifetime: for :class:`SoftFileLock`, the age in seconds after which a waiting process may delete the
             marker, even while its holder remains alive. This legacy expiry mode does not provide strict mutual
             exclusion. ``None`` (the default) disables age-based expiry. Native OS locks (:class:`FileLock`) cannot be
             revoked by file age and ignore a non-``None`` ``lifetime`` with a warning.
+
         :param context_error_policy: how a context manager reconciles a failure in its body with a failure while
             releasing on exit. ``"chain"`` (the default) keeps Python's behavior: the release error propagates with the
             body error in its ``__context__``. ``"group"`` raises a :class:`BaseExceptionGroup` holding the body error
             first and the release error second, so neither hides the other.
+
         :param close_error_policy: what to do with an ``os.close`` failure after relinquishing descriptor ownership.
             ``"default"`` keeps each backend's historical behavior (Unix native locks drop a FUSE/Docker ``EIO``;
             Windows native locks and :class:`SoftFileLock` propagate); ``"raise"`` always propagates the ``OSError``;
             ``"suppress"`` always ignores it. Held state is released either way. It does not affect unlock failures or
             lock-file deletion.
+
         :param fallback_to_soft: for :class:`UnixFileLock`, whether to switch to :class:`SoftFileLock` when the
-            filesystem's ``flock`` returns ``ENOSYS``. ``True`` (the default) keeps the historical fallback;
-            ``False`` fails closed, letting the ``ENOSYS`` propagate so a caller that needs kernel-enforced
-            locking is never silently downgraded. It has no effect on Windows or :class:`SoftFileLock`.
+            filesystem's ``flock`` returns ``ENOSYS``. ``True`` (the default) keeps the historical fallback; ``False``
+            fails closed, letting the ``ENOSYS`` propagate so a caller that needs kernel-enforced locking is never
+            silently downgraded. It has no effect on Windows or :class:`SoftFileLock`.
+
         :param preserve_lock_file: for native locks (:class:`FileLock`), whether filelock promises not to unlink the
             lock pathname on release. ``False`` (the default) keeps each backend's cleanup: Windows removes the lock
             file, Unix already leaves it. ``True`` keeps a stable file identity for ACLs, auditing, and holder metadata:
             Windows skips its post-release unlink and Unix refuses to enter the ``ENOSYS`` soft fallback (which releases
             by unlinking). :class:`SoftFileLock` rejects ``True``. The promise covers filelock's own release path only;
             it cannot stop another process or the filesystem from removing the pathname.
+
         :param on_acquired: for native locks (:class:`FileLock`), a callable invoked with the borrowed lock descriptor
             once per physical acquisition, after filelock holds the native lock and finished backend initialization but
             before :meth:`~BaseFileLock.acquire` returns. Recursive acquisitions do not call it again. The callback may
@@ -854,8 +866,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         :param poll_interval: interval of trying to acquire the lock file, ``None`` means use the default
             :attr:`~poll_interval`
         :param poll_intervall: deprecated, kept for backwards compatibility, use ``poll_interval`` instead
-        :param blocking: whether to retry until this call holds the lock or the timeout expires, ``None`` means use
-            the default :attr:`~blocking`. ``False`` makes one attempt and raises :class:`~Timeout` on failure.
+
+        :param blocking: whether to retry until this call holds the lock or the timeout expires, ``None`` means use the
+            default :attr:`~blocking`. ``False`` makes one attempt and raises :class:`~Timeout` on failure.
         :param cancel_check: a callable returning ``True`` when the acquisition should be canceled. Checked on each poll
             iteration. When triggered, raises :class:`~Timeout` just like an expired timeout.
 

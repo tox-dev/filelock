@@ -134,10 +134,10 @@ class SoftFileLease(MarkerSoftFileLock):
             for two missed refreshes before a peer may take the claim. Must be shorter than ``lease_duration`` and at
             most :data:`threading.TIMEOUT_MAX`.
         :param on_compromise: called from the heartbeat thread with a :class:`LeaseCompromise` when the claim is lost.
+
         :param kwargs: every other :class:`BaseFileLock <filelock.BaseFileLock>` option, ``timeout`` and ``mode`` among
-            them. The metaclass passes them all by keyword, and taking them here lets
-            :class:`AsyncSoftFileLease <filelock.AsyncSoftFileLease>` add the async plumbing a fixed signature would
-            hide.
+            them. The metaclass passes them all by keyword, and taking them here lets :class:`AsyncSoftFileLease
+            <filelock.AsyncSoftFileLease>` add the async plumbing a fixed signature would hide.
 
         """
         # A plain float: the marker records its repr, which NumPy's float64 spells in a form no parser reads.
