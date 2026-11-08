@@ -71,7 +71,7 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=sys.platform != "win32",
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
         for _ in range(process_count)
     ]
@@ -84,7 +84,7 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
         _kill_processes(processes)
         pytest.fail(f"strict soft-lock stress workers exceeded {_WORKER_DEADLINE} seconds")
 
-    recorded = int(counter_path.read_text()) if counter_path.exists() else 0
+    recorded = int(counter_path.read_text())
     assert ([process.returncode for process in processes], recorded) == (
         [0] * process_count,
         process_count * acquisitions_per_process,

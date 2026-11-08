@@ -113,19 +113,24 @@ def test_read_write_locks_held_together_each_keep_their_own_probe(tmp_path: Path
 
 @_NEEDS_FD_DIRECTORY
 @pytest.mark.parametrize(
-    "newer_releases_last", [pytest.param(True, id="newer-last"), pytest.param(False, id="older-last")]
+    ("first_name", "last_name"),
+    [pytest.param("older", "newer", id="newer-last"), pytest.param("newer", "older", id="older-last")],
 )
 @pytest.mark.parametrize("next_database", [pytest.param("shared.db", id="same"), pytest.param("other.db", id="other")])
 def test_read_write_lock_close_interrupted_among_its_probes_closes_the_rest_later(  # pragma: needs fd-directory
-    tmp_path: Path, mocker: MockerFixture, newer_releases_last: bool, next_database: str
+    tmp_path: Path,
+    mocker: MockerFixture,
+    first_name: Literal["older", "newer"],
+    last_name: Literal["older", "newer"],
+    next_database: str,
 ) -> None:
     lock_path: Final[Path] = tmp_path / "shared.db"
     older: Final = ReadWriteLock(lock_path, is_singleton=False)
     newer: Final = ReadWriteLock(lock_path, is_singleton=False)
     older.acquire_read()
     newer.acquire_read()
-    first, last = (older, newer) if newer_releases_last else (newer, older)
-    first.release()
+    locks: Final = {"older": older, "newer": newer}
+    locks[first_name].release()
     real_close: Final = os.close
 
     def close_then_interrupt(fd: int) -> None:
@@ -136,7 +141,7 @@ def test_read_write_lock_close_interrupted_among_its_probes_closes_the_rest_late
 
     mocker.patch("os.close", autospec=True, side_effect=close_then_interrupt)
     with pytest.raises(KeyboardInterrupt):
-        last.release()
+        locks[last_name].release()
     # The next connect must not adopt the probe the interrupted close already shut, and any connect finishes the close.
     with ReadWriteLock(tmp_path / next_database, is_singleton=False).read_lock():
         pass
@@ -146,17 +151,17 @@ def test_read_write_lock_close_interrupted_among_its_probes_closes_the_rest_late
 
 @_NEEDS_PROBE_DESCRIPTORS  # pragma: win32 no cover
 @pytest.mark.parametrize(
-    ("contender_output", "beside_a_peer"),
-    [pytest.param("", False, id="alone"), pytest.param("Timeout\n", True, id="beside-a-peer")],
+    ("contender_output", "peer_count"),
+    [pytest.param("", 0, id="alone"), pytest.param("Timeout\n", 1, id="beside-a-peer")],
 )
 def test_read_write_lock_release_interrupted_once_its_probe_release_applies(
-    tmp_path: Path, mocker: MockerFixture, contender_output: str, *, beside_a_peer: bool
+    tmp_path: Path, mocker: MockerFixture, contender_output: str, *, peer_count: int
 ) -> None:
     lock_path: Final[Path] = tmp_path / "held.db"
     lock: Final = ReadWriteLock(lock_path, is_singleton=False)
-    peer: Final = ReadWriteLock(lock_path, is_singleton=False)
+    peers: Final = [ReadWriteLock(lock_path, is_singleton=False) for _ in range(peer_count)]
     lock.acquire_read()
-    if beside_a_peer:
+    for peer in peers:
         peer.acquire_read()
     release_locked: Final = filelock._read_write._ProbeDescriptors._release_locked
 
@@ -182,15 +187,18 @@ def test_read_write_lock_release_interrupted_once_its_probe_release_applies(
 
 
 @_NEEDS_FD_DIRECTORY
-@pytest.mark.parametrize("taking", [pytest.param("retain", id="new-probe"), pytest.param("adopt", id="idle-probe")])
+@pytest.mark.parametrize(
+    ("taking", "idle_connections"),
+    [pytest.param("retain", 0, id="new-probe"), pytest.param("adopt", 1, id="idle-probe")],
+)
 def test_read_write_lock_connect_interrupted_once_it_leases_a_probe_releases_it(  # pragma: needs fd-directory
-    tmp_path: Path, mocker: MockerFixture, taking: Literal["retain", "adopt"]
+    tmp_path: Path, mocker: MockerFixture, taking: Literal["retain", "adopt"], idle_connections: int
 ) -> None:
     lock_path: Final[Path] = tmp_path / "held.db"
     holder: Final = ReadWriteLock(lock_path, is_singleton=False)
     holder.acquire_read()
-    if taking == "adopt":
-        # A connection that closes beside a live one leaves its probe idle for the next connect to adopt.
+    # A connection that closes beside a live one leaves its probe idle for the next connect to adopt.
+    for _ in range(idle_connections):
         with ReadWriteLock(lock_path, is_singleton=False).read_lock():
             pass
     real: Final = getattr(filelock._read_write._ProbeDescriptors, taking)
@@ -571,22 +579,22 @@ def _concurrent_operation_script() -> str:
 
 @NEEDS_FORK  # pragma: needs fork
 @pytest.mark.parametrize(
-    ("mode", "fork_name", "reject_audit_hook"),
+    ("mode", "fork_name", "audit_hook"),
     [
-        pytest.param("read", "fork", False, id="read-fork"),
-        pytest.param("write", "fork", False, id="write-fork"),
-        pytest.param("write", "fork", True, id="write-fork-rejected-audit-hook"),
+        pytest.param("read", "fork", "allow", id="read-fork"),
+        pytest.param("write", "fork", "allow", id="write-fork"),
+        pytest.param("write", "fork", "reject", id="write-fork-rejected-audit-hook"),
         pytest.param(
             "read",
             "fork1",
-            False,
+            "allow",
             marks=NEEDS_FORK1,
             id="read-fork1",
         ),
         pytest.param(
             "write",
             "fork1",
-            False,
+            "allow",
             marks=NEEDS_FORK1,
             id="write-fork1",
         ),
@@ -596,7 +604,7 @@ def test_read_write_lock_survives_normal_fork_child_exit(
     tmp_path: Path,
     mode: Literal["read", "write"],
     fork_name: Literal["fork", "fork1"],
-    reject_audit_hook: bool,
+    audit_hook: Literal["reject", "allow"],
 ) -> None:
     result = _run_fork_script(
         _fork_script(),
@@ -605,7 +613,7 @@ def test_read_write_lock_survives_normal_fork_child_exit(
             mode,
             OPPOSITE_MODE[mode],
             fork_name,
-            "reject" if reject_audit_hook else "allow",
+            audit_hook,
         ],
         timeout=15,
     )
@@ -1104,11 +1112,11 @@ def _subclass_fork_script() -> str:
 
 
 @NEEDS_FORK  # pragma: needs fork
-@pytest.mark.parametrize("held", [pytest.param(False, id="idle"), pytest.param(True, id="held")])
-def test_async_read_write_lock_fork_behavior(tmp_path: Path, held: bool) -> None:
+@pytest.mark.parametrize("state", [pytest.param("idle", id="idle"), pytest.param("held", id="held")])
+def test_async_read_write_lock_fork_behavior(tmp_path: Path, state: Literal["idle", "held"]) -> None:
     result = _run_fork_script(
         _async_fork_script(),
-        [str(tmp_path / "async-fork.db"), "held" if held else "idle"],
+        [str(tmp_path / "async-fork.db"), state],
         timeout=15,
     )
 

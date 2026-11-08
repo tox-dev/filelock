@@ -5,7 +5,7 @@ import functools
 import multiprocessing
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pytest
@@ -149,9 +149,8 @@ def test_executor_cancels_queued_acquire_without_compensation(lock_file: str, *,
         process.join(timeout=10)
         assert (process.exitcode, canceled.value) == (0, True)
     finally:
-        if process.is_alive():  # pragma: no cover - cleanup for a hung child after the assertion fails
-            process.terminate()
-            process.join(timeout=5)
+        process.terminate()
+        process.join(timeout=5)
         process.close()
 
 
@@ -395,19 +394,13 @@ def _patch_async_acquire_and_rollback_failure(
     return acquire_error, rollback_error, prior_rollback_error
 
 
-@pytest.mark.parametrize("supplied", [pytest.param(False, id="owned"), pytest.param(True, id="supplied")])
-@pytest.mark.asyncio
-async def test_close_cancellation_shuts_down_only_an_owned_executor(
-    lock_file: str, mocker: MockerFixture, supplied: bool
-) -> None:
+async def _cancel_close_of_write_lock(lock_file: str, mocker: MockerFixture, executor: Executor | None) -> Executor:
     rollback_started = asyncio.Event()
     finish_rollback = threading.Event()
     _patch_async_rollback(mocker, asyncio.get_running_loop(), rollback_started, finish_rollback)
-    lock = AsyncReadWriteLock(
-        lock_file, is_singleton=False, executor=ThreadPoolExecutor(max_workers=1) if supplied else None
-    )
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
     await lock.acquire_write()
-    executor = lock.executor
+    owned = lock.executor
     task = asyncio.create_task(lock.close())
     await rollback_started.wait()
     task.cancel("cancel close")
@@ -417,12 +410,22 @@ async def test_close_cancellation_shuts_down_only_an_owned_executor(
         await task
     assert_cancellation_message(info.value, "cancel close")
     assert_read_write_lock_state(lock_file, "read", available=True)
-    if supplied:
-        assert executor.submit(int).result(timeout=5) == 0
-        executor.shutdown(wait=True)
-    else:
-        with pytest.raises(RuntimeError):
-            executor.submit(int)
+    return owned
+
+
+@pytest.mark.asyncio
+async def test_close_cancellation_leaves_a_supplied_executor_running(lock_file: str, mocker: MockerFixture) -> None:
+    supplied = ThreadPoolExecutor(max_workers=1)
+    await _cancel_close_of_write_lock(lock_file, mocker, supplied)
+    assert supplied.submit(int).result(timeout=5) == 0
+    supplied.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_close_cancellation_shuts_down_an_owned_executor(lock_file: str, mocker: MockerFixture) -> None:
+    owned = await _cancel_close_of_write_lock(lock_file, mocker, None)
+    with pytest.raises(RuntimeError):
+        owned.submit(int)
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])

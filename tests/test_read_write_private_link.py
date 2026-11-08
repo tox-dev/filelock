@@ -23,7 +23,7 @@ from tests.capability_marks import NEEDS_FILE_PERMISSIONS
 from tests.read_write_helpers import assert_read_write_lock_state
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
     from pytest_mock import MockerFixture
 
@@ -123,15 +123,22 @@ def test_private_link_is_removed_after_failure(
     assert [directory.exists() for directory in created_directories] == [False]
 
 
-@pytest.mark.parametrize("replacement_kind", [pytest.param("file", id="file"), pytest.param("symlink", id="symlink")])
+@pytest.mark.parametrize(
+    "make_replacement",
+    [
+        pytest.param(Path.touch, id="file"),
+        pytest.param(lambda path: path.symlink_to(path.parent / "victim.db"), id="symlink"),
+    ],
+)
 def test_private_link_rejects_replaced_database(
-    database: Path, tmp_path: Path, mocker: MockerFixture, replacement_kind: str, created_directories: list[Path]
+    database: Path,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    make_replacement: Callable[[Path], object],
+    created_directories: list[Path],
 ) -> None:
     replacement: Final = tmp_path / "replacement.db"
-    if replacement_kind == "file":
-        replacement.touch()
-    else:
-        replacement.symlink_to(tmp_path / "victim.db")
+    make_replacement(replacement)
     link: Final = os.link
 
     def replace_and_link(source: str, destination: Path, *, follow_symlinks: bool) -> None:
@@ -288,13 +295,16 @@ def test_private_link_sweep_keeps_a_directory_named_like_a_dead_holder(database:
 
 
 @pytest.mark.parametrize(
-    "shape", [pytest.param("empty", id="empty"), pytest.param("empty-subdirectory", id="empty-subdirectory")]
+    "subdirectories",
+    [pytest.param((), id="empty"), pytest.param(("0123456789abcdef",), id="empty-subdirectory")],
 )
-def test_private_link_sweep_removes_a_directory_left_without_a_link(database: Path, shape: str) -> None:
+def test_private_link_sweep_removes_a_directory_left_without_a_link(
+    database: Path, subdirectories: tuple[str, ...]
+) -> None:
     left: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     left.mkdir(mode=0o700)
-    if shape == "empty-subdirectory":
-        (left / "0123456789abcdef").mkdir(mode=0o700)
+    for name in subdirectories:
+        (left / name).mkdir(mode=0o700)
     with ReadWriteLock(database, is_singleton=False).read_lock():
         pass
 
