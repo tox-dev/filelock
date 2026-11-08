@@ -39,7 +39,11 @@ class Sample:
 
 
 def main() -> None:
-    print(_environment())
+    build = "gil" if getattr(sys, "_is_gil_enabled", lambda: True)() else "free-threaded"
+    print(
+        f"filelock {filelock.__version__} | {platform.python_implementation()} {platform.python_version()} ({build}) | "
+        f"{platform.system()} {platform.machine()} | {os.cpu_count()} cpus"
+    )
     samples: list[Sample] = []
     with TemporaryDirectory(prefix="filelock-bench-") as directory:
         root = Path(directory)
@@ -50,14 +54,6 @@ def main() -> None:
         samples += _cancellation_latency(root)
         samples += _contention(root)
     _report(samples)
-
-
-def _environment() -> str:
-    build = "gil" if getattr(sys, "_is_gil_enabled", lambda: True)() else "free-threaded"
-    return (
-        f"filelock {filelock.__version__} | {platform.python_implementation()} {platform.python_version()} ({build}) | "
-        f"{platform.system()} {platform.machine()} | {os.cpu_count()} cpus"
-    )
 
 
 def _backends(root: Path) -> Iterator[tuple[str, Callable[[], filelock.BaseFileLock]]]:
