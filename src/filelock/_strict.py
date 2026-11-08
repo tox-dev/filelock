@@ -41,6 +41,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+#: The phase a claim file name records: ``intent`` while the claim waits at the doorway, ``held`` once it owns the lock.
 StrictSoftFileClaimState = Literal["intent", "held"]
 _OccupantState = Literal["sentinel", "held", "exited", "damaged", "unparsable"]
 
