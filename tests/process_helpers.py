@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
 
@@ -48,7 +49,7 @@ def break_then_hang_after_exchange(
         exchange(source, target)
         exchanged.set()
         while True:
-            threading.Event().wait()
+            time.sleep(_REAP_DEADLINE)  # simplint: ignore[SMP808]  # a blocked lock wait can swallow SIGTERM
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(filelock._soft, "exchange_names", exchange_then_hang)
