@@ -61,9 +61,11 @@ if TYPE_CHECKING:
 def test_read_locks_are_shared(lock_file: str) -> None:
     read1_acquired = Event()
     read2_acquired = Event()
+    release_read1 = Event()
+    release_read2 = Event()
 
-    reader1 = Process(target=acquire_lock, args=(lock_file, "read", read1_acquired))
-    reader2 = Process(target=acquire_lock, args=(lock_file, "read", read2_acquired))
+    reader1 = Process(target=acquire_lock, args=(lock_file, "read", read1_acquired, release_read1))
+    reader2 = Process(target=acquire_lock, args=(lock_file, "read", read2_acquired, release_read2))
 
     with cleanup_processes([reader1, reader2]):
         reader1.start()
@@ -72,6 +74,8 @@ def test_read_locks_are_shared(lock_file: str) -> None:
 
         assert read2_acquired.wait(timeout=_PROCESS_DEADLINE), f"Second read lock not acquired on {lock_file}"
 
+        release_read1.set()
+        release_read2.set()
         reader1.join(timeout=_PROCESS_DEADLINE)
         reader2.join(timeout=_PROCESS_DEADLINE)
         assert not reader1.is_alive(), "Reader 1 did not exit cleanly"
@@ -785,8 +789,6 @@ def acquire_lock(
         acquired_event.set()
         if release_event:
             release_event.wait(timeout=_PROCESS_DEADLINE)
-        else:
-            time.sleep(0.5)  # hold briefly to simulate work
 
 
 def test_cleanup_reports_the_failure_that_escaped_before_a_start() -> None:
