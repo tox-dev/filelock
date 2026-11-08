@@ -53,16 +53,31 @@ def _holder(pid: int, *, host: str = _HOST, start: int | None = None) -> str:
     return "\n".join([str(pid), host, *([] if start is None else [str(start)])]) + "\n"
 
 
-def _expected_lock_lines() -> list[str]:
-    # Every platform with a proven start time writes it as an integer third line; one without writes two lines.
-    token = process_start_token(os.getpid())
-    return [str(os.getpid()), _HOST] if token is None else [str(os.getpid()), _HOST, str(token)]
-
-
-def test_lock_writes_pid_and_hostname(lock_path: Path) -> None:
+@pytest.mark.parametrize(
+    "expected_lines",
+    [
+        pytest.param(
+            [str(os.getpid()), _HOST, str(process_start_token(os.getpid()))],
+            id="start_token",
+            marks=pytest.mark.skipif(
+                sys.platform not in {"win32", "darwin", "linux", "android"},
+                reason="only platforms with a proven start-time source write the third line",
+            ),
+        ),
+        pytest.param(
+            [str(os.getpid()), _HOST],
+            id="no_start_token",
+            marks=pytest.mark.skipif(
+                sys.platform in {"win32", "darwin", "linux", "android"},
+                reason="platforms with a proven start-time source write the third line",
+            ),
+        ),
+    ],
+)
+def test_lock_writes_pid_and_hostname(lock_path: Path, expected_lines: list[str]) -> None:
     with SoftFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").strip().splitlines()
-        assert lines == _expected_lock_lines()
+        assert lines == expected_lines
 
 
 @pytest.mark.parametrize(
@@ -1150,7 +1165,7 @@ def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixtur
     mock_read.assert_called()
 
 
-def _fail_open_process(mocker: MockerFixture, captured_error: int, ambient_error: int) -> None:
+def _fail_open_process(mocker: MockerFixture, captured_error: int, ambient_error: int) -> None:  # pragma: win32 cover
     if sys.platform != "win32":  # pragma: win32 cover  # narrows ctypes.windll for the type checker
         pytest.skip("windows-only")
     import ctypes

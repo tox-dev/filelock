@@ -100,20 +100,36 @@ def test_fallback_swaps_to_soft(tmp_path: Path) -> None:  # pragma: needs fcntl
         assert isinstance(lock, SoftFileLock)
 
 
-def _expected_pid_lines() -> list[str]:
-    token = process_start_token(os.getpid())
-    return [str(os.getpid()), host_name()] if token is None else [str(os.getpid()), host_name(), str(token)]
-
-
 @NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_writes_pid_and_hostname(tmp_path: Path) -> None:  # pragma: needs fcntl
+@pytest.mark.parametrize(
+    "expected_lines",
+    [
+        pytest.param(
+            [str(os.getpid()), host_name(), str(process_start_token(os.getpid()))],
+            id="start_token",
+            marks=pytest.mark.skipif(
+                sys.platform not in {"win32", "darwin", "linux", "android"},
+                reason="only platforms with a proven start-time source write the third line",
+            ),
+        ),
+        pytest.param(
+            [str(os.getpid()), host_name()],
+            id="no_start_token",
+            marks=pytest.mark.skipif(
+                sys.platform in {"win32", "darwin", "linux", "android"},
+                reason="platforms with a proven start-time source write the third line",
+            ),
+        ),
+    ],
+)
+def test_fallback_writes_pid_and_hostname(tmp_path: Path, expected_lines: list[str]) -> None:  # pragma: needs fcntl
     lock_path = tmp_path / "test.lock"
 
     with UnixFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").splitlines()
-    assert lines == _expected_pid_lines()
+    assert lines == expected_lines
 
 
 @NEEDS_FCNTL
