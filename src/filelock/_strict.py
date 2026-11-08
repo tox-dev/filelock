@@ -299,7 +299,9 @@ class StrictSoftFileLock(BaseFileLock):
             _raise_recorded_errors("strict doorway cleanup failed", errors)
 
     def _unlink_owner_claims(self) -> tuple[list[str], list[BaseException]]:
-        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
+        results = [(path, _unlink_owner_path_result(path)) for path in self._context.owner_claim_paths]
+        remaining = [path for path, (removed, _) in results if not removed]
+        errors = [error for _, (_, error) in results if error is not None]
         self._context.owner_claim_paths = tuple(remaining)
         if self._finalizing:
             # No retry runs after the finalizer and no caller sees its errors, so report success and let it close the
@@ -308,10 +310,26 @@ class StrictSoftFileLock(BaseFileLock):
         return remaining, errors
 
     def force_break(self, claim_name: str) -> None:
-        """Remove one named claim, allowing overlap if its owner still holds the protected resource."""
-        _validate_force_break_name(claim_name)
+        """
+        Remove one named claim, allowing overlap if its owner still holds the protected resource.
+
+        :raises ValueError: if *claim_name* is not one public claim basename
+        :raises FileNotFoundError: if no claim with that name is in the claim directory
+        """
+        invalid_component = not claim_name or claim_name.startswith(".") or claim_name in {os.curdir, os.pardir}
+        if invalid_component or any(separator in claim_name for separator in ("/", "\\", "\x00")):
+            msg = "claim_name must be one public claim basename"
+            raise ValueError(msg)
         with _pin_claim_directory(directory := self._claim_directory):
-            _require_exact_name(directory, claim_name)
+            directory_fd = _open_claim_directory(os.fspath(directory)) if _OPEN_SUPPORTS_DIR_FD else None
+            try:
+                with _scandir_relative((os.fspath(directory), directory_fd)) as entries:
+                    if not any(entry.name == claim_name for entry in entries):
+                        raise FileNotFoundError(ENOENT, os.strerror(ENOENT), claim_name)
+            finally:
+                if directory_fd is not None:  # pragma: needs dir-fd
+                    with contextlib.suppress(OSError):
+                        os.close(directory_fd)
             cleanup_error = _unlink_in_directory(directory, claim_name)
         if cleanup_error is not None:  # pragma: needs dir-fd
             raise cleanup_error
@@ -597,26 +615,18 @@ def _read_existing_claims(
             return _read_claims(
                 lock_file, (os.fspath(directory), None), probe_clock=probe_clock, verify_server=verify_server
             )
-    return _read_claims_through_descriptor(  # pragma: needs dir-fd
-        lock_file, directory, probe_clock=probe_clock, verify_server=verify_server
-    )
-
-
-def _read_claims_through_descriptor(  # pragma: needs dir-fd
-    lock_file: str, directory: Path, *, probe_clock: bool, verify_server: bool
-) -> tuple[StrictSoftFileClaim, ...]:
-    try:
+    try:  # pragma: needs dir-fd
         directory_fd = _open_claim_directory(os.fspath(directory))
-    except FileNotFoundError:
+    except FileNotFoundError:  # pragma: needs dir-fd
         return ()
-    except OSError as error:
+    except OSError as error:  # pragma: needs dir-fd
         reason = f"cannot open claim directory: {error.strerror or type(error).__name__}"
         raise SoftFileLockProtocolError(lock_file, None, reason) from error
-    try:
+    try:  # pragma: needs dir-fd
         return _read_claims(
             lock_file, (os.fspath(directory), directory_fd), probe_clock=probe_clock, verify_server=verify_server
         )
-    finally:
+    finally:  # pragma: needs dir-fd
         # A failed close has no result to report after the scan and proof cleanup.
         with contextlib.suppress(OSError):
             os.close(directory_fd)
@@ -762,8 +772,9 @@ def _close_and_unlink_private_record(
     try:
         if private_identity is None:
             _unlink_relative(directory_ref, private_name)
-        else:
-            _unlink_relative_if_identity(directory_ref, private_name, private_identity)
+        elif _relative_identity(directory_ref, private_name) == private_identity:
+            with contextlib.suppress(FileNotFoundError):
+                _unlink_relative(directory_ref, private_name)
     except FileNotFoundError:
         pass
     except BaseException as error:  # ruff:ignore[blind-except]  # returned for grouping with close failures
@@ -907,16 +918,6 @@ def _relative_identity(directory_ref: tuple[str, int | None], name: str) -> tupl
     return _file_identity(path_stat)
 
 
-def _unlink_relative_if_identity(
-    directory_ref: tuple[str, int | None],
-    name: str,
-    identity: tuple[int, int],
-) -> None:
-    if _relative_identity(directory_ref, name) == identity:
-        with contextlib.suppress(FileNotFoundError):
-            _unlink_relative(directory_ref, name)
-
-
 def _open_relative(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
     directory, directory_fd = directory_ref
     return (
@@ -1004,22 +1005,11 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
     return None  # pragma: win32 cover
 
 
-def _unlink_owner_path(path: str) -> BaseException | None:
-    directory, name = os.path.split(path)
-    with _pin_claim_directory(claim_directory := Path(directory or os.curdir)):
-        return _unlink_in_directory(claim_directory, name)
-
-
-def _unlink_owner_paths(paths: tuple[str, ...]) -> tuple[list[str], list[BaseException]]:
-    results = [(path, _unlink_owner_path_result(path)) for path in paths]
-    return [path for path, (removed, _) in results if not removed], [
-        error for _, (_, error) in results if error is not None
-    ]
-
-
 def _unlink_owner_path_result(path: str) -> tuple[bool, BaseException | None]:
+    directory, name = os.path.split(path)
     try:
-        cleanup_error = _unlink_owner_path(path)
+        with _pin_claim_directory(claim_directory := Path(directory or os.curdir)):
+            cleanup_error = _unlink_in_directory(claim_directory, name)
     except FileNotFoundError:
         return True, None
     except BaseException as error:  # ruff:ignore[blind-except]  # keep ownership when unlink did not commit
@@ -1239,25 +1229,6 @@ def _settle_directory_mode(lock_file: str, directory: Path, mode: int, parent_fd
             raise SoftFileLockProtocolError(lock_file, None, f"cannot set the mode of {directory}") from error
         finally:
             os.close(fd)
-
-
-def _validate_force_break_name(name: str) -> None:
-    invalid_component = not name or name.startswith(".") or name in {os.curdir, os.pardir}
-    if invalid_component or any(separator in name for separator in ("/", "\\", "\x00")):
-        msg = "claim_name must be one public claim basename"
-        raise ValueError(msg)
-
-
-def _require_exact_name(directory: Path, name: str) -> None:
-    directory_fd = _open_claim_directory(os.fspath(directory)) if _OPEN_SUPPORTS_DIR_FD else None
-    try:
-        with _scandir_relative((os.fspath(directory), directory_fd)) as entries:
-            if not any(entry.name == name for entry in entries):
-                raise FileNotFoundError(ENOENT, os.strerror(ENOENT), name)
-    finally:
-        if directory_fd is not None:  # pragma: needs dir-fd
-            with contextlib.suppress(OSError):
-                os.close(directory_fd)
 
 
 def _raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:

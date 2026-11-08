@@ -152,9 +152,42 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
         return
     break_path: Final[str] = f"{lock_file}.break.{os.getpid()}.{secrets.token_hex(16)}"
     if exchange_supported():  # pragma: win32 no cover
-        _swap_out(lock_file, break_path, mtime_before, ino_before)
+        # An atomic exchange with a placeholder takes the marker without the lock path ever being empty. No contender
+        # can then create a marker while this one is judged, and a live marker goes back the same way.
+        fd: Final = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            try:
+                # Not a record any lock writes, so a contender that reads it waits, and one left by a crash ages out.
+                # The PID tells the contender that evicts it whose break names to search for a marker this process left.
+                write_all(fd, f"filelock/break\n{os.getpid()}\n".encode())
+                exchanged = exchange_names(break_path, lock_file)
+            except OSError:
+                exchanged = False
+            if not exchanged:
+                Path(break_path).unlink()
+                return
+            if (grabbed := os.lstat(break_path)).st_mtime == mtime_before and grabbed.st_ino == ino_before:
+                Path(break_path).unlink()
+                # Our descriptor keeps the placeholder's inode allocated, so a matching number at the path is still
+                # ours.
+                if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
+                    Path(lock_file).unlink()
+            else:
+                exchange_back(lock_file, break_path, fd)
+        finally:
+            os.close(fd)
     elif _MOVES_WITHOUT_EXCHANGE:  # pragma: win32 cover
-        _break_by_rename(lock_file, break_path, mtime_before, ino_before)
+        # Renaming the marker aside empties the path until a recreated live marker is put back. link never replaces a
+        # name, so a marker a third process created meanwhile keeps the path, and the live one waits under the break
+        # name. Without os.link, or where the filesystem refuses hard links, the live one waits there too.
+        with _pinned_for_rename(lock_file):
+            Path(lock_file).rename(break_path)
+        if (st_after := os.lstat(break_path)).st_mtime == mtime_before and st_after.st_ino == ino_before:
+            unlink_path(break_path)
+        elif stat.S_ISREG(st_after.st_mode) and hasattr(os, "link"):  # pragma: needs hard-link
+            with suppress(OSError):
+                os.link(break_path, lock_file, follow_symlinks=False)
+                unlink_path(break_path)
 
 
 def exchange_supported() -> bool:
@@ -224,32 +257,6 @@ def _renameat2(libc: ctypes.CDLL) -> Callable[[bytes, bytes, int], int] | None: 
     return call_renameat2
 
 
-def _swap_out(lock_file: str, break_path: str, mtime_before: float, ino_before: int) -> None:  # pragma: win32 no cover
-    # An atomic exchange with a placeholder takes the marker without the lock path ever being empty. No contender can
-    # then create a marker while this one is judged, and a live marker goes back the same way.
-    fd: Final = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    try:
-        try:
-            # Not a record any lock writes, so a contender that reads it waits, and one left by a crash ages out. The
-            # PID tells the contender that evicts it whose break names to search for a marker this process left.
-            write_all(fd, f"filelock/break\n{os.getpid()}\n".encode())
-            exchanged = exchange_names(break_path, lock_file)
-        except OSError:
-            exchanged = False
-        if not exchanged:
-            Path(break_path).unlink()
-            return
-        if (grabbed := os.lstat(break_path)).st_mtime == mtime_before and grabbed.st_ino == ino_before:
-            Path(break_path).unlink()
-            # Our descriptor keeps the placeholder's inode allocated, so a matching number at the path is still ours.
-            if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
-                Path(lock_file).unlink()
-        else:
-            exchange_back(lock_file, break_path, fd)
-    finally:
-        os.close(fd)
-
-
 def write_all(fd: int, data: bytes) -> None:
     # Write the whole buffer to *fd*, looping over the short writes POSIX lets ``os.write`` make.
     #
@@ -312,22 +319,6 @@ def _exchange_until_aside(lock_file: str, aside: str, own: os.stat_result) -> bo
         else:
             time.sleep(0.0005)
     return True
-
-
-def _break_by_rename(
-    lock_file: str, break_path: str, mtime_before: float, ino_before: int
-) -> None:  # pragma: win32 cover
-    # Renaming the marker aside empties the path until a recreated live marker is put back. link never replaces a name,
-    # so a marker a third process created meanwhile keeps the path, and the live one waits under the break name.
-    # Without os.link, or where the filesystem refuses hard links, the live one waits there too.
-    with _pinned_for_rename(lock_file):
-        Path(lock_file).rename(break_path)
-    if (st_after := os.lstat(break_path)).st_mtime == mtime_before and st_after.st_ino == ino_before:
-        unlink_path(break_path)
-    elif stat.S_ISREG(st_after.st_mode) and hasattr(os, "link"):  # pragma: needs hard-link
-        with suppress(OSError):
-            os.link(break_path, lock_file, follow_symlinks=False)
-            unlink_path(break_path)
 
 
 def foreign_directory_owner(directory: os.stat_result, parent: os.stat_result) -> int | None:

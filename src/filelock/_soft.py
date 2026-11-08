@@ -541,7 +541,12 @@ class SoftFileLock(BaseFileLock):
                 return False
         if replaced:
             try:
-                _leave_released_record(fd)
+                # A peer's exchange holds our marker under its break name and will put it back. Overwriting the record
+                # lets contenders age it out instead of waiting on this live PID. The write comes before the truncate
+                # so the file is never empty.
+                if sys.platform != "win32":  # pragma: win32 no cover
+                    os.pwrite(fd, released := b"filelock/released\n", 0)
+                    os.ftruncate(fd, len(released))
             except OSError:
                 return False
         return True
@@ -638,15 +643,6 @@ def _begin_claim(name: str | Path) -> bool:  # pragma: win32 no cover
 def _end_claim(name: str | Path) -> None:  # pragma: win32 no cover
     with _CLAIMS_LOCK:
         _CLAIMS_IN_PROGRESS.discard(Path(name).name)
-
-
-def _leave_released_record(fd: int) -> None:
-    # A peer's exchange holds our marker under its break name and will put it back. Overwriting the record lets
-    # contenders age it out instead of waiting on this live PID. The write comes before the truncate so the file is
-    # never empty.
-    if sys.platform != "win32":  # pragma: win32 no cover
-        os.pwrite(fd, released := b"filelock/released\n", 0)
-        os.ftruncate(fd, len(released))
 
 
 __all__ = [

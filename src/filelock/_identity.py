@@ -57,26 +57,19 @@ def host_name() -> str:
     #
     # An over-long name ends in a digest of the part cut to fit the limit. A bare cut gives every name that shares the
     # kept prefix one identity, and :func:`owner_is_stale` would then probe a local PID for another host's holder.
-    name = (
-        "".join(
-            chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
-            for byte in socket.gethostname().encode("utf-8", "surrogateescape")
-        )
-        + _pid_namespace_suffix()
-    )
+    try:
+        namespace = Path("/proc/self/ns/pid").stat().st_ino
+    except OSError:  # only Linux 3.8+ has the file, and a sandbox may hide it; nothing else tells namespaces apart
+        namespace = _INITIAL_PID_NAMESPACE
+    name = "".join(
+        chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
+        for byte in socket.gethostname().encode("utf-8", "surrogateescape")
+    ) + ("" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}")
     if len(name) > _HOST_NAME_LIMIT:
         keep = _HOST_NAME_LIMIT - _HOST_NAME_DIGEST_LEN - 1
         name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
     # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
     return name or "?"
-
-
-def _pid_namespace_suffix() -> str:
-    try:
-        namespace: Final = Path("/proc/self/ns/pid").stat().st_ino
-    except OSError:  # only Linux 3.8+ has the file, and a sandbox may hide it; nothing else tells namespaces apart
-        return ""
-    return "" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}"
 
 
 def _same_start(current: int, recorded: int) -> bool:

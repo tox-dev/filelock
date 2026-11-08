@@ -1150,7 +1150,10 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         # SQLite opens the name it is given, following symlinks, and uses the -journal, -wal and -shm names beside it,
         # so the database name is safe only where no process of another account can create names. A descriptor path
         # such as /proc/self/fd/<n> is no better: SQLite reads it back into the name the kernel reports.
-        if not _names_are_private(pathlib.Path(database).parent, owner):  # pragma: needs posix-hard-link
+        status: Final = os.lstat(pathlib.Path(database).parent)  # pragma: needs posix-hard-link
+        # The sticky bit still lets others create names, so a directory anyone else may write to never qualifies.
+        writable_by_others: Final = status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)  # pragma: needs posix-hard-link
+        if status.st_uid not in {owner, 0} or writable_by_others:  # pragma: needs posix-hard-link
             link = _link_beside(database, identity, owner)
             target = os.fspath(link.database)
         connection = sqlite3.connect(
@@ -1165,12 +1168,6 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         if claimed and link is not None:  # pragma: needs posix-hard-link
             # A connection that already took the link removes it too when it closes.
             _remove_link_directory(link)
-
-
-def _names_are_private(directory: pathlib.Path, owner: int) -> bool:  # pragma: win32 no cover
-    status: Final = os.lstat(directory)
-    # The sticky bit still lets others create names, so a directory anyone else may write to never qualifies.
-    return status.st_uid in {owner, 0} and not status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
 
 
 class _LinkDirectory(NamedTuple):  # pragma: needs posix-hard-link

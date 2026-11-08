@@ -597,7 +597,25 @@ def _resolve_on_acquired(
 def _supported_init_params(
     cls: type[BaseFileLock], params: dict[str, _LockInitValue | _ExtraValue]
 ) -> dict[str, _LockInitValue | _ExtraValue]:
-    if (model := _init_parameter_model(cls)).accepts_kwargs:
+    # A strong cache would keep dynamically created subclasses alive for the process lifetime.
+    with _fork_transition(), _FORK_STATE.parameter_models_lock:
+        if (model := _INIT_PARAMETER_MODELS.get(cls)) is None:
+            parameters = inspect.signature(cls.__init__).parameters.values()
+            model = _InitParameterModel(
+                accepted_params=frozenset(
+                    parameter.name
+                    for parameter in parameters
+                    if parameter.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+                ),
+                accepts_kwargs=any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters),
+                default_params={
+                    name: parameter
+                    for name, parameter in inspect.signature(type(cls).__call__).parameters.items()
+                    if parameter.default is not inspect.Parameter.empty
+                },
+            )
+            _INIT_PARAMETER_MODELS[cls] = model
+    if model.accepts_kwargs:
         return params
     if unsupported := sorted(
         name
@@ -626,28 +644,6 @@ def _check_timeout_max(name: str, value: float) -> None:
 
 
 _INIT_PARAMETER_MODELS: Final[WeakKeyDictionary[type[BaseFileLock], _InitParameterModel]] = WeakKeyDictionary()
-
-
-def _init_parameter_model(cls: type[BaseFileLock]) -> _InitParameterModel:
-    # A strong cache would keep dynamically created subclasses alive for the process lifetime.
-    with _fork_transition(), _FORK_STATE.parameter_models_lock:
-        if (model := _INIT_PARAMETER_MODELS.get(cls)) is None:
-            parameters = inspect.signature(cls.__init__).parameters.values()
-            model = _InitParameterModel(
-                accepted_params=frozenset(
-                    parameter.name
-                    for parameter in parameters
-                    if parameter.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
-                ),
-                accepts_kwargs=any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters),
-                default_params={
-                    name: parameter
-                    for name, parameter in inspect.signature(type(cls).__call__).parameters.items()
-                    if parameter.default is not inspect.Parameter.empty
-                },
-            )
-            _INIT_PARAMETER_MODELS[cls] = model
-        return model
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1127,7 +1123,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def _register_unverified_context_descriptor(self) -> None:
         # The rollback only reaches here still holding a descriptor it never managed to register.
         if self._context.lock_file_fd is not None and self._context.lock_file_fd_token is None:  # pragma: no branch
-            self._context.lock_file_fd_token = _register_unverified_owned_descriptor(self._context.lock_file_fd)
+            if not _HAS_REGISTER_AT_FORK:  # pragma: lacks fork
+                return
+            with _fork_transition():  # pragma: needs fork
+                self._context.lock_file_fd_token = _record_owned_descriptor(self._context.lock_file_fd, None)
 
     def _release_with_fork_tracking(self) -> None:
         with _fork_transition(self):
@@ -1981,12 +1980,27 @@ def _fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Ge
     creator_pid = os.getpid()  # pragma: needs fork
     # A generator holding this transition can be finalized on another thread, which must close the entering thread's.
     thread_id: Final = get_ident()  # pragma: needs fork
-    token: Final = _enter_fork_transition(descriptor_owner, thread_id)  # pragma: needs fork
+    with _FORK_STATE.gate:  # pragma: needs fork
+        while (
+            _FORK_STATE.admission_closed
+            and thread_id not in _FORK_STATE.fork_owner_depths
+            and thread_id not in _FORK_STATE.transitions
+        ):
+            _FORK_STATE.gate.wait()  # pragma: no cover - exercised in isolated interpreter
+        token: Final = next(_TRANSITION_TOKENS)
+        _FORK_STATE.transitions.setdefault(thread_id, {})[token] = descriptor_owner
+        _FORK_STATE.active_transitions += 1
     try:  # pragma: needs fork
         yield
     finally:
         if os.getpid() == creator_pid:  # pragma: needs fork
-            _leave_fork_transition(token, thread_id)
+            with _FORK_STATE.gate:
+                owned: Final = _FORK_STATE.transitions[thread_id]
+                del owned[token]
+                if not owned:
+                    del _FORK_STATE.transitions[thread_id]
+                _FORK_STATE.active_transitions -= 1
+                _FORK_STATE.gate.notify_all()
 
 
 def _register_fork_object(instance: _ForkResettable) -> None:
@@ -2013,13 +2027,6 @@ def _register_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int
             stat_result = os.fstat(fd)
             identity = stat_result.st_dev, stat_result.st_ino
         return _record_owned_descriptor(fd, identity)
-
-
-def _register_unverified_owned_descriptor(fd: int) -> int | None:
-    if not _HAS_REGISTER_AT_FORK:
-        return None  # pragma: lacks fork
-    with _fork_transition():  # pragma: needs fork
-        return _record_owned_descriptor(fd, None)
 
 
 def _record_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int:  # pragma: needs fork
@@ -2055,7 +2062,20 @@ def _pin_fork_objects() -> None:  # pragma: needs fork
             while _FORK_STATE.active_transitions > len(_FORK_STATE.transitions.get(thread_id, ())):
                 _FORK_STATE.gate.wait()
             transition_owners = tuple(_FORK_STATE.transitions.get(thread_id, {}).values())
-        _verify_unverified_descriptors()
+        with _FORK_STATE.registry_lock:
+            for token, descriptor in tuple(_OWNED_DESCRIPTORS.items()):
+                if descriptor.creator_pid != os.getpid() or descriptor.device is not None:
+                    continue
+                try:
+                    stat_result = os.fstat(descriptor.fd)
+                except OSError:
+                    continue
+                _OWNED_DESCRIPTORS[token] = _OwnedDescriptor(
+                    fd=descriptor.fd,
+                    creator_pid=descriptor.creator_pid,
+                    device=stat_result.st_dev,
+                    inode=stat_result.st_ino,
+                )
         owners = {id(owner): owner for owner in transition_owners if owner is not None}
         provisional_descriptor_tokens.extend(
             starmap(
@@ -2114,47 +2134,6 @@ def _reset_child_after_fork() -> None:  # pragma: forked child
     _FORK_STATE.pid = pid
     _INIT_PARAMETER_MODELS.clear()
     _detach_child_state(descriptors, pinned_objects, pinned_classes)
-
-
-def _enter_fork_transition(descriptor_owner: _ForkDescriptorOwner | None, thread_id: int) -> int:  # pragma: needs fork
-    with _FORK_STATE.gate:
-        while (
-            _FORK_STATE.admission_closed
-            and thread_id not in _FORK_STATE.fork_owner_depths
-            and thread_id not in _FORK_STATE.transitions
-        ):
-            _FORK_STATE.gate.wait()  # pragma: no cover - exercised in isolated interpreter
-        token = next(_TRANSITION_TOKENS)
-        _FORK_STATE.transitions.setdefault(thread_id, {})[token] = descriptor_owner
-        _FORK_STATE.active_transitions += 1
-    return token
-
-
-def _leave_fork_transition(token: int, thread_id: int) -> None:  # pragma: needs fork
-    with _FORK_STATE.gate:
-        owned: Final = _FORK_STATE.transitions[thread_id]
-        del owned[token]
-        if not owned:
-            del _FORK_STATE.transitions[thread_id]
-        _FORK_STATE.active_transitions -= 1
-        _FORK_STATE.gate.notify_all()
-
-
-def _verify_unverified_descriptors() -> None:  # pragma: needs fork
-    with _FORK_STATE.registry_lock:
-        for token, descriptor in tuple(_OWNED_DESCRIPTORS.items()):
-            if descriptor.creator_pid != os.getpid() or descriptor.device is not None:
-                continue
-            try:
-                stat_result = os.fstat(descriptor.fd)
-            except OSError:
-                continue
-            _OWNED_DESCRIPTORS[token] = _OwnedDescriptor(
-                fd=descriptor.fd,
-                creator_pid=descriptor.creator_pid,
-                device=stat_result.st_dev,
-                inode=stat_result.st_ino,
-            )
 
 
 def _snapshot_descriptor_for_fork(fd: int, identity: tuple[int, int] | None) -> int:  # pragma: needs fork
