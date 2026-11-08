@@ -34,7 +34,7 @@ from filelock._read_write import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
-    from types import FrameType
+    from types import BuiltinFunctionType, FrameType
 
     from pytest_mock import MockerFixture
 
@@ -863,7 +863,7 @@ def test_singleton_dropped_while_held_is_not_handed_out_again(lock_file: str, mo
 
     # The cache lookup another thread makes while the dropped lock's connection closes. Interpreters run a profile
     # hook with tracing off, so coverage does not record its body.
-    def look_up_while_closing(_frame: FrameType, event: str, arg: object) -> None:  # pragma: no cover
+    def look_up_while_closing(_frame: FrameType, event: str, arg: BuiltinFunctionType) -> None:  # pragma: no cover
         closing = event == "c_call" and getattr(arg, "__name__", None) == "close"
         if closing and isinstance(getattr(arg, "__self__", None), sqlite3.Connection) and not looked_up:
             looked_up.append(ReadWriteLock(lock_file))
