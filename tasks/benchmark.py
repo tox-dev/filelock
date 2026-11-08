@@ -47,7 +47,7 @@ def main() -> None:
     samples: list[Sample] = []
     with TemporaryDirectory(prefix="filelock-bench-") as directory:
         root = Path(directory)
-        samples += [_timed(f"construct {name}", build, unit="us", scale=1e6) for name, build in _backends(root)]
+        samples += [_timed(f"construct {name}", factory, unit="us", scale=1e6) for name, factory in _backends(root)]
         samples += _uncontended(root)
         samples.append(_timeout_cpu(root))
         samples.append(_descriptor_growth(root))
