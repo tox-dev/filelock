@@ -6,9 +6,7 @@ from errno import EIO
 from queue import Queue
 from typing import TYPE_CHECKING, TypeVar
 
-import pytest
-
-from filelock import AsyncAcquireReturnProxy, AsyncFileLock, ContextErrorPolicy
+from filelock import AsyncAcquireReturnProxy, AsyncFileLock
 from tests.async_filelock_cancellation_helpers import assert_file_lock_state, get_fcntl
 from tests.capability_marks import NEEDS_FCNTL, XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
@@ -87,15 +85,51 @@ def _run_unawaited_acquire(  # pragma: needs fcntl
 
 
 @NEEDS_FCNTL
-@pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
-def test_runner_shutdown_preserves_body_cancellation_and_release_errors(  # pragma: needs fcntl
-    tmp_path: Path, mocker: MockerFixture, policy: ContextErrorPolicy
+def test_runner_shutdown_chains_body_cancellation_and_release_errors(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
 ) -> None:
     body_error = ValueError("body failed")
     prior_error = LookupError("prior release failure")
     release_error = OSError(EIO, "release failed")
     release_error.__context__ = prior_error
+    lock = AsyncFileLock(tmp_path / "a", thread_local=False, context_error_policy="chain")
+    error = _shutdown_with_failed_release(lock, mocker, body_error, release_error)
+    assert error is release_error
+    cancellation = release_error.__context__
+    assert isinstance(cancellation, asyncio.CancelledError)
+    assert (cancellation.__context__, prior_error.__context__) == (prior_error, body_error)
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    assert_file_lock_state(str(tmp_path / "a"), available=False)
+    asyncio.run(lock.release())
+    assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
+@NEEDS_FCNTL
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+def test_runner_shutdown_groups_body_cancellation_and_release_errors(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    body_error = ValueError("body failed")
+    prior_error = LookupError("prior release failure")
+    release_error = OSError(EIO, "release failed")
+    release_error.__context__ = prior_error
+    lock = AsyncFileLock(tmp_path / "a", thread_local=False, context_error_policy="group")
+    error = _shutdown_with_failed_release(lock, mocker, body_error, release_error)
+    assert isinstance(error, BaseExceptionGroup)
+    cancellation = error.exceptions[1]
+    assert isinstance(cancellation, asyncio.CancelledError)
+    assert error.exceptions == (body_error, cancellation, release_error)
+    assert (cancellation.__context__, release_error.__context__, prior_error.__context__) == (None, prior_error, None)
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    assert_file_lock_state(str(tmp_path / "a"), available=False)
+    asyncio.run(lock.release())
+    assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
+def _shutdown_with_failed_release(
+    lock: AsyncFileLock, mocker: MockerFixture, body_error: ValueError, release_error: OSError
+) -> BaseException | None:
     release_started = threading.Event()
     finish_release = threading.Event()
     failed = False
@@ -112,12 +146,7 @@ def test_runner_shutdown_preserves_body_cancellation_and_release_errors(  # prag
         real_flock(fd, operation)
 
     mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
-    lock = AsyncFileLock(tmp_path / "a", thread_local=False, context_error_policy=policy)
-    runner, task, cancellation_seen = _start_unawaited_context_failure(
-        lock,
-        body_error,
-        release_started,
-    )
+    runner, task, cancellation_seen = _start_unawaited_context_failure(lock, body_error, release_started)
     try:
         assert release_started.wait(timeout=5)
         assert cancellation_seen.wait(timeout=5), "asyncio runner did not cancel the pending lock task"
@@ -126,26 +155,7 @@ def test_runner_shutdown_preserves_body_cancellation_and_release_errors(  # prag
         runner.join(timeout=5)
 
     assert (runner.is_alive(), task.done()) == (False, True)
-    error = task.exception()
-    if policy == "chain":
-        assert error is release_error
-        cancellation = release_error.__context__
-        assert isinstance(cancellation, asyncio.CancelledError)
-        assert (cancellation.__context__, prior_error.__context__) == (prior_error, body_error)
-    else:
-        assert isinstance(error, BaseExceptionGroup)
-        cancellation = error.exceptions[1]
-        assert isinstance(cancellation, asyncio.CancelledError)
-        assert error.exceptions == (body_error, cancellation, release_error)
-        assert (cancellation.__context__, release_error.__context__, prior_error.__context__) == (
-            None,
-            prior_error,
-            None,
-        )
-    assert (lock.is_locked, lock.lock_counter) == (True, 1)
-    assert_file_lock_state(str(tmp_path / "a"), available=False)
-    asyncio.run(lock.release())
-    assert_file_lock_state(str(tmp_path / "a"), available=True)
+    return task.exception()
 
 
 def _start_unawaited_context_failure(  # pragma: needs fcntl

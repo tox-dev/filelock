@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from filelock import AsyncFileLock, BaseAsyncFileLock, ContextErrorPolicy
+from filelock import AsyncFileLock, BaseAsyncFileLock
 from tests.async_filelock_cancellation_helpers import (
     assert_cancellation_message,
     assert_file_lock_state,
@@ -146,15 +146,9 @@ async def test_release_returns_while_acquire_waits_for_external_holder(tmp_path:
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@NEEDS_FCNTL
-@pytest.mark.parametrize("policy", [pytest.param("chain", id="chain"), pytest.param("group", id="group")])
-@pytest.mark.asyncio
-@XFAIL_WITHOUT_COROUTINE_CANCELLATION
-async def test_release_cancellation_surfaces_backend_error(  # pragma: needs fcntl
-    tmp_path: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture, policy: ContextErrorPolicy
-) -> None:
-    lock = AsyncFileLock(tmp_path / "a", context_error_policy=policy)
-    await lock.acquire()
+async def _cancel_release_after_failed_unlock(
+    lock: AsyncFileLock, mocker: MockerFixture
+) -> tuple[asyncio.Task[None], OSError]:
     release_started = asyncio.Event()
     finish_release = threading.Event()
     loop = asyncio.get_running_loop()
@@ -174,23 +168,54 @@ async def test_release_cancellation_surfaces_backend_error(  # pragma: needs fcn
     await release_started.wait()
     task.cancel("cancel release")
     finish_release.set()
+    return task, release_error
 
-    if policy == "chain":
-        with pytest.raises(OSError, match="release failed") as info:
-            await task
-        cancellation = info.value.__context__
-        assert info.value is release_error
-    else:
-        with pytest.raises(BaseExceptionGroup) as info:
-            await task
-        cancellation, grouped_release_error = info.value.exceptions
-        assert grouped_release_error is release_error
-        assert (info.value.__cause__, info.value.__suppress_context__) == (None, True)
+
+@NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_release_cancellation_chains_backend_error(
+    tmp_path: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    lock = AsyncFileLock(tmp_path / "a", context_error_policy="chain")
+    await lock.acquire()
+    task, release_error = await _cancel_release_after_failed_unlock(lock, mocker)
+    with pytest.raises(OSError, match="release failed") as info:
+        await task
+    cancellation = info.value.__context__
+    assert info.value is release_error
     assert isinstance(cancellation, asyncio.CancelledError)
     assert (cancellation.args, release_error.__cause__, release_error.__context__) == (
         ("cancel release",),
         None,
-        cancellation if policy == "chain" else None,
+        cancellation,
+    )
+    assert (cancellation.__traceback__ is not None, release_error.__traceback__ is not None) == (True, True)
+    assert not any(record.name == "asyncio" and record.levelno >= logging.ERROR for record in caplog.records)
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    assert_file_lock_state(str(tmp_path / "a"), available=False)
+    await lock.release()
+
+
+@NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_release_cancellation_groups_backend_error(
+    tmp_path: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    lock = AsyncFileLock(tmp_path / "a", context_error_policy="group")
+    await lock.acquire()
+    task, release_error = await _cancel_release_after_failed_unlock(lock, mocker)
+    with pytest.raises(BaseExceptionGroup) as info:
+        await task
+    cancellation, grouped_release_error = info.value.exceptions
+    assert grouped_release_error is release_error
+    assert (info.value.__cause__, info.value.__suppress_context__) == (None, True)
+    assert isinstance(cancellation, asyncio.CancelledError)
+    assert (cancellation.args, release_error.__cause__, release_error.__context__) == (
+        ("cancel release",),
+        None,
+        None,
     )
     assert (cancellation.__traceback__ is not None, release_error.__traceback__ is not None) == (True, True)
     assert not any(record.name == "asyncio" and record.levelno >= logging.ERROR for record in caplog.records)

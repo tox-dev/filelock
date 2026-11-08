@@ -103,7 +103,8 @@ def test_exception_serialization_preserves_cycle(
 ) -> None:
     vars(error)["related"] = error
     restored: Final = clone(error)
-    assert vars(restored)["related"] is (error if clone is copy.copy else restored)
+    related_after_clone = {copy.copy: error}.get(clone, restored)
+    assert vars(restored)["related"] is related_after_clone
 
 
 def test_protocol_error_serialization_preserves_claim(

@@ -148,11 +148,16 @@ async def test_registration_failure_rolls_back_and_surfaces_cleanup(tmp_path: Pa
 
 
 @pytest.mark.parametrize(
-    "rollback_fails",
-    [pytest.param(True, id="rollback-fails"), pytest.param(False, id="rollback-succeeds")],
+    ("rollback_fails", "exception_count", "expected_state"),
+    [
+        pytest.param(True, 3, (True, 1), id="rollback-fails"),
+        pytest.param(False, 2, (False, 0), id="rollback-succeeds"),
+    ],
 )
 @pytest.mark.asyncio
-async def test_acquire_failure_with_registration_failure_rolls_back(tmp_path: Path, *, rollback_fails: bool) -> None:
+async def test_acquire_failure_with_registration_failure_rolls_back(
+    tmp_path: Path, *, rollback_fails: bool, exception_count: int, expected_state: tuple[bool, int]
+) -> None:
     acquisition_error = RuntimeError("acquire failed")
     registration_error = LookupError("registration failed")
     rollback_error = OSError(EIO, "rollback release failed")
@@ -175,13 +180,11 @@ async def test_acquire_failure_with_registration_failure_rolls_back(tmp_path: Pa
     with pytest.raises(ExceptionGroup) as info:
         await lock.acquire()
     assert info.value.message == "lock acquisition cleanup failed"
-    if rollback_fails:
-        assert info.value.exceptions == (acquisition_error, registration_error, rollback_error)
-        assert (lock.is_locked, lock.lock_counter) == (True, 1)  # rollback failed before unlocking, so state is kept
-        fail_release = False
-        await lock.release()
-    else:
-        assert info.value.exceptions == (acquisition_error, registration_error)
+    expected = (acquisition_error, registration_error, rollback_error)
+    assert info.value.exceptions == expected[:exception_count]
+    assert (lock.is_locked, lock.lock_counter) == expected_state
+    fail_release = False
+    await lock.release()
     assert (lock.is_locked, lock.lock_counter) == (False, 0)
 
 
