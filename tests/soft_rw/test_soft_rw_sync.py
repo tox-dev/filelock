@@ -1723,7 +1723,7 @@ def _reacquire_fresh_lock_in_child(  # pragma: needs fork
 
 
 def _fork_process(  # pragma: needs fork
-    target: Callable[..., object], args: tuple[float, ...] = ()
+    target: Callable[[], object] | Callable[[float], object], args: tuple[float, ...] = ()
 ) -> mp.process.BaseProcess:
     if sys.platform == "win32":  # pragma: win32 cover
         msg = "fork context is POSIX only"

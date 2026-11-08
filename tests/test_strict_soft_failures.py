@@ -14,7 +14,7 @@ import time
 from errno import EACCES, EEXIST, EIO, ENOENT, ENOSPC, ESTALE, EXDEV
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Final, NoReturn
+from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 import pytest
 from capabilities import CAPABILITIES
@@ -59,6 +59,12 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture, MockType
 
 _PathValue = str | bytes | os.PathLike[str] | os.PathLike[bytes]
+
+
+class _Inspect(Protocol):
+    def __call__(self, path: _PathValue, **options: int | bool | None) -> os.stat_result: ...
+
+
 _UNPARSABLE_CONTENTS: Final[list[pytest.ParameterSet]] = [
     pytest.param(b"", id="pre-3.22-empty"),
     pytest.param(b"4242\nhost", id="cut"),
@@ -2139,7 +2145,7 @@ def test_strict_soft_claim_removed_between_inspection_and_open_is_skipped(
 ) -> None:
     claim: Final = _write_held_claim(Path(f"{tmp_path / 'resource.lock'}.filelock") / "claims")
 
-    def remove_after_inspection(inspect: Callable[..., os.stat_result]) -> Callable[..., os.stat_result]:
+    def remove_after_inspection(inspect: _Inspect) -> _Inspect:
         def inspect_then_remove(path: _PathValue, **options: int | bool | None) -> os.stat_result:
             found = inspect(path, **options)
             # Windows inspects nothing else in this scan; with dir_fd the claim directory is stat-ed too.
@@ -2207,7 +2213,7 @@ def test_strict_soft_coordination_directory_swapped_for_a_junction_leaves_target
     (target := tmp_path / "target").mkdir()
     swapped: list[bool] = []
 
-    def swap_after_the_inspection(inspect: Callable[..., os.stat_result]) -> Callable[..., os.stat_result]:
+    def swap_after_the_inspection(inspect: _Inspect) -> _Inspect:
         def inspect_then_swap(path: _PathValue, **options: int | bool | None) -> os.stat_result:
             # The name was a real directory at inspection; by the time the lock creates claims in it, it is a junction.
             found = inspect(path, **options)
