@@ -453,29 +453,33 @@ class Participant:
         # A lost race is not a reason to wait: re-read and try again before handing the poll interval back to the
         # caller.
         for _ in range(4):
-            latest = self._log.latest()
-            self._keep_claim_fresh(latest)
-            self._sweep(latest)
-            stale = frozenset(token for token in latest.members - {self.token} if self._is_stale(token))
-            writer = None if latest.writer in stale else latest.writer
-            readers = latest.readers - stale
-            if not self._entered:
-                if writer is not None:
-                    # A live writer blocks entry in both modes; only an eviction is worth committing.
-                    if stale:
-                        self._commit(latest, writer, readers, stale)
-                    return False
-                writer, readers = (self.token, readers) if self.mode == "write" else (None, readers | {self.token})
-            granted = self.mode == "read" or not readers
-            if self._entered and not stale and not granted:
-                return False
-            if (generation := self._commit(latest, writer, readers, stale)) is None:
-                continue
-            self._entered = True
-            if granted:
-                self.generation = generation
-            return granted
+            if (outcome := self._attempt()) is not None:
+                return outcome
         return False
+
+    def _attempt(self) -> bool | None:
+        latest = self._log.latest()
+        self._keep_claim_fresh(latest)
+        self._sweep(latest)
+        stale = frozenset(token for token in latest.members - {self.token} if self._is_stale(token))
+        writer = None if latest.writer in stale else latest.writer
+        readers = latest.readers - stale
+        if not self._entered:
+            if writer is not None:
+                # A live writer blocks entry in both modes; only an eviction is worth committing.
+                if stale:
+                    self._commit(latest, writer, readers, stale)
+                return False
+            writer, readers = (self.token, readers) if self.mode == "write" else (None, readers | {self.token})
+        granted = self.mode == "read" or not readers
+        if self._entered and not stale and not granted:
+            return False
+        if (generation := self._commit(latest, writer, readers, stale)) is None:
+            return None
+        self._entered = True
+        if granted:
+            self.generation = generation
+        return granted
 
     def _keep_claim_fresh(self, latest: Snapshot) -> None:
         # The snapshot is the truth about membership: a commit the filesystem reported lost may have landed, and a peer
