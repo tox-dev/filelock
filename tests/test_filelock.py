@@ -4072,7 +4072,10 @@ def test_undo_acquire_keeps_registry_entry_while_still_held(tmp_path: Path, mock
 
 
 def test_soft_marker_omits_start_line_without_a_start_token(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._soft.process_start_token", return_value=None, autospec=True)
+    mocker.patch(
+        "filelock._soft.process_start_token",
+        new=mocker.create_autospec(filelock._soft.process_start_token, return_value=None),
+    )
     lock = SoftFileLock(str(tmp_path / "a"))
     with lock:
         lines = Path(lock.lock_file).read_text(encoding="utf-8").splitlines()

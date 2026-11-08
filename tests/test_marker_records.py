@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
+import filelock._marker
 from filelock import MarkerSoftFileLock, OwnerRecord, SoftFileLease, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._marker import encode_marker
@@ -132,7 +133,10 @@ def test_held_lease_records_the_process_start_token(tmp_path: Path) -> None:
 
 def test_marker_without_start_token_omits_it(tmp_path: Path, mocker: MockerFixture) -> None:
     # A platform without a proven start time publishes no start field, and the record still reads back cleanly.
-    mocker.patch("filelock._marker.process_start_token", return_value=None, autospec=True)
+    mocker.patch(
+        "filelock._marker.process_start_token",
+        new=mocker.create_autospec(filelock._marker.process_start_token, return_value=None),
+    )
     marker = tmp_path / "a.lock"
     with SoftFileLease(str(marker), lease_duration=5) as lease:
         assert lease.owner is not None

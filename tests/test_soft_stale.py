@@ -563,7 +563,10 @@ def test_stale_break_retries_a_claim_whose_return_failed(  # pragma: win32 no co
     foreign: Final = record.replace(_HOST, "elsewhere")
     _break_name(lock).write_text(foreign, encoding="utf-8")
     _refuse_returning_a_claim(mocker)
-    mocker.patch("filelock._soft.exchange_names", return_value=False, autospec=True)
+    mocker.patch(
+        "filelock._soft.exchange_names",
+        new=mocker.create_autospec(filelock._soft.exchange_names, return_value=False),
+    )
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
     left: Final = list(tmp_path.glob(f"test.lock.restore.{os.getpid()}.*"))
@@ -1775,7 +1778,10 @@ def test_close_and_marker_cleanup_failures_are_grouped(  # pragma: win32 cover
     lock = SoftFileLock(lock_path)
     lock.acquire()
     cleanup_error = RuntimeError("cleanup failed")
-    unlink_mock: Final = mocker.patch("filelock._soft.unlink_path", side_effect=cleanup_error, autospec=True)
+    unlink_mock: Final = mocker.patch(
+        "filelock._soft.unlink_path",
+        new=mocker.create_autospec(filelock._soft.unlink_path, side_effect=cleanup_error),
+    )
     with _close_after_commit(mocker, lock) as (close_error, _attempts), pytest.raises(ExceptionGroup) as info:
         lock.release()
     mocker.stop(unlink_mock)
