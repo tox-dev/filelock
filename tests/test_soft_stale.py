@@ -55,7 +55,7 @@ def lock_path(tmp_path: Path) -> Path:
 
 
 def _holder(pid: int, *, host: str = _HOST, start: int | None = None) -> str:
-    return "\n".join([str(pid), host, *([] if start is None else [str(start)])]) + "\n"
+    return f"{pid}\n{host}\n" if start is None else f"{pid}\n{host}\n{start}\n"
 
 
 @pytest.mark.parametrize(
