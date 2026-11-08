@@ -151,12 +151,6 @@ def _start_unawaited_context_failure(  # pragma: needs fcntl
     return _UnawaitedFailure(runner, tasks.get(timeout=5), cancellation_seen)
 
 
-class _UnawaitedFailure(NamedTuple):
-    runner: threading.Thread
-    task: asyncio.Task[None]
-    cancellation_seen: threading.Event
-
-
 def _run_unawaited_context_failure(  # pragma: needs fcntl
     lock: AsyncFileLock,
     body_error: BaseException,
@@ -179,6 +173,12 @@ def _run_unawaited_context_failure(  # pragma: needs fcntl
         assert await asyncio.to_thread(release_started.wait, 5)
 
     asyncio.run(start_context())
+
+
+class _UnawaitedFailure(NamedTuple):
+    runner: threading.Thread
+    task: asyncio.Task[None]
+    cancellation_seen: threading.Event
 
 
 @NEEDS_FCNTL

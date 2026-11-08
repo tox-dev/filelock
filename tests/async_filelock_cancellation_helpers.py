@@ -59,16 +59,16 @@ def start_file_lock_holder(lock_file: str) -> FileLockHolder:
     return FileLockHolder(holder, holder_started, finish_holder)
 
 
-class FileLockHolder(NamedTuple):
-    thread: threading.Thread
-    holder_started: threading.Event
-    finish_holder: threading.Event
-
-
 def _hold_file_lock(lock_file: str, holder_started: threading.Event, finish_holder: threading.Event) -> None:
     with FileLock(lock_file):
         holder_started.set()
         assert finish_holder.wait(timeout=5)
+
+
+class FileLockHolder(NamedTuple):
+    thread: threading.Thread
+    holder_started: threading.Event
+    finish_holder: threading.Event
 
 
 __all__ = [
