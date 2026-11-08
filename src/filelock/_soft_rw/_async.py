@@ -217,7 +217,7 @@ class AsyncSoftReadWriteLock:
             joinable=joinable,
         )
 
-    async def _run_acquire(self, acquire: Callable[..., AcquireReturnProxy]) -> None:
+    async def _run_acquire(self, acquire: functools.partial[AcquireReturnProxy]) -> None:
         # run_in_executor cannot recall work the pool already started. A sync acquire that won the lock before it saw
         # the cancellation has published its claim and started the heartbeat, which keeps the record fresh so no peer
         # evicts it. Wait the call out and hand the claim back, as AsyncReadWriteLock does.

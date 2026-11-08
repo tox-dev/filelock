@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 import pytest
 
 pytest.importorskip("sqlite3")
 
-from collections.abc import Callable
 
 from filelock import AsyncReadWriteLock, ReadWriteLock, Timeout
 from filelock._soft_rw import AsyncSoftReadWriteLock, SoftReadWriteLock
@@ -57,7 +56,12 @@ def _soft(  # pragma: needs hard-link
     )
 
 
-_Make = Callable[..., tuple[ReadWriteLock | SoftReadWriteLock, AsyncReadWriteLock | AsyncSoftReadWriteLock]]
+class _Make(Protocol):
+    def __call__(
+        self, path: Path, *, is_singleton: bool
+    ) -> tuple[ReadWriteLock | SoftReadWriteLock, AsyncReadWriteLock | AsyncSoftReadWriteLock]: ...
+
+
 _FAMILIES: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
     "make", [pytest.param(_sqlite, id="sqlite"), pytest.param(_soft, id="soft", marks=pytest.mark.requires_hard_links)]
 )

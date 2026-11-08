@@ -219,7 +219,7 @@ class AsyncReadWriteLock:
         """Whether blocking is enabled by default."""
         return self._lock.blocking
 
-    async def _run_acquire(self, acquire: Callable[..., AcquireReturnProxy]) -> None:
+    async def _run_acquire(self, acquire: functools.partial[AcquireReturnProxy]) -> None:
         abandoned = threading.Event()
         acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
         try:
