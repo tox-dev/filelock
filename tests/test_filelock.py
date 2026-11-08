@@ -1427,10 +1427,10 @@ def test_singleton_locks_are_deleted_when_no_external_references_exist(
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_singleton_instance_tracking_is_unique_per_subclass(lock_type: type[BaseFileLock]) -> None:
-    class Lock1(lock_type):  # ty: ignore[unsupported-base]
+    class Lock1(lock_type):  # ty: ignore[unsupported-base]  # ty types the parametrized base as type[BaseFileLock], not a class
         pass
 
-    class Lock2(lock_type):  # ty: ignore[unsupported-base]
+    class Lock2(lock_type):  # ty: ignore[unsupported-base]  # ty types the parametrized base as type[BaseFileLock], not a class
         pass
 
     assert isinstance(Lock1._instances, WeakValueDictionary)
@@ -3043,7 +3043,7 @@ def test_context_group_base_exception_leaf_is_base_group(
 
 def test_invalid_context_error_policy_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="context_error_policy must be"):
-        SoftFileLock(str(tmp_path / "a"), context_error_policy="explode")  # ty: ignore[invalid-argument-type]
+        SoftFileLock(str(tmp_path / "a"), context_error_policy="explode")  # ty: ignore[invalid-argument-type]  # the invalid policy is the input under test
 
 
 def test_singleton_rejects_different_context_policy(tmp_path: Path) -> None:
@@ -3149,7 +3149,7 @@ def test_dual_body_and_close_failure_grouped(tmp_path: Path, mocker: MockerFixtu
 
 def test_invalid_close_error_policy_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="close_error_policy must be"):
-        FileLock(str(tmp_path / "a"), close_error_policy="explode")  # ty: ignore[invalid-argument-type]
+        FileLock(str(tmp_path / "a"), close_error_policy="explode")  # ty: ignore[invalid-argument-type]  # the invalid policy is the input under test
 
 
 def test_singleton_rejects_different_close_policy(tmp_path: Path) -> None:

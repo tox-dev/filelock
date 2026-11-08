@@ -423,10 +423,10 @@ def test_stale_break_restores_under_an_exclusive_claim(  # pragma: win32 no cove
             rival.start()
             settle(first_has_checked)
             return exchange(first, second)
-        first_has_checked.set()  # pragma: no cover
-        while not release_rival.is_set():  # pragma: no cover
-            release_rival.wait(0.001)  # pragma: no cover
-        return exchange(first, second)  # pragma: no cover
+        first_has_checked.set()  # pragma: no cover  # only a recovery race lets two contenders share a record
+        while not release_rival.is_set():  # pragma: no cover  # only a recovery race lets two contenders share a record
+            release_rival.wait(0.001)  # pragma: no cover  # only a recovery race lets two contenders share a record
+        return exchange(first, second)  # pragma: no cover  # only a recovery race lets two contenders share a record
 
     def unlink_after_the_rival_finished(path: Path, *, missing_ok: bool = False) -> None:
         release_rival.set()

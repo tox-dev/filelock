@@ -290,12 +290,12 @@ async def test_coroutine_function(tmp_path: Path) -> None:
     acquired = released = False
 
     class AioFileLock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             nonlocal acquired
             acquired = True
             self._context.lock_file_fd = 1
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             nonlocal released
             released = True
             self._context.lock_file_fd = None
@@ -314,10 +314,10 @@ async def test_coroutine_acquire_without_holding_polls_and_skips_on_acquired(tmp
     attempts: list[str] = []
 
     class NeverHoldsLock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             attempts.append(self.lock_file)  # returns without setting the fd, so is_locked stays False
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = None  # pragma: no cover  # never held, so release never runs
 
     lock = NeverHoldsLock(str(tmp_path / "a"), timeout=0.1)

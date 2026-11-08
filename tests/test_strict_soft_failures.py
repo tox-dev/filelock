@@ -1933,7 +1933,7 @@ def test_strict_soft_failed_doorway_cleanup_keeps_no_descriptor(lock_path: Path,
     def fail_held_link(source: _PathValue, destination: _PathValue, **options: int | bool | None) -> None:
         if Path(os.fsdecode(destination)).name.startswith("held-"):
             raise OSError(EIO, "held link failed")
-        real_link(source, destination, **options)  # ty: ignore[invalid-argument-type]
+        real_link(source, destination, **options)  # ty: ignore[invalid-argument-type]  # the forwarded options are wider than os.link keyword types
 
     mocker.patch("filelock._strict.os.link", autospec=True, side_effect=fail_held_link)
     _deny_claim_unlinks(mocker)

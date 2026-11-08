@@ -396,7 +396,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         return self._async_context.executor
 
     @executor.setter
-    def executor(self, value: futures.Executor | None) -> None:  # pragma: no cover
+    def executor(self, value: futures.Executor | None) -> None:  # pragma: no cover  # no test assigns the executor
         """
         Change the executor.
 
