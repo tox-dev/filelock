@@ -357,7 +357,9 @@ def _patch_async_acquire_and_rollback_failure(
     mode: Literal["read", "write"],
 ) -> _RollbackFailures:
     acquire_error = sqlite3.OperationalError("acquire failed")
+    acquire_error.sqlite_errorcode = sqlite3.SQLITE_ERROR
     rollback_error = sqlite3.OperationalError("rollback failed")
+    rollback_error.sqlite_errorcode = sqlite3.SQLITE_ERROR
     prior_rollback_error = LookupError("prior rollback failure")
     rollback_error.__context__ = prior_rollback_error
     acquire_failed = False
