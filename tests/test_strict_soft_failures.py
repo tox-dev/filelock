@@ -886,7 +886,7 @@ def test_strict_soft_sentinel_uses_unique_private_names(tmp_path: Path, mocker: 
             marks=NEEDS_SYMLINK,
         ),
         pytest.param(
-            os.mkfifo,
+            getattr(os, "mkfifo", None),
             "a special file",
             id="fifo",
             marks=pytest.mark.skipif(not CAPABILITIES["fifo"], reason="needs os.mkfifo"),
