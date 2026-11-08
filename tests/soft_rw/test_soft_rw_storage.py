@@ -32,7 +32,11 @@ pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
         pytest.param(lambda files, path: files.listdir(path), [], id="listdir"),
     ],
 )
-def test_missing_path_returns_default(tmp_path: Path, call: Callable[[OsFiles, str], object], expected: object) -> None:
+def test_missing_path_returns_default(
+    tmp_path: Path,
+    call: Callable[[OsFiles, str], bytes | bool | list[str] | None],
+    expected: bytes | bool | list[str] | None,
+) -> None:
     assert call(OsFiles(str(tmp_path / "x.lock")), str(tmp_path / "absent")) == expected
 
 

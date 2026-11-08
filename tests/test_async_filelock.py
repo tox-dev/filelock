@@ -191,7 +191,7 @@ async def test_non_blocking(lock_type: type[BaseAsyncFileLock], tmp_path: Path) 
 async def test_poll_interval_rejects_invalid_value(
     lock_type: type[BaseAsyncFileLock],
     entry_point: Literal["constructor", "setter", "acquire"],
-    bad_value: object,
+    bad_value: float | str,
     error_type: type[ValueError | TypeError],
     message: str,
     tmp_path: Path,
@@ -205,7 +205,7 @@ async def _set_poll_interval(
     lock_type: type[BaseAsyncFileLock],
     entry_point: Literal["constructor", "setter", "acquire"],
     lock: BaseAsyncFileLock,
-    value: object,
+    value: float | str,
 ) -> None:
     value = cast("float", value)
     if entry_point == "constructor":

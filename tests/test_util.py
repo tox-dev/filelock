@@ -149,7 +149,7 @@ def test_stale_break_admits_no_third_holder_beside_a_recreated_marker(
     polling: list[bool] = []
     real: Final = getattr(os, point)
 
-    def third_contender_polls(path: str | os.PathLike[str], *args: int, **kwargs: int | None) -> object:
+    def third_contender_polls(path: str | os.PathLike[str], *args: int, **kwargs: int | None) -> int | None:
         result: Final = real(path, *args, **kwargs)
         if holder.is_locked and not polling and os.fspath(path).startswith(os.fspath(stale_lock)):
             polling.append(True)

@@ -150,7 +150,7 @@ def test_rejects_an_interval_it_cannot_use(
 def test_rejects_invalid_intervals(
     tmp_path: Path,
     lock_type: type[SoftReadWriteLock | AsyncSoftReadWriteLock],
-    keep: Callable[[Path], AbstractContextManager[object]],
+    keep: Callable[[Path], AbstractContextManager[SoftReadWriteLock | None]],
     settings: dict[str, float],
     message: str,
 ) -> None:
@@ -530,7 +530,7 @@ def test_acquire_on_closed_raises(lock_file: str) -> None:
     ],
 )
 def test_close_during_acquire_leaves_no_hold(
-    lock_file: str, mocker: MockerFixture, blocking: Callable[[SoftReadWriteLock], AbstractContextManager[object]]
+    lock_file: str, mocker: MockerFixture, blocking: Callable[[SoftReadWriteLock], AbstractContextManager[None]]
 ) -> None:
     # A close() that lands while an acquire polls, or between the grant and publishing the hold, must not leave a
     # heartbeat holding the slot on an instance nobody can release through any more.
@@ -1723,7 +1723,7 @@ def _reacquire_fresh_lock_in_child(  # pragma: needs fork
 
 
 def _fork_process(  # pragma: needs fork
-    target: Callable[..., object], args: tuple[object, ...] = ()
+    target: Callable[..., object], args: tuple[float, ...] = ()
 ) -> mp.process.BaseProcess:
     if sys.platform == "win32":  # pragma: win32 cover
         msg = "fork context is POSIX only"

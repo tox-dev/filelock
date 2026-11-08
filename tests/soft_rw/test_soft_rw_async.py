@@ -142,7 +142,7 @@ async def test_async_acquire_rejects_invalid_timeout(
     timeout: float,
     message: str,
     form: Callable[[float], tuple[float, dict[str, float]]],
-    holder: Callable[[AsyncSoftReadWriteLock], AbstractAsyncContextManager[object]],
+    holder: Callable[[AsyncSoftReadWriteLock], AbstractAsyncContextManager[None]],
 ) -> None:
     lock_timeout, call_kwargs = form(timeout)
     lock: Final = _make(tmp_path, timeout=lock_timeout)

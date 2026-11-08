@@ -824,7 +824,7 @@ def test_lease_reports_owner_changed_when_the_marker_identity_shifts(marker: Pat
     real_lstat = cast("Callable[..., os.stat_result]", os.lstat)
     shifted = False
 
-    def lstat(path: object, *args: object, **kwargs: object) -> object:
+    def lstat(path: str | os.PathLike[str], *args: object, **kwargs: object) -> os.stat_result | SimpleNamespace:
         st = real_lstat(path, *args, **kwargs)
         if shifted and str(path).endswith(marker.name):
             return SimpleNamespace(st_dev=st.st_dev, st_ino=st.st_ino + 1)

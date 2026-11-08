@@ -1637,7 +1637,7 @@ def test_close_error_suppression_forced_release_releases_once(lock_path: Path, m
 def test_context_surfaces_close_error_after_cleanup(
     lock_path: Path,
     mocker: MockerFixture,
-    enter: Callable[[SoftFileLock], AbstractContextManager[object]],
+    enter: Callable[[SoftFileLock], AbstractContextManager[SoftFileLock]],
 ) -> None:
     lock = SoftFileLock(lock_path)
     with (
