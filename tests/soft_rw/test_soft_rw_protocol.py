@@ -5,7 +5,6 @@ import os
 import random
 import shutil
 import threading
-from dataclasses import dataclass, field
 from errno import EIO
 from itertools import cycle, islice
 from pathlib import Path, PurePosixPath
@@ -1024,26 +1023,38 @@ def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability
     assert scheduler.crashes == sum(outcome.crashed for outcome in model.outcomes)
 
 
-@dataclass(slots=True, kw_only=True)
 class _Scheduler:
     # Discrete-event scheduler: a parked participant is runnable once its wake time has passed, the clock only jumps
     # when nothing is runnable, and every scheduled operation costs one step. A runnable participant waits at most
     # ``_FAIRNESS`` before it is picked, so only a crashed participant can ever look stale.
-    seed: int
-    crash_probability: float
-    max_crashes: int
-    clock: float = 0.0
-    crashes: int = 0
-    _random: random.Random = field(init=False)
-    _condition: threading.Condition = field(default_factory=threading.Condition)
-    _expected: int = 0
-    _live: set[int] = field(default_factory=set)
-    _parked: dict[int, float] = field(default_factory=dict)
-    _turn: int | None = None
-    _crashed: set[int] = field(default_factory=set)
+    __slots__ = (
+        "_condition",
+        "_crashed",
+        "_expected",
+        "_live",
+        "_parked",
+        "_random",
+        "_turn",
+        "clock",
+        "crash_probability",
+        "crashes",
+        "max_crashes",
+        "seed",
+    )
 
-    def __post_init__(self) -> None:
-        self._random = random.Random(self.seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded schedule is the point, not entropy
+    def __init__(self, *, seed: int, crash_probability: float, max_crashes: int) -> None:
+        self.seed = seed
+        self.crash_probability = crash_probability
+        self.max_crashes = max_crashes
+        self.clock = 0.0
+        self.crashes = 0
+        self._random = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded schedule is the point, not entropy
+        self._condition = threading.Condition()
+        self._expected = 0
+        self._live: set[int] = set()
+        self._parked: dict[int, float] = {}
+        self._turn: int | None = None
+        self._crashed: set[int] = set()
 
     def expect(self) -> None:
         # Counted before the thread starts, so the first step cannot conclude that nobody is left to run.
@@ -1262,13 +1273,15 @@ def _key(path: str) -> str:
     return path.replace("\\", "/")
 
 
-@dataclass(slots=True, kw_only=True)
 class _Outcome:
-    mode: Literal["read", "write"]
-    granted_at: int | None = None
-    crashed: bool = False
-    lost: bool = False
-    stuck: bool = False
+    __slots__ = ("crashed", "granted_at", "lost", "mode", "stuck")
+
+    def __init__(self, *, mode: Literal["read", "write"]) -> None:
+        self.mode = mode
+        self.granted_at: int | None = None
+        self.crashed = False
+        self.lost = False
+        self.stuck = False
 
 
 @pytest.mark.parametrize("seed", range(6))
