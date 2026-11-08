@@ -67,11 +67,7 @@ class _NarrowFileLock(BaseFileLock):
 
 def test_narrow_sync_subclass_rejects_unknown_option(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="unknown"):
-        _unknown_constructor()(str(tmp_path / "lock"), unknown=True)
-
-
-def _unknown_constructor() -> _UnknownFileLockConstructor:
-    return cast("_UnknownFileLockConstructor", _NarrowFileLock)
+        cast("_UnknownFileLockConstructor", _NarrowFileLock)(str(tmp_path / "lock"), unknown=True)
 
 
 def test_singleton_cache_hit_rejects_unknown_option(tmp_path: Path) -> None:

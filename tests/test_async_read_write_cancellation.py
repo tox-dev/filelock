@@ -288,7 +288,14 @@ async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
     try:
         getattr(holder, f"acquire_{OPPOSITE_MODE[mode]}")(blocking=False)
         execute_started: Final = asyncio.Event()
-        _patch_async_execute_signal(mocker, asyncio.get_running_loop(), execute_started)
+        loop: Final = asyncio.get_running_loop()
+
+        def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+            if "PRAGMA journal_mode" in statement:
+                loop.call_soon_threadsafe(execute_started.set)
+            return real_connection.executescript(statement)
+
+        _patch_async_connection(mocker, executescript=executescript)
         lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
         task: Final = asyncio.create_task(getattr(lock, f"acquire_{mode}")())
         await execute_started.wait()
@@ -303,19 +310,6 @@ async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
         await lock.close()
     finally:
         holder.close()
-
-
-def _patch_async_execute_signal(
-    mocker: MockerFixture,
-    loop: asyncio.AbstractEventLoop,
-    execute_started: asyncio.Event,
-) -> None:
-    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
-        if "PRAGMA journal_mode" in statement:
-            loop.call_soon_threadsafe(execute_started.set)
-        return real_connection.executescript(statement)
-
-    _patch_async_connection(mocker, executescript=executescript)
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
