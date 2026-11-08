@@ -292,7 +292,7 @@ async def test_async_tasks_sharing_a_lock_take_the_write_lock_one_at_a_time(tmp_
         async with lock.write_lock():
             inside += 1
             peak = max(peak, inside)
-            await asyncio.sleep(0.001)
+            await asyncio.sleep(0)
             inside -= 1
         progress.put_nowait(None)
 

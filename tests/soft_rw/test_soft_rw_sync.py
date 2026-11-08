@@ -1616,8 +1616,6 @@ def _worker(
             acquired_event.set()
             if release_event is not None:
                 release_event.wait(timeout=_PROCESS_DEADLINE)
-            else:
-                time.sleep(0.2)
     finally:
         lock.close()
 

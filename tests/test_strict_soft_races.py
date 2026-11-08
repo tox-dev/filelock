@@ -72,7 +72,7 @@ def test_strict_soft_lower_intent_delayed_until_higher_selects(tmp_path: Path, m
                 inside += 1
                 assert inside == 1
                 acquisition_order.append(label)
-            time.sleep(0.01)
+            time.sleep(0)  # give up the GIL so the other thread contends for the lock
             with state_lock:
                 inside -= 1
 
