@@ -169,18 +169,15 @@ def _block_executor(executor_started: threading.Event, release_executor: threadi
     assert release_executor.wait(timeout=5)
 
 
-@pytest.mark.parametrize("held", [pytest.param(False, id="acquire"), pytest.param(True, id="release")])
 @pytest.mark.asyncio
-async def test_executor_shutdown_drops_queued_call_with_runtime_error(tmp_path: Path, *, held: bool) -> None:
+async def test_executor_shutdown_drops_queued_acquire_with_runtime_error(tmp_path: Path) -> None:
     executor = ThreadPoolExecutor(max_workers=1)
     lock = AsyncFileLock(tmp_path / "a", executor=executor)
-    if held:
-        await lock.acquire()
     executor_started = threading.Event()
     release_executor = threading.Event()
     blocker = executor.submit(_block_executor, executor_started, release_executor)
     assert executor_started.wait(timeout=5)
-    task = asyncio.create_task(lock.release() if held else lock.acquire())
+    task = asyncio.create_task(lock.acquire())
     await asyncio.sleep(0)
     executor.shutdown(wait=False, cancel_futures=True)
     release_executor.set()
@@ -188,8 +185,32 @@ async def test_executor_shutdown_drops_queued_call_with_runtime_error(tmp_path: 
 
     with pytest.raises(RuntimeError, match="executor shut down before running"):
         await task
-    assert (lock.is_locked, lock.lock_counter) == (held, int(held))
-    assert_file_lock_state(str(tmp_path / "a"), available=not held)
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    assert_file_lock_state(str(tmp_path / "a"), available=True)
+    lock.executor = None
+    await lock.release()
+    assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
+@pytest.mark.asyncio
+async def test_executor_shutdown_drops_queued_release_with_runtime_error(tmp_path: Path) -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    lock = AsyncFileLock(tmp_path / "a", executor=executor)
+    await lock.acquire()
+    executor_started = threading.Event()
+    release_executor = threading.Event()
+    blocker = executor.submit(_block_executor, executor_started, release_executor)
+    assert executor_started.wait(timeout=5)
+    task = asyncio.create_task(lock.release())
+    await asyncio.sleep(0)
+    executor.shutdown(wait=False, cancel_futures=True)
+    release_executor.set()
+    blocker.result(timeout=5)
+
+    with pytest.raises(RuntimeError, match="executor shut down before running"):
+        await task
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    assert_file_lock_state(str(tmp_path / "a"), available=False)
     lock.executor = None
     await lock.release()
     assert_file_lock_state(str(tmp_path / "a"), available=True)

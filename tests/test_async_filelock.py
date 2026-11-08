@@ -42,11 +42,27 @@ from tests.capability_marks import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator
+    from collections.abc import Awaitable, Callable, Generator, Iterator
+    from contextlib import AbstractAsyncContextManager
     from types import FrameType
 
     from _typeshed import Unused
     from pytest_mock import MockerFixture, MockType
+
+    _Enter = Callable[[filelock.asyncio.BaseAsyncFileLock], Awaitable[AbstractAsyncContextManager[object]]]
+
+
+def _enter_lock(lock: filelock.asyncio.BaseAsyncFileLock) -> Awaitable[filelock.asyncio.BaseAsyncFileLock]:
+    return asyncio.sleep(0, lock)
+
+
+async def _enter_proxy(
+    lock: filelock.asyncio.BaseAsyncFileLock,
+) -> AbstractAsyncContextManager[object]:
+    return await lock.acquire()
+
+
+_ENTER: Final = [pytest.param(_enter_lock, id="direct"), pytest.param(_enter_proxy, id="proxy")]
 
 
 # Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
@@ -55,7 +71,7 @@ if TYPE_CHECKING:
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("path_type", [str, PurePath, Path])
 @pytest.mark.parametrize("filename", ["a", "new/b", "new2/new3/c"])
-@pytest.mark.parametrize("via_acquire", [pytest.param(False, id="context"), pytest.param(True, id="acquire")])
+@pytest.mark.parametrize("enter", _ENTER)
 @pytest.mark.asyncio
 async def test_simple(
     lock_type: type[BaseAsyncFileLock],
@@ -64,13 +80,13 @@ async def test_simple(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     *,
-    via_acquire: bool,
+    enter: _Enter,
 ) -> None:
     caplog.set_level(logging.DEBUG)
 
     lock_path = tmp_path / filename
     lock = lock_type(path_type(lock_path))
-    async with await lock.acquire() if via_acquire else lock as locked:
+    async with await enter(lock) as locked:
         assert lock.is_locked
         assert lock is locked
     assert not lock.is_locked
@@ -502,14 +518,20 @@ async def test_finite_timeout_gives_timeout_not_deadlock(tmp_path: Path, lock_ty
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
-@pytest.mark.parametrize("from_default", [pytest.param(True, id="default"), pytest.param(False, id="argument")])
+@pytest.mark.parametrize(
+    ("lock_timeout", "call_timeout"),
+    [
+        pytest.param(float("nan"), None, id="default"),
+        pytest.param(-1, float("nan"), id="argument"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_blocking_acquire_rejects_nan_timeout(
-    lock_type: type[BaseAsyncFileLock], from_default: bool, tmp_path: Path
+    lock_type: type[BaseAsyncFileLock], lock_timeout: float, call_timeout: float | None, tmp_path: Path
 ) -> None:
-    lock = lock_type(tmp_path / "a", timeout=float("nan") if from_default else -1)
+    lock = lock_type(tmp_path / "a", timeout=lock_timeout)
     with pytest.raises(ValueError, match="not nan"):
-        await lock.acquire(timeout=None if from_default else float("nan"))
+        await lock.acquire(timeout=call_timeout)
     assert not lock.is_locked
 
 
@@ -791,27 +813,32 @@ async def test_symlink_same_canonical_path(tmp_path: Path, lock_type: type[BaseA
 
 
 @NEEDS_FCNTL
-@pytest.mark.parametrize(
-    ("depth", "force"),
-    [
-        pytest.param(1, False, id="direct"),
-        pytest.param(2, False, id="nested"),
-        pytest.param(2, True, id="forced"),
-    ],
-)
+@pytest.mark.parametrize("depth", [1, 2])
 @pytest.mark.asyncio  # pragma: needs fcntl
-async def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, depth: int, force: bool) -> None:
+async def test_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path, depth: int) -> None:
     lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
     lock = AsyncFileLock(lock_path, run_in_executor=False)
     for _depth in range(depth):
         await lock.acquire()
     _retarget_parent(lock_path, replacement_path)
 
-    if force:
-        await lock.release(force=True)
-    else:
-        for _depth in range(depth):
-            await lock.release()
+    for _depth in range(depth):
+        await lock.release()
+
+    async with AsyncFileLock(original_path, run_in_executor=False) as successor:
+        assert successor.is_locked
+
+
+@NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
+async def test_forced_release_drops_acquisition_key_after_parent_retarget(tmp_path: Path) -> None:
+    lock_path, original_path, replacement_path = _symlinked_lock_paths(tmp_path)
+    lock = AsyncFileLock(lock_path, run_in_executor=False)
+    await lock.acquire()
+    await lock.acquire()
+    _retarget_parent(lock_path, replacement_path)
+
+    await lock.release(force=True)
 
     async with AsyncFileLock(original_path, run_in_executor=False) as successor:
         assert successor.is_locked
@@ -898,28 +925,28 @@ async def test_async_zero_write_rolls_back_acquire(tmp_path: Path, mocker: Mocke
     assert not lock.is_locked
 
 
-@pytest.mark.parametrize(
-    ("policy", "surfaces"),
-    [pytest.param("default", True, id="default"), pytest.param("suppress", False, id="suppress")],
-)
+@pytest.mark.parametrize("policy", ["default", "raise"])
 @pytest.mark.asyncio
 async def test_soft_close_error_policy_cleans_marker(
-    tmp_path: Path,
-    mocker: MockerFixture,
-    policy: CloseErrorPolicy,
-    *,
-    surfaces: bool,
+    tmp_path: Path, mocker: MockerFixture, policy: CloseErrorPolicy
 ) -> None:
     lock_path = tmp_path / "a"
     lock = AsyncSoftFileLock(lock_path, close_error_policy=policy, run_in_executor=False)
     await lock.acquire()
     with _close_after_commit(mocker, lock) as (close_error, attempts):
-        if surfaces:
-            with pytest.raises(OSError, match="close failed") as info:
-                await lock.release()
-            assert info.value is close_error
-        else:
+        with pytest.raises(OSError, match="close failed") as info:
             await lock.release()
+        assert info.value is close_error
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
+
+
+@pytest.mark.asyncio
+async def test_soft_close_error_suppress_policy_cleans_marker(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "a"
+    lock = AsyncSoftFileLock(lock_path, close_error_policy="suppress", run_in_executor=False)
+    await lock.acquire()
+    with _close_after_commit(mocker, lock) as (_, attempts):
+        await lock.release()
     assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
@@ -954,41 +981,38 @@ def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Gener
         mocker.stop(close_mock)
 
 
-@pytest.mark.parametrize(
-    ("depth", "force"),
-    [pytest.param(2, False, id="nested"), pytest.param(2, True, id="forced")],
-)
 @pytest.mark.asyncio
-async def test_soft_close_error_suppression_releases_once(
-    tmp_path: Path,
-    mocker: MockerFixture,
-    depth: int,
-    *,
-    force: bool,
+async def test_soft_close_error_suppression_releases_nested_acquisitions_once(
+    tmp_path: Path, mocker: MockerFixture
 ) -> None:
     lock_path = tmp_path / "a"
     lock = AsyncSoftFileLock(lock_path, close_error_policy="suppress", run_in_executor=False)
-    for _acquisition in range(depth):
-        await lock.acquire()
+    await lock.acquire()
+    await lock.acquire()
     with _close_after_commit(mocker, lock) as (_, attempts):
-        if force:
-            await lock.release(force=True)
-        else:
-            for _release in range(depth):
-                await lock.release()
+        await lock.release()
+        await lock.release()
     assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
-@pytest.mark.parametrize(
-    "use_proxy",
-    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
-)
+@pytest.mark.asyncio
+async def test_soft_close_error_suppression_forced_release_releases_once(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "a"
+    lock = AsyncSoftFileLock(lock_path, close_error_policy="suppress", run_in_executor=False)
+    await lock.acquire()
+    await lock.acquire()
+    with _close_after_commit(mocker, lock) as (_, attempts):
+        await lock.release(force=True)
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
+
+
+@pytest.mark.parametrize("enter", _ENTER)
 @pytest.mark.asyncio
 async def test_soft_context_surfaces_close_error_after_cleanup(
     tmp_path: Path,
     mocker: MockerFixture,
     *,
-    use_proxy: bool,
+    enter: _Enter,
 ) -> None:
     lock_path = tmp_path / "a"
     lock = AsyncSoftFileLock(lock_path, run_in_executor=False)
@@ -996,7 +1020,7 @@ async def test_soft_context_surfaces_close_error_after_cleanup(
         _close_after_commit(mocker, lock) as (close_error, attempts),
         pytest.raises(OSError, match="close failed") as info,
     ):
-        async with await lock.acquire() if use_proxy else lock:
+        async with await enter(lock):
             pass
     assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, False)
 
@@ -1049,16 +1073,13 @@ async def test_close_after_commit_ignores_other_descriptors(tmp_path: Path, mock
     assert (len(closed), len(attempts), attempts[0] in closed) == (4, 1, False)
 
 
-@pytest.mark.parametrize(
-    "use_proxy",
-    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
-)
+@pytest.mark.parametrize("enter", _ENTER)
 @pytest.mark.asyncio
 async def test_context_group_detaches_release_context(
     tmp_path: Path,
     close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
     *,
-    use_proxy: bool,
+    enter: _Enter,
 ) -> None:
     capture, release_error, release_cause = close_failure
     body_error = ValueError("body failed")
@@ -1071,7 +1092,7 @@ async def test_context_group_detaches_release_context(
         on_acquired=capture,
     )
     with pytest.raises(ExceptionGroup) as info:
-        async with await lock.acquire() if use_proxy else lock:
+        async with await enter(lock):
             raise body_error from body_cause
     assert (
         info.value.exceptions,
@@ -1084,16 +1105,13 @@ async def test_context_group_detaches_release_context(
     ) == ((body_error, release_error), None, None, body_cause, release_cause, True, True)
 
 
-@pytest.mark.parametrize(
-    "use_proxy",
-    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
-)
+@pytest.mark.parametrize("enter", _ENTER)
 @pytest.mark.asyncio
 async def test_context_group_renders_independent_leaves(
     tmp_path: Path,
     close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
     *,
-    use_proxy: bool,
+    enter: _Enter,
 ) -> None:
     capture, release_error, _ = close_failure
     release_error.__cause__ = None
@@ -1107,7 +1125,7 @@ async def test_context_group_renders_independent_leaves(
         on_acquired=capture,
     )
     with pytest.raises(ExceptionGroup) as info:
-        async with await lock.acquire() if use_proxy else lock:
+        async with await enter(lock):
             raise body_error
     group_rendering = "".join(traceback.format_exception(info.value))
     release_rendering = "".join(traceback.format_exception(release_error))
@@ -1119,16 +1137,13 @@ async def test_context_group_renders_independent_leaves(
     ) == (1, 0, 0, 1)
 
 
-@pytest.mark.parametrize(
-    "use_proxy",
-    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
-)
+@pytest.mark.parametrize("enter", _ENTER)
 @pytest.mark.asyncio
 async def test_context_chain_keeps_release_error_with_body_in_context(
     tmp_path: Path,
     close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
     *,
-    use_proxy: bool,
+    enter: _Enter,
 ) -> None:
     capture, release_error, _ = close_failure
     body_error = ValueError("body failed")
@@ -1140,7 +1155,7 @@ async def test_context_chain_keeps_release_error_with_body_in_context(
         on_acquired=capture,
     )
     with pytest.raises(OSError, match="release failed") as info:
-        async with await lock.acquire() if use_proxy else lock:
+        async with await enter(lock):
             raise body_error
     assert (info.value, release_error.__context__) == (release_error, body_error)
 
@@ -1149,18 +1164,15 @@ async def test_context_chain_keeps_release_error_with_body_in_context(
     "policy",
     [pytest.param("chain", id="chain"), pytest.param("group", id="group")],
 )
-@pytest.mark.parametrize(
-    "use_proxy",
-    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
-)
+@pytest.mark.parametrize("enter", _ENTER)
 @pytest.mark.asyncio
 async def test_context_body_only_failure_propagates_body(
-    tmp_path: Path, policy: ContextErrorPolicy, *, use_proxy: bool
+    tmp_path: Path, policy: ContextErrorPolicy, *, enter: _Enter
 ) -> None:
     lock = AsyncSoftFileLock(str(tmp_path / "a"), context_error_policy=policy)
     body = ValueError("body failed")
     with pytest.raises(ValueError, match="body failed") as info:
-        async with await lock.acquire() if use_proxy else lock:
+        async with await enter(lock):
             raise body
     assert info.value is body
 
@@ -1169,17 +1181,14 @@ async def test_context_body_only_failure_propagates_body(
     "policy",
     [pytest.param("chain", id="chain"), pytest.param("group", id="group")],
 )
-@pytest.mark.parametrize(
-    "use_proxy",
-    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
-)
+@pytest.mark.parametrize("enter", _ENTER)
 @pytest.mark.asyncio
 async def test_context_release_only_failure_propagates_release(
     tmp_path: Path,
     close_failure: tuple[Callable[[int], None], OSError, RuntimeError],
     policy: ContextErrorPolicy,
     *,
-    use_proxy: bool,
+    enter: _Enter,
 ) -> None:
     capture, release_error, release_cause = close_failure
     lock = AsyncFileLock(
@@ -1190,7 +1199,7 @@ async def test_context_release_only_failure_propagates_release(
         on_acquired=capture,
     )
     with pytest.raises(OSError, match="release failed") as info:
-        async with await lock.acquire() if use_proxy else lock:
+        async with await enter(lock):
             pass
     assert (info.value, release_error.__context__, release_error.__cause__) == (release_error, None, release_cause)
 
@@ -1435,10 +1444,16 @@ async def test_async_del_inside_a_running_loop_schedules_release(tmp_path: Path,
     assert (lock.is_locked, (tmp_path / "a").exists()) == (False, False)
 
 
-@pytest.mark.parametrize("cancel", [pytest.param(False, id="release-fails"), pytest.param(True, id="release-canceled")])
+@pytest.mark.parametrize(
+    "stop",
+    [
+        pytest.param(lambda _schedule, executor: executor.shutdown(), id="release-fails"),
+        pytest.param(lambda schedule, _executor: schedule.spy_return.cancel(), id="release-canceled"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_async_del_inside_a_running_loop_falls_back_when_the_release_does_not_finish(
-    tmp_path: Path, schedule: MockType, *, cancel: bool
+    tmp_path: Path, schedule: MockType, stop: Callable[[MockType, ThreadPoolExecutor], object]
 ) -> None:
     with ThreadPoolExecutor(max_workers=1) as executor:
         lock: Final = AsyncSoftFileLock(str(tmp_path / "a"), executor=executor)
@@ -1447,10 +1462,7 @@ async def test_async_del_inside_a_running_loop_falls_back_when_the_release_does_
         lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
 
         # A loop shutting down cancels the release before it runs; a shut-down executor fails it.
-        if cancel:
-            schedule.spy_return.cancel()
-        else:
-            executor.shutdown()
+        stop(schedule, executor)
         await asyncio.wait([schedule.spy_return])
         await asyncio.sleep(0)  # the done callbacks run on the next loop iteration
     assert (lock.is_locked, (tmp_path / "a").exists()) == (False, False)
