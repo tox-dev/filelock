@@ -398,13 +398,17 @@ class _RollbackFailures(NamedTuple):
 
 @pytest.mark.asyncio
 async def test_close_cancellation_leaves_a_supplied_executor_running(lock_file: str, mocker: MockerFixture) -> None:
-    supplied = ThreadPoolExecutor(max_workers=1)
-    await _cancel_close_of_write_lock(lock_file, mocker, supplied)
-    assert supplied.submit(int).result(timeout=5) == 0
-    supplied.shutdown(wait=True)
+    await _cancel_close_of_write_lock(
+        lock_file, mocker, ThreadPoolExecutor(max_workers=1), _assert_supplied_executor_runs
+    )
 
 
-async def _cancel_close_of_write_lock(lock_file: str, mocker: MockerFixture, executor: Executor | None) -> Executor:
+async def _cancel_close_of_write_lock(
+    lock_file: str,
+    mocker: MockerFixture,
+    executor: Executor | None,
+    verify: Callable[[Executor], None],
+) -> None:
     rollback_started = asyncio.Event()
     finish_rollback = threading.Event()
     _patch_async_rollback(mocker, asyncio.get_running_loop(), rollback_started, finish_rollback)
@@ -420,14 +424,22 @@ async def _cancel_close_of_write_lock(lock_file: str, mocker: MockerFixture, exe
         await task
     assert_cancellation_message(info.value, "cancel close")
     assert_read_write_lock_state(lock_file, "read", available=True)
-    return owned
+    verify(owned)
+
+
+def _assert_supplied_executor_runs(executor: Executor) -> None:
+    assert executor.submit(int).result(timeout=5) == 0
+    executor.shutdown(wait=True)
 
 
 @pytest.mark.asyncio
 async def test_close_cancellation_shuts_down_an_owned_executor(lock_file: str, mocker: MockerFixture) -> None:
-    owned = await _cancel_close_of_write_lock(lock_file, mocker, None)
+    await _cancel_close_of_write_lock(lock_file, mocker, None, _assert_owned_executor_is_shut_down)
+
+
+def _assert_owned_executor_is_shut_down(executor: Executor) -> None:
     with pytest.raises(RuntimeError):
-        owned.submit(int)
+        executor.submit(int)
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
