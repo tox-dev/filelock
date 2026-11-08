@@ -59,7 +59,7 @@ _HOLDERS_DIRECTORY: Final[str] = "holders"
 _TEMPORARY_PREFIX: Final[str] = ".commit-"
 
 
-class Files(Protocol):
+class _Files(Protocol):
     # The filesystem operations the protocol runs on; :mod:`._storage` implements them over :mod:`os`.
     def read(self, path: str) -> bytes | None:
         # The file's bytes, ``None`` when it does not exist, or ``b""`` when it is not a regular file.
@@ -196,7 +196,7 @@ class Ledger:
 
 class GenerationLog:
     # The ordered snapshots under ``gen/``, found by listing and probing, advanced by linking the next one.
-    def __init__(self, files: Files, lock_file: str, root: str) -> None:
+    def __init__(self, files: _Files, lock_file: str, root: str) -> None:
         self._files = files
         self._lock_file = lock_file
         self._directory = Path(root, _GENERATIONS_DIRECTORY)
@@ -401,7 +401,7 @@ class Participant:
     # never evict.
     def __init__(  # ruff:ignore[too-many-arguments]  # one value per protocol input; the lock builds this once per acquisition
         self,
-        files: Files,
+        files: _Files,
         root: str,
         mode: Mode,
         *,
@@ -603,7 +603,7 @@ def holder_lease(record: bytes | None) -> float | None:
 
 
 class TreeReplacedError(RuntimeError):
-    # Raised by a ``Files`` implementation when a protocol directory is not a real directory (a symlink, a junction, a
+    # Raised by a ``_Files`` implementation when a protocol directory is not a real directory (a symlink, a junction, a
     # file) or belongs to another account.
     ...
 

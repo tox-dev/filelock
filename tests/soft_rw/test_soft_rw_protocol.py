@@ -1191,7 +1191,7 @@ class _Model:
 
 
 class _MemoryFiles:
-    # An in-memory :class:`~filelock._soft_rw._protocol.Files` whose every call is one scheduler step.
+    # An in-memory :class:`~filelock._soft_rw._protocol._Files` whose every call is one scheduler step.
     def __init__(self, scheduler: _Scheduler, *, stale_listings: float = 0.0) -> None:
         self._scheduler = scheduler
         self.files: dict[str, bytes] = {}

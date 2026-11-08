@@ -28,10 +28,10 @@ if TYPE_CHECKING:
 
 # coverage passes the config's plugin options; this plugin takes none.
 def coverage_init(reg: Plugins, options: dict[str, str]) -> None:  # ruff:ignore[unused-function-argument]
-    reg.add_configurer(CapabilityPragmas())
+    reg.add_configurer(_CapabilityPragmas())
 
 
-class CapabilityPragmas(CoveragePlugin):
+class _CapabilityPragmas(CoveragePlugin):
     # Exclude ``needs``/``lacks`` capability pragmas on the runtimes where that code cannot run.
     def configure(self, config: TConfigurable) -> None:
         excluded = [
@@ -81,6 +81,5 @@ _ALWAYS_EXCLUDED: Final[tuple[str, ...]] = (r"# pragma: forked child\b",)
 _CAPABILITY_PRAGMA: Final[str] = rf"# pragma: (needs|lacks) ({'|'.join(sorted(CAPABILITIES))})\b"
 
 __all__ = [
-    "CAPABILITIES",
     "coverage_init",
 ]

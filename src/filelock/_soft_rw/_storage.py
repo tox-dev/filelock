@@ -1,4 +1,4 @@
-"""The :class:`~._protocol.Files` implementation over :mod:`os`."""
+"""The :class:`~._protocol._Files` implementation over :mod:`os`."""
 
 from __future__ import annotations
 
