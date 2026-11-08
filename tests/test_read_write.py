@@ -12,7 +12,7 @@ from contextlib import closing
 from errno import EWOULDBLOCK
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import pytest
 from capabilities import CAPABILITIES
@@ -538,11 +538,12 @@ def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(
 
 
 @pytest.mark.parametrize("replace", [pytest.param(False, id="unlinked"), pytest.param(True, id="replaced")])
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="SQLite holds the database open without delete sharing, so its name cannot move"
+)
 def test_read_write_lock_refuses_a_database_moved_after_connect(
     tmp_path: Path, mocker: MockerFixture, *, replace: bool
 ) -> None:
-    if sys.platform == "win32":  # pragma: win32 cover
-        pytest.skip("SQLite holds the database open without delete sharing, so its name cannot move")
     # A waiter connects, then the path moves on before its BEGIN lands; the lock it takes then excludes no later opener.
     lock_path = tmp_path / "lock.db"  # pragma: win32 no cover
     lock = ReadWriteLock(lock_path, is_singleton=False)  # pragma: win32 no cover
@@ -878,28 +879,26 @@ def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acqui
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.parametrize(
-    "step",
+    ("owner", "name", "real", "before"),
     [
-        pytest.param("rollback", id="after-rollback"),
-        pytest.param("close", id="after-close"),
-        pytest.param("level-reset", id="at-level-reset"),
+        pytest.param(_ForkSafeConnection, "rollback", sqlite3.Connection.rollback, False, id="after-rollback"),
+        pytest.param(_ForkSafeConnection, "close", _ForkSafeConnection.close, False, id="after-close"),
+        pytest.param(ReadWriteLock, "_clear_lock_state", ReadWriteLock._clear_lock_state, True, id="at-level-reset"),
     ],
 )
 def test_read_write_lock_after_an_interrupted_release_locks_again(
     lock_file: str,
     mocker: MockerFixture,
     mode: Literal["read", "write"],
-    step: Literal["rollback", "close", "level-reset"],
+    owner: type,
+    name: str,
+    real: Callable[[Any], None],
+    before: bool,
 ) -> None:
     lock: Final = ReadWriteLock(lock_file, is_singleton=False)
     acquire: Final = getattr(lock, f"acquire_{mode}")
     acquire()
-    if step == "level-reset":
-        reset = interrupt_once(ReadWriteLock._clear_lock_state, before=True)
-        mocker.patch.object(ReadWriteLock, "_clear_lock_state", new=reset)
-    else:
-        real = sqlite3.Connection.rollback if step == "rollback" else _ForkSafeConnection.close
-        mocker.patch.object(_ForkSafeConnection, step, new=interrupt_once(real, before=False))
+    mocker.patch.object(owner, name, new=interrupt_once(real, before=before))
     with pytest.raises(Interrupt):
         lock.release()
 
@@ -926,7 +925,7 @@ def test_read_write_lock_refuses_a_schema_that_never_finishes_loading(
             struct.pack(">IB", number + 1, 1),
             660,
             right_child=struct.pack(">I", number + 1),
-            header_at=100 if number == 1 else 0,
+            header_at=(100, 0, 0, 0)[number - 1],
         )
         for number in range(1, 5)
     ]
