@@ -87,6 +87,8 @@ _T = TypeVar("_T")
 
 
 class AsyncFileLockMeta(FileLockMeta):
+    """Gives the async locks their constructor, which rejects ``run_in_executor`` together with ``thread_local``."""
+
     def __call__(  # ruff:ignore[too-many-arguments]  # forwards the public constructor's documented parameters
         cls: type[_AT],  # ruff:ignore[invalid-first-argument-name-for-method]  # metaclass __call__ receives the class being constructed
         lock_file: str | os.PathLike[str],
@@ -836,7 +838,8 @@ def _new_transition_gate() -> _AsyncTransitionGate:
 
 @dataclass
 class AsyncFileLockContext(FileLockContext):
-    # A dataclass which holds the context for a ``BaseAsyncFileLock`` object.
+    """A dataclass which holds the context for a ``BaseAsyncFileLock`` object."""
+
     #: Whether run in executor
     run_in_executor: bool = True
 
@@ -852,7 +855,22 @@ class AsyncFileLockContext(FileLockContext):
 
 
 class AsyncThreadLocalFileContext(AsyncFileLockContext, ThreadLocalFileContext):
-    # A thread local version of the ``FileLockContext`` class.
+    """
+    A thread local version of the ``FileLockContext`` class.
+
+    :param lock_file: The path of the lock file.
+    :param timeout: The timeout for acquiring the lock, ``-1`` for unlimited.
+    :param mode: The file mode of the lock file.
+    :param blocking: Whether acquiring the lock blocks.
+    :param poll_interval: The interval between attempts to acquire the lock.
+    :param lifetime: The lifetime of the lock, or ``None`` for no expiry.
+    :param run_in_executor: Whether the lock is acquired in an executor.
+    :param executor: The executor to use, or ``None`` for the loop's default.
+    :param loop: The event loop the lock is bound to.
+    :ivar current: The context of the calling thread.
+
+    """
+
     # threading.local runs __init__ again with these arguments the first time each thread touches the context.
     def __init__(  # ruff:ignore[too-many-arguments]  # mirrors the AsyncFileLockContext fields set at construction
         self,
@@ -935,6 +953,7 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "AsyncAcquireReturnProxy",
+    "AsyncFileLockContext",
     "AsyncFileLockMeta",
     "AsyncSoftFileLease",
     "AsyncSoftFileLock",
