@@ -30,9 +30,8 @@ from tests.process_helpers import break_then_hang_after_exchange, call_within, c
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
-    from unittest.mock import MagicMock
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
 
@@ -543,7 +542,7 @@ def test_stale_break_retries_a_claim_whose_return_failed(  # pragma: win32 no co
     foreign: Final = record.replace(_HOST, "elsewhere")
     _break_name(lock).write_text(foreign, encoding="utf-8")
     _refuse_returning_a_claim(mocker)
-    mocker.patch("filelock._soft.exchange_names", return_value=False)
+    mocker.patch("filelock._soft.exchange_names", return_value=False, autospec=True)
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
     left: Final = list(tmp_path.glob(f"test.lock.restore.{os.getpid()}.*"))
@@ -1143,7 +1142,7 @@ def test_socket_lock_file_self_heals(lock_path: Path) -> None:
 
 def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
-    mock_read: MagicMock = mocker.patch(
+    mock_read: MockType = mocker.patch(
         "filelock._soft._read_lock_file", side_effect=OSError("read failed"), autospec=True
     )
     _assert_times_out(lock_path)
@@ -1755,7 +1754,7 @@ def test_close_and_marker_cleanup_failures_are_grouped(  # pragma: win32 cover
     lock = SoftFileLock(lock_path)
     lock.acquire()
     cleanup_error = RuntimeError("cleanup failed")
-    unlink_mock: Final = mocker.patch("filelock._soft.unlink_path", side_effect=cleanup_error)
+    unlink_mock: Final = mocker.patch("filelock._soft.unlink_path", side_effect=cleanup_error, autospec=True)
     with _close_after_commit(mocker, lock) as (close_error, _attempts), pytest.raises(ExceptionGroup) as info:
         lock.release()
     mocker.stop(unlink_mock)

@@ -28,9 +28,8 @@ from filelock._soft_rw._storage import OsFiles
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from unittest.mock import MagicMock
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 _FIRST: Final[str] = "0123456789abcdef0123456789abcdef"
 _SECOND: Final[str] = "fedcba9876543210fedcba9876543210"
@@ -734,7 +733,7 @@ def test_compaction_removes_a_stalled_survivor_before_the_window_edge(
 
 @pytest.mark.requires_hard_links
 def test_a_commit_flushes_only_its_generation_record(
-    lock_file: str, files: OsFiles, root: str, flushes: MagicMock
+    lock_file: str, files: OsFiles, root: str, flushes: MockType
 ) -> None:
     log = _committed(files, lock_file, root, [None])
     flushes.reset_mock()

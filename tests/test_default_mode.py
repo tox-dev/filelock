@@ -12,9 +12,8 @@ from filelock._api import _UNSET_FILE_MODE, BaseFileLock
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from unittest.mock import MagicMock
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -71,7 +70,7 @@ def test_default_mode_respects_umask(lock_type: type[BaseFileLock], tmp_path: Pa
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
-def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:  # pragma: win32 no cover
+def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MockType) -> None:  # pragma: win32 no cover
     lock = FileLock(str(tmp_path / "a.lock"))
 
     fchmod_spy = mocker.patch("os.fchmod", autospec=True)
@@ -82,7 +81,7 @@ def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:  
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
-def test_explicit_mode_calls_fchmod(tmp_path: Path, mocker: MagicMock) -> None:  # pragma: win32 no cover
+def test_explicit_mode_calls_fchmod(tmp_path: Path, mocker: MockType) -> None:  # pragma: win32 no cover
     lock = FileLock(str(tmp_path / "a.lock"), mode=0o644)
 
     fchmod_spy = mocker.spy(os, "fchmod")

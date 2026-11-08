@@ -195,7 +195,7 @@ def test_lease_heartbeat_survives_directory_rename(
 @NEEDS_STALE_RECLAIM
 def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) -> None:
     # A wedged holder: its marker stays on disk, but no refresh ever lands on it again, so the claim ages out.
-    mocker.patch("filelock._lease.touch")
+    mocker.patch("filelock._lease.touch", autospec=True)
     holder = _lease(marker)
     holder.acquire()
 
@@ -274,7 +274,7 @@ def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None: 
 def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: MockerFixture) -> None:
     seen: list[LeaseCompromise] = []
     failure = OSError("cannot touch the marker")
-    mocker.patch("filelock._lease.touch", side_effect=failure)
+    mocker.patch("filelock._lease.touch", side_effect=failure, autospec=True)
     lease = _lease(marker, on_compromise=seen.append)
 
     with lease:
@@ -298,7 +298,7 @@ def test_lease_tolerates_a_transient_refresh_error(marker: Path, mocker: MockerF
             raise OSError(EIO, "Input/output error")
         return real(path, *args, **kwargs)
 
-    mocker.patch(f"filelock._lease.{target}", side_effect=flaky)
+    mocker.patch(f"filelock._lease.{target}", side_effect=flaky, autospec=True)
     seen: list[LeaseCompromise] = []
     # A long lease keeps a slow runner's two failed ticks inside the window; the deadline has its own test above.
     lease: Final = _lease(marker, lease_duration=30, on_compromise=seen.append)
@@ -434,7 +434,7 @@ def test_lease_release_from_the_callback_needs_a_shared_context(marker: Path) ->
 def test_lease_records_a_compromise_without_a_callback_deterministically(marker: Path, mocker: MockerFixture) -> None:
     # With no callback the heartbeat still records the loss on the lease so a holder can poll .compromise. A refresh
     # that keeps failing drives the loss on every platform without depending on a peer taking the marker.
-    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"))
+    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
     lease = _lease(marker)
 
     with lease:
@@ -447,7 +447,7 @@ def test_lease_records_a_compromise_without_a_callback_deterministically(marker:
 def test_lease_release_from_the_callback_does_not_join_itself(marker: Path, mocker: MockerFixture) -> None:
     # The callback runs on the heartbeat thread, so releasing there must skip joining that thread onto itself. A shared
     # context lets the thread see the claim, and a failing refresh drives the loss deterministically on every platform.
-    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"))
+    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
     holder: list[SoftFileLease] = []
 
     def release_the_claim(_: LeaseCompromise) -> None:
@@ -705,7 +705,7 @@ def test_lease_supersedes_a_live_holder_once_its_claim_ages_out(marker: Path, mo
     # A live holder whose refresh stalled keeps its marker, yet a contender takes it once it has watched the marker go
     # lease_duration without a refresh. Windows cannot delete a live holder's open marker, so drive the age branch with
     # a non-stale owner and a clock that steps a full duration per look rather than a real second process.
-    mocker.patch("filelock._lease.owner_is_stale", return_value=False)
+    mocker.patch("filelock._lease.owner_is_stale", return_value=False, autospec=True)
     mocker.patch(
         "filelock._soft.time",
         new=SimpleNamespace(
@@ -849,7 +849,7 @@ def test_native_lock_rejects_a_lease_duration(marker: Path) -> None:
 
 def test_lease_does_not_age_out_a_live_exclusive_owner(marker: Path, mocker: MockerFixture) -> None:
     # An exclusive owner never agreed to expire, so only proof of death may reclaim it, however long it sits unchanged.
-    mocker.patch("filelock._lease.owner_is_stale", return_value=False)
+    mocker.patch("filelock._lease.owner_is_stale", return_value=False, autospec=True)
     mocker.patch(
         "filelock._soft.time",
         new=SimpleNamespace(
@@ -868,7 +868,7 @@ def test_lease_does_not_age_out_a_live_exclusive_owner(marker: Path, mocker: Moc
 def test_lease_keeps_a_claim_refreshed_by_a_host_whose_clock_lags(marker: Path, mocker: MockerFixture) -> None:
     # The holder's clock runs an hour behind, so every refresh stamps an hour-old mtime. The claim is live as long as
     # the mtime keeps changing; reading it against this host's wall clock would supersede the holder at once.
-    mocker.patch("filelock._lease.owner_is_stale", return_value=False)
+    mocker.patch("filelock._lease.owner_is_stale", return_value=False, autospec=True)
     marker.write_text(
         f"filelock/2\npid={os.getpid()}\nhost={host_name()}\nmode=lease\ntoken=skewed\nduration={_DURATION!r}\n",
         encoding="utf-8",

@@ -65,10 +65,9 @@ from tests.process_helpers import call_within
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
     from contextlib import AbstractContextManager
-    from unittest.mock import Mock
 
     from _typeshed import Unused
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -763,7 +762,7 @@ def test_default_poll_interval(lock_type: type[BaseFileLock], tmp_path: Path) ->
 
 
 @pytest.fixture
-def steady_clock(mocker: MockerFixture) -> Mock:
+def steady_clock(mocker: MockerFixture) -> MockType:
     # These tests assert the sleep the lock asked for. The lock caps that sleep at the time left before its timeout, so
     # a stall on a loaded machine between the start and the first poll would shorten it. A clock that advances 10 ms
     # per reading keeps the first poll inside the timeout regardless of load.
@@ -780,7 +779,7 @@ def steady_clock(mocker: MockerFixture) -> Mock:
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_poll_interval_used_by_context_manager(
-    lock_type: type[BaseFileLock], tmp_path: Path, steady_clock: Mock
+    lock_type: type[BaseFileLock], tmp_path: Path, steady_clock: MockType
 ) -> None:
     lock_path = tmp_path / "a"
     lock_1 = lock_type(str(lock_path))
@@ -800,7 +799,7 @@ def test_poll_interval_used_by_context_manager(
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_poll_interval_acquire_override(lock_type: type[BaseFileLock], tmp_path: Path, steady_clock: Mock) -> None:
+def test_poll_interval_acquire_override(lock_type: type[BaseFileLock], tmp_path: Path, steady_clock: MockType) -> None:
     lock_path = tmp_path / "a"
     lock_1 = lock_type(str(lock_path))
     lock_2 = lock_type(str(lock_path), timeout=0.2, poll_interval=0.05)
@@ -4063,7 +4062,7 @@ def test_undo_acquire_keeps_registry_entry_while_still_held(tmp_path: Path, mock
 
 
 def test_soft_marker_omits_start_line_without_a_start_token(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._soft.process_start_token", return_value=None)
+    mocker.patch("filelock._soft.process_start_token", return_value=None, autospec=True)
     lock = SoftFileLock(str(tmp_path / "a"))
     with lock:
         lines = Path(lock.lock_file).read_text(encoding="utf-8").splitlines()

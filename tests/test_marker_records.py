@@ -130,7 +130,7 @@ def test_held_lease_records_the_process_start_token(tmp_path: Path) -> None:
 
 def test_marker_without_start_token_omits_it(tmp_path: Path, mocker: MockerFixture) -> None:
     # A platform without a proven start time publishes no start field, and the record still reads back cleanly.
-    mocker.patch("filelock._marker.process_start_token", return_value=None)
+    mocker.patch("filelock._marker.process_start_token", return_value=None, autospec=True)
     marker = tmp_path / "a.lock"
     with SoftFileLease(str(marker), lease_duration=5) as lease:
         assert lease.owner is not None

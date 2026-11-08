@@ -55,9 +55,8 @@ _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from unittest.mock import MagicMock
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 _PathValue = str | bytes | os.PathLike[str] | os.PathLike[bytes]
 _UNPARSABLE_CONTENTS: Final[list[pytest.ParameterSet]] = [
@@ -1241,7 +1240,7 @@ def test_strict_soft_stale_claim_read_is_skipped(tmp_path: Path, mocker: MockerF
     assert StrictSoftFileLock(lock_path).claims == ()
 
 
-def _open_raising_for(claim: Path, error: OSError, mocker: MockerFixture) -> MagicMock:
+def _open_raising_for(claim: Path, error: OSError, mocker: MockerFixture) -> MockType:
     real_open = os.open
 
     def failing_open(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
