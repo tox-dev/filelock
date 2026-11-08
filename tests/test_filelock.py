@@ -1382,7 +1382,9 @@ class _SingletonArgs(TypedDict):
     poll_interval: float
 
 
-_SINGLETON_ARGS: Final = _SingletonArgs(timeout=-1, mode=0o644, thread_local=True, blocking=True, poll_interval=0.05)
+_SINGLETON_ARGS: Final[_SingletonArgs] = _SingletonArgs(
+    timeout=-1, mode=0o644, thread_local=True, blocking=True, poll_interval=0.05
+)
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
