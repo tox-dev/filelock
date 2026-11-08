@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 
     from filelock._lease import _LeaseClaim
     from filelock._read_write import ReadWriteLock
-    from filelock._soft_rw import SoftReadWriteLock
+    from filelock._soft_rw._sync import SoftReadWriteLock
 
     class _ForkResettable(Protocol):
         def _reset_after_fork_in_child(self) -> None: ...

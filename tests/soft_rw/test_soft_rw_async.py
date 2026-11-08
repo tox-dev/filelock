@@ -14,9 +14,10 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import Timeout
-from filelock._soft_rw import AsyncSoftReadWriteLock, SoftReadWriteLock
+from filelock._soft_rw._async import AsyncSoftReadWriteLock
 from filelock._soft_rw._protocol import GenerationLog, Snapshot
 from filelock._soft_rw._storage import OsFiles
+from filelock._soft_rw._sync import SoftReadWriteLock
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:

@@ -36,7 +36,8 @@ if TYPE_CHECKING:
     from filelock._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord
     from filelock._read_write import ReadWriteLock
     from filelock._soft import SoftFileLock
-    from filelock._soft_rw import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
+    from filelock._soft_rw._async import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock
+    from filelock._soft_rw._sync import SoftReadWriteLock
     from filelock._strict import StrictSoftFileClaim, StrictSoftFileClaimState, StrictSoftFileLock
     from filelock.asyncio import (
         AsyncAcquireReturnProxy,
@@ -80,12 +81,12 @@ else:
 _LAZY_ATTRIBUTES: Final[dict[str, str]] = {
     "AsyncAcquireReadWriteReturnProxy": "._async_read_write",
     "AsyncAcquireReturnProxy": ".asyncio",
-    "AsyncAcquireSoftReadWriteReturnProxy": "._soft_rw",
+    "AsyncAcquireSoftReadWriteReturnProxy": "._soft_rw._async",
     "AsyncFileLock": ".asyncio",
     "AsyncReadWriteLock": "._async_read_write",
     "AsyncSoftFileLease": ".asyncio",
     "AsyncSoftFileLock": ".asyncio",
-    "AsyncSoftReadWriteLock": "._soft_rw",
+    "AsyncSoftReadWriteLock": "._soft_rw._async",
     "AsyncStrictSoftFileLock": ".asyncio",
     "AsyncUnixFileLock": ".asyncio",
     "AsyncWindowsFileLock": ".asyncio",
@@ -98,7 +99,7 @@ _LAZY_ATTRIBUTES: Final[dict[str, str]] = {
     "ReadWriteLock": "._read_write",
     "SoftFileLease": "._lease",
     "SoftFileLock": "._soft",
-    "SoftReadWriteLock": "._soft_rw",
+    "SoftReadWriteLock": "._soft_rw._sync",
     "StrictSoftFileClaim": "._strict",
     "StrictSoftFileClaimState": "._strict",
     "StrictSoftFileLock": "._strict",

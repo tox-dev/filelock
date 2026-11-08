@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from concurrent.futures import Executor
 
     from filelock._read_write import ReadWriteLock
-    from filelock._soft_rw import SoftReadWriteLock
+    from filelock._soft_rw._sync import SoftReadWriteLock
 
 _T = TypeVar("_T")
 
