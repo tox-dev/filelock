@@ -40,8 +40,7 @@ _BOOTTIME_UNSHIFTED: Final[str] = "monotonic           0         0\nboottime    
 
 @pytest.fixture
 def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:  # pragma: linux cover
-    """Re-import the identity module as a process that cannot read the boot id, as under systemd's ProcSubset=pid."""
-
+    # Re-import the identity module as a process that cannot read the boot id, as under systemd's ProcSubset=pid.
     def hide() -> None:
         # The boot id is the only text file the module reads at import.
         hidden: Final = mocker.patch.object(
@@ -64,20 +63,22 @@ def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:  # prag
         pytest.param("who?", "who?3f", id="escape-character"),
         pytest.param("b\udcffd", "b?ffd", id="undecodable-byte"),
         pytest.param("x" * 253, "x" * 253, id="at-limit"),
-        pytest.param("x" * 300, "x" * 244 + "-04c26261", id="over-long"),
-        pytest.param("ä" * 200, "?c3?a4" * 40 + "?c3?-de6b44df", id="over-long-escaped"),
+        pytest.param("x" * 300, f"{'x' * 244}-04c26261", id="over-long"),
+        pytest.param("ä" * 200, f"{'?c3?a4' * 40}?c3?-de6b44df", id="over-long-escaped"),
         pytest.param("", "?", id="empty"),
     ],
 )
 def test_host_name_escapes_out_of_grammar_bytes(raw: str, expected: str, mocker: MockerFixture) -> None:
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
-    mocker.patch("filelock._identity.socket.gethostname", return_value=raw)
+    mocker.patch("filelock._identity.socket.gethostname", return_value=raw, autospec=True)
     assert host_name() == expected
 
 
 def test_host_name_keeps_over_long_names_apart_past_the_limit(mocker: MockerFixture) -> None:
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
-    mocker.patch("filelock._identity.socket.gethostname", side_effect=["a" * 253 + "-alpha", "a" * 253 + "-bravo"])
+    mocker.patch(
+        "filelock._identity.socket.gethostname", side_effect=[f"{'a' * 253}-alpha", f"{'a' * 253}-bravo"], autospec=True
+    )
     alpha, bravo = host_name(), host_name()
 
     assert (alpha != bravo, len(alpha), len(bravo)) == (True, 253, 253)
@@ -93,12 +94,12 @@ def test_host_name_keeps_over_long_names_apart_past_the_limit(mocker: MockerFixt
 )
 def test_host_name_names_the_pid_namespace(namespace: int | OSError, expected: str, mocker: MockerFixture) -> None:
     pin_pid_namespace(mocker, namespace)
-    mocker.patch("filelock._identity.socket.gethostname", return_value="build-01")
+    mocker.patch("filelock._identity.socket.gethostname", return_value="build-01", autospec=True)
     assert host_name() == expected
 
 
 def test_host_name_keeps_a_namespace_apart_from_a_lookalike_host(mocker: MockerFixture) -> None:
-    mocker.patch("filelock._identity.socket.gethostname", side_effect=["a", "a?pidns-f0000001"])
+    mocker.patch("filelock._identity.socket.gethostname", side_effect=["a", "a?pidns-f0000001"], autospec=True)
     pin_pid_namespace(mocker, 0xF0000001)
     in_namespace: Final[str] = host_name()
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
@@ -122,13 +123,13 @@ def test_process_alive_false_for_exited_child_still_referenced() -> None:
 
 @_POSIX_ONLY
 def test_process_alive_reads_permission_denied_as_alive(mocker: MockerFixture) -> None:  # pragma: win32 no cover
-    mocker.patch("filelock._identity.os.kill", side_effect=OSError(EPERM, "operation not permitted"))
+    mocker.patch("filelock._identity.os.kill", side_effect=OSError(EPERM, "operation not permitted"), autospec=True)
     assert process_alive(_DEAD_PID) is True
 
 
 @_POSIX_ONLY
 def test_process_alive_reraises_unexpected_errno(mocker: MockerFixture) -> None:  # pragma: win32 no cover
-    mocker.patch("filelock._identity.os.kill", side_effect=OSError(ENODEV, "no such device"))
+    mocker.patch("filelock._identity.os.kill", side_effect=OSError(ENODEV, "no such device"), autospec=True)
     with pytest.raises(OSError, match="no such device"):  # pragma: win32 no cover
         process_alive(_DEAD_PID)
 
@@ -166,7 +167,7 @@ def test_process_start_token_read_only_without_a_boottime_offset(
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS sysctl probe")
 def test_darwin_sysctl_probe_failure_reads_no_token(mocker: MockerFixture) -> None:  # pragma: darwin cover
-    mocker.patch("filelock._identity._LIBC.sysctl", return_value=-1)
+    mocker.patch("filelock._identity._LIBC.sysctl", return_value=-1, autospec=True)
     assert process_start_token(os.getpid()) is None
 
 
@@ -204,26 +205,34 @@ def test_owner_is_stale_live_process_across_time_namespaces_held(mocker: MockerF
 
 
 @_LINUX_ONLY  # pragma: linux cover
-@pytest.mark.parametrize("hidden_from", ["holder", "contender"])
-def test_owner_is_stale_live_process_boot_id_hidden_from_one_side_held(
-    hidden_from: str, hide_boot_id: Callable[[], None]
-) -> None:
+def test_owner_is_stale_live_process_boot_id_hidden_from_holder_held() -> None:
     token: Final = process_start_token(os.getpid())
     assert token is not None
-    if hidden_from == "contender":
-        hide_boot_id()
-    assert owner_is_stale(os.getpid(), host_name(), token if hidden_from == "contender" else token % 2**64) is False
+    assert owner_is_stale(os.getpid(), host_name(), token % 2**64) is False
 
 
 @_LINUX_ONLY  # pragma: linux cover
-@pytest.mark.parametrize("hidden_from", ["holder", "contender"])
-def test_owner_is_stale_recycled_pid_boot_id_hidden_from_one_side_reclaimed(
-    hidden_from: str, hide_boot_id: Callable[[], None]
+def test_owner_is_stale_live_process_boot_id_hidden_from_contender_held(hide_boot_id: Callable[[], None]) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    hide_boot_id()
+    assert owner_is_stale(os.getpid(), host_name(), token) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+def test_owner_is_stale_recycled_pid_boot_id_hidden_from_holder_reclaimed() -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    assert owner_is_stale(os.getpid(), host_name(), token % 2**64 + 10**9) is True
+
+
+@_LINUX_ONLY  # pragma: linux cover
+def test_owner_is_stale_recycled_pid_boot_id_hidden_from_contender_reclaimed(
+    hide_boot_id: Callable[[], None],
 ) -> None:
     token: Final = process_start_token(os.getpid())
     assert token is not None
-    if hidden_from == "contender":
-        hide_boot_id()
+    hide_boot_id()
     assert owner_is_stale(os.getpid(), host_name(), token % 2**64 + 10**9) is True
 
 
@@ -247,30 +256,53 @@ def owner_in_another_namespace(mocker: MockerFixture) -> None:  # pragma: linux 
 @_LINUX_ONLY  # pragma: linux cover
 @pytest.mark.usefixtures("owner_in_another_namespace")
 @pytest.mark.parametrize(
-    "view",
+    "recorded",
     [
-        pytest.param("same-token", id="start-token-matches"),
-        pytest.param("recorded-without-boot-id", id="holder-without-boot-id"),
-        pytest.param("read-without-boot-id", id="contender-without-boot-id"),
-        pytest.param("time-namespace", id="contender-with-boottime-offset"),
+        pytest.param(lambda token: token, id="start-token-matches"),
+        pytest.param(lambda token: token % 2**64, id="holder-without-boot-id"),
     ],
 )
-def test_owner_is_stale_owner_running_in_another_namespace_held(
-    view: str, hide_boot_id: Callable[[], None], mocker: MockerFixture
-) -> None:
+def test_owner_is_stale_owner_running_in_another_namespace_held(recorded: Callable[[int], int]) -> None:
     token: Final = process_start_token(os.getpid())
     assert token is not None
-    if view == "read-without-boot-id":
-        hide_boot_id()
-    if view == "time-namespace":
-        pin_time_namespace(mocker, _ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED)
-    recorded: Final = token % 2**64 if view == "recorded-without-boot-id" else token
-    assert owner_is_stale(_DEAD_PID, host_name(), recorded) is False
+    assert owner_is_stale(_DEAD_PID, host_name(), recorded(token)) is False
 
 
 @_LINUX_ONLY  # pragma: linux cover
-@pytest.mark.parametrize("forged", ["x", str(_DEAD_PID)])
-@pytest.mark.parametrize("separator", ["\r", "\v", "\f", "\x1c", "\x1d", "\x1e"])
+@pytest.mark.usefixtures("owner_in_another_namespace")
+def test_owner_is_stale_owner_running_in_another_namespace_contender_without_boot_id_held(
+    hide_boot_id: Callable[[], None],
+) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    hide_boot_id()
+    assert owner_is_stale(_DEAD_PID, host_name(), token) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.usefixtures("owner_in_another_namespace")
+def test_owner_is_stale_owner_running_in_another_namespace_contender_with_boottime_offset_held(
+    mocker: MockerFixture,
+) -> None:
+    token: Final = process_start_token(os.getpid())
+    assert token is not None
+    pin_time_namespace(mocker, _ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED)
+    assert owner_is_stale(_DEAD_PID, host_name(), token) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize("forged", [pytest.param("x", id="text"), pytest.param(str(_DEAD_PID), id="dead-pid")])
+@pytest.mark.parametrize(
+    "separator",
+    [
+        pytest.param("\r", id="CR"),
+        pytest.param("\v", id="VT"),
+        pytest.param("\f", id="FF"),
+        pytest.param("\x1c", id="FS"),
+        pytest.param("\x1d", id="GS"),
+        pytest.param("\x1e", id="RS"),
+    ],
+)
 def test_owner_is_stale_task_name_shaped_like_a_namespace_line_reclaimed(
     separator: str, forged: str, mocker: MockerFixture
 ) -> None:
@@ -322,5 +354,5 @@ def test_owner_is_stale_sibling_pid_namespace_never_reclaimed(mocker: MockerFixt
 
 def test_owner_is_stale_live_process_unreadable_token_held(mocker: MockerFixture) -> None:
     # A live PID whose current start token cannot be read is indistinguishable from the recorded owner, so it holds.
-    mocker.patch("filelock._identity.process_start_token", return_value=None)
+    mocker.patch("filelock._identity.process_start_token", return_value=None, autospec=True)
     assert owner_is_stale(os.getpid(), host_name(), 987654) is False

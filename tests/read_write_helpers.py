@@ -17,17 +17,20 @@ if TYPE_CHECKING:
         from multiprocessing.connection import Connection
 
 
+OPPOSITE_MODE: Final[dict[Literal["read", "write"], Literal["read", "write"]]] = {
+    "read": "write",
+    "write": "read",
+}
+
 ACQUIRE_SETTINGS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
-    ("instance_timeout", "instance_blocking", "call_timeout", "call_blocking", "minimum", "omitted"),
+    ("instance_timeout", "instance_blocking", "call_timeout", "call_blocking", "minimum"),
     [
-        pytest.param(0.2, True, None, None, 0.1, True, id="instance-timeout"),
-        pytest.param(30, False, None, None, 0, True, id="instance-nonblocking"),
-        pytest.param(0.2, True, None, None, 0.1, False, id="none-timeout"),
-        pytest.param(30, False, None, None, 0, False, id="none-nonblocking"),
-        pytest.param(30, True, 0.2, None, 0.1, False, id="call-timeout"),
-        pytest.param(0.2, False, None, True, 0.1, False, id="call-blocking"),
-        pytest.param(30, True, None, False, 0, False, id="call-nonblocking"),
-        pytest.param(30, True, 0, None, 0, False, id="zero-timeout"),
+        pytest.param(0.2, True, None, None, 0.1, id="instance-timeout"),
+        pytest.param(30, False, None, None, 0, id="instance-nonblocking"),
+        pytest.param(30, True, 0.2, None, 0.1, id="call-timeout"),
+        pytest.param(0.2, False, None, True, 0.1, id="call-blocking"),
+        pytest.param(30, True, None, False, 0, id="call-nonblocking"),
+        pytest.param(30, True, 0, None, 0, id="zero-timeout"),
     ],
 )
 
@@ -45,8 +48,6 @@ INVALID_TIMEOUTS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
 def assert_read_write_lock_state(lock_file: str, mode: Literal["read", "write"], *, available: bool) -> None:
     context: Final = multiprocessing.get_context("spawn")
     # Pipes avoid GraalPy's multiprocessing semaphore failures.
-    receiving: Final[Connection]
-    sending: Final[Connection]
     receiving, sending = context.Pipe(duplex=False)
     probe: Final = context.Process(target=_probe_read_write_lock, args=(lock_file, mode, sending))
     probe.start()
@@ -105,7 +106,14 @@ def interrupt_once(real: Callable[[_T], None], *, before: bool) -> Callable[[_T]
 
 
 class Interrupt(BaseException):
-    """Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt."""
+    # Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt.
+    ...
 
 
-__all__ = ["ACQUIRE_SETTINGS", "INVALID_TIMEOUTS", "Interrupt", "assert_read_write_lock_state", "interrupt_once"]
+__all__ = [
+    "ACQUIRE_SETTINGS",
+    "INVALID_TIMEOUTS",
+    "Interrupt",
+    "assert_read_write_lock_state",
+    "interrupt_once",
+]

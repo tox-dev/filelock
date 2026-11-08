@@ -4,7 +4,7 @@ import asyncio
 import os
 import sys
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
@@ -13,8 +13,8 @@ from filelock import AsyncSoftFileLease, AsyncStrictSoftFileLock, LeaseCompromis
 if TYPE_CHECKING:
     from pathlib import Path
 
-_DURATION: float = 0.9
-_HEARTBEAT: float = 0.1
+_DURATION: Final[float] = 0.9
+_HEARTBEAT: Final[float] = 0.1
 
 
 @pytest.fixture
@@ -50,7 +50,9 @@ async def test_async_lease_heartbeat_keeps_a_live_claim(marker: Path) -> None:
     lease = AsyncSoftFileLease(str(marker), lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT)
 
     async with lease:
-        await asyncio.sleep(_DURATION * 1.5)  # only a refreshing heartbeat keeps the claim past this
+        await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a clock hook for claim duration
+            _DURATION * 1.5
+        )  # only a refreshing heartbeat keeps the claim past this
         assert lease.compromise is None
         assert lease.token is not None
 

@@ -12,9 +12,8 @@ from filelock._api import _UNSET_FILE_MODE, BaseFileLock
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from unittest.mock import MagicMock
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -71,10 +70,10 @@ def test_default_mode_respects_umask(lock_type: type[BaseFileLock], tmp_path: Pa
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
-def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:  # pragma: win32 no cover
+def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MockType) -> None:  # pragma: win32 no cover
     lock = FileLock(str(tmp_path / "a.lock"))
 
-    fchmod_spy = mocker.patch("os.fchmod")
+    fchmod_spy = mocker.patch("os.fchmod", autospec=True)
     lock.acquire()
     assert lock.is_locked
     fchmod_spy.assert_not_called()
@@ -82,7 +81,7 @@ def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MagicMock) -> None:  
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
-def test_explicit_mode_calls_fchmod(tmp_path: Path, mocker: MagicMock) -> None:  # pragma: win32 no cover
+def test_explicit_mode_calls_fchmod(tmp_path: Path, mocker: MockType) -> None:  # pragma: win32 no cover
     lock = FileLock(str(tmp_path / "a.lock"), mode=0o644)
 
     fchmod_spy = mocker.spy(os, "fchmod")
@@ -151,8 +150,8 @@ def test_strict_wide_directories_are_narrowed_only_when_owned(  # pragma: win32 
     (coordination / "claims").mkdir(parents=True)
     for directory in (coordination, coordination / "claims"):
         directory.chmod(0o777)
-    if not owned and sys.platform != "win32":  # the skip above keeps Windows out; the test narrows os.geteuid for ty
-        mocker.patch("filelock._strict.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+    assert sys.platform != "win32"  # narrows os.geteuid for the type checker
+    mocker.patch("filelock._strict.os.geteuid", autospec=True, return_value=os.geteuid() + int(not owned))
 
     with StrictSoftFileLock(tmp_path / "a.lock", mode=0o600):
         pass

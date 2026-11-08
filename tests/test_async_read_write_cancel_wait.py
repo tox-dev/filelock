@@ -3,16 +3,16 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 import pytest
 
 pytest.importorskip("sqlite3")
 
-from collections.abc import Callable
 
 from filelock import AsyncReadWriteLock, ReadWriteLock, Timeout
-from filelock._soft_rw import AsyncSoftReadWriteLock, SoftReadWriteLock
+from filelock._soft_rw._async import AsyncSoftReadWriteLock
+from filelock._soft_rw._sync import SoftReadWriteLock
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ _HOLD: Final[float] = 3
 # The caller's own deadline, far below _HOLD.
 _DEADLINE: Final[float] = 0.2
 
-pytestmark = XFAIL_WITHOUT_COROUTINE_CANCELLATION
+pytestmark: Final[pytest.MarkDecorator] = XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 
 @pytest.fixture(autouse=True)
@@ -57,11 +57,18 @@ def _soft(  # pragma: needs hard-link
     )
 
 
-_Make = Callable[..., tuple[ReadWriteLock | SoftReadWriteLock, AsyncReadWriteLock | AsyncSoftReadWriteLock]]
-_FAMILIES: Final = pytest.mark.parametrize(
+class _Make(Protocol):
+    def __call__(
+        self, path: Path, *, is_singleton: bool
+    ) -> tuple[ReadWriteLock | SoftReadWriteLock, AsyncReadWriteLock | AsyncSoftReadWriteLock]: ...
+
+
+_FAMILIES: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
     "make", [pytest.param(_sqlite, id="sqlite"), pytest.param(_soft, id="soft", marks=pytest.mark.requires_hard_links)]
 )
-_MODES: Final = pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+_MODES: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
+    "mode", [pytest.param("read", id="read"), pytest.param("write", id="write")]
+)
 
 
 async def _acquire_within_deadline(
@@ -70,7 +77,7 @@ async def _acquire_within_deadline(
     start = time.perf_counter()
     with pytest.raises(TimeoutError) as info:
         async with asyncio.timeout(_DEADLINE):
-            await (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout)
+            await getattr(lock, f"acquire_{mode}")(timeout)
     assert not isinstance(info.value, Timeout)
     return time.perf_counter() - start
 
@@ -93,7 +100,7 @@ async def test_async_acquire_behind_another_process_honors_the_callers_deadline(
     assert elapsed < _HOLD
     ending.cancel()
     holder.release()
-    await (lock.acquire_read if mode == "read" else lock.acquire_write)(_HOLD * 2)
+    await getattr(lock, f"acquire_{mode}")(_HOLD * 2)
     await lock.release()
     await lock.close()
 
@@ -133,7 +140,7 @@ async def test_async_acquire_behind_a_sync_acquire_of_the_same_instance_times_ou
     tmp_path: Path, make: _Make, mocker: MockerFixture
 ) -> None:
     # With one thread alive the wait is not sliced, so the thread lock is polled across several intervals.
-    mocker.patch.object(threading, "active_count", return_value=1)
+    mocker.patch.object(threading, "active_count", return_value=1, autospec=True)
     holder, lock = make(tmp_path, is_singleton=False)
     shared, _ = make(tmp_path, is_singleton=True)
     holder.acquire_write()

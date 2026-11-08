@@ -59,68 +59,61 @@ _HOLDERS_DIRECTORY: Final[str] = "holders"
 _TEMPORARY_PREFIX: Final[str] = ".commit-"
 
 
-class TreeReplacedError(RuntimeError):
-    """
-    Raised by a ``Files`` implementation when a protocol directory is not a real directory (a symlink, a junction, a
-    file) or belongs to another account.
-    """
-
-
-class Files(Protocol):
-    """The filesystem operations the protocol runs on; :mod:`._storage` implements them over :mod:`os`."""
-
+class _Files(Protocol):
+    # The filesystem operations the protocol runs on; :mod:`._storage` implements them over :mod:`os`.
     def read(self, path: str) -> bytes | None:
-        """The file's bytes, ``None`` when it does not exist, or ``b""`` when it is not a regular file."""
+        # The file's bytes, ``None`` when it does not exist, or ``b""`` when it is not a regular file.
+        ...
 
     def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
-        """
-        Create the file exclusively with the whole record written; raise ``FileExistsError`` when it exists.
-
-        The returned device and inode (the kernel's identity for a file, independent of its name) let ``overwrite``
-        check that the name still leads to this file.
-
-        *durable* flushes it to stable storage first, for a record that outlives the host that wrote it: a generation a
-        crash left empty would wedge every other participant. A holder record dies with its writer, so it skips that.
-        """
+        # Create the file exclusively with the whole record written; raise ``FileExistsError`` when it exists.
+        #
+        # The returned device and inode (the kernel's identity for a file, independent of its name) let ``overwrite``
+        # check that the name still leads to this file.
+        #
+        # *durable* flushes it to stable storage first, for a record that outlives the host that wrote it: a generation
+        # a crash left empty would wedge every other participant. A holder record dies with its writer, so it skips
+        # that.
+        ...
 
     def link(self, source: str, target: str) -> bool:
-        """Hard-link *source* to *target* without replacing; ``True`` when *target* names *source*'s file afterwards."""
+        # Hard-link *source* to *target* without replacing; ``True`` when *target* names *source*'s file afterwards.
+        ...
 
     def replace(self, source: str, target: str) -> bool:
-        """Rename *source* over *target* atomically; ``False`` when the platform refused because *target* is in use."""
+        # Rename *source* over *target* atomically; ``False`` when the platform refused because *target* is in use.
+        ...
 
     def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:
-        """
-        Rewrite from offset zero the file ``create`` returned *identity* for.
-
-        ``False`` when *path* no longer leads to that file.
-        """
+        # Rewrite from offset zero the file ``create`` returned *identity* for.
+        #
+        # ``False`` when *path* no longer leads to that file.
+        ...
 
     def unlink(self, path: str) -> None:
-        """Remove the file, tolerating one that is already gone."""
+        # Remove the file, tolerating one that is already gone.
+        ...
 
     def listdir(self, path: str) -> list[str]:
-        """The names in the directory, or an empty list when it does not exist."""
+        # The names in the directory, or an empty list when it does not exist.
+        ...
 
     def prepare(self, root: str, *, force: bool = False) -> None:
-        """
-        Create the protocol directories under *root*, refusing anything at those paths that is not a directory.
+        # Create the protocol directories under *root*, refusing anything at those paths that is not a directory.
+        #
+        # Done once per lock; *force* repeats it after a write found a directory missing.
+        ...
 
-        Done once per lock; *force* repeats it after a write found a directory missing.
-        """
 
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Snapshot:
-    """The lock's state at one generation: which token writes, which tokens read."""
-
+    # The lock's state at one generation: which token writes, which tokens read.
     generation: int
     writer: str | None
     readers: frozenset[str]
 
     @property
     def members(self) -> frozenset[str]:
-        """Every token this generation names."""
         return self.readers if self.writer is None else self.readers | {self.writer}
 
     def encode(self) -> bytes:
@@ -132,7 +125,7 @@ class Snapshot:
 
 
 def parse_snapshot(data: bytes) -> Snapshot | None:
-    """The snapshot a ``gen/<N>`` record encodes, or ``None`` when the record is malformed."""
+    # The snapshot a ``gen/<N>`` record encodes, or ``None`` when the record is malformed.
     if not data or len(data) > _MAX_RECORD_SIZE:
         return None
     try:
@@ -154,70 +147,39 @@ def parse_snapshot(data: bytes) -> Snapshot | None:
             and str(int(value)) == value
         ):
             generation = int(value)
-        elif key == "writer" and writer is None and is_token(value):
+        elif key == "writer" and writer is None and _is_token(value):
             writer = value
-        elif key == "reader" and is_token(value) and value not in readers:
+        elif key == "reader" and _is_token(value) and value not in readers:
             readers.add(value)
         else:
             return None
     return None if generation is None else Snapshot(generation=generation, writer=writer, readers=frozenset(readers))
 
 
-def is_token(value: str) -> bool:
-    """Whether *value* is a claim token: exactly 32 lowercase hex digits."""
+def _is_token(value: str) -> bool:
+    # Whether *value* is a claim token: exactly 32 lowercase hex digits.
     return len(value) == _TOKEN_HEX_LENGTH and all(character in "0123456789abcdef" for character in value)
 
 
 def new_token() -> str:
-    """A fresh claim token."""
     return secrets.token_hex(_TOKEN_HEX_LENGTH // 2)
 
 
-def encode_holder(token: str, nonce: str, lease: float) -> bytes:
-    """
-    The ``holders/<token>`` record; only the nonce changes between heartbeats, so the length stays constant.
-
-    *lease* is the writer's own ``stale_threshold``: a peer configured tighter must not read this holder's longer
-    heartbeat interval as death, so evictors wait the longer of their threshold and this one.
-    """
-    return (
-        f"{_PROTOCOL}\ntoken={token}\npid={os.getpid()}\nhost={host_name()}\nlease={float(lease)!r}\nnonce={nonce}\n"
-    ).encode("ascii")
-
-
-def holder_lease(record: bytes | None) -> float | None:
-    """The ``lease`` a holder record carries, or ``None`` when it has none (an older release) or it is malformed."""
-    try:
-        text = next(
-            line for line in (record or b"").decode("ascii").split("\n") if line.startswith("lease=")
-        ).removeprefix("lease=")
-        lease = float(text)
-    except (StopIteration, ValueError):  # UnicodeDecodeError is a ValueError
-        return None
-    # Only the exact spelling repr() writes: float() alone also takes "1_000", " 1", and non-ASCII digits.
-    return lease if isfinite(lease) and lease > 0 and repr(lease) == text else None
-
-
 class Ledger:
-    """
-    How long each observed value has stayed the same, measured on this observer's monotonic clock.
-
-    A value that has not changed for ``stale_threshold`` belongs to a participant that stopped refreshing it. The clock
-    is the observer's own and only ever measures the gap between two of its own observations, which is what lets two
-    hosts agree on liveness without agreeing on the time.
-    """
-
+    # How long each observed value has stayed the same, measured on this observer's monotonic clock.
+    #
+    # A value that has not changed for ``stale_threshold`` belongs to a participant that stopped refreshing it. The
+    # clock is the observer's own and only ever measures the gap between two of its own observations, which is what lets
+    # two hosts agree on liveness without agreeing on the time.
     def __init__(self, clock: Callable[[], float]) -> None:
         self._clock = clock
         self._seen: dict[str, tuple[bytes | None, float]] = {}
 
     def observe(self, key: str, value: bytes | None, *, asked: float | None = None) -> float:
-        """
-        Record *value* for *key* and return for how long it has stayed the same.
-
-        *asked* is the clock reading taken before the caller fetched *value*. An unchanged value counts as unchanged up
-        to *asked*, so a pause between the fetch and this call adds no time.
-        """
+        # Record *value* for *key* and return for how long it has stayed the same.
+        #
+        # *asked* is the clock reading taken before the caller fetched *value*. An unchanged value counts as unchanged
+        # up to *asked*, so a pause between the fetch and this call adds no time.
         now = self._clock()
         if (seen := self._seen.get(key)) is None or seen[0] != value:
             self._seen[key] = (value, now)
@@ -228,14 +190,13 @@ class Ledger:
         self._seen.pop(key, None)
 
     def retain(self, keys: set[str]) -> None:
-        """Drop every key not in *keys*: peers that left would otherwise stay in the ledger for the lock's lifetime."""
+        # Drop every key not in *keys*: peers that left would otherwise stay in the ledger for the lock's lifetime.
         self._seen = {key: seen for key, seen in self._seen.items() if key in keys}
 
 
 class GenerationLog:
-    """The ordered snapshots under ``gen/``, found by listing and probing, advanced by linking the next one."""
-
-    def __init__(self, files: Files, lock_file: str, root: str) -> None:
+    # The ordered snapshots under ``gen/``, found by listing and probing, advanced by linking the next one.
+    def __init__(self, files: _Files, lock_file: str, root: str) -> None:
         self._files = files
         self._lock_file = lock_file
         self._directory = Path(root, _GENERATIONS_DIRECTORY)
@@ -245,18 +206,19 @@ class GenerationLog:
         self._latest: Snapshot | None = None
 
     def latest(self) -> Snapshot:
-        """
-        The newest snapshot.
-
-        Starts from the newest readable generation among those ``gen/HEAD``, the listing, or memory name, then probes
-        forward by name across the retained window. ``HEAD`` only names a generation, and that generation must still
-        read back: a committer stalled before its rename can leave ``HEAD`` on a generation compacted since. A
-        generation compacted between the listing and the read, and a hole left by a committer that died before it
-        compacted, are covered by the probe. Memory and ``HEAD`` are bound to the log's epoch, so a log wiped and
-        restarted is never continued from a generation it no longer holds. Only a log that names generations, now or as
-        remembered, of which none can be read is refused, because that is a client so far behind the log that nothing
-        it reads can be trusted.
-        """
+        # The newest snapshot.
+        #
+        # Starts from the newest readable generation among those ``gen/HEAD``, the listing, or memory name, then probes
+        # forward by name across the retained window. ``HEAD`` only names a generation, and that generation must still
+        # read back: a committer stalled before its rename can leave ``HEAD`` on a generation compacted since.
+        #
+        # A generation compacted between the listing and the read, and a hole left by a committer that died before it
+        # compacted, are covered by the probe. Memory and ``HEAD`` are bound to the log's epoch, so a log wiped and
+        # restarted is never continued from a generation it no longer holds.
+        #
+        # Only a log that names generations, now or as remembered, of which none can be read is refused, because that is
+        # a client so far behind the log that nothing it reads can be trusted.
+        #
         # When everything the first pass named is gone, peers compacted past it while this client looked, or the log was
         # replaced; one more pass settles whether this client cannot see the head at all.
         if (latest := self._find()) is None and (latest := self._find()) is None:
@@ -281,24 +243,6 @@ class GenerationLog:
         newest = max(named, default=0)
         found = self._probe(Snapshot(generation=newest, writer=None, readers=frozenset()))
         return found if found.generation > newest or not named else None
-
-    def _head_generation(self) -> int | None:
-        # HEAD is never flushed, so a crash can leave it unreadable; readers verify what it names anyway, so a torn one
-        # only sends them to the window probe.
-        if (record := self._head_record()) is None or (snapshot := parse_snapshot(record)) is None:
-            return None
-        return snapshot.generation
-
-    def _head_record(self) -> bytes | None:
-        if (data := self._files.read(self._head_path)) is None:
-            return None
-        # A HEAD from another epoch landed after its log was removed; a log whose epoch was never written runs without.
-        epoch, newline, record = data.partition(b"\n")
-        return record if self._valid_epoch() == epoch + newline else None
-
-    def _valid_epoch(self) -> bytes | None:
-        epoch = self._epoch
-        return epoch if epoch is not None and is_token(epoch.decode("ascii", "replace").removesuffix("\n")) else None
 
     def _incarnation(self) -> bytes | None:
         if (epoch := self._files.read(self._epoch_path)) is None:
@@ -329,6 +273,39 @@ class GenerationLog:
             if len(name) == _GENERATION_DIGITS and name.isascii() and name.isdigit()
         )
 
+    def _path(self, generation: int) -> str:
+        return str(self._directory / self._name(generation))
+
+    @staticmethod
+    def _name(generation: int) -> str:
+        return f"{generation:0{_GENERATION_DIGITS}d}"
+
+    def _head_generation(self) -> int | None:
+        # HEAD is never flushed, so a crash can leave it unreadable; readers verify what it names anyway, so a torn one
+        # only sends them to the window probe.
+        if (record := self._head_record()) is None or (snapshot := parse_snapshot(record)) is None:
+            return None
+        return snapshot.generation
+
+    def _head_record(self) -> bytes | None:
+        if (data := self._files.read(self._head_path)) is None:
+            return None
+        # A HEAD from another epoch landed after its log was removed; a log whose epoch was never written runs without.
+        epoch, newline, record = data.partition(b"\n")
+        return record if self._valid_epoch() == epoch + newline else None
+
+    def _valid_epoch(self) -> bytes | None:
+        epoch = self._epoch
+        return epoch if epoch is not None and _is_token(epoch.decode("ascii", "replace").removesuffix("\n")) else None
+
+    def _read(self, generation: int) -> Snapshot | None:
+        if (data := self._files.read(self._path(generation))) is None:
+            return None
+        if (snapshot := parse_snapshot(data)) is None or snapshot.generation != generation:
+            name = self._name(generation)
+            raise SoftFileLockProtocolError(self._lock_file, name, "malformed generation record")
+        return snapshot
+
     def _probe(self, start: Snapshot, patience: int = _RETAINED_GENERATIONS) -> Snapshot:
         latest = start
         generation = start.generation
@@ -342,30 +319,24 @@ class GenerationLog:
             gap = 0
         return latest
 
-    def _read(self, generation: int) -> Snapshot | None:
-        if (data := self._files.read(self._path(generation))) is None:
-            return None
-        if (snapshot := parse_snapshot(data)) is None or snapshot.generation != generation:
-            name = self._name(generation)
-            raise SoftFileLockProtocolError(self._lock_file, name, "malformed generation record")
-        return snapshot
-
     def commit(self, successor: Snapshot) -> bool:
-        """
-        Publish *successor* as the next generation; ``False`` when a peer published that generation first.
-
-        The record is complete before it gets its public name, and a no-replace hard link is the compare-and-swap: only
-        one link to ``gen/<N+1>`` can ever succeed. The link's return code is not trusted, because an NFS retry can
-        report a link that did land as failed; the file's identity after the call is what decides. A log whose epoch
-        changed since the snapshot was read is a different log, so the commit is refused as lost and the caller
-        re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the link. A slot
-        compaction freed is refused the same way, before the link and again after it, since a committer can stall in
-        between. After the link a surviving predecessor proves little: it may be a record another stalled committer
-        linked into its own freed slot and has yet to remove. A slot comes free once the log is a whole window past it,
-        and the head stays, so a record the listing or ``HEAD`` leads by a window is refused as well. A record refused
-        after it landed is removed when nothing was built on it. One that peers lead by less than a window stays, or its
-        slot would come free early.
-        """
+        # Publish *successor* as the next generation; ``False`` when a peer published that generation first.
+        #
+        # The record is complete before it gets its public name, and a no-replace hard link is the compare-and-swap:
+        # only one link to ``gen/<N+1>`` can ever succeed. The link's return code is not trusted, because an NFS retry
+        # can report a link that did land as failed; the file's identity after the call is what decides.
+        #
+        # A log whose epoch changed since the snapshot was read is a different log, so the commit is refused as lost and
+        # the caller re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the
+        # link. A slot compaction freed is refused the same way, before the link and again after it, since a committer
+        # can stall in between.
+        #
+        # After the link a surviving predecessor proves little: it may be a record another stalled committer linked into
+        # its own freed slot and has yet to remove.
+        #
+        # A slot comes free once the log is a whole window past it, and the head stays, so a record the listing or
+        # ``HEAD`` leads by a window is refused as well. A record refused after it landed is removed when nothing was
+        # built on it. One that peers lead by less than a window stays, or its slot would come free early.
         if self._files.read(self._epoch_path) != self._epoch or not self._extends_the_log(successor.generation):
             return False
         if not self._publish(
@@ -419,27 +390,18 @@ class GenerationLog:
         for generation in range(oldest, expired + 1):
             self._files.unlink(self._path(generation))
 
-    def _path(self, generation: int) -> str:
-        return str(self._directory / self._name(generation))
-
-    @staticmethod
-    def _name(generation: int) -> str:
-        return f"{generation:0{_GENERATION_DIGITS}d}"
-
 
 class Participant:
-    """
-    One acquisition, from publishing a claim through holding the lock to leaving.
-
-    ``advance`` is polled until it reports the lock granted, ``heartbeat`` runs on the holder's schedule, and ``leave``
-    commits the participant out. None of them sleep: the caller owns the deadline and the poll interval. The ledger and
-    the log outlive one acquisition: how long a peer's record has stayed unchanged is knowledge every attempt against
-    the same lock shares, or a caller whose attempts are each shorter than the stale threshold could never evict.
-    """
-
+    # One acquisition, from publishing a claim through holding the lock to leaving.
+    #
+    # ``advance`` is polled until it reports the lock granted, ``heartbeat`` runs on the holder's schedule, and
+    # ``leave`` commits the participant out. None of them sleep: the caller owns the deadline and the poll interval. The
+    # ledger and the log outlive one acquisition: how long a peer's record has stayed unchanged is knowledge every
+    # attempt against the same lock shares, or a caller whose attempts are each shorter than the stale threshold could
+    # never evict.
     def __init__(  # ruff:ignore[too-many-arguments]  # one value per protocol input; the lock builds this once per acquisition
         self,
-        files: Files,
+        files: _Files,
         root: str,
         mode: Mode,
         *,
@@ -462,8 +424,11 @@ class Participant:
         self._entered = False
         self._next_sweep = clock()
 
+    def _holder_path(self, token: str) -> str:
+        return str(Path(self._root, _HOLDERS_DIRECTORY, token))
+
     def publish(self) -> None:
-        """Create the holder record peers watch for liveness; it exists before the token appears in any snapshot."""
+        # Create the holder record peers watch for liveness; it exists before the token appears in any snapshot.
         self._files.prepare(self._root)
         self._create_holder()
 
@@ -479,40 +444,42 @@ class Participant:
         return encode_holder(self.token, new_token(), self._stale_threshold)
 
     def advance(self) -> bool:
-        """
-        Take the next step toward holding the lock; ``True`` once the lock is granted.
-
-        A reader enters as soon as no live writer is named. A writer enters as soon as no live writer is named, which
-        blocks every new reader, then waits for the named readers to leave. Stale members are evicted in the same commit
-        that admits this participant, and a writer's final admission is itself a commit, so no admission can rest on a
-        snapshot a peer is about to supersede.
-        """
+        # Take the next step toward holding the lock; ``True`` once the lock is granted.
+        #
+        # A reader enters as soon as no live writer is named. A writer enters as soon as no live writer is named, which
+        # blocks every new reader, then waits for the named readers to leave. Stale members are evicted in the same
+        # commit that admits this participant, and a writer's final admission is itself a commit, so no admission can
+        # rest on a snapshot a peer is about to supersede.
         # A lost race is not a reason to wait: re-read and try again before handing the poll interval back to the
         # caller.
         for _ in range(4):
-            latest = self._log.latest()
-            self._keep_claim_fresh(latest)
-            self._sweep(latest)
-            stale = frozenset(token for token in latest.members - {self.token} if self._is_stale(token))
-            writer = None if latest.writer in stale else latest.writer
-            readers = latest.readers - stale
-            if not self._entered:
-                if writer is not None:
-                    # A live writer blocks entry in both modes; only an eviction is worth committing.
-                    if stale:
-                        self._commit(latest, writer, readers, stale)
-                    return False
-                writer, readers = (self.token, readers) if self.mode == "write" else (None, readers | {self.token})
-            granted = self.mode == "read" or not readers
-            if self._entered and not stale and not granted:
-                return False
-            if (generation := self._commit(latest, writer, readers, stale)) is None:
-                continue
-            self._entered = True
-            if granted:
-                self.generation = generation
-            return granted
+            if (outcome := self._attempt()) is not None:
+                return outcome
         return False
+
+    def _attempt(self) -> bool | None:
+        latest = self._log.latest()
+        self._keep_claim_fresh(latest)
+        self._sweep(latest)
+        stale = frozenset(token for token in latest.members - {self.token} if self._is_stale(token))
+        writer = None if latest.writer in stale else latest.writer
+        readers = latest.readers - stale
+        if not self._entered:
+            if writer is not None:
+                # A live writer blocks entry in both modes; only an eviction is worth committing.
+                if stale:
+                    self._commit(latest, writer, readers, stale)
+                return False
+            writer, readers = (self.token, readers) if self.mode == "write" else (None, readers | {self.token})
+        granted = self.mode == "read" or not readers
+        if self._entered and not stale and not granted:
+            return False
+        if (generation := self._commit(latest, writer, readers, stale)) is None:
+            return None
+        self._entered = True
+        if granted:
+            self.generation = generation
+        return granted
 
     def _keep_claim_fresh(self, latest: Snapshot) -> None:
         # The snapshot is the truth about membership: a commit the filesystem reported lost may have landed, and a peer
@@ -525,6 +492,11 @@ class Participant:
             with suppress(FileExistsError):
                 self._create_holder()
 
+    def _refresh_nonce(self) -> bool:
+        if (identity := self._holder_identity) is None:
+            return False
+        return self._files.overwrite(self._holder, self._record(), identity)
+
     def _sweep(self, latest: Snapshot) -> None:
         # A participant that crashed before its first commit leaves a record no snapshot names, and a commit that
         # crashed between creating and unlinking its temporary file leaves that too. Neither blocks anyone, so they are
@@ -535,7 +507,7 @@ class Participant:
         watched = set(latest.members)
         holders = Path(self._root, _HOLDERS_DIRECTORY)
         for name in self._files.listdir(str(holders)):
-            if name != self.token and name not in latest.members and is_token(name):
+            if name != self.token and name not in latest.members and _is_token(name):
                 watched.add(key := f"holder:{name}")
                 self._collect(key, str(holders / name))
         generations = Path(self._root, _GENERATIONS_DIRECTORY)
@@ -550,6 +522,14 @@ class Participant:
             self._files.unlink(path)
             self._ledger.forget(key)
 
+    def _unchanged_for_its_lease(self, key: str, path: str) -> bool:
+        asked = self._clock()
+        record = self._files.read(path)
+        return self._ledger.observe(key, record, asked=asked) >= max(self._stale_threshold, holder_lease(record) or 0.0)
+
+    def _is_stale(self, token: str) -> bool:
+        return self._unchanged_for_its_lease(token, self._holder_path(token))
+
     def _commit(
         self, latest: Snapshot, writer: str | None, readers: frozenset[str], stale: frozenset[str]
     ) -> int | None:
@@ -561,31 +541,13 @@ class Participant:
             self._ledger.forget(token)
         return successor.generation
 
-    def _is_stale(self, token: str) -> bool:
-        return self._unchanged_for_its_lease(token, self._holder_path(token))
-
-    def _unchanged_for_its_lease(self, key: str, path: str) -> bool:
-        asked = self._clock()
-        record = self._files.read(path)
-        return self._ledger.observe(key, record, asked=asked) >= max(self._stale_threshold, holder_lease(record) or 0.0)
-
-    def _holder_path(self, token: str) -> str:
-        return str(Path(self._root, _HOLDERS_DIRECTORY, token))
-
-    def _refresh_nonce(self) -> bool:
-        if (identity := self._holder_identity) is None:
-            return False
-        return self._files.overwrite(self._holder, self._record(), identity)
-
     def heartbeat(self) -> tuple[HeartbeatOutcome, OSError | None]:
-        """
-        Refresh the nonce and confirm the latest snapshot still names this participant.
-
-        ``lost`` means a peer evicted this participant or removed its holder record: the lock is no longer held, and the
-        holder must stop using what it protects. ``transient`` is a filesystem error refreshing the nonce, worth
-        retrying on the next tick. A failure to read the log or to sweep decides nothing about this holder's liveness,
-        so it is not counted against it.
-        """
+        # Refresh the nonce and confirm the latest snapshot still names this participant.
+        #
+        # ``lost`` means a peer evicted this participant or removed its holder record: the lock is no longer held, and
+        # the holder must stop using what it protects. ``transient`` is a filesystem error refreshing the nonce, worth
+        # retrying on the next tick. A failure to read the log or to sweep decides nothing about this holder's liveness,
+        # so it is not counted against it.
         try:
             if not self._refresh_nonce():
                 return "lost", None
@@ -601,7 +563,7 @@ class Participant:
         return ("ok" if self.token in latest.members else "lost"), None
 
     def leave(self) -> None:
-        """Commit this participant out of the latest snapshot, then remove its holder record."""
+        # Commit this participant out of the latest snapshot, then remove its holder record.
         # The record goes even when the log cannot be read: a contender that never entered then leaves nothing behind,
         # and a member still named ages out the same way with or without one.
         # A tree that was swapped out leaves no record this participant can reach, so there is nothing to commit out of.
@@ -621,8 +583,36 @@ class Participant:
                 self._files.unlink(self._holder)
 
 
+def encode_holder(token: str, nonce: str, lease: float) -> bytes:
+    # The ``holders/<token>`` record; only the nonce changes between heartbeats, so the length stays constant.
+    #
+    # *lease* is the writer's own ``stale_threshold``: a peer configured tighter must not read this holder's longer
+    # heartbeat interval as death, so evictors wait the longer of their threshold and this one.
+    return (
+        f"{_PROTOCOL}\ntoken={token}\npid={os.getpid()}\nhost={host_name()}\nlease={float(lease)!r}\nnonce={nonce}\n"
+    ).encode("ascii")
+
+
+def holder_lease(record: bytes | None) -> float | None:
+    # The ``lease`` a holder record carries, or ``None`` when it has none (an older release) or it is malformed.
+    try:
+        text = next(
+            line for line in (record or b"").decode("ascii").split("\n") if line.startswith("lease=")
+        ).removeprefix("lease=")
+        lease = float(text)
+    except (StopIteration, ValueError):  # UnicodeDecodeError is a ValueError
+        return None
+    # Only the exact spelling repr() writes: float() alone also takes "1_000", " 1", and non-ASCII digits.
+    return lease if isfinite(lease) and lease > 0 and repr(lease) == text else None
+
+
+class TreeReplacedError(RuntimeError):
+    # Raised by a ``_Files`` implementation when a protocol directory is not a real directory (a symlink, a junction, a
+    # file) or belongs to another account.
+    ...
+
+
 __all__ = [
-    "Files",
     "GenerationLog",
     "HeartbeatOutcome",
     "Ledger",
@@ -632,7 +622,6 @@ __all__ = [
     "TreeReplacedError",
     "encode_holder",
     "holder_lease",
-    "is_token",
     "new_token",
     "parse_snapshot",
 ]

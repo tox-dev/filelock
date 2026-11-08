@@ -22,57 +22,14 @@ _INITIAL_PID_NAMESPACE: Final[int] = 0xEFFFFFFC
 _NAMESPACE_MARK: Final[str] = "?pidns-"
 
 
-def host_name() -> str:
-    """
-    The hostname recorded alongside an owner, so a marker written on another machine is never probed here.
-
-    Marker formats here hold the field to printable non-space ASCII, while ``socket.gethostname()`` reports whatever
-    the kernel stores: a space, a newline that forges an extra marker line, or a byte no codec encodes, which Python
-    hands back as a surrogate. A holder that publishes one raw writes a marker it cannot read back, and loses the lock
-    to the first peer that ages it out as malformed. ``?`` is illegal in a hostname, so escaping it along with every
-    out-of-grammar byte as ``?<hex>`` leaves a real name untouched and still keeps two hosts apart, which
-    :func:`owner_is_stale` relies on to refuse to probe a foreign PID.
-
-    Linux appends the PID namespace, as Mercurial's lock prefix does. Two containers in one pod share the hostname and
-    the boot id but not the PID namespace, so a PID recorded in one names another process, or none, in the other. The
-    suffix starts with a ``?`` no escape can produce, so ``a`` in a namespace never reads as a host literally named
-    ``a?pidns-...``. The initial namespace adds nothing, which keeps a host's name what older releases recorded.
-
-    An over-long name ends in a digest of the part cut to fit the limit. A bare cut gives every name that shares the
-    kept prefix one identity, and :func:`owner_is_stale` would then probe a local PID for another host's holder.
-    """
-    name = (
-        "".join(
-            chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
-            for byte in socket.gethostname().encode("utf-8", "surrogateescape")
-        )
-        + _pid_namespace_suffix()
-    )
-    if len(name) > _HOST_NAME_LIMIT:
-        keep = _HOST_NAME_LIMIT - _HOST_NAME_DIGEST_LEN - 1
-        name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
-    # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
-    return name or "?"
-
-
-def _pid_namespace_suffix() -> str:
-    try:
-        namespace: Final = Path("/proc/self/ns/pid").stat().st_ino
-    except OSError:  # only Linux 3.8+ has the file, and a sandbox may hide it; nothing else tells namespaces apart
-        return ""
-    return "" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}"
-
-
 def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
-    """
-    Whether the recorded owner is provably gone, so reclaiming its marker cannot detach a live holder.
-
-    Fail closed: return ``True`` only when this process can prove the exact recorded owner is dead. A marker from
-    another host cannot be probed; a live PID whose start token still matches, or whose token cannot be read, is the
-    holder or is indistinguishable from it; a live PID whose start token differs is a recycled PID, so the process that
-    wrote the marker is gone. PostgreSQL, Qt ``QLockFile`` and Mercurial all break a stale lock only on proof of death
-    and treat an unreadable or foreign owner as still holding.
-    """
+    # Whether the recorded owner is provably gone, so reclaiming its marker cannot detach a live holder.
+    #
+    # Fail closed: return ``True`` only when this process can prove the exact recorded owner is dead. A marker from
+    # another host cannot be probed; a live PID whose start token still matches, or whose token cannot be read, is the
+    # holder or is indistinguishable from it; a live PID whose start token differs is a recycled PID, so the process
+    # that wrote the marker is gone. PostgreSQL, Qt ``QLockFile`` and Mercurial all break a stale lock only on proof of
+    # death and treat an unreadable or foreign owner as still holding.
     if hostname != host_name():
         return False
     if process_alive(pid) and (
@@ -83,17 +40,38 @@ def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
     return _NAMESPACE_MARK in hostname or not _owner_runs_elsewhere(pid, start_token)
 
 
-def owner_is_current_process(pid: int, hostname: str, start_token: int | None) -> bool:
-    """
-    Whether the recorded owner is this process, so a marker a recycled PID left behind never reads as ours.
-
-    Fail closed: a recorded start token must match this process's. One that differs was written by an earlier process
-    that reused this PID, and when this process cannot read its own token nothing proves the marker is ours. A marker
-    without a token falls back to the PID and hostname.
-    """
-    if pid != os.getpid() or hostname != host_name():
-        return False
-    return start_token is None or start_token == process_start_token(pid)
+def host_name() -> str:
+    # The hostname recorded alongside an owner, so a marker written on another machine is never probed here.
+    #
+    # Marker formats here hold the field to printable non-space ASCII, while ``socket.gethostname()`` reports whatever
+    # the kernel stores: a space, a newline that forges an extra marker line, or a byte no codec encodes, which Python
+    # hands back as a surrogate. A holder that publishes one raw writes a marker it cannot read back, and loses the lock
+    # to the first peer that ages it out as malformed.
+    #
+    # ``?`` is illegal in a hostname, so escaping it along with every out-of-grammar byte as ``?<hex>`` leaves a real
+    # name untouched and still keeps two hosts apart, which :func:`owner_is_stale` relies on to refuse to probe a
+    # foreign PID.
+    #
+    # Linux appends the PID namespace, as Mercurial's lock prefix does. Two containers in one pod share the hostname and
+    # the boot id but not the PID namespace, so a PID recorded in one names another process, or none, in the other. The
+    # suffix starts with a ``?`` no escape can produce, so ``a`` in a namespace never reads as a host literally named
+    # ``a?pidns-...``. The initial namespace adds nothing, which keeps a host's name what older releases recorded.
+    #
+    # An over-long name ends in a digest of the part cut to fit the limit. A bare cut gives every name that shares the
+    # kept prefix one identity, and :func:`owner_is_stale` would then probe a local PID for another host's holder.
+    try:
+        namespace = Path("/proc/self/ns/pid").stat().st_ino
+    except OSError:  # only Linux 3.8+ has the file, and a sandbox may hide it; nothing else tells namespaces apart
+        namespace = _INITIAL_PID_NAMESPACE
+    name = "".join(
+        chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
+        for byte in socket.gethostname().encode("utf-8", "surrogateescape")
+    ) + ("" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}")
+    if len(name) > _HOST_NAME_LIMIT:
+        keep = _HOST_NAME_LIMIT - _HOST_NAME_DIGEST_LEN - 1
+        name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
+    # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
+    return name or "?"
 
 
 def _same_start(current: int, recorded: int) -> bool:
@@ -102,6 +80,17 @@ def _same_start(current: int, recorded: int) -> bool:
     # it. A missing boot id then proves nothing, and only starttime is compared. Other platforms' tokens fit in the
     # low bits.
     return current == recorded or (0 in {current >> 64, recorded >> 64} and current % 2**64 == recorded % 2**64)
+
+
+def owner_is_current_process(pid: int, hostname: str, start_token: int | None) -> bool:
+    # Whether the recorded owner is this process, so a marker a recycled PID left behind never reads as ours.
+    #
+    # Fail closed: a recorded start token must match this process's. One that differs was written by an earlier process
+    # that reused this PID, and when this process cannot read its own token nothing proves the marker is ours. A marker
+    # without a token falls back to the PID and hostname.
+    if pid != os.getpid() or hostname != host_name():
+        return False
+    return start_token is None or start_token == process_start_token(pid)
 
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -131,9 +120,8 @@ if sys.platform == "win32":  # pragma: win32 cover
     _WIN_WAIT_OBJECT_0: Final[int] = 0
 
     def process_alive(pid: int) -> bool:
-        """Whether a process with this PID still runs, treating an access denial as proof it does."""
-        handle = _KERNEL32.OpenProcess(_WIN_SYNCHRONIZE, _WIN_INHERIT_HANDLE, pid)
-        if handle:
+        # Whether a process with this PID still runs, treating an access denial as proof it does.
+        if handle := _KERNEL32.OpenProcess(_WIN_SYNCHRONIZE, _WIN_INHERIT_HANDLE, pid):
             try:
                 # Any open handle keeps an exited process openable, but its process object is signaled once it exits.
                 return _KERNEL32.WaitForSingleObject(handle, 0) != _WIN_WAIT_OBJECT_0
@@ -142,7 +130,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         return ctypes.get_last_error() != _WIN_ERROR_INVALID_PARAMETER
 
     def process_start_token(pid: int) -> int | None:
-        """The process creation FILETIME as a 100ns tick count, or ``None`` when it cannot be read."""
+        # The process creation FILETIME as a 100ns tick count, or ``None`` when it cannot be read.
         handle = _KERNEL32.OpenProcess(_WIN_PROCESS_QUERY_LIMITED_INFORMATION, _WIN_INHERIT_HANDLE, pid)
         if not handle:
             return None
@@ -163,7 +151,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 else:  # pragma: win32 no cover
 
     def process_alive(pid: int) -> bool:
-        """Whether a process with this PID exists, treating an access denial (``EPERM``) as proof it does."""
+        # Whether a process with this PID exists, treating an access denial (``EPERM``) as proof it does.
         try:
             os.kill(pid, 0)
         except OSError as error:
@@ -197,13 +185,11 @@ else:  # pragma: win32 no cover
         _INITIAL_TIME_NAMESPACE: Final[int] = 0xEFFFFFFA
 
         def process_start_token(pid: int) -> int | None:
-            """
-            The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id.
-
-            ``None`` when the process is gone, or when this process runs in a time namespace with a boottime offset.
-            Since Linux 5.6 the kernel shifts ``starttime`` by the reader's offset, so a value read there differs
-            from what a peer outside reads.
-            """
+            # The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id.
+            #
+            # ``None`` when the process is gone, or when this process runs in a time namespace with a boottime offset.
+            # Since Linux 5.6 the kernel shifts ``starttime`` by the reader's offset, so a value read there differs
+            # from what a peer outside reads.
             return _read_start_token(pid) if _starttime_unshifted() else None
 
         def _starttime_unshifted() -> bool:
@@ -243,14 +229,12 @@ else:  # pragma: win32 no cover
             return (_BOOT_ID << 64) | starttime
 
         def _owner_runs_elsewhere(pid: int, start_token: int | None) -> bool:
-            """
-            Whether the owner runs in another PID namespace as *pid*.
-
-            An older release in a container sharing this hostname recorded its in-container PID, which means nothing
-            here. Readers without a boottime offset read the same starttime and boot id. A task with the recorded
-            start token whose innermost PID is *pid* is therefore the owner; one that started in the same tick is not.
-            A reader with an offset cannot compare start tokens, so the innermost PID alone keeps the marker.
-            """
+            # Whether the owner runs in another PID namespace as *pid*.
+            #
+            # An older release in a container sharing this hostname recorded its in-container PID, which means nothing
+            # here. Readers without a boottime offset read the same starttime and boot id. A task with the recorded
+            # start token whose innermost PID is *pid* is therefore the owner; one that started in the same tick is not.
+            # A reader with an offset cannot compare start tokens, so the innermost PID alone keeps the marker.
             if start_token is None or (_BOOT_ID and start_token >> 64 not in {0, _BOOT_ID}):
                 return False
             unshifted: Final = _starttime_unshifted()
@@ -296,7 +280,7 @@ else:  # pragma: win32 no cover
         _TIMEVAL_SIZE: Final[int] = struct.calcsize(_TIMEVAL_AT_ZERO)
 
         def process_start_token(pid: int) -> int | None:
-            """The process start time in microseconds from ``sysctl(KERN_PROC_PID)``, or ``None`` when it is gone."""
+            # The process start time in microseconds from ``sysctl(KERN_PROC_PID)``, or ``None`` when it is gone.
             mib = (ctypes.c_int * 4)(_CTL_KERN, _KERN_PROC, _KERN_PROC_PID, pid)
             length = ctypes.c_size_t(0)
             # The size probe reports the kinfo_proc size for any PID, so the read below, not the probe, tells a live
@@ -312,7 +296,7 @@ else:  # pragma: win32 no cover
     else:  # pragma: no cover  # a POSIX platform without a proven start-time source falls back to fail-closed liveness
 
         def process_start_token(pid: int) -> int | None:
-            """No proven start-time source, so the owner carries no token and liveness rests on the PID alone."""
+            # No proven start-time source, so the owner carries no token and liveness rests on the PID alone.
             del pid
             return None
 
@@ -320,7 +304,7 @@ else:  # pragma: win32 no cover
 if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
 
     def _owner_runs_elsewhere(pid: int, start_token: int | None) -> bool:
-        """Without Linux PID namespaces, a PID that is gone or recycled leaves its owner nowhere else to run."""
+        # Without Linux PID namespaces, a PID that is gone or recycled leaves its owner nowhere else to run.
         del pid, start_token
         return False
 

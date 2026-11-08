@@ -15,7 +15,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from capabilities import CAPABILITIES
 
 import filelock._soft
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
@@ -23,16 +22,22 @@ from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, _read_lock_file
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import exchange_names
-from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_STALE_RECLAIM, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.capability_marks import (
+    NEEDS_FIFO,
+    NEEDS_POSIX_SIGNALS,
+    NEEDS_STALE_RECLAIM,
+    NEEDS_SYMLINK,
+    NEEDS_UNLINK_OPEN_FILE,
+)
 from tests.conftest import DEAD_OWNER, STALE_BREAKERS, acquire_after_reclaim, held_after_reclaim
 from tests.pid_namespace_helpers import pin_pid_namespace
 from tests.process_helpers import break_then_hang_after_exchange, call_within, cleanup_processes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
-    from unittest.mock import MagicMock
+    from contextlib import AbstractContextManager
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
 
@@ -50,18 +55,34 @@ def lock_path(tmp_path: Path) -> Path:
 
 
 def _holder(pid: int, *, host: str = _HOST, start: int | None = None) -> str:
-    return "\n".join([str(pid), host, *([] if start is None else [str(start)])]) + "\n"
+    return f"{pid}\n{host}\n" if start is None else f"{pid}\n{host}\n{start}\n"
 
 
-def test_lock_writes_pid_and_hostname(lock_path: Path) -> None:
+@pytest.mark.parametrize(
+    "expected_lines",
+    [
+        pytest.param(
+            [str(os.getpid()), _HOST, str(process_start_token(os.getpid()))],
+            id="start_token",
+            marks=pytest.mark.skipif(
+                process_start_token(os.getpid()) is None,
+                reason="the start token is unreadable here, e.g. under a time namespace with a boottime offset",
+            ),
+        ),
+        pytest.param(
+            [str(os.getpid()), _HOST],
+            id="no_start_token",
+            marks=pytest.mark.skipif(
+                process_start_token(os.getpid()) is not None,
+                reason="the start token is readable here, so the lock writes it as a third line",
+            ),
+        ),
+    ],
+)
+def test_lock_writes_pid_and_hostname(lock_path: Path, expected_lines: list[str]) -> None:
     with SoftFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").strip().splitlines()
-        assert lines[:2] == [str(os.getpid()), _HOST]
-        # Every platform with a proven start time writes it as an integer third line; one without writes two lines.
-        if (token := process_start_token(os.getpid())) is not None:
-            assert lines == [str(os.getpid()), _HOST, str(token)]
-        else:  # pragma: no cover  # every CI platform exposes a start time
-            assert lines == [str(os.getpid()), _HOST]
+        assert lines == expected_lines
 
 
 @pytest.mark.parametrize(
@@ -74,13 +95,13 @@ def test_lock_writes_pid_and_hostname(lock_path: Path) -> None:
 @NEEDS_STALE_RECLAIM
 def test_stale_lock_broken_when_process_dead(lock_path: Path, mocker: MockerFixture, content: str) -> None:
     lock_path.write_text(content, encoding="utf-8")
-    mocker.patch("filelock._identity.process_alive", return_value=False)
+    mocker.patch("filelock._identity.process_alive", return_value=False, autospec=True)
     _assert_self_heals(lock_path)
 
 
 def test_stale_lock_not_broken_when_process_alive(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
-    mocker.patch("filelock._identity.process_alive", return_value=True)
+    mocker.patch("filelock._identity.process_alive", return_value=True, autospec=True)
     _assert_times_out(lock_path)
 
 
@@ -168,7 +189,7 @@ def test_live_process_without_start_token_falls_back_to_pid(lock_path: Path) -> 
 )
 def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixture, errno: int) -> None:
     lock_path.write_text(_holder(99999), encoding="utf-8")
-    mocker.patch("filelock._identity.os.kill", side_effect=OSError(errno, "kill failed"))
+    mocker.patch("filelock._identity.os.kill", side_effect=OSError(errno, "kill failed"), autospec=True)
     _assert_times_out(lock_path)
 
 
@@ -290,8 +311,8 @@ def test_out_of_range_pid_not_evicted_when_fresh(lock_path: Path) -> None:
 @pytest.mark.parametrize("break_route", ["no-exchange"], indirect=True)
 def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    mocker.patch("filelock._identity.process_alive", return_value=False)
-    mocker.patch.object(Path, "rename", side_effect=FileNotFoundError("already gone"))
+    mocker.patch("filelock._identity.process_alive", return_value=False, autospec=True)
+    mocker.patch.object(Path, "rename", side_effect=FileNotFoundError("already gone"), autospec=True)
     _assert_times_out(lock_path)
 
 
@@ -341,14 +362,6 @@ def _break_name(lock: Path, pid: int = _DEAD_PID) -> Path:  # pragma: win32 no c
     return lock.with_name(f"test.lock.break.{pid}.{'0' * 32}")
 
 
-def _break_contents(lock: Path) -> list[str]:  # pragma: win32 no cover
-    return [path.read_text(encoding="utf-8") for path in lock.parent.glob(f"{lock.name}.break.*")]
-
-
-def _live(record: str) -> str:  # pragma: win32 no cover
-    return record.replace(str(_DEAD_PID), str(os.getpid()))
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
@@ -361,6 +374,10 @@ def test_stale_break_restores_a_live_marker_a_dead_breaker_left_under_its_break_
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), list(tmp_path.glob("test.lock.break.*"))) == (_live(record), [])
+
+
+def _live(record: str) -> str:  # pragma: win32 no cover
+    return record.replace(str(_DEAD_PID), str(os.getpid()))
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -376,10 +393,6 @@ def test_stale_break_restores_a_marker_of_another_host_with_the_breakers_pid(  #
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), list(tmp_path.glob("test.lock.break.*"))) == (foreign, [])
-
-
-def _restore_name(lock: Path, pid: int | str) -> Path:  # pragma: win32 no cover
-    return lock.with_name(f"test.lock.restore.{pid}.{'0' * 32}")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -410,15 +423,14 @@ def test_stale_break_restores_under_an_exclusive_claim(  # pragma: win32 no cove
             rival.join(0.001)
 
     def exchange_with_a_rival_between_check_and_exchange(first: str, second: str) -> bool:
-        # The rival reaches its own exchange only when recovery lets two contenders act on one record.
         if threading.current_thread() is main:
             rival.start()
             settle(first_has_checked)
             return exchange(first, second)
-        first_has_checked.set()  # pragma: no cover
-        while not release_rival.is_set():  # pragma: no cover
-            release_rival.wait(0.001)  # pragma: no cover
-        return exchange(first, second)  # pragma: no cover
+        first_has_checked.set()  # pragma: no cover  # only a recovery race lets two contenders share a record
+        while not release_rival.is_set():  # pragma: no cover  # only a recovery race lets two contenders share a record
+            release_rival.wait(0.001)  # pragma: no cover  # only a recovery race lets two contenders share a record
+        return exchange(first, second)  # pragma: no cover  # only a recovery race lets two contenders share a record
 
     def unlink_after_the_rival_finished(path: Path, *, missing_ok: bool = False) -> None:
         release_rival.set()
@@ -455,7 +467,7 @@ def test_stale_break_waits_when_a_peer_claimed_the_record_first(  # pragma: win3
         rename(source, _restore_name(lock, _DEAD_PID - 1))
         rename(source, target)
 
-    mocker.patch("filelock._soft.os.rename", side_effect=peer_claims_first)
+    mocker.patch("filelock._soft.os.rename", side_effect=peer_claims_first, autospec=True)
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 
@@ -463,6 +475,10 @@ def test_stale_break_waits_when_a_peer_claimed_the_record_first(  # pragma: win3
         record,
         foreign,
     )
+
+
+def _restore_name(lock: Path, pid: int | str) -> Path:  # pragma: win32 no cover
+    return lock.with_name(f"test.lock.restore.{pid}.{'0' * 32}")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -473,11 +489,15 @@ def test_stale_break_waits_when_the_record_cannot_be_claimed(  # pragma: win32 n
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     foreign: Final = record.replace(_HOST, "elsewhere")
     _break_name(lock).write_text(foreign, encoding="utf-8")
-    mocker.patch("filelock._soft.os.rename", side_effect=OSError(EACCES, "denied"))
+    mocker.patch("filelock._soft.os.rename", side_effect=OSError(EACCES, "denied"), autospec=True)
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), _break_contents(lock)) == (record, [foreign])
+
+
+def _break_contents(lock: Path) -> list[str]:  # pragma: win32 no cover
+    return [path.read_text(encoding="utf-8") for path in lock.parent.glob(f"{lock.name}.break.*")]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -533,17 +553,6 @@ def test_stale_break_ignores_a_claim_naming_no_valid_pid(  # pragma: win32 no co
     assert planted.read_text(encoding="utf-8") == foreign
 
 
-def _refuse_returning_a_claim(mocker: MockerFixture) -> None:  # pragma: win32 no cover
-    rename: Final = Path.rename
-
-    def rename_unless_returning(path: Path, target: str | Path) -> Path:
-        if ".break." in str(target):
-            raise OSError(EACCES, "denied")
-        return rename(path, target)
-
-    mocker.patch.object(Path, "rename", new=rename_unless_returning)
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
@@ -554,7 +563,10 @@ def test_stale_break_retries_a_claim_whose_return_failed(  # pragma: win32 no co
     foreign: Final = record.replace(_HOST, "elsewhere")
     _break_name(lock).write_text(foreign, encoding="utf-8")
     _refuse_returning_a_claim(mocker)
-    mocker.patch("filelock._soft.exchange_names", return_value=False)
+    mocker.patch(
+        "filelock._soft.exchange_names",
+        new=mocker.create_autospec(filelock._soft.exchange_names, return_value=False),
+    )
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
     left: Final = list(tmp_path.glob(f"test.lock.restore.{os.getpid()}.*"))
@@ -563,6 +575,17 @@ def test_stale_break_retries_a_claim_whose_return_failed(  # pragma: win32 no co
         lock_type(lock).acquire(blocking=False)
 
     assert (len(left), lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (1, foreign, [lock])
+
+
+def _refuse_returning_a_claim(mocker: MockerFixture) -> None:  # pragma: win32 no cover
+    rename: Final = Path.rename
+
+    def rename_unless_returning(path: Path, target: str | Path) -> Path:
+        if ".break." in str(target):
+            raise OSError(EACCES, "denied")
+        return rename(path, target)
+
+    mocker.patch.object(Path, "rename", new=rename_unless_returning)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -623,14 +646,6 @@ def test_stale_break_waits_for_a_claim_another_thread_is_working(  # pragma: win
     assert (len(claims_while_working), untouched == claims_while_working) == (1, True)
 
 
-def _acquire_timing_out(  # pragma: win32 no cover
-    lock_type: type[SoftFileLock], lock: Path, outcomes: list[bool]
-) -> None:
-    with pytest.raises(Timeout):
-        lock_type(lock).acquire(blocking=False)
-    outcomes.append(True)
-
-
 def _acquire(lock_type: type[SoftFileLock], lock: Path) -> None:  # pragma: win32 no cover
     with suppress(Timeout):
         lock_type(lock).acquire(blocking=False)
@@ -675,6 +690,14 @@ def test_stale_break_claim_is_registered_before_it_is_visible(  # pragma: win32 
     )
 
 
+def _acquire_timing_out(  # pragma: win32 no cover
+    lock_type: type[SoftFileLock], lock: Path, outcomes: list[bool]
+) -> None:
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+    outcomes.append(True)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 def test_stale_break_stops_when_the_claim_is_already_registered(  # pragma: win32 no cover
@@ -683,8 +706,8 @@ def test_stale_break_stops_when_the_claim_is_already_registered(  # pragma: win3
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     foreign: Final = record.replace(_HOST, "elsewhere")
     _break_name(lock).write_text(foreign, encoding="utf-8")
-    mocker.patch("filelock._soft.secrets.token_hex", return_value="a" * 32)
-    registered: Final = str(lock) + f".restore.{os.getpid()}." + "a" * 32
+    mocker.patch("filelock._soft.secrets.token_hex", return_value="a" * 32, autospec=True)
+    registered: Final = f"{lock!s}.restore.{os.getpid()}.{'a' * 32}"
     assert _begin_claim(registered)
     try:
         with pytest.raises(Timeout):
@@ -703,7 +726,7 @@ def test_stale_break_claim_identity_ignores_path_spelling(  # pragma: win32 no c
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     foreign: Final = record.replace(_HOST, "elsewhere")
     _break_name(lock).write_text(foreign, encoding="utf-8")
-    mocker.patch("filelock._soft.secrets.token_hex", return_value="a" * 32)
+    mocker.patch("filelock._soft.secrets.token_hex", return_value="a" * 32, autospec=True)
     registered: Final = Path(f"{lock}.restore.{os.getpid()}.{'a' * 32}")
     assert _begin_claim(registered)
     monkeypatch.chdir(tmp_path)
@@ -786,21 +809,6 @@ def test_stale_break_undoes_an_exchange_that_took_a_peers_marker(  # pragma: win
     ) == (_live(record), [foreign], [])
 
 
-def _lose_to_a_live_holder(  # pragma: win32 no cover
-    lock: Path, live: str, mocker: MockerFixture, then: Callable[[str, str], bool | None]
-) -> None:
-    (holder := lock.with_name("holder")).write_text(live, encoding="utf-8")
-
-    def exchange_after_the_holder_won(aside: str, path: str) -> bool:
-        mocker.patch("filelock._soft.exchange_names", new=exchange_names)
-        holder.replace(lock)
-        exchange_names(aside, path)
-        then(aside, path)
-        return True
-
-    mocker.patch("filelock._soft.exchange_names", new=exchange_after_the_holder_won)
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
@@ -815,11 +823,28 @@ def test_stale_break_exchanges_back_after_the_breaker_that_took_its_marker(  # p
         peer.unlink()
 
     _lose_to_a_live_holder(lock, _live(record), mocker, lambda _aside, path: exchange_names(str(peer), path))
-    mocker.patch("filelock._util.time", wraps=time, sleep=mocker.Mock(side_effect=peer_exchanges_back))
+    mocker.patch(
+        "filelock._util.time", wraps=time, sleep=mocker.create_autospec(time.sleep, side_effect=peer_exchanges_back)
+    )
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (_live(record), [lock])
+
+
+def _lose_to_a_live_holder(  # pragma: win32 no cover
+    lock: Path, live: str, mocker: MockerFixture, then: Callable[[str, str], bool | None]
+) -> None:
+    (holder := lock.with_name("holder")).write_text(live, encoding="utf-8")
+
+    def exchange_after_the_holder_won(aside: str, path: str) -> bool:
+        mocker.patch("filelock._soft.exchange_names", new=exchange_names)
+        holder.replace(lock)
+        exchange_names(aside, path)
+        then(aside, path)
+        return True
+
+    mocker.patch("filelock._soft.exchange_names", new=exchange_after_the_holder_won)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -843,7 +868,9 @@ def test_stale_break_opens_a_ring_of_breakers_holding_each_others_markers(  # pr
 
     _lose_to_a_live_holder(lock, _live(record), mocker, peer_then_our_exchange_out_of_turn)
     mocker.patch(
-        "filelock._util.time", wraps=time, sleep=mocker.Mock(side_effect=peer_exchanges_back_once_it_stands_at_the_path)
+        "filelock._util.time",
+        wraps=time,
+        sleep=mocker.create_autospec(time.sleep, side_effect=peer_exchanges_back_once_it_stands_at_the_path),
     )
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
@@ -875,7 +902,9 @@ def test_stale_break_keeps_its_marker_when_exchange_back_is_refused(  # pragma: 
 ) -> None:
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     _lose_to_a_live_holder(lock, _live(record), mocker, lambda _aside, _path: None)
-    mocker.patch("filelock._util.exchange_names", side_effect=[False, AssertionError("retried refused exchange")])
+    mocker.patch(
+        "filelock._util.exchange_names", side_effect=[False, AssertionError("retried refused exchange")], autospec=True
+    )
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 
@@ -1024,7 +1053,11 @@ def test_stale_break_leaves_a_break_name_it_cannot_exchange(  # pragma: win32 no
 ) -> None:
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
     _break_name(lock_path).write_text(_holder(os.getpid()), encoding="utf-8")
-    mocker.patch("filelock._util._rename_call", return_value=(mocker.MagicMock(return_value=error), 2))
+    mocker.patch(
+        "filelock._util._rename_call",
+        return_value=(mocker.create_autospec(_exchange_call, return_value=error), 2),
+        autospec=True,
+    )
     with pytest.raises(Timeout):
         SoftFileLock(lock_path).acquire(blocking=False)
 
@@ -1032,6 +1065,10 @@ def test_stale_break_leaves_a_break_name_it_cannot_exchange(  # pragma: win32 no
         _holder(_DEAD_PID),
         [_holder(os.getpid())],
     )
+
+
+def _exchange_call(source: bytes, target: bytes, flags: int) -> int:
+    raise NotImplementedError  # pragma: no cover  # the autospec answers the call, so only the signature matters
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -1095,21 +1132,21 @@ def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) ->
     assert target.read_text(encoding="utf-8") == _holder(99999)
 
 
+@NEEDS_FIFO
 def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
-    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
     # An attacker-placed FIFO must not stall the open; O_NONBLOCK makes the read bail instead of hang.
+    assert sys.platform != "win32"  # narrows os.mkfifo for the type checker  # pragma: win32 no cover
     os.mkfifo(lock_path)  # pragma: win32 no cover
     assert SoftFileLock(lock_path).pid is None  # pragma: win32 no cover
 
 
 @pytest.mark.usefixtures("unchanged_past_grace")
 @NEEDS_STALE_RECLAIM
+@NEEDS_FIFO
 def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None:
-    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
     # A same-UID peer can plant a FIFO with a writer attached so a non-blocking read would raise EAGAIN. The lstat
     # guard classifies it as a malformed lock before any open, so an aged FIFO self-heals like any other node.
+    assert sys.platform != "win32"  # narrows os.mkfifo and O_NONBLOCK for the type checker  # pragma: win32 no cover
     os.mkfifo(lock_path)  # pragma: win32 no cover
     reader = os.open(lock_path, os.O_RDONLY | os.O_NONBLOCK)  # pragma: win32 no cover
     writer = os.open(lock_path, os.O_WRONLY | os.O_NONBLOCK)  # pragma: win32 no cover
@@ -1122,9 +1159,9 @@ def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None
 
 @pytest.mark.usefixtures("unchanged_past_grace")
 @NEEDS_STALE_RECLAIM
+@pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX sockets are unix-only")
 def test_socket_lock_file_self_heals(lock_path: Path) -> None:
-    if sys.platform == "win32":  # pragma: win32 cover
-        pytest.skip("AF_UNIX sockets are unix-only")
+    assert sys.platform != "win32"  # narrows socket.AF_UNIX for the type checker  # pragma: win32 no cover
     sock = socket.socket(socket.AF_UNIX)  # pragma: win32 no cover
     try:  # pragma: win32 no cover
         sock.bind(str(lock_path))
@@ -1141,29 +1178,16 @@ def test_socket_lock_file_self_heals(lock_path: Path) -> None:
 
 def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
-    mock_read: MagicMock = mocker.patch("filelock._soft._read_lock_file", side_effect=OSError("read failed"))
+    mock_read: MockType = mocker.patch(
+        "filelock._soft._read_lock_file", side_effect=OSError("read failed"), autospec=True
+    )
     _assert_times_out(lock_path)
     mock_read.assert_called()
 
 
-@_WINDOWS_ONLY
-@pytest.mark.parametrize(
-    ("captured_error", "ambient_error", "acquires"),
-    [
-        pytest.param(_WIN_ERROR_INVALID_PARAMETER, _WIN_ERROR_ACCESS_DENIED, True, id="dead"),
-        pytest.param(_WIN_ERROR_ACCESS_DENIED, _WIN_ERROR_INVALID_PARAMETER, False, id="access-denied"),
-    ],
-)
-def test_windows_stale_lock_uses_captured_process_error(  # pragma: win32 cover
-    lock_path: Path,
-    mocker: MockerFixture,
-    captured_error: int,
-    ambient_error: int,
-    *,
-    acquires: bool,
-) -> None:
-    if sys.platform != "win32":  # pragma: win32 cover
-        pytest.skip("windows-only")  # pragma: no cover  # win32-only test; this guard never runs
+def _fail_open_process(mocker: MockerFixture, captured_error: int, ambient_error: int) -> None:  # pragma: win32 cover
+    if sys.platform != "win32":  # pragma: win32 cover  # narrows ctypes.windll for the type checker
+        pytest.skip("windows-only")  # pragma: win32 no cover
     import ctypes
 
     def fail_open_process(_access: int, _inherit_handle: bool, _pid: int) -> None:
@@ -1171,12 +1195,25 @@ def test_windows_stale_lock_uses_captured_process_error(  # pragma: win32 cover
         ctypes.windll.kernel32.SetLastError(ambient_error)
 
     # ctypes function pointers do not expose a Python signature for autospec.
-    mocker.patch("filelock._identity._KERNEL32.OpenProcess", side_effect=fail_open_process)
+    mocker.patch("filelock._identity._KERNEL32.OpenProcess", side_effect=fail_open_process, autospec=True)
+
+
+@_WINDOWS_ONLY
+def test_windows_stale_lock_uses_captured_process_error(  # pragma: win32 cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    _fail_open_process(mocker, _WIN_ERROR_INVALID_PARAMETER, _WIN_ERROR_ACCESS_DENIED)
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    if acquires:
-        _assert_self_heals(lock_path)
-    else:
-        _assert_times_out(lock_path)
+    _assert_self_heals(lock_path)
+
+
+@_WINDOWS_ONLY
+def test_windows_stale_lock_held_on_access_denied(  # pragma: win32 cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    _fail_open_process(mocker, _WIN_ERROR_ACCESS_DENIED, _WIN_ERROR_INVALID_PARAMETER)
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    _assert_times_out(lock_path)
 
 
 @_WINDOWS_ONLY
@@ -1219,10 +1256,13 @@ def test_windows_process_probe_closes_handles(lock_path: Path) -> None:  # pragm
         lock.release()
 
 
+def test_pid_without_a_lock_file(lock_path: Path) -> None:
+    assert SoftFileLock(lock_path).pid is None
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     [
-        pytest.param(None, None, id="no_file"),
         pytest.param(b"not-a-number\n", None, id="malformed"),
         pytest.param(b"\xff\xfe\n", None, id="non_utf8"),
         pytest.param(b"x" * (_MAX_LOCK_FILE_SIZE + 1), None, id="oversized"),
@@ -1232,9 +1272,8 @@ def test_windows_process_probe_closes_handles(lock_path: Path) -> None:  # pragm
         pytest.param(_holder(os.getpid()).encode(), os.getpid(), id="valid"),
     ],
 )
-def test_pid(lock_path: Path, content: bytes | None, expected: int | None) -> None:
-    if content is not None:
-        lock_path.write_bytes(content)
+def test_pid(lock_path: Path, content: bytes, expected: int | None) -> None:
+    lock_path.write_bytes(content)
     assert SoftFileLock(lock_path).pid == expected
 
 
@@ -1244,18 +1283,20 @@ def test_pid_while_locked(lock_path: Path) -> None:
         assert lock.pid == os.getpid()
 
 
+def test_is_lock_held_by_us_without_a_lock_file(lock_path: Path) -> None:
+    assert SoftFileLock(lock_path).is_lock_held_by_us is False
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     [
-        pytest.param(None, False, id="no_file"),
         pytest.param(_holder(os.getpid() + 1), False, id="different_pid"),
         pytest.param(_holder(os.getpid()), True, id="same_pid"),
         pytest.param(_holder(os.getpid(), host="other-host"), False, id="same_pid_different_host"),
     ],
 )
-def test_is_lock_held_by_us(lock_path: Path, content: str | None, expected: bool) -> None:
-    if content is not None:
-        lock_path.write_text(content, encoding="utf-8")
+def test_is_lock_held_by_us(lock_path: Path, content: str, expected: bool) -> None:
+    lock_path.write_text(content, encoding="utf-8")
     assert SoftFileLock(lock_path).is_lock_held_by_us is expected
 
 
@@ -1274,23 +1315,23 @@ def test_is_lock_held_by_us_checks_start_token(lock_path: Path, offset: int, *, 
 
 def test_is_lock_held_by_us_fails_closed_without_own_start_token(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(os.getpid(), start=1), encoding="utf-8")
-    mocker.patch("filelock._identity.process_start_token", return_value=None)
+    mocker.patch("filelock._identity.process_start_token", return_value=None, autospec=True)
     assert SoftFileLock(lock_path).is_lock_held_by_us is False
 
 
-@pytest.mark.parametrize(
-    "exists",
-    [pytest.param(True, id="exists"), pytest.param(False, id="missing")],
-)
-def test_break_lock(lock_path: Path, *, exists: bool) -> None:
-    if exists:
-        lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
+def test_break_lock(lock_path: Path) -> None:
+    lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
+    SoftFileLock(lock_path).break_lock()
+    assert not lock_path.exists()
+
+
+def test_break_lock_without_a_lock_file(lock_path: Path) -> None:
     SoftFileLock(lock_path).break_lock()
     assert not lock_path.exists()
 
 
 def test_write_failure_rolls_back_acquire(lock_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
+    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"), autospec=True)
 
     lock = SoftFileLock(lock_path)
     with pytest.raises(OSError, match="No space left on device"):
@@ -1330,21 +1371,22 @@ def _current_process_handle_count() -> int:  # pragma: win32 cover
 def _hold_reports_foreign_identity(mocker: MockerFixture) -> None:
     # Make the held descriptor report a different inode than the file on disk, as if a peer replaced the marker at the
     # path. fstat runs only on our own lock fd, so nothing else in acquire or release is disturbed.
-    mocker.patch("filelock._soft.os.fstat", return_value=mocker.Mock(st_dev=1, st_ino=999))
+    mocker.patch(
+        "filelock._soft.os.fstat", return_value=os.stat_result((0, 999, 1, 0, 0, 0, 0, 0, 0, 0)), autospec=True
+    )
 
 
 def test_short_writes_still_write_the_whole_record(lock_path: Path, mocker: MockerFixture) -> None:
     real_write = os.write
-    mocker.patch("filelock._util.os.write", side_effect=lambda fd, data: real_write(fd, bytes(data[:1])))
+    mocker.patch("filelock._util.os.write", side_effect=lambda fd, data: real_write(fd, bytes(data[:1])), autospec=True)
 
     with SoftFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").splitlines()
-    assert lines[0] == str(os.getpid())
-    assert lines[1] == _HOST
+    assert (lines[0], lines[1]) == (str(os.getpid()), _HOST)
 
 
 def test_zero_write_rolls_back_acquire(lock_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._util.os.write", return_value=0)
+    mocker.patch("filelock._util.os.write", return_value=0, autospec=True)
 
     lock = SoftFileLock(lock_path)
     with pytest.raises(OSError, match="0 bytes"):
@@ -1366,7 +1408,7 @@ def test_failed_acquire_spares_a_successor_on_the_freed_inode_number(  # pragma:
         reuse_inode(lock_path, ours)
         raise OSError(ENOSPC, f"No space left on device for {len(data)} bytes")
 
-    mocker.patch("filelock._util.os.write", side_effect=evicted_and_succeeded_then_write_fails)
+    mocker.patch("filelock._util.os.write", side_effect=evicted_and_succeeded_then_write_fails, autospec=True)
     with pytest.raises(OSError, match="No space left on device"):
         SoftFileLock(lock_path).acquire()
     mocker.stopall()
@@ -1379,7 +1421,7 @@ def test_failed_acquire_spares_a_successor_on_the_freed_inode_number(  # pragma:
 def test_failed_acquire_spares_a_file_that_replaced_its_placeholder(  # pragma: win32 no cover
     lock_path: Path, mocker: MockerFixture
 ) -> None:
-    mocker.patch("filelock._soft.os.fchmod", side_effect=OSError(EIO, "Input/output error"))
+    mocker.patch("filelock._soft.os.fchmod", side_effect=OSError(EIO, "Input/output error"), autospec=True)
     lstat: Final = os.lstat
     replaced: list[bool] = []
 
@@ -1400,7 +1442,7 @@ def test_failed_acquire_spares_a_file_that_replaced_its_placeholder(  # pragma: 
 
 
 def test_failed_acquire_cleanup_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
+    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"), autospec=True)
     _hold_reports_foreign_identity(mocker)
 
     lock = SoftFileLock(lock_path)
@@ -1437,7 +1479,7 @@ def test_transient_identity_failure_still_cleans_the_marker(lock_path: Path, moc
             raise OSError(EIO, "Input/output error")
         return real_fstat(fd)
 
-    mocker.patch("filelock._soft.os.fstat", side_effect=fail_first)
+    mocker.patch("filelock._soft.os.fstat", side_effect=fail_first, autospec=True)
     lock: Final = SoftFileLock(lock_path)
     with pytest.raises(OSError, match="Input/output error"):
         lock.acquire()
@@ -1493,7 +1535,7 @@ def test_release_without_identity_skips_unlink(lock_path: Path, mocker: MockerFi
             raise OSError
         return found
 
-    mocker.patch("filelock._soft.os.fstat", side_effect=no_identity)
+    mocker.patch("filelock._soft.os.fstat", side_effect=no_identity, autospec=True)
     lock.release()
     assert not lock.is_locked
     assert lock_path.exists()
@@ -1511,7 +1553,7 @@ def test_del_suppresses_a_release_error(lock_path: Path, mocker: MockerFixture) 
     # under a raising release and forcing collection here leaves the run clean only if __del__ swallows the error.
     lock = SoftFileLock(lock_path)
     lock.acquire()
-    mocker.patch.object(SoftFileLock, "release", side_effect=OSError("release failed"))
+    mocker.patch.object(SoftFileLock, "release", side_effect=OSError("release failed"), autospec=True)
     del lock
     gc.collect()
 
@@ -1538,71 +1580,90 @@ def test_windows_release_spares_a_replacement(lock_path: Path, mocker: MockerFix
     lock_path.unlink()
 
 
-@pytest.mark.parametrize(
-    ("policy", "surfaces"),
-    [
-        pytest.param("default", True, id="default"),
-        pytest.param("raise", True, id="raise"),
-        pytest.param("suppress", False, id="suppress"),
-    ],
-)
-def test_close_error_policy_cleans_marker(
-    lock_path: Path,
-    mocker: MockerFixture,
-    policy: CloseErrorPolicy,
-    *,
-    surfaces: bool,
-) -> None:
+@pytest.mark.parametrize("policy", ["default", "raise"])
+def test_close_error_policy_cleans_marker(lock_path: Path, mocker: MockerFixture, policy: CloseErrorPolicy) -> None:
     lock = SoftFileLock(lock_path, close_error_policy=policy)
     lock.acquire()
     with _close_after_commit(mocker, lock) as (close_error, attempts):
-        if surfaces:
-            with pytest.raises(OSError, match="close failed") as info:
-                lock.release()
-            assert info.value is close_error
-        else:
+        with pytest.raises(OSError, match="close failed") as info:
             lock.release()
+        assert info.value is close_error
     assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
-@pytest.mark.parametrize(
-    ("depth", "force"),
-    [pytest.param(2, False, id="nested"), pytest.param(2, True, id="forced")],
-)
-def test_close_error_suppression_releases_once(
-    lock_path: Path,
-    mocker: MockerFixture,
-    depth: int,
-    *,
-    force: bool,
-) -> None:
+def test_close_error_suppress_policy_cleans_marker(lock_path: Path, mocker: MockerFixture) -> None:
     lock = SoftFileLock(lock_path, close_error_policy="suppress")
-    for _acquisition in range(depth):
-        lock.acquire()
+    lock.acquire()
     with _close_after_commit(mocker, lock) as (_, attempts):
-        if force:
-            lock.release(force=True)
-        else:
-            for _release in range(depth):
-                lock.release()
+        lock.release()
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
+
+
+@contextmanager
+def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[tuple[OSError, list[int]]]:
+    real_close = os.close
+    close_error = OSError(EINTR, "close failed")
+    attempts: list[int] = []
+    # close is an attribute of the shared os module, so this patch binds for every close in the process while the
+    # window is open, including one a GC-run finalizer (a multiprocessing pipe from an earlier test, say) makes on this
+    # very thread. Fail only the descriptor this lock lets go of: it clears its bookkeeping right before the one close
+    # attempt, so record the descriptor as it does.
+    released: list[int | None] = []
+    real_mark_released = lock._mark_descriptor_released
+
+    def mark_released() -> None:
+        context: Final = lock._context
+        released.append(context.pending_lock_file_fd if context.lock_file_fd is None else context.lock_file_fd)
+        real_mark_released()
+
+    def close(fd: int) -> None:
+        real_close(fd)
+        if fd not in released:
+            return
+        attempts.append(fd)
+        raise close_error
+
+    mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_released, autospec=True)
+    close_mock = mocker.patch("filelock._soft.os.close", side_effect=close, autospec=True)
+    try:
+        yield close_error, attempts
+    finally:
+        mocker.stop(close_mock)
+
+
+def test_close_error_suppression_releases_nested_acquisitions_once(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(lock_path, close_error_policy="suppress")
+    lock.acquire()
+    lock.acquire()
+    with _close_after_commit(mocker, lock) as (_, attempts):
+        lock.release()
+        lock.release()
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
+
+
+def test_close_error_suppression_forced_release_releases_once(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(lock_path, close_error_policy="suppress")
+    lock.acquire()
+    lock.acquire()
+    with _close_after_commit(mocker, lock) as (_, attempts):
+        lock.release(force=True)
     assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
 @pytest.mark.parametrize(
-    "use_proxy",
-    [pytest.param(False, id="direct"), pytest.param(True, id="proxy")],
+    "enter",
+    [pytest.param(lambda lock: lock, id="direct"), pytest.param(SoftFileLock.acquire, id="proxy")],
 )
 def test_context_surfaces_close_error_after_cleanup(
     lock_path: Path,
     mocker: MockerFixture,
-    *,
-    use_proxy: bool,
+    enter: Callable[[SoftFileLock], AbstractContextManager[SoftFileLock]],
 ) -> None:
     lock = SoftFileLock(lock_path)
     with (
         _close_after_commit(mocker, lock) as (close_error, attempts),
         pytest.raises(OSError, match="close failed") as info,
-        lock.acquire() if use_proxy else lock,
+        enter(lock),
     ):
         pass
     assert (info.value, len(attempts), lock.is_locked, lock_path.exists()) == (close_error, 1, False, False)
@@ -1647,7 +1708,7 @@ def test_released_record_write_error_spares_successor_marker(lock_path: Path, mo
     holder.acquire()
     lock_path.unlink()
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    mocker.patch("filelock._soft.os.pwrite", side_effect=PermissionError(EACCES, "record denied"))
+    mocker.patch("filelock._soft.os.pwrite", side_effect=PermissionError(EACCES, "record denied"), autospec=True)
 
     holder.release()
 
@@ -1720,7 +1781,10 @@ def test_close_and_marker_cleanup_failures_are_grouped(  # pragma: win32 cover
     lock = SoftFileLock(lock_path)
     lock.acquire()
     cleanup_error = RuntimeError("cleanup failed")
-    unlink_mock: Final = mocker.patch("filelock._soft.unlink_path", side_effect=cleanup_error)
+    unlink_mock: Final = mocker.patch(
+        "filelock._soft.unlink_path",
+        new=mocker.create_autospec(filelock._soft.unlink_path, side_effect=cleanup_error),
+    )
     with _close_after_commit(mocker, lock) as (close_error, _attempts), pytest.raises(ExceptionGroup) as info:
         lock.release()
     mocker.stop(unlink_mock)
@@ -1740,15 +1804,17 @@ def test_close_and_marker_cleanup_failures_are_grouped(  # pragma: win32 cover
 
 
 @pytest.mark.parametrize(
-    "replaced",
-    [pytest.param(False, id="own-marker-removed"), pytest.param(True, id="replacement-spared")],
+    ("replace", "replaced"),
+    [
+        pytest.param(lambda _mocker: None, False, id="own-marker-removed"),
+        pytest.param(_hold_reports_foreign_identity, True, id="replacement-spared"),
+    ],
 )
 def test_publication_rollback_close_failure_unlinks_only_its_marker(
-    lock_path: Path, mocker: MockerFixture, *, replaced: bool
+    lock_path: Path, mocker: MockerFixture, replace: Callable[[MockerFixture], None], *, replaced: bool
 ) -> None:
-    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"))
-    if replaced:
-        _hold_reports_foreign_identity(mocker)
+    mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "No space left on device"), autospec=True)
+    replace(mocker)
     lock: Final = SoftFileLock(lock_path)
     with (
         _close_after_commit(mocker, lock) as (close_error, attempts),
@@ -1783,38 +1849,6 @@ def test_close_after_commit_ignores_other_descriptors(lock_path: Path, mocker: M
     assert (len(closed), len(attempts), attempts[0] in closed) == (4, 1, False)
 
 
-@contextmanager
-def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[tuple[OSError, list[int]]]:
-    real_close = os.close
-    close_error = OSError(EINTR, "close failed")
-    attempts: list[int] = []
-    # close is an attribute of the shared os module, so this patch binds for every close in the process while the
-    # window is open, including one a GC-run finalizer (a multiprocessing pipe from an earlier test, say) makes on this
-    # very thread. Fail only the descriptor this lock lets go of: it clears its bookkeeping right before the one close
-    # attempt, so record the descriptor as it does.
-    released: list[int | None] = []
-    real_mark_released = lock._mark_descriptor_released
-
-    def mark_released() -> None:
-        context: Final = lock._context
-        released.append(context.pending_lock_file_fd if context.lock_file_fd is None else context.lock_file_fd)
-        real_mark_released()
-
-    def close(fd: int) -> None:
-        real_close(fd)
-        if fd not in released:
-            return
-        attempts.append(fd)
-        raise close_error
-
-    mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_released)
-    close_mock = mocker.patch("filelock._soft.os.close", side_effect=close)
-    try:
-        yield close_error, attempts
-    finally:
-        mocker.stop(close_mock)
-
-
 def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Path, mocker: MockerFixture) -> None:
     # Windows can still hold a handle just after close, so the marker unlink retries on EACCES. Deny every attempt to
     # prove the retry runs and then stops, and that the denial never escapes to the caller.
@@ -1827,7 +1861,12 @@ def test_soft_windows_unlink_gives_up_after_every_attempt_is_denied(tmp_path: Pa
         "filelock._soft.time",
         new=SimpleNamespace(monotonic=time.monotonic, sleep=mocker.create_autospec(time.sleep)),
     )
-    unlink: Final = mocker.patch("filelock._soft.unlink_path", side_effect=PermissionError(EACCES, "handle still open"))
+    unlink: Final = mocker.patch(
+        "filelock._soft.unlink_path",
+        new=mocker.create_autospec(
+            filelock._soft.unlink_path, side_effect=PermissionError(EACCES, "handle still open")
+        ),
+    )
 
     lock._windows_unlink_if_ours(_file_identity(os.lstat(marker)))
     denied: Final = marker.exists()

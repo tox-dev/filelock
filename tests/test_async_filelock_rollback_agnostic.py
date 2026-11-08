@@ -20,10 +20,10 @@ async def test_release_serialized_skips_when_peer_already_released(tmp_path: Pat
     releases = 0
 
     class Lock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = 1
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             nonlocal releases
             releases += 1
             release_started.set()
@@ -53,10 +53,10 @@ async def test_release_cancellation_surfaces_backend_error(tmp_path: Path) -> No
     fail_release = True
 
     class Lock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = 1
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             if fail_release:
                 release_started.set()
                 await finish_release.wait()
@@ -90,12 +90,12 @@ async def test_acquire_cancellation_rollback_failure_surfaces_backend_error(tmp_
     fail_release = True
 
     class Lock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             acquire_started.set()
             await finish_acquire.wait()
             self._context.lock_file_fd = 1
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             if fail_release:
                 raise rollback_error
             self._context.lock_file_fd = None
@@ -124,10 +124,10 @@ async def test_registration_failure_rolls_back_and_surfaces_cleanup(tmp_path: Pa
     fail_release = True
 
     class Lock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = 1
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             if fail_release:
                 raise rollback_error
             self._context.lock_file_fd = None
@@ -138,8 +138,10 @@ async def test_registration_failure_rolls_back_and_surfaces_cleanup(tmp_path: Pa
     lock = Lock(tmp_path / "a", run_in_executor=False)
     with pytest.raises(ExceptionGroup) as info:
         await lock.acquire()
-    assert info.value.message == "descriptor registration cleanup failed"
-    assert info.value.exceptions == (registration_error, rollback_error)
+    assert (info.value.message, info.value.exceptions) == (
+        "descriptor registration cleanup failed",
+        (registration_error, rollback_error),
+    )
     assert (lock.is_locked, lock.lock_counter) == (True, 1)  # rollback failed before unlocking, so state is kept
 
     fail_release = False
@@ -148,22 +150,27 @@ async def test_registration_failure_rolls_back_and_surfaces_cleanup(tmp_path: Pa
 
 
 @pytest.mark.parametrize(
-    "rollback_fails",
-    [pytest.param(True, id="rollback-fails"), pytest.param(False, id="rollback-succeeds")],
+    ("rollback_fails", "exception_count", "expected_state"),
+    [
+        pytest.param(True, 3, (True, 1), id="rollback-fails"),
+        pytest.param(False, 2, (False, 0), id="rollback-succeeds"),
+    ],
 )
 @pytest.mark.asyncio
-async def test_acquire_failure_with_registration_failure_rolls_back(tmp_path: Path, *, rollback_fails: bool) -> None:
+async def test_acquire_failure_with_registration_failure_rolls_back(
+    tmp_path: Path, *, rollback_fails: bool, exception_count: int, expected_state: tuple[bool, int]
+) -> None:
     acquisition_error = RuntimeError("acquire failed")
     registration_error = LookupError("registration failed")
     rollback_error = OSError(EIO, "rollback release failed")
     fail_release = rollback_fails
 
     class Lock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = 1
             raise acquisition_error
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             if fail_release:
                 raise rollback_error
             self._context.lock_file_fd = None
@@ -175,13 +182,11 @@ async def test_acquire_failure_with_registration_failure_rolls_back(tmp_path: Pa
     with pytest.raises(ExceptionGroup) as info:
         await lock.acquire()
     assert info.value.message == "lock acquisition cleanup failed"
-    if rollback_fails:
-        assert info.value.exceptions == (acquisition_error, registration_error, rollback_error)
-        assert (lock.is_locked, lock.lock_counter) == (True, 1)  # rollback failed before unlocking, so state is kept
-        fail_release = False
-        await lock.release()
-    else:
-        assert info.value.exceptions == (acquisition_error, registration_error)
+    expected = (acquisition_error, registration_error, rollback_error)
+    assert info.value.exceptions == expected[:exception_count]
+    assert (lock.is_locked, lock.lock_counter) == expected_state
+    fail_release = False
+    await lock.release()
     assert (lock.is_locked, lock.lock_counter) == (False, 0)
 
 
@@ -194,10 +199,10 @@ async def test_context_group_reconciles_release_cancellation_with_backend_error(
     fail_release = True
 
     class Lock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = 1
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]
+        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
             if fail_release:
                 release_started.set()
                 await finish_release.wait()

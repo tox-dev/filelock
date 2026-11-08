@@ -61,8 +61,7 @@ def test_child_cleanup_preserves_parent_lock(
     def cleanup_child() -> NoReturn:
         _run_child_cleanup(lock, proxy, action)
 
-    child_pid = fork_process(cleanup_child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(cleanup_child), 0)
 
     assert os.waitstatus_to_exitcode(status) == 0
     assert not _probe_lock(lock_type, path)
@@ -93,8 +92,7 @@ def test_async_child_release_preserves_parent_lock(
         asyncio.run(lock.release(force=True))
         exit_child(0 if state == (False, 0) else 1)
 
-    child_pid = fork_process(release_child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(release_child), 0)
 
     assert os.waitstatus_to_exitcode(status) == 0
     assert not _probe_lock(sync_lock_type, path)
@@ -119,8 +117,7 @@ def test_soft_read_write_resets_older_same_path_instance(tmp_path: Path) -> None
         older.release()
         exit_child(0)
 
-    child_pid = fork_process(inherited_child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(inherited_child), 0)
 
     assert os.waitstatus_to_exitcode(status) == 0
     contender = SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5)
@@ -139,8 +136,7 @@ def test_child_closes_descriptor_held_by_vanished_thread(tmp_path: Path) -> None
     acquired, release = threading.Event(), threading.Event()
 
     def hold_lock() -> None:
-        lock = FileLock(path, thread_local=True, is_singleton=False, on_acquired=descriptor.put)
-        with lock:
+        with FileLock(path, thread_local=True, is_singleton=False, on_acquired=descriptor.put):
             acquired.set()
             release.wait()
 
@@ -152,8 +148,7 @@ def test_child_closes_descriptor_held_by_vanished_thread(tmp_path: Path) -> None
     def descriptor_child() -> NoReturn:
         _assert_descriptor_closed(fd)
 
-    child_pid = fork_process(descriptor_child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(descriptor_child), 0)
     release.set()
     worker.join(timeout=5)
 
@@ -163,8 +158,7 @@ def test_child_closes_descriptor_held_by_vanished_thread(tmp_path: Path) -> None
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFixture) -> None:
-    path = str(tmp_path / "parent.lock")
-    lock = FileLock(path, thread_local=False, is_singleton=False)
+    lock = FileLock(str(tmp_path / "parent.lock"), thread_local=False, is_singleton=False)
     entered, proceed, acquired = threading.Event(), threading.Event(), threading.Event()
     descriptors: list[int] = []
     real_fstat = os.fstat
@@ -176,7 +170,7 @@ def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFi
             proceed.wait()
         return real_fstat(fd)
 
-    mocker.patch("os.fstat", side_effect=delayed_fstat)
+    mocker.patch("os.fstat", side_effect=delayed_fstat, autospec=True)
 
     def acquire_lock() -> None:
         lock.acquire()
@@ -191,8 +185,7 @@ def test_fork_waits_for_descriptor_registration(tmp_path: Path, mocker: MockerFi
     def descriptor_child() -> NoReturn:
         _assert_descriptor_closed(descriptors[0])
 
-    child_pid = fork_process(descriptor_child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(descriptor_child), 0)
     timer.join(timeout=5)
     worker.join(timeout=5)
 
@@ -213,7 +206,7 @@ def test_unrelated_acquisitions_reach_filesystem_boundary_concurrently(  # pragm
             boundary.wait()
         return real_fstat(fd)
 
-    mocker.patch("os.fstat", side_effect=wait_at_boundary)
+    mocker.patch("os.fstat", side_effect=wait_at_boundary, autospec=True)
 
     def acquire_lock(path: str) -> None:
         with FileLock(path, is_singleton=False):
@@ -246,11 +239,9 @@ def test_child_singleton_registry_drops_parent_instance(tmp_path: Path, lock_typ
     parent_lock = lock_type(path, is_singleton=True)
 
     def singleton_child() -> NoReturn:
-        child_lock = lock_type(path, is_singleton=True)
-        exit_child(0 if child_lock is not parent_lock else 1)
+        exit_child(0 if lock_type(path, is_singleton=True) is not parent_lock else 1)
 
-    child_pid = fork_process(singleton_child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(singleton_child), 0)
 
     assert os.waitstatus_to_exitcode(status) == 0
 
@@ -268,8 +259,7 @@ def test_inherited_idle_lock_rejects_acquire(tmp_path: Path, lock_type: type[Bas
             exit_child(0 if "inherited across fork" in str(exception) else 1)
         exit_child(1)
 
-    child_pid = fork_process(inherited_child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(inherited_child), 0)
 
     assert os.waitstatus_to_exitcode(status) == 0
 
@@ -289,8 +279,7 @@ def test_inherited_idle_async_lock_rejects_acquire(tmp_path: Path, lock_type: ty
             exit_child(0 if "inherited across fork" in str(exception) else 1)
         exit_child(1)
 
-    child_pid = fork_process(inherited_child)
-    _, status = os.waitpid(child_pid, 0)
+    _, status = os.waitpid(fork_process(inherited_child), 0)
 
     assert os.waitstatus_to_exitcode(status) == 0
 

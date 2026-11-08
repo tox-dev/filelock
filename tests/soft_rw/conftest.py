@@ -5,12 +5,10 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
-    from unittest.mock import MagicMock
-
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 
 @pytest.fixture
-def flushes(mocker: MockerFixture) -> MagicMock:
+def flushes(mocker: MockerFixture) -> MockType:
     # These tests commit by the hundred, and one flush can take a Windows runner most of a second.
     return mocker.patch("filelock._soft_rw._storage.os.fsync", autospec=True)

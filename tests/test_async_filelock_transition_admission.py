@@ -17,9 +17,9 @@ from tests.async_filelock_cancellation_helpers import (
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from concurrent.futures import Future as ConcurrentFuture
     from pathlib import Path
-    from typing import Literal
 
     from pytest_mock import MockerFixture
 
@@ -28,18 +28,43 @@ _UNIX_FLOCK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 )
 
 
+async def _acquire_nonblocking(lock: AsyncFileLock) -> None:
+    with pytest.raises(Timeout):
+        await lock.acquire(blocking=False)
+
+
+async def _acquire_finite_deadline(lock: AsyncFileLock) -> None:
+    with pytest.raises(Timeout):
+        await lock.acquire(timeout=0.01)
+
+
+async def _acquire_cancelled_by_check(lock: AsyncFileLock) -> None:
+    cancel_second = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def acquire_second() -> None:
+        second_started.set()
+        await lock.acquire(cancel_check=cancel_second.is_set, poll_interval=0.001)
+
+    second_task = asyncio.create_task(acquire_second())
+    await second_started.wait()
+    cancel_second.set()
+    with pytest.raises(Timeout):
+        await second_task
+
+
 @pytest.mark.parametrize(
     "admission",
     [
-        pytest.param("nonblocking", id="nonblocking"),
-        pytest.param("deadline", id="finite-deadline"),
-        pytest.param("cancel-check", id="cancel-check"),
+        pytest.param(_acquire_nonblocking, id="nonblocking"),
+        pytest.param(_acquire_finite_deadline, id="finite-deadline"),
+        pytest.param(_acquire_cancelled_by_check, id="cancel-check"),
     ],
 )
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_queued_acquire_honors_own_admission_policy(
-    tmp_path: Path, admission: Literal["nonblocking", "deadline", "cancel-check"]
+    tmp_path: Path, admission: Callable[[AsyncFileLock], Awaitable[None]]
 ) -> None:
     first_polled = asyncio.Event()
 
@@ -53,25 +78,7 @@ async def test_queued_acquire_honors_own_admission_policy(
     first_task = asyncio.create_task(lock.acquire(cancel_check=observe_first_poll, poll_interval=0.001))
     try:
         await first_polled.wait()
-        if admission == "nonblocking":
-            with pytest.raises(Timeout):
-                await lock.acquire(blocking=False)
-        elif admission == "deadline":
-            with pytest.raises(Timeout):
-                await lock.acquire(timeout=0.01)
-        else:
-            cancel_second = asyncio.Event()
-            second_started = asyncio.Event()
-
-            async def acquire_second() -> None:
-                second_started.set()
-                await lock.acquire(cancel_check=cancel_second.is_set, poll_interval=0.001)
-
-            second_task = asyncio.create_task(acquire_second())
-            await second_started.wait()
-            cancel_second.set()
-            with pytest.raises(Timeout):
-                await second_task
+        await admission(lock)
         assert not first_task.done()
     finally:
         finish_holder.set()
@@ -110,6 +117,11 @@ async def test_acquire_interrupted_while_joining_the_gate_leaves_the_lock_usable
 
     assert lock.is_locked
     await lock.release()
+
+
+class _Interrupt(BaseException):
+    # Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt.
+    ...
 
 
 @pytest.mark.asyncio
@@ -213,7 +225,3 @@ async def test_thread_local_lock_releases_while_another_thread_waits_for_it(
 
     await waiter
     assert not lock.is_locked
-
-
-class _Interrupt(BaseException):
-    """Stands in for an exception a signal handler raises, without pytest treating it as a KeyboardInterrupt."""

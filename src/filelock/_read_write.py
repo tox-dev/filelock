@@ -80,7 +80,6 @@ _DatabaseIdentity: TypeAlias = tuple[int, int]
 _MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
 # How long a wait that its caller may abandon runs before it checks whether it should stop.
 _CANCEL_POLL_INTERVAL: Final[float] = 0.1
-_UNSAFE_FORK_EXIT_STATUS: Final[int] = 70
 #: The longest a contended acquisition waits for the database inside one fork transition, in seconds.
 _MAX_TRANSITION_WAIT: Final[float] = 0.05
 # O_NONBLOCK keeps an open from blocking on a FIFO planted at the path; the regular-file check then rejects it.
@@ -89,15 +88,13 @@ _DIRECTORY_FLAGS: Final[int] = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | get
 # Header bytes 18 and 19 hold the file format versions, 2 in WAL mode: https://www.sqlite.org/fileformat.html
 _SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
 _FORMAT_VERSIONS: Final[slice] = slice(18, 20)
-_HEADER_SIZE: Final[int] = 20
-_WAL_FORMAT_VERSION: Final[int] = 2
 
 
 class _SQLiteTransitionContext(threading.local):
     depth: int = 0
 
 
-_SQLITE_TRANSITION_CONTEXT: Final = _SQLiteTransitionContext()
+_SQLITE_TRANSITION_CONTEXT: Final[_SQLiteTransitionContext] = _SQLiteTransitionContext()
 
 
 class _ConnectionEscrow:
@@ -130,7 +127,7 @@ class _ConnectionEscrow:
         self._lock = threading.RLock()
 
 
-_CONNECTION_ESCROW: Final = _ConnectionEscrow()
+_CONNECTION_ESCROW: Final[_ConnectionEscrow] = _ConnectionEscrow()
 
 
 class _ForkedDatabaseRegistry:
@@ -156,6 +153,14 @@ class _ForkedDatabaseRegistry:
             )
             raise RuntimeError(msg)
 
+    @staticmethod
+    def identity(path: pathlib.Path) -> _DatabaseIdentity | None:
+        try:
+            stat_result = path.stat()
+        except OSError:
+            return None
+        return stat_result.st_dev, stat_result.st_ino
+
     def poison_after_fork(self, path: pathlib.Path, identity: _DatabaseIdentity | None) -> None:
         self._paths.add(path)
         if identity is not None:
@@ -171,16 +176,8 @@ class _ForkedDatabaseRegistry:
         self._all_paths_poisoned = self._all_paths_poisoned or (_IS_PYPY and self._sqlite_used)
         self._sqlite_used = False
 
-    @staticmethod
-    def identity(path: pathlib.Path) -> _DatabaseIdentity | None:
-        try:
-            stat_result = path.stat()
-        except OSError:
-            return None
-        return stat_result.st_dev, stat_result.st_ino
 
-
-_FORKED_DATABASES: Final = _ForkedDatabaseRegistry()
+_FORKED_DATABASES: Final[_ForkedDatabaseRegistry] = _ForkedDatabaseRegistry()
 
 _LINK_PREFIX: Final[str] = ".filelock-"
 _LINK_NAME: Final[str] = "lock.db"
@@ -281,14 +278,14 @@ class _Probe(NamedTuple):
     lease: int
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _InodeProbes:
     leases: set[int] = field(default_factory=set)
     descriptors: list[tuple[int, int | None]] = field(default_factory=list)
     idle: list[int] = field(default_factory=list)
 
 
-_PROBE_DESCRIPTORS: Final = _ProbeDescriptors()
+_PROBE_DESCRIPTORS: Final[_ProbeDescriptors] = _ProbeDescriptors()
 
 
 class _ForkSafeConnection(sqlite3.Connection):
@@ -309,6 +306,10 @@ class _ForkSafeConnection(sqlite3.Connection):
         connection._database_directory = None
         return connection
 
+    def __del__(self) -> None:
+        with suppress(sqlite3.Error, RuntimeError, OSError):
+            self.close()
+
     def close(self) -> None:
         with _sqlite_transition():
             if _GETPID() != self._creator_pid:  # pragma: needs fork
@@ -328,11 +329,11 @@ class _ForkSafeConnection(sqlite3.Connection):
                     decrement(self)
 
     def retain_link(self, directory: _LinkDirectory | None) -> None:  # pragma: win32 cover
-        """Keep the private link directory, if there is one, until SQLite no longer uses it."""
+        # Keep the private link directory, if there is one, until SQLite no longer uses it.
         self._database_directory = directory
 
     def retain_until_close(self, directory: _LinkDirectory | None, probe: _Probe) -> None:  # pragma: win32 no cover
-        """Keep the private link and this connection's probe descriptor until SQLite no longer uses them."""
+        # Keep the private link and this connection's probe descriptor until SQLite no longer uses them.
         self._database_directory = directory
         self._probe = probe
         self.database_identity = probe.identity
@@ -347,23 +348,18 @@ class _ForkSafeConnection(sqlite3.Connection):
             increment(self)
             self._decrement_escrow = decrement
 
-    def __del__(self) -> None:
-        with suppress(sqlite3.Error, RuntimeError, OSError):
-            self.close()
 
-
-@dataclass(slots=True)
 class _OwnedConnection:
-    """
-    The connection of one lock, closed when the lock is collected.
+    # The connection of one lock, closed when the lock is collected.
+    #
+    # CPython runs ``__del__`` before it clears weak references. A finalizer on the lock itself would close the
+    # connection while the singleton cache still hands the lock out, and a thread given the lock would nest into a hold
+    # with no database lock behind it. The lock alone refers to this holder, so the holder is collected once the cache
+    # no longer finds the lock.
+    __slots__ = ("connection",)
 
-    CPython runs ``__del__`` before it clears weak references. A finalizer on the lock itself would close the
-    connection while the singleton cache still hands the lock out, and a thread given the lock would nest into a hold
-    with no database lock behind it. The lock alone refers to this holder, so the holder is collected once the cache no
-    longer finds the lock.
-    """
-
-    connection: _ForkSafeConnection | None = None
+    def __init__(self) -> None:
+        self.connection: _ForkSafeConnection | None = None
 
     def __del__(self) -> None:
         if (connection := self.connection) is not None:
@@ -372,14 +368,10 @@ class _OwnedConnection:
 
 
 class _ReadWriteLockMeta(type):
-    """
-    Resolve singleton instances for ``is_singleton=True`` construction.
-
-    This logic lives here rather than in ReadWriteLock.get_lock so ``ReadWriteLock(path)`` returns cached instances
-    without a 2-arg ``super()`` call that type checkers cannot verify.
-
-    """
-
+    # Resolve singleton instances for ``is_singleton=True`` construction.
+    #
+    # This logic lives here rather than in ReadWriteLock.get_lock so ``ReadWriteLock(path)`` returns cached instances
+    # without a 2-arg ``super()`` call that type checkers cannot verify.
     _instances: WeakValueDictionary[pathlib.Path, ReadWriteLock]
     _instances_lock: threading.RLock
     _instances_pid: int
@@ -489,24 +481,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         cls._instances_under_construction = set()
         _register_fork_class(cls)
 
-    @classmethod
-    def get_lock(
-        cls, lock_file: str | os.PathLike[str], timeout: float = -1, *, blocking: bool = True
-    ) -> ReadWriteLock:
-        """
-        Return the singleton :class:`ReadWriteLock` for *lock_file*.
-
-        :param lock_file: path to the SQLite database file used as the lock
-        :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
-
-        :returns: the singleton lock instance
-
-        :raises ValueError: if an instance already exists for this path with different *timeout* or *blocking* values
-
-        """
-        return cls(lock_file, timeout, blocking=blocking)
-
     def __init__(
         self,
         lock_file: str | os.PathLike[str],
@@ -535,8 +509,69 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._fork_invalidated = False
         _register_fork_object(self)
         with _fork_transition(), _sqlite_transition():
-            validation_connection = self._open_connection(sqlite_timeout=5.0)
-            validation_connection.close()
+            self._open_connection(sqlite_timeout=5.0).close()
+
+    def _open_connection(self, *, sqlite_timeout: float) -> _ForkSafeConnection:
+        with _sqlite_transition():
+            creator_pid = _GETPID()
+            functions = _CONNECTION_ESCROW.functions()
+            if _GETPID() != creator_pid:  # pragma: forked child
+                msg = "SQLite connection construction cannot continue after fork"
+                raise RuntimeError(msg)
+            try:
+                connection = _connect(
+                    os.fspath(self._canonical_path),
+                    factory=_ForkSafeConnection,
+                    timeout=sqlite_timeout,
+                )
+            except BlockingIOError:
+                raise Timeout(self.lock_file) from None
+            if functions is not None:  # pragma: <3.12 cover  # pragma: needs fork
+                connection.acquire_escrow(functions)
+            if _GETPID() != creator_pid:  # pragma: forked child
+                _FORKED_DATABASES.poison_after_fork(
+                    self._canonical_path,
+                    _FORKED_DATABASES.identity(self._canonical_path),
+                )
+                msg = "SQLite connection construction cannot continue after fork"
+                raise RuntimeError(msg)
+            return connection
+
+    @classmethod
+    def get_lock(
+        cls, lock_file: str | os.PathLike[str], timeout: float = -1, *, blocking: bool = True
+    ) -> ReadWriteLock:
+        """
+        Return the singleton :class:`ReadWriteLock` for *lock_file*.
+
+        :param lock_file: path to the SQLite database file used as the lock
+        :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+
+        :returns: the singleton lock instance
+
+        :raises ValueError: if an instance already exists for this path with different *timeout* or *blocking* values
+
+        """
+        return cls(lock_file, timeout, blocking=blocking)
+
+    @contextmanager
+    def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
+        """
+        Context manager that acquires and releases a shared read lock.
+
+        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
+
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the shared read lock is held
+
+        """
+        self.acquire_read(timeout, blocking=blocking)
+        try:
+            yield
+        finally:
+            self.release()
 
     def acquire_read(self, timeout: float | None = None, *, blocking: bool | None = None) -> AcquireReturnProxy:
         """
@@ -563,228 +598,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self.timeout if timeout is None else timeout,
             blocking=self.blocking if blocking is None else blocking,
         )
-
-    def acquire_write(self, timeout: float | None = None, *, blocking: bool | None = None) -> AcquireReturnProxy:
-        """
-        Acquire an exclusive write lock.
-
-        If this instance already holds a write lock from the same thread, the lock level is incremented (reentrant).
-        Attempting to acquire a write lock while holding a read lock raises :class:`RuntimeError` (upgrade not allowed).
-        Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
-        :class:`RuntimeError`.
-
-        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
-            busy-timeout cap of about 23 days
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
-            ``None`` uses the instance setting
-
-        :returns: a proxy that can be used as a context manager to release the lock
-
-        :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
-        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
-        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
-
-        """
-        return self._acquire(
-            "write",
-            self.timeout if timeout is None else timeout,
-            blocking=self.blocking if blocking is None else blocking,
-        )
-
-    @contextmanager
-    def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
-        """
-        Context manager that acquires and releases a shared read lock.
-
-        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
-
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
-        """
-        self.acquire_read(timeout, blocking=blocking)
-        try:
-            yield
-        finally:
-            self.release()
-
-    @contextmanager
-    def write_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
-        """
-        Context manager that acquires and releases an exclusive write lock.
-
-        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
-
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
-        """
-        self.acquire_write(timeout, blocking=blocking)
-        try:
-            yield
-        finally:
-            self.release()
-
-    def release(self, *, force: bool = False) -> None:
-        """
-        Release one level of the current lock.
-
-        When the lock level reaches zero the underlying SQLite transaction is rolled back, releasing the database lock.
-
-        :param force: if ``True``, release the lock completely regardless of the current lock level
-
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if the calling thread holds
-            no level of the current lock and *force* is ``False``
-
-        """
-        with _fork_transition():
-            _ensure_current_process()
-            if self._inherited:  # pragma: needs fork
-                return
-            self._raise_if_acquiring("release")
-            self._release(force=force, close=False)
-
-    def close(self) -> None:
-        """
-        Release the lock (if held) and close the underlying SQLite connection.
-
-        After calling this method, the lock instance is no longer usable. Unlike :meth:`release`, it ends every
-        thread's hold on this instance, whichever thread calls it.
-
-        """
-        with _fork_transition():
-            _ensure_current_process()
-            if self._inherited:  # pragma: needs fork
-                return
-            self._raise_if_acquiring("close")
-            self._release(force=True, close=True)
-
-    def _acquire_level_of(
-        self,
-        holder: int,
-        mode: Literal["read", "write"],
-        timeout: float,
-        *,
-        blocking: bool,
-        cancel_check: Callable[[], bool],
-    ) -> AcquireReturnProxy:
-        # Records the level under *holder* instead of the calling thread: an async wrapper's executor thread does not
-        # identify the tasks it holds for. Gives up with Timeout once *cancel_check* is true.
-        return self._acquire(mode, timeout, blocking=blocking, holder=holder, cancel_check=cancel_check)
-
-    def _release_level_of(self, thread_id: int) -> None:
-        with _fork_transition():
-            _ensure_current_process()
-            self._raise_if_acquiring("release")
-            self._release(force=False, close=False, thread_id=thread_id)
-
-    def _holds_level_of(self, thread_id: int) -> bool:
-        # Read without the internal lock. The async wrapper asks from its event loop, which must not wait out a release
-        # on another thread. A stale answer is what a caller asking a moment earlier would have had. A level whose
-        # transaction ended is one an interrupted release left behind; it counts as gone, as _holds_level() treats it.
-        if thread_id != self._write_thread_id and thread_id not in self._read_depths:
-            return False
-        try:
-            return not self._transaction_ended()
-        except sqlite3.ProgrammingError:
-            # The connection closed between the read of _con and the in_transaction call, so the transaction is over.
-            return False
-
-    def _release(self, *, force: bool, close: bool, thread_id: int | None = None) -> None:
-        thread_id = threading.get_ident() if thread_id is None else thread_id
-        with self._transaction_lock, self._internal_lock:
-            if not force:
-                self._raise_if_not_holder(thread_id)
-            if self._lock_level == 0:
-                if force and self._con is None:
-                    if close:
-                        self._closed = True
-                    return
-                if not force:
-                    msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
-                    raise RuntimeError(msg)
-            if not force and self._lock_level > 1:
-                self._leave_one_level(thread_id)
-                return
-            try:
-                self._finish_connection()
-            except BaseException:
-                # Once the rollback ran, the level is gone whatever stopped the cleanup, a signal handler's exception
-                # included. Kept, it would let the next acquire nest into a transaction that no longer exists.
-                if self._transaction_ended():
-                    self._clear_lock_state()
-                raise
-            self._clear_lock_state()
-            if close:
-                self._closed = True
-
-    def _transaction_ended(self) -> bool:
-        if self._connection_transaction_released or (connection := self._con) is None:
-            return True
-        # An interrupt can land between the rollback and the flag that records it.
-        return not connection.in_transaction
-
-    def _raise_if_not_holder(self, thread_id: int) -> None:
-        # The connection runs with check_same_thread=False, so a release from another thread would end the owner's
-        # transaction under it and let a second writer in.
-        if self._current_mode == "write" and thread_id != self._write_thread_id:
-            msg = (
-                f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {thread_id} while it is held by thread {self._write_thread_id}"
-            )
-            raise RuntimeError(msg)
-        # Readers share that one transaction too, so a thread that holds no read level would end another's hold.
-        if self._current_mode == "read" and thread_id not in self._read_depths:
-            msg = (
-                f"Cannot release read lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {thread_id}, which does not hold it"
-            )
-            raise RuntimeError(msg)
-
-    def _leave_one_level(self, thread_id: int) -> None:
-        self._lock_level -= 1
-        if self._current_mode == "read" and (depth := self._read_depths.pop(thread_id) - 1):
-            self._read_depths[thread_id] = depth
-
-    def _clear_lock_state(self) -> None:
-        self._lock_level = 0
-        self._current_mode = None
-        self._write_thread_id = None
-        self._read_depths = {}
-
-    @property
-    def _con(self) -> _ForkSafeConnection | None:
-        return self._owned_connection.connection
-
-    @_con.setter
-    def _con(self, connection: _ForkSafeConnection | None) -> None:
-        self._owned_connection.connection = connection
-
-    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
-        if self._con is not None:
-            _FORKED_DATABASES.poison_after_fork(self._canonical_path, self._connection_identity)
-        self._con = None
-        self._connection_transaction_released = True
-        self._connection_identity = None
-        self._transaction_lock = threading.Lock()
-        self._internal_lock = threading.Lock()
-        self._clear_lock_state()
-        self._acquisition_thread_ids = set()
-        self._fork_invalidated = True
-
-    @property
-    def _inherited(self) -> bool:
-        return self._fork_invalidated or _GETPID() != self._creator_pid
-
-    def _raise_if_unusable(self) -> None:
-        _ensure_current_process()
-        if self._inherited:  # pragma: needs fork
-            msg = f"ReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
-            raise RuntimeError(msg)
-        if self._closed:
-            msg = "Cannot operate on a closed database."
-            raise sqlite3.ProgrammingError(msg)
 
     def _acquire(
         self,
@@ -863,6 +676,81 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 with self._internal_lock:
                     self._acquisition_thread_ids.discard(thread_id)
 
+    def _raise_if_unusable(self) -> None:
+        _ensure_current_process()
+        if self._inherited:  # pragma: needs fork
+            msg = f"ReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
+            raise RuntimeError(msg)
+        if self._closed:
+            msg = "Cannot operate on a closed database."
+            raise sqlite3.ProgrammingError(msg)
+
+    @property
+    def _inherited(self) -> bool:
+        return self._fork_invalidated or _GETPID() != self._creator_pid
+
+    def _holds_level(self) -> bool:
+        # A release interrupted after its rollback, but before it recorded that, leaves a level with no transaction.
+        if self._lock_level > 0 and self._transaction_ended():
+            self._clear_lock_state()
+        return self._lock_level > 0
+
+    def _transaction_ended(self) -> bool:
+        if self._connection_transaction_released or (connection := self._con) is None:
+            return True
+        # An interrupt can land between the rollback and the flag that records it.
+        return not connection.in_transaction
+
+    @property
+    def _con(self) -> _ForkSafeConnection | None:
+        return self._owned_connection.connection
+
+    @_con.setter
+    def _con(self, connection: _ForkSafeConnection | None) -> None:
+        self._owned_connection.connection = connection
+
+    def _clear_lock_state(self) -> None:
+        self._lock_level = 0
+        self._current_mode = None
+        self._write_thread_id = None
+        self._read_depths = {}
+
+    def _validate_reentrant(self, mode: Literal["read", "write"], cur: int) -> AcquireReturnProxy:
+        if self._current_mode != mode:
+            opposite = "write" if mode == "read" else "read"
+            if cur == self._write_thread_id or cur in self._read_depths:
+                direction = "downgrade" if mode == "read" else "upgrade"
+                reason = f"already holding a {opposite} lock ({direction} not allowed)"
+            else:
+                reason = (
+                    f"another thread holds a {opposite} lock on this instance, which coordinates processes rather "
+                    "than threads; give each thread its own instance with is_singleton=False"
+                )
+            msg = f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): {reason}"
+            raise RuntimeError(msg)
+        if mode == "write" and cur != self._write_thread_id:
+            msg = (
+                f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {cur} while it is held by thread {self._write_thread_id}"
+            )
+            raise RuntimeError(msg)
+        if mode == "read":
+            self._read_depths[cur] = self._read_depths.get(cur, 0) + 1
+        self._lock_level += 1
+        return AcquireReturnProxy(lock=self)
+
+    def _acquire_transaction_lock(
+        self, *, blocking: bool, timeout: float, cancel_check: Callable[[], bool] | None
+    ) -> None:
+        if not _acquire_thread_lock(
+            self._transaction_lock,
+            blocking=blocking,
+            timeout=timeout,
+            poll_interval=_CANCEL_POLL_INTERVAL,
+            cancel_check=cancel_check,
+        ):
+            raise Timeout(self.lock_file) from None
+
     def _do_acquire_inner(
         self,
         mode: Literal["read", "write"],
@@ -890,7 +778,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._raise_if_process_changed(operation_pid)
         except BaseException as error:
             acquisition_error: BaseException
-            if isinstance(error, sqlite3.OperationalError) and "database is locked" in str(error):
+            if isinstance(error, sqlite3.OperationalError) and error.sqlite_errorcode == sqlite3.SQLITE_BUSY:
                 acquisition_error = Timeout(self.lock_file)
             else:
                 acquisition_error = error
@@ -910,6 +798,36 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             else:
                 self._read_depths = {holder: 1}
         return AcquireReturnProxy(lock=self)
+
+    def _finish_connection(self) -> None:
+        with _sqlite_transition():
+            if (connection := self._con) is None:
+                return
+            rollback_error: sqlite3.Error | None = None
+            if not self._connection_transaction_released:
+                if connection.in_transaction:
+                    try:
+                        connection.rollback()
+                    except sqlite3.Error as error:
+                        if connection.in_transaction:
+                            raise
+                        self._connection_transaction_released = True
+                        rollback_error = error
+                    else:
+                        self._connection_transaction_released = True
+                else:
+                    self._connection_transaction_released = True
+            try:
+                connection.close()
+            except sqlite3.Error as close_error:
+                if rollback_error is not None:
+                    _raise_chained_errors(rollback_error, close_error)
+                raise
+            self._con = None
+            self._connection_transaction_released = True
+            self._connection_identity = None
+            if rollback_error is not None:
+                raise rollback_error
 
     def _open_for_acquisition(self, timeout: float, *, blocking: bool, operation_pid: int, start_time: float) -> None:
         with _sqlite_transition():
@@ -961,6 +879,19 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 self._execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
             self._raise_if_database_replaced(connection)
 
+    def _raise_if_database_replaced(self, connection: _ForkSafeConnection) -> None:
+        # Windows pins the name: SQLite opens the database without delete sharing, so it cannot be unlinked or renamed.
+        if (identity := connection.database_identity) is None:  # pragma: win32 cover
+            return
+        try:  # pragma: win32 no cover
+            current = self._canonical_path.stat(follow_symlinks=False)
+        except FileNotFoundError:  # pragma: win32 no cover
+            current = None
+        # The lock lives on the inode, so one taken after the path moved on excludes no later opener.
+        if current is None or (current.st_dev, current.st_ino) != identity:  # pragma: win32 no cover
+            msg = f"lock database {self.lock_file!r} was unlinked or replaced while acquiring; leave it in place"
+            raise OSError(msg)
+
     @staticmethod
     def _execute_waiting(
         connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
@@ -978,7 +909,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     f"PRAGMA busy_timeout={busy_ms if cancel_check is None else slice_ms}; {statements}"
                 ).close()
             except sqlite3.OperationalError as error:
-                if cancel_check is None or "database is locked" not in str(error) or cancel_check():
+                if cancel_check is None or error.sqlite_errorcode != sqlite3.SQLITE_BUSY or cancel_check():
                     raise
                 # A read's BEGIN succeeds before its SELECT waits, so the retry has to start a fresh transaction.
                 if connection.in_transaction:
@@ -986,116 +917,29 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             else:
                 return
 
-    def _raise_if_database_replaced(self, connection: _ForkSafeConnection) -> None:
-        # Windows pins the name: SQLite opens the database without delete sharing, so it cannot be unlinked or renamed.
-        if (identity := connection.database_identity) is None:  # pragma: win32 cover
-            return
-        try:  # pragma: win32 no cover
-            current = self._canonical_path.stat(follow_symlinks=False)
-        except FileNotFoundError:  # pragma: win32 no cover
-            current = None
-        # The lock lives on the inode, so one taken after the path moved on excludes no later opener.
-        if current is None or (current.st_dev, current.st_ino) != identity:  # pragma: win32 no cover
-            msg = f"lock database {self.lock_file!r} was unlinked or replaced while acquiring; leave it in place"
-            raise OSError(msg)
+    def _raise_if_process_changed(self, operation_pid: int) -> None:
+        if _GETPID() != operation_pid or self._inherited:  # pragma: forked child
+            msg = f"ReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
+            raise RuntimeError(msg)
 
-    def _open_connection(self, *, sqlite_timeout: float) -> _ForkSafeConnection:
-        with _sqlite_transition():
-            creator_pid = _GETPID()
-            functions = _CONNECTION_ESCROW.functions()
-            if _GETPID() != creator_pid:  # pragma: forked child
-                msg = "SQLite connection construction cannot continue after fork"
-                raise RuntimeError(msg)
-            try:
-                connection = _connect(
-                    os.fspath(self._canonical_path),
-                    factory=_ForkSafeConnection,
-                    timeout=sqlite_timeout,
-                )
-            except BlockingIOError:
-                raise Timeout(self.lock_file) from None
-            if functions is not None:  # pragma: <3.12 cover  # pragma: needs fork
-                connection.acquire_escrow(functions)
-            if _GETPID() != creator_pid:  # pragma: forked child
-                _FORKED_DATABASES.poison_after_fork(
-                    self._canonical_path,
-                    _FORKED_DATABASES.identity(self._canonical_path),
-                )
-                msg = "SQLite connection construction cannot continue after fork"
-                raise RuntimeError(msg)
-            return connection
+    def release(self, *, force: bool = False) -> None:
+        """
+        Release one level of the current lock.
 
-    def _finish_connection(self) -> None:
-        with _sqlite_transition():
-            if (connection := self._con) is None:
+        When the lock level reaches zero the underlying SQLite transaction is rolled back, releasing the database lock.
+
+        :param force: if ``True``, release the lock completely regardless of the current lock level
+
+        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if the calling thread holds
+            no level of the current lock and *force* is ``False``
+
+        """
+        with _fork_transition():
+            _ensure_current_process()
+            if self._inherited:  # pragma: needs fork
                 return
-            rollback_error: sqlite3.Error | None = None
-            if not self._connection_transaction_released:
-                if connection.in_transaction:
-                    try:
-                        connection.rollback()
-                    except sqlite3.Error as error:
-                        if connection.in_transaction:
-                            raise
-                        self._connection_transaction_released = True
-                        rollback_error = error
-                    else:
-                        self._connection_transaction_released = True
-                else:
-                    self._connection_transaction_released = True
-            try:
-                connection.close()
-            except sqlite3.Error as close_error:
-                if rollback_error is not None:
-                    _raise_chained_errors(rollback_error, close_error)
-                raise
-            self._con = None
-            self._connection_transaction_released = True
-            self._connection_identity = None
-            if rollback_error is not None:
-                raise rollback_error
-
-    def _holds_level(self) -> bool:
-        # A release interrupted after its rollback, but before it recorded that, leaves a level with no transaction.
-        if self._lock_level > 0 and self._transaction_ended():
-            self._clear_lock_state()
-        return self._lock_level > 0
-
-    def _validate_reentrant(self, mode: Literal["read", "write"], cur: int) -> AcquireReturnProxy:
-        if self._current_mode != mode:
-            opposite = "write" if mode == "read" else "read"
-            if cur == self._write_thread_id or cur in self._read_depths:
-                direction = "downgrade" if mode == "read" else "upgrade"
-                reason = f"already holding a {opposite} lock ({direction} not allowed)"
-            else:
-                reason = (
-                    f"another thread holds a {opposite} lock on this instance, which coordinates processes rather "
-                    "than threads; give each thread its own instance with is_singleton=False"
-                )
-            msg = f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): {reason}"
-            raise RuntimeError(msg)
-        if mode == "write" and cur != self._write_thread_id:
-            msg = (
-                f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {cur} while it is held by thread {self._write_thread_id}"
-            )
-            raise RuntimeError(msg)
-        if mode == "read":
-            self._read_depths[cur] = self._read_depths.get(cur, 0) + 1
-        self._lock_level += 1
-        return AcquireReturnProxy(lock=self)
-
-    def _acquire_transaction_lock(
-        self, *, blocking: bool, timeout: float, cancel_check: Callable[[], bool] | None
-    ) -> None:
-        if not _acquire_thread_lock(
-            self._transaction_lock,
-            blocking=blocking,
-            timeout=timeout,
-            poll_interval=_CANCEL_POLL_INTERVAL,
-            cancel_check=cancel_check,
-        ):
-            raise Timeout(self.lock_file) from None
+            self._raise_if_acquiring("release")
+            self._release(force=force, close=False)
 
     def _raise_if_acquiring(self, operation: Literal["acquire", "close", "release"]) -> None:
         with self._internal_lock:
@@ -1104,10 +948,159 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             msg = f"Cannot {operation} ReadWriteLock on {self.lock_file} while acquisition is active in this thread"
             raise RuntimeError(msg)
 
-    def _raise_if_process_changed(self, operation_pid: int) -> None:
-        if _GETPID() != operation_pid or self._inherited:  # pragma: forked child
-            msg = f"ReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
+    def _release(self, *, force: bool, close: bool, thread_id: int | None = None) -> None:
+        thread_id = threading.get_ident() if thread_id is None else thread_id
+        with self._transaction_lock, self._internal_lock:
+            if not force:
+                self._raise_if_not_holder(thread_id)
+            if self._lock_level == 0:
+                if force and self._con is None:
+                    if close:
+                        self._closed = True
+                    return
+                if not force:
+                    msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
+                    raise RuntimeError(msg)
+            if not force and self._lock_level > 1:
+                self._leave_one_level(thread_id)
+                return
+            try:
+                self._finish_connection()
+            except BaseException:
+                # Once the rollback ran, the level is gone whatever stopped the cleanup, a signal handler's exception
+                # included. Kept, it would let the next acquire nest into a transaction that no longer exists.
+                if self._transaction_ended():
+                    self._clear_lock_state()
+                raise
+            self._clear_lock_state()
+            if close:
+                self._closed = True
+
+    def _raise_if_not_holder(self, thread_id: int) -> None:
+        # The connection runs with check_same_thread=False, so a release from another thread would end the owner's
+        # transaction under it and let a second writer in.
+        if self._current_mode == "write" and thread_id != self._write_thread_id:
+            msg = (
+                f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id} while it is held by thread {self._write_thread_id}"
+            )
             raise RuntimeError(msg)
+        # Readers share that one transaction too, so a thread that holds no read level would end another's hold.
+        if self._current_mode == "read" and thread_id not in self._read_depths:
+            msg = (
+                f"Cannot release read lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id}, which does not hold it"
+            )
+            raise RuntimeError(msg)
+
+    def _leave_one_level(self, thread_id: int) -> None:
+        self._lock_level -= 1
+        if self._current_mode == "read" and (depth := self._read_depths.pop(thread_id) - 1):
+            self._read_depths[thread_id] = depth
+
+    @contextmanager
+    def write_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
+        """
+        Context manager that acquires and releases an exclusive write lock.
+
+        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
+
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the exclusive write lock is held
+
+        """
+        self.acquire_write(timeout, blocking=blocking)
+        try:
+            yield
+        finally:
+            self.release()
+
+    def acquire_write(self, timeout: float | None = None, *, blocking: bool | None = None) -> AcquireReturnProxy:
+        """
+        Acquire an exclusive write lock.
+
+        If this instance already holds a write lock from the same thread, the lock level is incremented (reentrant).
+        Attempting to acquire a write lock while holding a read lock raises :class:`RuntimeError` (upgrade not allowed).
+        Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
+        :class:`RuntimeError`.
+
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
+            busy-timeout cap of about 23 days
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
+            ``None`` uses the instance setting
+
+        :returns: a proxy that can be used as a context manager to release the lock
+
+        :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
+        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
+
+        """
+        return self._acquire(
+            "write",
+            self.timeout if timeout is None else timeout,
+            blocking=self.blocking if blocking is None else blocking,
+        )
+
+    def close(self) -> None:
+        """
+        Release the lock (if held) and close the underlying SQLite connection.
+
+        After calling this method, the lock instance is no longer usable. Unlike :meth:`release`, it ends every
+        thread's hold on this instance, whichever thread calls it.
+
+        """
+        with _fork_transition():
+            _ensure_current_process()
+            if self._inherited:  # pragma: needs fork
+                return
+            self._raise_if_acquiring("close")
+            self._release(force=True, close=True)
+
+    def _acquire_level_of(
+        self,
+        holder: int,
+        mode: Literal["read", "write"],
+        timeout: float,
+        *,
+        blocking: bool,
+        cancel_check: Callable[[], bool],
+    ) -> AcquireReturnProxy:
+        # Records the level under *holder* instead of the calling thread: an async wrapper's executor thread does not
+        # identify the tasks it holds for. Gives up with Timeout once *cancel_check* is true.
+        return self._acquire(mode, timeout, blocking=blocking, holder=holder, cancel_check=cancel_check)
+
+    def _release_level_of(self, thread_id: int) -> None:
+        with _fork_transition():
+            _ensure_current_process()
+            self._raise_if_acquiring("release")
+            self._release(force=False, close=False, thread_id=thread_id)
+
+    def _holds_level_of(self, thread_id: int) -> bool:
+        # Read without the internal lock. The async wrapper asks from its event loop, which must not wait out a release
+        # on another thread. A stale answer is what a caller asking a moment earlier would have had. A level whose
+        # transaction ended is one an interrupted release left behind; it counts as gone, as _holds_level() treats it.
+        if thread_id != self._write_thread_id and thread_id not in self._read_depths:
+            return False
+        try:
+            return not self._transaction_ended()
+        except sqlite3.ProgrammingError:
+            # The connection closed between the read of _con and the in_transaction call, so the transaction is over.
+            return False
+
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+        if self._con is not None:
+            _FORKED_DATABASES.poison_after_fork(self._canonical_path, self._connection_identity)
+        self._con = None
+        self._connection_transaction_released = True
+        self._connection_identity = None
+        self._transaction_lock = threading.Lock()
+        self._internal_lock = threading.Lock()
+        self._clear_lock_state()
+        self._acquisition_thread_ids = set()
+        self._fork_invalidated = True
 
 
 def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: float) -> _ForkSafeConnection:
@@ -1159,7 +1152,10 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         # SQLite opens the name it is given, following symlinks, and uses the -journal, -wal and -shm names beside it,
         # so the database name is safe only where no process of another account can create names. A descriptor path
         # such as /proc/self/fd/<n> is no better: SQLite reads it back into the name the kernel reports.
-        if not _names_are_private(pathlib.Path(database).parent, owner):  # pragma: needs posix-hard-link
+        status: Final = os.lstat(pathlib.Path(database).parent)  # pragma: needs posix-hard-link
+        # The sticky bit still lets others create names, so a directory anyone else may write to never qualifies.
+        writable_by_others: Final = status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)  # pragma: needs posix-hard-link
+        if status.st_uid not in {owner, 0} or writable_by_others:  # pragma: needs posix-hard-link
             link = _link_beside(database, identity, owner)
             target = os.fspath(link.database)
         connection = sqlite3.connect(
@@ -1174,12 +1170,6 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         if claimed and link is not None:  # pragma: needs posix-hard-link
             # A connection that already took the link removes it too when it closes.
             _remove_link_directory(link)
-
-
-def _names_are_private(directory: pathlib.Path, owner: int) -> bool:  # pragma: win32 no cover
-    status: Final = os.lstat(directory)
-    # The sticky bit still lets others create names, so a directory anyone else may write to never qualifies.
-    return status.st_uid in {owner, 0} and not status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
 
 
 class _LinkDirectory(NamedTuple):  # pragma: needs posix-hard-link
@@ -1440,8 +1430,10 @@ def _raise_if_wal(fd: int, database: str) -> None:
     # SQLite derives the -wal name from the path it connects through, a descriptor name on POSIX, and WAL never blocks
     # readers behind a writer, so the lock cannot work on such a database.
     # pread: an adopted probe is shared, so its file offset is not this connect's to move.
-    header: Final = os.pread(fd, _HEADER_SIZE, 0) if hasattr(os, "pread") else os.read(fd, _HEADER_SIZE)
-    if header.startswith(_SQLITE_MAGIC) and _WAL_FORMAT_VERSION in header[_FORMAT_VERSIONS]:
+    header_size: Final = 20
+    wal_format_version: Final = 2
+    header: Final = os.pread(fd, header_size, 0) if hasattr(os, "pread") else os.read(fd, header_size)
+    if header.startswith(_SQLITE_MAGIC) and wal_format_version in header[_FORMAT_VERSIONS]:
         msg = f"refusing a WAL-mode lock database: {database!r}; give ReadWriteLock a file of its own"
         raise ValueError(msg)
 
@@ -1480,7 +1472,8 @@ def _sqlite_transition() -> Generator[None]:
 
 def _abort_forked_sqlite_transition() -> None:  # pragma: forked child
     if _SQLITE_TRANSITION_CONTEXT.depth:
-        os._exit(_UNSAFE_FORK_EXIT_STATUS)  # inherited SQLite handles cannot be used or closed safely
+        unsafe_fork_exit_status: Final = 70
+        os._exit(unsafe_fork_exit_status)  # inherited SQLite handles cannot be used or closed safely
 
 
 def _track_sqlite_use(event: str, _args: Unused) -> None:

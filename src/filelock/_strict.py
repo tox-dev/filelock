@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from errno import EACCES, EEXIST, ENOENT, ENOSYS, EPERM, ESTALE, EXDEV
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, cast
 
 from filelock._api import BaseFileLock, ThreadLocalFileContext, _canonical, _raise_cleanup_errors
 from filelock._error import SoftFileLockProtocolError
@@ -41,22 +41,19 @@ if sys.platform == "win32":  # pragma: win32 cover
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+#: The phase a claim file name records: ``intent`` while the claim waits at the doorway, ``held`` once it owns the lock.
 StrictSoftFileClaimState = Literal["intent", "held"]
 _OccupantState = Literal["sentinel", "held", "exited", "damaged", "unparsable"]
 
-_CLAIM_STATES: Final[frozenset[str]] = frozenset({"intent", "held"})
 _COORDINATION_SUFFIX: Final[str] = ".filelock"
 _CLAIM_DIRECTORY_NAME: Final[str] = "claims"
 _CLAIM_MAGIC: Final[str] = "filelock-strict-v1"
 _CLAIM_RECORD_LIMIT: Final[int] = 1024
-_CLAIM_NAME_PART_COUNT: Final[int] = 3
 _TOKEN_HEX_LENGTH: Final[int] = 32
 _PRIVATE_RECORD_MARKER: Final[str] = ".private-v1-"
 _PRIVATE_RECORD_SUFFIX: Final[str] = ".tmp"
 _PRIVATE_RECORD_RANDOM_HEX_LENGTH: Final[int] = 32
 _CLAIM_PROBE_PREFIX: Final[str] = ".probe-v1-"
-_PRIVATE_RECORD_GRACE: Final[float] = 2.0
-_UNLINK_MAX_RETRIES: Final[int] = 10
 #: How long a scan waits out a claim held in Windows' delete-pending state before treating it as unreadable.
 _CLAIM_READ_GRACE: Final[float] = 0.5
 _CLAIM_READ_RETRY: Final[float] = 0.002
@@ -67,7 +64,6 @@ _NODE_DESCRIPTIONS: Final[dict[int, str]] = {stat.S_IFDIR: "a directory", stat.S
 #: The claim and sentinel records are exact binary, so every record descriptor must be binary; POSIX ignores the flag.
 _O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
 _LEGACY_SENTINEL: Final[bytes] = STRICT_SOFT_SENTINEL_RECORD.encode()
-_WINDOWS_HARD_LINK_UNSUPPORTED: Final[frozenset[int]] = frozenset({1, 17, 50})
 
 # Termux/Android CPython ships without os.link (bionic long had only linkat), so the strict backend's whole hard-link
 # mechanism is absent there. Probe once and gate every os.link reference on it, so importing filelock still works and
@@ -133,6 +129,37 @@ class StrictSoftFileLock(BaseFileLock):
     _occupant_seen: tuple[tuple[float, int, int], float] | None = None
     #: Set by the finalizer, after which no retry of a failed cleanup can run.
     _finalizing: bool = False
+
+    @property
+    def claims(self) -> tuple[StrictSoftFileClaim, ...]:
+        """Published claims that block acquisition."""
+        # An inspection writes nothing, so it trusts no record's age rather than probe the filesystem clock.
+        return _read_existing_claims(self.lock_file, self._claim_directory, probe_clock=False, verify_server=False)
+
+    @property
+    def _claim_directory(self) -> Path:
+        if self._context.owner_claim_paths:
+            return Path(self._context.owner_claim_paths[0]).parent
+        return Path(f"{_canonical(self.lock_file)}{_COORDINATION_SUFFIX}") / _CLAIM_DIRECTORY_NAME
+
+    @property
+    def lock_path_occupant(self) -> str | None:
+        """
+        What sits at the lock path in place of the strict sentinel, or ``None`` when the sentinel or nothing is there.
+
+        A soft-lock owner's marker blocks acquisition without appearing in :attr:`~filelock.StrictSoftFileLock.claims`;
+        this describes it, naming the PID and host when the marker records them. A directory, a symlink, a marker whose
+        owner on this host has exited, or a file it cannot parse that stays unchanged for two seconds makes acquisition
+        raise :class:`~filelock.SoftFileLockProtocolError` instead and needs an operator to remove it.
+        """
+        try:
+            fd, _, occupant = _inspect_lock_path(Path(_canonical(self.lock_file)))
+        except FileNotFoundError:
+            return None
+        if fd is None:
+            return occupant
+        os.close(fd)
+        return None
 
     def _acquire(self) -> None:
         # Finish a doorway whose claim cleanup failed before publishing, so this owner never contends with leftovers.
@@ -232,8 +259,7 @@ class StrictSoftFileLock(BaseFileLock):
             return False
 
         held_name = _claim_name("held", token)
-        held_path = str(claim_directory / held_name)
-        self._context.owner_claim_paths = (held_path, intent_path)
+        self._context.owner_claim_paths = (str(claim_directory / held_name), intent_path)
         try:
             link_cleanup_error = _link_no_replace(claim_directory, intent_name, held_name)
         except (NotImplementedError, OSError) as error:
@@ -249,42 +275,65 @@ class StrictSoftFileLock(BaseFileLock):
         # since this owner published it, so a contender's os.scandir is guaranteed to return it (POSIX only leaves the
         # visibility of entries created or removed *during* a scan unspecified). The freshly linked held claim carries
         # no such guarantee: a scan that races its creation can miss it. Were the intent removed here, that scan could
-        # observe neither claim and let a larger-token contender win over this owner. The stable intent is the witness
-        # that keeps the phase-five min-token decision computed over the true set. Release unlinks both.
+        # observe neither claim and let a larger-token contender win over this owner.
+        #
+        # The stable intent is the witness that keeps the phase-five min-token decision computed over the true set.
+        # Release unlinks both.
         return {intent_name, held_name}.issubset(claim.name for claim in claims) and min(
             _claim_token_key(claim.name) for claim in claims
         ) == f"v1-{token}.claim"
 
-    @property
-    def claims(self) -> tuple[StrictSoftFileClaim, ...]:
-        """Published claims that block acquisition."""
-        # An inspection writes nothing, so it trusts no record's age rather than probe the filesystem clock.
-        return _read_existing_claims(self.lock_file, self._claim_directory, probe_clock=False, verify_server=False)
+    def _discard_doorway(self) -> None:
+        remaining, errors = self._unlink_owner_claims()
+        # The pending descriptor holds no lock and a retry needs the claim paths alone. A dropped instance does not
+        # retry, so close it now.
+        if (fd := self._context.pending_lock_file_fd) is not None:
+            self._context.pending_lock_file_fd = self._context.pending_lock_file_fd_identity = None
+            try:
+                self._close_released_fd(fd, default_suppresses=False)
+            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
+                errors.append(close_error)
+        if remaining:
+            # Stay pending, not owned: is_locked reports only a held claim that passed the final rescan. The next
+            # acquire retries this cleanup.
+            _raise_recorded_errors("strict doorway claim cleanup failed", errors)
+        self._mark_descriptor_released()
+        if errors:
+            _raise_recorded_errors("strict doorway cleanup failed", errors)
 
-    @property
-    def lock_path_occupant(self) -> str | None:
-        """
-        What sits at the lock path in place of the strict sentinel, or ``None`` when the sentinel or nothing is there.
-
-        A soft-lock owner's marker blocks acquisition without appearing in :attr:`~filelock.StrictSoftFileLock.claims`;
-        this describes it, naming the PID and host when the marker records them. A directory, a symlink, a marker whose
-        owner on this host has exited, or a file it cannot parse that stays unchanged for two seconds makes acquisition
-        raise :class:`~filelock.SoftFileLockProtocolError` instead and needs an operator to remove it.
-        """
-        try:
-            fd, _, occupant = _inspect_lock_path(Path(_canonical(self.lock_file)))
-        except FileNotFoundError:
-            return None
-        if fd is None:
-            return occupant
-        os.close(fd)
-        return None
+    def _unlink_owner_claims(self) -> tuple[list[str], list[BaseException]]:
+        results = [(path, _unlink_owner_path_result(path)) for path in self._context.owner_claim_paths]
+        remaining = [path for path, (removed, _) in results if not removed]
+        errors = [error for _, (_, error) in results if error is not None]
+        self._context.owner_claim_paths = tuple(remaining)
+        if self._finalizing:
+            # No retry runs after the finalizer and no caller sees its errors, so report success and let it close the
+            # descriptor even when claims remain.
+            return [], []  # pragma: needs collected-finalization
+        return remaining, errors
 
     def force_break(self, claim_name: str) -> None:
-        """Remove one named claim, allowing overlap if its owner still holds the protected resource."""
-        _validate_force_break_name(claim_name)
+        """
+        Remove one named claim, allowing overlap if its owner still holds the protected resource.
+
+        :param claim_name: the file name of the claim to remove, as listed by :meth:`claims`
+        :raises ValueError: if *claim_name* is not one public claim basename
+        :raises FileNotFoundError: if no claim with that name is in the claim directory
+        """
+        invalid_component = not claim_name or claim_name.startswith(".") or claim_name in {os.curdir, os.pardir}
+        if invalid_component or any(separator in claim_name for separator in ("/", "\\", "\x00")):
+            msg = "claim_name must be one public claim basename"
+            raise ValueError(msg)
         with _pin_claim_directory(directory := self._claim_directory):
-            _require_exact_name(directory, claim_name)
+            directory_fd = _open_claim_directory(os.fspath(directory)) if _OPEN_SUPPORTS_DIR_FD else None
+            try:
+                with _scandir_relative((os.fspath(directory), directory_fd)) as entries:
+                    if not any(entry.name == claim_name for entry in entries):
+                        raise FileNotFoundError(ENOENT, os.strerror(ENOENT), claim_name)
+            finally:
+                if directory_fd is not None:  # pragma: needs dir-fd
+                    with contextlib.suppress(OSError):
+                        os.close(directory_fd)
             cleanup_error = _unlink_in_directory(directory, claim_name)
         if cleanup_error is not None:  # pragma: needs dir-fd
             raise cleanup_error
@@ -316,43 +365,19 @@ class StrictSoftFileLock(BaseFileLock):
         if errors:
             _raise_recorded_errors("strict release cleanup failed", errors)
 
-    def _discard_doorway(self) -> None:
-        remaining, errors = self._unlink_owner_claims()
-        # The pending descriptor holds no lock and a retry needs the claim paths alone. A dropped instance does not
-        # retry, so close it now.
-        if (fd := self._context.pending_lock_file_fd) is not None:
-            self._context.pending_lock_file_fd = self._context.pending_lock_file_fd_identity = None
-            try:
-                self._close_released_fd(fd, default_suppresses=False)
-            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
-                errors.append(close_error)
-        if remaining:
-            # Stay pending, not owned: is_locked reports only a held claim that passed the final rescan. The next
-            # acquire retries this cleanup.
-            _raise_recorded_errors("strict doorway claim cleanup failed", errors)
-        self._mark_descriptor_released()
-        if errors:
-            _raise_recorded_errors("strict doorway cleanup failed", errors)
-
-    def _unlink_owner_claims(self) -> tuple[list[str], list[BaseException]]:
-        remaining, errors = _unlink_owner_paths(self._context.owner_claim_paths)
-        self._context.owner_claim_paths = tuple(remaining)
-        if self._finalizing:
-            # No retry runs after the finalizer and no caller sees its errors, so report success and let it close the
-            # descriptor even when claims remain.
-            return [], []  # pragma: needs collected-finalization
-        return remaining, errors
-
-    @property
-    def _claim_directory(self) -> Path:
-        if self._context.owner_claim_paths:
-            return Path(self._context.owner_claim_paths[0]).parent
-        return Path(f"{_canonical(self.lock_file)}{_COORDINATION_SUFFIX}") / _CLAIM_DIRECTORY_NAME
-
 
 @dataclass(frozen=True)
 class StrictSoftFileClaim:
-    """One parsed strict soft-lock claim."""
+    """
+    One parsed strict soft-lock claim.
+
+    :param name: the claim's file name in the claim directory
+    :param state: whether the claim is an ``intent`` or a ``held`` record
+    :param token: the random token that identifies the claim
+    :param pid: the PID of the process that wrote the claim
+    :param hostname: the host name of the process that wrote the claim
+    :param start: the owner's process start token, or ``None`` when the platform exposes no proven start time
+    """
 
     name: str
     state: StrictSoftFileClaimState
@@ -417,11 +442,17 @@ def _open_sentinel(lock_file: str, path: Path, unchanged_for: Callable[[os.stat_
         time.sleep(_CLAIM_READ_RETRY)
 
 
-def _inspect_lock_path(path: Path) -> tuple[int | None, _OccupantState, str]:
+class _LockPathInspection(NamedTuple):
+    fd: int | None
+    state: _OccupantState
+    occupant: str
+
+
+def _inspect_lock_path(path: Path) -> _LockPathInspection:
     # "held" may be a soft-lock owner that still runs, "exited" is one this host proves gone, "unparsable" is content no
     # lock parses, and "damaged" is a node no lock writes.
     if not stat.S_ISREG(mode := path.lstat().st_mode):
-        return None, "damaged", _NODE_DESCRIPTIONS.get(stat.S_IFMT(mode), "a special file")
+        return _LockPathInspection(None, "damaged", _NODE_DESCRIPTIONS.get(stat.S_IFMT(mode), "a special file"))
     try:
         fd, record = _open_record((os.fspath(path.parent), None), path.name, _CLAIM_RECORD_LIMIT)
     except FileNotFoundError:
@@ -429,13 +460,13 @@ def _inspect_lock_path(path: Path) -> tuple[int | None, _OccupantState, str]:
     except PermissionError as error:
         # Windows denies the read while a legacy holder keeps its marker open, and a holder running as another user
         # may leave it unreadable here, so a marker that cannot be read may still be held.
-        return None, "held", f"a file it cannot read ({error.strerror or error})"
+        return _LockPathInspection(None, "held", f"a file it cannot read ({error.strerror or error})")
     except OSError as error:
-        return None, "damaged", f"a file it cannot read ({error.strerror or error})"
+        return _LockPathInspection(None, "damaged", f"a file it cannot read ({error.strerror or error})")
     if record == _LEGACY_SENTINEL:
-        return fd, "sentinel", "the strict sentinel"
+        return _LockPathInspection(fd, "sentinel", "the strict sentinel")
     os.close(fd)
-    return None, *_describe_soft_marker(record.decode("utf-8", errors="replace"))
+    return _LockPathInspection(None, *_describe_soft_marker(record.decode("utf-8", errors="replace")))
 
 
 def _describe_soft_marker(content: str) -> tuple[_OccupantState, str]:
@@ -507,13 +538,15 @@ def _read_claim_records(
     # A contended scan can list a claim that is not yet cleanly readable, in two ways that both resolve on a brief
     # retry. Windows fails an open with EACCES while a peer's unlink holds the claim; once the deletion is pending,
     # _attempt_claim_read skips the claim outright, as another process's handle can keep the name listed for seconds.
+    #
     # On NFS, a peer that unlinks its own claim leaves this client's cached filehandle stale, so the next open returns
     # ESTALE rather than a clean ENOENT until the lookup revalidates against the server. Retrying re-runs the path
     # lookup, which turns the vanished claim into ENOENT (skip) or reads it if it still exists. A genuinely unreadable
-    # record (a locked-down file, an EIO fault) still fails closed. The grace starts at the first pending result rather
-    # than before the first attempt, so a slow first read cannot use up the window and leave no retry. One deadline
-    # covers the scan: a deadline per claim let claims that clear one after another stretch a scan, and the caller's
-    # timeout with it, by a grace each.
+    # record (a locked-down file, an EIO fault) still fails closed.
+    #
+    # The grace starts at the first pending result rather than before the first attempt, so a slow first read cannot use
+    # up the window and leave no retry. One deadline covers the scan: a deadline per claim let claims that clear one
+    # after another stretch a scan, and the caller's timeout with it, by a grace each.
     records: dict[str, bytes] = {}
     deadline: float | None = None
     while True:
@@ -603,26 +636,18 @@ def _read_existing_claims(
             return _read_claims(
                 lock_file, (os.fspath(directory), None), probe_clock=probe_clock, verify_server=verify_server
             )
-    return _read_claims_through_descriptor(  # pragma: needs dir-fd
-        lock_file, directory, probe_clock=probe_clock, verify_server=verify_server
-    )
-
-
-def _read_claims_through_descriptor(  # pragma: needs dir-fd
-    lock_file: str, directory: Path, *, probe_clock: bool, verify_server: bool
-) -> tuple[StrictSoftFileClaim, ...]:
-    try:
+    try:  # pragma: needs dir-fd
         directory_fd = _open_claim_directory(os.fspath(directory))
-    except FileNotFoundError:
+    except FileNotFoundError:  # pragma: needs dir-fd
         return ()
-    except OSError as error:
+    except OSError as error:  # pragma: needs dir-fd
         reason = f"cannot open claim directory: {error.strerror or type(error).__name__}"
         raise SoftFileLockProtocolError(lock_file, None, reason) from error
-    try:
+    try:  # pragma: needs dir-fd
         return _read_claims(
             lock_file, (os.fspath(directory), directory_fd), probe_clock=probe_clock, verify_server=verify_server
         )
-    finally:
+    finally:  # pragma: needs dir-fd
         # A failed close has no result to report after the scan and proof cleanup.
         with contextlib.suppress(OSError):
             os.close(directory_fd)
@@ -660,7 +685,9 @@ def _parse_claim_name(name: str) -> tuple[StrictSoftFileClaimState, str] | None:
     if not name.endswith(".claim"):
         return None
     parts = name.removesuffix(".claim").split("-")
-    if len(parts) != _CLAIM_NAME_PART_COUNT or parts[0] not in _CLAIM_STATES or parts[1] != "v1":
+    claim_states: Final = frozenset({"intent", "held"})
+    claim_name_part_count: Final = 3
+    if len(parts) != claim_name_part_count or parts[0] not in claim_states or parts[1] != "v1":
         return None
     token = parts[2]
     if len(token) != _TOKEN_HEX_LENGTH or any(character not in "0123456789abcdef" for character in token):
@@ -766,8 +793,9 @@ def _close_and_unlink_private_record(
     try:
         if private_identity is None:
             _unlink_relative(directory_ref, private_name)
-        else:
-            _unlink_relative_if_identity(directory_ref, private_name, private_identity)
+        elif _relative_identity(directory_ref, private_name) == private_identity:
+            with contextlib.suppress(FileNotFoundError):
+                _unlink_relative(directory_ref, private_name)
     except FileNotFoundError:
         pass
     except BaseException as error:  # ruff:ignore[blind-except]  # returned for grouping with close failures
@@ -855,8 +883,9 @@ def _reclaim_private_record(
     if not stat.S_ISREG(private_stat.st_mode):
         msg = f"{Path(directory, private_name)} is not a regular private record"
         raise OSError(msg)
+    private_record_grace: Final = 2.0
     if private_stat.st_nlink == 1 and (
-        (current := now()) is None or current - private_stat.st_mtime < _PRIVATE_RECORD_GRACE
+        (current := now()) is None or current - private_stat.st_mtime < private_record_grace
     ):
         return
     try:
@@ -908,16 +937,6 @@ def _relative_identity(directory_ref: tuple[str, int | None], name: str) -> tupl
     except FileNotFoundError:
         return None
     return _file_identity(path_stat)
-
-
-def _unlink_relative_if_identity(
-    directory_ref: tuple[str, int | None],
-    name: str,
-    identity: tuple[int, int],
-) -> None:
-    if _relative_identity(directory_ref, name) == identity:
-        with contextlib.suppress(FileNotFoundError):
-            _unlink_relative(directory_ref, name)
 
 
 def _open_relative(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
@@ -1007,22 +1026,11 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
     return None  # pragma: win32 cover
 
 
-def _unlink_owner_path(path: str) -> BaseException | None:
-    directory, name = os.path.split(path)
-    with _pin_claim_directory(claim_directory := Path(directory or os.curdir)):
-        return _unlink_in_directory(claim_directory, name)
-
-
-def _unlink_owner_paths(paths: tuple[str, ...]) -> tuple[list[str], list[BaseException]]:
-    results = [(path, _unlink_owner_path_result(path)) for path in paths]
-    return [path for path, (removed, _) in results if not removed], [
-        error for _, (_, error) in results if error is not None
-    ]
-
-
 def _unlink_owner_path_result(path: str) -> tuple[bool, BaseException | None]:
+    directory, name = os.path.split(path)
     try:
-        cleanup_error = _unlink_owner_path(path)
+        with _pin_claim_directory(claim_directory := Path(directory or os.curdir)):
+            cleanup_error = _unlink_in_directory(claim_directory, name)
     except FileNotFoundError:
         return True, None
     except BaseException as error:  # ruff:ignore[blind-except]  # keep ownership when unlink did not commit
@@ -1056,10 +1064,11 @@ def _unlink_in_directory(directory: Path, name: str) -> BaseException | None:
         Path(directory / name).unlink()
         return None
     retry_delay = 0.001  # pragma: win32 cover
-    for attempt in range(_UNLINK_MAX_RETRIES):  # pragma: win32 cover
+    max_retries: Final = 10  # pragma: win32 cover
+    for attempt in range(max_retries):  # pragma: win32 cover
         if (error := _unlink_error(directory / name)) is None:
             return None
-        if error.errno not in {EACCES, EPERM} or attempt == _UNLINK_MAX_RETRIES - 1:
+        if error.errno not in {EACCES, EPERM} or attempt == max_retries - 1:
             raise error
         time.sleep(retry_delay)
         retry_delay *= 2
@@ -1243,30 +1252,12 @@ def _settle_directory_mode(lock_file: str, directory: Path, mode: int, parent_fd
             os.close(fd)
 
 
-def _validate_force_break_name(name: str) -> None:
-    invalid_component = not name or name.startswith(".") or name in {os.curdir, os.pardir}
-    if invalid_component or any(separator in name for separator in ("/", "\\", "\x00")):
-        msg = "claim_name must be one public claim basename"
-        raise ValueError(msg)
-
-
-def _require_exact_name(directory: Path, name: str) -> None:
-    directory_fd = _open_claim_directory(os.fspath(directory)) if _OPEN_SUPPORTS_DIR_FD else None
-    try:
-        with _scandir_relative((os.fspath(directory), directory_fd)) as entries:
-            if not any(entry.name == name for entry in entries):
-                raise FileNotFoundError(ENOENT, os.strerror(ENOENT), name)
-    finally:
-        if directory_fd is not None:  # pragma: needs dir-fd
-            with contextlib.suppress(OSError):
-                os.close(directory_fd)
-
-
 def _raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:
+    windows_hard_link_unsupported: Final = frozenset({1, 17, 50})
     unsupported = (
         isinstance(error, NotImplementedError)
         or error.errno in _HARD_LINK_UNSUPPORTED_ERRNOS
-        or (getattr(error, "winerror", None) in _WINDOWS_HARD_LINK_UNSUPPORTED)
+        or (getattr(error, "winerror", None) in windows_hard_link_unsupported)
     )
     if unsupported:
         reason = "filesystem does not support atomic no-replace hard-link publication"

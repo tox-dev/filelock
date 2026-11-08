@@ -27,12 +27,12 @@ _REGISTER_AT_FORK: Final[_RegisterAtFork | None] = cast(
 )
 
 
-def fork_process(child: Callable[[], NoReturn] | None = None) -> int:  # pragma: win32 no cover
+def fork_process(child: Callable[[], NoReturn]) -> int:  # pragma: win32 no cover
     if _FORK is None:  # pragma: no cover - platform without os.fork
         msg = "os.fork is unavailable"
         raise RuntimeError(msg)
     child_pid = _FORK()
-    if child_pid == 0 and child is not None:  # pragma: win32 no cover
+    if child_pid == 0:  # pragma: win32 no cover
         child()  # pragma: no cover - child coverage starts after fork returns to this frame
     return child_pid
 
@@ -68,4 +68,7 @@ if _REGISTER_AT_FORK is not None and CAPABILITIES["coverage"]:  # pragma: win32 
     _REGISTER_AT_FORK(after_in_child=_restart_coverage_after_fork)
 
 
-__all__ = ["exit_child", "fork_process"]
+__all__ = [
+    "exit_child",
+    "fork_process",
+]

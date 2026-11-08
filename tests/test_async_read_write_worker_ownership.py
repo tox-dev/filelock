@@ -9,7 +9,8 @@ import pytest
 pytest.importorskip("sqlite3")
 
 from filelock import AsyncReadWriteLock, ReadWriteLock
-from filelock._soft_rw import AsyncSoftReadWriteLock, SoftReadWriteLock
+from filelock._soft_rw._async import AsyncSoftReadWriteLock
+from filelock._soft_rw._sync import SoftReadWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -45,7 +46,7 @@ def _soft(  # pragma: needs hard-link
     return AsyncSoftReadWriteLock(path / "lock", executor=worker), SoftReadWriteLock(path / "lock")
 
 
-_FAMILIES: Final = pytest.mark.parametrize(
+_FAMILIES: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
     "make",
     [pytest.param(_sqlite, id="sqlite"), pytest.param(_soft, id="soft", marks=pytest.mark.requires_hard_links)],
 )
@@ -83,7 +84,7 @@ async def test_async_hold_refuses_a_sync_release_on_the_entering_worker(
     mode: Literal["read", "write"],
 ) -> None:
     lock, sync = make(tmp_path, worker)
-    await (lock.acquire_read() if mode == "read" else lock.acquire_write())
+    await getattr(lock, f"acquire_{mode}")()
 
     with pytest.raises(RuntimeError, match="Cannot release"):
         await asyncio.get_running_loop().run_in_executor(worker, sync.release)

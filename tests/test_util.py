@@ -149,7 +149,7 @@ def test_stale_break_admits_no_third_holder_beside_a_recreated_marker(
     polling: list[bool] = []
     real: Final = getattr(os, point)
 
-    def third_contender_polls(path: str | os.PathLike[str], *args: int, **kwargs: int | None) -> object:
+    def third_contender_polls(path: str | os.PathLike[str], *args: int, **kwargs: int | None) -> int | None:
         result: Final = real(path, *args, **kwargs)
         if holder.is_locked and not polling and os.fspath(path).startswith(os.fspath(stale_lock)):
             polling.append(True)
@@ -183,7 +183,9 @@ def test_break_lock_file_put_back_never_replaces_a_marker_at_the_path(  # pragma
     rename: Final = Path.rename
     pin: Final = filelock._util._pinned_for_rename
 
-    def peer_recreates_then_pin(path: str) -> AbstractContextManager[object]:
+    def peer_recreates_then_pin(
+        path: str,
+    ) -> AbstractContextManager[object]:  # simplint: ignore[SMP602]  # mirrors src/filelock/_util.py:347
         _rewrite_in_place(Path(path))  # Windows refuses an in-place rewrite once the pin holds the marker
         return pin(path)
 
@@ -192,7 +194,7 @@ def test_break_lock_file_put_back_never_replaces_a_marker_at_the_path(  # pragma
         source.write_text("third", encoding="utf-8")
         return result
 
-    mocker.patch("filelock._util._pinned_for_rename", side_effect=peer_recreates_then_pin)
+    mocker.patch("filelock._util._pinned_for_rename", side_effect=peer_recreates_then_pin, autospec=True)
     mocker.patch.object(Path, "rename", autospec=True, side_effect=rename_then_third_creates)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
@@ -240,7 +242,7 @@ def test_break_lock_file_never_links_a_symlink_swapped_in_under_the_break_name( 
         Path(path).symlink_to(target)
         return found
 
-    mocker.patch("os.lstat", side_effect=peer_recreates_then_swaps_in_a_symlink)
+    mocker.patch("os.lstat", side_effect=peer_recreates_then_swaps_in_a_symlink, autospec=True)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
     mocker.stopall()
@@ -269,7 +271,7 @@ def test_stale_break_spares_a_successor_on_the_freed_inode_number(  # pragma: wi
         reuse_inode(lock, stale)
         raise ProcessLookupError(ESRCH, f"no process {pid} for signal {signal}")
 
-    mocker.patch("filelock._identity.os.kill", side_effect=owner_gone_and_successor_acquired)
+    mocker.patch("filelock._identity.os.kill", side_effect=owner_gone_and_successor_acquired, autospec=True)
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
     mocker.stopall()
@@ -294,7 +296,7 @@ def test_stale_break_skips_a_marker_swapped_in_after_the_pin(  # pragma: win32 n
             replacement.replace(lock)
         return found
 
-    mocker.patch("os.fstat", side_effect=pin_then_peer_swaps_the_marker)
+    mocker.patch("os.fstat", side_effect=pin_then_peer_swaps_the_marker, autospec=True)
     rename: Final = mocker.spy(Path, "rename")
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
@@ -322,7 +324,7 @@ def test_stale_break_reclaims_a_marker_it_cannot_pin(  # pragma: win32 no cover
             raise OSError(ELOOP, "Too many levels of symbolic links", os.fspath(path))
         return open_(path, flags, mode, dir_fd=dir_fd)
 
-    mocker.patch("os.open", side_effect=pin_refused)
+    mocker.patch("os.open", side_effect=pin_refused, autospec=True)
     with lock_type(lock, timeout=1) as held:
         assert held.is_locked
 
@@ -342,7 +344,7 @@ def test_stale_break_lets_acquire_retry_after_the_marker_vanishes_before_the_pin
             lock.unlink()
         return open_(path, flags, mode, dir_fd=dir_fd)
 
-    mocker.patch("os.open", side_effect=holder_releases_then_open)
+    mocker.patch("os.open", side_effect=holder_releases_then_open, autospec=True)
     with lock_type(lock, timeout=1) as held:
         assert held.is_locked
 
@@ -397,7 +399,7 @@ def test_stale_take_over_keeps_the_lock_when_a_rename_replaces_its_marker(  # pr
 def test_remove_own_file_placeholder_names_this_process(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: win32 no cover
-    mocker.patch("filelock._soft.os.fchmod", side_effect=OSError(EIO, "Input/output error"))
+    mocker.patch("filelock._soft.os.fchmod", side_effect=OSError(EIO, "Input/output error"), autospec=True)
     exchange: Final = filelock._util.exchange_names
     placeholders: Final[list[bytes]] = []
 
@@ -405,7 +407,7 @@ def test_remove_own_file_placeholder_names_this_process(
         placeholders.append(Path(source).read_bytes())
         return exchange(source, target)
 
-    mocker.patch("filelock._util.exchange_names", side_effect=record_the_placeholder)
+    mocker.patch("filelock._util.exchange_names", side_effect=record_the_placeholder, autospec=True)
     with pytest.raises(OSError, match="Input/output error"):
         SoftFileLock(tmp_path / "test.lock", mode=0o600).acquire()
 
@@ -455,7 +457,7 @@ def test_stale_break_spares_a_successor_on_the_freed_inode_number_across_the_exc
 def test_break_lock_file_leaves_a_recreated_marker_aside_where_links_are_refused(  # pragma: win32 cover
     stale_lock: Path, mocker: MockerFixture, on_break_recheck: Callable[[Path, Callable[[], None]], None]
 ) -> None:
-    mocker.patch("os.link", side_effect=PermissionError(1, "Operation not permitted"))
+    mocker.patch("os.link", side_effect=PermissionError(1, "Operation not permitted"), autospec=True)
     on_break_recheck(stale_lock, lambda: _rewrite_in_place(stale_lock))
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
@@ -476,8 +478,8 @@ def test_break_lock_file_leaves_the_marker_where_the_exchange_fails(  # pragma: 
     stale_lock: Path, mocker: MockerFixture, error: int
 ) -> None:
     # NFS and SMB refuse the exchange; renaming the marker aside instead would empty the path beside a live holder.
-    renamer: Final = mocker.MagicMock(return_value=error)
-    mocker.patch("filelock._util._rename_call", return_value=(renamer, 2))
+    renamer: Final = mocker.create_autospec(_exchange_call, return_value=error)
+    mocker.patch("filelock._util._rename_call", return_value=(renamer, 2), autospec=True)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
 
@@ -490,6 +492,10 @@ def test_break_lock_file_leaves_the_marker_where_the_exchange_fails(  # pragma: 
         [],
         True,
     )
+
+
+def _exchange_call(source: bytes, target: bytes, flags: int) -> int:
+    raise NotImplementedError  # pragma: no cover  # the autospec answers the call, so only the signature matters
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -539,7 +545,7 @@ def test_break_lock_file_break_name_is_unguessable(stale_lock: Path, mocker: Moc
             stale_lock.rename(guessable)
         return result
 
-    mocker.patch("os.lstat", side_effect=peer_moves_a_live_lock_onto_the_guessable_name)
+    mocker.patch("os.lstat", side_effect=peer_moves_a_live_lock_onto_the_guessable_name, autospec=True)
     with SoftFileLock(stale_lock):
         pass
 
@@ -614,7 +620,7 @@ def test_writability_uses_open_credentials(
 
     supported: Final = effective_ids
     probe: Final = mocker.patch("os.access", autospec=True, side_effect=access)
-    mocker.patch("os.supports_effective_ids", {probe} if effective_ids else set())
+    mocker.patch("os.supports_effective_ids", {True: {probe}, False: set()}[effective_ids])
     with pytest.raises(Timeout):
         SoftFileLock(readonly_marker).acquire(timeout=0)
 

@@ -163,6 +163,12 @@ lint.ignore = [
   "non-empty-init-module",                     # `__init__` module should only contain docstrings and re-exports
   "non-imperative-mood",                       # First line of docstring should be in imperative mood
   "single-line-implicit-string-concatenation", # Conflict with formatter
+  "undocumented-magic-method",                 # undocumented-public-api (simplint SMP903) covers the public API instead
+  "undocumented-public-class",                 # undocumented-public-api (simplint SMP903) covers the public API instead
+  "undocumented-public-function",              # undocumented-public-api (simplint SMP903) covers the public API instead
+  "undocumented-public-init",                  # undocumented-public-api (simplint SMP903) covers the public API instead
+  "undocumented-public-method",                # undocumented-public-api (simplint SMP903) covers the public API instead
+  "undocumented-public-nested-class",          # undocumented-public-api (simplint SMP903) covers the public API instead
 ]
 lint.per-file-ignores."tasks/**/*.py" = [
   "assert",                               # asserts state the platform a Windows-only script already refuses to run outside of, narrowing it for ty
@@ -320,3 +326,6 @@ matrix.platforms = [ "linux_x86_64" ]
 # expires 2026-11-09
 # expires 2026-11-09
 packages.release-creator.uploaded-prior-to = 2026-11-02T21:45:00Z
+
+[tool.simplint]
+docstring-style = "rst"

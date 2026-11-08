@@ -36,7 +36,9 @@ async def test_hold_waits_for_a_predecessor_before_entering() -> None:
     first_task = asyncio.create_task(first())
     await first_holding.wait()
     second_task = asyncio.create_task(second())
-    await asyncio.sleep(0.05)  # second parks on the predecessor instead of entering
+    await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a parked-waiter signal
+        0.05
+    )  # second parks on the predecessor instead of entering
     assert order == ["first-in"]
 
     release_first.set()
@@ -80,7 +82,9 @@ async def test_hold_canceled_while_waiting_takes_its_ticket_out() -> None:
     first_task = asyncio.create_task(first())
     await first_holding.wait()
     second_task = asyncio.create_task(second())
-    await asyncio.sleep(0.05)  # second is parked on the predecessor
+    await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a parked-waiter signal
+        0.05
+    )  # second is parked on the predecessor
     second_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await second_task
@@ -125,6 +129,11 @@ async def test_hold_interrupted_while_waiting_takes_its_ticket_out() -> None:
             pass
 
     await asyncio.wait_for(third(), timeout=1)
+
+
+class _Interrupt(BaseException):
+    # Stands in for a KeyboardInterrupt delivered while a waiter is parked, without pytest treating it as one.
+    ...
 
 
 @pytest.mark.parametrize("joined", [pytest.param(True, id="after-join"), pytest.param(False, id="before-join")])
@@ -208,7 +217,3 @@ async def test_wait_for_turn_returns_immediately_when_already_done() -> None:
     )
 
     assert ticket.done()
-
-
-class _Interrupt(BaseException):
-    """Stands in for a KeyboardInterrupt delivered while a waiter is parked, without pytest treating it as one."""

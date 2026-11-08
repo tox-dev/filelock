@@ -59,6 +59,7 @@ class AsyncReadWriteLock:
     :param timeout: maximum wait time in seconds; ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
     :param is_singleton: if ``True``, reuse existing :class:`ReadWriteLock` instances for the same resolved path
+
     :param loop: event loop for ``run_in_executor``; ``None`` uses the running loop
     :param executor: executor for ``run_in_executor``. When ``None`` this lock creates and owns a dedicated
         single-thread executor so every operation runs on the same thread (SQLite affinity requires this) and shuts it
@@ -97,20 +98,11 @@ class AsyncReadWriteLock:
                 msg = "AsyncReadWriteLock construction cannot continue after fork"
                 raise RuntimeError(msg)
 
-    @property
-    def lock_file(self) -> str:
-        """The path to the lock file."""
-        return self._lock.lock_file
-
-    @property
-    def timeout(self) -> float:
-        """The default timeout."""
-        return self._lock.timeout
-
-    @property
-    def blocking(self) -> bool:
-        """Whether blocking is enabled by default."""
-        return self._lock.blocking
+    def __del__(self) -> None:
+        # Safety net when close() was never called: shut down the executor we own so its worker thread does not
+        # outlive the lock. shutdown(wait=False) never blocks.
+        if os.getpid() == getattr(self, "_creator_pid", None) and getattr(self, "_owns_executor", False):
+            self._executor.shutdown(wait=False)
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
@@ -131,6 +123,7 @@ class AsyncReadWriteLock:
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the shared read lock is held
 
         """
         await self.acquire_read(timeout, blocking=blocking)
@@ -142,35 +135,6 @@ class AsyncReadWriteLock:
             raise
         finally:
             await self._release_in_context(body_error)
-
-    @asynccontextmanager
-    async def write_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> AsyncGenerator[None]:
-        """
-        Async context manager that acquires and releases an exclusive write lock.
-
-        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
-
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
-        """
-        await self.acquire_write(timeout, blocking=blocking)
-        body_error: BaseException | None = None
-        try:
-            yield
-        except BaseException as error:
-            body_error = error
-            raise
-        finally:
-            await self._release_in_context(body_error)
-
-    async def _release_in_context(self, body_error: BaseException | None) -> None:
-        try:
-            await self.release()
-        except BaseException as release_error:
-            if body_error is not None:
-                _append_exception_context(release_error, body_error)
-            raise
 
     async def acquire_read(
         self, timeout: float | None = None, *, blocking: bool | None = None
@@ -197,30 +161,23 @@ class AsyncReadWriteLock:
         await self._acquire("read", timeout, blocking=blocking)
         return AsyncAcquireReadWriteReturnProxy(lock=self)
 
-    async def acquire_write(
-        self, timeout: float | None = None, *, blocking: bool | None = None
-    ) -> AsyncAcquireReadWriteReturnProxy:
-        """
-        Acquire an exclusive write lock.
+    def _raise_if_unusable(self) -> None:
+        _ensure_current_process()
+        if self._inherited:  # pragma: needs fork
+            msg = f"AsyncReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
+            raise RuntimeError(msg)
+        if self._closed:
+            msg = "Cannot operate on a closed database."
+            raise sqlite3.ProgrammingError(msg)
 
-        See :meth:`ReadWriteLock.acquire_write` for full semantics.
+    @property
+    def _inherited(self) -> bool:
+        return self._fork_invalidated or os.getpid() != self._creator_pid
 
-        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
-            busy-timeout cap of about 23 days
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
-            ``None`` uses the instance setting
-
-        :returns: a proxy that can be used as an async context manager to release the lock
-
-        :raises RuntimeError: if the calling task already holds the read lock
-        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
-        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
-
-        """
-        self._raise_if_unusable()
-        await self._acquire("write", timeout, blocking=blocking)
-        return AsyncAcquireReadWriteReturnProxy(lock=self)
+    @property
+    def lock_file(self) -> str:
+        """The path to the lock file."""
+        return self._lock.lock_file
 
     async def _acquire(self, mode: Literal["read", "write"], timeout: float | None, *, blocking: bool | None) -> None:
         timeout = self.timeout if timeout is None else timeout
@@ -253,6 +210,63 @@ class AsyncReadWriteLock:
             joinable=joinable,
         )
 
+    @property
+    def timeout(self) -> float:
+        """The default timeout."""
+        return self._lock.timeout
+
+    @property
+    def blocking(self) -> bool:
+        """Whether blocking is enabled by default."""
+        return self._lock.blocking
+
+    async def _run_acquire(self, acquire: functools.partial[AcquireReturnProxy]) -> None:
+        abandoned = threading.Event()
+        acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
+        try:
+            await _wait_until_done(acquire_future)
+        except asyncio.CancelledError as cancellation:
+            # Stops a backend wait on another process's hold, which would otherwise outlast the caller by as long.
+            abandoned.set()
+            try:
+                await _drain_future(acquire_future)
+            except Timeout:
+                # Nothing was taken, so the caller's cancellation is the whole outcome.
+                raise cancellation from None
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
+                _raise_cancelled_error(cancellation, error)
+            try:
+                await _drain_future(self._submit(self._leave_backend))
+            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
+                _raise_cancelled_error(cancellation, error)
+            raise
+        _future_result(acquire_future)
+
+    def _submit(
+        self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
+    ) -> asyncio.Future[_BackendOutcome[_R]]:
+        return (self._loop or asyncio.get_running_loop()).run_in_executor(
+            self._executor,
+            _capture_call,
+            functools.partial(func, *args, **kwargs),
+        )
+
+    def _leave_backend(self) -> None:
+        # Only the tasks' level: a sync user of the same singleton keeps its own.
+        self._lock._release_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+
+    def _backend_holds(self) -> bool:
+        # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
+        return self._lock._holds_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+
+    async def _release_in_context(self, body_error: BaseException | None) -> None:
+        try:
+            await self.release()
+        except BaseException as release_error:
+            if body_error is not None:
+                _append_exception_context(release_error, body_error)
+            raise
+
     async def release(self, *, force: bool = False) -> None:
         """
         Release one level of the calling task's hold.
@@ -275,6 +289,53 @@ class AsyncReadWriteLock:
             leave=functools.partial(self._submit, self._leave_backend),
             still_held=self._backend_holds,
         )
+
+    @asynccontextmanager
+    async def write_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> AsyncGenerator[None]:
+        """
+        Async context manager that acquires and releases an exclusive write lock.
+
+        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
+
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the exclusive write lock is held
+
+        """
+        await self.acquire_write(timeout, blocking=blocking)
+        body_error: BaseException | None = None
+        try:
+            yield
+        except BaseException as error:
+            body_error = error
+            raise
+        finally:
+            await self._release_in_context(body_error)
+
+    async def acquire_write(
+        self, timeout: float | None = None, *, blocking: bool | None = None
+    ) -> AsyncAcquireReadWriteReturnProxy:
+        """
+        Acquire an exclusive write lock.
+
+        See :meth:`ReadWriteLock.acquire_write` for full semantics.
+
+        :param timeout: seconds to wait; ``None`` uses the instance setting; ``-1`` waits up to SQLite's
+            busy-timeout cap of about 23 days
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` on contention;
+            ``None`` uses the instance setting
+
+        :returns: a proxy that can be used as an async context manager to release the lock
+
+        :raises RuntimeError: if the calling task already holds the read lock
+        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
+
+        """
+        self._raise_if_unusable()
+        await self._acquire("write", timeout, blocking=blocking)
+        return AsyncAcquireReadWriteReturnProxy(lock=self)
 
     async def close(self) -> None:
         """
@@ -312,61 +373,9 @@ class AsyncReadWriteLock:
         if self._owns_executor:
             await asyncio.to_thread(functools.partial(self._executor.shutdown, wait=True))
 
-    async def _run_acquire(self, acquire: Callable[..., AcquireReturnProxy]) -> None:
-        abandoned = threading.Event()
-        acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
-        try:
-            await _wait_until_done(acquire_future)
-        except asyncio.CancelledError as cancellation:
-            # Stops a backend wait on another process's hold, which would otherwise outlast the caller by as long.
-            abandoned.set()
-            try:
-                await _drain_future(acquire_future)
-            except Timeout:
-                # Nothing was taken, so the caller's cancellation is the whole outcome.
-                raise cancellation from None
-            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                _raise_cancelled_error(cancellation, error)
-            try:
-                await _drain_future(self._submit(self._leave_backend))
-            except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                _raise_cancelled_error(cancellation, error)
-            raise
-        _future_result(acquire_future)
-
-    def _backend_holds(self) -> bool:
-        # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
-        return self._lock._holds_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
-
-    def _leave_backend(self) -> None:
-        # Only the tasks' level: a sync user of the same singleton keeps its own.
-        self._lock._release_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
-
-    def _submit(
-        self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
-    ) -> asyncio.Future[_BackendOutcome[_R]]:
-        return (self._loop or asyncio.get_running_loop()).run_in_executor(
-            self._executor,
-            _capture_call,
-            functools.partial(func, *args, **kwargs),
-        )
-
     def _shutdown_owned_executor(self) -> None:
         if self._owns_executor:
             self._executor.shutdown(wait=False)
-
-    @property
-    def _inherited(self) -> bool:
-        return self._fork_invalidated or os.getpid() != self._creator_pid
-
-    def _raise_if_unusable(self) -> None:
-        _ensure_current_process()
-        if self._inherited:  # pragma: needs fork
-            msg = f"AsyncReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
-            raise RuntimeError(msg)
-        if self._closed:
-            msg = "Cannot operate on a closed database."
-            raise sqlite3.ProgrammingError(msg)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         self._fork_invalidated = True
@@ -382,15 +391,13 @@ class AsyncReadWriteLock:
             for worker in cast("ThreadPoolExecutor", self._executor)._threads:  # ruff:ignore[private-member-access]  # only the executor lists its workers
                 registry.pop(worker, None)
 
-    def __del__(self) -> None:
-        # Safety net when close() was never called: shut down the executor we own so its worker thread does not
-        # outlive the lock. shutdown(wait=False) never blocks.
-        if os.getpid() == getattr(self, "_creator_pid", None) and getattr(self, "_owns_executor", False):
-            self._executor.shutdown(wait=False)
-
 
 class AsyncAcquireReadWriteReturnProxy:
-    """Context-aware object that releases the async read/write lock on exit."""
+    """
+    Context-aware object that releases the async read/write lock on exit.
+
+    :param lock: the lock to release on exit
+    """
 
     def __init__(self, lock: AsyncReadWriteLock) -> None:
         self.lock = lock

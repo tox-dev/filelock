@@ -30,37 +30,27 @@ if TYPE_CHECKING:
         pytest.param(AsyncSoftFileLock, "AsyncStrictSoftFileLock", "AsyncSoftFileLease", id="async"),
     ],
 )
-@pytest.mark.parametrize(
-    "entry_point",
-    [pytest.param("constructor", id="constructor"), pytest.param("setter", id="setter")],
-)
 def test_soft_lifetime_warning_identifies_caller(
     lock_type: type[SoftFileLock | AsyncSoftFileLock],
     strict_lock: str,
     lease: str,
-    entry_point: Literal["constructor", "setter"],
     tmp_path: Path,
 ) -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        if entry_point == "constructor":
-            warning_line = sys._getframe().f_lineno + 1
-            lock_type(tmp_path / "test.lock", lifetime=10)
-        else:
-            lock = lock_type(tmp_path / "test.lock")
-            warning_line = sys._getframe().f_lineno + 1
-            lock.lifetime = 10
+        constructor_line = sys._getframe().f_lineno + 1
+        lock_type(tmp_path / "test.lock", lifetime=10)
+        lock = lock_type(tmp_path / "test.lock")
+        setter_line = sys._getframe().f_lineno + 1
+        lock.lifetime = 10
 
+    message = (
+        f"{lock_type.__name__}(lifetime=...) uses age-based expiry and can overlap a live holder; "
+        f"use {lease} for expiry or {strict_lock} for fail-closed locking"
+    )
     assert [(item.category, str(item.message), item.filename, item.lineno) for item in caught] == [
-        (
-            SoftFileLockLifetimeWarning,
-            (
-                f"{lock_type.__name__}(lifetime=...) uses age-based expiry and can overlap a live holder; "
-                f"use {lease} for expiry or {strict_lock} for fail-closed locking"
-            ),
-            __file__,
-            warning_line,
-        )
+        (SoftFileLockLifetimeWarning, message, __file__, constructor_line),
+        (SoftFileLockLifetimeWarning, message, __file__, setter_line),
     ]
 
 
@@ -68,20 +58,11 @@ def test_soft_lifetime_warning_identifies_caller(
     "lock_type",
     [pytest.param(SoftFileLock, id="sync"), pytest.param(AsyncSoftFileLock, id="async")],
 )
-@pytest.mark.parametrize(
-    "entry_point",
-    [pytest.param("constructor", id="constructor"), pytest.param("setter", id="setter")],
-)
-def test_soft_lifetime_none_does_not_warn(
-    lock_type: type[SoftFileLock | AsyncSoftFileLock], entry_point: Literal["constructor", "setter"], tmp_path: Path
-) -> None:
+def test_soft_lifetime_none_does_not_warn(lock_type: type[SoftFileLock | AsyncSoftFileLock], tmp_path: Path) -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        if entry_point == "constructor":
-            lock_type(tmp_path / "test.lock", lifetime=None)
-        else:
-            lock = lock_type(tmp_path / "test.lock")
-            lock.lifetime = None
+        lock_type(tmp_path / "test.lock", lifetime=None)
+        lock_type(tmp_path / "test.lock").lifetime = None
 
     assert caught == []
 
@@ -105,6 +86,17 @@ def test_invalid_soft_lifetime_does_not_warn(
     assert caught == []
 
 
+def _set_invalid_lifetime(
+    lock_type: type[SoftFileLock | AsyncSoftFileLock],
+    entry_point: Literal["constructor", "setter"],
+    lock_path: Path,
+) -> None:
+    if entry_point == "constructor":
+        lock_type(lock_path, lifetime=-1)
+    else:
+        lock_type(lock_path).lifetime = -1
+
+
 @pytest.mark.parametrize(
     "lock_type",
     [
@@ -124,35 +116,25 @@ def test_invalid_soft_lifetime_does_not_warn(
         ),
     ],
 )
-@pytest.mark.parametrize(
-    "entry_point",
-    [pytest.param("constructor", id="constructor"), pytest.param("setter", id="setter")],
-)
 def test_native_lifetime_warning_identifies_caller(
     lock_type: type[UnixFileLock | AsyncUnixFileLock | WindowsFileLock | AsyncWindowsFileLock],
-    entry_point: Literal["constructor", "setter"],
     tmp_path: Path,
 ) -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        if entry_point == "constructor":
-            warning_line = sys._getframe().f_lineno + 1
-            lock_type(tmp_path / "test.lock", lifetime=10)
-        else:
-            lock = lock_type(tmp_path / "test.lock")
-            warning_line = sys._getframe().f_lineno + 1
-            lock.lifetime = 10
+        constructor_line = sys._getframe().f_lineno + 1
+        lock_type(tmp_path / "test.lock", lifetime=10)
+        lock = lock_type(tmp_path / "test.lock")
+        setter_line = sys._getframe().f_lineno + 1
+        lock.lifetime = 10
 
+    message = (
+        f"lifetime is ignored for {lock_type.__name__}: a native OS lock cannot be broken safely by file age; "
+        "only SoftFileLock supports lifetime-based expiry"
+    )
     assert [(item.category, str(item.message), item.filename, item.lineno) for item in caught] == [
-        (
-            UserWarning,
-            (
-                f"lifetime is ignored for {lock_type.__name__}: a native OS lock cannot be broken safely by file age; "
-                "only SoftFileLock supports lifetime-based expiry"
-            ),
-            __file__,
-            warning_line,
-        )
+        (UserWarning, message, __file__, constructor_line),
+        (UserWarning, message, __file__, setter_line),
     ]
 
 
@@ -236,15 +218,3 @@ def test_soft_lifetime_warning_shows_under_default_filters(tmp_path: Path) -> No
     )
 
     assert "SoftFileLockLifetimeWarning" in result.stderr
-
-
-def _set_invalid_lifetime(
-    lock_type: type[SoftFileLock | AsyncSoftFileLock],
-    entry_point: Literal["constructor", "setter"],
-    lock_path: Path,
-) -> None:
-    if entry_point == "constructor":
-        lock_type(lock_path, lifetime=-1)
-    else:
-        lock = lock_type(lock_path)
-        lock.lifetime = -1

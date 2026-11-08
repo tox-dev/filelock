@@ -34,13 +34,11 @@ _LockT = TypeVar("_LockT", bound=BaseFileLock)
 
 
 def acquire_after_reclaim(lock: BaseFileLock) -> None:
-    """
-    Take a path whose stale marker the lock has to break first, without a wall-clock budget.
-
-    A try finds the marker and breaks it, or first watches an unreadable one age; the last creates its own. A deadline
-    would test how fast the machine is: a first try that outlasts it times out after the marker is gone and before the
-    lock is held.
-    """
+    # Take a path whose stale marker the lock has to break first, without a wall-clock budget.
+    #
+    # A try finds the marker and breaks it, or first watches an unreadable one age; the last creates its own. A deadline
+    # would test how fast the machine is: a first try that outlasts it times out after the marker is gone and before the
+    # lock is held.
     for _ in range(3):
         with suppress(Timeout):
             lock.acquire(blocking=False)
@@ -50,7 +48,7 @@ def acquire_after_reclaim(lock: BaseFileLock) -> None:
 
 @contextmanager
 def held_after_reclaim(lock: _LockT) -> Generator[_LockT]:
-    """Hold *lock* through :func:`acquire_after_reclaim` and release it on exit."""
+    # Hold *lock* through :func:`acquire_after_reclaim` and release it on exit.
     acquire_after_reclaim(lock)
     try:
         yield lock
@@ -81,18 +79,20 @@ def _tracemalloc_lookup_without_support() -> Iterator[None]:
 
 
 _HOST_COLLECTION_INTERVAL: Final[int] = 20
-_HOST_COLLECTION_DUE: Final = itertools.cycle((False,) * (_HOST_COLLECTION_INTERVAL - 1) + (True,))
+_HOST_COLLECTION_DUE: Final[Iterator[bool]] = itertools.cycle((False,) * (_HOST_COLLECTION_INTERVAL - 1) + (True,))
 
 
 @pytest.fixture(autouse=True)
 def _collect_garbage() -> Iterator[None]:
-    # Multiprocessing objects register finalizers that close pipes, unlink semaphores and write to the resource
-    # tracker; when cyclic garbage from one test is collected during a later one, those run against whatever that
-    # later test has patched onto os.close or os.write. Collect after every test so finalizers fire in the test that
-    # created the objects, before any such patch is in place. This runs after mocker's undo, since autouse fixtures
-    # set up first and tear down last. Where a collection runs no finalizers (GraalPy queues them on the host
-    # collector), it cannot do that, and a full host collection after every test was nearly all of the suite's runtime.
-    # It still needs one now and then: with none at all, GraalPy CI runs stalled past the timeout inside trivial tests.
+    # Multiprocessing objects register finalizers that close pipes, unlink semaphores and write to the resource tracker;
+    # when cyclic garbage from one test is collected during a later one, those run against whatever that later test has
+    # patched onto os.close or os.write. Collect after every test so finalizers fire in the test that created the
+    # objects, before any such patch is in place.
+    #
+    # This runs after mocker's undo, since autouse fixtures set up first and tear down last. Where a collection runs no
+    # finalizers (GraalPy queues them on the host collector), it cannot do that, and a full host collection after every
+    # test was nearly all of the suite's runtime. It still needs one now and then: with none at all, GraalPy CI runs
+    # stalled past the timeout inside trivial tests.
     yield
     if CAPABILITIES["collected-finalization"] or next(_HOST_COLLECTION_DUE):  # pragma: needs collected-finalization
         gc.collect()
@@ -112,7 +112,7 @@ def close_failure(
     def capture(fd: int) -> None:
         nonlocal locked_fd
         locked_fd = fd
-        mocker.patch("filelock._api.os.close", side_effect=close)
+        mocker.patch("filelock._api.os.close", side_effect=close, autospec=True)
 
     def close(fd: int) -> None:
         # filelock._api.os is the os module, so this patches os.close process-wide. Raise only for the descriptor
@@ -128,15 +128,14 @@ def close_failure(
 
 @pytest.fixture(params=[pytest.param("native", id="native"), pytest.param("no-exchange", id="no-exchange")])
 def break_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
-    """Run the test with the platform's own stale break, then as where no atomic exchange of two names exists."""
+    # Run the test with the platform's own stale break, then as where no atomic exchange of two names exists.
     if request.param == "no-exchange":
-        mocker.patch("filelock._util._rename_call", return_value=None)
+        mocker.patch("filelock._util._rename_call", return_value=None, autospec=True)
 
 
 @pytest.fixture
 def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None]], None]:
-    """Schedule an action for right after the stale break re-reads the lock file and before it takes the marker."""
-
+    # Schedule an action for right after the stale break re-reads the lock file and before it takes the marker.
     def schedule(lock: Path, action: Callable[[], None]) -> None:
         alive: Final = filelock._identity.process_alive
         lstat: Final = os.lstat
@@ -154,7 +153,7 @@ def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None
                 action()
             return found
 
-        mocker.patch("filelock._identity.process_alive", side_effect=judged)
+        mocker.patch("filelock._identity.process_alive", side_effect=judged, autospec=True)
         mocker.patch.object(os, "lstat", new=lstat_then_act)
 
     return schedule
@@ -162,13 +161,10 @@ def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None
 
 @pytest.fixture
 def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]:  # pragma: win32 no cover
-    """
-    Stand in for ext4, which hands a freed inode number to the next file created.
-
-    A tmpfs test directory never reuses a number. The stand-in makes ``os.lstat`` report a successor under the number of
-    the unlinked file it is given, once no descriptor in this process keeps that inode allocated.
-    """
-
+    # Stand in for ext4, which hands a freed inode number to the next file created.
+    #
+    # A tmpfs test directory never reuses a number. The stand-in makes ``os.lstat`` report a successor under the number
+    # of the unlinked file it is given, once no descriptor in this process keeps that inode allocated.
     def stand_in(successor: Path, freed: os.stat_result) -> None:
         created: Final = successor.lstat()
         lstat: Final = os.lstat
@@ -186,16 +182,16 @@ def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]
             }
             return os.stat_result((found.st_mode, freed.st_ino, *found[2:10]), extra)
 
-        mocker.patch("os.lstat", side_effect=lstat_with_reuse)
+        mocker.patch("os.lstat", side_effect=lstat_with_reuse, autospec=True)
 
     return stand_in
 
 
 #: Linux and macOS cap PIDs below 2**22 + 1, and Windows answers OpenProcess for it with an invalid-parameter error, so
 #: the marker names a holder every platform reads as dead.
-DEAD_PID: Final[int] = 2**22 + 1
-DEAD_HOLDER: Final[str] = f"{DEAD_PID}\n{host_name()}\n"
-DEAD_OWNER: Final[str] = f"filelock/2\npid={DEAD_PID}\nhost={host_name()}\nmode=exclusive\n"
+_DEAD_PID: Final[int] = 2**22 + 1
+DEAD_HOLDER: Final[str] = f"{_DEAD_PID}\n{host_name()}\n"
+DEAD_OWNER: Final[str] = f"filelock/2\npid={_DEAD_PID}\nhost={host_name()}\nmode=exclusive\n"
 
 #: Every soft lock that breaks a stale marker, with a record naming a dead owner in the format it reads.
 STALE_BREAKERS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(

@@ -1,11 +1,3 @@
-"""Marks for runtime capabilities several test modules gate on.
-
-Capabilities used by a single module stay private to it, as ``_NEEDS_LINK_DIR_FD`` and friends do. These span modules,
-so they live here and read the same ``CAPABILITIES`` probes the coverage pragmas use. Gate on a probe rather than on an
-interpreter or platform name: a name answers who is running, and every one of these questions is about what the runtime
-can do.
-"""
-
 from __future__ import annotations
 
 import sys
@@ -47,6 +39,10 @@ NEEDS_FCNTL: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 
 NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"], reason="creating a symlink needs a privilege this runtime does not grant"
+)
+
+NEEDS_FIFO: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform == "win32" or not CAPABILITIES["fifo"], reason="os.mkfifo is unavailable"
 )
 
 #: Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.

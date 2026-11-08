@@ -23,10 +23,6 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Final
 
-_TOKEN_ADJUST_PRIVILEGES: Final[int] = 0x0020
-_TOKEN_QUERY: Final[int] = 0x0008
-_SE_PRIVILEGE_REMOVED: Final[int] = 0x0004
-_ERROR_NOT_ALL_ASSIGNED: Final[int] = 1300
 _PRIVILEGE: Final[str] = "SeCreateSymbolicLinkPrivilege"
 
 
@@ -55,8 +51,21 @@ def main() -> int:
     print(f"{_PRIVILEGE} after: {_privilege_state()}")
     print(f"symlink after (this process): {_can_symlink()}")
 
+    child_probe: str = """
+import pathlib, tempfile
+
+with tempfile.TemporaryDirectory() as directory:
+    target = pathlib.Path(directory, "target")
+    target.touch()
+    try:
+        pathlib.Path(directory, "link").symlink_to(target)
+    except OSError as error:
+        print(f"False (WinError {error.winerror})")
+    else:
+        print("True")
+"""
     child = subprocess.run(
-        [sys.executable, "-c", _CHILD_PROBE],
+        [sys.executable, "-c", child_probe],
         capture_output=True,
         text=True,
         check=False,
@@ -117,8 +126,10 @@ def _remove_privilege() -> str:
     advapi32.AdjustTokenPrivileges.restype = wintypes.BOOL
 
     token = wintypes.HANDLE()
+    token_adjust_privileges: int = 0x0020
+    token_query: int = 0x0008
     if not advapi32.OpenProcessToken(
-        kernel32.GetCurrentProcess(), _TOKEN_ADJUST_PRIVILEGES | _TOKEN_QUERY, ctypes.byref(token)
+        kernel32.GetCurrentProcess(), token_adjust_privileges | token_query, ctypes.byref(token)
     ):
         return f"OpenProcessToken failed with {ctypes.get_last_error()}"
 
@@ -126,28 +137,15 @@ def _remove_privilege() -> str:
     if not advapi32.LookupPrivilegeValueW(None, _PRIVILEGE, ctypes.byref(luid)):
         return f"LookupPrivilegeValue failed with {ctypes.get_last_error()}"
 
-    privileges = _TokenPrivileges(1, (_LuidAndAttributes * 1)(_LuidAndAttributes(luid, _SE_PRIVILEGE_REMOVED)))
-    if not advapi32.AdjustTokenPrivileges(token, False, ctypes.byref(privileges), 0, None, None):  # ruff:ignore[boolean-positional-value-in-call]
+    se_privilege_removed: int = 0x0004
+    privileges = _TokenPrivileges(1, (_LuidAndAttributes * 1)(_LuidAndAttributes(luid, se_privilege_removed)))
+    if not advapi32.AdjustTokenPrivileges(token, False, ctypes.byref(privileges), 0, None, None):  # ruff:ignore[boolean-positional-value-in-call]  # the Win32 signature takes a plain BOOL
         return f"AdjustTokenPrivileges failed with {ctypes.get_last_error()}"
     # The call reports success even when the token never held the privilege, so read the code it leaves behind.
-    if (code := ctypes.get_last_error()) == _ERROR_NOT_ALL_ASSIGNED:
+    error_not_all_assigned: int = 1300
+    if (code := ctypes.get_last_error()) == error_not_all_assigned:
         return "the token did not hold the privilege"
     return "removed" if code == 0 else f"unexpected code {code}"
-
-
-_CHILD_PROBE: Final[str] = """
-import pathlib, tempfile
-
-with tempfile.TemporaryDirectory() as directory:
-    target = pathlib.Path(directory, "target")
-    target.touch()
-    try:
-        pathlib.Path(directory, "link").symlink_to(target)
-    except OSError as error:
-        print(f"False (WinError {error.winerror})")
-    else:
-        print("True")
-"""
 
 
 def _can_symlink() -> str:

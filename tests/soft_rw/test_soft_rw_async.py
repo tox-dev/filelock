@@ -7,27 +7,29 @@ import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Concatenate, Final, Generic, Literal, ParamSpec, TypeVar
 
 import pytest
 
 from filelock import Timeout
-from filelock._soft_rw import AsyncSoftReadWriteLock, SoftReadWriteLock
+from filelock._soft_rw._async import AsyncSoftReadWriteLock
 from filelock._soft_rw._protocol import GenerationLog, Snapshot
 from filelock._soft_rw._storage import OsFiles
+from filelock._soft_rw._sync import SoftReadWriteLock
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
     from concurrent.futures import Executor
+    from contextlib import AbstractAsyncContextManager
 
     from pytest_mock import MockerFixture
 
     from filelock._lease import LeaseCompromise
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 # Bounds every wait on another task, so a lock that never admits it fails the test instead of hanging the suite.
 _TASK_WAIT: Final[float] = 10
@@ -40,6 +42,17 @@ def _clear_singletons() -> Generator[None]:
     for lock in filter(None, (ref() for ref in list(SoftReadWriteLock._instances.valuerefs()))):
         lock.close()
     SoftReadWriteLock._instances.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
+async def test_async_lock_context_manager(tmp_path: Path, mode: Literal["read", "write"]) -> None:
+    lock = _make(tmp_path)
+    try:
+        async with getattr(lock, f"{mode}_lock")(timeout=2):
+            pass
+    finally:
+        await lock.close()
 
 
 def _make(
@@ -68,58 +81,6 @@ def _make(
         executor=executor,
         on_compromise=on_compromise,
     )
-
-
-class _Gate:
-    """Pause one call inside the executor thread so a cancellation lands after the backend work started."""
-
-    def __init__(self, mocker: MockerFixture, name: str, *, fail_with: BaseException | None = None) -> None:
-        self.started = asyncio.Event()
-        # Set once the gated call returns, letting a test distinguish the executor finishing from the caller giving up.
-        self.finished = threading.Event()
-        self._resume = threading.Event()
-        self._loop = asyncio.get_running_loop()
-        self._real: Callable[..., object] = getattr(SoftReadWriteLock, name)
-        self._pending = True
-        mocker.patch.object(SoftReadWriteLock, name, autospec=True, side_effect=self._call(fail_with))
-
-    def _call(self, fail_with: BaseException | None) -> Callable[..., object]:
-        def call(lock: SoftReadWriteLock, *args: object, **kwargs: object) -> object:
-            if not self._pending:
-                return self._real(lock, *args, **kwargs)
-            self._pending = False
-            self._loop.call_soon_threadsafe(self.started.set)
-            assert self._resume.wait(timeout=5)
-            try:
-                if fail_with is not None:
-                    raise fail_with
-                return self._real(lock, *args, **kwargs)
-            finally:
-                self.finished.set()
-
-        return call
-
-    def resume(self) -> None:
-        self._resume.set()
-
-
-def _members(tmp_path: Path, name: str = "foo.lock") -> list[str]:
-    lock_file = str(tmp_path / name)
-    latest = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw").latest()
-    holders = tmp_path / f"{name}.rw" / "holders"
-    return sorted(latest.members) + (sorted(entry.name for entry in holders.iterdir()) if holders.is_dir() else [])
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
-async def test_async_lock_context_manager(tmp_path: Path, mode: Literal["read", "write"]) -> None:
-    lock = _make(tmp_path)
-    try:
-        context = lock.write_lock if mode == "write" else lock.read_lock
-        async with context(timeout=2):
-            pass
-    finally:
-        await lock.close()
 
 
 @pytest.mark.asyncio
@@ -162,25 +123,36 @@ async def test_async_raw_acquire_release_round_trip(tmp_path: Path) -> None:
         pytest.param(float("nan"), "timeout must be a number of seconds, not nan", id="nan"),
     ],
 )
-@pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
-@pytest.mark.parametrize("contended", [pytest.param(True, id="contended"), pytest.param(False, id="free")])
+@pytest.mark.parametrize(
+    "form",
+    [
+        pytest.param(lambda timeout: (timeout, {}), id="instance"),
+        pytest.param(lambda timeout: (-1, {"timeout": timeout}), id="call"),
+    ],
+)
+@pytest.mark.parametrize(
+    "holder",
+    [
+        pytest.param(lambda lock: lock.write_lock(timeout=0), id="contended"),
+        pytest.param(lambda _lock: nullcontext(), id="free"),
+    ],
+)
 async def test_async_acquire_rejects_invalid_timeout(
     tmp_path: Path,
     mode: Literal["read", "write"],
     timeout: float,
     message: str,
-    *,
-    configured: bool,
-    contended: bool,
+    form: Callable[[float], tuple[float, dict[str, float]]],
+    holder: Callable[[AsyncSoftReadWriteLock], AbstractAsyncContextManager[None]],
 ) -> None:
-    lock: Final = _make(tmp_path, timeout=timeout if configured else -1)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    lock_timeout, call_kwargs = form(timeout)
+    lock: Final = _make(tmp_path, timeout=lock_timeout)
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
         async with AsyncExitStack() as stack:
-            if contended:
-                await stack.enter_async_context(lock.write_lock(timeout=0))
+            await stack.enter_async_context(holder(lock))
             with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
-                await asyncio.create_task(acquire() if configured else acquire(timeout=timeout))
+                await asyncio.create_task(acquire(**call_kwargs))
     finally:
         await lock.close()
 
@@ -191,14 +163,24 @@ async def test_async_acquire_rejects_invalid_timeout(
     "timeout",
     [pytest.param(-2, id="integer"), pytest.param(float("inf"), id="infinite"), pytest.param(float("nan"), id="nan")],
 )
-@pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
+@pytest.mark.parametrize(
+    "form",
+    [
+        pytest.param(lambda timeout: (timeout, False, {}), id="instance"),
+        pytest.param(lambda timeout: (timeout, True, {"timeout": timeout, "blocking": False}), id="call"),
+    ],
+)
 async def test_async_nonblocking_ignores_invalid_timeout(
-    tmp_path: Path, mode: Literal["read", "write"], timeout: float, *, configured: bool
+    tmp_path: Path,
+    mode: Literal["read", "write"],
+    timeout: float,
+    form: Callable[[float], tuple[float, bool, dict[str, float | bool]]],
 ) -> None:
-    lock: Final = _make(tmp_path, timeout=timeout, blocking=not configured)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    lock_timeout, lock_blocking, call_kwargs = form(timeout)
+    lock: Final = _make(tmp_path, timeout=lock_timeout, blocking=lock_blocking)
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
-        async with await (acquire() if configured else acquire(timeout=timeout, blocking=False)):
+        async with await acquire(**call_kwargs):
             with pytest.raises(Timeout):
                 await asyncio.create_task(lock.acquire_write(timeout=timeout, blocking=False))
     finally:
@@ -209,7 +191,7 @@ async def test_async_nonblocking_ignores_invalid_timeout(
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 async def test_async_acquire_accepts_infinite_timeout(tmp_path: Path, mode: Literal["read", "write"]) -> None:
     lock: Final = _make(tmp_path)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
         async with await acquire(timeout=float("inf")):
             with pytest.raises(Timeout):
@@ -272,7 +254,7 @@ async def test_async_release_and_close_skip_when_pid_differs(tmp_path: Path, moc
     lock = _make(tmp_path)
     await lock.acquire_write(timeout=2)
     try:
-        mocker.patch("filelock._soft_rw._async.os.getpid", return_value=os.getpid() + 1)
+        mocker.patch("filelock._soft_rw._async.os.getpid", return_value=os.getpid() + 1, autospec=True)
         await lock.release(force=True)
         await lock.close()
         mocker.stopall()
@@ -291,6 +273,13 @@ async def test_async_leaked_singleton_is_closed_on_teardown(tmp_path: Path) -> N
     assert len(_members(tmp_path, "singleton.lock")) == 2
 
 
+def _members(tmp_path: Path, name: str = "foo.lock") -> list[str]:
+    lock_file = str(tmp_path / name)
+    latest = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw").latest()
+    holders = tmp_path / f"{name}.rw" / "holders"
+    return sorted(latest.members) + (sorted(entry.name for entry in holders.iterdir()) if holders.is_dir() else [])
+
+
 @pytest.mark.timeout(0)  # The per-handoff wait bounds stalls; batch runtime is not a lock guarantee.
 @pytest.mark.asyncio
 async def test_async_tasks_sharing_a_lock_take_the_write_lock_one_at_a_time(tmp_path: Path) -> None:
@@ -303,7 +292,7 @@ async def test_async_tasks_sharing_a_lock_take_the_write_lock_one_at_a_time(tmp_
         async with lock.write_lock():
             inside += 1
             peak = max(peak, inside)
-            await asyncio.sleep(0.001)
+            await asyncio.sleep(0)
             inside -= 1
         progress.put_nowait(None)
 
@@ -370,10 +359,9 @@ async def test_async_writer_times_out_behind_reader(tmp_path: Path) -> None:
 async def test_async_acquire_cancellation_hands_the_claim_back(
     tmp_path: Path, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
-    gate = _Gate(mocker, "_acquire_level_of")
+    gate = _Gate(mocker, "_acquire_level_of", SoftReadWriteLock._acquire_level_of)
     lock = _make(tmp_path)
-    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
-    task = asyncio.create_task(acquire(timeout=5))
+    task = asyncio.create_task(getattr(lock, f"acquire_{mode}")(timeout=5))
     await gate.started.wait()
     task.cancel("cancel acquire")
     gate.resume()
@@ -392,12 +380,55 @@ async def test_async_acquire_cancellation_hands_the_claim_back(
     await lock.close()
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+class _Gate(Generic[_P, _R]):
+    # Pause one call inside the executor thread so a cancellation lands after the backend work started.
+    def __init__(
+        self,
+        mocker: MockerFixture,
+        name: str,
+        method: Callable[Concatenate[SoftReadWriteLock, _P], _R],
+        *,
+        fail_with: BaseException | None = None,
+    ) -> None:
+        self.started = asyncio.Event()
+        # Set once the gated call returns, letting a test distinguish the executor finishing from the caller giving up.
+        self.finished = threading.Event()
+        self._resume = threading.Event()
+        self._loop = asyncio.get_running_loop()
+        self._real = method
+        self._pending = True
+        mocker.patch.object(SoftReadWriteLock, name, autospec=True, side_effect=self._call(fail_with))
+
+    def _call(self, fail_with: BaseException | None) -> Callable[Concatenate[SoftReadWriteLock, _P], _R]:
+        def call(lock: SoftReadWriteLock, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+            if not self._pending:
+                return self._real(lock, *args, **kwargs)
+            self._pending = False
+            self._loop.call_soon_threadsafe(self.started.set)
+            assert self._resume.wait(timeout=5)
+            try:
+                if fail_with is not None:
+                    raise fail_with
+                return self._real(lock, *args, **kwargs)
+            finally:
+                self.finished.set()
+
+        return call
+
+    def resume(self) -> None:
+        self._resume.set()
+
+
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_acquire_cancellation_surfaces_a_failed_acquire(tmp_path: Path, mocker: MockerFixture) -> None:
     # A Timeout here means the acquire gave up on the cancellation, so a real failure has to be another error.
     acquire_error = OSError("acquire failed")
-    gate = _Gate(mocker, "_acquire_level_of", fail_with=acquire_error)
+    gate = _Gate(mocker, "_acquire_level_of", SoftReadWriteLock._acquire_level_of, fail_with=acquire_error)
     lock = _make(tmp_path)
     task = asyncio.create_task(lock.acquire_write(timeout=5))
     await gate.started.wait()
@@ -416,9 +447,9 @@ async def test_async_acquire_cancellation_surfaces_a_failed_acquire(tmp_path: Pa
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_acquire_cancellation_surfaces_a_failed_release(tmp_path: Path, mocker: MockerFixture) -> None:
-    gate = _Gate(mocker, "_acquire_level_of")
+    gate = _Gate(mocker, "_acquire_level_of", SoftReadWriteLock._acquire_level_of)
     release_error = RuntimeError("release failed")
-    mocker.patch.object(SoftReadWriteLock, "_release_level_of", side_effect=release_error)
+    mocker.patch.object(SoftReadWriteLock, "_release_level_of", side_effect=release_error, autospec=True)
     lock = _make(tmp_path)
     task = asyncio.create_task(lock.acquire_write(timeout=5))
     await gate.started.wait()
@@ -437,7 +468,7 @@ async def test_async_acquire_cancellation_surfaces_a_failed_release(tmp_path: Pa
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_async_release_cancellation_drains_the_release(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _make(tmp_path)
-    gate = _Gate(mocker, "_release_level_of")
+    gate = _Gate(mocker, "_release_level_of", SoftReadWriteLock._release_level_of)
     task = asyncio.create_task(_acquire_then_release(lock, "write"))
     await gate.started.wait()
     task.cancel("cancel release")
@@ -453,6 +484,12 @@ async def test_async_release_cancellation_drains_the_release(tmp_path: Path, moc
     await lock.close()
 
 
+async def _acquire_then_release(lock: AsyncSoftReadWriteLock, mode: Literal["read", "write"]) -> None:
+    # A hold belongs to the task that took it, so the task whose release gets canceled has to acquire first.
+    await getattr(lock, f"acquire_{mode}")(timeout=5)
+    await lock.release()
+
+
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
@@ -460,7 +497,7 @@ async def test_async_release_cancellation_hands_the_lock_to_the_next_task(
     tmp_path: Path, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
     lock = _make(tmp_path)
-    gate = _Gate(mocker, "_release_level_of")
+    gate = _Gate(mocker, "_release_level_of", SoftReadWriteLock._release_level_of)
     task = asyncio.create_task(_acquire_then_release(lock, mode))
     await gate.started.wait()
     task.cancel("cancel release")
@@ -479,27 +516,42 @@ async def test_async_release_cancellation_hands_the_lock_to_the_next_task(
     await lock.close()
 
 
-@pytest.mark.parametrize("fail", [pytest.param(False, id="closed"), pytest.param(True, id="failed")])
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
-async def test_async_close_cancellation_drains_the_close(tmp_path: Path, mocker: MockerFixture, *, fail: bool) -> None:
+async def test_async_close_cancellation_drains_the_close(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _make(tmp_path)
     await lock.acquire_write(timeout=5)
-    close_error = RuntimeError("close failed")
-    gate = _Gate(mocker, "close", fail_with=close_error if fail else None)
+    gate = _Gate(mocker, "close", SoftReadWriteLock.close)
     task = asyncio.create_task(lock.close())
     await gate.started.wait()
     task.cancel("cancel close")
     gate.resume()
-    with pytest.raises(RuntimeError if fail else asyncio.CancelledError) as info:
+    with pytest.raises(asyncio.CancelledError):
         await task
 
     assert gate.finished.is_set()
-    if fail:
-        assert info.value is close_error
-        assert isinstance(close_error.__context__, asyncio.CancelledError)
-        mocker.stopall()
-        await lock.close()
+    assert _members(tmp_path) == []
+
+
+@pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_async_close_cancellation_surfaces_a_failed_close(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = _make(tmp_path)
+    await lock.acquire_write(timeout=5)
+    close_error = RuntimeError("close failed")
+    gate = _Gate(mocker, "close", SoftReadWriteLock.close, fail_with=close_error)
+    task = asyncio.create_task(lock.close())
+    await gate.started.wait()
+    task.cancel("cancel close")
+    gate.resume()
+    with pytest.raises(RuntimeError) as info:
+        await task
+
+    assert gate.finished.is_set()
+    assert info.value is close_error
+    assert isinstance(close_error.__context__, asyncio.CancelledError)
+    mocker.stopall()
+    await lock.close()
     assert _members(tmp_path) == []
 
 
@@ -508,7 +560,7 @@ async def test_async_close_cancellation_drains_the_close(tmp_path: Path, mocker:
 async def test_async_release_cancellation_surfaces_a_failed_release(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = _make(tmp_path)
     release_error = RuntimeError("release failed")
-    gate = _Gate(mocker, "_release_level_of", fail_with=release_error)
+    gate = _Gate(mocker, "_release_level_of", SoftReadWriteLock._release_level_of, fail_with=release_error)
     task = asyncio.create_task(_acquire_then_release(lock, "write"))
     await gate.started.wait()
     task.cancel("cancel release")
@@ -520,12 +572,6 @@ async def test_async_release_cancellation_surfaces_a_failed_release(tmp_path: Pa
     assert isinstance(release_error.__context__, asyncio.CancelledError)
     mocker.stopall()
     await lock.close()
-
-
-async def _acquire_then_release(lock: AsyncSoftReadWriteLock, mode: Literal["read", "write"]) -> None:
-    # A hold belongs to the task that took it, so the task whose release gets canceled has to acquire first.
-    await (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=5)
-    await lock.release()
 
 
 @pytest.mark.asyncio
@@ -541,13 +587,21 @@ async def test_async_soft_read_after_a_sync_close_of_the_shared_singleton_raises
     await lock.close()
 
 
-@pytest.mark.parametrize("sync_end", [pytest.param("release", id="release"), pytest.param("close", id="close")])
+@pytest.mark.parametrize(
+    "sync_end",
+    [
+        pytest.param(SoftReadWriteLock.close, id="close"),
+        pytest.param(functools.partial(SoftReadWriteLock.release, force=True), id="release"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_async_soft_close_after_a_sync_end_of_the_shared_singleton_returns(tmp_path: Path, sync_end: str) -> None:
+async def test_async_soft_close_after_a_sync_end_of_the_shared_singleton_returns(
+    tmp_path: Path, sync_end: Callable[[SoftReadWriteLock], object]
+) -> None:
     lock: Final = _make(tmp_path, is_singleton=True)
     await lock.acquire_read(timeout=_TASK_WAIT)
     sync: Final = SoftReadWriteLock(str(tmp_path / "foo.lock"))
-    await asyncio.to_thread(sync.close if sync_end == "close" else functools.partial(sync.release, force=True))
+    await asyncio.to_thread(sync_end, sync)
 
     await lock.close()
 
@@ -578,6 +632,28 @@ async def test_async_soft_read_arriving_during_close_is_refused(tmp_path: Path, 
         await arriving
 
 
+async def _read_and_probe(lock: AsyncSoftReadWriteLock) -> bool:
+    async with lock.read_lock(timeout=_TASK_WAIT):
+        return await asyncio.to_thread(_writer_gets_in, Path(lock.lock_file).parent)
+
+
+def _writer_gets_in(tmp_path: Path) -> bool:
+    contender: Final = _make_sync(tmp_path)
+    try:
+        contender.acquire_write(blocking=False)
+    except Timeout:
+        return False
+    finally:
+        contender.close()
+    return True
+
+
+def _make_sync(tmp_path: Path) -> SoftReadWriteLock:
+    return SoftReadWriteLock(
+        str(tmp_path / "foo.lock"), is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5
+    )
+
+
 @pytest.mark.asyncio
 async def test_async_soft_read_through_another_wrapper_during_close_holds_the_lock(tmp_path: Path) -> None:
     closing, other = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)
@@ -596,7 +672,7 @@ async def test_async_soft_close_keeps_the_hold_taken_through_another_wrapper(
     tmp_path: Path, mode: Literal["read", "write"]
 ) -> None:
     holder, closing = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)
-    await (holder.acquire_read if mode == "read" else holder.acquire_write)(timeout=_TASK_WAIT)
+    await getattr(holder, f"acquire_{mode}")(timeout=_TASK_WAIT)
 
     await asyncio.create_task(closing.close())
 
@@ -689,28 +765,6 @@ async def test_async_soft_close_of_a_singleton_wrapper_ends_the_holds_taken_thro
         await lock.acquire_read(timeout=_TASK_WAIT)
 
 
-def _writer_gets_in(tmp_path: Path) -> bool:
-    contender: Final = _make_sync(tmp_path)
-    try:
-        contender.acquire_write(blocking=False)
-    except Timeout:
-        return False
-    finally:
-        contender.close()
-    return True
-
-
-def _make_sync(tmp_path: Path) -> SoftReadWriteLock:
-    return SoftReadWriteLock(
-        str(tmp_path / "foo.lock"), is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5
-    )
-
-
-async def _read_and_probe(lock: AsyncSoftReadWriteLock) -> bool:
-    async with lock.read_lock(timeout=_TASK_WAIT):
-        return await asyncio.to_thread(_writer_gets_in, Path(lock.lock_file).parent)
-
-
 @pytest.mark.usefixtures("failing_release")
 @pytest.mark.asyncio
 async def test_async_soft_read_after_a_failed_release_waits_for_another_writer(tmp_path: Path) -> None:
@@ -797,7 +851,7 @@ async def test_async_soft_canceled_acquire_leaves_a_sync_reader_of_the_same_sing
 ) -> None:
     async_lock: Final = AsyncSoftReadWriteLock(str(tmp_path / "foo.lock"))
     with SoftReadWriteLock(str(tmp_path / "foo.lock")).read_lock():
-        gate = _Gate(mocker, "_acquire_level_of")
+        gate = _Gate(mocker, "_acquire_level_of", SoftReadWriteLock._acquire_level_of)
         acquiring = asyncio.create_task(async_lock.acquire_read(timeout=5))
         await gate.started.wait()
         acquiring.cancel()

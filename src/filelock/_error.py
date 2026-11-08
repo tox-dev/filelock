@@ -6,14 +6,21 @@ from typing import Final
 
 
 class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # public exception name; renaming breaks the API
-    """Raised when the lock could not be acquired in *timeout* seconds."""
+    """
+    Raised when the lock could not be acquired in *timeout* seconds.
+
+    :param lock_file: the path of the file lock
+    :param holder: a description of the lock's holder, when one is recorded and this host cannot probe it
+    """
 
     def __init__(self, lock_file: str, holder: str | None = None) -> None:
         super().__init__()
         self._lock_file = lock_file
         self._holder = holder
 
-    def __reduce__(self) -> tuple[type[Timeout], tuple[str], dict[str, object]]:
+    def __reduce__(
+        self,
+    ) -> tuple[type[Timeout], tuple[str], dict[str, object]]:  # simplint: ignore[SMP602]  # __dict__ holds any value
         # holder rides in the state so a subclass taking only lock_file, and a 4.0.12 reader, can still unpickle it.
         return self.__class__, (self._lock_file,), self.__dict__
 
@@ -47,7 +54,13 @@ class LeaseSettingsMismatch(ValueError):  # ruff:ignore[error-suffix-on-exceptio
 
 
 class SoftFileLockProtocolError(OSError):
-    """Raised when strict soft-lock state cannot be interpreted without risking overlap."""
+    """
+    Raised when strict soft-lock state cannot be interpreted without risking overlap.
+
+    :param lock_file: the path of the lock
+    :param claim_name: the name of the claim the state belongs to, or ``None`` when it concerns the lock as a whole
+    :param reason: why the state cannot be interpreted
+    """
 
     def __init__(self, lock_file: str, claim_name: str | None, reason: str) -> None:
         self._lock_file = lock_file
@@ -55,16 +68,18 @@ class SoftFileLockProtocolError(OSError):
         self._reason = reason
         super().__init__(self.__str__())
 
-    def __reduce__(
-        self,
-    ) -> tuple[
-        type[SoftFileLockProtocolError], tuple[str, str | None, str], dict[str, object]
-    ]:  # pragma: needs hard-link
-        return self.__class__, (self._lock_file, self._claim_name, self._reason), self.__dict__
-
     def __str__(self) -> str:
         location = self._lock_file if self._claim_name is None else f"{self._lock_file}: claim {self._claim_name!r}"
         return f"Invalid strict soft-lock state at {location}: {self._reason}"
+
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type[SoftFileLockProtocolError],
+        tuple[str, str | None, str],
+        dict[str, object],  # simplint: ignore[SMP602]  # __dict__ holds any value
+    ]:  # pragma: needs hard-link
+        return self.__class__, (self._lock_file, self._claim_name, self._reason), self.__dict__
 
     @property
     def lock_file(self) -> str:  # pragma: needs hard-link

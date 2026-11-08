@@ -1,4 +1,4 @@
-"""The :class:`~._protocol.Files` implementation over :mod:`os`."""
+"""The :class:`~._protocol._Files` implementation over :mod:`os`."""
 
 from __future__ import annotations
 
@@ -44,8 +44,7 @@ _WINDOWS_OPEN_GRACE: Final[float] = 0.5
 
 
 class OsFiles:
-    """Record files under a lock's protocol root, opened without following symlinks and owned by this UID alone."""
-
+    # Record files under a lock's protocol root, opened without following symlinks and owned by this UID alone.
     def __init__(self, lock_file: str) -> None:
         self._lock_file = lock_file
         self._prepared = False
@@ -66,122 +65,6 @@ class OsFiles:
             return b"".join(chunks)
         finally:
             os.close(fd)
-
-    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
-        with self._relative(path) as (name, dir_fd):
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, 0o600, dir_fd=dir_fd)
-        try:
-            write_all(fd, data)
-            if durable:
-                os.fsync(fd)
-            created = os.fstat(fd)
-        except BaseException:
-            os.close(fd)
-            # The name is unique to this call, so removing it cannot take a record from anyone else.
-            self.unlink(path)
-            raise
-        os.close(fd)
-        return created.st_dev, created.st_ino
-
-    def link(self, source: str, target: str) -> bool:
-        failure: NotImplementedError | OSError | None = None
-        with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
-            try:
-                _link_no_follow(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
-            except FileExistsError:
-                pass
-            except (NotImplementedError, OSError) as error:
-                _raise_if_hard_links_unsupported(self._lock_file, error)
-                failure = error
-            # The file's identity decides, not the call's result: an NFS retransmit can report a link that landed as
-            # failed, and an EEXIST can be this very link answered twice. Any other error on a link that did not land is
-            # a fault, not a peer winning the race, and a retry would spin.
-            if (identity := _identity(source_name, source_fd)) is not None and identity == _identity(
-                target_name, target_fd
-            ):
-                return True
-        if failure is not None:
-            raise failure
-        return False
-
-    def replace(self, source: str, target: str) -> bool:
-        try:
-            with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
-                os.replace(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
-        except PermissionError:
-            # Windows refuses to rename over a file a reader holds open; callers tolerate a target one rename behind.
-            return False
-        return True
-
-    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:
-        # O_NONBLOCK keeps an open of a FIFO (a named pipe) at the path from blocking, as in read. With no reader the
-        # open fails with ENXIO.
-        try:
-            fd = self._open(path, os.O_WRONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)
-        except OSError as error:
-            if error.errno != ENXIO:
-                raise
-            return False  # pragma: needs fifo
-        if fd is None:
-            return False
-        try:
-            # O_NOFOLLOW refuses a symlink but not a hard link (a second name for the same file) or another file renamed
-            # over the name, and a write through either lands in a file that is not the record. The protocol does not
-            # link holder records, so a second name marks a file that inherited a removed record's inode number.
-            opened = os.fstat(fd)
-            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != identity or opened.st_nlink != 1:
-                return False
-            write_all(fd, data)
-        finally:
-            os.close(fd)
-        return True
-
-    def unlink(self, path: str) -> None:
-        try:
-            with self._relative(path) as (name, dir_fd):
-                os.unlink(name, dir_fd=dir_fd)
-        except OSError as error:
-            # Windows refuses to remove a file another process holds open; the record then outlives its owner until
-            # that process exits, which only delays the cleanup a later participant repeats.
-            if error.errno not in _MISSING_ERRNOS and not isinstance(error, PermissionError):
-                raise
-
-    def listdir(self, path: str) -> list[str]:
-        try:
-            with self._directory(path) as dir_fd, os.scandir(path if dir_fd is None else dir_fd) as entries:
-                return [entry.name for entry in entries]
-        except FileNotFoundError:
-            return []
-
-    def prepare(self, root: str, *, force: bool = False) -> None:
-        if self._prepared and not force:
-            return
-        if force:
-            self._identities.clear()
-        ensure_directory_exists(root)
-        for directory, depth in (
-            (Path(root), 0),
-            (Path(root, _GENERATIONS_DIRECTORY), 1),
-            (Path(root, _HOLDERS_DIRECTORY), 1),
-        ):
-            with self._relative(str(directory), depth) as (name, dir_fd):
-                with suppress(FileExistsError):
-                    os.mkdir(name, 0o700, dir_fd=dir_fd)
-                # mkdir has no O_NOFOLLOW, so check what the name resolves to before the lock creates anything in it.
-                found = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                parent = directory.parent.stat() if dir_fd is None else os.fstat(dir_fd)
-            if (
-                not stat.S_ISDIR(found.st_mode)
-                or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
-            ):
-                msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
-                raise TreeReplacedError(msg)
-            owner = foreign_directory_owner(found, parent)
-            if owner is not None:  # pragma: needs foreign-sticky-tmp
-                msg = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
-                raise TreeReplacedError(msg)
-            self._identities[str(directory)] = found.st_dev, found.st_ino
-        self._prepared = True
 
     def _open(self, path: str, flags: int) -> int | None:
         # Missing is the one answer a caller acts on without raising. A refused open is real on POSIX, where nothing
@@ -263,6 +146,121 @@ class OsFiles:
             msg = f"{path} belongs to uid {owner}, not to this process's account or the parent's owner"
             raise TreeReplacedError(msg)
         self._identities[path] = found.st_dev, found.st_ino
+
+    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
+        with self._relative(path) as (name, dir_fd):
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, 0o600, dir_fd=dir_fd)
+        try:
+            write_all(fd, data)
+            if durable:
+                os.fsync(fd)
+            created = os.fstat(fd)
+        except BaseException:
+            os.close(fd)
+            # The name is unique to this call, so removing it cannot take a record from anyone else.
+            self.unlink(path)
+            raise
+        os.close(fd)
+        return created.st_dev, created.st_ino
+
+    def unlink(self, path: str) -> None:
+        try:
+            with self._relative(path) as (name, dir_fd):
+                os.unlink(name, dir_fd=dir_fd)
+        except OSError as error:
+            # Windows refuses to remove a file another process holds open; the record then outlives its owner until
+            # that process exits, which only delays the cleanup a later participant repeats.
+            if error.errno not in _MISSING_ERRNOS and not isinstance(error, PermissionError):
+                raise
+
+    def link(self, source: str, target: str) -> bool:
+        failure: NotImplementedError | OSError | None = None
+        with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
+            try:
+                _link_no_follow(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
+            except FileExistsError:
+                pass
+            except (NotImplementedError, OSError) as error:
+                _raise_if_hard_links_unsupported(self._lock_file, error)
+                failure = error
+            # The file's identity decides, not the call's result: an NFS retransmit can report a link that landed as
+            # failed, and an EEXIST can be this very link answered twice. Any other error on a link that did not land is
+            # a fault, not a peer winning the race, and a retry would spin.
+            if (identity := _identity(source_name, source_fd)) is not None and identity == _identity(
+                target_name, target_fd
+            ):
+                return True
+        if failure is not None:
+            raise failure
+        return False
+
+    def replace(self, source: str, target: str) -> bool:
+        try:
+            with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
+                os.replace(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
+        except PermissionError:
+            # Windows refuses to rename over a file a reader holds open; callers tolerate a target one rename behind.
+            return False
+        return True
+
+    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:
+        # O_NONBLOCK keeps an open of a FIFO (a named pipe) at the path from blocking, as in read. With no reader the
+        # open fails with ENXIO.
+        try:
+            fd = self._open(path, os.O_WRONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)
+        except OSError as error:
+            if error.errno != ENXIO:
+                raise
+            return False  # pragma: needs fifo
+        if fd is None:
+            return False
+        try:
+            # O_NOFOLLOW refuses a symlink but not a hard link (a second name for the same file) or another file renamed
+            # over the name, and a write through either lands in a file that is not the record. The protocol does not
+            # link holder records, so a second name marks a file that inherited a removed record's inode number.
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != identity or opened.st_nlink != 1:
+                return False
+            write_all(fd, data)
+        finally:
+            os.close(fd)
+        return True
+
+    def listdir(self, path: str) -> list[str]:
+        try:
+            with self._directory(path) as dir_fd, os.scandir(path if dir_fd is None else dir_fd) as entries:
+                return [entry.name for entry in entries]
+        except FileNotFoundError:
+            return []
+
+    def prepare(self, root: str, *, force: bool = False) -> None:
+        if self._prepared and not force:
+            return
+        if force:
+            self._identities.clear()
+        ensure_directory_exists(root)
+        for directory, depth in (
+            (Path(root), 0),
+            (Path(root, _GENERATIONS_DIRECTORY), 1),
+            (Path(root, _HOLDERS_DIRECTORY), 1),
+        ):
+            with self._relative(str(directory), depth) as (name, dir_fd):
+                with suppress(FileExistsError):
+                    os.mkdir(name, 0o700, dir_fd=dir_fd)
+                # mkdir has no O_NOFOLLOW, so check what the name resolves to before the lock creates anything in it.
+                found = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                parent = directory.parent.stat() if dir_fd is None else os.fstat(dir_fd)
+            if (
+                not stat.S_ISDIR(found.st_mode)
+                or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            ):
+                msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
+                raise TreeReplacedError(msg)
+            if (owner := foreign_directory_owner(found, parent)) is not None:  # pragma: needs foreign-sticky-tmp
+                msg = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
+                raise TreeReplacedError(msg)
+            self._identities[str(directory)] = found.st_dev, found.st_ino
+        self._prepared = True
 
 
 def _identity(path: str, dir_fd: int | None) -> tuple[int, int] | None:

@@ -6,14 +6,13 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 import pytest_asyncio
 
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, XFAIL_WITHOUT_COROUTINE_CANCELLATION
-from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS, Interrupt, interrupt_once
+from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS, OPPOSITE_MODE, Interrupt, interrupt_once
 
 pytest.importorskip("sqlite3")
 
@@ -22,7 +21,7 @@ import sqlite3
 from filelock import AsyncReadWriteLock, ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Generator
+    from collections.abc import AsyncIterator, Callable, Generator
     from pathlib import Path
 
     from pytest_mock import MockerFixture
@@ -61,7 +60,7 @@ async def test_async_release_leaves_a_sync_reader_of_the_same_singleton_holding(
 @pytest.mark.asyncio
 async def test_acquire_release(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    proxy = await (lock.acquire_read() if mode == "read" else lock.acquire_write())
+    proxy = await getattr(lock, f"acquire_{mode}")()
     async with proxy as held:
         assert held is lock
     with pytest.raises(RuntimeError, match="not held"):
@@ -73,19 +72,26 @@ async def test_acquire_release(lock_file: str, mode: Literal["read", "write"]) -
 @pytest.mark.asyncio
 async def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    ctx = lock.read_lock() if mode == "read" else lock.write_lock()
-    async with ctx:
+    async with getattr(lock, f"{mode}_lock")():
         assert_mode_held(lock_file, mode)
     with pytest.raises(RuntimeError, match="not held"):
         await lock.release()
     await lock.close()
 
 
+def assert_mode_held(lock_file: str, mode: Literal["read", "write"]) -> None:
+    contender = ReadWriteLock(lock_file, is_singleton=False)
+    acquire = getattr(contender, f"acquire_{OPPOSITE_MODE[mode]}")
+    with pytest.raises(Timeout):
+        acquire(blocking=False)
+    contender.close()
+
+
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
 async def test_reentrant(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire = getattr(lock, f"acquire_{mode}")
     await acquire()
     await acquire()
     await lock.release()
@@ -111,22 +117,30 @@ async def test_mode_change_prohibited(
     match: str,
 ) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    await (lock.acquire_read() if held == "read" else lock.acquire_write())
+    await getattr(lock, f"acquire_{held}")()
     with pytest.raises(RuntimeError, match=match):
-        await (lock.acquire_read() if requested == "read" else lock.acquire_write())
+        await getattr(lock, f"acquire_{requested}")()
     await lock.release()
     await lock.close()
 
 
-@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    ("mode", "held"),
+    [
+        pytest.param("read", "write", id="read-blocked-by-write"),
+        pytest.param("write", "read", id="write-blocked-by-read"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_non_blocking_conflict(lock_file: str, mode: Literal["read", "write"]) -> None:
+async def test_non_blocking_conflict(
+    lock_file: str, mode: Literal["read", "write"], held: Literal["read", "write"]
+) -> None:
     holder = ReadWriteLock(lock_file, is_singleton=False)
-    (holder.acquire_write if mode == "read" else holder.acquire_read)()
+    getattr(holder, f"acquire_{held}")()
     try:
         lock = AsyncReadWriteLock(lock_file, is_singleton=False)
         with pytest.raises(Timeout):
-            await (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False)
+            await getattr(lock, f"acquire_{mode}")(blocking=False)
         await lock.close()
     finally:
         holder.release()
@@ -171,33 +185,48 @@ async def test_release_force_unheld_is_noop(lock_file: str) -> None:
     await lock.close()
 
 
-@pytest.mark.parametrize(
-    ("held", "supplied_executor"),
-    [
-        pytest.param(False, False, id="idle-owned-executor"),
-        pytest.param(True, False, id="held-owned-executor"),
-        pytest.param(False, True, id="idle-supplied-executor"),
-        pytest.param(True, True, id="held-supplied-executor"),
-    ],
-)
 @pytest.mark.asyncio
-async def test_close_rejects_later_acquisition(lock_file: str, held: bool, supplied_executor: bool) -> None:
-    executor = ThreadPoolExecutor(max_workers=1) if supplied_executor else None
-    lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
-    if held:
-        await lock.acquire_write()
+async def test_close_rejects_later_acquisition_idle_owned_executor(lock_file: str) -> None:
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     await lock.close()
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
         await lock.acquire_read()
-    if executor is not None:
-        executor.shutdown(wait=False)
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_later_acquisition_held_owned_executor(lock_file: str) -> None:
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+    await lock.acquire_write()
+    await lock.close()
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        await lock.acquire_read()
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_later_acquisition_idle_supplied_executor(lock_file: str) -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
+    await lock.close()
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        await lock.acquire_read()
+    executor.shutdown(wait=False)
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_later_acquisition_held_supplied_executor(lock_file: str) -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
+    await lock.acquire_write()
+    await lock.close()
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        await lock.acquire_read()
+    executor.shutdown(wait=False)
 
 
 def test_properties(lock_file: str) -> None:
     executor = ThreadPoolExecutor(max_workers=1)
     lock = AsyncReadWriteLock(lock_file, timeout=5.0, blocking=False, is_singleton=False, executor=executor)
-    assert lock.lock_file == lock_file
-    assert lock.timeout == pytest.approx(5.0)
+    assert (lock.lock_file, lock.timeout) == (lock_file, pytest.approx(5.0))
     assert lock.blocking is False
     assert lock.loop is None
     assert lock.executor is executor
@@ -253,8 +282,7 @@ async def test_close_shuts_down_owned_executor(lock_file: str) -> None:
 @pytest.mark.asyncio
 async def test_close_keeps_provided_executor_open(lock_file: str) -> None:
     executor = ThreadPoolExecutor(max_workers=1)
-    lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
-    await lock.close()
+    await AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor).close()
     assert executor.submit(int).result(timeout=5) == 0
     executor.shutdown(wait=False)
 
@@ -293,7 +321,7 @@ async def test_acquire_return_proxy_context_manager(lock_file: str) -> None:
 @pytest.mark.asyncio
 async def test_nested_context_managers(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
-    make_ctx = lock.read_lock if mode == "read" else lock.write_lock
+    make_ctx = getattr(lock, f"{mode}_lock")
     async with make_ctx():
         assert_mode_held(lock_file, mode)
         async with make_ctx():
@@ -336,11 +364,12 @@ async def test_sequential_mode_switch(lock_file: str) -> None:
     await lock.close()
 
 
-@pytest.mark.parametrize("workers", [pytest.param(None, id="owned-executor"), pytest.param(4, id="four-workers")])
 @pytest.mark.asyncio
-async def test_tasks_sharing_a_lock_take_the_write_lock_one_at_a_time(lock_file: str, workers: int | None) -> None:
-    executor = None if workers is None else ThreadPoolExecutor(max_workers=workers)
-    lock = AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)
+async def test_tasks_sharing_a_lock_take_the_write_lock_one_at_a_time(lock_file: str) -> None:
+    assert await writers_peak_inside(AsyncReadWriteLock(lock_file, is_singleton=False)) == 1
+
+
+async def writers_peak_inside(lock: AsyncReadWriteLock) -> int:
     inside = peak = 0
 
     async def write() -> None:
@@ -348,15 +377,19 @@ async def test_tasks_sharing_a_lock_take_the_write_lock_one_at_a_time(lock_file:
         async with lock.write_lock(timeout=_TASK_WAIT):
             inside += 1
             peak = max(peak, inside)
-            await asyncio.sleep(0.001)
+            await asyncio.sleep(0)
             inside -= 1
 
     await asyncio.gather(*(write() for _ in range(20)))
     await lock.close()
-    if executor is not None:
-        executor.shutdown()
+    return peak
 
-    assert peak == 1
+
+@pytest.mark.asyncio
+async def test_tasks_sharing_a_lock_take_the_write_lock_one_at_a_time_with_four_workers(lock_file: str) -> None:
+    executor = ThreadPoolExecutor(max_workers=4)
+    assert await writers_peak_inside(AsyncReadWriteLock(lock_file, is_singleton=False, executor=executor)) == 1
+    executor.shutdown()
 
 
 @pytest.mark.asyncio
@@ -393,6 +426,15 @@ async def test_another_task_waits_for_the_last_release_of_a_nested_write(lock_fi
     assert (entered_while_nested, entered_after_release) == (False, True)
 
 
+async def _try_write(lock: AsyncReadWriteLock) -> bool:
+    try:
+        await lock.acquire_write(blocking=False)
+    except Timeout:
+        return False
+    await lock.release()
+    return True
+
+
 @pytest.mark.asyncio
 async def test_force_release_drops_the_callers_whole_nest(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
@@ -403,15 +445,6 @@ async def test_force_release_drops_the_callers_whole_nest(lock_file: str) -> Non
     await lock.close()
 
     assert entered
-
-
-async def _try_write(lock: AsyncReadWriteLock) -> bool:
-    try:
-        await lock.acquire_write(blocking=False)
-    except Timeout:
-        return False
-    await lock.release()
-    return True
 
 
 @pytest.mark.asyncio
@@ -437,6 +470,11 @@ async def test_a_waiting_writer_goes_ahead_of_new_readers(lock_file: str) -> Non
     await lock.close()
 
 
+async def _write_once(lock: AsyncReadWriteLock) -> None:
+    async with lock.write_lock(timeout=_TASK_WAIT):
+        pass
+
+
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_a_canceled_waiting_writer_lets_readers_in(lock_file: str) -> None:
@@ -452,6 +490,11 @@ async def test_a_canceled_waiting_writer_lets_readers_in(lock_file: str) -> None
     await lock.close()
 
 
+async def _read_without_waiting(lock: AsyncReadWriteLock) -> None:
+    async with lock.read_lock(blocking=False):
+        pass
+
+
 @pytest.mark.asyncio
 async def test_a_writer_times_out_waiting_for_another_task(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
@@ -460,16 +503,6 @@ async def test_a_writer_times_out_waiting_for_another_task(lock_file: str) -> No
         await asyncio.create_task(lock.acquire_write(timeout=0.05))
     await lock.release()
     await lock.close()
-
-
-async def _write_once(lock: AsyncReadWriteLock) -> None:
-    async with lock.write_lock(timeout=_TASK_WAIT):
-        pass
-
-
-async def _read_without_waiting(lock: AsyncReadWriteLock) -> None:
-    async with lock.read_lock(blocking=False):
-        pass
 
 
 @pytest.mark.asyncio
@@ -503,7 +536,7 @@ def test_tasks_on_different_event_loops_exclude_each_other(lock_file: str) -> No
                 with guard:
                     inside += 1
                     peak = max(peak, inside)
-                await asyncio.sleep(0.001)
+                await asyncio.sleep(0)
                 with guard:
                     inside -= 1
 
@@ -514,14 +547,6 @@ def test_tasks_on_different_event_loops_exclude_each_other(lock_file: str) -> No
         thread.join(_TASK_WAIT)
 
     assert ([thread.is_alive() for thread in threads], peak) == ([False, False], 1)
-
-
-def assert_mode_held(lock_file: str, mode: Literal["read", "write"]) -> None:
-    contender = ReadWriteLock(lock_file, is_singleton=False)
-    acquire = contender.acquire_write if mode == "read" else contender.acquire_read
-    with pytest.raises(Timeout):
-        acquire(blocking=False)
-    contender.close()
 
 
 @pytest.mark.asyncio
@@ -535,33 +560,98 @@ async def test_async_acquire_respects_settings(
     minimum: float,
     *,
     call_blocking: bool | None,
-    omitted: bool,
 ) -> None:
     contender: Final[AsyncReadWriteLock] = async_locks[1]
-    acquire: Final = contender.acquire_read if mode == "read" else contender.acquire_write
+    acquire: Final = getattr(contender, f"acquire_{mode}")
     async with async_locks[0].write_lock():
         started: Final[float] = time.perf_counter()
         with pytest.raises(Timeout):
-            await asyncio.create_task(acquire() if omitted else acquire(timeout=call_timeout, blocking=call_blocking))
+            await asyncio.create_task(acquire(timeout=call_timeout, blocking=call_blocking))
+        assert minimum <= time.perf_counter() - started < 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize("shared", [pytest.param(False, id="sqlite"), pytest.param(True, id="task-owner")])
+@pytest.mark.parametrize(
+    ("instance_timeout", "instance_blocking", "minimum"),
+    [
+        pytest.param(0.2, True, 0.1, id="instance-timeout"),
+        pytest.param(30, False, 0, id="instance-nonblocking"),
+    ],
+)
+async def test_async_acquire_without_arguments_uses_instance_settings(
+    async_locks: tuple[AsyncReadWriteLock, AsyncReadWriteLock],
+    mode: Literal["read", "write"],
+    minimum: float,
+) -> None:
+    contender: Final[AsyncReadWriteLock] = async_locks[1]
+    acquire: Final = getattr(contender, f"acquire_{mode}")
+    async with async_locks[0].write_lock():
+        started: Final[float] = time.perf_counter()
+        with pytest.raises(Timeout):
+            await asyncio.create_task(acquire())
         assert minimum <= time.perf_counter() - started < 5
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @INVALID_TIMEOUTS
-@pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
-@pytest.mark.parametrize("contended", [pytest.param(True, id="contended"), pytest.param(False, id="free")])
-async def test_async_acquire_rejects_invalid_timeout(
-    lock_file: str, mode: Literal["read", "write"], timeout: float, message: str, *, configured: bool, contended: bool
+async def test_async_instance_timeout_rejects_invalid_value(
+    lock_file: str, mode: Literal["read", "write"], timeout: float, message: str
 ) -> None:
-    lock: Final = AsyncReadWriteLock(lock_file, timeout=timeout if configured else -1, is_singleton=False)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    lock: Final = AsyncReadWriteLock(lock_file, timeout=timeout, is_singleton=False)
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
-        async with AsyncExitStack() as stack:
-            if contended:
-                await stack.enter_async_context(lock.write_lock(timeout=0))
+        with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+            await asyncio.create_task(acquire())
+    finally:
+        await lock.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@INVALID_TIMEOUTS
+async def test_async_call_timeout_rejects_invalid_value(
+    lock_file: str, mode: Literal["read", "write"], timeout: float, message: str
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
+    acquire: Final = getattr(lock, f"acquire_{mode}")
+    try:
+        with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+            await asyncio.create_task(acquire(timeout=timeout))
+    finally:
+        await lock.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@INVALID_TIMEOUTS
+async def test_async_contended_acquire_rejects_invalid_timeout(
+    lock_file: str, mode: Literal["read", "write"], timeout: float, message: str
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
+    acquire: Final = getattr(lock, f"acquire_{mode}")
+    try:
+        async with lock.write_lock(timeout=0):
             with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
-                await asyncio.create_task(acquire() if configured else acquire(timeout=timeout))
+                await asyncio.create_task(acquire(timeout=timeout))
+    finally:
+        await lock.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@INVALID_TIMEOUTS
+async def test_async_contended_instance_timeout_rejects_invalid_value(
+    lock_file: str, mode: Literal["read", "write"], timeout: float, message: str
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file, timeout=timeout, is_singleton=False)
+    acquire: Final = getattr(lock, f"acquire_{mode}")
+    try:
+        async with lock.write_lock(timeout=0):
+            with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+                await asyncio.create_task(acquire())
     finally:
         await lock.close()
 
@@ -573,12 +663,10 @@ async def test_async_acquire_rejects_a_blocking_that_is_not_a_bool(
     lock_file: str, mode: Literal["read", "write"], blocking: str | int
 ) -> None:
     lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
         with pytest.raises(TypeError, match="blocking must be a bool"):
-            await asyncio.create_task(
-                acquire(blocking=blocking)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
-            )
+            await asyncio.create_task(acquire(blocking=blocking))
     finally:
         await lock.close()
 
@@ -589,14 +677,32 @@ async def test_async_acquire_rejects_a_blocking_that_is_not_a_bool(
     "timeout",
     [pytest.param(-2, id="integer"), pytest.param(float("inf"), id="infinite"), pytest.param(float("nan"), id="nan")],
 )
-@pytest.mark.parametrize("configured", [pytest.param(True, id="instance"), pytest.param(False, id="call")])
-async def test_async_nonblocking_ignores_invalid_timeout(
-    lock_file: str, mode: Literal["read", "write"], timeout: float, *, configured: bool
+async def test_async_nonblocking_instance_ignores_invalid_timeout(
+    lock_file: str, mode: Literal["read", "write"], timeout: float
 ) -> None:
-    lock: Final = AsyncReadWriteLock(lock_file, timeout=timeout, blocking=not configured, is_singleton=False)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    lock: Final = AsyncReadWriteLock(lock_file, timeout=timeout, blocking=False, is_singleton=False)
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
-        async with await (acquire() if configured else acquire(timeout=timeout, blocking=False)):
+        async with await acquire():
+            with pytest.raises(Timeout):
+                await asyncio.create_task(lock.acquire_write(timeout=timeout, blocking=False))
+    finally:
+        await lock.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    "timeout",
+    [pytest.param(-2, id="integer"), pytest.param(float("inf"), id="infinite"), pytest.param(float("nan"), id="nan")],
+)
+async def test_async_nonblocking_call_ignores_invalid_timeout(
+    lock_file: str, mode: Literal["read", "write"], timeout: float
+) -> None:
+    lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
+    acquire: Final = getattr(lock, f"acquire_{mode}")
+    try:
+        async with await acquire(timeout=timeout, blocking=False):
             with pytest.raises(Timeout):
                 await asyncio.create_task(lock.acquire_write(timeout=timeout, blocking=False))
     finally:
@@ -607,7 +713,7 @@ async def test_async_nonblocking_ignores_invalid_timeout(
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 async def test_async_acquire_accepts_infinite_timeout(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
-    acquire: Final = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire: Final = getattr(lock, f"acquire_{mode}")
     try:
         async with await acquire(timeout=float("inf")):
             with pytest.raises(Timeout):
@@ -650,17 +756,36 @@ async def test_async_read_after_a_sync_close_of_the_shared_singleton_raises(lock
     await lock.close()
 
 
-@pytest.mark.parametrize("sync_end", [pytest.param("release", id="release"), pytest.param("close", id="close")])
+@pytest.mark.parametrize(
+    "sync_end",
+    [
+        pytest.param(ReadWriteLock.close, id="close"),
+        pytest.param(lambda sync: sync.release(force=True), id="release"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_async_close_after_a_sync_end_of_the_shared_singleton_returns(lock_file: str, sync_end: str) -> None:
+async def test_async_close_after_a_sync_end_of_the_shared_singleton_returns(
+    lock_file: str, sync_end: Callable[[ReadWriteLock], object]
+) -> None:
     lock: Final = AsyncReadWriteLock(lock_file)
     await lock.acquire_read()
     sync: Final = ReadWriteLock(lock_file)
-    sync.close() if sync_end == "close" else sync.release(force=True)
+    sync_end(sync)
 
     await lock.close()
 
     assert _writer_gets_in(lock_file)
+
+
+def _writer_gets_in(lock_file: str) -> bool:
+    contender: Final = ReadWriteLock(lock_file, is_singleton=False)
+    try:
+        contender.acquire_write(blocking=False)
+    except Timeout:
+        return False
+    finally:
+        contender.close()
+    return True
 
 
 @pytest.mark.asyncio
@@ -686,10 +811,21 @@ async def test_async_read_after_a_sync_forced_release_takes_the_lock_again(lock_
     await lock.close()
 
 
-@pytest.mark.parametrize("sync_end", [pytest.param("release", id="release"), pytest.param("close", id="close")])
+async def _read_and_probe(lock: AsyncReadWriteLock) -> bool:
+    async with lock.read_lock(timeout=_TASK_WAIT):
+        return _writer_gets_in(lock.lock_file)
+
+
+@pytest.mark.parametrize(
+    "sync_end",
+    [
+        pytest.param(ReadWriteLock.close, id="close"),
+        pytest.param(lambda sync: sync.release(force=True), id="release"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_async_read_after_an_interrupted_sync_forced_release_takes_the_lock_again(
-    lock_file: str, mocker: MockerFixture, sync_end: str
+    lock_file: str, mocker: MockerFixture, sync_end: Callable[[ReadWriteLock], object]
 ) -> None:
     lock: Final = AsyncReadWriteLock(lock_file)
     await lock.acquire_read()
@@ -698,7 +834,7 @@ async def test_async_read_after_an_interrupted_sync_forced_release_takes_the_loc
     )
     sync: Final = ReadWriteLock(lock_file)
     with pytest.raises(Interrupt):
-        sync.close() if sync_end == "close" else sync.release(force=True)
+        sync_end(sync)
 
     writer_got_in = await asyncio.create_task(_read_and_probe(lock))
 
@@ -763,7 +899,7 @@ async def test_async_close_keeps_the_hold_taken_through_another_wrapper(
     lock_file: str, mode: Literal["read", "write"]
 ) -> None:
     holder, closing = AsyncReadWriteLock(lock_file), AsyncReadWriteLock(lock_file)
-    await (holder.acquire_read() if mode == "read" else holder.acquire_write())
+    await getattr(holder, f"acquire_{mode}")()
 
     await asyncio.create_task(closing.close())
 
@@ -898,22 +1034,6 @@ async def test_async_close_that_fails_before_any_acquire_leaves_the_wrapper_clos
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         await lock.acquire_read()
-
-
-def _writer_gets_in(lock_file: str) -> bool:
-    contender: Final = ReadWriteLock(lock_file, is_singleton=False)
-    try:
-        contender.acquire_write(blocking=False)
-    except Timeout:
-        return False
-    finally:
-        contender.close()
-    return True
-
-
-async def _read_and_probe(lock: AsyncReadWriteLock) -> bool:
-    async with lock.read_lock(timeout=_TASK_WAIT):
-        return _writer_gets_in(lock.lock_file)
 
 
 @pytest.mark.asyncio

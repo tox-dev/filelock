@@ -12,8 +12,6 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-_PROCESS_COUNT: Final[int] = 8
-_ACQUISITIONS_PER_PROCESS: Final[int] = 500
 # A guard against a deadlock, not a throughput assertion: overlap fails immediately through the markers below, so this
 # budget only bounds a hang. The four thousand contended acquisitions cost CPython about three seconds and GraalPy about
 # twenty-eight on a ten-core machine, and the CI runners have far fewer, so it is sized for the slowest interpreter on
@@ -46,7 +44,7 @@ for _ in range(int(sys.argv[5])):
 """
 
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 
 @pytest.mark.timeout(_WORKER_DEADLINE + 60)
@@ -55,6 +53,8 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
     start_path = tmp_path / "start"
     counter_path = tmp_path / "counter"
     occupied_path = tmp_path / "occupied"
+    process_count: int = 8
+    acquisitions_per_process: int = 500
     processes = [
         subprocess.Popen(
             [
@@ -65,15 +65,15 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
                 str(start_path),
                 str(counter_path),
                 str(occupied_path),
-                str(_ACQUISITIONS_PER_PROCESS),
+                str(acquisitions_per_process),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=sys.platform != "win32",
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
-        for _ in range(_PROCESS_COUNT)
+        for _ in range(process_count)
     ]
     start_path.touch()
     deadline = time.monotonic() + _WORKER_DEADLINE
@@ -84,10 +84,11 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
         _kill_processes(processes)
         pytest.fail(f"strict soft-lock stress workers exceeded {_WORKER_DEADLINE} seconds")
 
-    recorded = int(counter_path.read_text()) if counter_path.exists() else 0
+    assert counter_path.exists(), outputs
+    recorded = int(counter_path.read_text())
     assert ([process.returncode for process in processes], recorded) == (
-        [0] * _PROCESS_COUNT,
-        _PROCESS_COUNT * _ACQUISITIONS_PER_PROCESS,
+        [0] * process_count,
+        process_count * acquisitions_per_process,
     ), outputs
 
 

@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 _SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
 
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 
 def test_strict_soft_acquire_publishes_owner_claim(tmp_path: Path) -> None:
@@ -65,9 +65,8 @@ def test_strict_soft_is_reentrant(tmp_path: Path) -> None:
 
 def test_strict_soft_contender_times_out(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
-    holder = StrictSoftFileLock(lock_path)
 
-    with holder, pytest.raises(Timeout):
+    with StrictSoftFileLock(lock_path), pytest.raises(Timeout):
         StrictSoftFileLock(lock_path, timeout=0).acquire()
     with StrictSoftFileLock(lock_path, timeout=0) as acquired:
         assert acquired.is_locked
@@ -99,8 +98,8 @@ def test_legacy_client_never_reclaims_permanent_sentinel(tmp_path: Path, mocker:
     lock_path = tmp_path / "resource.lock"
     lock_path.write_bytes(_SENTINEL)
     os.utime(lock_path, (0, 0))
-    mocker.patch("filelock._identity.socket.gethostname", return_value="filelock-strict-v1\x00")
-    mocker.patch("filelock._identity.os.kill", side_effect=ProcessLookupError)
+    mocker.patch("filelock._identity.socket.gethostname", return_value="filelock-strict-v1\x00", autospec=True)
+    mocker.patch("filelock._identity.os.kill", side_effect=ProcessLookupError, autospec=True)
 
     with pytest.raises(Timeout):
         SoftFileLock(lock_path, timeout=0).acquire()
@@ -299,8 +298,7 @@ def test_strict_soft_symlink_claim_fails_closed(tmp_path: Path) -> None:  # prag
     claims.mkdir(parents=True)
     target = tmp_path / "claim-target"
     target.write_bytes(b"filelock-strict-v1\n" + b"0" * 32 + b"\n1\n686f7374\n")
-    claim = claims / f"held-v1-{'0' * 32}.claim"
-    claim.symlink_to(target)
+    (claims / f"held-v1-{'0' * 32}.claim").symlink_to(target)
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot read claim"):
         StrictSoftFileLock(lock_path).acquire()
@@ -317,7 +315,7 @@ def test_strict_soft_symlink_claim_fails_closed(tmp_path: Path) -> None:  # prag
 def test_strict_soft_hard_link_failure_names_filesystem_contract(
     tmp_path: Path, mocker: MockerFixture, error: OSError | NotImplementedError
 ) -> None:
-    mocker.patch("filelock._strict.os.link", side_effect=error)
+    mocker.patch("filelock._strict.os.link", side_effect=error, autospec=True)
 
     with pytest.raises(SoftFileLockProtocolError, match="atomic no-replace hard-link"):
         StrictSoftFileLock(tmp_path / "resource.lock").acquire()
@@ -346,7 +344,7 @@ def test_strict_soft_write_failure_leaves_no_public_claim(tmp_path: Path, mocker
     lock_path = tmp_path / "resource.lock"
     with StrictSoftFileLock(lock_path):
         pass
-    mocker.patch("filelock._util.os.write", side_effect=OSError("write failed"))
+    mocker.patch("filelock._util.os.write", side_effect=OSError("write failed"), autospec=True)
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(OSError, match="write failed"):
@@ -373,7 +371,7 @@ def test_strict_soft_sentinel_inspection_failure_closes_descriptor(tmp_path: Pat
             raise OSError(msg)
         return real_fstat(fd)
 
-    mocker.patch("filelock._strict.os.fstat", side_effect=fail_sentinel_inspection)
+    mocker.patch("filelock._strict.os.fstat", side_effect=fail_sentinel_inspection, autospec=True)
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(OSError, match="sentinel inspection failed"):
@@ -405,9 +403,9 @@ def test_strict_soft_publication_and_close_failures_preserve_both_errors(tmp_pat
             msg = "private close failed"
             raise OSError(msg)
 
-    mocker.patch("filelock._util.os.write", side_effect=OSError("record write failed"))
-    mocker.patch("filelock._strict._open_relative", side_effect=capture_private_record)
-    mocker.patch("filelock._strict.os.close", side_effect=fail_private_close)
+    mocker.patch("filelock._util.os.write", side_effect=OSError("record write failed"), autospec=True)
+    mocker.patch("filelock._strict._open_relative", side_effect=capture_private_record, autospec=True)
+    mocker.patch("filelock._strict.os.close", side_effect=fail_private_close, autospec=True)
     lock = StrictSoftFileLock(lock_path)
 
     with pytest.raises(ExceptionGroup) as raised:

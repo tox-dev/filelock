@@ -17,11 +17,16 @@ from filelock._util import pin_inode, write_all
 #: and evicts it after its grace period, so the two never guarantee mutual exclusion against each other.
 _PROTOCOL: Final[str] = "filelock/2"
 
-_MAX_PID: Final[int] = 2**31 - 1
-
 #: The forms ``repr`` gives a non-negative finite float or int; ``float()`` would also accept whitespace, underscores
 #: and non-ASCII digits.
-_DURATION: Final[re.Pattern[str]] = re.compile(r"[0-9]+(?:\.[0-9]+)?(?:e[+-][0-9]+)?", re.ASCII)
+_DURATION: Final[re.Pattern[str]] = re.compile(
+    r"""
+    [0-9]+              # the integer digits
+    (?:\.[0-9]+)?       # the fraction, when the value is not whole
+    (?:e[+-][0-9]+)?    # the exponent repr writes for very large or very small values
+    """,
+    re.ASCII | re.VERBOSE,
+)
 
 #: Preserve unknown contracts so contenders cannot mistake them for malformed, reclaimable markers.
 OwnerMode = Literal["lease", "exclusive", "unknown"]
@@ -38,17 +43,22 @@ class MarkerSoftFileLock(SoftFileLock):
         """
         The owner named by the marker on disk.
 
-        :returns: the published record, or ``None`` when no marker exists or its record is malformed or protocol 1
+        The published record, or ``None`` when no marker exists or its record is malformed or protocol 1.
 
         """
         return self._read_owner()
+
+    def _read_owner(self) -> OwnerRecord | None:
+        with suppress(OSError, ValueError):
+            return parse_marker(_read_lock_file(self._lock_path)[0])
+        return None
 
     @property
     def pid(self) -> int | None:
         """
         The PID of the process holding this lock, read from the marker.
 
-        :returns: the PID, or ``None`` when no marker exists or its record is unreadable
+        The PID, or ``None`` when no marker exists or its record is unreadable.
 
         """
         return None if (owner := self._read_owner()) is None else owner.pid
@@ -58,7 +68,7 @@ class MarkerSoftFileLock(SoftFileLock):
         """
         Whether the marker on disk names this process.
 
-        :returns: ``True`` when the marker names this process's PID, hostname and, when recorded, start token
+        ``True`` when the marker names this process's PID, hostname and, when recorded, start token.
 
         """
         owner = self._read_owner()
@@ -76,7 +86,7 @@ class MarkerSoftFileLock(SoftFileLock):
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError), pin_inode(self._lock_path) as pinned:
             content, marker = _read_lock_file(self._lock_path)
-            owner: Final[OwnerRecord | None]
+            owner: OwnerRecord | None
             if pinned not in {None, marker.st_ino}:  # pragma: win32 no cover  # Windows pins nothing
                 return  # replaced before the read, so nothing keeps the number read from reuse
             if (owner := parse_marker(content)) is None:
@@ -99,11 +109,6 @@ class MarkerSoftFileLock(SoftFileLock):
             and not owner_is_stale(owner.pid, owner.hostname, owner.start)
         )
 
-    def _read_owner(self) -> OwnerRecord | None:
-        with suppress(OSError, ValueError):
-            return parse_marker(_read_lock_file(self._lock_path)[0])
-        return None
-
     def _write_lock_info(self, fd: int) -> None:
         write_all(fd, encode_marker(self._published_record()))
 
@@ -117,7 +122,16 @@ class MarkerSoftFileLock(SoftFileLock):
 
 
 class OwnerRecord(NamedTuple):
-    """Keep optional metadata when reading unknown lock modes."""
+    """
+    Keep optional metadata when reading unknown lock modes.
+
+    :param pid: the PID of the process that wrote the marker
+    :param hostname: the host name recorded in the marker
+    :param mode: the owner mode the marker declares: ``lease``, ``exclusive``, or ``unknown``
+    :param token: the claim token of a lease, or ``None``
+    :param lease_duration: the lease duration in seconds, or ``None`` when the marker records none
+    :param start: the owner's process start token, or ``None`` when none was recorded
+    """
 
     pid: int
     hostname: str
@@ -128,7 +142,7 @@ class OwnerRecord(NamedTuple):
 
 
 def encode_marker(record: OwnerRecord) -> bytes:
-    """Render an owner record as the bytes a protocol 2 marker holds."""
+    # Render an owner record as the bytes a protocol 2 marker holds.
     lines = [_PROTOCOL, f"pid={record.pid}", f"host={record.hostname}", f"mode={record.mode}"]
     if record.token is not None:
         lines.append(f"token={record.token}")
@@ -140,7 +154,7 @@ def encode_marker(record: OwnerRecord) -> bytes:
 
 
 def parse_marker(content: str | None) -> OwnerRecord | None:
-    """Return the owner a protocol 2 marker names, or ``None`` when the record is malformed or protocol 1."""
+    # Return the owner a protocol 2 marker names, or ``None`` when the record is malformed or protocol 1.
     # A torn write may end in a prefix like "mode=exclu", an unknown contract nobody reclaims; malformed, it ages out.
     if not content or content[-1] != "\n" or not (lines := content.strip().splitlines()) or lines[0] != _PROTOCOL:
         return None
@@ -170,7 +184,7 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
         start = parse_decimal(fields["start"]) if "start" in fields else None
     except ValueError:
         return None
-    if not 1 <= pid <= _MAX_PID:
+    if not 1 <= pid <= (2**31 - 1):
         return None
     token = fields.get("token")
     # "1e400" passes the grammar but overflows to inf, which mismatches every configured duration and so wedges reclaim,

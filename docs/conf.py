@@ -1,4 +1,4 @@
-# ruff:ignore[implicit-namespace-package]
+# ruff:ignore[implicit-namespace-package]  # Sphinx runs conf.py as a script, not as a package
 """Configuration for Sphinx."""
 
 from __future__ import annotations
@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from docutils.nodes import Element, Text, reference
 from sphinx.domains.python import PythonDomain
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 name, company = "filelock", "tox-dev"
 now = datetime.now(tz=UTC)
 version, release = ".".join(__version__.split(".")[:2]), __version__
-copyright = f"2014-{now.date().year}, {company}"  # ruff:ignore[builtin-variable-shadowing]
+copyright: Final[str] = f"2014-{now.date().year}, {company}"  # ruff:ignore[builtin-variable-shadowing]  # Sphinx reads the module-level copyright name
 extensions = [
     "sphinx_llm.txt",
     "sphinx.ext.autodoc",
@@ -41,17 +41,19 @@ extensions = [
 # raw output lets the browser render the diagrams, so they can follow furo's light/dark toggle. The extension picks the
 # theme below from the page background and re-renders on every toggle; neutral pairs grays with the semantic tints that
 # docs/_static/custom.css applies.
-mermaid_output_format = "raw"
-mermaid_light_theme = "neutral"
+mermaid_output_format: Final[str] = "raw"
+mermaid_light_theme: Final[str] = "neutral"
 
 # sphinxcontrib-towncrier: the .. towncrier-draft-entries:: directive in changelog.rst shows the unreleased fragments.
-towncrier_draft_autoversion_mode = "draft"
-towncrier_draft_include_empty = True  # keep the docs build green right after a release, when no fragments remain
+towncrier_draft_autoversion_mode: Final[str] = "draft"
+towncrier_draft_include_empty: Final[bool] = (
+    True  # keep the docs build green right after a release, when no fragments remain
+)
 towncrier_draft_working_directory = Path(__file__).parent.parent
 
 # sphinx-copybutton: add copy button to code blocks
-copybutton_prompt_is_regexp = True
-copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: "
+copybutton_prompt_is_regexp: Final[bool] = True
+copybutton_prompt_text: Final[str] = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: "
 
 # sphinx-design: no special config needed
 
@@ -59,18 +61,18 @@ copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: "
 # sitemap at pages that 404.
 html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "https://py-filelock.readthedocs.io/en/stable/")
 # sphinx-sitemap: generate sitemap.xml; html_baseurl already carries the language and version.
-sitemap_url_scheme = "{link}"
+sitemap_url_scheme: Final[str] = "{link}"
 # sphinx-notfound-page: custom 404 pages (no config needed)
 
 # sphinxext-opengraph: social media metadata
 ogp_site_url = html_baseurl
 ogp_social_cards = {"enable": False}
-ogp_use_first_image = True
-ogp_description_length = 200
+ogp_use_first_image: Final[bool] = True
+ogp_description_length: Final[int] = 200
 
-html_theme = "furo"
-html_logo = "logo.svg"
-html_favicon = "logo.svg"
+html_theme: Final[str] = "furo"
+html_logo: Final[str] = "logo.svg"
+html_favicon: Final[str] = "logo.svg"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 html_title, html_last_updated_fmt = name, now.isoformat()
@@ -79,11 +81,11 @@ autoclass_content, autodoc_member_order, autodoc_typehints = "both", "bysource",
 # _typeshed exists only inside type checkers; sphinx-autodoc-typehints executes TYPE_CHECKING imports to resolve hints.
 autodoc_mock_imports = ["_typeshed"]
 autodoc_default_options = {"member-order": "bysource", "undoc-members": True, "show-inheritance": True}
-autosectionlabel_prefix_document = True
-autosectionlabel_maxdepth = 2
+autosectionlabel_prefix_document: Final[bool] = True
+autosectionlabel_maxdepth: Final[int] = 2
 
 intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
-nitpicky = True
+nitpicky: Final[bool] = True
 # show-inheritance renders AcquireReturnProxy's Generic[_LockT] base; the type variable is private and undocumented.
 nitpick_ignore = [("py:obj", "filelock._api._LockT")]
 # Towncrier news fragments are rST snippets folded into changelog.rst at release; they are not standalone pages.
@@ -96,20 +98,16 @@ extlinks = {
 
 
 def setup(app: Sphinx) -> None:
-    """
-    Setup app.
-
-    :param app: the app
-
-    """
-
+    # Setup app.
+    #
+    # :param app: the app
     class PatchedPythonDomain(PythonDomain):
-        def resolve_xref(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]
+        def resolve_xref(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]  # overrides Sphinx's signature
             self,
             env: BuildEnvironment,
             fromdocname: str,
             builder: Builder,
-            type: str,  # ruff:ignore[builtin-argument-shadowing]
+            type: str,  # ruff:ignore[builtin-argument-shadowing]  # Sphinx's resolve_xref names this parameter type
             target: str,
             node: pending_xref,
             contnode: Element,

@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, closing
+from contextlib import closing
 from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, Literal
@@ -34,7 +34,7 @@ from filelock._read_write import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
-    from types import FrameType
+    from types import BuiltinFunctionType, FrameType
 
     from pytest_mock import MockerFixture
 
@@ -152,8 +152,7 @@ def test_non_singleton_creates_new_instance(lock_file: str) -> None:
 
 def test_init_sets_attributes(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, timeout=5.0, blocking=False, is_singleton=False)
-    assert lock.lock_file == lock_file
-    assert lock.timeout == pytest.approx(5.0)
+    assert (lock.lock_file, lock.timeout) == (lock_file, pytest.approx(5.0))
     assert lock.blocking is False
     assert lock._lock_level == 0
     assert lock._current_mode is None
@@ -164,8 +163,7 @@ def test_init_sets_attributes(lock_file: str) -> None:
 def test_acquire_release_read(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     proxy = lock.acquire_read()
-    assert lock._lock_level == 1
-    assert lock._current_mode == "read"
+    assert (lock._lock_level, lock._current_mode) == (1, "read")
     lock.release()
     assert lock._lock_level == 0
     assert lock._current_mode is None
@@ -175,9 +173,7 @@ def test_acquire_release_read(lock_file: str) -> None:
 def test_acquire_release_write(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock.acquire_write()
-    assert lock._lock_level == 1
-    assert lock._current_mode == "write"
-    assert lock._write_thread_id == threading.get_ident()
+    assert (lock._lock_level, lock._current_mode, lock._write_thread_id) == (1, "write", threading.get_ident())
     lock.release()
     assert lock._lock_level == 0
     assert lock._current_mode is None
@@ -193,13 +189,12 @@ def test_acquire_release_write(lock_file: str) -> None:
 )
 def test_reentrant_lock(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    acquire = lock.acquire_read if mode == "read" else lock.acquire_write
+    acquire = getattr(lock, f"acquire_{mode}")
     acquire()
     acquire()
     assert lock._lock_level == 2
     lock.release()
-    assert lock._lock_level == 1
-    assert lock._current_mode == mode
+    assert (lock._lock_level, lock._current_mode) == (1, mode)
     lock.release()
     assert lock._lock_level == 0
 
@@ -227,8 +222,7 @@ def test_release_unheld_lock_raises(lock_file: str) -> None:
 
 
 def test_release_force_unheld_is_noop(lock_file: str) -> None:
-    lock = ReadWriteLock(lock_file, is_singleton=False)
-    lock.release(force=True)
+    ReadWriteLock(lock_file, is_singleton=False).release(force=True)
 
 
 def test_release_force_resets_level(lock_file: str) -> None:
@@ -259,9 +253,8 @@ def test_release_force_closes_lingering_connection_at_zero_level(lock_file: str)
 )
 def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    with lock.read_lock() if mode == "read" else lock.write_lock():
-        assert lock._lock_level == 1
-        assert lock._current_mode == mode
+    with getattr(lock, f"{mode}_lock")():
+        assert (lock._lock_level, lock._current_mode) == (1, mode)
     assert lock._lock_level == 0
     assert lock._current_mode is None
 
@@ -275,7 +268,7 @@ def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) ->
 )
 def test_lock_uses_instance_defaults(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file, timeout=3.0, blocking=True, is_singleton=False)
-    with lock.read_lock() if mode == "read" else lock.write_lock():
+    with getattr(lock, f"{mode}_lock")():
         assert lock._current_mode == mode
 
 
@@ -447,9 +440,9 @@ def test_write_lock_drop_from_different_thread_needs_an_explicit_override(
 )
 def test_sequential_mode_switch(lock_file: str, first: str, second: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    with lock.read_lock() if first == "read" else lock.write_lock():
+    with getattr(lock, f"{first}_lock")():
         pass
-    with lock.read_lock() if second == "read" else lock.write_lock():
+    with getattr(lock, f"{second}_lock")():
         pass
 
 
@@ -548,7 +541,7 @@ def test_non_blocking_transaction_lock_timeout(lock_file: str, mode: Literal["re
     lock._transaction_lock.acquire()
     try:
         with pytest.raises(Timeout):
-            (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False)
+            getattr(lock, f"acquire_{mode}")(blocking=False)
     finally:
         lock._transaction_lock.release()
 
@@ -565,7 +558,7 @@ def test_non_blocking_with_timeout_no_value_error(lock_file: str, mode: Literal[
     lock._transaction_lock.acquire()
     try:
         with pytest.raises(Timeout):
-            (lock.acquire_read if mode == "read" else lock.acquire_write)(blocking=False, timeout=5.0)
+            getattr(lock, f"acquire_{mode}")(blocking=False, timeout=5.0)
     finally:
         lock._transaction_lock.release()
 
@@ -582,7 +575,7 @@ def test_finite_timeout_transaction_lock(lock_file: str, mode: Literal["read", "
     lock._transaction_lock.acquire()
     try:
         with pytest.raises(Timeout):
-            (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=0.1)
+            getattr(lock, f"acquire_{mode}")(timeout=0.1)
     finally:
         lock._transaction_lock.release()
 
@@ -590,7 +583,7 @@ def test_finite_timeout_transaction_lock(lock_file: str, mode: Literal["read", "
 def test_double_check_read_reentrance(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     real_lock = lock._transaction_lock
-    mock_lock = mocker.MagicMock()
+    mock_lock = mocker.create_autospec(real_lock)
 
     def fake_acquire(blocking: bool = True, timeout: float = -1) -> bool:
         lock._lock_level = 1
@@ -610,10 +603,16 @@ def test_double_check_read_reentrance(lock_file: str, mocker: MockerFixture) -> 
     lock.release(force=True)
 
 
+def _fake_open_transaction(lock: ReadWriteLock, mocker: MockerFixture) -> None:
+    # A level stands only while its transaction does, so a faked level needs a transaction behind it too.
+    lock._con = mocker.create_autospec(sqlite3.Connection, instance=True, in_transaction=True)
+    lock._connection_transaction_released = False
+
+
 def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     real_lock = lock._transaction_lock
-    mock_lock = mocker.MagicMock()
+    mock_lock = mocker.create_autospec(real_lock)
 
     def fake_acquire(blocking: bool = True, timeout: float = -1) -> bool:
         lock._lock_level = 1
@@ -651,7 +650,7 @@ def test_double_check_wrong_mode_raises(
 ) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     real_lock = lock._transaction_lock
-    mock_lock = mocker.MagicMock()
+    mock_lock = mocker.create_autospec(real_lock)
 
     def fake_acquire(blocking: bool = True, timeout: float = -1) -> bool:
         lock._lock_level = 1
@@ -663,16 +662,10 @@ def test_double_check_wrong_mode_raises(
     mock_lock.release = real_lock.release
     lock._transaction_lock = mock_lock
     with pytest.raises(RuntimeError, match=match):
-        (lock.acquire_read if acquire_mode == "read" else lock.acquire_write)()
+        getattr(lock, f"acquire_{acquire_mode}")()
     lock._lock_level = 0
     lock._current_mode = None
     lock._con, lock._connection_transaction_released = None, True
-
-
-def _fake_open_transaction(lock: ReadWriteLock, mocker: MockerFixture) -> None:
-    # A level stands only while its transaction does, so a faked level needs a transaction behind it too.
-    lock._con = mocker.MagicMock(in_transaction=True)
-    lock._connection_transaction_released = False
 
 
 def test_write_lock_context_manager_overrides_defaults(lock_file: str) -> None:
@@ -699,16 +692,15 @@ def test_busy_timeout_recomputed_after_journal_mode(
         ),
     )
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    (lock.acquire_read if mode == "read" else lock.acquire_write)(timeout=2.0)
+    getattr(lock, f"acquire_{mode}")(timeout=2.0)
     lock.release()
 
 
 def test_acquire_converts_connect_lock_error_to_timeout(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    mocker.patch(
-        "filelock._read_write._connect",
-        side_effect=sqlite3.OperationalError("database is locked"),
-    )
+    busy = sqlite3.OperationalError("database is locked")
+    busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    mocker.patch("filelock._read_write._connect", side_effect=busy, autospec=True)
 
     with pytest.raises(Timeout):
         lock.acquire_read(timeout=0.1)
@@ -737,13 +729,13 @@ def test_poison_after_fork_records_path_and_identity(identity: tuple[int, int] |
 
 
 def test_track_sqlite_use_forwards_connect_event(mocker: MockerFixture) -> None:
-    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use")
+    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use", autospec=True)
     _track_sqlite_use("sqlite3.connect", ())
     note.assert_called_once_with()
 
 
 def test_track_sqlite_use_ignores_other_events(mocker: MockerFixture) -> None:
-    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use")
+    note = mocker.patch.object(_FORKED_DATABASES, "note_sqlite_use", autospec=True)
     _track_sqlite_use("open", ())
     note.assert_not_called()
 
@@ -766,7 +758,7 @@ def test_meta_raises_when_pid_changes_during_singleton_construction(lock_file: s
         pass
 
     pid_box = [os.getpid()]
-    mocker.patch("filelock._read_write._GETPID", side_effect=lambda: pid_box[0])
+    mocker.patch("filelock._read_write._GETPID", side_effect=lambda: pid_box[0], autospec=True)
     original_init = _Sub.__init__
 
     def _init_then_fork(
@@ -789,8 +781,10 @@ def test_meta_raises_when_pid_changes_during_singleton_construction(lock_file: s
 @NEEDS_GENERATOR_EXCEPTION_CONTEXT
 def test_finish_connection_chains_rollback_then_close_error(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    con = mocker.MagicMock()
-    type(con).in_transaction = mocker.PropertyMock(side_effect=[True, False])
+    con = mocker.create_autospec(sqlite3.Connection, instance=True)
+    type(con).in_transaction = mocker.PropertyMock(  # simplint: ignore[SMP806]  # read-only C property, no autospec
+        side_effect=[True, False]
+    )
     con.rollback.side_effect = sqlite3.OperationalError("rollback boom")
     con.close.side_effect = sqlite3.OperationalError("close boom")
     lock._con = con
@@ -842,7 +836,7 @@ def test_read_lock_avoids_sqlite_schema_alias(lock_file: str, mocker: MockerFixt
         connection.set_trace_callback(statements.append)
         return connection
 
-    mocker.patch("sqlite3.connect", side_effect=connect)
+    mocker.patch("sqlite3.connect", side_effect=connect, autospec=True)
     with ReadWriteLock(lock_file, is_singleton=False).read_lock():
         pass
 
@@ -866,12 +860,12 @@ def test_dropping_a_lock_closes_its_connection(lock_file: str) -> None:
 @pytest.mark.parametrize("mode", ["read", "write"])
 def test_singleton_dropped_while_held_is_not_handed_out_again(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file)
-    (lock.acquire_read if mode == "read" else lock.acquire_write)()
+    getattr(lock, f"acquire_{mode}")()
     looked_up: Final[list[ReadWriteLock]] = []
 
     # The cache lookup another thread makes while the dropped lock's connection closes. Interpreters run a profile
     # hook with tracing off, so coverage does not record its body.
-    def look_up_while_closing(_frame: FrameType, event: str, arg: object) -> None:  # pragma: no cover
+    def look_up_while_closing(_frame: FrameType, event: str, arg: BuiltinFunctionType) -> None:  # pragma: no cover
         closing = event == "c_call" and getattr(arg, "__name__", None) == "close"
         if closing and isinstance(getattr(arg, "__self__", None), sqlite3.Connection) and not looked_up:
             looked_up.append(ReadWriteLock(lock_file))
@@ -882,7 +876,7 @@ def test_singleton_dropped_while_held_is_not_handed_out_again(lock_file: str, mo
     finally:
         sys.setprofile(None)
 
-    with (looked_up[0].read_lock if mode == "read" else looked_up[0].write_lock)(), pytest.raises(Timeout):
+    with getattr(looked_up[0], f"{mode}_lock")(), pytest.raises(Timeout):
         ReadWriteLock(lock_file, is_singleton=False).acquire_write(blocking=False)
 
 
@@ -892,7 +886,7 @@ def test_connection_close_from_another_process_leaves_it_open(lock_file: str, mo
     lock.acquire_read()
     connection = lock._con
     assert connection is not None
-    mocker.patch("filelock._read_write._GETPID", return_value=-1)
+    mocker.patch("filelock._read_write._GETPID", return_value=-1, autospec=True)
 
     connection.close()
 
@@ -912,16 +906,41 @@ def test_acquire_respects_settings(
     *,
     instance_blocking: bool,
     call_blocking: bool | None,
-    omitted: bool,
 ) -> None:
     contender: Final[ReadWriteLock] = sync_locks[1]
     contender.timeout = instance_timeout
     contender.blocking = instance_blocking
-    acquire: Final = contender.acquire_read if mode == "read" else contender.acquire_write
+    acquire: Final = getattr(contender, f"acquire_{mode}")
     with sync_locks[0].write_lock():
         started: Final[float] = time.perf_counter()
         with pytest.raises(Timeout):
-            acquire() if omitted else acquire(timeout=call_timeout, blocking=call_blocking)
+            acquire(timeout=call_timeout, blocking=call_blocking)
+        assert minimum <= time.perf_counter() - started < 5
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.parametrize(
+    ("instance_timeout", "instance_blocking", "minimum"),
+    [
+        pytest.param(0.2, True, 0.1, id="instance-timeout"),
+        pytest.param(30, False, 0, id="instance-nonblocking"),
+    ],
+)
+def test_acquire_without_arguments_uses_instance_settings(
+    sync_locks: tuple[ReadWriteLock, ReadWriteLock],
+    mode: Literal["read", "write"],
+    instance_timeout: float,
+    instance_blocking: bool,
+    minimum: float,
+) -> None:
+    contender: Final[ReadWriteLock] = sync_locks[1]
+    contender.timeout = instance_timeout
+    contender.blocking = instance_blocking
+    acquire: Final = getattr(contender, f"acquire_{mode}")
+    with sync_locks[0].write_lock():
+        started: Final[float] = time.perf_counter()
+        with pytest.raises(Timeout):
+            acquire()
         assert minimum <= time.perf_counter() - started < 5
 
 
@@ -964,7 +983,7 @@ def test_acquire_default_excludes_contender(
 ) -> None:
     holder: Final[ReadWriteLock] = sync_locks[0]
     contender: Final[ReadWriteLock] = sync_locks[1]
-    with holder.acquire_read() if mode == "read" else holder.acquire_write(), pytest.raises(Timeout):
+    with getattr(holder, f"acquire_{mode}")(), pytest.raises(Timeout):
         contender.acquire_write(blocking=False)
     with contender.acquire_write(), pytest.raises(Timeout):
         holder.acquire_write(blocking=False)
@@ -988,11 +1007,11 @@ def test_acquire_rejects_a_blocking_that_is_not_a_bool(
 ) -> None:
     # Contended, so a 0 read as blocking would wait out the contender's timeout instead of failing fast.
     holder, contender = timeout_locks
-    acquire: Final = contender.acquire_read if mode == "read" else contender.acquire_write
+    acquire: Final = getattr(contender, f"acquire_{mode}")
     with holder.acquire_write(blocking=False):
         started: Final = time.monotonic()
         with pytest.raises(TypeError, match="blocking must be a bool"):
-            acquire(blocking=blocking)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+            acquire(blocking=blocking)
         assert time.monotonic() - started < 5
     with contender.acquire_write(blocking=False):
         pass
@@ -1000,22 +1019,32 @@ def test_acquire_rejects_a_blocking_that_is_not_a_bool(
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @INVALID_TIMEOUTS
-@pytest.mark.parametrize("reentrant", [pytest.param(True, id="reentrant"), pytest.param(False, id="first")])
 def test_acquire_rejects_invalid_timeout(
     timeout_locks: tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock],
     mode: Literal["read", "write"],
     timeout: float,
     message: str,
-    *,
-    reentrant: bool,
 ) -> None:
     holder: Final = timeout_locks[0]
-    acquire: Final = holder.acquire_read if mode == "read" else holder.acquire_write
-    with ExitStack() as stack:
-        if reentrant:
-            stack.enter_context(acquire())
-        with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
-            stack.enter_context(acquire(timeout=timeout))
+    acquire: Final = getattr(holder, f"acquire_{mode}")
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        acquire(timeout=timeout)
+    with timeout_locks[1].acquire_write(blocking=False), pytest.raises(Timeout):
+        holder.acquire_write(blocking=False)
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@INVALID_TIMEOUTS
+def test_reentrant_acquire_rejects_invalid_timeout(
+    timeout_locks: tuple[ReadWriteLock | SoftReadWriteLock, ReadWriteLock | SoftReadWriteLock],
+    mode: Literal["read", "write"],
+    timeout: float,
+    message: str,
+) -> None:
+    holder: Final = timeout_locks[0]
+    acquire: Final = getattr(holder, f"acquire_{mode}")
+    with acquire(), pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        acquire(timeout=timeout)
     with timeout_locks[1].acquire_write(blocking=False), pytest.raises(Timeout):
         holder.acquire_write(blocking=False)
 
@@ -1044,7 +1073,7 @@ def test_acquire_valid_timeout_preserves_nested_hold(
 ) -> None:
     holder: Final = timeout_locks[0]
     contender: Final = timeout_locks[1]
-    acquire: Final = holder.acquire_read if mode == "read" else holder.acquire_write
+    acquire: Final = getattr(holder, f"acquire_{mode}")
     with acquire(timeout=timeout, blocking=blocking):
         with acquire(timeout=timeout, blocking=blocking), pytest.raises(Timeout):
             contender.acquire_write(blocking=False)

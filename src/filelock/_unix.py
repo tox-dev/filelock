@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._util", "pathlib", "typing", "warnings"]
+__lazy_modules__ = ["contextlib", "filelock._util", "pathlib", "warnings"]
 
 import os
 import sys
@@ -8,7 +8,7 @@ import warnings
 from contextlib import suppress
 from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, NamedTuple, cast
 
 from filelock._api import BaseFileLock
 from filelock._util import remove_own_file
@@ -66,6 +66,11 @@ else:  # pragma: win32 no cover
             return exception.errno == ENOSYS
         return False  # a flock the probe won is released when the caller closes fd
 
+    class _MissingFlock(NamedTuple):
+        fd: int
+        exception: OSError
+        created: bool
+
     class UnixFileLock(BaseFileLock):
         """
         Uses the :func:`fcntl.flock` to hard lock the lock file on unix systems.
@@ -80,7 +85,7 @@ else:  # pragma: win32 no cover
                 fd, exception, created = missing_flock
                 self._switch_to_soft_lock(fd, exception, created=created)
 
-        def _acquire_native(self) -> tuple[int, OSError, bool] | None:
+        def _acquire_native(self) -> _MissingFlock | None:
             if (opened := self._open_lock_file()) is None:
                 return None
             fd, created = opened
@@ -103,7 +108,7 @@ else:  # pragma: win32 no cover
                     return None
             except BaseException as exception:
                 if not locked and isinstance(exception, OSError) and exception.errno == ENOSYS:
-                    return fd, exception, created
+                    return _MissingFlock(fd, exception, created)
                 # Contention returns False from _lock_fd_nonblocking, so a raise here is a failure.
                 self._mark_descriptor_released()
                 os.close(fd)
@@ -158,6 +163,20 @@ else:  # pragma: win32 no cover
                 os.close(fd)
                 raise
 
+        def _apply_explicit_mode(self, fd: int) -> None:
+            if self.has_explicit_mode:
+                with suppress(PermissionError):
+                    os.fchmod(fd, self._context.mode)
+
+        def _finalize_locked_fd(self, fd: int) -> bool:
+            # Runs with the flock held; the caller closes fd on failure. A concurrent _release() may have unlinked
+            # the file between our open() and flock(), which st_nlink 0 shows. That lock guards no name, so report
+            # it and let the retry loop start over.
+            if (stat_result := os.fstat(fd)).st_nlink == 0:
+                return False
+            self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
+            return True
+
         def _switch_to_soft_lock(self, fd: int, missing_flock: OSError, *, created: bool) -> None:
             # The filesystem does not implement flock. Fail closed when the caller opted out of existence-lock
             # semantics (#603), asked to preserve the pathname (#605), or set an on_acquired hook (#607), none of which
@@ -178,27 +197,13 @@ else:  # pragma: win32 no cover
             self._fallback_to_soft_lock()
             self._acquire()
 
-        def _finalize_locked_fd(self, fd: int) -> bool:
-            # Runs with the flock held; the caller closes fd on failure. A concurrent _release() may have unlinked
-            # the file between our open() and flock(), which st_nlink 0 shows. That lock guards no name, so report
-            # it and let the retry loop start over.
-            if (stat_result := os.fstat(fd)).st_nlink == 0:
-                return False
-            self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
-            return True
-
-        def _apply_explicit_mode(self, fd: int) -> None:
-            if self.has_explicit_mode:
-                with suppress(PermissionError):
-                    os.fchmod(fd, self._context.mode)
-
         def _fallback_to_soft_lock(self: BaseFileLock) -> None:
             # Import lazily: this runs only on the rare flock fallback, and asyncio imports _unix, so a
             # module-level import of it here would cycle.
             from filelock._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]
 
             warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
-            from filelock.asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # ruff:ignore[import-outside-top-level]
+            from filelock.asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # ruff:ignore[import-outside-top-level]  # asyncio imports this module
 
             self.__class__ = AsyncSoftFileLock if isinstance(self, BaseAsyncFileLock) else SoftFileLock
 

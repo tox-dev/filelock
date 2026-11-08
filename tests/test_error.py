@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     [
         pytest.param(str, "The file lock '/path/to/lock' could not be acquired.", id="str"),
         pytest.param(repr, "Timeout('/path/to/lock')", id="repr"),
-        pytest.param(lambda t: t.lock_file, "/path/to/lock", id="lock_file"),
+        pytest.param(lambda error: error.lock_file, "/path/to/lock", id="lock_file"),
     ],
 )
 def test_timeout_attribute(extract: Callable[[Timeout], str], expected: str) -> None:
@@ -47,7 +47,7 @@ def test_exception_serialization_preserves_diagnostics(
     clone: Callable[[Timeout | SoftFileLockProtocolError], Timeout | SoftFileLockProtocolError],
 ) -> None:
     error.add_note("while acquiring the build cache")
-    vars(error)["request_id"] = "request-1"
+    error.__dict__["request_id"] = "request-1"
     restored: Final = clone(error)
     assert (
         type(restored),
@@ -56,7 +56,7 @@ def test_exception_serialization_preserves_diagnostics(
         restored.args,
         restored.lock_file,
         restored.__notes__,
-        vars(restored)["request_id"],
+        restored.__dict__["request_id"],
     ) == (
         type(error),
         str(error),
@@ -80,9 +80,9 @@ def test_exception_serialization_preserves_note_alias(
     clone: Callable[[Timeout | SoftFileLockProtocolError], Timeout | SoftFileLockProtocolError],
 ) -> None:
     error.__notes__ = ["original"]
-    vars(error)["diagnostics"] = error.__notes__
+    error.__dict__["diagnostics"] = error.__notes__
     restored: Final = clone(error)
-    assert vars(restored)["diagnostics"] is restored.__notes__
+    assert restored.__dict__["diagnostics"] is restored.__notes__
 
 
 def test_exception_copy_shares_notes(error: Timeout | SoftFileLockProtocolError) -> None:
@@ -101,9 +101,10 @@ def test_exception_serialization_preserves_cycle(
     error: Timeout | SoftFileLockProtocolError,
     clone: Callable[[Timeout | SoftFileLockProtocolError], Timeout | SoftFileLockProtocolError],
 ) -> None:
-    vars(error)["related"] = error
+    error.__dict__["related"] = error
     restored: Final = clone(error)
-    assert vars(restored)["related"] is (error if clone is copy.copy else restored)
+    related_after_clone = {copy.copy: error}.get(clone, restored)
+    assert restored.__dict__["related"] is related_after_clone
 
 
 def test_protocol_error_serialization_preserves_claim(

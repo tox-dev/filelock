@@ -24,7 +24,7 @@ from importlib import import_module
 from importlib.util import find_spec
 from itertools import count
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, TypeVar
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
@@ -97,11 +97,14 @@ def _finalizes_on_collection() -> bool:
     return bool(finalized)
 
 
+_T = TypeVar("_T")
+
+
 def _collects_classes() -> bool:
     # GraalPy can collect a plain class while retaining one instantiated through a custom metaclass.
     class ProbeMeta(type):
-        def __call__(cls) -> object:
-            return super().__call__()
+        def __call__(cls: type[_T]) -> _T:
+            return type.__call__(cls)
 
     def build() -> type:
         class Probe(metaclass=ProbeMeta):
@@ -132,8 +135,7 @@ def _preserves_context_thrown_into_a_generator() -> bool:
 
 
 class _Suspend:
-    """An awaitable that parks its coroutine once, so a probe can throw into a suspended frame without a loop."""
-
+    # An awaitable that parks its coroutine once, so a probe can throw into a suspended frame without a loop.
     def __await__(self) -> Generator[None, None, None]:
         yield
 
@@ -208,14 +210,12 @@ def _runs_a_raised_signal_handler_at_once() -> bool:
     return at_once
 
 
-_AUDIT_PROBE_EVENT: Final[str] = "filelock.capability-probe"
-
-
 def _delivers_audit_events() -> bool:
     # GraalPy accepts a hook and never calls it. The hook is a permanent no-op; tests install their own anyway.
     delivered: list[bool] = []
-    sys.addaudithook(lambda event, _args: delivered.append(True) if event == _AUDIT_PROBE_EVENT else None)
-    sys.audit(_AUDIT_PROBE_EVENT)
+    audit_probe_event: str = "filelock.capability-probe"
+    sys.addaudithook(lambda event, _args: delivered.append(True) if event == audit_probe_event else None)
+    sys.audit(audit_probe_event)
     return bool(delivered)
 
 
@@ -224,7 +224,7 @@ def _survives_settrace_inside_audit_hook() -> bool:
     # call raises. Probe through setprofile: re-installing the trace function would unhook coverage's C tracer.
     nested: list[bool] = []
 
-    def setprofile_again(event: str, _args: object) -> None:
+    def setprofile_again(event: str, _args: Unused) -> None:
         if event == "sys.setprofile" and not nested:
             nested.append(True)
             sys.setprofile(sys.getprofile())

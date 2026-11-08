@@ -4,7 +4,8 @@ import threading
 import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
-from unittest.mock import patch
+
+import pytest
 
 import filelock._soft
 from filelock import SoftFileLock
@@ -20,7 +21,7 @@ _REAP_DEADLINE: Final[int] = 5
 
 @contextmanager
 def cleanup_processes(processes: list[BaseProcess]) -> Generator[None]:
-    """Reap every process on the way out, whatever the block did."""
+    # Reap every process on the way out, whatever the block did.
     try:
         yield
     finally:
@@ -39,7 +40,7 @@ def cleanup_processes(processes: list[BaseProcess]) -> Generator[None]:
 def break_then_hang_after_exchange(
     lock_file: str, ready: Event, go: Event, exchanged: Event
 ) -> None:  # pragma: win32 no cover
-    """Break a stale marker, pausing right before the exchange and hanging right after it, until the test kills it."""
+    # Break a stale marker, pausing right before the exchange and hanging right after it, until the test kills it.
     exchange: Final = filelock._soft.exchange_names
 
     def exchange_then_hang(source: str, target: str) -> bool:
@@ -48,14 +49,15 @@ def break_then_hang_after_exchange(
         exchange(source, target)
         exchanged.set()
         while True:
-            time.sleep(_REAP_DEADLINE)
+            time.sleep(_REAP_DEADLINE)  # simplint: ignore[SMP808]  # a blocked lock wait can swallow SIGTERM
 
-    with patch.object(filelock._soft, "exchange_names", new=exchange_then_hang):
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(filelock._soft, "exchange_names", exchange_then_hang)
         SoftFileLock(lock_file).acquire(blocking=False)
 
 
 def call_within(call: Callable[[], object], seconds: float) -> tuple[bool, BaseException | None]:  # pragma: win32 cover
-    """Run *call* on a daemon thread and report whether it returned within *seconds* and what it raised."""
+    # Run *call* on a daemon thread and report whether it returned within *seconds* and what it raised.
     raised: list[BaseException] = []
 
     def run() -> None:
@@ -70,4 +72,8 @@ def call_within(call: Callable[[], object], seconds: float) -> tuple[bool, BaseE
     return not thread.is_alive(), next(iter(raised), None)
 
 
-__all__ = ["break_then_hang_after_exchange", "call_within", "cleanup_processes"]
+__all__ = [
+    "break_then_hang_after_exchange",
+    "call_within",
+    "cleanup_processes",
+]

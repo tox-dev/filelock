@@ -23,11 +23,11 @@ from filelock._api import (
 from filelock._error import Timeout
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Hashable
     from concurrent.futures import Executor
 
     from filelock._read_write import ReadWriteLock
-    from filelock._soft_rw import SoftReadWriteLock
+    from filelock._soft_rw._sync import SoftReadWriteLock
 
 _T = TypeVar("_T")
 
@@ -36,24 +36,17 @@ _T = TypeVar("_T")
 _TASKS_THREAD_ID: Final[int] = 0
 
 
-class _AsyncTransitionUnavailableError(Exception):
-    pass
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _BackendOutcome(Generic[_T]):
     value: _T | None = None
     error: BaseException | None = None
 
 
 class _AsyncTransitionGate:
-    """
-    First-in, first-out admission for the calls that transition one lock context.
-
-    Each call queues a ticket, and the head of the queue holds the gate. A call that gives up removes its own ticket,
-    so abandoned calls do not pile up behind a long holder.
-    """
-
+    # First-in, first-out admission for the calls that transition one lock context.
+    #
+    # Each call queues a ticket, and the head of the queue holds the gate. A call that gives up removes its own ticket,
+    # so abandoned calls do not pile up behind a long holder.
     def __init__(self) -> None:
         self._queue_lock: Final[Lock] = Lock()
         self._queue: Final[deque[ConcurrentFuture[None]]] = deque()
@@ -69,29 +62,11 @@ class _AsyncTransitionGate:
         finally:
             self._leave(ticket)
 
-    @contextlib.asynccontextmanager
-    async def hold_for_acquire(
-        self,
-        *,
-        blocking: bool,
-        cancel_check: Callable[[], bool] | None,
-        deadline: float | None,
-        poll_interval: float,
-    ) -> AsyncGenerator[None]:
-        ticket: ConcurrentFuture[None] = ConcurrentFuture()
-        try:
-            self._join(ticket)
-            if not ticket.done():
-                await self._wait_for_turn(
-                    ticket,
-                    blocking=blocking,
-                    cancel_check=cancel_check,
-                    deadline=deadline,
-                    poll_interval=poll_interval,
-                )
-            yield
-        finally:
-            self._leave(ticket)
+    def _join(self, ticket: ConcurrentFuture[None]) -> None:
+        with self._queue_lock:
+            self._queue.append(ticket)
+            if len(self._queue) == 1:
+                ticket.set_result(None)
 
     async def _wait_for_turn(
         self,
@@ -117,11 +92,13 @@ class _AsyncTransitionGate:
             # A hand-off that a signal handler's exception cut short leaves the head undone, so the head settles itself.
             self._settle_head()
 
-    def _join(self, ticket: ConcurrentFuture[None]) -> None:
+    def _settle_head(self) -> None:
         with self._queue_lock:
-            self._queue.append(ticket)
-            if len(self._queue) == 1:
-                ticket.set_result(None)
+            self._settle_head_locked()
+
+    def _settle_head_locked(self) -> None:
+        if self._queue and not (head := self._queue[0]).done():
+            head.set_result(None)
 
     def _leave(self, ticket: ConcurrentFuture[None]) -> None:
         with self._queue_lock:
@@ -132,42 +109,61 @@ class _AsyncTransitionGate:
                 return
             self._settle_head_locked()
 
-    def _settle_head(self) -> None:
-        with self._queue_lock:
-            self._settle_head_locked()
+    @contextlib.asynccontextmanager
+    async def hold_for_acquire(
+        self,
+        *,
+        blocking: bool,
+        cancel_check: Callable[[], bool] | None,
+        deadline: float | None,
+        poll_interval: float,
+    ) -> AsyncGenerator[None]:
+        ticket: ConcurrentFuture[None] = ConcurrentFuture()
+        try:
+            self._join(ticket)
+            if not ticket.done():
+                await self._wait_for_turn(
+                    ticket,
+                    blocking=blocking,
+                    cancel_check=cancel_check,
+                    deadline=deadline,
+                    poll_interval=poll_interval,
+                )
+            yield
+        finally:
+            self._leave(ticket)
 
-    def _settle_head_locked(self) -> None:
-        if self._queue and not (head := self._queue[0]).done():
-            head.set_result(None)
+
+class _AsyncTransitionUnavailableError(Exception):
+    pass
 
 
-@dataclass
-class _TaskHold:
-    """
-    One task's hold, as the nesting count per wrapper it entered through.
+_TASK_OWNERS: Final[WeakKeyDictionary[ReadWriteLock | SoftReadWriteLock, _TaskOwners]] = WeakKeyDictionary()
 
-    A task's hold ends when its last wrapper level is released or closed. Closing one wrapper ends only the levels
-    taken through it.
-    """
 
-    depths: dict[object, int]
+_TASK_OWNERS_LOCK: Final[Lock] = Lock()
+
+
+def _task_owners_for(sync_lock: ReadWriteLock | SoftReadWriteLock) -> _TaskOwners:
+    # Singleton wrappers share one sync lock, so they must share its task holds too.
+    with _fork_transition(), _TASK_OWNERS_LOCK:
+        if (owners := _TASK_OWNERS.get(sync_lock)) is None:
+            owners = _TASK_OWNERS[sync_lock] = _TaskOwners()
+        return owners
 
 
 class _TaskOwners:
-    """
-    Per-task ownership in front of a sync reader/writer lock that tracks threads.
-
-    An async wrapper runs each call on an executor thread, and that thread does not identify the calling task. Waiting
-    writers block new readers so a stream of readers cannot starve them. A thread lock guards the table because tasks on
-    different event loops share it. The table stands for one backend level, taken once for all tasks. Sync code can
-    end that level directly, with ``close()`` or a forced release on a shared singleton. The next admission then
-    forgets the holds instead of letting more tasks join them.
-    """
-
+    # Per-task ownership in front of a sync reader/writer lock that tracks threads.
+    #
+    # An async wrapper runs each call on an executor thread, and that thread does not identify the calling task. Waiting
+    # writers block new readers so a stream of readers cannot starve them. A thread lock guards the table because tasks
+    # on different event loops share it. The table stands for one backend level, taken once for all tasks. Sync code can
+    # end that level directly, with ``close()`` or a forced release on a shared singleton. The next admission then
+    # forgets the holds instead of letting more tasks join them.
     def __init__(self) -> None:
         self._lock: Final[Lock] = Lock()
         self._mode: Literal["read", "write"] | None = None
-        self._holds: dict[asyncio.Task[object], _TaskHold] = {}
+        self._holds: dict[asyncio.Task[object], _TaskHold] = {}  # simplint: ignore[SMP602]  # tasks carry any type
         self._transitioning = False
         self._waiting_writers = 0
         #: One ticket per waiting call, settled on the next state change. A call that stops waiting takes its own out,
@@ -181,7 +177,7 @@ class _TaskOwners:
         timeout: float,
         blocking: bool,
         lock_file: str,
-        via: object,
+        via: Hashable,
         enter: Callable[[float], Awaitable[None]],
         joinable: Callable[[], bool],
     ) -> None:
@@ -223,11 +219,11 @@ class _TaskOwners:
 
     def _admit(  # ruff:ignore[too-many-arguments]  # the acquire's state, passed through under the table lock
         self,
-        task: asyncio.Task[object],
+        task: asyncio.Task[object],  # simplint: ignore[SMP602]  # tasks carry any result type
         mode: Literal["read", "write"],
         lock_file: str,
         *,
-        via: object,
+        via: Hashable,
         joinable: Callable[[], bool],
         waiting_writer: bool,
     ) -> Literal["held", "enter"] | ConcurrentFuture[None]:
@@ -257,12 +253,40 @@ class _TaskOwners:
                     return "enter"
             return self._ticket()
 
+    def _ticket(self) -> ConcurrentFuture[None]:
+        # Called under the table lock, in the section that decided to wait, so no state change slips in between.
+        ticket: ConcurrentFuture[None] = ConcurrentFuture()
+        self._waiters[ticket] = None
+        return ticket
+
+    def _forget(self, ticket: ConcurrentFuture[None]) -> None:
+        with self._lock:
+            self._waiters.pop(ticket, None)
+
+    def _notify(self) -> None:
+        waiters, self._waiters = self._waiters, {}
+        for ticket in waiters:
+            ticket.set_result(None)
+
+    def _finish_transition(
+        self,
+        *,
+        mode: Literal["read", "write"] | None,
+        holds: dict[asyncio.Task[object], _TaskHold] | None = None,  # simplint: ignore[SMP602]  # tasks carry any type
+    ) -> None:
+        with self._lock:
+            self._transitioning, self._mode = False, mode
+            if mode is not None and holds:
+                for task, hold in holds.items():
+                    self._holds.setdefault(task, _TaskHold(depths={})).depths.update(hold.depths)
+            self._notify()
+
     async def release(
         self,
         *,
         force: bool,
         lock_file: str,
-        via: object,
+        via: Hashable,
         leave: Callable[[], asyncio.Future[_BackendOutcome[None]]],
         still_held: Callable[[], bool],
     ) -> None:
@@ -303,19 +327,18 @@ class _TaskOwners:
 
     async def retire(
         self,
-        via: object | None,
+        via: Hashable | None,
         *,
         leave: Callable[[], asyncio.Future[_BackendOutcome[None]]],
         still_held: Callable[[], bool],
     ) -> None:
-        """
-        End the holds taken through *via*, or every hold when it is ``None``, as one transition.
-
-        Leaves the backend through *leave* when that ends the last hold, and always when *via* is ``None``. Arrivals
-        wait while it runs, so none joins a hold the backend is letting go of. A transition already under way is waited
-        out first: a task entering through *via* must not get a hold after the wrapper is gone. A cancellation is raised
-        once the holds are settled.
-        """
+        # End the holds taken through *via*, or every hold when it is ``None``, as one transition.
+        #
+        # Leaves the backend through *leave* when that ends the last hold, and always when *via* is ``None``. Arrivals
+        # wait while it runs, so none joins a hold the backend is letting go of. A transition already under way is
+        # waited
+        # out first: a task entering through *via* must not get a hold after the wrapper is gone. A cancellation is
+        # raised once the holds are settled.
         cancellation: asyncio.CancelledError | None = None
         while isinstance(settled := self._drop_holds_via(via), ConcurrentFuture):
             try:
@@ -340,8 +363,14 @@ class _TaskOwners:
             raise cancellation
 
     def _drop_holds_via(
-        self, via: object | None
-    ) -> tuple[Literal["read", "write"] | None, dict[asyncio.Task[object], _TaskHold]] | ConcurrentFuture[None]:
+        self, via: Hashable | None
+    ) -> (
+        tuple[
+            Literal["read", "write"] | None,
+            dict[asyncio.Task[object], _TaskHold],  # simplint: ignore[SMP602]  # tasks carry any type
+        ]
+        | ConcurrentFuture[None]
+    ):
         # Returns the future a running transition settles, or else the mode to leave (None when other holds keep the
         # backend level) and the dropped holds. The table stays transitioning while that mode is left.
         with self._lock:
@@ -363,49 +392,21 @@ class _TaskOwners:
             self._transitioning = mode is not None or via is None
             return mode, dropped
 
-    def _finish_transition(
-        self, *, mode: Literal["read", "write"] | None, holds: dict[asyncio.Task[object], _TaskHold] | None = None
-    ) -> None:
-        with self._lock:
-            self._transitioning, self._mode = False, mode
-            if mode is not None and holds:
-                for task, hold in holds.items():
-                    self._holds.setdefault(task, _TaskHold(depths={})).depths.update(hold.depths)
-            self._notify()
 
-    def _ticket(self) -> ConcurrentFuture[None]:
-        # Called under the table lock, in the section that decided to wait, so no state change slips in between.
-        ticket: ConcurrentFuture[None] = ConcurrentFuture()
-        self._waiters[ticket] = None
-        return ticket
-
-    def _forget(self, ticket: ConcurrentFuture[None]) -> None:
-        with self._lock:
-            self._waiters.pop(ticket, None)
-
-    def _notify(self) -> None:
-        waiters, self._waiters = self._waiters, {}
-        for ticket in waiters:
-            ticket.set_result(None)
-
-
-_TASK_OWNERS: Final[WeakKeyDictionary[ReadWriteLock | SoftReadWriteLock, _TaskOwners]] = WeakKeyDictionary()
-_TASK_OWNERS_LOCK: Final[Lock] = Lock()
-
-
-def _task_owners_for(sync_lock: ReadWriteLock | SoftReadWriteLock) -> _TaskOwners:
-    """Singleton wrappers share one sync lock, so they must share its task holds too."""
-    with _fork_transition(), _TASK_OWNERS_LOCK:
-        if (owners := _TASK_OWNERS.get(sync_lock)) is None:
-            owners = _TASK_OWNERS[sync_lock] = _TaskOwners()
-        return owners
-
-
-def _current_task() -> asyncio.Task[object]:
+def _current_task() -> asyncio.Task[object]:  # simplint: ignore[SMP602]  # tasks carry any result type
     if (task := asyncio.current_task()) is None:
         msg = "an async reader/writer lock must be used from inside an asyncio task"
         raise RuntimeError(msg)
     return task
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _TaskHold:
+    # One task's hold, as the nesting count per wrapper it entered through.
+    #
+    # A task's hold ends when its last wrapper level is released or closed. Closing one wrapper ends only the levels
+    # taken through it.
+    depths: dict[Hashable, int]
 
 
 async def _drain_cancellation(future: asyncio.Future[_BackendOutcome[None]]) -> asyncio.CancelledError | None:
@@ -429,9 +430,16 @@ async def _drain_future(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
     return _future_result(future)
 
 
-async def _wait_until_done(future: asyncio.Future[_T]) -> None:
-    if not future.done():
-        await asyncio.wait((future,))
+def _raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseException) -> NoReturn:
+    # A reconciliation step failed while unwinding a cancellation, so keep both exception chains. Splice the error's
+    # existing context onto the cancellation, then make the cancellation the error's context, so both the failure and
+    # the cancellation that triggered it survive. Shared by the async wrappers so cancellations report the same way.
+    if (context := error.__context__) is not None and context is not cancellation:
+        if (cancellation_context := cancellation.__context__) is not None:
+            _append_exception_context(context, cancellation_context)
+        cancellation.__context__ = context
+    error.__context__ = cancellation
+    _raise_chained_errors(error)
 
 
 def _future_result(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
@@ -446,6 +454,11 @@ def _future_result(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
         raise
 
 
+async def _wait_until_done(future: asyncio.Future[_T]) -> None:
+    if not future.done():
+        await asyncio.wait((future,))
+
+
 def _run_in_executor(
     loop: asyncio.AbstractEventLoop, executor: Executor | None, func: Callable[[], _T]
 ) -> asyncio.Future[_BackendOutcome[_T]]:
@@ -457,8 +470,7 @@ def _run_in_executor(
         except asyncio.CancelledError:
             # shutdown(cancel_futures=True) dropped the call unrun: a CancelledError would cancel a task nobody canceled
             # and hide that the lock state never changed.
-            msg = "the executor shut down before running the lock backend call"
-            result = _BackendOutcome(error=RuntimeError(msg))
+            result = _BackendOutcome(error=RuntimeError("the executor shut down before running the lock backend call"))
         outcome.set_result(result)
 
     loop.run_in_executor(executor, _capture_call, func).add_done_callback(settle)
@@ -470,18 +482,6 @@ def _capture_call(func: Callable[[], _T]) -> _BackendOutcome[_T]:
         return _BackendOutcome(value=func())
     except BaseException as error:  # ruff:ignore[blind-except]  # backend control-flow exceptions are operation results
         return _BackendOutcome(error=error)
-
-
-def _raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseException) -> NoReturn:
-    # A reconciliation step failed while unwinding a cancellation, so keep both exception chains. Splice the error's
-    # existing context onto the cancellation, then make the cancellation the error's context, so both the failure and
-    # the cancellation that triggered it survive. Shared by the async wrappers so cancellations report the same way.
-    if (context := error.__context__) is not None and context is not cancellation:
-        if (cancellation_context := cancellation.__context__) is not None:
-            _append_exception_context(context, cancellation_context)
-        cancellation.__context__ = context
-    error.__context__ = cancellation
-    _raise_chained_errors(error)
 
 
 async def _capture_awaitable(awaitable: Awaitable[_T]) -> _BackendOutcome[_T]:

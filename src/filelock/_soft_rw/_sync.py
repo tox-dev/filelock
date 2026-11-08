@@ -17,7 +17,7 @@ import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from math import isfinite
-from typing import TYPE_CHECKING, ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar, Final, NamedTuple
 from weakref import WeakValueDictionary
 
 from filelock._api import (
@@ -140,11 +140,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     The lock's state is a log of immutable snapshots under ``foo.lock.rw/gen/<N>``, each naming the writer and the
     readers holding the lock at generation ``N``. Every acquire, release, and eviction publishes the next snapshot with
-    one atomic no-replace hard link, so no transition can be left half done by a crash on any host. Each participant
-    also keeps ``foo.lock.rw/holders/<token>``, a record whose nonce a daemon heartbeat thread rewrites every
-    ``heartbeat_interval`` seconds. A contender evicts a member whose record has not changed for ``stale_threshold``
-    seconds of the contender's own monotonic clock; no clock is ever compared across hosts, so skew between hosts or
-    against the file server cannot make a live holder look dead.
+    one atomic no-replace hard link, so no transition can be left half done by a crash on any host.
+
+    Each participant also keeps ``foo.lock.rw/holders/<token>``, a record whose nonce a daemon heartbeat thread rewrites
+    every ``heartbeat_interval`` seconds. A contender evicts a member whose record has not changed for
+    ``stale_threshold`` seconds of the contender's own monotonic clock; no clock is ever compared across hosts, so skew
+    between hosts or against the file server cannot make a live holder look dead.
 
     Writer acquire is writer-preferring: a writer enters the snapshot as soon as no live writer is named, which blocks
     any new reader, then waits for the named readers to leave. Writer starvation is impossible.
@@ -168,9 +169,10 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
     :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately on contention
     :param is_singleton: if ``True``, reuse existing instances for the same canonical path
+
     :param heartbeat_interval: seconds between heartbeat refreshes; default 30 s
-    :param stale_threshold: seconds a holder record may stay unchanged before a contender evicts it; defaults to
-        ``3 * heartbeat_interval``, matching etcd's ``LeaseKeepAlive`` convention
+    :param stale_threshold: seconds a holder record may stay unchanged before a contender evicts it; defaults to ``3 *
+        heartbeat_interval``, matching etcd's ``LeaseKeepAlive`` convention
     :param poll_interval: seconds between acquire retries under contention; default 0.25 s
     :param on_compromise: called from the heartbeat thread with a :class:`~filelock.LeaseCompromise` when the hold is
         lost: a peer evicted it, or refreshes failed for long enough that a peer could have
@@ -236,12 +238,26 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         _register_fork_object(self)
 
     @classmethod
-    def _reset_class_after_fork(cls) -> None:  # pragma: forked child
-        global _ALL_INSTANCES_LOCK  # ruff:ignore[global-statement]  # rebinds the module lock to a fresh one in the fork child
-        _ALL_INSTANCES_LOCK = threading.Lock()
-        cls._instances = WeakValueDictionary()
-        cls._instances_lock = threading.RLock()
-        cls._instances_under_construction = set()
+    def get_lock(
+        cls,
+        lock_file: str | os.PathLike[str],
+        timeout: float = -1,
+        *,
+        blocking: bool = True,
+    ) -> SoftReadWriteLock:
+        """
+        Return the singleton :class:`SoftReadWriteLock` for *lock_file*.
+
+        :param lock_file: path to the lock file; the protocol directory lives next to it as ``<lock_file>.rw``
+        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
+
+        :returns: the singleton lock instance
+
+        :raises ValueError: if an instance already exists for this path with different *timeout* or *blocking* values
+
+        """
+        return cls(lock_file, timeout, blocking=blocking)
 
     @property
     def generation(self) -> int | None:
@@ -274,6 +290,14 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         with self._locks.internal:
             return self._compromise
 
+    @classmethod
+    def _reset_class_after_fork(cls) -> None:  # pragma: forked child
+        global _ALL_INSTANCES_LOCK  # ruff:ignore[global-statement]  # rebinds the module lock to a fresh one in the fork child
+        _ALL_INSTANCES_LOCK = threading.Lock()
+        cls._instances = WeakValueDictionary()
+        cls._instances_lock = threading.RLock()
+        cls._instances_under_construction = set()
+
     @contextmanager
     def read_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
         """
@@ -283,6 +307,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
         :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the shared read lock is held
 
         :raises RuntimeError: if a write lock is already held on this instance
         :raises Timeout: if the lock cannot be acquired within *timeout* seconds
@@ -291,28 +316,6 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         """
         self.acquire_read(timeout, blocking=blocking)
-        try:
-            yield
-        finally:
-            self.release()
-
-    @contextmanager
-    def write_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
-        """
-        Context manager that acquires and releases an exclusive write lock.
-
-        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
-
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
-
-        :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
-        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
-        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
-
-        """
-        self.acquire_write(timeout, blocking=blocking)
         try:
             yield
         finally:
@@ -345,156 +348,6 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         """
         return self._acquire("read", timeout, blocking=blocking)
-
-    def acquire_write(self, timeout: float | None = None, *, blocking: bool | None = None) -> AcquireReturnProxy:
-        """
-        Acquire an exclusive write lock.
-
-        If this instance already holds a write lock from the same thread, the lock level is incremented (reentrant).
-        Attempting to acquire a write lock while holding a read lock raises :class:`RuntimeError` (upgrade not
-        allowed). Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
-        :class:`RuntimeError`.
-
-        A writer enters the next snapshot as its writer as soon as no live writer is named, which blocks every new
-        reader on every host, then waits for the readers that snapshot names to leave. Writer starvation is impossible:
-        new readers see the named writer and wait behind it.
-
-        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means block
-            indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable;
-            ``None`` uses the instance default
-
-        :returns: a proxy that can be used as a context manager to release the lock
-
-        :raises RuntimeError: if a read lock is already held, if a write lock is held by a different thread, if this
-            instance was invalidated by :func:`os.fork`, or if :meth:`close` was called
-        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
-        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
-        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
-        :raises SoftFileLockProtocolError: if a snapshot cannot be read without risking overlap, or the filesystem
-            refuses the no-replace hard links the protocol commits with
-
-        """
-        return self._acquire("write", timeout, blocking=blocking)
-
-    @classmethod
-    def get_lock(
-        cls,
-        lock_file: str | os.PathLike[str],
-        timeout: float = -1,
-        *,
-        blocking: bool = True,
-    ) -> SoftReadWriteLock:
-        """
-        Return the singleton :class:`SoftReadWriteLock` for *lock_file*.
-
-        :param lock_file: path to the lock file; the protocol directory lives next to it as ``<lock_file>.rw``
-        :param timeout: maximum wait time in seconds; ``-1`` means block indefinitely
-        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable
-
-        :returns: the singleton lock instance
-
-        :raises ValueError: if an instance already exists for this path with different *timeout* or *blocking* values
-
-        """
-        return cls(lock_file, timeout, blocking=blocking)
-
-    def close(self) -> None:
-        """
-        Release any held lock and mark the instance closed.
-
-        Idempotent. After calling this method the instance can no longer acquire locks — subsequent acquires raise
-        :class:`RuntimeError`, and so does an acquire another thread is still waiting in, which gives up its claim
-        instead of taking the lock. A fork-invalidated instance is closed without raising.
-        """
-        if self._creator_pid != os.getpid():  # pragma: forked child
-            return
-        # Closed first, under the lock an acquire publishes its hold under: an acquire still waiting then sees the flag
-        # and leaves instead of publishing, and one that published before it is released below.
-        with self._locks.internal:
-            self._closed = True
-        self.release(force=True)
-
-    def release(self, *, force: bool = False) -> None:
-        """
-        Release one level of the current lock.
-
-        When the lock level reaches zero the heartbeat thread is stopped, the participant is committed out of the next
-        snapshot, and its holder record is removed. On a fork-invalidated instance (that is, the child of a
-        :func:`os.fork` call made while the parent held a lock) this method is a no-op so inherited ``with`` blocks can
-        unwind cleanly in the child.
-
-        :param force: if ``True``, release the lock completely regardless of the current lock level
-
-        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if the calling thread holds no
-            level of the current lock and *force* is ``False``
-
-        """
-        if self._creator_pid != os.getpid():  # pragma: forked child
-            return
-        self._release(threading.get_ident(), force=force)
-
-    def _acquire_level_of(
-        self, holder: int, mode: Mode, timeout: float, *, blocking: bool, cancel_check: Callable[[], bool]
-    ) -> AcquireReturnProxy:
-        # Records the level under *holder* instead of the calling thread: an async wrapper's executor thread does not
-        # identify the tasks it holds for. Gives up with Timeout once *cancel_check* is true.
-        return self._acquire(mode, timeout, blocking=blocking, holder=holder, cancel_check=cancel_check)
-
-    def _release_level_of(self, holder: int) -> None:
-        self._release(holder, force=False)
-
-    def _holds_level_of(self, holder: int) -> bool:
-        # Read without the internal lock: an async wrapper asks from its event loop, which must not wait out a release
-        # running on another thread.
-        return (hold := self._hold) is not None and (holder == hold.write_thread_id or holder in hold.read_depths)
-
-    def _release(self, thread_id: int, *, force: bool) -> None:
-        with self._locks.internal:
-            hold = self._hold
-            if hold is None:
-                if force:
-                    return
-                msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
-                raise RuntimeError(msg)
-            if force:
-                hold.level = 0
-            else:
-                self._raise_if_not_holder(hold, thread_id)
-                hold.leave_one_level(thread_id)
-            if hold.level > 0:
-                return
-            self._hold = None
-
-        # Stop the heartbeat before leaving, so a late tick cannot re-read a snapshot this participant just left and
-        # report an eviction that was its own release. on_compromise runs on that thread and may be what called here,
-        # in which case there is nothing to join.
-        hold.heartbeat_stop.set()
-        try:
-            if hold.heartbeat_thread is not threading.current_thread():
-                hold.heartbeat_thread.join(timeout=min(self.heartbeat_interval + 1.0, threading.TIMEOUT_MAX))
-        finally:
-            # The hold is already gone from this instance, so a join that raises must not strand its record too.
-            hold.participant.leave()
-
-    def _raise_if_not_holder(self, hold: _Hold, thread_id: int) -> None:
-        # The hold's own heartbeat thread may release it, since on_compromise runs there.
-        if thread_id == hold.heartbeat_thread.ident:
-            return
-        # Another thread's release would leave the generation log under the holder and let a peer in.
-        if hold.mode == "write" and thread_id != hold.write_thread_id:
-            msg = (
-                f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {thread_id} while it is held by thread {hold.write_thread_id}"
-            )
-            raise RuntimeError(msg)
-        # Readers share one participant, so a thread that holds no read level would end another's hold.
-        if hold.mode == "read" and thread_id not in hold.read_depths:
-            msg = (
-                f"Cannot release read lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {thread_id}, which does not hold it"
-            )
-            raise RuntimeError(msg)
 
     def _acquire(
         self,
@@ -535,6 +388,32 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     def _closed_error(self) -> RuntimeError:
         return RuntimeError(f"SoftReadWriteLock on {self.lock_file} has been closed")
+
+    def _validate_reentrant(self, mode: Mode, holder: int) -> AcquireReturnProxy:
+        hold = self._hold
+        assert hold is not None  # ruff:ignore[assert]  # callers dispatch here only inside the self._hold is not None branch
+        if hold.mode != mode:
+            opposite = "write" if mode == "read" else "read"
+            direction = "downgrade" if mode == "read" else "upgrade"
+            msg = (
+                f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): "
+                f"already holding a {opposite} lock ({direction} not allowed)"
+            )
+            raise RuntimeError(msg)
+        if mode == "write" and holder != hold.write_thread_id:
+            msg = (
+                f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {holder} while it is held by thread {hold.write_thread_id}"
+            )
+            raise RuntimeError(msg)
+        # Publishing a hold clears the loss recorded for the one before, so a loss seen here is this hold's. Its
+        # heartbeat has stopped and a peer may hold the lock, so a new level must not bypass the log.
+        if (compromise := self._compromise) is not None:
+            raise _lost_hold_error(self.lock_file, mode, compromise)
+        if mode == "read":
+            hold.read_depths[holder] = hold.read_depths.get(holder, 0) + 1
+        hold.level += 1
+        return AcquireReturnProxy(lock=self)
 
     def _do_acquire_inner(
         self,
@@ -605,32 +484,6 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             raise start_error
         return AcquireReturnProxy(lock=self)
 
-    def _validate_reentrant(self, mode: Mode, holder: int) -> AcquireReturnProxy:
-        hold = self._hold
-        assert hold is not None  # ruff:ignore[assert]  # callers dispatch here only inside the self._hold is not None branch
-        if hold.mode != mode:
-            opposite = "write" if mode == "read" else "read"
-            direction = "downgrade" if mode == "read" else "upgrade"
-            msg = (
-                f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): "
-                f"already holding a {opposite} lock ({direction} not allowed)"
-            )
-            raise RuntimeError(msg)
-        if mode == "write" and holder != hold.write_thread_id:
-            msg = (
-                f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {holder} while it is held by thread {hold.write_thread_id}"
-            )
-            raise RuntimeError(msg)
-        # Publishing a hold clears the loss recorded for the one before, so a loss seen here is this hold's. Its
-        # heartbeat has stopped and a peer may hold the lock, so a new level must not bypass the log.
-        if (compromise := self._compromise) is not None:
-            raise _lost_hold_error(self.lock_file, mode, compromise)
-        if mode == "read":
-            hold.read_depths[holder] = hold.read_depths.get(holder, 0) + 1
-        hold.level += 1
-        return AcquireReturnProxy(lock=self)
-
     def _wait_for(
         self,
         predicate: Callable[[], bool],
@@ -687,6 +540,157 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         if self._on_compromise is not None:
             self._on_compromise(compromise)
 
+    def release(self, *, force: bool = False) -> None:
+        """
+        Release one level of the current lock.
+
+        When the lock level reaches zero the heartbeat thread is stopped, the participant is committed out of the next
+        snapshot, and its holder record is removed. On a fork-invalidated instance (that is, the child of a
+        :func:`os.fork` call made while the parent held a lock) this method is a no-op so inherited ``with`` blocks can
+        unwind cleanly in the child.
+
+        :param force: if ``True``, release the lock completely regardless of the current lock level
+
+        :raises RuntimeError: if no lock is currently held and *force* is ``False``, or if the calling thread holds no
+            level of the current lock and *force* is ``False``
+
+        """
+        if self._creator_pid != os.getpid():  # pragma: forked child
+            return
+        self._release(threading.get_ident(), force=force)
+
+    def _release(self, thread_id: int, *, force: bool) -> None:
+        with self._locks.internal:
+            hold = self._hold
+            if hold is None:
+                if force:
+                    return
+                msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
+                raise RuntimeError(msg)
+            if force:
+                hold.level = 0
+            else:
+                self._raise_if_not_holder(hold, thread_id)
+                hold.leave_one_level(thread_id)
+            if hold.level > 0:
+                return
+            self._hold = None
+
+        # Stop the heartbeat before leaving, so a late tick cannot re-read a snapshot this participant just left and
+        # report an eviction that was its own release. on_compromise runs on that thread and may be what called here,
+        # in which case there is nothing to join.
+        hold.heartbeat_stop.set()
+        try:
+            if hold.heartbeat_thread is not threading.current_thread():
+                hold.heartbeat_thread.join(timeout=min(self.heartbeat_interval + 1.0, threading.TIMEOUT_MAX))
+        finally:
+            # The hold is already gone from this instance, so a join that raises must not strand its record too.
+            hold.participant.leave()
+
+    def _raise_if_not_holder(self, hold: _Hold, thread_id: int) -> None:
+        # The hold's own heartbeat thread may release it, since on_compromise runs there.
+        if thread_id == hold.heartbeat_thread.ident:
+            return
+        # Another thread's release would leave the generation log under the holder and let a peer in.
+        if hold.mode == "write" and thread_id != hold.write_thread_id:
+            msg = (
+                f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id} while it is held by thread {hold.write_thread_id}"
+            )
+            raise RuntimeError(msg)
+        # Readers share one participant, so a thread that holds no read level would end another's hold.
+        if hold.mode == "read" and thread_id not in hold.read_depths:
+            msg = (
+                f"Cannot release read lock on {self.lock_file} (lock id: {id(self)}) "
+                f"from thread {thread_id}, which does not hold it"
+            )
+            raise RuntimeError(msg)
+
+    @contextmanager
+    def write_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
+        """
+        Context manager that acquires and releases an exclusive write lock.
+
+        Falls back to instance defaults for *timeout* and *blocking* when ``None``.
+
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately; ``None`` uses the instance default
+        :yields: while the exclusive write lock is held
+
+        :raises RuntimeError: if a read lock is already held, or a write lock is held by a different thread
+        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
+
+        """
+        self.acquire_write(timeout, blocking=blocking)
+        try:
+            yield
+        finally:
+            self.release()
+
+    def acquire_write(self, timeout: float | None = None, *, blocking: bool | None = None) -> AcquireReturnProxy:
+        """
+        Acquire an exclusive write lock.
+
+        If this instance already holds a write lock from the same thread, the lock level is incremented (reentrant).
+        Attempting to acquire a write lock while holding a read lock raises :class:`RuntimeError` (upgrade not
+        allowed). Write locks are pinned to the acquiring thread: a different thread trying to re-enter also raises
+        :class:`RuntimeError`.
+
+        A writer enters the next snapshot as its writer as soon as no live writer is named, which blocks every new
+        reader on every host, then waits for the readers that snapshot names to leave. Writer starvation is impossible:
+        new readers see the named writer and wait behind it.
+
+        :param timeout: maximum wait time in seconds, or ``None`` to use the instance default; ``-1`` means block
+            indefinitely
+        :param blocking: if ``False``, raise :class:`~filelock.Timeout` immediately when the lock is unavailable;
+            ``None`` uses the instance default
+
+        :returns: a proxy that can be used as a context manager to release the lock
+
+        :raises RuntimeError: if a read lock is already held, if a write lock is held by a different thread, if this
+            instance was invalidated by :func:`os.fork`, or if :meth:`close` was called
+        :raises Timeout: if the lock cannot be acquired within *timeout* seconds
+        :raises TypeError: if *timeout* is a :class:`bool` or not a real number, or *blocking* is not a :class:`bool`
+        :raises ValueError: if a blocking call gets a ``nan`` *timeout* or a negative one other than ``-1``
+        :raises SoftFileLockProtocolError: if a snapshot cannot be read without risking overlap, or the filesystem
+            refuses the no-replace hard links the protocol commits with
+
+        """
+        return self._acquire("write", timeout, blocking=blocking)
+
+    def close(self) -> None:
+        """
+        Release any held lock and mark the instance closed.
+
+        Idempotent. After calling this method the instance can no longer acquire locks — subsequent acquires raise
+        :class:`RuntimeError`, and so does an acquire another thread is still waiting in, which gives up its claim
+        instead of taking the lock. A fork-invalidated instance is closed without raising.
+        """
+        if self._creator_pid != os.getpid():  # pragma: forked child
+            return
+        # Closed first, under the lock an acquire publishes its hold under: an acquire still waiting then sees the flag
+        # and leaves instead of publishing, and one that published before it is released below.
+        with self._locks.internal:
+            self._closed = True
+        self.release(force=True)
+
+    def _acquire_level_of(
+        self, holder: int, mode: Mode, timeout: float, *, blocking: bool, cancel_check: Callable[[], bool]
+    ) -> AcquireReturnProxy:
+        # Records the level under *holder* instead of the calling thread: an async wrapper's executor thread does not
+        # identify the tasks it holds for. Gives up with Timeout once *cancel_check* is true.
+        return self._acquire(mode, timeout, blocking=blocking, holder=holder, cancel_check=cancel_check)
+
+    def _release_level_of(self, holder: int) -> None:
+        self._release(holder, force=False)
+
+    def _holds_level_of(self, holder: int) -> bool:
+        # Read without the internal lock: an async wrapper asks from its event loop, which must not wait out a release
+        # running on another thread.
+        return (hold := self._hold) is not None and (holder == hold.write_thread_id or holder in hold.read_depths)
+
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         self._locks = _Locks(internal=threading.Lock(), transaction=threading.Lock())
         self._hold = None
@@ -722,9 +726,13 @@ def _lost_hold_error(lock_file: str, mode: Mode, compromise: LeaseCompromise) ->
     )
 
 
-def _validate_intervals(
-    heartbeat_interval: float, stale_threshold: float | None, poll_interval: float
-) -> tuple[float, float, float]:
+class _Intervals(NamedTuple):
+    heartbeat_interval: float
+    stale_threshold: float
+    poll_interval: float
+
+
+def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None, poll_interval: float) -> _Intervals:
     heartbeat_interval = _seconds("heartbeat_interval", heartbeat_interval)
     if not isfinite(heartbeat_interval) or heartbeat_interval <= 0:
         msg = f"heartbeat_interval must be positive and finite, got {heartbeat_interval}"
@@ -748,19 +756,18 @@ def _validate_intervals(
     if poll_interval >= stale_threshold:
         msg = f"poll_interval must be below stale_threshold ({stale_threshold}), got {poll_interval}"
         raise ValueError(msg)
-    return heartbeat_interval, stale_threshold, poll_interval
+    return _Intervals(heartbeat_interval, stale_threshold, poll_interval)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _Locks:
     internal: threading.Lock
     transaction: threading.Lock
 
 
-@dataclass
+@dataclass(slots=True, kw_only=True)
 class _Hold:
-    """Everything that exists only while a lock is held; ``None`` when the instance has no lock."""
-
+    # Everything that exists only while a lock is held; ``None`` when the instance has no lock.
     level: int
     mode: Mode
     write_thread_id: int | None

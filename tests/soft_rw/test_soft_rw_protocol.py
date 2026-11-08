@@ -1,15 +1,3 @@
-"""
-The generation-log protocol: record formats, the ledger, and ``GenerationLog``/``Participant`` behavior, plus a model
-check of the whole protocol under an adversarial scheduler.
-
-The direct tests below exercise ``Snapshot``, ``Ledger``, ``GenerationLog``, and ``Participant`` against a real
-filesystem. The model check that follows runs every participant on its own thread over an in-memory filesystem, and
-every filesystem call hands the turn back to a seeded scheduler that picks which participant runs next, advances a fake
-clock, and sometimes kills the participant it picked. That interleaves the protocol at the granularity of single
-filesystem operations, including inside a commit, and a crash at any of those points leaves exactly what a dead process
-would leave on disk.
-"""
-
 from __future__ import annotations
 
 import errno
@@ -17,8 +5,8 @@ import os
 import random
 import shutil
 import threading
-from dataclasses import dataclass, field
 from errno import EIO
+from itertools import cycle, islice
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -39,36 +27,14 @@ from filelock._soft_rw._protocol import (
 from filelock._soft_rw._storage import OsFiles
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from unittest.mock import MagicMock
+    from collections.abc import Callable, Iterator
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
-_FIRST = "0123456789abcdef0123456789abcdef"
-_SECOND = "fedcba9876543210fedcba9876543210"
+_FIRST: Final[str] = "0123456789abcdef0123456789abcdef"
+_SECOND: Final[str] = "fedcba9876543210fedcba9876543210"
 
-pytestmark = pytest.mark.usefixtures("flushes")
-
-
-def _participant(
-    files: OsFiles,
-    lock_file: str,
-    mode: Literal["read", "write"],
-    *,
-    stale_threshold: float = 100,
-    clock: Callable[[], float] = lambda: 0.0,
-) -> Participant:
-    # Each participant gets its own ledger and log, the way separate processes do.
-    root = f"{lock_file}.rw"
-    return Participant(
-        files,
-        root,
-        mode,
-        stale_threshold=stale_threshold,
-        clock=clock,
-        ledger=Ledger(clock),
-        log=GenerationLog(files, lock_file, root),
-    )
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.usefixtures("flushes")
 
 
 @pytest.fixture
@@ -283,6 +249,27 @@ def test_leave_without_entering_only_drops_the_record(lock_file: str, files: OsF
     assert participant.generation is None
 
 
+def _participant(
+    files: OsFiles,
+    lock_file: str,
+    mode: Literal["read", "write"],
+    *,
+    stale_threshold: float = 100,
+    clock: Callable[[], float] = lambda: 0.0,
+) -> Participant:
+    # Each participant gets its own ledger and log, the way separate processes do.
+    root = f"{lock_file}.rw"
+    return Participant(
+        files,
+        root,
+        mode,
+        stale_threshold=stale_threshold,
+        clock=clock,
+        ledger=Ledger(clock),
+        log=GenerationLog(files, lock_file, root),
+    )
+
+
 @pytest.mark.requires_hard_links
 def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root: str, mocker: MockerFixture) -> None:
     # A peer can publish the next generation between leave() reading the latest one and linking its successor; the
@@ -304,8 +291,7 @@ def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root:
     mocker.patch.object(GenerationLog, "commit", autospec=True, side_effect=commit_after_a_peer)
     reader.leave()
     latest = GenerationLog(files, lock_file, root).latest()
-    assert latest.members == frozenset()
-    assert latest.generation == lost[0].generation + 1
+    assert (latest.members, latest.generation) == (frozenset(), lost[0].generation + 1)
 
 
 @pytest.mark.requires_hard_links
@@ -330,7 +316,7 @@ def test_waiting_contender_keeps_an_undeletable_record(
     # Windows can leave the record in place while refusing the rewrite; the contender carries on.
     reader = _participant(files, lock_file, "read", stale_threshold=100)
     reader.publish()
-    mocker.patch.object(OsFiles, "overwrite", return_value=False)
+    mocker.patch.object(OsFiles, "overwrite", return_value=False, autospec=True)
     assert reader.advance()
     assert Path(root, "holders", reader.token).exists()
 
@@ -352,8 +338,7 @@ def test_blocked_contender_still_evicts_stale_readers(lock_file: str, files: OsF
     assert writer.heartbeat() == ("ok", None)  # keeps its own nonce fresh, so only the dead reader goes stale
     assert not contender.advance()
     latest = GenerationLog(files, lock_file, root).latest()
-    assert latest.writer == writer.token
-    assert latest.readers == frozenset()
+    assert (latest.writer, latest.readers) == (writer.token, frozenset())
 
 
 def test_advance_hands_back_the_poll_after_losing_every_race(
@@ -426,7 +411,7 @@ def test_a_listing_naming_only_compacted_generations_fails_closed(
     # A client that can see names but read none of them is behind the log by more than the retained window; treating
     # that as an empty log would restart the sequence and fork it.
     files.prepare(root)
-    mocker.patch.object(OsFiles, "listdir", return_value=[f"{generation:020d}" for generation in (4, 5)])
+    mocker.patch.object(OsFiles, "listdir", return_value=[f"{generation:020d}" for generation in (4, 5)], autospec=True)
     with pytest.raises(SoftFileLockProtocolError, match="names no readable snapshot"):
         GenerationLog(files, lock_file, root).latest()
 
@@ -485,17 +470,24 @@ def test_a_remembered_head_gone_from_the_same_log_fails_closed(lock_file: str, f
 
 
 @pytest.mark.requires_hard_links
-@pytest.mark.parametrize("remembered", [pytest.param(True, id="memory"), pytest.param(False, id="head")])
-def test_an_empty_listing_past_compaction_still_finds_the_head(
-    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture, *, remembered: bool
+def test_an_empty_listing_past_compaction_still_finds_the_remembered_head(
+    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture
 ) -> None:
     # Compaction leaves nothing within the probe window of generation 0, so only the head this client remembers or
     # gen/HEAD names, read by name, finds the log; a cached empty listing would make it look new and fork it at gen/1.
     log = _committed(files, lock_file, root, [None] * 140 + [_FIRST])
-    if remembered:
-        head.unlink()
+    head.unlink()
     mocker.patch.object(OsFiles, "listdir", autospec=True, return_value=[])
-    reader = log if remembered else GenerationLog(files, lock_file, root)
+    assert log.latest() == Snapshot(generation=141, writer=_FIRST, readers=frozenset())
+
+
+@pytest.mark.requires_hard_links
+def test_an_empty_listing_past_compaction_still_finds_the_head_by_name(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    _committed(files, lock_file, root, [None] * 140 + [_FIRST])
+    mocker.patch.object(OsFiles, "listdir", autospec=True, return_value=[])
+    reader = GenerationLog(files, lock_file, root)
     assert reader.latest() == Snapshot(generation=141, writer=_FIRST, readers=frozenset())
 
 
@@ -597,6 +589,10 @@ def test_a_commit_overtaken_by_a_wipe_leaves_the_new_heads_alone(
         True,
         Snapshot(generation=2, writer=None, readers=frozenset()),
     )
+
+
+def _published(head: Path) -> Snapshot | None:
+    return parse_snapshot(head.read_bytes().partition(b"\n")[2])
 
 
 @pytest.mark.requires_hard_links
@@ -744,7 +740,7 @@ def test_compaction_removes_a_stalled_survivor_before_the_window_edge(
 
 @pytest.mark.requires_hard_links
 def test_a_commit_flushes_only_its_generation_record(
-    lock_file: str, files: OsFiles, root: str, flushes: MagicMock
+    lock_file: str, files: OsFiles, root: str, flushes: MockType
 ) -> None:
     log = _committed(files, lock_file, root, [None])
     flushes.reset_mock()
@@ -764,10 +760,6 @@ def test_a_torn_head_still_refuses_a_first_generation(lock_file: str, files: OsF
 @pytest.fixture
 def head(root: str) -> Path:
     return Path(root, "gen", "HEAD")
-
-
-def _published(head: Path) -> Snapshot | None:
-    return parse_snapshot(head.read_bytes().partition(b"\n")[2])
 
 
 @pytest.mark.requires_hard_links
@@ -886,25 +878,22 @@ def test_heartbeat_ignores_a_broken_successor_record(lock_file: str, files: OsFi
 
 
 @pytest.mark.requires_hard_links
-@pytest.mark.parametrize(
-    ("error", "expected"),
-    [
-        pytest.param(OSError(EIO, "Input/output error"), "transient", id="filesystem-error"),
-        pytest.param(TreeReplacedError("tree replaced"), "lost", id="replaced-tree"),
-    ],
-)
-def test_heartbeat_reports_the_refresh_error(
-    lock_file: str,
-    files: OsFiles,
-    mocker: MockerFixture,
-    error: OSError | TreeReplacedError,
-    expected: Literal["transient", "lost"],
-) -> None:
+def test_heartbeat_reports_the_refresh_filesystem_error(lock_file: str, files: OsFiles, mocker: MockerFixture) -> None:
     writer: Final[Participant] = _participant(files, lock_file, "write")
     writer.publish()
     assert writer.advance()
+    error = OSError(EIO, "Input/output error")
     mocker.patch.object(OsFiles, "overwrite", autospec=True, side_effect=error)
-    assert writer.heartbeat() == (expected, error if isinstance(error, OSError) else None)
+    assert writer.heartbeat() == ("transient", error)
+
+
+@pytest.mark.requires_hard_links
+def test_heartbeat_reports_a_replaced_tree_as_lost(lock_file: str, files: OsFiles, mocker: MockerFixture) -> None:
+    writer: Final[Participant] = _participant(files, lock_file, "write")
+    writer.publish()
+    assert writer.advance()
+    mocker.patch.object(OsFiles, "overwrite", autospec=True, side_effect=TreeReplacedError("tree replaced"))
+    assert writer.heartbeat() == ("lost", None)
 
 
 def test_heartbeat_without_a_published_record_is_lost(lock_file: str, files: OsFiles) -> None:
@@ -934,15 +923,24 @@ def test_heartbeat_with_the_tree_swapped_for_a_symlink_is_lost(  # pragma: needs
     reason="a swapped tree is refused only where records are reached through descriptors",
 )
 @pytest.mark.requires_hard_links
-@pytest.mark.parametrize("component", ["root", "holders"])
+@pytest.mark.parametrize(
+    "component",
+    [pytest.param(Path, id="root"), pytest.param(lambda root: Path(root, "holders"), id="holders")],
+)
 @pytest.mark.parametrize("refusal", ["EFTYPE", "EMLINK"])
 def test_heartbeat_with_a_symlink_refused_by_platform_errno_is_lost(  # pragma: needs link-dir-fd
-    lock_file: str, files: OsFiles, root: str, tmp_path: Path, mocker: MockerFixture, component: str, refusal: str
+    lock_file: str,
+    files: OsFiles,
+    root: str,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    component: Callable[[str], Path],
+    refusal: str,
 ) -> None:
     writer = _participant(files, lock_file, "write")
     writer.publish()
     assert writer.advance()
-    directory = Path(root) if component == "root" else Path(root, component)
+    directory = component(root)
     directory.rename(tmp_path / "aside")
     directory.symlink_to(target := tmp_path / "target", target_is_directory=True)
     target.mkdir()
@@ -960,7 +958,7 @@ def test_heartbeat_with_a_symlink_refused_by_platform_errno_is_lost(  # pragma: 
             refusals.append((flags, error.errno))
             raise OSError(refusal_errno, os.strerror(refusal_errno), path) from error
 
-    mocker.patch.object(os, "open", side_effect=platform_open)
+    mocker.patch.object(os, "open", side_effect=platform_open, autospec=True)
 
     assert (writer.heartbeat(), list(target.iterdir())) == (("lost", None), [])
     assert len(refusals) == 1
@@ -982,45 +980,82 @@ def test_heartbeat_leaves_a_file_linked_over_the_holder_record_alone(lock_file: 
     assert (writer.heartbeat(), private.read_bytes()) == (("lost", None), b"private")
 
 
-_STALE_THRESHOLD: Final[float] = 1.0
-_HEARTBEAT: Final[float] = 0.3
-_POLL: Final[float] = 0.1
 #: What one filesystem operation costs. Small against the heartbeat so a live participant's refreshes stay well inside
 #: the stale threshold however the scheduler orders its operations, as they do on a real filesystem.
 _STEP: Final[float] = 0.001
+
+
 #: A runnable participant is scheduled again before this much fake time passes, so only a crashed one goes stale.
 _FAIRNESS: Final[float] = 8 * _STEP
-_ACQUIRE_BUDGET: Final[float] = 120.0
+
+
 _ROOT: Final[str] = "/lock.rw"
 
 
-class _Crashed(BaseException):
-    """Raised inside a participant the scheduler killed; it exits at once and never touches the filesystem again."""
+@pytest.mark.parametrize(
+    ("seed", "crash_probability", "stale_listings"),
+    [
+        pytest.param(
+            seed,
+            probability,
+            stale,
+            id=f"seed{seed}-{'crashes' if probability else 'clean'}-{'stale-listings' if stale else 'fresh-listings'}",
+        )
+        for seed in range(24)
+        for probability in (0.0 if seed % 3 == 0 else 0.02,)
+        for stale in (0.3 if seed % 2 else 0.0,)
+    ],
+)
+@pytest.mark.timeout(120)
+def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability: float, stale_listings: float) -> None:
+    scheduler = _Scheduler(seed=seed, crash_probability=crash_probability, max_crashes=3)
+    model = _Model(scheduler, stale_listings=stale_listings)
+    rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded mix of hold lengths, not entropy
+    modes: Iterator[Literal["read", "write"]] = cycle(("write", "read", "read"))
+    for mode in islice(modes, 8):
+        model.add(mode, hold_beats=rng.randint(1, 4))
+    model.run()
+
+    assert model.violations == []
+    survivors = [outcome for outcome in model.outcomes if not outcome.crashed]
+    assert [outcome for outcome in survivors if outcome.stuck] == []
+    assert [outcome for outcome in survivors if outcome.lost] == []
+    assert all(outcome.granted_at is not None for outcome in survivors)
+    assert scheduler.crashes == sum(outcome.crashed for outcome in model.outcomes)
 
 
-@dataclass
 class _Scheduler:
-    """
-    Discrete-event scheduler: a parked participant is runnable once its wake time has passed, the clock only jumps when
-    nothing is runnable, and every scheduled operation costs one step. A runnable participant waits at most
-    ``_FAIRNESS`` before it is picked, so only a crashed participant can ever look stale.
-    """
+    # Discrete-event scheduler: a parked participant is runnable once its wake time has passed, the clock only jumps
+    # when nothing is runnable, and every scheduled operation costs one step. A runnable participant waits at most
+    # ``_FAIRNESS`` before it is picked, so only a crashed participant can ever look stale.
+    __slots__ = (
+        "_condition",
+        "_crashed",
+        "_expected",
+        "_live",
+        "_parked",
+        "_random",
+        "_turn",
+        "clock",
+        "crash_probability",
+        "crashes",
+        "max_crashes",
+        "seed",
+    )
 
-    seed: int
-    crash_probability: float
-    max_crashes: int
-    clock: float = 0.0
-    crashes: int = 0
-    _random: random.Random = field(init=False)
-    _condition: threading.Condition = field(default_factory=threading.Condition)
-    _expected: int = 0
-    _live: set[int] = field(default_factory=set)
-    _parked: dict[int, float] = field(default_factory=dict)
-    _turn: int | None = None
-    _crashed: set[int] = field(default_factory=set)
-
-    def __post_init__(self) -> None:
-        self._random = random.Random(self.seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded schedule is the point, not entropy
+    def __init__(self, *, seed: int, crash_probability: float, max_crashes: int) -> None:
+        self.seed = seed
+        self.crash_probability = crash_probability
+        self.max_crashes = max_crashes
+        self.clock = 0.0
+        self.crashes = 0
+        self._random = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded schedule is the point, not entropy
+        self._condition = threading.Condition()
+        self._expected = 0
+        self._live: set[int] = set()
+        self._parked: dict[int, float] = {}
+        self._turn: int | None = None
+        self._crashed: set[int] = set()
 
     def expect(self) -> None:
         # Counted before the thread starts, so the first step cannot conclude that nobody is left to run.
@@ -1032,6 +1067,9 @@ class _Scheduler:
             self._expected -= 1
             self._live.add(threading.get_ident())
             self._condition.notify_all()
+
+    def sleep(self, seconds: float) -> None:
+        self.yield_turn(wake_at=self.clock + seconds)
 
     def yield_turn(self, wake_at: float | None = None) -> None:
         me = threading.get_ident()
@@ -1045,9 +1083,6 @@ class _Scheduler:
         if crashed:
             raise _Crashed
 
-    def sleep(self, seconds: float) -> None:
-        self.yield_turn(wake_at=self.clock + seconds)
-
     def finish(self) -> None:
         with self._condition:
             self._live.discard(threading.get_ident())
@@ -1055,7 +1090,7 @@ class _Scheduler:
             self._condition.notify_all()
 
     def step(self) -> bool:
-        """Run one participant for one filesystem operation; ``False`` once every participant has finished."""
+        # Run one participant for one filesystem operation; ``False`` once every participant has finished.
         with self._condition:
             while self._expected or self._turn is not None or set(self._parked) != self._live:
                 self._condition.wait()
@@ -1076,9 +1111,99 @@ class _Scheduler:
         return True
 
 
-class _MemoryFiles:
-    """An in-memory :class:`~filelock._soft_rw._protocol.Files` whose every call is one scheduler step."""
+class _Crashed(BaseException):
+    # Raised inside a participant the scheduler killed; it exits at once and never touches the filesystem again.
+    ...
 
+
+class _Model:
+    def __init__(self, scheduler: _Scheduler, *, stale_listings: float = 0.0) -> None:
+        self.scheduler = scheduler
+        self.files = _MemoryFiles(scheduler, stale_listings=stale_listings)
+        self.holding: dict[str, Literal["read", "write"]] = {}
+        self.last_granted = 0
+        self.last_writer = 0
+        self.outcomes: list[_Outcome] = []
+        self.threads: list[threading.Thread] = []
+        self.violations: list[str] = []
+
+    def add(self, mode: Literal["read", "write"], hold_beats: int) -> None:
+        outcome = _Outcome(mode=mode)
+        self.outcomes.append(outcome)
+        self.scheduler.expect()
+        self.threads.append(threading.Thread(target=self._run, args=(outcome, hold_beats), daemon=True))
+
+    def _run(self, outcome: _Outcome, hold_beats: int) -> None:
+        self.scheduler.register()
+        participant = Participant(
+            self.files,
+            _ROOT,
+            outcome.mode,
+            stale_threshold=1.0,
+            clock=lambda: self.scheduler.clock,
+            ledger=Ledger(lambda: self.scheduler.clock),
+            log=GenerationLog(self.files, "/lock", _ROOT),
+        )
+        poll: float = 0.1
+        try:
+            participant.publish()
+            deadline = self.scheduler.clock + 120.0
+            while not participant.advance():
+                if (
+                    self.scheduler.clock >= deadline
+                ):  # pragma: no cover  # a liveness regression, reported by the assertion
+                    outcome.stuck = True
+                    return
+                self.scheduler.sleep(poll)
+            outcome.granted_at = participant.generation
+            self._enter(participant.token, outcome.mode, outcome.granted_at)
+            heartbeat: float = 0.3
+            for _ in range(hold_beats):
+                self.scheduler.sleep(heartbeat)
+                if (
+                    participant.heartbeat()[0] != "ok"
+                ):  # pragma: no cover  # a live holder evicted: a regression the test reports
+                    outcome.lost = True
+                    break
+            self.holding.pop(participant.token, None)
+            participant.leave()
+        except _Crashed:
+            outcome.crashed = True
+            self.holding.pop(participant.token, None)
+        finally:
+            self.scheduler.finish()
+
+    def _enter(self, token: str, mode: Literal["read", "write"], granted_at: int | None) -> None:
+        # Recorded from the participant's thread while it holds the turn, so the check sees a consistent set.
+        writers = [held for held in self.holding.values() if held == "write"]
+        # Fencing orders writers against every grant; concurrent readers may enter out of commit order.
+        floor = self.last_granted if mode == "write" else self.last_writer
+        if granted_at is None or granted_at <= floor:  # pragma: no cover  # a forked log, reported by the assertion
+            self.violations.append(f"{mode} granted at generation {granted_at} after generation {floor}")
+        else:
+            self.last_granted = max(self.last_granted, granted_at)
+            if mode == "write":
+                self.last_writer = granted_at
+        if mode == "write" and self.holding:  # pragma: no cover  # an exclusion regression, reported by the assertion
+            self.violations.append(
+                f"writer granted at {self.scheduler.clock:.2f} while {sorted(self.holding.values())}"
+            )
+        elif mode == "read" and writers:  # pragma: no cover  # an exclusion regression, reported by the assertion
+            self.violations.append(f"reader granted at {self.scheduler.clock:.2f} while a writer holds")
+        self.holding[token] = mode
+
+    def run(self) -> None:
+        for thread in self.threads:
+            thread.start()
+        while self.scheduler.step():
+            pass
+        for thread in self.threads:
+            thread.join(timeout=30)
+            assert not thread.is_alive()
+
+
+class _MemoryFiles:
+    # An in-memory :class:`~filelock._soft_rw._protocol._Files` whose every call is one scheduler step.
     def __init__(self, scheduler: _Scheduler, *, stale_listings: float = 0.0) -> None:
         self._scheduler = scheduler
         self.files: dict[str, bytes] = {}
@@ -1087,10 +1212,6 @@ class _MemoryFiles:
         self._stale_listings = stale_listings
         self._random = random.Random(scheduler.seed + 1)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded schedule, not entropy
         self._history: list[list[str]] = [[]]
-
-    def _record(self) -> None:
-        self._history.append(sorted(self.files))
-        del self._history[:-128]
 
     def read(self, path: str) -> bytes | None:
         self._scheduler.yield_turn()
@@ -1103,6 +1224,10 @@ class _MemoryFiles:
         self.files[_key(path)] = data
         self._record()
         return 0, 0
+
+    def _record(self) -> None:
+        self._history.append(sorted(self.files))
+        del self._history[:-128]
 
     def link(self, source: str, target: str) -> bool:
         self._scheduler.yield_turn()
@@ -1149,128 +1274,15 @@ def _key(path: str) -> str:
     return path.replace("\\", "/")
 
 
-@dataclass
 class _Outcome:
-    mode: Literal["read", "write"]
-    granted_at: int | None = None
-    crashed: bool = False
-    lost: bool = False
-    stuck: bool = False
+    __slots__ = ("crashed", "granted_at", "lost", "mode", "stuck")
 
-
-class _Model:
-    def __init__(self, scheduler: _Scheduler, *, stale_listings: float = 0.0) -> None:
-        self.scheduler = scheduler
-        self.files = _MemoryFiles(scheduler, stale_listings=stale_listings)
-        self.holding: dict[str, Literal["read", "write"]] = {}
-        self.last_granted = 0
-        self.last_writer = 0
-        self.outcomes: list[_Outcome] = []
-        self.threads: list[threading.Thread] = []
-        self.violations: list[str] = []
-
-    def add(self, mode: Literal["read", "write"], hold_beats: int) -> None:
-        outcome = _Outcome(mode)
-        self.outcomes.append(outcome)
-        self.scheduler.expect()
-        self.threads.append(threading.Thread(target=self._run, args=(outcome, hold_beats), daemon=True))
-
-    def _run(self, outcome: _Outcome, hold_beats: int) -> None:
-        self.scheduler.register()
-        participant = Participant(
-            self.files,
-            _ROOT,
-            outcome.mode,
-            stale_threshold=_STALE_THRESHOLD,
-            clock=lambda: self.scheduler.clock,
-            ledger=Ledger(lambda: self.scheduler.clock),
-            log=GenerationLog(self.files, "/lock", _ROOT),
-        )
-        try:
-            participant.publish()
-            deadline = self.scheduler.clock + _ACQUIRE_BUDGET
-            while not participant.advance():
-                if (
-                    self.scheduler.clock >= deadline
-                ):  # pragma: no cover  # a liveness regression, reported by the assertion
-                    outcome.stuck = True
-                    return
-                self.scheduler.sleep(_POLL)
-            outcome.granted_at = participant.generation
-            self._enter(participant.token, outcome.mode, outcome.granted_at)
-            for _ in range(hold_beats):
-                self.scheduler.sleep(_HEARTBEAT)
-                if (
-                    participant.heartbeat()[0] != "ok"
-                ):  # pragma: no cover  # a live holder evicted: a regression the test reports
-                    outcome.lost = True
-                    break
-            self.holding.pop(participant.token, None)
-            participant.leave()
-        except _Crashed:
-            outcome.crashed = True
-            self.holding.pop(participant.token, None)
-        finally:
-            self.scheduler.finish()
-
-    def _enter(self, token: str, mode: Literal["read", "write"], granted_at: int | None) -> None:
-        # Recorded from the participant's thread while it holds the turn, so the check sees a consistent set.
-        writers = [held for held in self.holding.values() if held == "write"]
-        # Fencing orders writers against every grant; concurrent readers may enter out of commit order.
-        floor = self.last_granted if mode == "write" else self.last_writer
-        if granted_at is None or granted_at <= floor:  # pragma: no cover  # a forked log, reported by the assertion
-            self.violations.append(f"{mode} granted at generation {granted_at} after generation {floor}")
-        else:
-            self.last_granted = max(self.last_granted, granted_at)
-            if mode == "write":
-                self.last_writer = granted_at
-        if mode == "write" and self.holding:  # pragma: no cover  # an exclusion regression, reported by the assertion
-            self.violations.append(
-                f"writer granted at {self.scheduler.clock:.2f} while {sorted(self.holding.values())}"
-            )
-        elif mode == "read" and writers:  # pragma: no cover  # an exclusion regression, reported by the assertion
-            self.violations.append(f"reader granted at {self.scheduler.clock:.2f} while a writer holds")
-        self.holding[token] = mode
-
-    def run(self) -> None:
-        for thread in self.threads:
-            thread.start()
-        while self.scheduler.step():
-            pass
-        for thread in self.threads:
-            thread.join(timeout=30)
-            assert not thread.is_alive()
-
-
-@pytest.mark.parametrize(
-    ("seed", "crash_probability", "stale_listings"),
-    [
-        pytest.param(
-            seed,
-            probability,
-            stale,
-            id=f"seed{seed}-{'crashes' if probability else 'clean'}-{'stale-listings' if stale else 'fresh-listings'}",
-        )
-        for seed in range(24)
-        for probability in (0.0 if seed % 3 == 0 else 0.02,)
-        for stale in (0.3 if seed % 2 else 0.0,)
-    ],
-)
-@pytest.mark.timeout(120)
-def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability: float, stale_listings: float) -> None:
-    scheduler = _Scheduler(seed=seed, crash_probability=crash_probability, max_crashes=3)
-    model = _Model(scheduler, stale_listings=stale_listings)
-    rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded mix of hold lengths, not entropy
-    for index in range(8):
-        model.add("write" if index % 3 == 0 else "read", hold_beats=rng.randint(1, 4))
-    model.run()
-
-    assert model.violations == []
-    survivors = [outcome for outcome in model.outcomes if not outcome.crashed]
-    assert [outcome for outcome in survivors if outcome.stuck] == []
-    assert [outcome for outcome in survivors if outcome.lost] == []
-    assert all(outcome.granted_at is not None for outcome in survivors)
-    assert scheduler.crashes == sum(outcome.crashed for outcome in model.outcomes)
+    def __init__(self, *, mode: Literal["read", "write"]) -> None:
+        self.mode = mode
+        self.granted_at: int | None = None
+        self.crashed = False
+        self.lost = False
+        self.stuck = False
 
 
 @pytest.mark.parametrize("seed", range(6))
@@ -1278,10 +1290,10 @@ def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability
 def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
     # After the crashes, one more writer must be able to enter by evicting whatever the dead left behind, and leave the
     # log naming nobody and the holders directory holding nobody.
-    scheduler = _Scheduler(seed=seed, crash_probability=0.05, max_crashes=4)
-    model = _Model(scheduler)
-    for index in range(6):
-        model.add("write" if index % 2 else "read", hold_beats=2)
+    model = _Model(_Scheduler(seed=seed, crash_probability=0.05, max_crashes=4))
+    modes: Iterator[Literal["read", "write"]] = cycle(("read", "write"))
+    for mode in islice(modes, 6):
+        model.add(mode, hold_beats=2)
     model.run()
     assert model.violations == []
 
@@ -1304,15 +1316,13 @@ def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
 
 @pytest.mark.timeout(120)
 def test_fencing_generations_are_strictly_increasing_across_grants() -> None:
-    scheduler = _Scheduler(seed=7, crash_probability=0.0, max_crashes=0)
-    model = _Model(scheduler)
-    for index in range(9):
-        model.add("write" if index % 3 == 0 else "read", hold_beats=1)
+    model = _Model(_Scheduler(seed=7, crash_probability=0.0, max_crashes=0))
+    modes: Iterator[Literal["read", "write"]] = cycle(("write", "read", "read"))
+    for mode in islice(modes, 9):
+        model.add(mode, hold_beats=1)
     model.run()
     assert model.violations == []
     writers = sorted(outcome.granted_at or 0 for outcome in model.outcomes if outcome.mode == "write")
     assert len(set(writers)) == len(writers)
-    for outcome in model.outcomes:
-        assert outcome.granted_at is not None
-        if outcome.mode == "read":
-            assert outcome.granted_at not in writers
+    assert all(outcome.granted_at is not None for outcome in model.outcomes)
+    assert [outcome for outcome in model.outcomes if outcome.mode == "read" and outcome.granted_at in writers] == []

@@ -46,7 +46,14 @@ _DEFAULT_LEASE_DURATION: Final[float] = 30.0
 
 @dataclass(frozen=True)
 class LeaseCompromise:
-    """Why a held lease stopped being this process's to hold, and the error that ended its refresh, if any."""
+    """
+    Why a held lease stopped being this process's to hold, and the error that ended its refresh, if any.
+
+    :param lock_file: the path of the lock the lease was held on
+    :param token: the token of the claim that was lost
+    :param reason: what took the claim away: the marker vanished, its owner changed, a refresh failed, or it was evicted
+    :param error: the error that ended the refresh, when a refresh failed with one
+    """
 
     lock_file: str
     token: str
@@ -54,21 +61,21 @@ class LeaseCompromise:
     error: Exception | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _Heartbeat:
-    """A running heartbeat and the event that stops it, which only ever exist together."""
-
+    # A running heartbeat and the event that stops it, which only ever exist together.
     thread: Thread
     stop: Event
 
 
-@dataclass
 class _LeaseClaim:
-    """The state of one claim: its token, its heartbeat, and how that claim was lost."""
+    # The state of one claim: its token, its heartbeat, and how that claim was lost.
+    __slots__ = ("compromise", "heartbeat", "token")
 
-    token: str | None = None
-    compromise: LeaseCompromise | None = None
-    heartbeat: _Heartbeat | None = None
+    def __init__(self) -> None:
+        self.token: str | None = None
+        self.compromise: LeaseCompromise | None = None
+        self.heartbeat: _Heartbeat | None = None
 
 
 class SoftFileLease(MarkerSoftFileLock):
@@ -101,6 +108,8 @@ class SoftFileLease(MarkerSoftFileLock):
 
     .. versionadded:: 3.30.0
 
+    :param lock_file: the path of the lock file
+
     """
 
     _owner_mode: OwnerMode = "lease"
@@ -127,10 +136,10 @@ class SoftFileLease(MarkerSoftFileLock):
             for two missed refreshes before a peer may take the claim. Must be shorter than ``lease_duration`` and at
             most :data:`threading.TIMEOUT_MAX`.
         :param on_compromise: called from the heartbeat thread with a :class:`LeaseCompromise` when the claim is lost.
+
         :param kwargs: every other :class:`BaseFileLock <filelock.BaseFileLock>` option, ``timeout`` and ``mode`` among
-            them. The metaclass passes them all by keyword, and taking them here lets
-            :class:`AsyncSoftFileLease <filelock.AsyncSoftFileLease>` add the async plumbing a fixed signature would
-            hide.
+            them. The metaclass passes them all by keyword, and taking them here lets :class:`AsyncSoftFileLease
+            <filelock.AsyncSoftFileLease>` add the async plumbing a fixed signature would hide.
 
         """
         # A plain float: the marker records its repr, which NumPy's float64 spells in a form no parser reads.
@@ -152,6 +161,43 @@ class SoftFileLease(MarkerSoftFileLock):
         if not self.is_thread_local():
             self._context.lease_claim = _LeaseClaim()
 
+    @property
+    def lease_duration(self) -> float:
+        """The staleness in seconds after which a contender may take this claim."""
+        return self._lease_duration
+
+    @property
+    def token(self) -> str | None:
+        """
+        The token naming the claim this process published.
+
+        The token while the lease is held, ``None`` otherwise. It identifies a claim; it does not fence one.
+
+        """
+        return self._claim.token
+
+    @property
+    def _claim(self) -> _LeaseClaim:
+        # Per hold, so another thread's failed acquire cannot stop the holder's heartbeat.
+        state: Final = self._hold_state()
+        if (claim := state.lease_claim) is None:
+            claim = state.lease_claim = _LeaseClaim()
+        return claim
+
+    @property
+    def compromise(self) -> LeaseCompromise | None:
+        """
+        The loss of claim the heartbeat observed.
+
+        The value outlives ``release()``, so a holder can check after leaving the ``with`` block whether its work may
+        have overlapped a successor; the next acquisition resets it, as :attr:`SoftReadWriteLock.compromise
+        <filelock.SoftReadWriteLock.compromise>` does.
+
+        The :class:`LeaseCompromise` of the latest claim, or ``None`` while that claim holds or held to its release.
+
+        """
+        return self._claim.compromise
+
     def _singleton_extra_mismatches(self, kwargs: Mapping[str, _ExtraValue], /) -> dict[str, tuple[str, str]]:
         mismatches = super()._singleton_extra_mismatches(kwargs)
         lease_duration: Final = _seconds(
@@ -172,44 +218,6 @@ class SoftFileLease(MarkerSoftFileLock):
             mismatches["on_compromise"] = (str(on_compromise), str(self._on_compromise))
         return mismatches
 
-    @property
-    def _claim(self) -> _LeaseClaim:
-        # Per hold, so another thread's failed acquire cannot stop the holder's heartbeat.
-        state: Final = self._hold_state()
-        if (claim := state.lease_claim) is None:
-            claim = state.lease_claim = _LeaseClaim()
-        return claim
-
-    @property
-    def lease_duration(self) -> float:
-        """The staleness in seconds after which a contender may take this claim."""
-        return self._lease_duration
-
-    @property
-    def token(self) -> str | None:
-        """
-        The token naming the claim this process published.
-
-        :returns: the token while the lease is held, ``None`` otherwise. It identifies a claim; it does not fence one.
-
-        """
-        return self._claim.token
-
-    @property
-    def compromise(self) -> LeaseCompromise | None:
-        """
-        The loss of claim the heartbeat observed.
-
-        The value outlives ``release()``, so a holder can check after leaving the ``with`` block whether its work may
-        have overlapped a successor; the next acquisition resets it, as :attr:`SoftReadWriteLock.compromise
-        <filelock.SoftReadWriteLock.compromise>` does.
-
-        :returns: the :class:`LeaseCompromise` of the latest claim, or ``None`` while that claim holds or held to its
-            release
-
-        """
-        return self._claim.compromise
-
     def _acquire(self) -> None:
         claim = self._claim
         self._stop_heartbeat()  # no earlier claim's heartbeat outlives the acquisition of the next one
@@ -229,6 +237,55 @@ class SoftFileLease(MarkerSoftFileLock):
             self._start_heartbeat(claim, fd, identity, token)
         else:
             claim.token = None
+
+    def _stop_heartbeat(self) -> None:
+        claim = self._claim
+        if (heartbeat := claim.heartbeat) is None:
+            return
+        heartbeat.stop.set()
+        claim.heartbeat = None
+        # An unstarted thread has nothing to join, on_compromise may release from the heartbeat thread itself, and
+        # during finalization a daemon thread is frozen, so joining it raises PythonFinalizationError (3.14+).
+        if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread() and not sys.is_finalizing():
+            heartbeat.thread.join(timeout=self._heartbeat_interval)
+
+    def _start_heartbeat(self, claim: _LeaseClaim, fd: int, identity: tuple[int, int], token: str) -> None:
+        # The thread watches the event it was handed rather than whatever the claim names later: a heartbeat that
+        # outlives its join timeout would otherwise adopt the next acquisition's event and never stop.
+        stop: Final = Event()
+        loop: Final = _RefreshLoop(
+            # A strong reference from a running thread would keep a dropped lease alive, so __del__ would never release
+            # it and its marker would outlive the process. The callback stops a heartbeat that __del__ could not reach.
+            report=WeakMethod(self._report_compromise, lambda _: stop.set()),
+            lock_file=self._lock_path,
+            claim=claim,
+            fd=fd,
+            identity=identity,
+            token=token,
+            stop=stop,
+            interval=self._heartbeat_interval,
+            duration=self._lease_duration,
+        )
+        thread: Final = Thread(target=loop.run, name=f"filelock-lease-{os.getpid()}", daemon=True)
+        # Record the heartbeat before starting the thread so a release racing this acquire on a shared,
+        # non-thread-local claim always sees it and sets the stop event; the thread then exits at its first wait
+        # instead of outliving the release. A start that raises leaves the unstarted thread for _stop_heartbeat.
+        claim.heartbeat = _Heartbeat(thread=thread, stop=stop)
+        thread.start()
+
+    def _report_compromise(
+        self,
+        claim: _LeaseClaim,
+        reason: CompromiseReason,
+        error: OSError | None,
+        token: str,
+    ) -> None:
+        # Record it on the claim this heartbeat serves, not on self._claim: a thread-local claim read from the
+        # heartbeat thread is a different, empty one, so the holder would never see the loss it is being told about.
+        # The token is the one this thread published, not claim.token, which a release may already have cleared.
+        claim.compromise = LeaseCompromise(lock_file=self.lock_file, token=token, reason=reason, error=error)
+        if self._on_compromise is not None:
+            self._on_compromise(claim.compromise)
 
     def _release(self) -> None:
         self._stop_heartbeat()
@@ -284,60 +341,10 @@ class SoftFileLease(MarkerSoftFileLock):
                 return owner, marker
         return None
 
-    def _start_heartbeat(self, claim: _LeaseClaim, fd: int, identity: tuple[int, int], token: str) -> None:
-        # The thread watches the event it was handed rather than whatever the claim names later: a heartbeat that
-        # outlives its join timeout would otherwise adopt the next acquisition's event and never stop.
-        stop: Final = Event()
-        loop: Final = _RefreshLoop(
-            # A strong reference from a running thread would keep a dropped lease alive, so __del__ would never release
-            # it and its marker would outlive the process. The callback stops a heartbeat that __del__ could not reach.
-            report=WeakMethod(self._report_compromise, lambda _: stop.set()),
-            lock_file=self._lock_path,
-            claim=claim,
-            fd=fd,
-            identity=identity,
-            token=token,
-            stop=stop,
-            interval=self._heartbeat_interval,
-            duration=self._lease_duration,
-        )
-        thread: Final = Thread(target=loop.run, name=f"filelock-lease-{os.getpid()}", daemon=True)
-        # Record the heartbeat before starting the thread so a release racing this acquire on a shared,
-        # non-thread-local claim always sees it and sets the stop event; the thread then exits at its first wait
-        # instead of outliving the release. A start that raises leaves the unstarted thread for _stop_heartbeat.
-        claim.heartbeat = _Heartbeat(thread, stop)
-        thread.start()
 
-    def _stop_heartbeat(self) -> None:
-        claim = self._claim
-        if (heartbeat := claim.heartbeat) is None:
-            return
-        heartbeat.stop.set()
-        claim.heartbeat = None
-        # An unstarted thread has nothing to join, on_compromise may release from the heartbeat thread itself, and
-        # during finalization a daemon thread is frozen, so joining it raises PythonFinalizationError (3.14+).
-        if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread() and not sys.is_finalizing():
-            heartbeat.thread.join(timeout=self._heartbeat_interval)
-
-    def _report_compromise(
-        self,
-        claim: _LeaseClaim,
-        reason: CompromiseReason,
-        error: OSError | None,
-        token: str,
-    ) -> None:
-        # Record it on the claim this heartbeat serves, not on self._claim: a thread-local claim read from the
-        # heartbeat thread is a different, empty one, so the holder would never see the loss it is being told about.
-        # The token is the one this thread published, not claim.token, which a release may already have cleared.
-        claim.compromise = LeaseCompromise(lock_file=self.lock_file, token=token, reason=reason, error=error)
-        if self._on_compromise is not None:
-            self._on_compromise(claim.compromise)
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _RefreshLoop:
-    """What a heartbeat thread needs to refresh one claim, holding the lease itself only weakly."""
-
+    # What a heartbeat thread needs to refresh one claim, holding the lease itself only weakly.
     report: WeakMethod[Callable[[_LeaseClaim, CompromiseReason, OSError | None, str], None]]
     lock_file: str
     claim: _LeaseClaim

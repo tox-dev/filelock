@@ -16,9 +16,8 @@ from tests.capability_marks import NEEDS_FCNTL
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from unittest.mock import MagicMock
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 
 @NEEDS_FCNTL
@@ -78,7 +77,7 @@ def test_fallback_emits_warning(tmp_path: Path) -> None:  # pragma: needs fcntl
 
 @NEEDS_FCNTL
 def test_fchmod_enosys_is_not_a_missing_flock(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: needs fcntl
-    mocker.patch("os.fchmod", side_effect=OSError(ENOSYS, "Function not implemented"))
+    mocker.patch("os.fchmod", side_effect=OSError(ENOSYS, "Function not implemented"), autospec=True)
     lock = UnixFileLock(tmp_path / "test.lock", mode=0o644)
 
     with warnings.catch_warnings(record=True) as recorded:
@@ -104,15 +103,33 @@ def test_fallback_swaps_to_soft(tmp_path: Path) -> None:  # pragma: needs fcntl
 @NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_writes_pid_and_hostname(tmp_path: Path) -> None:  # pragma: needs fcntl
+@pytest.mark.parametrize(
+    "expected_lines",
+    [
+        pytest.param(
+            [str(os.getpid()), host_name(), str(process_start_token(os.getpid()))],
+            id="start_token",
+            marks=pytest.mark.skipif(
+                process_start_token(os.getpid()) is None,
+                reason="the start token is unreadable here, e.g. under a time namespace with a boottime offset",
+            ),
+        ),
+        pytest.param(
+            [str(os.getpid()), host_name()],
+            id="no_start_token",
+            marks=pytest.mark.skipif(
+                process_start_token(os.getpid()) is not None,
+                reason="the start token is readable here, so the lock writes it as a third line",
+            ),
+        ),
+    ],
+)
+def test_fallback_writes_pid_and_hostname(tmp_path: Path, expected_lines: list[str]) -> None:  # pragma: needs fcntl
     lock_path = tmp_path / "test.lock"
 
     with UnixFileLock(lock_path):
         lines = lock_path.read_text(encoding="utf-8").splitlines()
-    expected = [str(os.getpid()), host_name()]
-    if (token := process_start_token(os.getpid())) is not None:  # pragma: no branch  # CI always exposes a start time
-        expected.append(str(token))
-    assert lines == expected
+    assert lines == expected_lines
 
 
 @NEEDS_FCNTL
@@ -130,7 +147,7 @@ def test_fallback_release_unlinks_file(tmp_path: Path) -> None:  # pragma: needs
 
 @NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")  # pragma: needs fcntl
-def test_fallback_subsequent_acquire_skips_flock(tmp_path: Path, unsupported_flock: MagicMock) -> None:
+def test_fallback_subsequent_acquire_skips_flock(tmp_path: Path, unsupported_flock: MockType) -> None:
     lock = UnixFileLock(tmp_path / "test.lock")
 
     lock.acquire()
@@ -205,8 +222,8 @@ def test_fallback_spares_a_peer_marker_that_replaced_its_placeholder(  # pragma:
             lock_path.write_text(peer_marker, encoding="utf-8")
         return found
 
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=flock_missing)
-    mocker.patch("os.lstat", side_effect=lstat_then_peer_replaces_placeholder)
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=flock_missing, autospec=True)
+    mocker.patch("os.lstat", side_effect=lstat_then_peer_replaces_placeholder, autospec=True)
     with pytest.raises(Timeout):
         UnixFileLock(lock_path).acquire(timeout=0)
     mocker.stopall()
@@ -258,7 +275,7 @@ def test_denied_lock_file_is_reopened_in_the_acquisition_directory(  # pragma: n
             read_only_opens.append(path)
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
-    mocker.patch("os.open", side_effect=deny_write_then_chdir)
+    mocker.patch("os.open", side_effect=deny_write_then_chdir, autospec=True)
     with pytest.raises(PermissionError):
         UnixFileLock("test.lock").acquire(timeout=0)
 
@@ -316,7 +333,7 @@ def write_denied_lock_file(
                 raise BlockingIOError(EWOULDBLOCK, "Resource temporarily unavailable", path)
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
-    mocker.patch("os.open", side_effect=deny_write)
+    mocker.patch("os.open", side_effect=deny_write, autospec=True)
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
@@ -339,7 +356,7 @@ def test_release_suppresses_eio_on_close(tmp_path: Path, mocker: MockerFixture) 
         if fd == fd_to_fail:  # pragma: no branch  # only the lock's own descriptor closes while the patch is live
             raise OSError(EIO, "Input/output error")
 
-    mocker.patch("filelock._unix.os.close", side_effect=_close_eio)
+    mocker.patch("filelock._unix.os.close", side_effect=_close_eio, autospec=True)
     lock.release()
     assert not lock.is_locked
 
@@ -350,6 +367,7 @@ def test_acquire_flock_error_clears_pending_descriptor(tmp_path: Path, mocker: M
     mocker.patch(
         "filelock._unix.fcntl.flock",
         side_effect=[OSError(EIO, "Input/output error"), None, None],
+        autospec=True,
     )
 
     with pytest.raises(OSError, match="Input/output error"):
@@ -363,5 +381,7 @@ def test_acquire_flock_error_clears_pending_descriptor(tmp_path: Path, mocker: M
 
 
 @pytest.fixture
-def unsupported_flock(mocker: MockerFixture) -> MagicMock:  # pragma: needs fcntl
-    return mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "Function not implemented"))
+def unsupported_flock(mocker: MockerFixture) -> MockType:  # pragma: needs fcntl
+    return mocker.patch(
+        "filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "Function not implemented"), autospec=True
+    )

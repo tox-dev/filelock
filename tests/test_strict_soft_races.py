@@ -5,7 +5,7 @@ import threading
 import time
 from errno import EIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
-pytestmark = pytest.mark.requires_hard_links
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 
 def test_strict_soft_lower_intent_delayed_until_higher_selects(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -56,10 +56,11 @@ def test_strict_soft_lower_intent_delayed_until_higher_selects(tmp_path: Path, m
         elif threading.current_thread().name == "higher" and name.startswith("held-"):
             higher_held_linked.set()
 
-    mocker.patch("filelock._strict.os.link", side_effect=ordered_link)
+    mocker.patch("filelock._strict.os.link", side_effect=ordered_link, autospec=True)
     mocker.patch(
         "filelock._strict.secrets.token_hex",
         side_effect=lambda _size: "0" * 32 if threading.current_thread().name == "lower" else "f" * 32,
+        autospec=True,
     )
     acquisition_order: list[str] = []
     inside, state_lock = 0, threading.Lock()
@@ -71,7 +72,7 @@ def test_strict_soft_lower_intent_delayed_until_higher_selects(tmp_path: Path, m
                 inside += 1
                 assert inside == 1
                 acquisition_order.append(label)
-            time.sleep(0.01)
+            time.sleep(0)  # give up the GIL so the other thread contends for the lock
             with state_lock:
                 inside -= 1
 
@@ -82,6 +83,17 @@ def test_strict_soft_lower_intent_delayed_until_higher_selects(tmp_path: Path, m
     higher.start()
     _join_threads(lower, higher)
     assert (acquisition_order, inside) == (["lower", "higher"], 0)
+
+
+def _initialize_protocol(lock_path: Path) -> None:
+    with StrictSoftFileLock(lock_path):
+        pass
+
+
+def _join_threads(*threads: threading.Thread) -> None:
+    for thread in threads:
+        thread.join(timeout=3)
+    assert [thread.name for thread in threads if thread.is_alive()] == []
 
 
 def test_strict_soft_lower_intent_delayed_until_higher_enters(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -111,10 +123,11 @@ def test_strict_soft_lower_intent_delayed_until_higher_enters(tmp_path: Path, mo
             follow_symlinks=follow_symlinks,
         )
 
-    mocker.patch("filelock._strict.os.link", side_effect=delayed_link)
+    mocker.patch("filelock._strict.os.link", side_effect=delayed_link, autospec=True)
     mocker.patch(
         "filelock._strict.secrets.token_hex",
         side_effect=lambda _size: "0" * 32 if threading.current_thread().name == "lower" else "f" * 32,
+        autospec=True,
     )
     acquisition_order: list[str] = []
 
@@ -158,7 +171,7 @@ def test_strict_soft_private_partial_record_is_not_a_claim(tmp_path: Path, mocke
         assert resume_write.wait(timeout=2)
         return written
 
-    mocker.patch("filelock._util.os.write", side_effect=paused_write)
+    mocker.patch("filelock._util.os.write", side_effect=paused_write, autospec=True)
 
     def acquire_partial() -> None:
         with StrictSoftFileLock(lock_path, timeout=3, poll_interval=0.001):
@@ -213,7 +226,7 @@ def test_strict_soft_shared_instance_waits_for_failed_doorway(tmp_path: Path, mo
         with lock:
             second_entered.set()
 
-    mocker.patch("filelock._strict.os.link", side_effect=pause_first_intent)
+    mocker.patch("filelock._strict.os.link", side_effect=pause_first_intent, autospec=True)
     first = threading.Thread(target=acquire_first, name="first")
     second = threading.Thread(target=acquire_second, name="second")
     first.start()
@@ -273,7 +286,7 @@ def test_strict_soft_shared_instance_transition_respects_admission(
         with lock:
             assert release_first.wait(timeout=2)
 
-    mocker.patch("filelock._strict.os.link", side_effect=pause_first_intent)
+    mocker.patch("filelock._strict.os.link", side_effect=pause_first_intent, autospec=True)
     first = threading.Thread(target=acquire_first, name="first")
     first.start()
     assert first_doorway.wait(timeout=2)
@@ -297,14 +310,3 @@ def _acquire_during_transition(
         lock.acquire(blocking=False)
     else:
         lock.acquire(cancel_check=lambda: True)
-
-
-def _initialize_protocol(lock_path: Path) -> None:
-    with StrictSoftFileLock(lock_path):
-        pass
-
-
-def _join_threads(*threads: threading.Thread) -> None:
-    for thread in threads:
-        thread.join(timeout=3)
-    assert [thread.name for thread in threads if thread.is_alive()] == []

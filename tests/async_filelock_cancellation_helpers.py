@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import multiprocessing
 import threading
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from filelock import FileLock, Timeout
 
@@ -43,14 +43,6 @@ def assert_file_lock_state(lock_file: str, *, available: bool) -> None:
         probe.close()
 
 
-def start_file_lock_holder(lock_file: str) -> tuple[threading.Thread, threading.Event, threading.Event]:
-    holder_started = threading.Event()
-    finish_holder = threading.Event()
-    holder = threading.Thread(target=_hold_file_lock, args=(lock_file, holder_started, finish_holder))
-    holder.start()
-    return holder, holder_started, finish_holder
-
-
 def _probe_file_lock(lock_file: str, acquired: Synchronized[bool]) -> None:
     try:
         with FileLock(lock_file, timeout=0):
@@ -59,10 +51,30 @@ def _probe_file_lock(lock_file: str, acquired: Synchronized[bool]) -> None:
         pass  # pragma: win32 no cover
 
 
+def start_file_lock_holder(lock_file: str) -> FileLockHolder:
+    holder_started = threading.Event()
+    finish_holder = threading.Event()
+    holder = threading.Thread(target=_hold_file_lock, args=(lock_file, holder_started, finish_holder))
+    holder.start()
+    return FileLockHolder(holder, holder_started, finish_holder)
+
+
 def _hold_file_lock(lock_file: str, holder_started: threading.Event, finish_holder: threading.Event) -> None:
     with FileLock(lock_file):
         holder_started.set()
         assert finish_holder.wait(timeout=5)
 
 
-__all__ = ["assert_cancellation_message", "assert_file_lock_state", "get_fcntl", "start_file_lock_holder"]
+class FileLockHolder(NamedTuple):
+    thread: threading.Thread
+    holder_started: threading.Event
+    finish_holder: threading.Event
+
+
+__all__ = [
+    "FileLockHolder",
+    "assert_cancellation_message",
+    "assert_file_lock_state",
+    "get_fcntl",
+    "start_file_lock_holder",
+]

@@ -5,7 +5,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolated inter
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, NoReturn
 
 import pytest
 from capabilities import CAPABILITIES
@@ -1365,12 +1365,13 @@ def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) 
     worker.start()
     assert entered.wait(timeout=5)
 
-    if (child_pid := fork_process()) == 0:  # pragma: forked child
+    def child() -> NoReturn:  # pragma: forked child
         child_lock = BlockingLock(str(tmp_path / "mutex.lock"), is_singleton=True)
         child_lock.acquire(timeout=0)
         child_lock.release()
         exit_child(0)
-    _, status = os.waitpid(child_pid, 0)
+
+    _, status = os.waitpid(fork_process(child), 0)
     release.set()
     worker.join(timeout=5)
 

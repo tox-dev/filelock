@@ -9,7 +9,6 @@ __lazy_modules__ = [
     "pathlib",
     "re",
     "secrets",
-    "typing",
 ]
 
 import os
@@ -23,7 +22,7 @@ from contextlib import suppress
 from errno import EACCES, EEXIST, EPERM
 from itertools import islice
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 from filelock._api import BaseFileLock, _raise_grouped_errors
 from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
@@ -47,8 +46,6 @@ else:  # pragma: win32 no cover
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
-_UNLINK_MAX_RETRIES: Final[int] = 10
-_MARKER_WITH_START_TOKEN_LINE_COUNT: Final[int] = 3
 #: Contenders act on the record in the marker, so no other account may write it, whatever the mode or umask.
 _OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
 #: All a SoftFileLock before 3.22 writes, and what a current one shows between creating its marker and writing it.
@@ -93,6 +90,33 @@ class SoftFileLock(BaseFileLock):
 
     #: The descriptor of that marker while its close has not run yet, as a list so one C call can take it.
     _marker_fds: list[int]
+
+    @property
+    def pid(self) -> int | None:
+        """
+        The PID of the process holding this lock, read from the lock file.
+
+        The PID as an integer, or ``None`` if the lock file does not exist or cannot be parsed.
+
+        """
+        with suppress(OSError, ValueError):
+            if (holder := _parse_lock_holder(_read_lock_file(self._lock_path)[0])) is not None:
+                return holder[0]
+        return None
+
+    @property
+    def is_lock_held_by_us(self) -> bool:
+        """
+        Whether this lock is held by the current process.
+
+        ``True`` if the lock file exists and names the current process's PID, hostname and, when recorded, start
+        token.
+
+        """
+        with suppress(OSError, ValueError):
+            if (holder := _parse_lock_holder(_read_lock_file(self._lock_path)[0])) is not None:
+                return owner_is_current_process(*holder)
+        return False
 
     def _acquire(self) -> None:
         self._finish_marker_cleanup()
@@ -145,12 +169,59 @@ class SoftFileLock(BaseFileLock):
                         self._unlink_held_marker(identity)
             raise
 
-    def _apply_explicit_mode(self, fd: int) -> None:
-        # os.open filters the mode through the umask, so an explicit mode lands as given only through fchmod, the way
-        # UnixFileLock applies it. Windows maps the mode to a read-only bit that os.open already set.
-        if self.has_explicit_mode and sys.platform != "win32":  # pragma: win32 no cover
-            with suppress(PermissionError):
-                os.fchmod(fd, self._context.mode & ~_OTHERS_WRITE)
+    def _finish_marker_cleanup(self) -> None:
+        # Never waits: whoever holds the gate is acquiring or releasing this lock and finishes the cleanup itself.
+        if self._marker_cleanup is not None and self._transition_lock.acquire(blocking=False):  # pragma: win32 cover
+            try:
+                # A close error here belongs to the release an interrupt cut short, not to this caller.
+                with suppress(OSError):
+                    self._close_marker_fd()
+                if (identity := self._marker_cleanup) is not None:  # pragma: no branch  # the gate's holder clears it
+                    self._windows_unlink_if_ours(identity)
+            finally:
+                self._transition_lock.release()
+
+    def _close_marker_fd(self) -> None:  # pragma: win32 cover
+        # Popping and closing is one chain of C calls that no signal handler can split, so a retried release closes the
+        # descriptor at most once; a second close could hit an unrelated file that reused the number.
+        try:
+            list(map(os.close, islice(iter(self.__dict__.setdefault("_marker_fds", []).pop, None), 1)))
+        except IndexError:
+            return
+        except OSError:
+            if not self._suppresses_close_error(default_suppresses=False):
+                raise
+
+    def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:  # pragma: win32 cover
+        max_retries: Final = 10
+        retry_delay = 0.001
+        for attempt in range(max_retries):
+            # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck
+            # identity each attempt: a failed unlink leaves a window for a successor to replace the marker at this path.
+            try:
+                for name in self._marker_names():
+                    with suppress(FileNotFoundError):
+                        if _file_identity(os.lstat(name)) == identity:
+                            # Forgotten before the unlink: Windows does not promise unique file IDs, so no retry may
+                            # reach a successor that reused ours.
+                            self._marker_cleanup = None
+                            unlink_path(name)
+                            break
+            except OSError as exc:
+                if exc.errno in {EACCES, EPERM}:
+                    # The file is still ours, so the next acquire or release tries again if these attempts run out.
+                    self._marker_cleanup = identity
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    continue
+            self._marker_cleanup = None
+            return
+
+    def _marker_names(self) -> tuple[str, ...]:
+        # After a rename of the lock's directory only the caller's spelling, resolved through the working directory,
+        # still reaches the marker this hold opened.
+        return tuple(dict.fromkeys((self._lock_path, self.lock_file)))
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError), pin_inode(self._lock_path) as pinned:
@@ -175,16 +246,17 @@ class SoftFileLock(BaseFileLock):
             if owner_is_stale(*holder):
                 self._take_over(marker, holder[0])
 
-    def _try_break_expired_lock(self) -> None:
-        if (lifetime := self._context.lifetime) is None:
-            return
-        with suppress(OSError), pin_inode(self._lock_path) as pinned:
-            # _read_lock_file takes the lstat, not stat: a symlink swapped in at the path must report its own mtime.
-            content, marker = _read_lock_file(self._lock_path)
-            if pinned not in {None, marker.st_ino} or time.time() - marker.st_mtime < lifetime:
-                return
-            holder = self._recorded_holder(content)
-            self._take_over(marker, None if holder is None else holder[0])
+    def _marker_unchanged_for(self, marker: os.stat_result) -> float:
+        # The mtime is the writer's or file server's clock, so against time.time() a contender whose clock runs ahead
+        # would expire a fresh marker. Only watch it for change, timed on this process's monotonic clock. The owner of a
+        # file sets its mtime, and ext4 reuses a freed inode number, so a new marker can repeat both. The change time
+        # cannot be set and moves with every create, which keeps a new marker from inheriting an old one's age.
+        now: Final = time.monotonic()
+        key: Final = marker.st_mtime, marker.st_ino, marker.st_ctime_ns
+        if (seen := self._marker_seen) is None or seen[0] != key:
+            self._marker_seen = key, now
+            return 0.0
+        return now - seen[1]
 
     def _take_over(self, marker: os.stat_result, breaker_pid: int | None) -> None:
         # Swap the judged marker for a complete marker of ours in one exchange, so the lock path never stands empty.
@@ -229,12 +301,13 @@ class SoftFileLock(BaseFileLock):
                 self._abandon_take_over(fd, aside, put_back=exchanged)
 
     def _restore_stranded_marker(self, breaker_pid: int, marker: os.stat_result) -> bool:  # pragma: win32 no cover
-        # A breaker killed between its exchange and the put-back leaves its own marker at the path and the live
-        # holder's marker under its break name. A recoverer first renames that record to a name of its own. Only one
-        # contender wins the rename, so two of them never exchange the same record and reverse each other. A record
-        # a dead recoverer holds is claimable again. A claim of this process that no thread is working on was
-        # abandoned by a failed put-back, and the next poll takes it up again. Where the marker cannot be put back
-        # the lock counts as held, as it does wherever no exchange is possible.
+        # A breaker killed between its exchange and the put-back leaves its own marker at the path and the live holder's
+        # marker under its break name. A recoverer first renames that record to a name of its own. Only one contender
+        # wins the rename, so two of them never exchange the same record and reverse each other.
+        #
+        # A record a dead recoverer holds is claimable again. A claim of this process that no thread is working on was
+        # abandoned by a failed put-back, and the next poll takes it up again. Where the marker cannot be put back the
+        # lock counts as held, as it does wherever no exchange is possible.
         if (candidates := self._stranded_candidates(breaker_pid)) is None:
             return True
         return any(self._recover_claimed(path, breaker_pid, marker, adopt=abandoned) for path, abandoned in candidates)
@@ -340,30 +413,12 @@ class SoftFileLock(BaseFileLock):
             finally:
                 os.close(fd)
 
-    def _marker_unchanged_for(self, marker: os.stat_result) -> float:
-        # The mtime is the writer's or file server's clock, so against time.time() a contender whose clock runs ahead
-        # would expire a fresh marker. Only watch it for change, timed on this process's monotonic clock. The owner of a
-        # file sets its mtime, and ext4 reuses a freed inode number, so a new marker can repeat both. The change time
-        # cannot be set and moves with every create, which keeps a new marker from inheriting an old one's age.
-        now: Final = time.monotonic()
-        key: Final = marker.st_mtime, marker.st_ino, marker.st_ctime_ns
-        if (seen := self._marker_seen) is None or seen[0] != key:
-            self._marker_seen = key, now
-            return 0.0
-        return now - seen[1]
-
-    def _unprobeable_holder(self) -> str | None:
-        # This host cannot prove such a holder dead, so whoever decides whether it is gone needs its name.
-        with suppress(OSError, ValueError):
-            if (content := _read_lock_file(self._lock_path)[0]) == _RECORDLESS_MARKER:
-                return "an owner that recorded no PID (a filelock release before 3.22, or one still writing its record)"
-            if (holder := self._recorded_holder(content)) and holder[1] != host_name():
-                return f"pid {holder[0]} on {holder[1]}"
-        return None
-
-    @classmethod
-    def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
-        return None if (holder := _parse_lock_holder(content)) is None else holder[:2]
+    def _apply_explicit_mode(self, fd: int) -> None:
+        # os.open filters the mode through the umask, so an explicit mode lands as given only through fchmod, the way
+        # UnixFileLock applies it. Windows maps the mode to a read-only bit that os.open already set.
+        if self.has_explicit_mode and sys.platform != "win32":  # pragma: win32 no cover
+            with suppress(PermissionError):
+                os.fchmod(fd, self._context.mode & ~_OTHERS_WRITE)
 
     @staticmethod
     def _write_lock_info(fd: int) -> None:
@@ -375,33 +430,40 @@ class SoftFileLock(BaseFileLock):
             info += f"{token}\n"
         write_all(fd, info.encode())
 
-    @property
-    def pid(self) -> int | None:
-        """
-        The PID of the process holding this lock, read from the lock file.
+    def _unlink_held_marker(self, identity: tuple[int, int] | None) -> None:
+        if sys.platform == "win32":  # pragma: win32 cover
+            if identity is not None:
+                self._windows_unlink_if_ours(identity)
+        else:  # pragma: win32 no cover
+            for name in self._marker_names():
+                with suppress(OSError):
+                    if _file_identity(os.lstat(name)) == identity:
+                        Path(name).unlink()
+                        return
 
-        :returns: the PID as an integer, or ``None`` if the lock file does not exist or cannot be parsed
+    def _try_break_expired_lock(self) -> None:
+        if (lifetime := self._context.lifetime) is None:
+            return
+        with suppress(OSError), pin_inode(self._lock_path) as pinned:
+            # _read_lock_file takes the lstat, not stat: a symlink swapped in at the path must report its own mtime.
+            content, marker = _read_lock_file(self._lock_path)
+            if pinned not in {None, marker.st_ino} or time.time() - marker.st_mtime < lifetime:
+                return
+            holder = self._recorded_holder(content)
+            self._take_over(marker, None if holder is None else holder[0])
 
-        """
+    @classmethod
+    def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
+        return None if (holder := _parse_lock_holder(content)) is None else holder[:2]
+
+    def _unprobeable_holder(self) -> str | None:
+        # This host cannot prove such a holder dead, so whoever decides whether it is gone needs its name.
         with suppress(OSError, ValueError):
-            holder = _parse_lock_holder(_read_lock_file(self._lock_path)[0])
-            if holder is not None:
-                return holder[0]
+            if (content := _read_lock_file(self._lock_path)[0]) == _RECORDLESS_MARKER:
+                return "an owner that recorded no PID (a filelock release before 3.22, or one still writing its record)"
+            if (holder := self._recorded_holder(content)) and holder[1] != host_name():
+                return f"pid {holder[0]} on {holder[1]}"
         return None
-
-    @property
-    def is_lock_held_by_us(self) -> bool:
-        """
-        Whether this lock is held by the current process.
-
-        :returns: ``True`` if the lock file exists and names the current process's PID, hostname and, when recorded,
-            start token
-
-        """
-        with suppress(OSError, ValueError):
-            if (holder := _parse_lock_holder(_read_lock_file(self._lock_path)[0])) is not None:
-                return owner_is_current_process(*holder)
-        return False
 
     def break_lock(self) -> None:
         """Forcibly break the lock by removing the lock file, regardless of who holds it."""
@@ -463,11 +525,6 @@ class SoftFileLock(BaseFileLock):
                 raise
             self._finish_marker_cleanup()
 
-    def _marker_names(self) -> tuple[str, ...]:
-        # After a rename of the lock's directory only the caller's spelling, resolved through the working directory,
-        # still reaches the marker this hold opened.
-        return tuple(dict.fromkeys((self._lock_path, self.lock_file)))
-
     def _unlink_open_marker(self, fd: int, identity: tuple[int, int] | None) -> bool:  # pragma: win32 no cover
         if identity is None:
             return True
@@ -484,107 +541,57 @@ class SoftFileLock(BaseFileLock):
                 return False
         if replaced:
             try:
-                _leave_released_record(fd)
+                # A peer's exchange holds our marker under its break name and will put it back. Overwriting the record
+                # lets contenders age it out instead of waiting on this live PID. The write comes before the truncate
+                # so the file is never empty.
+                if sys.platform != "win32":  # pragma: win32 no cover
+                    os.pwrite(fd, released := b"filelock/released\n", 0)
+                    os.ftruncate(fd, len(released))
             except OSError:
                 return False
         return True
 
-    def _finish_marker_cleanup(self) -> None:
-        # Never waits: whoever holds the gate is acquiring or releasing this lock and finishes the cleanup itself.
-        if self._marker_cleanup is not None and self._transition_lock.acquire(blocking=False):  # pragma: win32 cover
-            try:
-                # A close error here belongs to the release an interrupt cut short, not to this caller.
-                with suppress(OSError):
-                    self._close_marker_fd()
-                if (identity := self._marker_cleanup) is not None:  # pragma: no branch  # the gate's holder clears it
-                    self._windows_unlink_if_ours(identity)
-            finally:
-                self._transition_lock.release()
 
-    def _close_marker_fd(self) -> None:  # pragma: win32 cover
-        # Popping and closing is one chain of C calls that no signal handler can split, so a retried release closes the
-        # descriptor at most once; a second close could hit an unrelated file that reused the number.
-        try:
-            list(map(os.close, islice(iter(vars(self).setdefault("_marker_fds", []).pop, None), 1)))
-        except IndexError:
-            return
-        except OSError:
-            if not self._suppresses_close_error(default_suppresses=False):
-                raise
-
-    def _unlink_held_marker(self, identity: tuple[int, int] | None) -> None:
-        if sys.platform == "win32":  # pragma: win32 cover
-            if identity is not None:
-                self._windows_unlink_if_ours(identity)
-        else:  # pragma: win32 no cover
-            for name in self._marker_names():
-                with suppress(OSError):
-                    if _file_identity(os.lstat(name)) == identity:
-                        Path(name).unlink()
-                        return
-
-    def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:  # pragma: win32 cover
-        retry_delay = 0.001
-        for attempt in range(_UNLINK_MAX_RETRIES):
-            # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck
-            # identity each attempt: a failed unlink leaves a window for a successor to replace the marker at this path.
-            try:
-                for name in self._marker_names():
-                    with suppress(FileNotFoundError):
-                        if _file_identity(os.lstat(name)) == identity:
-                            # Forgotten before the unlink: Windows does not promise unique file IDs, so no retry may
-                            # reach a successor that reused ours.
-                            self._marker_cleanup = None
-                            unlink_path(name)
-                            break
-            except OSError as exc:
-                if exc.errno in {EACCES, EPERM}:
-                    # The file is still ours, so the next acquire or release tries again if these attempts run out.
-                    self._marker_cleanup = identity
-                    if attempt < _UNLINK_MAX_RETRIES - 1:
-                        time.sleep(retry_delay)
-                        retry_delay *= 2
-                    continue
-            self._marker_cleanup = None
-            return
-
-
-def _file_identity(st: os.stat_result) -> tuple[int, int]:
-    # (st_dev, st_ino) names the concrete inode behind a path, so a marker recreated at the same pathname after an
-    # expired lease reads as a different file. CPython populates both on Windows from the volume serial and file index.
-    return st.st_dev, st.st_ino
-
-
-def _begin_claim(name: str | Path) -> bool:  # pragma: win32 no cover
-    # Keyed by the file name alone: its random token identifies the claim, and the spelling of the directory varies.
-    with _CLAIMS_LOCK:
-        if (key := Path(name).name) in _CLAIMS_IN_PROGRESS:
-            return False
-        _CLAIMS_IN_PROGRESS.add(key)
-        return True
-
-
-def _end_claim(name: str | Path) -> None:  # pragma: win32 no cover
-    with _CLAIMS_LOCK:
-        _CLAIMS_IN_PROGRESS.discard(Path(name).name)
-
-
-def _placeholder_breaker(content: str | None) -> int | None:  # pragma: win32 no cover
-    # The placeholder a break leaves at the path while it works names the breaker that may have died there.
-    if content is None or not content.startswith(placeholder := "filelock/break\n") or not content.endswith("\n"):
+def _parse_lock_holder(content: str | None) -> _LockHolder | None:
+    # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<start_token>\n" third line naming the holder's
+    # process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now). Anything
+    # else (wrong line count, a non-integer PID or start token, empty or unreadable content) is unparsable; returning
+    # None lets the caller treat it as a malformed lock to self-heal rather than a holder.
+    #
+    # Every writer since 3.22 ends each line with "\n", so a record without one was cut by a crash or read mid-write. As
+    # a holder it would name a foreign host no one reclaims, or a start token that lets a contender break a live lock.
+    if not content or not content.endswith("\n") or len(lines := content.strip().splitlines()) not in {2, 3}:
         return None
-    with suppress(ValueError):
-        return parse_decimal(content.removeprefix(placeholder)[:-1])
-    return None
+    start_token_line_count: Final = 3
+    try:
+        pid = parse_decimal(lines[0])
+        start_token = parse_decimal(lines[2]) if len(lines) == start_token_line_count else None
+    except ValueError:
+        return None
+    # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid
+    # reaches os.kill() where 0 / -1 mean "the caller's own process group / every process" so a dead
+    # holder reads as alive and the lock is never reclaimed, while an oversized pid raises OverflowError
+    # (not OSError/ValueError) out of the self-heal path. _parse_marker_bytes already enforces this range.
+    if not 1 <= pid <= 2**31 - 1:
+        return None
+    return _LockHolder(pid, lines[1], start_token)
 
 
-def _leave_released_record(fd: int) -> None:
-    # A peer's exchange holds our marker under its break name and will put it back. Overwriting the record lets
-    # contenders age it out instead of waiting on this live PID. The write comes before the truncate so the file is
-    # never empty.
-    if sys.platform != "win32":  # pragma: win32 no cover
-        os.pwrite(fd, released := b"filelock/released\n", 0)
-        os.ftruncate(fd, len(released))
+def parse_decimal(text: str) -> int:
+    # Read a PID or start token as a writer formats it: ASCII digits only.
+    #
+    # :raises ValueError: for anything else ``int()`` would accept, such as ``1_000``, surrounding whitespace, a sign or
+    #     non-ASCII digits; no filelock writes those
+    if not (text.isascii() and text.isdigit()):
+        msg = f"not a decimal integer: {text!r}"
+        raise ValueError(msg)
+    return int(text)
+
+
+class _LockHolder(NamedTuple):
+    pid: int
+    hostname: str
+    start_token: int | None
 
 
 def _read_lock_file(path: str) -> tuple[str | None, os.stat_result]:
@@ -616,41 +623,33 @@ def _read_lock_file(path: str) -> tuple[str | None, os.stat_result]:
     return None, st
 
 
-def _parse_lock_holder(content: str | None) -> tuple[int, str, int | None] | None:
-    # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<start_token>\n" third line naming the
-    # holder's process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now).
-    # Anything else (wrong line count, a non-integer PID or start token, empty or unreadable content) is unparsable;
-    # returning None lets the caller treat it as a malformed lock to self-heal rather than a holder.
-    # Every writer since 3.22 ends each line with "\n", so a record without one was cut by a crash or read mid-write. As
-    # a holder it would name a foreign host no one reclaims, or a start token that lets a contender break a live lock.
-    if not content or not content.endswith("\n") or len(lines := content.strip().splitlines()) not in {2, 3}:
+def _file_identity(st: os.stat_result) -> tuple[int, int]:
+    # (st_dev, st_ino) names the concrete inode behind a path, so a marker recreated at the same pathname after an
+    # expired lease reads as a different file. CPython populates both on Windows from the volume serial and file index.
+    return st.st_dev, st.st_ino
+
+
+def _placeholder_breaker(content: str | None) -> int | None:  # pragma: win32 no cover
+    # The placeholder a break leaves at the path while it works names the breaker that may have died there.
+    if content is None or not content.startswith(placeholder := "filelock/break\n") or not content.endswith("\n"):
         return None
-    try:
-        pid = parse_decimal(lines[0])
-        start_token = parse_decimal(lines[2]) if len(lines) == _MARKER_WITH_START_TOKEN_LINE_COUNT else None
-    except ValueError:
-        return None
-    # A pid outside the valid range is a malformed lock, not a holder. Without this, a non-positive pid
-    # reaches os.kill() where 0 / -1 mean "the caller's own process group / every process" so a dead
-    # holder reads as alive and the lock is never reclaimed, while an oversized pid raises OverflowError
-    # (not OSError/ValueError) out of the self-heal path. _parse_marker_bytes already enforces this range.
-    if not 1 <= pid <= 2**31 - 1:
-        return None
-    return pid, lines[1], start_token
+    with suppress(ValueError):
+        return parse_decimal(content.removeprefix(placeholder)[:-1])
+    return None
 
 
-def parse_decimal(text: str) -> int:
-    """
-    Read a PID or start token as a writer formats it: ASCII digits only.
+def _begin_claim(name: str | Path) -> bool:  # pragma: win32 no cover
+    # Keyed by the file name alone: its random token identifies the claim, and the spelling of the directory varies.
+    with _CLAIMS_LOCK:
+        if (key := Path(name).name) in _CLAIMS_IN_PROGRESS:
+            return False
+        _CLAIMS_IN_PROGRESS.add(key)
+        return True
 
-    :raises ValueError: for anything else ``int()`` would accept, such as ``1_000``, surrounding whitespace, a sign or
-        non-ASCII digits; no filelock writes those
 
-    """
-    if not (text.isascii() and text.isdigit()):
-        msg = f"not a decimal integer: {text!r}"
-        raise ValueError(msg)
-    return int(text)
+def _end_claim(name: str | Path) -> None:  # pragma: win32 no cover
+    with _CLAIMS_LOCK:
+        _CLAIMS_IN_PROGRESS.discard(Path(name).name)
 
 
 __all__ = [

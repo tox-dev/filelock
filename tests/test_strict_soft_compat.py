@@ -27,23 +27,9 @@ sys.stdin.readline()
 lock.release()
 print("released", flush=True)
 """
-_OLD_PROBE: Final[str] = """
-import sys
-
-from filelock import SoftFileLock, Timeout
-
-lock = SoftFileLock(sys.argv[1])
-try:
-    lock.acquire(timeout=0)
-except Timeout:
-    print("blocked")
-else:
-    lock.release()
-    print("acquired")
-"""
 
 
-pytestmark = [
+pytestmark: Final[list[pytest.MarkDecorator]] = [
     pytest.mark.requires_hard_links,
     pytest.mark.skipif(
         not CAPABILITIES["old-client"],
@@ -118,9 +104,23 @@ def test_strict_activation_rejects_old_soft_client(
     tmp_path: Path, old_client_env: dict[str, str]
 ) -> None:  # pragma: needs old-client
     lock_path = tmp_path / "resource.lock"
+    old_probe: str = """
+import sys
+
+from filelock import SoftFileLock, Timeout
+
+lock = SoftFileLock(sys.argv[1])
+try:
+    lock.acquire(timeout=0)
+except Timeout:
+    print("blocked")
+else:
+    lock.release()
+    print("acquired")
+"""
     with StrictSoftFileLock(lock_path):
         blocked = subprocess.run(
-            [sys.executable, "-c", _OLD_PROBE, os.fspath(lock_path)],
+            [sys.executable, "-c", old_probe, os.fspath(lock_path)],
             check=True,
             capture_output=True,
             cwd=tmp_path,
@@ -128,7 +128,7 @@ def test_strict_activation_rejects_old_soft_client(
             text=True,
         )
     after_release = subprocess.run(
-        [sys.executable, "-c", _OLD_PROBE, os.fspath(lock_path)],
+        [sys.executable, "-c", old_probe, os.fspath(lock_path)],
         check=True,
         capture_output=True,
         cwd=tmp_path,

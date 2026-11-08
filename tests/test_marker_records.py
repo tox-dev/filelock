@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
+import filelock._marker
 from filelock import MarkerSoftFileLock, OwnerRecord, SoftFileLease, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._marker import encode_marker
@@ -18,6 +19,8 @@ from tests.capability_marks import NEEDS_STALE_RECLAIM
 from tests.process_helpers import cleanup_processes
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
     from multiprocessing.process import BaseProcess
     from pathlib import Path
 
@@ -123,15 +126,17 @@ def test_record_with_an_unknown_mode_names_its_owner(tmp_path: Path, published: 
 
 
 def test_held_lease_records_the_process_start_token(tmp_path: Path) -> None:
-    marker = tmp_path / "a.lock"
-    with SoftFileLease(str(marker), lease_duration=5) as lease:
+    with SoftFileLease(str(tmp_path / "a.lock"), lease_duration=5) as lease:
         assert lease.owner is not None
         assert lease.owner.start == process_start_token(os.getpid())
 
 
 def test_marker_without_start_token_omits_it(tmp_path: Path, mocker: MockerFixture) -> None:
     # A platform without a proven start time publishes no start field, and the record still reads back cleanly.
-    mocker.patch("filelock._marker.process_start_token", return_value=None)
+    mocker.patch(
+        "filelock._marker.process_start_token",
+        new=mocker.create_autospec(filelock._marker.process_start_token, return_value=None),
+    )
     marker = tmp_path / "a.lock"
     with SoftFileLease(str(marker), lease_duration=5) as lease:
         assert lease.owner is not None
@@ -218,10 +223,15 @@ def test_marker_force_break_removes_the_marker(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
-@pytest.mark.parametrize("acquire", [pytest.param(True, id="acquire"), pytest.param(False, id="context")])
-def test_marker_lock_publishes_exclusive(marker: Path, *, acquire: bool) -> None:
+@pytest.mark.parametrize(
+    "enter",
+    [pytest.param(lambda lock: lock.acquire(), id="acquire"), pytest.param(lambda lock: lock, id="context")],
+)
+def test_marker_lock_publishes_exclusive(
+    marker: Path, enter: Callable[[MarkerSoftFileLock], AbstractContextManager[MarkerSoftFileLock]]
+) -> None:
     lock: Final[MarkerSoftFileLock] = MarkerSoftFileLock(marker)
-    with lock.acquire() if acquire else lock:
+    with enter(lock):
         owner: Final[OwnerRecord | None]
         assert (owner := MarkerSoftFileLock(lock.lock_file).owner) is not None
         assert (lock.is_locked, lock.is_lock_held_by_us, lock.pid, owner.mode) == (True, True, os.getpid(), "exclusive")
@@ -250,7 +260,7 @@ def test_marker_lock_excludes_contenders(marker: Path, contender_type: type[Mark
 def test_marker_lock_preserves_live_records(marker: Path, mode: str) -> None:
     with MarkerSoftFileLock(marker):
         record: Final[str] = marker.read_text(encoding="utf-8").replace("mode=exclusive", f"mode={mode}")
-    marker.write_text(record + "token=t\nduration=1\n", encoding="utf-8")
+    marker.write_text(f"{record}token=t\nduration=1\n", encoding="utf-8")
     os.utime(marker, (0, 0))
     with pytest.raises(Timeout):
         MarkerSoftFileLock(marker, timeout=0.1).acquire()

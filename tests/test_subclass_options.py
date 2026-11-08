@@ -48,9 +48,26 @@ def test_narrow_sync_subclass_rejects_non_default_option(
         )
 
 
+def _sync_constructor() -> type[BaseFileLock]:
+    return cast("type[BaseFileLock]", _NarrowFileLock)
+
+
+class _NarrowFileLock(BaseFileLock):
+    _lifetime_supported = True
+
+    def __init__(self, lock_file: str) -> None:
+        super().__init__(lock_file)
+
+    def _acquire(self) -> None:
+        raise NotImplementedError
+
+    def _release(self) -> None:
+        raise NotImplementedError
+
+
 def test_narrow_sync_subclass_rejects_unknown_option(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="unknown"):
-        _unknown_constructor()(str(tmp_path / "lock"), unknown=True)
+        cast("_UnknownFileLockConstructor", _NarrowFileLock)(str(tmp_path / "lock"), unknown=True)
 
 
 def test_singleton_cache_hit_rejects_unknown_option(tmp_path: Path) -> None:
@@ -85,6 +102,37 @@ def test_narrow_async_subclass_rejects_non_default_option(
         loop.close()
 
 
+def _async_constructor() -> type[BaseAsyncFileLock]:
+    return cast("type[BaseAsyncFileLock]", _NarrowAsyncFileLock)
+
+
+class _NarrowAsyncFileLock(BaseAsyncFileLock):
+    _lifetime_supported = True
+
+    def __init__(self, lock_file: str) -> None:
+        super().__init__(lock_file)
+
+    def _acquire(self) -> None:
+        raise NotImplementedError
+
+    def _release(self) -> None:
+        raise NotImplementedError
+
+
+def _unsupported_async_options(
+    option: Literal["thread_local", "loop", "run_in_executor", "executor"],
+    loop: asyncio.AbstractEventLoop,
+    executor: Executor,
+) -> _AsyncFileLockOptions:
+    if option == "thread_local":
+        return {"thread_local": True, "run_in_executor": False}
+    if option == "loop":
+        return {"loop": loop}
+    if option == "run_in_executor":
+        return {"run_in_executor": False}
+    return {"executor": executor}
+
+
 @pytest.mark.parametrize(
     "kind",
     [pytest.param("sync", id="sync"), pytest.param("async", id="async")],
@@ -97,8 +145,57 @@ def test_narrow_subclass_accepts_explicit_base_defaults(
     assert _build_with_explicit_defaults(kind, lock_path).lock_file == lock_path
 
 
+def _build_with_explicit_defaults(kind: Literal["sync", "async"], lock_path: str) -> BaseFileLock:
+    if kind == "sync":
+        return _sync_constructor()(
+            lock_path,
+            timeout=-1,
+            mode=-1,
+            thread_local=True,
+            blocking=True,
+            is_singleton=False,
+            poll_interval=0.05,
+            lifetime=None,
+            context_error_policy="chain",
+            close_error_policy="default",
+            fallback_to_soft=True,
+            preserve_lock_file=False,
+            on_acquired=None,
+        )
+    return _async_constructor()(
+        lock_path,
+        timeout=-1,
+        mode=-1,
+        thread_local=False,
+        blocking=True,
+        is_singleton=False,
+        poll_interval=0.05,
+        lifetime=None,
+        context_error_policy="chain",
+        close_error_policy="default",
+        fallback_to_soft=True,
+        preserve_lock_file=False,
+        on_acquired=None,
+        loop=None,
+        run_in_executor=True,
+        executor=None,
+    )
+
+
 def test_narrow_subclass_accepts_named_option(tmp_path: Path) -> None:
     assert _NamedFileLock(str(tmp_path / "lock"), marker=7).marker == 7
+
+
+class _NamedFileLock(BaseFileLock):
+    def __init__(self, lock_file: str, *, marker: int = 0) -> None:
+        super().__init__(lock_file)
+        self.marker = marker
+
+    def _acquire(self) -> None:
+        raise NotImplementedError
+
+    def _release(self) -> None:
+        raise NotImplementedError
 
 
 def test_sync_subclass_forwards_kwargs(tmp_path: Path) -> None:
@@ -146,6 +243,19 @@ def test_sync_subclass_forwards_kwargs(tmp_path: Path) -> None:
         "preserve_lock_file": True,
         "on_acquired": hook,
     }
+
+
+class _ForwardingFileLock(BaseFileLock):
+    _lifetime_supported = True
+
+    def __init__(self, lock_file: str, **kwargs: Unpack[_FileLockOptions]) -> None:
+        super().__init__(lock_file, **kwargs)
+
+    def _acquire(self) -> None:
+        raise NotImplementedError
+
+    def _release(self) -> None:
+        raise NotImplementedError
 
 
 def test_async_subclass_forwards_kwargs(tmp_path: Path) -> None:
@@ -209,94 +319,35 @@ def test_async_subclass_forwards_kwargs(tmp_path: Path) -> None:
         loop.close()
 
 
+class _ForwardingAsyncFileLock(BaseAsyncFileLock):
+    _lifetime_supported = True
+
+    def __init__(self, lock_file: str, **kwargs: Unpack[_AsyncFileLockOptions]) -> None:
+        super().__init__(lock_file, **kwargs)
+
+    def _acquire(self) -> None:
+        raise NotImplementedError
+
+    def _release(self) -> None:
+        raise NotImplementedError
+
+
 @pytest.mark.parametrize(
-    "option",
-    [pytest.param("hook", id="hook"), pytest.param("policy", id="policy")],
+    ("option", "message"),
+    [pytest.param("hook", "on_acquired", id="hook"), pytest.param("policy", "context_error_policy", id="policy")],
 )
 def test_forwarding_subclass_singleton_rejects_changed_option(
     option: Literal["hook", "policy"],
+    message: str,
     tmp_path: Path,
 ) -> None:
     hook: Callable[[int], None] = list[int]().append
     lock_path = str(tmp_path / "lock")
     first = _ForwardingFileLock(lock_path, is_singleton=True, on_acquired=hook)
 
-    with pytest.raises(ValueError, match="on_acquired" if option == "hook" else "context_error_policy"):
+    with pytest.raises(ValueError, match=message):
         _change_singleton_option(option, lock_path, hook)
     assert first.on_acquired is hook
-
-
-@NEEDS_CLASS_COLLECTION
-def test_constructor_model_does_not_retain_dynamic_subclass(tmp_path: Path) -> None:
-    lock_type = _dynamic_constructor()
-    class_ref = ref(lock_type)
-    lock_type(str(tmp_path / "lock"))
-    del lock_type
-    gc.collect()
-    assert class_ref() is None
-
-
-def _sync_constructor() -> type[BaseFileLock]:
-    return cast("type[BaseFileLock]", _NarrowFileLock)
-
-
-def _async_constructor() -> type[BaseAsyncFileLock]:
-    return cast("type[BaseAsyncFileLock]", _NarrowAsyncFileLock)
-
-
-def _unknown_constructor() -> _UnknownFileLockConstructor:
-    return cast("_UnknownFileLockConstructor", _NarrowFileLock)
-
-
-def _unsupported_async_options(
-    option: Literal["thread_local", "loop", "run_in_executor", "executor"],
-    loop: asyncio.AbstractEventLoop,
-    executor: Executor,
-) -> _AsyncFileLockOptions:
-    if option == "thread_local":
-        return {"thread_local": True, "run_in_executor": False}
-    if option == "loop":
-        return {"loop": loop}
-    if option == "run_in_executor":
-        return {"run_in_executor": False}
-    return {"executor": executor}
-
-
-def _build_with_explicit_defaults(kind: Literal["sync", "async"], lock_path: str) -> BaseFileLock:
-    if kind == "sync":
-        return _sync_constructor()(
-            lock_path,
-            timeout=-1,
-            mode=-1,
-            thread_local=True,
-            blocking=True,
-            is_singleton=False,
-            poll_interval=0.05,
-            lifetime=None,
-            context_error_policy="chain",
-            close_error_policy="default",
-            fallback_to_soft=True,
-            preserve_lock_file=False,
-            on_acquired=None,
-        )
-    return _async_constructor()(
-        lock_path,
-        timeout=-1,
-        mode=-1,
-        thread_local=False,
-        blocking=True,
-        is_singleton=False,
-        poll_interval=0.05,
-        lifetime=None,
-        context_error_policy="chain",
-        close_error_policy="default",
-        fallback_to_soft=True,
-        preserve_lock_file=False,
-        on_acquired=None,
-        loop=None,
-        run_in_executor=True,
-        executor=None,
-    )
 
 
 def _change_singleton_option(
@@ -314,7 +365,8 @@ def _change_singleton_option(
     )
 
 
-def _dynamic_constructor() -> type[BaseFileLock]:
+@NEEDS_CLASS_COLLECTION
+def test_constructor_model_does_not_retain_dynamic_subclass(tmp_path: Path) -> None:
     class DynamicFileLock(BaseFileLock):
         def _acquire(self) -> None:
             raise NotImplementedError
@@ -322,71 +374,11 @@ def _dynamic_constructor() -> type[BaseFileLock]:
         def _release(self) -> None:
             raise NotImplementedError
 
-    return DynamicFileLock
-
-
-class _NarrowFileLock(BaseFileLock):
-    _lifetime_supported = True
-
-    def __init__(self, lock_file: str) -> None:
-        super().__init__(lock_file)
-
-    def _acquire(self) -> None:
-        raise NotImplementedError
-
-    def _release(self) -> None:
-        raise NotImplementedError
-
-
-class _NamedFileLock(BaseFileLock):
-    def __init__(self, lock_file: str, *, marker: int = 0) -> None:
-        super().__init__(lock_file)
-        self.marker = marker
-
-    def _acquire(self) -> None:
-        raise NotImplementedError
-
-    def _release(self) -> None:
-        raise NotImplementedError
-
-
-class _NarrowAsyncFileLock(BaseAsyncFileLock):
-    _lifetime_supported = True
-
-    def __init__(self, lock_file: str) -> None:
-        super().__init__(lock_file)
-
-    def _acquire(self) -> None:
-        raise NotImplementedError
-
-    def _release(self) -> None:
-        raise NotImplementedError
-
-
-class _ForwardingFileLock(BaseFileLock):
-    _lifetime_supported = True
-
-    def __init__(self, lock_file: str, **kwargs: Unpack[_FileLockOptions]) -> None:
-        super().__init__(lock_file, **kwargs)
-
-    def _acquire(self) -> None:
-        raise NotImplementedError
-
-    def _release(self) -> None:
-        raise NotImplementedError
-
-
-class _ForwardingAsyncFileLock(BaseAsyncFileLock):
-    _lifetime_supported = True
-
-    def __init__(self, lock_file: str, **kwargs: Unpack[_AsyncFileLockOptions]) -> None:
-        super().__init__(lock_file, **kwargs)
-
-    def _acquire(self) -> None:
-        raise NotImplementedError
-
-    def _release(self) -> None:
-        raise NotImplementedError
+    class_ref = ref(DynamicFileLock)
+    DynamicFileLock(str(tmp_path / "lock"))
+    del DynamicFileLock
+    gc.collect()
+    assert class_ref() is None
 
 
 class _FileLockOptions(TypedDict, total=False):
