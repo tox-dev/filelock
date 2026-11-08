@@ -559,6 +559,24 @@ def _holders(lock_file: str) -> list[str]:
     return sorted(entry.name for entry in holders.iterdir()) if holders.is_dir() else []
 
 
+def test_close_while_polling_stops_the_wait(lock_file: str, mocker: MockerFixture) -> None:
+    blocker = _make_lock(lock_file)
+    victim = _make_lock(lock_file)
+    real_advance = Participant.advance
+    polls: list[bool] = []
+
+    def close_on_second_poll(participant: Participant) -> bool:
+        polls.append(True)
+        if len(polls) == 2:
+            victim.close()
+        return real_advance(participant)
+
+    mocker.patch.object(Participant, "advance", autospec=True, side_effect=close_on_second_poll)
+    with blocker.write_lock(timeout=2), pytest.raises(RuntimeError, match="has been closed"):
+        victim.acquire_write(timeout=2)
+    assert (len(polls), victim.generation, _holders(lock_file)) == (2, None, [])
+
+
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_multiple_readers_can_hold_simultaneously(lock_file: str) -> None:
@@ -1374,7 +1392,9 @@ def test_protocol_tree_with_a_junction_is_refused_before_first_acquire(  # pragm
     assert list(target.iterdir()) == []
 
 
-def _junction_the_tree(root: Path, swapped: str, target: Path, create_junction: Callable[[Path, Path], None]) -> None:
+def _junction_the_tree(  # pragma: win32 cover
+    root: Path, swapped: str, target: Path, create_junction: Callable[[Path, Path], None]
+) -> None:
     for name in {"gen", "holders"} - {swapped}:
         (root / name).mkdir(parents=True)
     target.mkdir()
