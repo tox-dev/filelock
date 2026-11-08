@@ -150,8 +150,7 @@ def test_strict_wide_directories_are_narrowed_only_when_owned(  # pragma: win32 
     (coordination / "claims").mkdir(parents=True)
     for directory in (coordination, coordination / "claims"):
         directory.chmod(0o777)
-    if not owned and sys.platform != "win32":  # the skip above keeps Windows out; the test narrows os.geteuid for ty
-        mocker.patch("filelock._strict.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+    mocker.patch("filelock._strict.os.geteuid", autospec=True, return_value=os.geteuid() + int(not owned))
 
     with StrictSoftFileLock(tmp_path / "a.lock", mode=0o600):
         pass
