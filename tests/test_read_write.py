@@ -226,10 +226,8 @@ def test_write_non_starvation(lock_file: str) -> None:
         writer.start()
 
         assert writer_contending.wait(timeout=_PROCESS_DEADLINE), "Writer process did not reach the lock"
-        # pragma-no-branch: the loop never exhausts in a passing run, since the helper's deadline fires first
-        for _ in range(_PROCESS_DEADLINE * 20):  # pragma: no branch
-            if not _write_intent_pending(prober, probe_deadline):  # pragma: no branch  # exits at the writer's speed
-                break
+        while _write_intent_pending(prober, probe_deadline):  # pragma: no branch  # exits at the writer's speed
+            pass  # pragma: no cover  # runs only when the first probe precedes the writer's intent
         prober.close()
         with release_count.get_lock():
             releases_before_contending = release_count.value
@@ -1352,7 +1350,7 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(  
 
     with pytest.raises(OSError, match="replaced while acquiring"):
         lock.acquire_write()
-    if replacement == "symlink":
+    if replacement == "symlink":  # simplint: ignore[SMP803]  # symlink and directory swap leave different state
         # SQLite's open creates the missing name, which a symlink there sends to its target.
         assert ((tmp_path / "elsewhere.txt").read_bytes(), (moved / "notes.txt").read_text()) == (b"", "keep")
     else:
