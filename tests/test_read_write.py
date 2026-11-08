@@ -23,7 +23,7 @@ import sqlite3
 
 from filelock import ReadWriteLock, Timeout
 from filelock._read_write import _ForkSafeConnection
-from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
+from tests.capability_marks import NEEDS_FIFO, SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.process_helpers import cleanup_processes
 from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, interrupt_once
 
@@ -508,9 +508,8 @@ def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:
     assert not target.exists()
 
 
+@NEEDS_FIFO
 def test_read_write_lock_refuses_a_non_regular_path(tmp_path: Path) -> None:
-    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
     # A FIFO planted at the lock path opens without blocking (O_NONBLOCK) but is not a database to hand SQLite.
     lock_path = tmp_path / "lock.db"  # pragma: win32 no cover
     os.mkfifo(lock_path)  # pragma: win32 no cover

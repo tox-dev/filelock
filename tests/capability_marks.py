@@ -41,6 +41,10 @@ NEEDS_SYMLINK: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"], reason="creating a symlink needs a privilege this runtime does not grant"
 )
 
+NEEDS_FIFO: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform == "win32" or not CAPABILITIES["fifo"], reason="os.mkfifo is unavailable"
+)
+
 #: Windows resolves a lock's parent with abspath, so a symlinked parent stays a distinct key and never collapses.
 NEEDS_PARENT_SYMLINK_COLLAPSE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["symlink"] or sys.platform == "win32",

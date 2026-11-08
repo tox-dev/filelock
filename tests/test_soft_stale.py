@@ -15,7 +15,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from capabilities import CAPABILITIES
 
 import filelock._soft
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
@@ -23,7 +22,13 @@ from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, _read_lock_file
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import exchange_names
-from tests.capability_marks import NEEDS_POSIX_SIGNALS, NEEDS_STALE_RECLAIM, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
+from tests.capability_marks import (
+    NEEDS_FIFO,
+    NEEDS_POSIX_SIGNALS,
+    NEEDS_STALE_RECLAIM,
+    NEEDS_SYMLINK,
+    NEEDS_UNLINK_OPEN_FILE,
+)
 from tests.conftest import DEAD_OWNER, STALE_BREAKERS, acquire_after_reclaim, held_after_reclaim
 from tests.pid_namespace_helpers import pin_pid_namespace
 from tests.process_helpers import break_then_hang_after_exchange, call_within, cleanup_processes
@@ -1112,9 +1117,8 @@ def test_symlinked_lock_file_is_not_followed(tmp_path: Path, lock_path: Path) ->
     assert target.read_text(encoding="utf-8") == _holder(99999)
 
 
+@NEEDS_FIFO
 def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
-    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
     # An attacker-placed FIFO must not stall the open; O_NONBLOCK makes the read bail instead of hang.
     os.mkfifo(lock_path)  # pragma: win32 no cover
     assert SoftFileLock(lock_path).pid is None  # pragma: win32 no cover
@@ -1122,9 +1126,8 @@ def test_fifo_lock_file_does_not_block(lock_path: Path) -> None:
 
 @pytest.mark.usefixtures("unchanged_past_grace")
 @NEEDS_STALE_RECLAIM
+@NEEDS_FIFO
 def test_fifo_lock_file_with_attached_writer_self_heals(lock_path: Path) -> None:
-    if sys.platform == "win32" or not CAPABILITIES["fifo"]:  # pragma: win32 cover
-        pytest.skip("os.mkfifo is unavailable")  # the platform arm also narrows so ty resolves os.mkfifo below
     # A same-UID peer can plant a FIFO with a writer attached so a non-blocking read would raise EAGAIN. The lstat
     # guard classifies it as a malformed lock before any open, so an aged FIFO self-heals like any other node.
     os.mkfifo(lock_path)  # pragma: win32 no cover
