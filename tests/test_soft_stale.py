@@ -362,10 +362,6 @@ def _break_name(lock: Path, pid: int = _DEAD_PID) -> Path:  # pragma: win32 no c
     return lock.with_name(f"test.lock.break.{pid}.{'0' * 32}")
 
 
-def _exchange_call(source: bytes, target: bytes, flags: int) -> int:
-    raise NotImplementedError  # pragma: no cover  # the autospec answers the call, so only the signature matters
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
@@ -1066,6 +1062,10 @@ def test_stale_break_leaves_a_break_name_it_cannot_exchange(  # pragma: win32 no
         _holder(_DEAD_PID),
         [_holder(os.getpid())],
     )
+
+
+def _exchange_call(source: bytes, target: bytes, flags: int) -> int:
+    raise NotImplementedError  # pragma: no cover  # the autospec answers the call, so only the signature matters
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
