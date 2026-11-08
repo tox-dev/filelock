@@ -2114,26 +2114,24 @@ def test_strict_soft_claims_removed_one_by_one_share_one_read_grace(tmp_path: Pa
 def test_strict_soft_claim_pending_deletion_is_skipped(tmp_path: Path) -> None:
     # A peer's unlink sets the claim's delete disposition, then closes its handle. Until that close, every open fails
     # with EACCES, and a peer stalled in between can hold that past the read grace, yet the claim is already withdrawn.
-    # The marker skips the run; the guard only narrows ctypes.WinDLL for ty, so it goes one way.
-    if sys.platform == "win32":  # pragma: no branch
-        import ctypes
+    # The marker skips the run off Windows; the assert narrows the platform for ty.
+    assert sys.platform == "win32"
+    import ctypes
 
-        lock_path = tmp_path / "resource.lock"
-        claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
-        kernel32 = ctypes.WinDLL("kernel32")  # a private instance, so the restype below stays local
-        kernel32.CreateFileW.restype = ctypes.c_void_p
-        delete_access, share_all, open_existing, file_disposition_info = 0x10000, 0x1 | 0x2 | 0x4, 3, 4
-        handle = ctypes.c_void_p(
-            kernel32.CreateFileW(str(claim), delete_access, share_all, None, open_existing, 0, None)
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    kernel32 = ctypes.WinDLL("kernel32")  # a private instance, so the restype below stays local
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    delete_access, share_all, open_existing, file_disposition_info = 0x10000, 0x1 | 0x2 | 0x4, 3, 4
+    handle = ctypes.c_void_p(kernel32.CreateFileW(str(claim), delete_access, share_all, None, open_existing, 0, None))
+    delete_file = ctypes.c_bool(True)  # the FILE_DISPOSITION_INFO BOOLEAN
+    try:
+        assert kernel32.SetFileInformationByHandle(
+            handle, file_disposition_info, ctypes.byref(delete_file), ctypes.sizeof(delete_file)
         )
-        delete_file = ctypes.c_bool(True)  # the FILE_DISPOSITION_INFO BOOLEAN
-        try:
-            assert kernel32.SetFileInformationByHandle(
-                handle, file_disposition_info, ctypes.byref(delete_file), ctypes.sizeof(delete_file)
-            )
-            assert StrictSoftFileLock(lock_path).claims == ()
-        finally:
-            kernel32.CloseHandle(handle)
+        assert StrictSoftFileLock(lock_path).claims == ()
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def test_strict_soft_claim_removed_between_inspection_and_open_is_skipped(

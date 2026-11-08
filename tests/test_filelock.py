@@ -2644,52 +2644,52 @@ def test_windows_permanent_denial_raises_without_timeout(tmp_path: Path, mocker:
 def test_windows_transient_denial_is_retried_within_grace(tmp_path: Path, mocker: MockerFixture) -> None:
     # A peer unlinking the lock file as it releases can make NtCreateFile answer STATUS_ACCESS_DENIED for a moment,
     # which the open must wait out instead of raising a PermissionError. timeout=0 leaves the acquire loop one attempt,
-    # so the retry has to come from the open itself. The guard only narrows the import for ty, which cannot see
-    # filelock._windows._nt_open off Windows; the marker skips the run there.
-    if sys.platform == "win32":  # pragma: no branch
-        from filelock._windows import _nt_open as real_nt_open
+    # so the retry has to come from the open itself. The marker skips the run off Windows, where filelock._windows
+    # does not import; the assert narrows the platform for ty.
+    assert sys.platform == "win32"
+    from filelock._windows import _nt_open as real_nt_open
 
-        statuses = [0xC0000022]
+    statuses = [0xC0000022]
 
-        def deny_once(path: str, *, read_only: bool, owner_only: bool) -> tuple[int, int]:
-            if statuses:
-                return 0, statuses.pop()
-            return real_nt_open(path, read_only=read_only, owner_only=owner_only)
+    def deny_once(path: str, *, read_only: bool, owner_only: bool) -> tuple[int, int]:
+        if statuses:
+            return 0, statuses.pop()
+        return real_nt_open(path, read_only=read_only, owner_only=owner_only)
 
-        nt_open = mocker.patch("filelock._windows._nt_open", side_effect=deny_once, autospec=True)
-        lock = FileLock(str(tmp_path / "a"), timeout=0)
-        lock.acquire()
-        assert (lock.is_locked, nt_open.call_count) == (True, 2)
-        lock.release()
+    nt_open = mocker.patch("filelock._windows._nt_open", side_effect=deny_once, autospec=True)
+    lock = FileLock(str(tmp_path / "a"), timeout=0)
+    lock.acquire()
+    assert (lock.is_locked, nt_open.call_count) == (True, 2)
+    lock.release()
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_delete_in_progress_is_contention_not_denial(tmp_path: Path) -> None:
-    # The marker skips the run; this only narrows ctypes.windll for ty, so it goes one way.
-    if sys.platform == "win32":  # pragma: no branch
-        import ctypes
+    # The marker skips the run off Windows; the assert narrows the platform for ty.
+    assert sys.platform == "win32"
+    import ctypes
 
-        target = str(tmp_path / "dp.lock")
-        kernel32 = ctypes.windll.kernel32
-        delete_access, generic_read, share_all, create_always, delete_on_close = (
-            0x10000,
-            0x80000000,
-            0x1 | 0x2 | 0x4,
-            2,
-            0x04000000,
-        )
-        # Open with delete-on-close so the name is marked for deletion but the live handle keeps it around: a fresh
-        # open sees the deletion in progress (delete-pending or a sharing violation), which acquire must retry rather
-        # than mistake for a permanent PermissionError.
-        handle = kernel32.CreateFileW(
-            target, delete_access | generic_read, share_all, None, create_always, delete_on_close, None
-        )
-        assert handle not in {0, ctypes.c_void_p(-1).value}
-        try:
-            with pytest.raises(Timeout):
-                FileLock(target, timeout=0.3).acquire()
-        finally:
-            kernel32.CloseHandle(handle)
+    target = str(tmp_path / "dp.lock")
+    kernel32 = ctypes.windll.kernel32
+    delete_access, generic_read, share_all, create_always, delete_on_close = (
+        0x10000,
+        0x80000000,
+        0x1 | 0x2 | 0x4,
+        2,
+        0x04000000,
+    )
+    # Open with delete-on-close so the name is marked for deletion but the live handle keeps it around: a fresh
+    # open sees the deletion in progress (delete-pending or a sharing violation), which acquire must retry rather
+    # than mistake for a permanent PermissionError.
+    handle = kernel32.CreateFileW(
+        target, delete_access | generic_read, share_all, None, create_always, delete_on_close, None
+    )
+    assert handle not in {0, ctypes.c_void_p(-1).value}
+    try:
+        with pytest.raises(Timeout):
+            FileLock(target, timeout=0.3).acquire()
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
