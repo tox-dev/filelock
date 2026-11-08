@@ -7,6 +7,7 @@ import shutil
 import threading
 from dataclasses import dataclass, field
 from errno import EIO
+from itertools import cycle, islice
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -27,7 +28,7 @@ from filelock._soft_rw._protocol import (
 from filelock._soft_rw._storage import OsFiles
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from pytest_mock import MockerFixture, MockType
 
@@ -1013,8 +1014,9 @@ def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability
     scheduler = _Scheduler(seed=seed, crash_probability=crash_probability, max_crashes=3)
     model = _Model(scheduler, stale_listings=stale_listings)
     rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]  # a seeded mix of hold lengths, not entropy
-    for index in range(8):
-        model.add(("write", "read", "read")[index % 3], hold_beats=rng.randint(1, 4))
+    modes: Iterator[Literal["read", "write"]] = cycle(("write", "read", "read"))
+    for mode in islice(modes, 8):
+        model.add(mode, hold_beats=rng.randint(1, 4))
     model.run()
 
     assert model.violations == []
@@ -1277,8 +1279,9 @@ def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
     # After the crashes, one more writer must be able to enter by evicting whatever the dead left behind, and leave the
     # log naming nobody and the holders directory holding nobody.
     model = _Model(_Scheduler(seed=seed, crash_probability=0.05, max_crashes=4))
-    for index in range(6):
-        model.add(("read", "write")[index % 2], hold_beats=2)
+    modes: Iterator[Literal["read", "write"]] = cycle(("read", "write"))
+    for mode in islice(modes, 6):
+        model.add(mode, hold_beats=2)
     model.run()
     assert model.violations == []
 
@@ -1302,8 +1305,9 @@ def test_model_janitor_clears_every_crashed_holder(seed: int) -> None:
 @pytest.mark.timeout(120)
 def test_fencing_generations_are_strictly_increasing_across_grants() -> None:
     model = _Model(_Scheduler(seed=7, crash_probability=0.0, max_crashes=0))
-    for index in range(9):
-        model.add(("write", "read", "read")[index % 3], hold_beats=1)
+    modes: Iterator[Literal["read", "write"]] = cycle(("write", "read", "read"))
+    for mode in islice(modes, 9):
+        model.add(mode, hold_beats=1)
     model.run()
     assert model.violations == []
     writers = sorted(outcome.granted_at or 0 for outcome in model.outcomes if outcome.mode == "write")
