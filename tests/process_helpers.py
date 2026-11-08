@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
 from unittest.mock import patch
@@ -48,7 +47,7 @@ def break_then_hang_after_exchange(
         exchange(source, target)
         exchanged.set()
         while True:
-            time.sleep(_REAP_DEADLINE)
+            threading.Event().wait()
 
     with patch.object(filelock._soft, "exchange_names", new=exchange_then_hang):
         SoftFileLock(lock_file).acquire(blocking=False)

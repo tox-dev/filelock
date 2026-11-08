@@ -67,10 +67,9 @@ def test_read_locks_are_shared(lock_file: str) -> None:
 
     with cleanup_processes([reader1, reader2]):
         reader1.start()
-        time.sleep(0.5)  # let reader1 acquire before reader2 starts
+        assert read1_acquired.wait(timeout=_PROCESS_DEADLINE), f"First read lock not acquired on {lock_file}"
         reader2.start()
 
-        assert read1_acquired.wait(timeout=_PROCESS_DEADLINE), f"First read lock not acquired on {lock_file}"
         assert read2_acquired.wait(timeout=_PROCESS_DEADLINE), f"Second read lock not acquired on {lock_file}"
 
         reader1.join(timeout=_PROCESS_DEADLINE)
@@ -350,7 +349,6 @@ def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read
     successor = Process(target=acquire_lock, args=(lock_file, "write", write_acquired))
 
     with cleanup_processes([crashing, successor]):
-        time.sleep(0.5)  # let the lock settle before killing the holder
         crashing.terminate()
         crashing.join(timeout=_REAP_DEADLINE)
 
@@ -885,8 +883,7 @@ def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acqui
     lock = ReadWriteLock(lock_file)  # pragma: win32 no cover
     with getattr(lock, f"{mode}_lock")():  # pragma: win32 no cover
         acquired_event.set()
-        while True:  # pragma: win32 no cover
-            time.sleep(0.1)
+        threading.Event().wait()  # pragma: win32 no cover
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
