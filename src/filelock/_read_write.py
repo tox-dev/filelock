@@ -278,7 +278,7 @@ class _Probe(NamedTuple):
     lease: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _InodeProbes:
     leases: set[int] = field(default_factory=set)
     descriptors: list[tuple[int, int | None]] = field(default_factory=list)
