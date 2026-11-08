@@ -1251,9 +1251,9 @@ def test_thread_local_setter_visibility(lock_type: type[BaseFileLock], tmp_path:
     def read_from_thread() -> None:
         observed.append(lock.poll_interval)
 
-    t = threading.Thread(target=read_from_thread)
-    t.start()
-    t.join()
+    thread = threading.Thread(target=read_from_thread)
+    thread.start()
+    thread.join()
 
     assert observed == [pytest.approx(0.05)]
 
@@ -1265,9 +1265,9 @@ def test_non_thread_local_setter_visibility(lock_type: type[BaseFileLock], tmp_p
     lock.poll_interval = 0.5
 
     observed: list[float] = []
-    t = threading.Thread(target=lambda: observed.append(lock.poll_interval))
-    t.start()
-    t.join()
+    thread = threading.Thread(target=lambda: observed.append(lock.poll_interval))
+    thread.start()
+    thread.join()
 
     assert observed == [pytest.approx(0.5)]
 

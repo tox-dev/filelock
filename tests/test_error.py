@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     [
         pytest.param(str, "The file lock '/path/to/lock' could not be acquired.", id="str"),
         pytest.param(repr, "Timeout('/path/to/lock')", id="repr"),
-        pytest.param(lambda t: t.lock_file, "/path/to/lock", id="lock_file"),
+        pytest.param(lambda error: error.lock_file, "/path/to/lock", id="lock_file"),
     ],
 )
 def test_timeout_attribute(extract: Callable[[Timeout], str], expected: str) -> None:
