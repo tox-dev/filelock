@@ -1601,11 +1601,14 @@ def test_release_interrupted_at_any_call_leaves_the_lock_usable(
 ) -> None:
     # A raising signal handler lands at some call; wherever, a retry and one more hold must leave the path free.
     lock_path: Final = str(tmp_path / "a")
-    for target in count(1):  # pragma: no branch  # count() never runs out; the release that finishes ends the loop
+    lock = lock_type(lock_path, thread_local=thread_local, timeout=_SHARED_WAIT)
+    lock.acquire()
+    points: Final = _interrupt_points(lock, lock.release)
+    for target in range(1, points + 1):
         lock = lock_type(lock_path, thread_local=thread_local, timeout=_SHARED_WAIT)
         lock.acquire()
-        if not _interrupted_at_call(lock, target, lock.release):
-            break
+        with pytest.raises(KeyboardInterrupt):
+            _interrupted_at_call(lock, target, lock.release)
         lock.release()
         # Bounded first, so a lock the interrupt leaked fails here instead of hanging the blocking acquire below.
         with lock_type(lock_path, blocking=False) as peer:
@@ -1615,14 +1618,28 @@ def test_release_interrupted_at_any_call_leaves_the_lock_usable(
             assert peer.is_locked
         lock.acquire()
         lock.release()
-    assert target > 1
+    assert points > 0
 
 
-def _interrupted_at_call(
-    lock: BaseFileLock, target: int, operation: Callable[[], object], *, callee: CodeType | None = None
-) -> bool:
+def _interrupt_points(lock: BaseFileLock, operation: Callable[[], object], *, callee: CodeType | None = None) -> int:
+    points: Final[list[None]] = []
+    sys.setprofile(_interrupt_hook(lock, callee, lambda: points.append(None)))
+    try:
+        operation()
+    finally:
+        sys.setprofile(None)
+    return len(points)
+
+
+def _interrupt_hook(
+    lock: BaseFileLock, callee: CodeType | None, on_call: Callable[[], object]
+) -> Callable[[FrameType, str, Unused], None]:
     # Interpreters run a profile hook with tracing off, so coverage never records its body.
-    def interrupt(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover
+    # Where the hook would end a resumed generator without its finally, only a fresh call models a signal.
+    resumable: Final = CAPABILITIES["profile-interrupted-generator-finishes"]
+    entered: Final[set[FrameType]] = set()
+
+    def hook(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover  # runs inside the profile hook
         # Only calls handed the lock, or calls of callee made by one: raising inside threading's own context managers
         # would leak its locks.
         if event != "call" or (callee is not None and frame.f_code is not callee):
@@ -1634,21 +1651,25 @@ def _interrupted_at_call(
             and any(v is lock for v in holder.f_locals.values())
         ):
             entered.add(frame)
-            if next(calls) == target:
-                raise KeyboardInterrupt
+            on_call()
 
+    return hook
+
+
+def _interrupted_at_call(
+    lock: BaseFileLock, target: int, operation: Callable[[], object], *, callee: CodeType | None = None
+) -> None:
     calls: Final = count(1)
-    # Where the hook would end a resumed generator without its finally, only a fresh call models a signal.
-    resumable: Final = CAPABILITIES["profile-interrupted-generator-finishes"]
-    entered: Final[set[FrameType]] = set()
-    sys.setprofile(interrupt)
+
+    def interrupt() -> None:  # pragma: no cover  # runs inside the profile hook, which coverage does not trace
+        if next(calls) == target:
+            raise KeyboardInterrupt
+
+    sys.setprofile(_interrupt_hook(lock, callee, interrupt))
     try:
         operation()
-    except KeyboardInterrupt:
-        return True
     finally:
         sys.setprofile(None)
-    return False
 
 
 @pytest.mark.parametrize(
@@ -1662,28 +1683,41 @@ def _interrupted_at_call(
     ],
 )
 @pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
-@pytest.mark.parametrize("operation", ["acquire", "release"])
+@pytest.mark.parametrize(
+    ("operation", "hold_first"),
+    [
+        pytest.param("acquire", lambda _lock: None, id="acquire"),
+        pytest.param("release", lambda lock: lock.acquire(), id="release"),
+    ],
+)
 def test_interrupted_at_any_call_reports_whether_it_holds(
-    tmp_path: Path, lock_type: type[BaseFileLock], thread_local: bool, operation: Literal["acquire", "release"]
+    tmp_path: Path,
+    lock_type: type[BaseFileLock],
+    thread_local: bool,
+    operation: Literal["acquire", "release"],
+    hold_first: Callable[[BaseFileLock], object],
 ) -> None:
     # A with block makes no second call that could correct is_locked, so it must not report a hold the OS dropped.
     lock_path: Final = str(tmp_path / "a")
-    for target in count(1):  # pragma: no branch  # count() never runs out; the call that finishes ends the loop
+    lock = lock_type(lock_path, thread_local=thread_local)
+    hold_first(lock)
+    points: Final = _interrupt_points(lock, getattr(lock, operation))
+    lock.release()
+    for target in range(1, points + 1):
         lock = lock_type(lock_path, thread_local=thread_local)
-        if operation == "release":
-            lock.acquire()
-        if not _interrupted_at_call(lock, target, getattr(lock, operation)):
-            lock.release()
-            break
+        hold_first(lock)
+        with pytest.raises(KeyboardInterrupt):
+            _interrupted_at_call(lock, target, getattr(lock, operation))
         peer = lock_type(lock_path, blocking=False)
-        if lock.is_locked:
-            with pytest.raises(Timeout):
-                peer.acquire()
+        with suppress(Timeout):
+            peer.acquire()
+        assert peer.is_locked != lock.is_locked
         # Windows leaves a soft marker's unlink that the interrupt cut short to the instance's next call.
         lock.release()
+        peer.release()
         with peer:
             assert peer.is_locked
-    assert target > 1
+    assert points > 0
 
 
 @pytest.mark.parametrize(
@@ -1701,32 +1735,36 @@ def test_release_interrupted_below_release_completes(
     tmp_path: Path, lock_type: type[BaseFileLock], thread_local: bool
 ) -> None:
     lock_path: Final = str(tmp_path / "a")
+    lock = lock_type(lock_path, thread_local=thread_local)
+    lock.acquire()
+    points: Final = _interrupt_points(lock, lock.release)
     # Target 1 is the entry of release() itself, which no Python code can cover.
-    for target in count(2):  # pragma: no branch  # count() never runs out; the release that finishes ends the loop
+    for target in range(2, points + 1):
         lock = lock_type(lock_path, thread_local=thread_local)
         lock.acquire()
-        if not _interrupted_at_call(lock, target, lock.release):
-            lock.release()
-            break
+        with pytest.raises(KeyboardInterrupt):
+            _interrupted_at_call(lock, target, lock.release)
         assert not lock.is_locked
         with lock_type(lock_path, blocking=False) as peer:
             assert peer.is_locked
-    assert target > 2
+    assert points > 1
 
 
 def test_acquire_interrupted_after_recording_the_hold_releases_it(tmp_path: Path) -> None:
     # The thread-hold bookkeeping after _mark_descriptor_owned stores the descriptor calls into threading, where a
     # signal can land too.
     lock_path: Final = str(tmp_path / "a")
-    for target in count(1):  # pragma: no branch  # count() never runs out; the acquire that finishes ends the loop
+    lock = FileLock(lock_path)
+    points: Final = _interrupt_points(lock, lock.acquire, callee=threading.current_thread.__code__)
+    lock.release()
+    for target in range(1, points + 1):
         lock = FileLock(lock_path)
-        if not _interrupted_at_call(lock, target, lock.acquire, callee=threading.current_thread.__code__):
-            lock.release()
-            break
+        with pytest.raises(KeyboardInterrupt):
+            _interrupted_at_call(lock, target, lock.acquire, callee=threading.current_thread.__code__)
         assert not lock.is_locked
         with FileLock(lock_path, blocking=False) as peer:
             assert peer.is_locked
-    assert target > 1
+    assert points > 0
 
 
 def test_acquire_after_one_interrupted_once_held_excludes_another_process(tmp_path: Path) -> None:
@@ -1734,7 +1772,8 @@ def test_acquire_after_one_interrupted_once_held_excludes_another_process(tmp_pa
     # the OS lock again, not nest into a hold whose handle the cut-short acquire closed.
     lock_path: Final = str(tmp_path / "a")
     lock: Final = FileLock(lock_path)
-    assert _interrupted_at_call(lock, 1, lock.acquire, callee=threading.current_thread.__code__)
+    with pytest.raises(KeyboardInterrupt):
+        _interrupted_at_call(lock, 1, lock.acquire, callee=threading.current_thread.__code__)
     with lock:
         script = textwrap.dedent(f"""
             from filelock import FileLock, Timeout
