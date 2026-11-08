@@ -13,7 +13,7 @@ from decimal import Decimal
 from errno import EIO, ENOENT
 from threading import Event, Thread
 from types import FrameType, SimpleNamespace
-from typing import TYPE_CHECKING, Final, Literal, NoReturn, TypedDict, cast
+from typing import TYPE_CHECKING, Final, Literal, NoReturn, Protocol, TypedDict, cast
 
 import pytest
 
@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from _typeshed import Unused
     from pytest_mock import MockerFixture
 
 #: Short enough to keep the suite quick, long enough that a loaded runner still refreshes twice before expiry.
@@ -285,18 +286,22 @@ def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: Moc
     assert [(c.reason, c.error) for c in seen] == [("refresh-failed", failure)]
 
 
+class _RefreshCall(Protocol):
+    def __call__(self, path: str, *args: object, **kwargs: object) -> os.stat_result | None: ...
+
+
 @pytest.mark.parametrize(
     ("target", "real"),
     [pytest.param("touch", lease_mod.touch, id="touch"), pytest.param("os.lstat", os.lstat, id="lstat")],
 )
 def test_lease_tolerates_a_transient_refresh_error(
-    marker: Path, mocker: MockerFixture, target: str, real: Callable[..., object]
+    marker: Path, mocker: MockerFixture, target: str, real: _RefreshCall
 ) -> None:
     # A transient ESTALE/EIO on the refresh path that recovers before the lease could lapse must not raise a
     # compromise: the marker was ours last tick, so retry rather than tell the holder to abandon its work.
     ticks = itertools.count()
 
-    def flaky(path: str, *args: object, **kwargs: object) -> object:
+    def flaky(path: str, *args: object, **kwargs: object) -> os.stat_result | None:
         if path.endswith(marker.name) and next(ticks) < 2:
             raise OSError(EIO, "Input/output error")
         return real(path, *args, **kwargs)
@@ -520,7 +525,7 @@ def test_lease_shared_across_threads_has_one_claim(marker: Path) -> None:
     inside, resume = Event(), Event()
 
     # Interpreters run a profile hook with tracing off, so coverage never records its body.
-    def pause_in_claim_creation(frame: FrameType, event: str, _arg: object) -> None:  # pragma: no cover
+    def pause_in_claim_creation(frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover
         if event == "call" and type(frame.f_locals.get("self")).__name__ == "_LeaseClaim":
             inside.set()
             resume.wait()
