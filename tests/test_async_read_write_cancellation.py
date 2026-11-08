@@ -394,6 +394,14 @@ def _patch_async_acquire_and_rollback_failure(
     return acquire_error, rollback_error, prior_rollback_error
 
 
+@pytest.mark.asyncio
+async def test_close_cancellation_leaves_a_supplied_executor_running(lock_file: str, mocker: MockerFixture) -> None:
+    supplied = ThreadPoolExecutor(max_workers=1)
+    await _cancel_close_of_write_lock(lock_file, mocker, supplied)
+    assert supplied.submit(int).result(timeout=5) == 0
+    supplied.shutdown(wait=True)
+
+
 async def _cancel_close_of_write_lock(lock_file: str, mocker: MockerFixture, executor: Executor | None) -> Executor:
     rollback_started = asyncio.Event()
     finish_rollback = threading.Event()
@@ -411,14 +419,6 @@ async def _cancel_close_of_write_lock(lock_file: str, mocker: MockerFixture, exe
     assert_cancellation_message(info.value, "cancel close")
     assert_read_write_lock_state(lock_file, "read", available=True)
     return owned
-
-
-@pytest.mark.asyncio
-async def test_close_cancellation_leaves_a_supplied_executor_running(lock_file: str, mocker: MockerFixture) -> None:
-    supplied = ThreadPoolExecutor(max_workers=1)
-    await _cancel_close_of_write_lock(lock_file, mocker, supplied)
-    assert supplied.submit(int).result(timeout=5) == 0
-    supplied.shutdown(wait=True)
 
 
 @pytest.mark.asyncio

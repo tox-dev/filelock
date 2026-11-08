@@ -21,8 +21,8 @@ from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
-    from contextlib import AbstractAsyncContextManager
     from concurrent.futures import Executor
+    from contextlib import AbstractAsyncContextManager
 
     from pytest_mock import MockerFixture
 
@@ -133,7 +133,7 @@ async def test_async_raw_acquire_release_round_trip(tmp_path: Path) -> None:
     "holder",
     [
         pytest.param(lambda lock: lock.write_lock(timeout=0), id="contended"),
-        pytest.param(lambda lock: nullcontext(), id="free"),
+        pytest.param(lambda _lock: nullcontext(), id="free"),
     ],
 )
 async def test_async_acquire_rejects_invalid_timeout(
