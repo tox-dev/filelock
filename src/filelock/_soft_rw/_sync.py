@@ -763,7 +763,7 @@ class _Locks:
     transaction: threading.Lock
 
 
-@dataclass(kw_only=True)
+@dataclass(slots=True, kw_only=True)
 class _Hold:
     # Everything that exists only while a lock is held; ``None`` when the instance has no lock.
     level: int

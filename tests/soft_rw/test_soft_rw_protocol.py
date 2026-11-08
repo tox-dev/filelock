@@ -1027,7 +1027,7 @@ def test_model_never_overlaps_and_always_progresses(seed: int, crash_probability
     assert scheduler.crashes == sum(outcome.crashed for outcome in model.outcomes)
 
 
-@dataclass(kw_only=True)
+@dataclass(slots=True, kw_only=True)
 class _Scheduler:
     # Discrete-event scheduler: a parked participant is runnable once its wake time has passed, the clock only jumps
     # when nothing is runnable, and every scheduled operation costs one step. A runnable participant waits at most
@@ -1264,7 +1264,7 @@ def _key(path: str) -> str:
     return path.replace("\\", "/")
 
 
-@dataclass(kw_only=True)
+@dataclass(slots=True, kw_only=True)
 class _Outcome:
     mode: Literal["read", "write"]
     granted_at: int | None = None

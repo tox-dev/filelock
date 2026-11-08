@@ -68,7 +68,7 @@ class _Heartbeat:
     stop: Event
 
 
-@dataclass(kw_only=True)
+@dataclass(slots=True, kw_only=True)
 class _LeaseClaim:
     # The state of one claim: its token, its heartbeat, and how that claim was lost.
     token: str | None = None
