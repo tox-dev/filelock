@@ -68,12 +68,14 @@ class _Heartbeat:
     stop: Event
 
 
-@dataclass(slots=True, kw_only=True)
 class _LeaseClaim:
     # The state of one claim: its token, its heartbeat, and how that claim was lost.
-    token: str | None = None
-    compromise: LeaseCompromise | None = None
-    heartbeat: _Heartbeat | None = None
+    __slots__ = ("compromise", "heartbeat", "token")
+
+    def __init__(self) -> None:
+        self.token: str | None = None
+        self.compromise: LeaseCompromise | None = None
+        self.heartbeat: _Heartbeat | None = None
 
 
 class SoftFileLease(MarkerSoftFileLock):

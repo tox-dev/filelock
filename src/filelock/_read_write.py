@@ -349,7 +349,6 @@ class _ForkSafeConnection(sqlite3.Connection):
             self._decrement_escrow = decrement
 
 
-@dataclass(slots=True, kw_only=True)
 class _OwnedConnection:
     # The connection of one lock, closed when the lock is collected.
     #
@@ -357,7 +356,10 @@ class _OwnedConnection:
     # connection while the singleton cache still hands the lock out, and a thread given the lock would nest into a hold
     # with no database lock behind it. The lock alone refers to this holder, so the holder is collected once the cache
     # no longer finds the lock.
-    connection: _ForkSafeConnection | None = None
+    __slots__ = ("connection",)
+
+    def __init__(self) -> None:
+        self.connection: _ForkSafeConnection | None = None
 
     def __del__(self) -> None:
         if (connection := self.connection) is not None:
