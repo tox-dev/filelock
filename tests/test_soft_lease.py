@@ -89,19 +89,6 @@ class _Reports:
         self.landed.set()
 
 
-def _count_refreshes(mocker: MockerFixture) -> Semaphore:
-    # Releases one permit per refresh the heartbeat makes, so a test waits for ticks rather than sleeping through them.
-    refreshes: Final = Semaphore(0)
-    real: Final = lease_mod.touch
-
-    def touch_and_count(name: str, *, fd: int) -> None:
-        real(name, fd=fd)
-        refreshes.release()
-
-    mocker.patch("filelock._lease.touch", side_effect=touch_and_count, autospec=True)
-    return refreshes
-
-
 def test_lease_publishes_its_claim(marker: Path) -> None:
     lease = _lease(marker)
 
@@ -276,13 +263,6 @@ def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None
     assert [(c.reason, c.token, c.lock_file) for c in reports.seen] == [("marker-missing", token, str(marker))]
 
 
-def _wait_until(condition: Callable[[], bool]) -> None:
-    # Bounded, so a heartbeat that never gets there fails the assertion after it instead of hanging the run.
-    deadline: Final = time.monotonic() + _DURATION * 20
-    while not condition() and time.monotonic() < deadline:
-        time.sleep(_HEARTBEAT / 2)
-
-
 @NEEDS_UNLINK_OPEN_FILE
 def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None:  # pragma: needs unlink-open-file
     reports = _Reports()
@@ -416,6 +396,13 @@ def test_lease_records_the_compromise_without_a_callback(marker: Path) -> None: 
     assert compromise.reason == "marker-missing"
 
 
+def _wait_until(condition: Callable[[], bool]) -> None:
+    # Bounded, so a heartbeat that never gets there fails the assertion after it instead of hanging the run.
+    deadline: Final = time.monotonic() + _DURATION * 20
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(_HEARTBEAT / 2)
+
+
 def test_lease_holds_an_uncompromised_claim(marker: Path, mocker: MockerFixture) -> None:
     refreshes = _count_refreshes(mocker)
     lease = _lease(marker)
@@ -424,6 +411,19 @@ def test_lease_holds_an_uncompromised_claim(marker: Path, mocker: MockerFixture)
         for _ in range(3):
             assert refreshes.acquire(timeout=_DEADLINE)
         assert lease.compromise is None
+
+
+def _count_refreshes(mocker: MockerFixture) -> Semaphore:
+    # Releases one permit per refresh the heartbeat makes, so a test waits for ticks rather than sleeping through them.
+    refreshes: Final = Semaphore(0)
+    real: Final = lease_mod.touch
+
+    def touch_and_count(name: str, *, fd: int) -> None:
+        real(name, fd=fd)
+        refreshes.release()
+
+    mocker.patch("filelock._lease.touch", side_effect=touch_and_count, autospec=True)
+    return refreshes
 
 
 @NEEDS_UNLINK_OPEN_FILE
