@@ -6,6 +6,30 @@
 
 .. towncrier release notes start
 
+.. _release-4-2-10:
+
+*********************
+ 4.2.10 (2026-11-09)
+*********************
+
+.. _release-4-2-10-fixed:
+
+Fixed
+=====
+
+- Contended :class:`~filelock.FileLock` and :class:`~filelock.SoftFileLock` acquisitions now raise
+  :class:`~filelock.Timeout` when elapsed time reaches the requested timeout. A clock that landed exactly on the
+  deadline previously left a waiter retrying with zero-length sleeps indefinitely (:pr:`922`) by :user:`gaborbernat`.
+
+.. _release-4-2-10-packaging:
+
+Packaging
+=========
+
+- Every wheel now carries a `PEP 770 <https://peps.python.org/pep-0770/>`_ CycloneDX SBOM in its ``.dist-info/sboms``
+  directory, written at build time by `python-sbom <https://github.com/tox-dev/python-sbom>`_ (:pr:`921`) by
+  :user:`gaborbernat`.
+
 .. _release-4-2-9:
 
 ********************
