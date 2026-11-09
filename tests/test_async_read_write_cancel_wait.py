@@ -10,9 +10,7 @@ import pytest
 pytest.importorskip("sqlite3")
 
 
-from filelock import AsyncReadWriteLock, ReadWriteLock, Timeout
-from filelock._soft_rw._async import AsyncSoftReadWriteLock
-from filelock._soft_rw._sync import SoftReadWriteLock
+from filelock import AsyncReadWriteLock, AsyncSoftReadWriteLock, ReadWriteLock, SoftReadWriteLock, Timeout
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:

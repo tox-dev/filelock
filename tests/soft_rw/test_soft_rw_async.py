@@ -13,11 +13,9 @@ from typing import TYPE_CHECKING, Concatenate, Final, Generic, Literal, ParamSpe
 
 import pytest
 
-from filelock import Timeout
-from filelock._soft_rw._async import AsyncSoftReadWriteLock
+from filelock import AsyncSoftReadWriteLock, SoftReadWriteLock, Timeout
 from filelock._soft_rw._protocol import GenerationLog, Snapshot
 from filelock._soft_rw._storage import OsFiles
-from filelock._soft_rw._sync import SoftReadWriteLock
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
@@ -27,7 +25,7 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
-    from filelock._lease import LeaseCompromise
+    from filelock import LeaseCompromise
 
 pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
