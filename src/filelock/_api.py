@@ -1259,7 +1259,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         if cancel_check is not None and cancel_check():
             _LOGGER.debug("Cancellation requested for lock %s on %s", lock_id, lock_filename)
             return True
-        if 0 <= timeout < time.perf_counter() - start_time:
+        if 0 <= timeout <= time.perf_counter() - start_time:
             _LOGGER.debug("Timeout on acquiring lock %s on %s", lock_id, lock_filename)
             return True
         return False

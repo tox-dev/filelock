@@ -2304,6 +2304,27 @@ def test_poll_wait_stays_within_timeout(tmp_path: Path, lock_type: type[BaseFile
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_timeout_at_exact_deadline_with_virtual_clock(
+    tmp_path: Path, lock_type: type[BaseFileLock], mocker: MockerFixture
+) -> None:
+    elapsed = 0.0
+
+    def advance_clock(delay: float) -> None:
+        nonlocal elapsed
+        assert delay > 0
+        elapsed += delay
+
+    lock_path = tmp_path / "test.lock"
+    with lock_type(lock_path):
+        mocker.patch(
+            "filelock._api.time", new=mocker.Mock(spec=time, perf_counter=lambda: elapsed, sleep=advance_clock)
+        )
+        with pytest.raises(Timeout):
+            lock_type(lock_path).acquire(timeout=1, poll_interval=0.25)
+    assert elapsed == 1
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_non_blocking_gives_timeout_not_deadlock(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     lock_path = tmp_path / "test.lock"
     with lock_type(lock_path):
