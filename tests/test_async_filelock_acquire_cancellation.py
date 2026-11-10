@@ -30,11 +30,11 @@ async def test_backend_cancellation_after_acquire_rolls_back(tmp_path: Path) -> 
     released = False
 
     class CancellingFileLock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+        async def _acquire(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = 1
             raise backend_cancellation
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+        async def _release(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
             nonlocal released
             released = True
             self._context.lock_file_fd = None
@@ -83,11 +83,11 @@ def _lock_failing_rollback_once(
     fail_rollback = True
 
     class CancellingFileLock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+        async def _acquire(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = 1
             raise backend_cancellation
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+        async def _release(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
             nonlocal fail_rollback
             if fail_rollback:
                 fail_rollback = False
@@ -126,13 +126,13 @@ async def test_caller_and_backend_cancellation_both_surface(tmp_path: Path) -> N
     backend_cancellation = asyncio.CancelledError("backend canceled")
 
     class CancellingFileLock(BaseAsyncFileLock):
-        async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+        async def _acquire(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = 1
             acquire_started.set()
             await finish_acquire.wait()
             raise backend_cancellation
 
-        async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+        async def _release(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
             self._context.lock_file_fd = None
 
     lock = CancellingFileLock(tmp_path / "a", run_in_executor=False, context_error_policy="group")
