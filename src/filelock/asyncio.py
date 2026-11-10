@@ -281,7 +281,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         await self.acquire()
         return self
 
-    async def acquire(  # ty: ignore[invalid-method-override]  # the async signature differs from the base class
+    async def acquire(  # ty: ignore[incompatible-method-override]  # the async signature differs from the base class
         self,
         timeout: float | None = None,
         poll_interval: float | None = None,
@@ -653,7 +653,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """
         await self._release_in_context(exc_value)
 
-    async def _release_in_context(  # ty: ignore[invalid-method-override]  # the async signature differs from the base class
+    async def _release_in_context(  # ty: ignore[incompatible-method-override]  # the async signature differs from the base class
         self, body_error: BaseException | None
     ) -> None:
         # The async counterpart of BaseFileLock._release_in_context: await release, then apply the same policy.
@@ -683,7 +683,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                         )
             _raise_body_and_release(body_error, release_error)
 
-    async def release(self, force: bool = False) -> None:  # ty: ignore[invalid-method-override]  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
+    async def release(self, force: bool = False) -> None:  # ty: ignore[incompatible-method-override]  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         """
         Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
         itself may be deleted automatically, the behavior is platform-specific.

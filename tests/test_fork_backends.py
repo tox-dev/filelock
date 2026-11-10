@@ -318,14 +318,14 @@ class _CoroutineDescriptorLock(BaseAsyncFileLock):
     release_error: BaseException | None = None
     release_error_before_close: BaseException | None = None
 
-    async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+    async def _acquire(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
         if self.acquire_error_before_descriptor is not None:
             raise self.acquire_error_before_descriptor
         self.descriptor = self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
         if self.acquire_error is not None:  # pragma: needs fork
             raise self.acquire_error
 
-    async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+    async def _release(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
         if self.release_error_before_close is not None:  # pragma: needs fork
             raise self.release_error_before_close
         os.close(cast("int", self._context.lock_file_fd))

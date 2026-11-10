@@ -669,7 +669,7 @@ descriptors: list[int] = []
 child_status = -1
 
 class OverlapLock(BaseAsyncFileLock):
-    async def _acquire(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+    async def _acquire(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
         global child_status
         descriptor = self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
         descriptors.append(descriptor)
@@ -693,7 +693,7 @@ class OverlapLock(BaseAsyncFileLock):
         child_status = os.waitstatus_to_exitcode(status)
         allow_return.set()
 
-    async def _release(self) -> None:  # ty: ignore[invalid-method-override]  # coroutine backends are supported
+    async def _release(self) -> None:  # ty: ignore[incompatible-method-override]  # coroutine backends are supported
         os.close(self._context.lock_file_fd if self._context.lock_file_fd is not None else -1)
         self._context.lock_file_fd = None
 
