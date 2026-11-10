@@ -23,9 +23,9 @@ def _clear_singleton_caches() -> Generator[None]:
     for cache in caches:
         cache.clear()
     yield
-    # One loop for both caches, so a platform where only one kind of lock runs still closes through it.
+    # SQLite variants close explicitly; only the soft variants can leave a live cache entry after a passing test.
     for lock in filter(None, [ref() for cache in caches for ref in list(cache.valuerefs())]):
-        lock.close()
+        lock.close()  # pragma: needs hard-link
     for cache in caches:
         cache.clear()
 
