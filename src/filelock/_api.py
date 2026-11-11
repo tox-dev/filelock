@@ -348,6 +348,12 @@ def _canonical(path: str | os.PathLike[str]) -> str:
     return os.path.join(_RESOLVE_DIR(parent or os.curdir), name)  # ruff:ignore[os-path-join]  # string join matches abspath/realpath
 
 
+def _path_key(path: str) -> str:
+    # Drive and UNC prefixes ignore case. Keep names intact: Windows directories can opt into case sensitivity.
+    drive, tail = os.path.splitdrive(path)
+    return drive.lower() + tail
+
+
 class _ThreadLocalRegistry(local):
     def __init__(self) -> None:
         super().__init__()
@@ -429,13 +435,13 @@ class FileLockMeta(ABCMeta):
         # race besides. ReadWriteLock and SoftReadWriteLock already guard their singleton caches this way.
         # Key the cache on the canonical form so equivalent spellings of one path share a singleton, and it matches the
         # deadlock-registry key acquire() uses.
-        singleton_key = _canonical(lock_file)
+        singleton_key = _path_key(_canonical(lock_file))
         with cls._instances_lock:
             # A cached lock resolves its relative path at each acquisition and pins it for the hold. After a chdir, or
             # once a parent symlink points elsewhere, an unheld lock may name another file than this key; a held one
             # names the file it pinned.
-            if (instance := cls._instances.get(singleton_key)) is None or _canonical(
-                instance._lock_path  # ruff:ignore[private-member-access]  # the metaclass owns the instance it returns
+            if (instance := cls._instances.get(singleton_key)) is None or _path_key(
+                _canonical(instance._lock_path)  # ruff:ignore[private-member-access]  # the metaclass owns the instance it returns
             ) != singleton_key:
                 if singleton_key in cls._instances_under_construction:  # pragma: needs fork
                     msg = f"Singleton lock construction is already active for {lock_file!s}"
@@ -1053,6 +1059,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             raise RuntimeError(msg)
 
     def _registry_key(self, canonical: str) -> Hashable:
+        canonical = _path_key(canonical)
         return canonical if (scope := self._deadlock_scope()) is None else (scope, canonical)
 
     @staticmethod
@@ -2282,6 +2289,7 @@ __all__ = [
     "_ensure_current_process",
     "_fork_transition",
     "_grouped_errors",
+    "_path_key",
     "_raise_body_and_release",
     "_raise_chained_errors",
     "_raise_cleanup_errors",
