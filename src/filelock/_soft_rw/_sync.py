@@ -27,6 +27,7 @@ from filelock._api import (
     _check_blocking,
     _check_timeout_max,
     _ensure_current_process,
+    _path_key,
     _register_fork_class,
     _register_fork_object,
     _resolve_read_write_timeout,
@@ -83,7 +84,7 @@ class _SoftRWMeta(type):
             )
 
         # Keyed like the log root, so one instance never spans two logs.
-        normalized = _canonical(lock_file)
+        normalized = _path_key(_canonical(lock_file))
         with cls._instances_lock:
             instance = cls._instances.get(normalized)
             if instance is None:
