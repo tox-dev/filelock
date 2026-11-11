@@ -427,6 +427,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     ) -> None:
         lock_id = id(self)
         lock_filename = self.lock_file
+        attempt = 0
         await self._off_loop(functools.partial(ensure_directory_exists, self._lock_path))
         while True:
             self._raise_if_inherited()
@@ -443,7 +444,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 start_time=start_time,
             ):
                 raise Timeout(lock_filename, await self._off_loop(self._unprobeable_holder))
-            delay = poll_interval
+            attempt += 1
+            delay = self._poll_delay(poll_interval, attempt)
             if timeout >= 0:
                 delay = min(delay, max(start_time + timeout - time.perf_counter(), 0.0))
             _LOGGER.debug("Lock %s not acquired on %s, waiting %s seconds ...", lock_id, lock_filename, delay)

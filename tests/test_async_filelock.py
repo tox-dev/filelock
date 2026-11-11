@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+import math
 import os
 import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter exit finalizes a held lock
@@ -572,6 +573,26 @@ async def test_poll_wait_stays_within_timeout(tmp_path: Path, lock_type: type[Ba
         with pytest.raises(Timeout):
             await lock_type(lock_path).acquire(timeout=0.05, poll_interval=10)
         assert time.perf_counter() - start < 5
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_poll_contention_invokes_poll_delay(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
+    lock_path = tmp_path / "test.lock"
+    delays: list[tuple[float, int]] = []
+
+    class TrackedLock(lock_type):
+        def _poll_delay(self, poll_interval: float, attempt: int) -> float:
+            delays.append((poll_interval, attempt))
+            return super()._poll_delay(poll_interval, attempt)
+
+    async with lock_type(lock_path):
+        with pytest.raises(Timeout):
+            await TrackedLock(lock_path).acquire(timeout=0.05, poll_interval=0.01)
+
+    assert delays
+    assert [attempt for _, attempt in delays] == list(range(1, len(delays) + 1))
+    assert all(math.isclose(poll_interval, 0.01) for poll_interval, _ in delays)
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
