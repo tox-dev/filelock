@@ -48,6 +48,9 @@ from filelock._api import (  # simplint: ignore[private-import-path]  # shared p
     ensure_current_process as _ensure_current_process,
 )
 from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    path_key as _path_key,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
     register_fork_class as _register_fork_class,
 )
 from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
@@ -118,7 +121,7 @@ class _SoftRWMeta(type):
             )
 
         # Keyed like the log root, so one instance never spans two logs.
-        normalized = _canonical(lock_file)
+        normalized = _path_key(_canonical(lock_file))
         with cls._instances_lock:
             instance = cls._instances.get(normalized)
             if instance is None:
