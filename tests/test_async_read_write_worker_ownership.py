@@ -8,9 +8,7 @@ import pytest
 
 pytest.importorskip("sqlite3")
 
-from filelock import AsyncReadWriteLock, ReadWriteLock
-from filelock._soft_rw._async import AsyncSoftReadWriteLock
-from filelock._soft_rw._sync import SoftReadWriteLock
+from filelock import AsyncReadWriteLock, AsyncSoftReadWriteLock, ReadWriteLock, SoftReadWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator

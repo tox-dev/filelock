@@ -20,13 +20,11 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock import AsyncSoftReadWriteLock, SoftFileLockProtocolError, Timeout
-from filelock._lease import LeaseCompromise
+from filelock import AsyncSoftReadWriteLock, LeaseCompromise, SoftFileLockProtocolError, SoftReadWriteLock, Timeout
 from filelock._soft_rw import _storage as storage_mod
 from filelock._soft_rw import _sync as sync_mod
 from filelock._soft_rw._protocol import GenerationLog, Participant, Snapshot, encode_holder, new_token
 from filelock._soft_rw._storage import OsFiles
-from filelock._soft_rw._sync import SoftReadWriteLock
 from tests.capability_marks import (
     NEEDS_FILE_MODE,
     NEEDS_FOREIGN_STICKY_TMP,
