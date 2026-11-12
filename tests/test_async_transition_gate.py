@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock._async import _AsyncTransitionGate, _AsyncTransitionUnavailableError
+from filelock._async import AsyncTransitionGate, AsyncTransitionUnavailableError
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 @pytest.mark.asyncio
 async def test_hold_waits_for_a_predecessor_before_entering() -> None:
-    gate = _AsyncTransitionGate()
+    gate = AsyncTransitionGate()
     order: list[str] = []
     first_holding = asyncio.Event()
     release_first = asyncio.Event()
@@ -36,7 +36,7 @@ async def test_hold_waits_for_a_predecessor_before_entering() -> None:
     first_task = asyncio.create_task(first())
     await first_holding.wait()
     second_task = asyncio.create_task(second())
-    await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a parked-waiter signal
+    await asyncio.sleep(  # simplint: ignore[sleep-in-test]  # needs a parked-waiter signal
         0.05
     )  # second parks on the predecessor instead of entering
     assert order == ["first-in"]
@@ -48,7 +48,7 @@ async def test_hold_waits_for_a_predecessor_before_entering() -> None:
 
 @pytest.mark.asyncio
 async def test_hold_for_acquire_deadline_preempts_long_poll() -> None:
-    gate = _AsyncTransitionGate()
+    gate = AsyncTransitionGate()
 
     async def wait_for_turn() -> None:
         async with contextlib.AsyncExitStack() as stack:
@@ -59,14 +59,14 @@ async def test_hold_for_acquire_deadline_preempts_long_poll() -> None:
             )
 
     async with gate.hold():
-        with pytest.raises(_AsyncTransitionUnavailableError):
+        with pytest.raises(AsyncTransitionUnavailableError):
             await asyncio.wait_for(wait_for_turn(), timeout=0.2)
 
 
 @pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_hold_canceled_while_waiting_takes_its_ticket_out() -> None:
-    gate = _AsyncTransitionGate()
+    gate = AsyncTransitionGate()
     first_holding = asyncio.Event()
     release_first = asyncio.Event()
 
@@ -82,7 +82,7 @@ async def test_hold_canceled_while_waiting_takes_its_ticket_out() -> None:
     first_task = asyncio.create_task(first())
     await first_holding.wait()
     second_task = asyncio.create_task(second())
-    await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a parked-waiter signal
+    await asyncio.sleep(  # simplint: ignore[sleep-in-test]  # needs a parked-waiter signal
         0.05
     )  # second is parked on the predecessor
     second_task.cancel()
@@ -106,7 +106,7 @@ async def test_hold_canceled_while_waiting_takes_its_ticket_out() -> None:
 
 @pytest.mark.asyncio
 async def test_hold_interrupted_while_waiting_takes_its_ticket_out() -> None:
-    gate = _AsyncTransitionGate()
+    gate = AsyncTransitionGate()
     first_holding = asyncio.Event()
     release_first = asyncio.Event()
 
@@ -142,11 +142,11 @@ class _Interrupt(BaseException):
 async def test_hold_interrupted_while_joining_leaves_the_gate_free(
     mocker: MockerFixture, entry: str, *, joined: bool
 ) -> None:
-    gate: Final = _AsyncTransitionGate()
-    real_join: Final = _AsyncTransitionGate._join
+    gate: Final = AsyncTransitionGate()
+    real_join: Final = AsyncTransitionGate._join
     interrupted = False
 
-    def join_then_interrupt(instance: _AsyncTransitionGate, ticket: ConcurrentFuture[None]) -> None:
+    def join_then_interrupt(instance: AsyncTransitionGate, ticket: ConcurrentFuture[None]) -> None:
         nonlocal interrupted
         if not interrupted:
             interrupted = True
@@ -155,7 +155,7 @@ async def test_hold_interrupted_while_joining_leaves_the_gate_free(
             raise _Interrupt
         real_join(instance, ticket)
 
-    mocker.patch.object(_AsyncTransitionGate, "_join", autospec=True, side_effect=join_then_interrupt)
+    mocker.patch.object(AsyncTransitionGate, "_join", autospec=True, side_effect=join_then_interrupt)
 
     def hold() -> contextlib.AbstractAsyncContextManager[None]:
         if entry == "hold":
@@ -173,11 +173,11 @@ async def test_hold_interrupted_while_joining_leaves_the_gate_free(
 
 @pytest.mark.asyncio
 async def test_parked_caller_settles_a_head_whose_hand_off_was_lost(mocker: MockerFixture) -> None:
-    gate: Final = _AsyncTransitionGate()
-    real_settle: Final = _AsyncTransitionGate._settle_head_locked
+    gate: Final = AsyncTransitionGate()
+    real_settle: Final = AsyncTransitionGate._settle_head_locked
     calls = 0
 
-    def lose_first_hand_off(instance: _AsyncTransitionGate) -> None:
+    def lose_first_hand_off(instance: AsyncTransitionGate) -> None:
         nonlocal calls
         calls += 1
         if calls > 1:
@@ -198,7 +198,7 @@ async def test_parked_caller_settles_a_head_whose_hand_off_was_lost(mocker: Mock
     await first_holding.wait()
     second_task = asyncio.create_task(second())
     await asyncio.sleep(0)
-    mocker.patch.object(_AsyncTransitionGate, "_settle_head_locked", autospec=True, side_effect=lose_first_hand_off)
+    mocker.patch.object(AsyncTransitionGate, "_settle_head_locked", autospec=True, side_effect=lose_first_hand_off)
 
     release_first.set()
     async with asyncio.timeout(1):
@@ -212,7 +212,7 @@ async def test_wait_for_turn_returns_immediately_when_already_done() -> None:
     ticket: ConcurrentFuture[None] = ConcurrentFuture()
     ticket.set_result(None)
 
-    await _AsyncTransitionGate()._wait_for_turn(
+    await AsyncTransitionGate()._wait_for_turn(
         ticket, blocking=True, cancel_check=None, deadline=None, poll_interval=0.01
     )
 

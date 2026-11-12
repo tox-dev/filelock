@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock._identity
+import filelock._identity  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock._identity import host_name, owner_is_stale, process_alive, process_start_token
 from tests.pid_namespace_helpers import (
     INITIAL_PID_NAMESPACE,
@@ -141,6 +141,27 @@ def test_process_start_token_is_int_for_self() -> None:
 
 def test_process_start_token_none_for_dead() -> None:
     assert process_start_token(_DEAD_PID) is None
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@_NEEDS_START_TOKEN
+@pytest.mark.parametrize(
+    "stat",
+    [
+        pytest.param(b"1 (short) S", id="truncated"),
+        pytest.param(b"1 (bad) " + b"0 " * 19 + b"not-an-integer", id="invalid-starttime"),
+    ],
+)
+def test_process_start_token_rejects_malformed_stat(stat: bytes, mocker: MockerFixture) -> None:
+    path = Path(f"/proc/{os.getpid()}/stat")
+    read_bytes = Path.read_bytes
+    mocker.patch.object(
+        Path,
+        "read_bytes",
+        autospec=True,
+        side_effect=lambda current: stat if current == path else read_bytes(current),
+    )
+    assert process_start_token(os.getpid()) is None
 
 
 @_LINUX_ONLY  # pragma: linux cover

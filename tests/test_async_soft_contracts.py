@@ -50,7 +50,7 @@ async def test_async_lease_heartbeat_keeps_a_live_claim(marker: Path) -> None:
     lease = AsyncSoftFileLease(str(marker), lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT)
 
     async with lease:
-        await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a clock hook for claim duration
+        await asyncio.sleep(  # simplint: ignore[sleep-in-test]  # needs a clock hook for claim duration
             _DURATION * 1.5
         )  # only a refreshing heartbeat keeps the claim past this
         assert lease.compromise is None

@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock._soft
+import filelock._soft  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
-from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, _read_lock_file
+from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, read_lock_file
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import exchange_names
 from tests.capability_marks import (
@@ -597,7 +597,7 @@ def test_stale_break_finishes_a_claim_an_unreadable_record_interrupted(  # pragm
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     foreign: Final = record.replace(_HOST, "elsewhere")
     _break_name(lock).write_text(foreign, encoding="utf-8")
-    read: Final = _read_lock_file
+    read: Final = read_lock_file
 
     def read_unless_claimed(path: str) -> tuple[str | None, os.stat_result]:
         if ".restore." in path:
@@ -605,7 +605,7 @@ def test_stale_break_finishes_a_claim_an_unreadable_record_interrupted(  # pragm
         return read(path)
 
     _refuse_returning_a_claim(mocker)
-    mocker.patch("filelock._soft._read_lock_file", new=read_unless_claimed)
+    mocker.patch("filelock._soft.read_lock_file", new=read_unless_claimed)
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
     left: Final = list(tmp_path.glob(f"test.lock.restore.{os.getpid()}.*"))
@@ -758,14 +758,14 @@ def test_stale_break_releases_the_registration_when_recovery_is_interrupted(  # 
     def read_the_claim_then_interrupt(path: str) -> tuple[str | None, os.stat_result]:
         if ".restore." in path:
             raise KeyboardInterrupt
-        return _read_lock_file(path)
+        return read_lock_file(path)
 
     def exchange_then_interrupt(*_names: str) -> bool:
         raise KeyboardInterrupt
 
     target, interruption = {
         "rename": ("pathlib.Path.rename", rename_then_interrupt),
-        "read": ("filelock._soft._read_lock_file", read_the_claim_then_interrupt),
+        "read": ("filelock._soft.read_lock_file", read_the_claim_then_interrupt),
         "exchange": ("filelock._soft.exchange_names", exchange_then_interrupt),
     }[interrupted]
     mocker.patch(target, new=interruption)
@@ -824,7 +824,11 @@ def test_stale_break_exchanges_back_after_the_breaker_that_took_its_marker(  # p
 
     _lose_to_a_live_holder(lock, _live(record), mocker, lambda _aside, path: exchange_names(str(peer), path))
     mocker.patch(
-        "filelock._util.time", wraps=time, sleep=mocker.create_autospec(time.sleep, side_effect=peer_exchanges_back)
+        "filelock._util.time",
+        autospec=True,
+        wraps=time,
+        monotonic=mocker.create_autospec(time.monotonic, side_effect=time.monotonic),
+        sleep=mocker.create_autospec(time.sleep, side_effect=peer_exchanges_back),
     )
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
@@ -869,7 +873,9 @@ def test_stale_break_opens_a_ring_of_breakers_holding_each_others_markers(  # pr
     _lose_to_a_live_holder(lock, _live(record), mocker, peer_then_our_exchange_out_of_turn)
     mocker.patch(
         "filelock._util.time",
+        autospec=True,
         wraps=time,
+        monotonic=mocker.create_autospec(time.monotonic, side_effect=time.monotonic),
         sleep=mocker.create_autospec(time.sleep, side_effect=peer_exchanges_back_once_it_stands_at_the_path),
     )
     with pytest.raises(Timeout):
@@ -1179,7 +1185,7 @@ def test_socket_lock_file_self_heals(lock_path: Path) -> None:
 def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     mock_read: MockType = mocker.patch(
-        "filelock._soft._read_lock_file", side_effect=OSError("read failed"), autospec=True
+        "filelock._soft.read_lock_file", side_effect=OSError("read failed"), autospec=True
     )
     _assert_times_out(lock_path)
     mock_read.assert_called()
@@ -1918,7 +1924,7 @@ def test_lock_with_a_non_decimal_number_names_no_holder(lock_path: Path, content
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
-@pytest.mark.parametrize("oplocked_lock_path", [_holder(os.getpid())], indirect=True, ids=["live-marker"])
+@pytest.mark.parametrize("oplocked_lock_path", [pytest.param(_holder(os.getpid()), id="live-marker")], indirect=True)
 def test_soft_contender_keeps_its_deadline_under_an_oplocked_live_marker(oplocked_lock_path: Path) -> None:
     lock = SoftFileLock(oplocked_lock_path, is_singleton=False)
 

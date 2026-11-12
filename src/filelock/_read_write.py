@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
 __lazy_modules__ = [
     "collections",
-    "filelock._error",
-    "filelock._identity",
     "hashlib",
     "itertools",
     "pathlib",
     "secrets",
     "tempfile",
+    f"{__spec__.parent}._error",
+    f"{__spec__.parent}._identity",
+    f"{__spec__.parent}._windows",
 ]
 
 import hashlib
@@ -29,41 +37,83 @@ from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
 from weakref import WeakValueDictionary
 
-from filelock._api import (
+from ._api import (
     AcquireReturnProxy,
-    _acquire_thread_lock,
-    _canonical,
-    _check_blocking,
-    _ensure_current_process,
-    _fork_transition,
-    _raise_chained_errors,
-    _register_fork_class,
-    _register_fork_object,
-    _register_owned_descriptor,
-    _resolve_lazy_imports_before_shutdown,
-    _resolve_read_write_timeout,
-    _seconds,
-    _timeout_behavior,
-    _unregister_owned_descriptor,
 )
-from filelock._error import Timeout
-from filelock._identity import host_name, owner_is_stale, process_start_token
+from ._api import (
+    acquire_thread_lock as _acquire_thread_lock,
+)
+from ._api import (
+    canonical as _canonical,
+)
+from ._api import (
+    check_blocking as _check_blocking,
+)
+from ._api import (
+    ensure_current_process as _ensure_current_process,
+)
+from ._api import (
+    fork_transition as _fork_transition,
+)
+from ._api import (
+    raise_chained_errors as _raise_chained_errors,
+)
+from ._api import (
+    register_fork_class as _register_fork_class,
+)
+from ._api import (
+    register_fork_object as _register_fork_object,
+)
+from ._api import (
+    register_owned_descriptor as _register_owned_descriptor,
+)
+from ._api import (
+    resolve_lazy_imports_before_shutdown as _resolve_lazy_imports_before_shutdown,
+)
+from ._api import (
+    resolve_read_write_timeout as _resolve_read_write_timeout,
+)
+from ._api import (
+    seconds as _seconds,
+)
+from ._api import (
+    timeout_behavior as _timeout_behavior,
+)
+from ._api import (
+    unregister_owned_descriptor as _unregister_owned_descriptor,
+)
+from ._error import Timeout
+from ._identity import (
+    host_name,
+    owner_is_stale,
+    process_start_token,
+)
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._windows import (
-        _directory_is_private,
-        _identity_at,
-        _identity_of_fd,
-        _make_private_directory,
-        _open_non_reparse_fd,
-        _pinned,
+    from ._windows import (
+        directory_is_private as _directory_is_private,
+    )
+    from ._windows import (
+        identity_at as _identity_at,
+    )
+    from ._windows import (
+        identity_of_fd as _identity_of_fd,
+    )
+    from ._windows import (
+        make_private_directory as _make_private_directory,
+    )
+    from ._windows import (
+        open_non_reparse_fd as _open_non_reparse_fd,
+    )
+    from ._windows import (
+        pinned as _pinned,
     )
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
     from typing import Self
 
-    from _typeshed import Unused
+    from _typeshed import Unused  # simplint: ignore[private-import-path]  # precise callback type
 
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 _GETPID: Final[Callable[[], int]] = os.getpid
@@ -1375,7 +1425,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         _make_private_directory(os.fspath(link.path / link.name))
         os.link(database, link.database)
         # The open database handle pins its path against a rename, so only a file index that is not unique can differ.
-        if _identity_at(os.fspath(link.database)) != identity:  # pragma: no cover
+        if _identity_at(os.fspath(link.database)) != identity:
             msg = f"lock database changed while opening: {database!r}"
             raise OSError(msg)
 

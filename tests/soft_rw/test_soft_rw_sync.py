@@ -5,6 +5,7 @@ import os
 import shutil
 import signal
 import stat
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # runs this test's own interpreter
 import sys
 import threading
 import time
@@ -72,6 +73,38 @@ def lock(lock_file: str) -> Generator[SoftReadWriteLock]:
         yield instance
     finally:
         instance.close()
+
+
+def test_atexit_releases_held_lock(lock_file: str, tmp_path: Path) -> None:
+    script = """
+import atexit
+import sys
+from pathlib import Path
+
+def check_released():
+    from filelock import SoftReadWriteLock
+
+    peer = SoftReadWriteLock(sys.argv[1], is_singleton=False)
+    peer.acquire_write(timeout=0)
+    peer.release()
+    Path(sys.argv[2]).write_text("released")
+
+atexit.register(check_released)
+
+from filelock import SoftReadWriteLock
+
+lock = SoftReadWriteLock(sys.argv[1], is_singleton=False)
+lock.acquire_write(timeout=0)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, lock_file, str(tmp_path / "released")],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert (result.returncode, result.stderr) == (0, "")
+    assert (tmp_path / "released").read_text() == "released"
 
 
 def _state(lock_file: str) -> Snapshot:
@@ -659,7 +692,7 @@ def _wait_until(condition: Callable[[], bool]) -> None:
     deadline = time.monotonic() + _PROCESS_DEADLINE
     while not condition():
         assert time.monotonic() < deadline
-        time.sleep(0.01)  # simplint: ignore[SMP808]  # polls on-disk state; needs a library hook
+        time.sleep(0.01)  # simplint: ignore[sleep-in-test]  # polls on-disk state; needs a library hook
 
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 4)
@@ -1173,7 +1206,7 @@ def test_live_heartbeat_keeps_lock_alive_past_stale_threshold(lock_file: str) ->
     with cleanup_processes([holder]):
         holder.start()
         assert held.wait(timeout=_PROCESS_DEADLINE)
-        time.sleep(stale * 2)  # simplint: ignore[SMP808]  # needs a clock hook in soft rw
+        time.sleep(stale * 2)  # simplint: ignore[sleep-in-test]  # needs a clock hook in soft rw
         lock = _make_lock(lock_file, heartbeat_interval=heartbeat, stale_threshold=stale)
         try:
             with pytest.raises(Timeout):

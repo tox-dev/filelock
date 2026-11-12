@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from capabilities import CAPABILITIES
 
-import filelock._strict
+import filelock._strict  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import (
     AsyncStrictSoftFileLock,
     SoftFileLock,

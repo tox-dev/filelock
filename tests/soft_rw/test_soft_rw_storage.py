@@ -81,7 +81,7 @@ def test_create_flushes_only_a_durable_record(tmp_path: Path, mocker: MockerFixt
 
 def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixture) -> None:
     # An NFS retransmit can report a link that landed as failed; the target naming the source's file is what counts.
-    real_link = storage_mod._link_no_follow
+    real_link = storage_mod.link_no_follow
 
     def link_then_fail(source: str, target: str, **dir_fds: int | None) -> None:
         real_link(source, target, **dir_fds)
@@ -89,8 +89,8 @@ def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixtur
 
     mocker.patch.object(
         storage_mod,
-        "_link_no_follow",
-        new=mocker.create_autospec(storage_mod._link_no_follow, side_effect=link_then_fail),
+        "link_no_follow",
+        new=mocker.create_autospec(storage_mod.link_no_follow, side_effect=link_then_fail),
     )
     source = tmp_path / "source"
     source.write_bytes(b"data")
@@ -100,8 +100,8 @@ def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixtur
 def test_link_reports_an_unsupported_filesystem(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch.object(
         storage_mod,
-        "_link_no_follow",
-        new=mocker.create_autospec(storage_mod._link_no_follow, side_effect=NotImplementedError("no os.link")),
+        "link_no_follow",
+        new=mocker.create_autospec(storage_mod.link_no_follow, side_effect=NotImplementedError("no os.link")),
     )
     source = tmp_path / "source"
     source.write_bytes(b"data")
@@ -118,8 +118,8 @@ def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFix
     # A persistent EPERM or EIO is not a peer winning the race; reporting it as one would spin forever.
     mocker.patch.object(
         storage_mod,
-        "_link_no_follow",
-        new=mocker.create_autospec(storage_mod._link_no_follow, side_effect=OSError(EIO, "Input/output error")),
+        "link_no_follow",
+        new=mocker.create_autospec(storage_mod.link_no_follow, side_effect=OSError(EIO, "Input/output error")),
     )
     source = tmp_path / "source"
     source.write_bytes(b"data")

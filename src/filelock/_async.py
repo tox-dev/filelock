@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["asyncio", "collections", "concurrent.futures", "filelock._error"]
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
+__lazy_modules__ = [
+    "asyncio",
+    "collections",
+    "concurrent.futures",
+    f"{__spec__.parent}._api",
+    f"{__spec__.parent}._error",
+]
 
 import asyncio
 import contextlib
@@ -14,35 +27,41 @@ from threading import Lock
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypeVar, cast
 from weakref import WeakKeyDictionary
 
-from filelock._api import (
-    _append_exception_context,
-    _fork_transition,
-    _raise_chained_errors,
-    _resolve_read_write_timeout,
+from ._api import (
+    append_exception_context as _append_exception_context,
 )
-from filelock._error import Timeout
+from ._api import (
+    fork_transition as _fork_transition,
+)
+from ._api import (
+    raise_chained_errors as _raise_chained_errors,
+)
+from ._api import (
+    resolve_read_write_timeout as _resolve_read_write_timeout,
+)
+from ._error import Timeout
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Hashable
     from concurrent.futures import Executor
 
-    from filelock._read_write import ReadWriteLock
-    from filelock._soft_rw._sync import SoftReadWriteLock
+    from ._read_write import ReadWriteLock
+    from ._soft_rw import SoftReadWriteLock
 
 _T = TypeVar("_T")
 
 #: The holder an async wrapper records its backend level under. No thread has this identifier, so sync code on the
 #: executor thread that took the level cannot re-enter or release it.
-_TASKS_THREAD_ID: Final[int] = 0
+TASKS_THREAD_ID: Final[int] = 0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class _BackendOutcome(Generic[_T]):
+class BackendOutcome(Generic[_T]):
     value: _T | None = None
     error: BaseException | None = None
 
 
-class _AsyncTransitionGate:
+class AsyncTransitionGate:
     # First-in, first-out admission for the calls that transition one lock context.
     #
     # Each call queues a ticket, and the head of the queue holds the gate. A call that gives up removes its own ticket,
@@ -78,15 +97,15 @@ class _AsyncTransitionGate:
         poll_interval: float,
     ) -> None:
         if not blocking:
-            raise _AsyncTransitionUnavailableError
+            raise AsyncTransitionUnavailableError
         waiter = asyncio.wrap_future(ticket)
         while not ticket.done():
             if cancel_check is not None and cancel_check():
-                raise _AsyncTransitionUnavailableError
+                raise AsyncTransitionUnavailableError
             wait_interval = poll_interval
             if deadline is not None:
                 if (remaining := deadline - time.perf_counter()) <= 0:
-                    raise _AsyncTransitionUnavailableError
+                    raise AsyncTransitionUnavailableError
                 wait_interval = min(wait_interval, remaining)
             await asyncio.wait((waiter,), timeout=wait_interval)
             # A hand-off that a signal handler's exception cut short leaves the head undone, so the head settles itself.
@@ -134,7 +153,7 @@ class _AsyncTransitionGate:
             self._leave(ticket)
 
 
-class _AsyncTransitionUnavailableError(Exception):
+class AsyncTransitionUnavailableError(Exception):
     pass
 
 
@@ -144,7 +163,7 @@ _TASK_OWNERS: Final[WeakKeyDictionary[ReadWriteLock | SoftReadWriteLock, _TaskOw
 _TASK_OWNERS_LOCK: Final[Lock] = Lock()
 
 
-def _task_owners_for(sync_lock: ReadWriteLock | SoftReadWriteLock) -> _TaskOwners:
+def task_owners_for(sync_lock: ReadWriteLock | SoftReadWriteLock) -> _TaskOwners:
     # Singleton wrappers share one sync lock, so they must share its task holds too.
     with _fork_transition(), _TASK_OWNERS_LOCK:
         if (owners := _TASK_OWNERS.get(sync_lock)) is None:
@@ -163,7 +182,9 @@ class _TaskOwners:
     def __init__(self) -> None:
         self._lock: Final[Lock] = Lock()
         self._mode: Literal["read", "write"] | None = None
-        self._holds: dict[asyncio.Task[object], _TaskHold] = {}  # simplint: ignore[SMP602]  # tasks carry any type
+        self._holds: dict[
+            asyncio.Task[object], _TaskHold  # simplint: ignore[imprecise-annotation]  # task results vary
+        ] = {}
         self._transitioning = False
         self._waiting_writers = 0
         #: One ticket per waiting call, settled on the next state change. A call that stops waiting takes its own out,
@@ -219,7 +240,7 @@ class _TaskOwners:
 
     def _admit(  # ruff:ignore[too-many-arguments]  # the acquire's state, passed through under the table lock
         self,
-        task: asyncio.Task[object],  # simplint: ignore[SMP602]  # tasks carry any result type
+        task: asyncio.Task[object],  # simplint: ignore[imprecise-annotation]  # task results vary
         mode: Literal["read", "write"],
         lock_file: str,
         *,
@@ -272,7 +293,8 @@ class _TaskOwners:
         self,
         *,
         mode: Literal["read", "write"] | None,
-        holds: dict[asyncio.Task[object], _TaskHold] | None = None,  # simplint: ignore[SMP602]  # tasks carry any type
+        holds: dict[asyncio.Task[object], _TaskHold]  # simplint: ignore[imprecise-annotation]  # task results vary
+        | None = None,
     ) -> None:
         with self._lock:
             self._transitioning, self._mode = False, mode
@@ -287,7 +309,7 @@ class _TaskOwners:
         force: bool,
         lock_file: str,
         via: Hashable,
-        leave: Callable[[], asyncio.Future[_BackendOutcome[None]]],
+        leave: Callable[[], asyncio.Future[BackendOutcome[None]]],
         still_held: Callable[[], bool],
     ) -> None:
         task = _current_task()
@@ -329,7 +351,7 @@ class _TaskOwners:
         self,
         via: Hashable | None,
         *,
-        leave: Callable[[], asyncio.Future[_BackendOutcome[None]]],
+        leave: Callable[[], asyncio.Future[BackendOutcome[None]]],
         still_held: Callable[[], bool],
     ) -> None:
         # End the holds taken through *via*, or every hold when it is ``None``, as one transition.
@@ -342,7 +364,7 @@ class _TaskOwners:
         cancellation: asyncio.CancelledError | None = None
         while isinstance(settled := self._drop_holds_via(via), ConcurrentFuture):
             try:
-                await _wait_until_done(asyncio.wrap_future(settled))
+                await wait_until_done(asyncio.wrap_future(settled))
             except asyncio.CancelledError as error:
                 cancellation = error
             finally:
@@ -367,7 +389,7 @@ class _TaskOwners:
     ) -> (
         tuple[
             Literal["read", "write"] | None,
-            dict[asyncio.Task[object], _TaskHold],  # simplint: ignore[SMP602]  # tasks carry any type
+            dict[asyncio.Task[object], _TaskHold],  # simplint: ignore[imprecise-annotation]  # task results vary
         ]
         | ConcurrentFuture[None]
     ):
@@ -393,7 +415,7 @@ class _TaskOwners:
             return mode, dropped
 
 
-def _current_task() -> asyncio.Task[object]:  # simplint: ignore[SMP602]  # tasks carry any result type
+def _current_task() -> asyncio.Task[object]:  # simplint: ignore[imprecise-annotation]  # task results vary
     if (task := asyncio.current_task()) is None:
         msg = "an async reader/writer lock must be used from inside an asyncio task"
         raise RuntimeError(msg)
@@ -409,28 +431,28 @@ class _TaskHold:
     depths: dict[Hashable, int]
 
 
-async def _drain_cancellation(future: asyncio.Future[_BackendOutcome[None]]) -> asyncio.CancelledError | None:
+async def _drain_cancellation(future: asyncio.Future[BackendOutcome[None]]) -> asyncio.CancelledError | None:
     # Returned, not raised, so the caller can tell a call that completed under cancellation from one that failed.
     try:
-        await _wait_until_done(future)
+        await wait_until_done(future)
     except asyncio.CancelledError as cancellation:
         try:
-            await _drain_future(future)
+            await drain_future(future)
         except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-            _raise_cancelled_error(cancellation, error)
+            raise_cancelled_error(cancellation, error)
         return cancellation
-    _future_result(future)
+    future_result(future)
     return None
 
 
-async def _drain_future(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
+async def drain_future(future: asyncio.Future[BackendOutcome[_T]]) -> _T:
     while not future.done():
         with contextlib.suppress(asyncio.CancelledError):
-            await _wait_until_done(future)
-    return _future_result(future)
+            await wait_until_done(future)
+    return future_result(future)
 
 
-def _raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseException) -> NoReturn:
+def raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseException) -> NoReturn:
     # A reconciliation step failed while unwinding a cancellation, so keep both exception chains. Splice the error's
     # existing context onto the cancellation, then make the cancellation the error's context, so both the failure and
     # the cancellation that triggered it survive. Shared by the async wrappers so cancellations report the same way.
@@ -442,7 +464,7 @@ def _raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseExce
     _raise_chained_errors(error)
 
 
-def _future_result(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
+def future_result(future: asyncio.Future[BackendOutcome[_T]]) -> _T:
     outcome = future.result()
     if (error := outcome.error) is None:
         return cast("_T", outcome.value)
@@ -454,54 +476,54 @@ def _future_result(future: asyncio.Future[_BackendOutcome[_T]]) -> _T:
         raise
 
 
-async def _wait_until_done(future: asyncio.Future[_T]) -> None:
+async def wait_until_done(future: asyncio.Future[_T]) -> None:
     if not future.done():
         await asyncio.wait((future,))
 
 
-def _run_in_executor(
+def run_in_executor(
     loop: asyncio.AbstractEventLoop, executor: Executor | None, func: Callable[[], _T]
-) -> asyncio.Future[_BackendOutcome[_T]]:
-    outcome: asyncio.Future[_BackendOutcome[_T]] = loop.create_future()
+) -> asyncio.Future[BackendOutcome[_T]]:
+    outcome: asyncio.Future[BackendOutcome[_T]] = loop.create_future()
 
-    def settle(call: asyncio.Future[_BackendOutcome[_T]]) -> None:
+    def settle(call: asyncio.Future[BackendOutcome[_T]]) -> None:
         try:
             result = call.result()
         except asyncio.CancelledError:
             # shutdown(cancel_futures=True) dropped the call unrun: a CancelledError would cancel a task nobody canceled
             # and hide that the lock state never changed.
-            result = _BackendOutcome(error=RuntimeError("the executor shut down before running the lock backend call"))
+            result = BackendOutcome(error=RuntimeError("the executor shut down before running the lock backend call"))
         outcome.set_result(result)
 
-    loop.run_in_executor(executor, _capture_call, func).add_done_callback(settle)
+    loop.run_in_executor(executor, capture_call, func).add_done_callback(settle)
     return outcome
 
 
-def _capture_call(func: Callable[[], _T]) -> _BackendOutcome[_T]:
+def capture_call(func: Callable[[], _T]) -> BackendOutcome[_T]:
     try:
-        return _BackendOutcome(value=func())
+        return BackendOutcome(value=func())
     except BaseException as error:  # ruff:ignore[blind-except]  # backend control-flow exceptions are operation results
-        return _BackendOutcome(error=error)
+        return BackendOutcome(error=error)
 
 
-async def _capture_awaitable(awaitable: Awaitable[_T]) -> _BackendOutcome[_T]:
+async def capture_awaitable(awaitable: Awaitable[_T]) -> BackendOutcome[_T]:
     try:
-        return _BackendOutcome(value=await awaitable)
+        return BackendOutcome(value=await awaitable)
     except BaseException as error:  # ruff:ignore[blind-except]  # backend cancellation must remain distinct from caller cancellation
-        return _BackendOutcome(error=error)
+        return BackendOutcome(error=error)
 
 
 __all__ = [
-    "_TASKS_THREAD_ID",
-    "_AsyncTransitionGate",
-    "_AsyncTransitionUnavailableError",
-    "_BackendOutcome",
-    "_capture_awaitable",
-    "_capture_call",
-    "_drain_future",
-    "_future_result",
-    "_raise_cancelled_error",
-    "_run_in_executor",
-    "_task_owners_for",
-    "_wait_until_done",
+    "TASKS_THREAD_ID",
+    "AsyncTransitionGate",
+    "AsyncTransitionUnavailableError",
+    "BackendOutcome",
+    "capture_awaitable",
+    "capture_call",
+    "drain_future",
+    "future_result",
+    "raise_cancelled_error",
+    "run_in_executor",
+    "task_owners_for",
+    "wait_until_done",
 ]

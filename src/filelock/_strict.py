@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
 __lazy_modules__ = [
     "contextlib",
-    "filelock._error",
-    "filelock._identity",
-    "filelock._marker",
-    "filelock._soft",
-    "filelock._util",
     "functools",
     "pathlib",
     "secrets",
     "tempfile",
+    f"{__spec__.parent}._error",
+    f"{__spec__.parent}._identity",
+    f"{__spec__.parent}._marker",
+    f"{__spec__.parent}._soft",
+    f"{__spec__.parent}._util",
+    f"{__spec__.parent}._windows",
 ]
 
 import contextlib
@@ -27,16 +35,50 @@ from errno import EACCES, EEXIST, ENOENT, ENOSYS, EPERM, ESTALE, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, NamedTuple, cast
 
-from filelock._api import BaseFileLock, ThreadLocalFileContext, _canonical, _raise_cleanup_errors
-from filelock._error import SoftFileLockProtocolError
-from filelock._identity import host_name, owner_is_stale, process_start_token
-from filelock._marker import parse_marker
-from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD, _parse_lock_holder
-from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import foreign_directory_owner, write_all
+from ._api import (
+    BaseFileLock,
+    ThreadLocalFileContext,
+)
+from ._api import (
+    canonical as _canonical,
+)
+from ._api import (
+    raise_cleanup_errors as _raise_cleanup_errors,
+)
+from ._error import SoftFileLockProtocolError
+from ._identity import (
+    host_name,
+    owner_is_stale,
+    process_start_token,
+)
+from ._marker import parse_marker
+from ._soft import (
+    MALFORMED_LOCK_AGE_THRESHOLD,
+)
+from ._soft import (
+    parse_lock_holder as _parse_lock_holder,
+)
+from ._soft_protocol import (
+    STRICT_SOFT_SENTINEL_RECORD,
+)
+from ._util import (
+    foreign_directory_owner,
+    write_all,
+)
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._windows import _is_unlinked, _open_deletable_for_reading, _pin_directory, _unpin_directory
+    from ._windows import (
+        is_unlinked as _is_unlinked,
+    )
+    from ._windows import (
+        open_deletable_for_reading as _open_deletable_for_reading,
+    )
+    from ._windows import (
+        pin_directory as _pin_directory,
+    )
+    from ._windows import (
+        unpin_directory as _unpin_directory,
+    )
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -241,7 +283,7 @@ class StrictSoftFileLock(BaseFileLock):
         except _PrivateRecordReclaimedError:
             return False
         except (NotImplementedError, OSError) as error:
-            _raise_if_hard_links_unsupported(self.lock_file, error)
+            raise_if_hard_links_unsupported(self.lock_file, error)
             if isinstance(error, OSError) and error.errno == EEXIST:
                 # Another file holds the name, so it is not this owner's to remove.
                 self._context.owner_claim_paths = ()
@@ -263,7 +305,7 @@ class StrictSoftFileLock(BaseFileLock):
         try:
             link_cleanup_error = _link_no_replace(claim_directory, intent_name, held_name)
         except (NotImplementedError, OSError) as error:
-            _raise_if_hard_links_unsupported(self.lock_file, error)
+            raise_if_hard_links_unsupported(self.lock_file, error)
             if isinstance(error, OSError) and error.errno == EEXIST:
                 self._context.owner_claim_paths = (intent_path,)
             raise
@@ -407,7 +449,7 @@ def _open_or_create_sentinel(
     except _PrivateRecordReclaimedError:
         return None
     except (NotImplementedError, OSError) as error:
-        _raise_if_hard_links_unsupported(lock_file, error)
+        raise_if_hard_links_unsupported(lock_file, error)
         if not isinstance(error, OSError) or error.errno != EEXIST:
             raise
     else:
@@ -951,9 +993,9 @@ def _open_relative(directory_ref: tuple[str, int | None], name: str, flags: int,
 def _link_relative(directory_ref: tuple[str, int | None], source_name: str, destination_name: str) -> None:
     directory, directory_fd = directory_ref
     if directory_fd is not None and _LINK_SUPPORTS_DIR_FD:  # pragma: needs dir-fd
-        _link_no_follow(source_name, destination_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        link_no_follow(source_name, destination_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
         return
-    _link_no_follow(Path(directory, source_name), Path(directory, destination_name))  # pragma: win32 cover
+    link_no_follow(Path(directory, source_name), Path(directory, destination_name))  # pragma: win32 cover
 
 
 def _link_or_find_committed(
@@ -974,7 +1016,7 @@ def _link_or_find_committed(
             raise
 
 
-def _link_no_follow(
+def link_no_follow(
     source: str | Path,
     destination: str | Path,
     *,
@@ -1084,10 +1126,10 @@ def _unlink_error(path: Path) -> OSError | None:  # pragma: win32 cover
 
 
 def _pin_claim_directory(directory: Path) -> contextlib.ExitStack[bool | None]:
-    return _pin_directories(directory.parent, directory)
+    return pin_directories(directory.parent, directory)
 
 
-def _pin_directories(*directories: Path) -> contextlib.ExitStack[bool | None]:
+def pin_directories(*directories: Path) -> contextlib.ExitStack[bool | None]:
     # Windows has no dir_fd, so each operation resolves every path component by name again. An open handle on a
     # directory blocks a rename of it, and with it a swap for a junction (a directory that points at another directory),
     # until the operation ends. Other platforms work through descriptors and hold nothing.
@@ -1184,7 +1226,7 @@ def _read_opened_record(fd: int, path: Path, path_stat: os.stat_result, limit: i
 def _ensure_claim_directory(lock_file: str, directory: Path, mode: int) -> None:
     if not (_OPEN_SUPPORTS_DIR_FD and _MKDIR_SUPPORTS_DIR_FD):  # pragma: lacks dir-fd
         try:
-            pinned = _pin_directories(directory.parent)
+            pinned = pin_directories(directory.parent)
         except OSError as error:
             raise SoftFileLockProtocolError(lock_file, None, f"cannot open {directory.parent}") from error
         with pinned:
@@ -1252,7 +1294,7 @@ def _settle_directory_mode(lock_file: str, directory: Path, mode: int, parent_fd
             os.close(fd)
 
 
-def _raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:
+def raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:
     windows_hard_link_unsupported: Final = frozenset({1, 17, 50})
     unsupported = (
         isinstance(error, NotImplementedError)
@@ -1272,4 +1314,7 @@ __all__ = [
     "StrictSoftFileClaim",
     "StrictSoftFileClaimState",
     "StrictSoftFileLock",
+    "link_no_follow",
+    "pin_directories",
+    "raise_if_hard_links_unsupported",
 ]

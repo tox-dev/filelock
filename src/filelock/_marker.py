@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._identity", "filelock._util", "math"]
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
+__lazy_modules__ = ["contextlib", "math", f"{__spec__.parent}._identity", f"{__spec__.parent}._util"]
 
 import math
 import os
@@ -8,9 +15,20 @@ import re
 from contextlib import suppress
 from typing import Final, Literal, NamedTuple
 
-from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
-from filelock._soft import SoftFileLock, _read_lock_file, parse_decimal
-from filelock._util import pin_inode, write_all
+from ._identity import (
+    host_name,
+    owner_is_current_process,
+    owner_is_stale,
+    process_start_token,
+)
+from ._soft import (
+    SoftFileLock,
+    parse_decimal,
+)
+from ._soft import (
+    read_lock_file as _read_lock_file,
+)
+from ._util import pin_inode, write_all
 
 #: Protocol 1 is the legacy ``<pid>\n<hostname>\n[<start_token>\n]`` marker that :class:`SoftFileLock` still writes.
 #: Protocol 2 carries the owner mode and the lease claim. A protocol 1 reader treats a protocol 2 marker as malformed

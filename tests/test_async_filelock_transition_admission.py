@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, Timeout
-from filelock._async import _AsyncTransitionGate
+from filelock._async import AsyncTransitionGate
 from tests.async_filelock_cancellation_helpers import (
     assert_cancellation_message,
     assert_file_lock_state,
@@ -98,17 +98,17 @@ async def test_queued_acquire_honors_own_admission_policy(
 async def test_acquire_interrupted_while_joining_the_gate_leaves_the_lock_usable(
     tmp_path: Path, mocker: MockerFixture, lock_type: type[AsyncFileLock | AsyncSoftFileLock]
 ) -> None:
-    real_join: Final = _AsyncTransitionGate._join
+    real_join: Final = AsyncTransitionGate._join
     interrupted = False
 
-    def join_then_interrupt(instance: _AsyncTransitionGate, ticket: ConcurrentFuture[None]) -> None:
+    def join_then_interrupt(instance: AsyncTransitionGate, ticket: ConcurrentFuture[None]) -> None:
         nonlocal interrupted
         real_join(instance, ticket)
         if not interrupted:
             interrupted = True
             raise _Interrupt
 
-    mocker.patch.object(_AsyncTransitionGate, "_join", autospec=True, side_effect=join_then_interrupt)
+    mocker.patch.object(AsyncTransitionGate, "_join", autospec=True, side_effect=join_then_interrupt)
     lock = lock_type(tmp_path / "a")
     with pytest.raises(_Interrupt):
         await lock.acquire()

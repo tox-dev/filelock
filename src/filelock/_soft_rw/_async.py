@@ -2,7 +2,21 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["asyncio", "filelock._async", "filelock._error", "functools", "threading"]
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
+__lazy_modules__ = [
+    "asyncio",
+    "filelock._async",
+    "filelock._error",
+    "functools",
+    "threading",
+    f"{__spec__.parent}._sync",
+]
 
 import asyncio
 import functools
@@ -11,26 +25,46 @@ import threading
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 
-from filelock._async import (
-    _TASKS_THREAD_ID,
-    _BackendOutcome,
-    _capture_call,
-    _drain_future,
-    _future_result,
-    _raise_cancelled_error,
-    _task_owners_for,
-    _wait_until_done,
+from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
+    TASKS_THREAD_ID as _TASKS_THREAD_ID,
 )
-from filelock._error import Timeout
-from filelock._soft_rw._sync import SoftReadWriteLock, _lost_hold_error
+from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
+    BackendOutcome as _BackendOutcome,
+)
+from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
+    capture_call as _capture_call,
+)
+from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
+    drain_future as _drain_future,
+)
+from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
+    future_result as _future_result,
+)
+from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
+    raise_cancelled_error as _raise_cancelled_error,
+)
+from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
+    task_owners_for as _task_owners_for,
+)
+from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
+    wait_until_done as _wait_until_done,
+)
+from filelock._error import Timeout  # simplint: ignore[private-import-path]  # internal dependency
+
+from ._sync import (
+    SoftReadWriteLock,
+)
+from ._sync import (
+    lost_hold_error as _lost_hold_error,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
     from concurrent import futures
     from types import TracebackType
 
-    from filelock._api import AcquireReturnProxy
-    from filelock._lease import LeaseCompromise
+    from filelock._api import AcquireReturnProxy  # simplint: ignore[private-import-path]  # internal dependency
+    from filelock._lease import LeaseCompromise  # simplint: ignore[private-import-path]  # internal dependency
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from filelock import AsyncFileLock, FileLock, SoftFileLock, StrictSoftFileLock
-from filelock._api import _UNSET_FILE_MODE, BaseFileLock
+from filelock._api import UNSET_FILE_MODE, BaseFileLock
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        pytest.param(_UNSET_FILE_MODE, 0o644, id="default"),
+        pytest.param(UNSET_FILE_MODE, 0o644, id="default"),
         pytest.param(0o600, 0o600, id="explicit"),
     ],
 )
@@ -32,7 +32,7 @@ def test_mode_property(lock_type: type[BaseFileLock], mode: int, expected: int, 
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        pytest.param(_UNSET_FILE_MODE, False, id="default"),
+        pytest.param(UNSET_FILE_MODE, False, id="default"),
         pytest.param(0o644, True, id="explicit"),
     ],
 )
@@ -44,7 +44,7 @@ def test_has_explicit_mode(lock_type: type[BaseFileLock], mode: int, expected: b
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        pytest.param(_UNSET_FILE_MODE, 0o666, id="default"),
+        pytest.param(UNSET_FILE_MODE, 0o666, id="default"),
         pytest.param(0o600, 0o600, id="explicit"),
     ],
 )
@@ -113,7 +113,7 @@ def test_explicit_mode_overrides_umask(tmp_path: Path) -> None:  # pragma: win32
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        pytest.param(_UNSET_FILE_MODE, "drwxrwxrwt", id="default"),
+        pytest.param(UNSET_FILE_MODE, "drwxrwxrwt", id="default"),
         pytest.param(0o600, "drwx-----T", id="owner"),
         pytest.param(0o640, "drwxr-x--T", id="group-read"),
         pytest.param(0o660, "drwxrwx--T", id="group-write"),
@@ -165,7 +165,7 @@ def test_strict_wide_directories_are_narrowed_only_when_owned(  # pragma: win32 
 @pytest.mark.parametrize(
     "mode",
     [
-        pytest.param(_UNSET_FILE_MODE, id="default"),
+        pytest.param(UNSET_FILE_MODE, id="default"),
         pytest.param(0o600, id="explicit"),
     ],
 )
@@ -183,7 +183,7 @@ def test_singleton_default_vs_explicit_mode_differ(tmp_path: Path) -> None:
 
 
 def test_unset_file_mode_sentinel_value() -> None:
-    assert _UNSET_FILE_MODE == -1
+    assert UNSET_FILE_MODE == -1
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, StrictSoftFileLock, AsyncFileLock])

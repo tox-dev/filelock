@@ -168,14 +168,14 @@ async def test_acquire_cancellation_before_executor_start_rolls_back(tmp_path: P
         release_executor.set()
         assert await asyncio.to_thread(second_started.wait, 5)
         # The resolved path wakes the task, which queues the directory job behind the second blocker.
-        await asyncio.sleep(0.05)  # simplint: ignore[SMP808]  # needs an executor-queue signal
+        await asyncio.sleep(0.05)  # simplint: ignore[sleep-in-test]  # needs an executor-queue signal
         third_started = threading.Event()
         release_third = threading.Event()
         third_blocker = executor.submit(_block_executor, third_started, release_third)
         release_second.set()
         assert await asyncio.to_thread(third_started.wait, 5)
         # The created directory wakes the task, which queues the attempt behind the third blocker.
-        await asyncio.sleep(0.05)  # simplint: ignore[SMP808]  # needs an executor-queue signal
+        await asyncio.sleep(0.05)  # simplint: ignore[sleep-in-test]  # needs an executor-queue signal
         assert (lock.lock_counter, acquired.is_set()) == (1, False)
         task.cancel()
         release_third.set()

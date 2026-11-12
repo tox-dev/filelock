@@ -30,8 +30,8 @@ from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
-from filelock._error import SoftFileLockProtocolError
-from filelock._identity import host_name
+from filelock._error import SoftFileLockProtocolError  # simplint: ignore[private-import-path]  # internal dependency
+from filelock._identity import host_name  # simplint: ignore[private-import-path]  # internal dependency
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -43,19 +43,19 @@ _PROTOCOL: Final[str] = "filelock-rw/1"
 _GENERATION_DIGITS: Final[int] = 20
 _TOKEN_HEX_LENGTH: Final[int] = 32
 #: A snapshot line is ``reader=`` plus a token, so this bounds a hostile record without capping real reader counts.
-_MAX_RECORD_SIZE: Final[int] = 1 << 20
+MAX_RECORD_SIZE: Final[int] = 1 << 20
 #: Snapshots older than this many generations behind the latest are removed by whoever commits. The window is also how
 #: far ``latest`` probes past a gap before it trusts that nothing newer exists; ``gen/HEAD``, not the window, is what
 #: keeps a listing served further behind from passing an old generation off as the head.
 _RETAINED_GENERATIONS: Final[int] = 64
-_GENERATIONS_DIRECTORY: Final[str] = "gen"
+GENERATIONS_DIRECTORY: Final[str] = "gen"
 #: A random token created once per log: removing ``gen/`` removes it, so a participant can tell a log that was wiped and
 #: restarted from the one it remembers.
 _EPOCH_NAME: Final[str] = "epoch"
 #: The epoch plus a copy of the newest snapshot, renamed into place after each commit. NFS revalidates a file opened by
 #: name but may serve a listing from cache, so this is the head a stale client cannot miss; it may lag, never lead.
 _HEAD_NAME: Final[str] = "HEAD"
-_HOLDERS_DIRECTORY: Final[str] = "holders"
+HOLDERS_DIRECTORY: Final[str] = "holders"
 _TEMPORARY_PREFIX: Final[str] = ".commit-"
 
 
@@ -126,7 +126,7 @@ class Snapshot:
 
 def parse_snapshot(data: bytes) -> Snapshot | None:
     # The snapshot a ``gen/<N>`` record encodes, or ``None`` when the record is malformed.
-    if not data or len(data) > _MAX_RECORD_SIZE:
+    if not data or len(data) > MAX_RECORD_SIZE:
         return None
     try:
         lines = data.decode("ascii").split("\n")
@@ -199,7 +199,7 @@ class GenerationLog:
     def __init__(self, files: _Files, lock_file: str, root: str) -> None:
         self._files = files
         self._lock_file = lock_file
-        self._directory = Path(root, _GENERATIONS_DIRECTORY)
+        self._directory = Path(root, GENERATIONS_DIRECTORY)
         self._epoch_path = str(self._directory / _EPOCH_NAME)
         self._head_path = str(self._directory / _HEAD_NAME)
         self._epoch: bytes | None = None
@@ -425,7 +425,7 @@ class Participant:
         self._next_sweep = clock()
 
     def _holder_path(self, token: str) -> str:
-        return str(Path(self._root, _HOLDERS_DIRECTORY, token))
+        return str(Path(self._root, HOLDERS_DIRECTORY, token))
 
     def publish(self) -> None:
         # Create the holder record peers watch for liveness; it exists before the token appears in any snapshot.
@@ -505,12 +505,12 @@ class Participant:
             return
         self._next_sweep = now + self._stale_threshold / 2
         watched = set(latest.members)
-        holders = Path(self._root, _HOLDERS_DIRECTORY)
+        holders = Path(self._root, HOLDERS_DIRECTORY)
         for name in self._files.listdir(str(holders)):
             if name != self.token and name not in latest.members and _is_token(name):
                 watched.add(key := f"holder:{name}")
                 self._collect(key, str(holders / name))
-        generations = Path(self._root, _GENERATIONS_DIRECTORY)
+        generations = Path(self._root, GENERATIONS_DIRECTORY)
         for name in self._files.listdir(str(generations)):
             if name.startswith(_TEMPORARY_PREFIX):
                 watched.add(key := f"temporary:{name}")
@@ -613,6 +613,9 @@ class TreeReplacedError(RuntimeError):
 
 
 __all__ = [
+    "GENERATIONS_DIRECTORY",
+    "HOLDERS_DIRECTORY",
+    "MAX_RECORD_SIZE",
     "GenerationLog",
     "HeartbeatOutcome",
     "Ledger",

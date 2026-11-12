@@ -719,7 +719,7 @@ def test_note_sqlite_use_records_use_on_pypy(mocker: MockerFixture) -> None:
     assert registry._sqlite_used is True
 
 
-@pytest.mark.parametrize("identity", [None, (1, 2)], ids=["no-identity", "with-identity"])
+@pytest.mark.parametrize("identity", [pytest.param(None, id="no-identity"), pytest.param((1, 2), id="with-identity")])
 def test_poison_after_fork_records_path_and_identity(identity: tuple[int, int] | None) -> None:
     registry = _ForkedDatabaseRegistry()
     path = Path("poisoned.db")
@@ -782,7 +782,7 @@ def test_meta_raises_when_pid_changes_during_singleton_construction(lock_file: s
 def test_finish_connection_chains_rollback_then_close_error(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     con = mocker.create_autospec(sqlite3.Connection, instance=True)
-    type(con).in_transaction = mocker.PropertyMock(  # simplint: ignore[SMP806]  # read-only C property, no autospec
+    type(con).in_transaction = mocker.PropertyMock(  # simplint: ignore[mock-without-spec]  # C property has no autospec
         side_effect=[True, False]
     )
     con.rollback.side_effect = sqlite3.OperationalError("rollback boom")

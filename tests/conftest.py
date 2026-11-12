@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Final, TypeVar
 import pytest
 from capabilities import CAPABILITIES
 
-import filelock._identity
+import filelock._identity  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import BaseFileLock, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name
 from tests.descriptor_helpers import descriptors_on
