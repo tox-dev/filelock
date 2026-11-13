@@ -69,17 +69,6 @@ _MODES: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
 )
 
 
-async def _acquire_within_deadline(
-    lock: AsyncReadWriteLock | AsyncSoftReadWriteLock, mode: Literal["read", "write"], timeout: float
-) -> float:
-    start = time.perf_counter()
-    with pytest.raises(TimeoutError) as info:
-        async with asyncio.timeout(_DEADLINE):
-            await getattr(lock, f"acquire_{mode}")(timeout)
-    assert not isinstance(info.value, Timeout)
-    return time.perf_counter() - start
-
-
 @_FAMILIES
 @_MODES
 @pytest.mark.parametrize(
@@ -101,6 +90,17 @@ async def test_async_acquire_behind_another_process_honors_the_callers_deadline(
     await getattr(lock, f"acquire_{mode}")(_HOLD * 2)
     await lock.release()
     await lock.close()
+
+
+async def _acquire_within_deadline(
+    lock: AsyncReadWriteLock | AsyncSoftReadWriteLock, mode: Literal["read", "write"], timeout: float
+) -> float:
+    start = time.perf_counter()
+    with pytest.raises(TimeoutError) as info:
+        async with asyncio.timeout(_DEADLINE):
+            await getattr(lock, f"acquire_{mode}")(timeout)
+    assert not isinstance(info.value, Timeout)
+    return time.perf_counter() - start
 
 
 @_FAMILIES

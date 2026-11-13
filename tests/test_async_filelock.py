@@ -982,16 +982,6 @@ async def test_soft_close_error_policy_cleans_marker(
     assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
-@pytest.mark.asyncio
-async def test_soft_close_error_suppress_policy_cleans_marker(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "a"
-    lock = AsyncSoftFileLock(lock_path, close_error_policy="suppress", run_in_executor=False)
-    await lock.acquire()
-    with _close_after_commit(mocker, lock) as (_, attempts):
-        await lock.release()
-    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
-
-
 @contextmanager
 def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Generator[tuple[OSError, list[int]]]:
     real_close = os.close
@@ -1021,6 +1011,16 @@ def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Gener
         yield close_error, attempts
     finally:
         mocker.stop(close_mock)
+
+
+@pytest.mark.asyncio
+async def test_soft_close_error_suppress_policy_cleans_marker(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "a"
+    lock = AsyncSoftFileLock(lock_path, close_error_policy="suppress", run_in_executor=False)
+    await lock.acquire()
+    with _close_after_commit(mocker, lock) as (_, attempts):
+        await lock.release()
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
 @pytest.mark.asyncio

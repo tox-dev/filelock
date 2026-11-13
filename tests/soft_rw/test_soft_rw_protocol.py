@@ -224,6 +224,15 @@ def test_rescan_skips_a_generation_removed_after_listing(
     assert fresh.latest().generation == 1
 
 
+def _committed(files: OsFiles, lock_file: str, root: str, writers: list[str | None]) -> GenerationLog:
+    # One log that read the head before each commit, as a participant does, and so remembers the last one.
+    files.prepare(root)
+    log = GenerationLog(files, lock_file, root)
+    for writer in writers:
+        assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=writer, readers=frozenset()))
+    return log
+
+
 def test_malformed_generation_raises(lock_file: str, files: OsFiles, root: str) -> None:
     files.prepare(root)
     Path(root, "gen", f"{1:020d}").write_bytes(b"filelock-rw/1\ngeneration=5\n")
@@ -429,15 +438,6 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(
     listings = iter([[f"{generation:020d}" for generation in (4, 5)]])
     mocker.patch.object(OsFiles, "listdir", lambda self, path: next(listings, None) or real_listdir(self, path))
     assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
-
-
-def _committed(files: OsFiles, lock_file: str, root: str, writers: list[str | None]) -> GenerationLog:
-    # One log that read the head before each commit, as a participant does, and so remembers the last one.
-    files.prepare(root)
-    log = GenerationLog(files, lock_file, root)
-    for writer in writers:
-        assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=writer, readers=frozenset()))
-    return log
 
 
 @pytest.mark.requires_hard_links

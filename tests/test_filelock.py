@@ -3155,6 +3155,15 @@ def test_singleton_rejects_different_context_policy(tmp_path: Path) -> None:
         first.release(force=True)
 
 
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"))  # default policy
+    lock.acquire()
+    _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
+    lock.release()  # Unix default drops a FUSE/Docker EIO
+    assert not lock.is_locked
+
+
 def _fail_close_of(mocker: MockerFixture, lock: BaseFileLock, error: OSError) -> list[int]:
     # Fail os.close only for this lock's own descriptor, and record each attempt on it. A blanket patch would also hit
     # the close another test's lock runs from __del__ during this test, turning an unrelated garbage collection into a
@@ -3171,15 +3180,6 @@ def _fail_close_of(mocker: MockerFixture, lock: BaseFileLock, error: OSError) ->
 
     mocker.patch("filelock._api.os.close", side_effect=close, autospec=True)
     return attempts
-
-
-@NEEDS_FCNTL  # pragma: needs fcntl
-def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock = FileLock(str(tmp_path / "a"))  # default policy
-    lock.acquire()
-    _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
-    lock.release()  # Unix default drops a FUSE/Docker EIO
-    assert not lock.is_locked
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover

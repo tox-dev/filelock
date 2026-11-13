@@ -95,6 +95,28 @@ def test_read_locks_are_shared(lock_file: str) -> None:
         assert not reader2.is_alive(), "Reader 2 did not exit cleanly"
 
 
+def acquire_lock(
+    lock_file: str,
+    mode: Literal["read", "write"],
+    acquired_event: EventType,
+    release_event: EventType | None = None,
+    timeout: float = -1,
+    blocking: bool = True,
+    ready_event: EventType | None = None,
+    contending_event: EventType | None = None,
+) -> None:
+    if ready_event:
+        ready_event.wait(timeout=_PROCESS_DEADLINE)
+
+    lock = ReadWriteLock(lock_file, timeout=timeout, blocking=blocking)
+    if contending_event:
+        contending_event.set()  # interpreter start-up is over, so a caller can time the contention itself
+    with getattr(lock, f"{mode}_lock")():
+        acquired_event.set()
+        if release_event:
+            release_event.wait(timeout=_PROCESS_DEADLINE)
+
+
 @pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_write_lock_excludes_other_write_locks(lock_file: str) -> None:
     write1_acquired = Event()
@@ -263,6 +285,50 @@ def test_write_non_starvation(lock_file: str) -> None:
             assert not reader.is_alive(), f"Reader {idx} did not exit cleanly"
 
 
+def chain_reader(
+    reader_index: int,
+    lock_file: str,
+    release_count: Synchronized[int],
+    start_signal: EventType,
+    release_signal: EventType,
+    next_reader_signal: EventType | None,
+    writer_or_prev_signal: EventType,
+) -> None:
+    start_signal.wait(timeout=_PROCESS_DEADLINE)
+
+    with ReadWriteLock(lock_file).read_lock():
+        if reader_index > 0:
+            time.sleep(  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
+                2
+            )  # overlap with earlier readers so the writer contends mid-chain
+
+        if next_reader_signal is not None:
+            next_reader_signal.set()
+
+        if reader_index == 0:
+            time.sleep(  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
+                1
+            )  # hold briefly before releasing the writer
+
+        writer_or_prev_signal.set()
+
+        release_signal.wait(timeout=_PROCESS_DEADLINE)
+
+        with release_count.get_lock():
+            release_count.value += 1
+
+
+def _write_intent_pending(prober: ReadWriteLock, deadline: float) -> bool:
+    try:
+        prober.acquire_read(blocking=False)
+    except Timeout:
+        return False
+    prober.release()
+    assert time.monotonic() < deadline, "Writer never registered its write intent"
+    time.sleep(0.05)  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
+    return True
+
+
 @pytest.mark.parametrize(
     "hold_mode",
     [pytest.param("read", id="upgrade"), pytest.param("write", id="downgrade")],
@@ -279,6 +345,18 @@ def test_lock_mode_transition_prohibited(lock_file: str, hold_mode: Literal["rea
         assert not worker.is_alive(), "Process did not exit cleanly"
 
     assert result.value == 0, f"Illegal {hold_mode} transition was permitted"
+
+
+def try_illegal_transition(lock_file: str, hold_mode: Literal["read", "write"], result: Synchronized[int]) -> None:
+    lock = ReadWriteLock(lock_file)
+    with getattr(lock, f"{hold_mode}_lock")():
+        try:
+            if hold_mode == "read":
+                lock.acquire_write()
+            else:
+                lock.acquire_read()
+        except RuntimeError:
+            result.value = 0
 
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 3)
@@ -347,6 +425,33 @@ def test_recursive_lock_acquisition(lock_file: str, mode: Literal["read", "write
     assert success.value == 1, "Recursive lock acquisition failed"
 
 
+def recursive_lock(lock_file: str, mode: Literal["read", "write"], success_flag: Synchronized[int]) -> None:
+    lock = ReadWriteLock(lock_file)
+    acquire = getattr(lock, f"{mode}_lock")
+    with acquire():
+        assert lock._hold.level == 1
+        assert lock._hold.mode == mode
+
+        with acquire():
+            assert lock._hold.level == 2
+            assert lock._hold.mode == mode
+
+            with acquire():
+                assert lock._hold.level == 3
+                assert lock._hold.mode == mode
+
+            assert lock._hold.level == 2
+            assert lock._hold.mode == mode
+
+        assert lock._hold.level == 1
+        assert lock._hold.mode == mode
+
+    assert lock._hold.level == 0
+    assert lock._hold.mode is None
+
+    success_flag.value = 1
+
+
 @pytest.mark.parametrize(
     "mode",
     [pytest.param("read", id="read"), pytest.param("write", id="write")],
@@ -373,6 +478,14 @@ def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read
 
         successor.join(timeout=_PROCESS_DEADLINE)
         assert not successor.is_alive(), "Successor did not exit cleanly"
+
+
+def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acquired_event: EventType) -> None:
+    lock = ReadWriteLock(lock_file)  # pragma: win32 no cover
+    with getattr(lock, f"{mode}_lock")():  # pragma: win32 no cover
+        acquired_event.set()
+        while True:  # pragma: win32 no cover
+            time.sleep(0.1)  # simplint: ignore[sleep-in-test]  # a blocked lock wait can swallow SIGTERM
 
 
 @pytest.mark.parametrize(
@@ -783,28 +896,6 @@ def test_acquire_proxy_releases_the_read_write_lock_on_exit(lock_file: str, mode
     assert_read_write_lock_state(lock_file, "write", available=True)
 
 
-def acquire_lock(
-    lock_file: str,
-    mode: Literal["read", "write"],
-    acquired_event: EventType,
-    release_event: EventType | None = None,
-    timeout: float = -1,
-    blocking: bool = True,
-    ready_event: EventType | None = None,
-    contending_event: EventType | None = None,
-) -> None:
-    if ready_event:
-        ready_event.wait(timeout=_PROCESS_DEADLINE)
-
-    lock = ReadWriteLock(lock_file, timeout=timeout, blocking=blocking)
-    if contending_event:
-        contending_event.set()  # interpreter start-up is over, so a caller can time the contention itself
-    with getattr(lock, f"{mode}_lock")():
-        acquired_event.set()
-        if release_event:
-            release_event.wait(timeout=_PROCESS_DEADLINE)
-
-
 def test_cleanup_reports_the_failure_that_escaped_before_a_start() -> None:
     unstarted = Process(target=time.sleep, args=(0,))
 
@@ -815,97 +906,6 @@ def test_cleanup_reports_the_failure_that_escaped_before_a_start() -> None:
 
     with pytest.raises(AssertionError, match="the real failure"):
         fail_before_start()
-
-
-def _write_intent_pending(prober: ReadWriteLock, deadline: float) -> bool:
-    try:
-        prober.acquire_read(blocking=False)
-    except Timeout:
-        return False
-    prober.release()
-    assert time.monotonic() < deadline, "Writer never registered its write intent"
-    time.sleep(0.05)  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
-    return True
-
-
-def chain_reader(
-    reader_index: int,
-    lock_file: str,
-    release_count: Synchronized[int],
-    start_signal: EventType,
-    release_signal: EventType,
-    next_reader_signal: EventType | None,
-    writer_or_prev_signal: EventType,
-) -> None:
-    start_signal.wait(timeout=_PROCESS_DEADLINE)
-
-    with ReadWriteLock(lock_file).read_lock():
-        if reader_index > 0:
-            time.sleep(  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
-                2
-            )  # overlap with earlier readers so the writer contends mid-chain
-
-        if next_reader_signal is not None:
-            next_reader_signal.set()
-
-        if reader_index == 0:
-            time.sleep(  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
-                1
-            )  # hold briefly before releasing the writer
-
-        writer_or_prev_signal.set()
-
-        release_signal.wait(timeout=_PROCESS_DEADLINE)
-
-        with release_count.get_lock():
-            release_count.value += 1
-
-
-def try_illegal_transition(lock_file: str, hold_mode: Literal["read", "write"], result: Synchronized[int]) -> None:
-    lock = ReadWriteLock(lock_file)
-    with getattr(lock, f"{hold_mode}_lock")():
-        try:
-            if hold_mode == "read":
-                lock.acquire_write()
-            else:
-                lock.acquire_read()
-        except RuntimeError:
-            result.value = 0
-
-
-def recursive_lock(lock_file: str, mode: Literal["read", "write"], success_flag: Synchronized[int]) -> None:
-    lock = ReadWriteLock(lock_file)
-    acquire = getattr(lock, f"{mode}_lock")
-    with acquire():
-        assert lock._hold.level == 1
-        assert lock._hold.mode == mode
-
-        with acquire():
-            assert lock._hold.level == 2
-            assert lock._hold.mode == mode
-
-            with acquire():
-                assert lock._hold.level == 3
-                assert lock._hold.mode == mode
-
-            assert lock._hold.level == 2
-            assert lock._hold.mode == mode
-
-        assert lock._hold.level == 1
-        assert lock._hold.mode == mode
-
-    assert lock._hold.level == 0
-    assert lock._hold.mode is None
-
-    success_flag.value = 1
-
-
-def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acquired_event: EventType) -> None:
-    lock = ReadWriteLock(lock_file)  # pragma: win32 no cover
-    with getattr(lock, f"{mode}_lock")():  # pragma: win32 no cover
-        acquired_event.set()
-        while True:  # pragma: win32 no cover
-            time.sleep(0.1)  # simplint: ignore[sleep-in-test]  # a blocked lock wait can swallow SIGTERM
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -1060,6 +1060,13 @@ def test_shared_directory_ignores_a_journal_beside_the_database(  # pragma: need
         pass
 
     assert named.read_text() == "keep"
+
+
+def _hot_journal(super_journal: Path) -> bytes:  # pragma: needs posix-hard-link
+    # A journal whose tail names a super-journal makes SQLite unlink that file once it finishes the journal:
+    # https://www.sqlite.org/fileformat.html#the_rollback_journal
+    name = os.fsencode(super_journal)
+    return name + struct.pack(">II", len(name), sum(name)) + bytes.fromhex("d9d505f920a163d7")
 
 
 @pytest.mark.requires_hard_links
@@ -1376,13 +1383,6 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(  
         # The journal and WAL beside the replacement stay, the file the journal names stays, and no bytes change.
         assert {directory: _entries(directory) for directory in before} == before
     assert_read_write_lock_state(str(moved / "lock.db"), "write", available=True)
-
-
-def _hot_journal(super_journal: Path) -> bytes:  # pragma: needs posix-hard-link
-    # A journal whose tail names a super-journal makes SQLite unlink that file once it finishes the journal:
-    # https://www.sqlite.org/fileformat.html#the_rollback_journal
-    name = os.fsencode(super_journal)
-    return name + struct.pack(">II", len(name), sum(name)) + bytes.fromhex("d9d505f920a163d7")
 
 
 def _entries(directory: Path) -> list[tuple[str, bytes | None]]:  # pragma: needs posix-hard-link

@@ -139,38 +139,6 @@ class MarkerSoftFileLock(SoftFileLock):
         )
 
 
-class OwnerRecord(NamedTuple):
-    """
-    Keep optional metadata when reading unknown lock modes.
-
-    :param pid: the PID of the process that wrote the marker
-    :param hostname: the host name recorded in the marker
-    :param mode: the owner mode the marker declares: ``lease``, ``exclusive``, or ``unknown``
-    :param token: the claim token of a lease, or ``None``
-    :param lease_duration: the lease duration in seconds, or ``None`` when the marker records none
-    :param start: the owner's process start token, or ``None`` when none was recorded
-    """
-
-    pid: int
-    hostname: str
-    mode: OwnerMode
-    token: str | None = None
-    lease_duration: float | None = None
-    start: int | None = None
-
-
-def encode_marker(record: OwnerRecord) -> bytes:
-    # Render an owner record as the bytes a protocol 2 marker holds.
-    lines = [_PROTOCOL, f"pid={record.pid}", f"host={record.hostname}", f"mode={record.mode}"]
-    if record.token is not None:
-        lines.append(f"token={record.token}")
-    if record.lease_duration is not None:
-        lines.append(f"duration={record.lease_duration!r}")
-    if record.start is not None:
-        lines.append(f"start={record.start}")
-    return "".join(f"{line}\n" for line in lines).encode()
-
-
 def parse_marker(content: str | None) -> OwnerRecord | None:
     # Return the owner a protocol 2 marker names, or ``None`` when the record is malformed or protocol 1.
     # A torn write may end in a prefix like "mode=exclu", an unknown contract nobody reclaims; malformed, it ages out.
@@ -210,6 +178,38 @@ def _build_record(fields: dict[str, str]) -> OwnerRecord | None:
     if mode == "lease" and (not token or duration is None or not (math.isfinite(duration) and duration > 0)):
         return None
     return OwnerRecord(pid=pid, hostname=hostname, mode=mode, token=token, lease_duration=duration, start=start)
+
+
+def encode_marker(record: OwnerRecord) -> bytes:
+    # Render an owner record as the bytes a protocol 2 marker holds.
+    lines = [_PROTOCOL, f"pid={record.pid}", f"host={record.hostname}", f"mode={record.mode}"]
+    if record.token is not None:
+        lines.append(f"token={record.token}")
+    if record.lease_duration is not None:
+        lines.append(f"duration={record.lease_duration!r}")
+    if record.start is not None:
+        lines.append(f"start={record.start}")
+    return "".join(f"{line}\n" for line in lines).encode()
+
+
+class OwnerRecord(NamedTuple):
+    """
+    Keep optional metadata when reading unknown lock modes.
+
+    :param pid: the PID of the process that wrote the marker
+    :param hostname: the host name recorded in the marker
+    :param mode: the owner mode the marker declares: ``lease``, ``exclusive``, or ``unknown``
+    :param token: the claim token of a lease, or ``None``
+    :param lease_duration: the lease duration in seconds, or ``None`` when the marker records none
+    :param start: the owner's process start token, or ``None`` when none was recorded
+    """
+
+    pid: int
+    hostname: str
+    mode: OwnerMode
+    token: str | None = None
+    lease_duration: float | None = None
+    start: int | None = None
 
 
 __all__ = [

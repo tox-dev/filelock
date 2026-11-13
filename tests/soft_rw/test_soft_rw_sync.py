@@ -75,6 +75,25 @@ def lock(lock_file: str) -> Generator[SoftReadWriteLock]:
         instance.close()
 
 
+def _make_lock(
+    path: str,
+    *,
+    heartbeat_interval: float = 0.1,
+    stale_threshold: float = 0.5,
+    poll_interval: float = 0.02,
+    is_singleton: bool = False,
+    on_compromise: Callable[[LeaseCompromise], None] | None = None,
+) -> SoftReadWriteLock:
+    return SoftReadWriteLock(
+        path,
+        heartbeat_interval=heartbeat_interval,
+        stale_threshold=stale_threshold,
+        poll_interval=poll_interval,
+        is_singleton=is_singleton,
+        on_compromise=on_compromise,
+    )
+
+
 def test_atexit_releases_held_lock(lock_file: str, tmp_path: Path) -> None:
     script = """
 import atexit
@@ -105,10 +124,6 @@ lock.acquire_write(timeout=0)
     )
     assert (result.returncode, result.stderr) == (0, "")
     assert (tmp_path / "released").read_text() == "released"
-
-
-def _state(lock_file: str) -> Snapshot:
-    return GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw").latest()
 
 
 def test_release_interrupted_while_joining_the_heartbeat_still_leaves(lock_file: str, mocker: MockerFixture) -> None:
@@ -414,6 +429,10 @@ def test_leaked_acquired_singleton_is_closed_on_teardown(lock_file: str) -> None
     assert _state(lock_file).writer is not None
 
 
+def _state(lock_file: str) -> Snapshot:
+    return GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw").latest()
+
+
 def test_reentrant_read_holds_and_releases(lock_file: str, lock: SoftReadWriteLock) -> None:
     with lock.read_lock(timeout=2):
         with lock.read_lock(timeout=2):
@@ -639,6 +658,35 @@ def test_multiple_readers_can_hold_simultaneously(lock_file: str) -> None:
         p2.join(timeout=_PROCESS_DEADLINE)
 
 
+def _worker(
+    lock_file: str,
+    mode: Literal["read", "write"],
+    acquired_event: EventType,
+    release_event: EventType | None = None,
+    timeout: float = -1,
+    blocking: bool = True,
+    heartbeat_interval: float = 0.1,
+    stale_threshold: float = 1.0,
+    poll_interval: float = 0.02,
+) -> None:
+    lock = SoftReadWriteLock(
+        lock_file,
+        timeout=timeout,
+        blocking=blocking,
+        is_singleton=False,
+        heartbeat_interval=heartbeat_interval,
+        stale_threshold=stale_threshold,
+        poll_interval=poll_interval,
+    )
+    try:
+        with lock.read_lock() if mode == "read" else lock.write_lock():
+            acquired_event.set()
+            if release_event is not None:
+                release_event.wait(timeout=_PROCESS_DEADLINE)
+    finally:
+        lock.close()
+
+
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
 @pytest.mark.timeout(_PROCESS_DEADLINE * 4)
 @pytest.mark.parametrize("contender_mode", [pytest.param("write", id="writer"), pytest.param("read", id="reader")])
@@ -847,6 +895,28 @@ def test_dead_holder_evicted_by_contender(
             hold = lock._hold
             assert hold is not None
             assert _state(lock_file).members == {hold.participant.token}
+
+
+def _sigkill_worker(  # pragma: forked child
+    lock_file: str,
+    mode: Literal["read", "write"],
+    acquired_event: EventType,
+    heartbeat_interval: float,
+    stale_threshold: float,
+) -> None:
+    lock = SoftReadWriteLock(
+        lock_file,
+        is_singleton=False,
+        heartbeat_interval=heartbeat_interval,
+        stale_threshold=stale_threshold,
+        poll_interval=0.05,
+    )
+    if mode == "read":
+        lock.acquire_read()
+    else:
+        lock.acquire_write()
+    acquired_event.set()
+    threading.Event().wait()
 
 
 def test_heartbeat_reports_eviction_and_stops(lock_file: str) -> None:
@@ -1602,110 +1672,6 @@ def test_child_fork_lock_behavior(tmp_path: Path, scenario: str, names: tuple[st
         assert result.is_set()
 
 
-@NEEDS_FORK
-@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
-# Holding the write lock keeps the heartbeat thread alive, so this fork is necessarily from a multi-threaded
-# process and Python 3.15 warns that it may deadlock. That is the scenario under test, and it is already safe:
-# register_at_fork resets inherited state in the child (any child use raises "invalidated by fork()"). Expected.
-@SKIP_ON_UNRELIABLE_PROCESS_SYNC
-@pytest.mark.filterwarnings("ignore:.*multi-threaded, use of fork.*:DeprecationWarning")
-def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:  # pragma: needs fork
-    path = str(tmp_path / "foo.lock")
-    lock = SoftReadWriteLock(path, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
-    lock.acquire_write(timeout=5)
-    try:
-        child = _fork_process(target=time.sleep, args=(0.05,))
-        child.start()
-        child.join(timeout=_PROCESS_DEADLINE)
-        assert _state(path).writer is not None
-        peer = SoftReadWriteLock(
-            path,
-            heartbeat_interval=0.2,
-            stale_threshold=1.0,
-            poll_interval=0.02,
-            is_singleton=False,
-        )
-        try:
-            with pytest.raises(Timeout):
-                peer.acquire_write(timeout=0.3)
-        finally:
-            peer.close()
-    finally:
-        lock.release()
-        lock.close()
-    assert _state(path).writer is None
-
-
-def _make_lock(
-    path: str,
-    *,
-    heartbeat_interval: float = 0.1,
-    stale_threshold: float = 0.5,
-    poll_interval: float = 0.02,
-    is_singleton: bool = False,
-    on_compromise: Callable[[LeaseCompromise], None] | None = None,
-) -> SoftReadWriteLock:
-    return SoftReadWriteLock(
-        path,
-        heartbeat_interval=heartbeat_interval,
-        stale_threshold=stale_threshold,
-        poll_interval=poll_interval,
-        is_singleton=is_singleton,
-        on_compromise=on_compromise,
-    )
-
-
-def _worker(
-    lock_file: str,
-    mode: Literal["read", "write"],
-    acquired_event: EventType,
-    release_event: EventType | None = None,
-    timeout: float = -1,
-    blocking: bool = True,
-    heartbeat_interval: float = 0.1,
-    stale_threshold: float = 1.0,
-    poll_interval: float = 0.02,
-) -> None:
-    lock = SoftReadWriteLock(
-        lock_file,
-        timeout=timeout,
-        blocking=blocking,
-        is_singleton=False,
-        heartbeat_interval=heartbeat_interval,
-        stale_threshold=stale_threshold,
-        poll_interval=poll_interval,
-    )
-    try:
-        with lock.read_lock() if mode == "read" else lock.write_lock():
-            acquired_event.set()
-            if release_event is not None:
-                release_event.wait(timeout=_PROCESS_DEADLINE)
-    finally:
-        lock.close()
-
-
-def _sigkill_worker(  # pragma: forked child
-    lock_file: str,
-    mode: Literal["read", "write"],
-    acquired_event: EventType,
-    heartbeat_interval: float,
-    stale_threshold: float,
-) -> None:
-    lock = SoftReadWriteLock(
-        lock_file,
-        is_singleton=False,
-        heartbeat_interval=heartbeat_interval,
-        stale_threshold=stale_threshold,
-        poll_interval=0.05,
-    )
-    if mode == "read":
-        lock.acquire_read()
-    else:
-        lock.acquire_write()
-    acquired_event.set()
-    threading.Event().wait()
-
-
 def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:  # pragma: needs fork
     lock = SoftReadWriteLock(lock_file, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
     lock.acquire_write(timeout=5)
@@ -1727,6 +1693,22 @@ def _reuse_inherited_lock(lock_file: str, result: EventType, failure: EventType)
         failure.set()
     lock.release()
     lock.close()
+
+
+def _fork_event() -> EventType:  # pragma: needs fork
+    if sys.platform == "win32":  # pragma: win32 cover
+        msg = "fork context is POSIX only"
+        raise RuntimeError(msg)
+    return mp.get_context("fork").Event()
+
+
+def _fork_process(  # pragma: needs fork
+    target: Callable[[], object] | Callable[[float], object], args: tuple[float, ...] = ()
+) -> mp.process.BaseProcess:
+    if sys.platform == "win32":  # pragma: win32 cover
+        msg = "fork context is POSIX only"
+        raise RuntimeError(msg)
+    return mp.get_context("fork").Process(target=target, args=args)
 
 
 def _release_inherited_lock(lock_file: str, result: EventType, failure: EventType) -> None:  # pragma: needs fork
@@ -1784,20 +1766,38 @@ def _reacquire_fresh_lock_in_child(  # pragma: needs fork
     parent_lock.close()
 
 
-def _fork_process(  # pragma: needs fork
-    target: Callable[[], object] | Callable[[float], object], args: tuple[float, ...] = ()
-) -> mp.process.BaseProcess:
-    if sys.platform == "win32":  # pragma: win32 cover
-        msg = "fork context is POSIX only"
-        raise RuntimeError(msg)
-    return mp.get_context("fork").Process(target=target, args=args)
-
-
-def _fork_event() -> EventType:  # pragma: needs fork
-    if sys.platform == "win32":  # pragma: win32 cover
-        msg = "fork context is POSIX only"
-        raise RuntimeError(msg)
-    return mp.get_context("fork").Event()
+@NEEDS_FORK
+@pytest.mark.timeout(_PROCESS_DEADLINE * 2)
+# Holding the write lock keeps the heartbeat thread alive, so this fork is necessarily from a multi-threaded
+# process and Python 3.15 warns that it may deadlock. That is the scenario under test, and it is already safe:
+# register_at_fork resets inherited state in the child (any child use raises "invalidated by fork()"). Expected.
+@SKIP_ON_UNRELIABLE_PROCESS_SYNC
+@pytest.mark.filterwarnings("ignore:.*multi-threaded, use of fork.*:DeprecationWarning")
+def test_parent_retains_lock_across_fork(tmp_path: Path) -> None:  # pragma: needs fork
+    path = str(tmp_path / "foo.lock")
+    lock = SoftReadWriteLock(path, heartbeat_interval=0.2, stale_threshold=1.0, poll_interval=0.02)
+    lock.acquire_write(timeout=5)
+    try:
+        child = _fork_process(target=time.sleep, args=(0.05,))
+        child.start()
+        child.join(timeout=_PROCESS_DEADLINE)
+        assert _state(path).writer is not None
+        peer = SoftReadWriteLock(
+            path,
+            heartbeat_interval=0.2,
+            stale_threshold=1.0,
+            poll_interval=0.02,
+            is_singleton=False,
+        )
+        try:
+            with pytest.raises(Timeout):
+                peer.acquire_write(timeout=0.3)
+        finally:
+            peer.close()
+    finally:
+        lock.release()
+        lock.close()
+    assert _state(path).writer is None
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC

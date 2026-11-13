@@ -62,6 +62,21 @@ def marker(tmp_path: Path) -> Path:
     return tmp_path / "a.lock"
 
 
+def test_lease_publishes_its_claim(marker: Path) -> None:
+    lease = _lease(marker)
+
+    with lease:
+        owner = lease.owner
+        assert owner is not None
+        assert (owner.pid, owner.hostname, owner.mode, owner.lease_duration) == (
+            os.getpid(),
+            host_name(),
+            "lease",
+            _DURATION,
+        )
+        assert owner.token == lease.token
+
+
 def _lease(
     marker: Path,
     *,
@@ -76,32 +91,6 @@ def _lease(
         heartbeat_interval=_HEARTBEAT,
         on_compromise=on_compromise,
     )
-
-
-class _Reports:
-    # Keeps the compromises a lease reports and wakes the test when the first one lands, instead of polling for it.
-    def __init__(self) -> None:
-        self.seen: list[LeaseCompromise] = []
-        self.landed: Final = Event()
-
-    def __call__(self, compromise: LeaseCompromise) -> None:
-        self.seen.append(compromise)
-        self.landed.set()
-
-
-def test_lease_publishes_its_claim(marker: Path) -> None:
-    lease = _lease(marker)
-
-    with lease:
-        owner = lease.owner
-        assert owner is not None
-        assert (owner.pid, owner.hostname, owner.mode, owner.lease_duration) == (
-            os.getpid(),
-            host_name(),
-            "lease",
-            _DURATION,
-        )
-        assert owner.token == lease.token
 
 
 def test_lease_token_names_the_claim_only_while_held(marker: Path) -> None:
@@ -265,6 +254,17 @@ def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None
         assert reports.landed.wait(_DEADLINE)
 
     assert [(c.reason, c.token, c.lock_file) for c in reports.seen] == [("marker-missing", token, str(marker))]
+
+
+class _Reports:
+    # Keeps the compromises a lease reports and wakes the test when the first one lands, instead of polling for it.
+    def __init__(self) -> None:
+        self.seen: list[LeaseCompromise] = []
+        self.landed: Final = Event()
+
+    def __call__(self, compromise: LeaseCompromise) -> None:
+        self.seen.append(compromise)
+        self.landed.set()
 
 
 @NEEDS_UNLINK_OPEN_FILE

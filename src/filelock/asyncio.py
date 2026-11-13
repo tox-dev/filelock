@@ -886,6 +886,28 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             self._release_without_loop()
 
 
+class AsyncAcquireReturnProxy:
+    """
+    A context-aware object that will release the lock file when exiting.
+
+    :param lock: the lock to release on exit
+    """
+
+    def __init__(self, lock: BaseAsyncFileLock) -> None:  # trivial release-on-exit proxy
+        self.lock = lock
+
+    async def __aenter__(self) -> BaseAsyncFileLock:  # returns the wrapped lock
+        return self.lock
+
+    async def __aexit__(  # releases the wrapped lock on exit
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # releases the wrapped lock's context
+
+
 def _new_transition_gate() -> _AsyncTransitionGate:
     # Called per context rather than passed as the factory, so the lazy import resolves on first use, not at import.
     return _AsyncTransitionGate()
@@ -947,28 +969,6 @@ class AsyncThreadLocalFileContext(  # simplint: ignore[unexported-public-name]  
 
 for _field in fields(AsyncFileLockContext):
     setattr(AsyncThreadLocalFileContext, _field.name, _delegate_to_current(_field.name))
-
-
-class AsyncAcquireReturnProxy:
-    """
-    A context-aware object that will release the lock file when exiting.
-
-    :param lock: the lock to release on exit
-    """
-
-    def __init__(self, lock: BaseAsyncFileLock) -> None:  # trivial release-on-exit proxy
-        self.lock = lock
-
-    async def __aenter__(self) -> BaseAsyncFileLock:  # returns the wrapped lock
-        return self.lock
-
-    async def __aexit__(  # releases the wrapped lock on exit
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # releases the wrapped lock's context
 
 
 class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
