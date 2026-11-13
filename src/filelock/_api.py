@@ -1866,7 +1866,7 @@ class AcquireReturnProxy(Generic[_LockT]):
 
 
 @dataclass  # simplint: ignore[dataclass-slots, dataclass-kw-only]  # base rejects slots; signature is public
-class FileLockContext:
+class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields are public API
     # Holds the context for a ``BaseFileLock`` object.
     # A separate class so ThreadLocalFileContext can make the whole context thread-local.
 
