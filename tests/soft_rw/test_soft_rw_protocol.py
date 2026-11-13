@@ -992,6 +992,13 @@ _FAIRNESS: Final[float] = 8 * _STEP
 _ROOT: Final[str] = "/lock.rw"
 
 
+#: Each seed with its crash probability and stale-listing rate: every third seed runs without crashes, every other one
+#: sees stale directory listings.
+_MODEL_CASES: Final[tuple[tuple[int, float, float], ...]] = tuple(
+    (seed, 0.0 if seed % 3 == 0 else 0.02, 0.3 if seed % 2 else 0.0) for seed in range(24)
+)
+
+
 @pytest.mark.parametrize(
     ("seed", "crash_probability", "stale_listings"),
     [
@@ -1001,9 +1008,7 @@ _ROOT: Final[str] = "/lock.rw"
             stale,
             id=f"seed{seed}-{'crashes' if probability else 'clean'}-{'stale-listings' if stale else 'fresh-listings'}",
         )
-        for seed in range(24)
-        for probability in (0.0 if seed % 3 == 0 else 0.02,)
-        for stale in (0.3 if seed % 2 else 0.0,)
+        for seed, probability, stale in _MODEL_CASES
     ],
 )
 @pytest.mark.timeout(120)
