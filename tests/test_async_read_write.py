@@ -12,7 +12,14 @@ import pytest
 import pytest_asyncio
 
 from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, XFAIL_WITHOUT_COROUTINE_CANCELLATION
-from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS, OPPOSITE_MODE, Interrupt, interrupt_once
+from tests.read_write_helpers import (
+    ACQUIRE_SETTINGS,
+    INVALID_TIMEOUTS,
+    OPPOSITE_MODE,
+    Interrupt,
+    interrupt_once,
+    writer_gets_in,
+)
 
 pytest.importorskip("sqlite3")
 
@@ -182,7 +189,17 @@ async def test_release_force(lock_file: str) -> None:
 async def test_release_force_unheld_is_noop(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     await lock.release(force=True)
+    assert await _try_write(lock)
     await lock.close()
+
+
+async def _try_write(lock: AsyncReadWriteLock) -> bool:
+    try:
+        await lock.acquire_write(blocking=False)
+    except Timeout:
+        return False
+    await lock.release()
+    return True
 
 
 @pytest.mark.asyncio
@@ -263,8 +280,7 @@ async def test_write_release_lands_on_another_executor_thread(lock_file: str) ->
     finally:
         gate.set()
         await parked
-    async with lock.write_lock(timeout=_TASK_WAIT):
-        pass
+    assert await _try_write(lock)
     await lock.close()
     executor.shutdown()
 
@@ -356,12 +372,13 @@ async def test_context_manager_overrides_defaults(lock_file: str) -> None:
 async def test_sequential_mode_switch(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
     async with lock.read_lock():
-        pass
+        assert not await asyncio.to_thread(writer_gets_in, lock_file)
     async with lock.write_lock():
-        pass
+        assert not await asyncio.to_thread(writer_gets_in, lock_file)
     async with lock.read_lock():
-        pass
+        assert not await asyncio.to_thread(writer_gets_in, lock_file)
     await lock.close()
+    assert writer_gets_in(lock_file)
 
 
 @pytest.mark.asyncio
@@ -424,15 +441,6 @@ async def test_another_task_waits_for_the_last_release_of_a_nested_write(lock_fi
     await lock.close()
 
     assert (entered_while_nested, entered_after_release) == (False, True)
-
-
-async def _try_write(lock: AsyncReadWriteLock) -> bool:
-    try:
-        await lock.acquire_write(blocking=False)
-    except Timeout:
-        return False
-    await lock.release()
-    return True
 
 
 @pytest.mark.asyncio
@@ -774,18 +782,7 @@ async def test_async_close_after_a_sync_end_of_the_shared_singleton_returns(
 
     await lock.close()
 
-    assert _writer_gets_in(lock_file)
-
-
-def _writer_gets_in(lock_file: str) -> bool:
-    contender: Final = ReadWriteLock(lock_file, is_singleton=False)
-    try:
-        contender.acquire_write(blocking=False)
-    except Timeout:
-        return False
-    finally:
-        contender.close()
-    return True
+    assert writer_gets_in(lock_file)
 
 
 @pytest.mark.asyncio
@@ -813,7 +810,7 @@ async def test_async_read_after_a_sync_forced_release_takes_the_lock_again(lock_
 
 async def _read_and_probe(lock: AsyncReadWriteLock) -> bool:
     async with lock.read_lock(timeout=_TASK_WAIT):
-        return _writer_gets_in(lock.lock_file)
+        return writer_gets_in(lock.lock_file)
 
 
 @pytest.mark.parametrize(
@@ -903,9 +900,9 @@ async def test_async_close_keeps_the_hold_taken_through_another_wrapper(
 
     await asyncio.create_task(closing.close())
 
-    assert not _writer_gets_in(lock_file)
+    assert not writer_gets_in(lock_file)
     await holder.release()
-    assert _writer_gets_in(lock_file)
+    assert writer_gets_in(lock_file)
     await holder.close()
 
 
@@ -917,9 +914,9 @@ async def test_async_close_of_the_entering_wrapper_keeps_a_level_taken_through_a
 
     await entering.close()
 
-    assert not _writer_gets_in(lock_file)
+    assert not writer_gets_in(lock_file)
     await nested.release()
-    assert _writer_gets_in(lock_file)
+    assert writer_gets_in(lock_file)
     await nested.close()
 
 
@@ -932,7 +929,7 @@ async def test_async_close_of_the_nested_wrapper_ends_only_its_own_level(lock_fi
     await nested.close()
 
     await entering.release()
-    assert _writer_gets_in(lock_file)
+    assert writer_gets_in(lock_file)
     await entering.close()
 
 
@@ -944,9 +941,9 @@ async def test_async_release_through_each_wrapper_ends_the_hold_after_the_last(l
 
     await nested.release()
 
-    assert not _writer_gets_in(lock_file)
+    assert not writer_gets_in(lock_file)
     await entering.release()
-    assert _writer_gets_in(lock_file)
+    assert writer_gets_in(lock_file)
     await entering.close()
     await nested.close()
 
@@ -958,9 +955,9 @@ async def test_async_forced_release_through_a_wrapper_without_a_level_releases_n
 
     await other.release(force=True)
 
-    assert not _writer_gets_in(lock_file)
+    assert not writer_gets_in(lock_file)
     await holder.release()
-    assert _writer_gets_in(lock_file)
+    assert writer_gets_in(lock_file)
     await holder.close()
     await other.close()
 
@@ -973,7 +970,7 @@ async def test_async_release_through_a_wrapper_without_a_level_raises(lock_file:
     with pytest.raises(RuntimeError, match="through this wrapper"):
         await other.release()
 
-    assert not _writer_gets_in(lock_file)
+    assert not writer_gets_in(lock_file)
     await holder.release()
     await holder.close()
     await other.close()
@@ -987,7 +984,7 @@ async def test_async_close_keeps_a_sync_reader_of_the_shared_singleton(lock_file
             pass
         await lock.close()
 
-        assert not _writer_gets_in(lock_file)
+        assert not writer_gets_in(lock_file)
 
 
 @pytest.mark.asyncio
@@ -997,7 +994,7 @@ async def test_async_close_of_a_singleton_wrapper_ends_the_holds_taken_through_i
 
     await lock.close()
 
-    assert _writer_gets_in(lock_file)
+    assert writer_gets_in(lock_file)
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         await lock.acquire_read()
 
@@ -1019,7 +1016,7 @@ async def test_async_close_waits_out_an_acquire_in_flight_even_when_canceled(loc
     with pytest.raises(asyncio.CancelledError):
         await closing
 
-    assert _writer_gets_in(lock_file)
+    assert writer_gets_in(lock_file)
     holder.close()
 
 

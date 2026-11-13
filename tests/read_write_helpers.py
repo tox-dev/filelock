@@ -8,6 +8,7 @@ import pytest
 from filelock import ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
+    import os
     import sys
     from collections.abc import Callable
 
@@ -86,6 +87,17 @@ def _probe_read_write_lock(lock_file: str, mode: Literal["read", "write"], sendi
             sending.send_bytes(bytes([acquired]))
 
 
+def writer_gets_in(lock_file: str | os.PathLike[str]) -> bool:
+    contender: Final = ReadWriteLock(lock_file, is_singleton=False)
+    try:
+        contender.acquire_write(blocking=False)
+    except Timeout:
+        return False
+    finally:
+        contender.close()
+    return True
+
+
 _T = TypeVar("_T")
 
 
@@ -116,4 +128,5 @@ __all__ = [
     "Interrupt",
     "assert_read_write_lock_state",
     "interrupt_once",
+    "writer_gets_in",
 ]

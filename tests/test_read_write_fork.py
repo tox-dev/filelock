@@ -23,7 +23,7 @@ from tests.capability_marks import (
     NEEDS_FORK1,
 )
 from tests.descriptor_helpers import descriptors_on
-from tests.read_write_helpers import OPPOSITE_MODE
+from tests.read_write_helpers import OPPOSITE_MODE, writer_gets_in
 
 if TYPE_CHECKING:
     from _typeshed import StrOrBytesPath  # simplint: ignore[private-import-path]  # tests internal behavior
@@ -268,8 +268,7 @@ def test_read_write_lock_finalized_while_probes_are_recorded_does_not_deadlock( 
         ReadWriteLock(tmp_path / "other.db", is_singleton=False).close()
     finally:
         gc.enable()
-    with ReadWriteLock(tmp_path / "dropped.db", is_singleton=False).write_lock(blocking=False):
-        pass
+    assert writer_gets_in(tmp_path / "dropped.db")
 
 
 @NEEDS_FORK  # pragma: needs fork

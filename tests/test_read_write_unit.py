@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from tests.capability_marks import NEEDS_GENERATOR_EXCEPTION_CONTEXT, NEEDS_PROMPT_FINALIZATION
-from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS
+from tests.read_write_helpers import ACQUIRE_SETTINGS, INVALID_TIMEOUTS, writer_gets_in
 
 pytest.importorskip("sqlite3")
 
@@ -222,7 +222,10 @@ def test_release_unheld_lock_raises(lock_file: str) -> None:
 
 
 def test_release_force_unheld_is_noop(lock_file: str) -> None:
-    ReadWriteLock(lock_file, is_singleton=False).release(force=True)
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    lock.release(force=True)
+    assert writer_gets_in(lock_file)
+    lock.close()
 
 
 def test_release_force_resets_level(lock_file: str) -> None:
@@ -368,13 +371,13 @@ def test_read_lock_release_past_a_threads_own_depth_prohibited(
 def test_read_lock_shared_by_threads_ends_with_the_last_reader(
     sync_locks: tuple[ReadWriteLock, ReadWriteLock], other_thread: ThreadPoolExecutor
 ) -> None:
-    lock, contender = sync_locks
+    lock, _ = sync_locks
     lock.acquire_read()
     other_thread.submit(lock.acquire_read).result()
     lock.release()
+    assert not writer_gets_in(lock.lock_file)
     other_thread.submit(lock.release).result()
-    with contender.write_lock(blocking=False):
-        pass
+    assert writer_gets_in(lock.lock_file)
 
 
 @pytest.mark.parametrize(
@@ -422,13 +425,11 @@ def test_write_lock_drop_from_different_thread_needs_an_explicit_override(
 ) -> None:
     with (
         closing(ReadWriteLock(lock_file, is_singleton=False)) as lock,
-        closing(ReadWriteLock(lock_file, is_singleton=False)) as contender,
         ThreadPoolExecutor(max_workers=1) as other_thread,
     ):
         lock.acquire_write()
         other_thread.submit(drop, lock).result()
-        with contender.write_lock(blocking=False):
-            pass
+        assert writer_gets_in(lock_file)
 
 
 @pytest.mark.parametrize(
@@ -441,9 +442,9 @@ def test_write_lock_drop_from_different_thread_needs_an_explicit_override(
 def test_sequential_mode_switch(lock_file: str, first: str, second: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     with getattr(lock, f"{first}_lock")():
-        pass
+        assert not writer_gets_in(lock_file)
     with getattr(lock, f"{second}_lock")():
-        pass
+        assert not writer_gets_in(lock_file)
 
 
 def test_non_blocking_read_fails_when_write_held(lock_file: str) -> None:
@@ -684,16 +685,13 @@ def test_write_lock_context_manager_overrides_defaults(lock_file: str) -> None:
 def test_busy_timeout_recomputed_after_journal_mode(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
-    counter = iter([0.0, 0.0, 0.0, 0.5])
-    mocker.patch(
-        "filelock._read_write.time",
-        new=SimpleNamespace(
-            monotonic=time.monotonic, perf_counter=mocker.create_autospec(time.perf_counter, side_effect=counter)
-        ),
-    )
+    perf_counter = mocker.create_autospec(time.perf_counter, side_effect=[0.0, 0.0, 0.0, 0.5])
+    mocker.patch("filelock._read_write.time", new=SimpleNamespace(monotonic=time.monotonic, perf_counter=perf_counter))
     lock = ReadWriteLock(lock_file, is_singleton=False)
     getattr(lock, f"acquire_{mode}")(timeout=2.0)
     lock.release()
+    # the fourth reading recomputes the remaining wait after the journal mode switch
+    assert perf_counter.call_count == 4
 
 
 def test_acquire_converts_connect_lock_error_to_timeout(lock_file: str, mocker: MockerFixture) -> None:
@@ -852,8 +850,7 @@ def test_dropping_a_lock_closes_its_connection(lock_file: str) -> None:
 
     del lock
 
-    with ReadWriteLock(lock_file, is_singleton=False).write_lock(blocking=False):
-        pass
+    assert writer_gets_in(lock_file)
 
 
 @NEEDS_PROMPT_FINALIZATION

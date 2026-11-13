@@ -11,7 +11,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import BaseFileLock, Timeout, has_fcntl
-from filelock._api import fork_transition
+from filelock._api import _FORK_STATE, fork_transition
 from tests.capability_marks import (
     NEEDS_AUDIT_EVENTS,
     NEEDS_FORK,
@@ -1392,3 +1392,4 @@ def test_fork_transition_finished_on_another_thread_releases_the_entering_thread
     transition.__enter__()  # ruff:ignore[unnecessary-dunder-call]  # entered and left on different threads
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(transition.__exit__, None, None, None).result()
+    assert threading.get_ident() not in _FORK_STATE.transitions

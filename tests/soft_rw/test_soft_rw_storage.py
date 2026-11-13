@@ -196,8 +196,9 @@ def test_overwrite_does_not_block_on_a_fifo_with_a_reader(tmp_path: Path) -> Non
 
 
 def test_unlink_tolerates_a_refused_removal(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch.object(storage_mod.os, "unlink", side_effect=PermissionError("held open"), autospec=True)
+    unlink = mocker.patch.object(storage_mod.os, "unlink", side_effect=PermissionError("held open"), autospec=True)
     OsFiles(str(tmp_path / "x.lock")).unlink(str(tmp_path / "record"))
+    unlink.assert_called_once()
 
 
 def test_unlink_other_errors_propagate(tmp_path: Path, mocker: MockerFixture) -> None:

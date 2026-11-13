@@ -25,7 +25,7 @@ from filelock import ReadWriteLock, Timeout
 from filelock._read_write import _ForkSafeConnection
 from tests.capability_marks import NEEDS_FIFO, SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.process_helpers import cleanup_processes
-from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, interrupt_once
+from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, interrupt_once, writer_gets_in
 
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._identity import host_name
@@ -383,11 +383,12 @@ def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read
 def test_single_lock_reentrant(lock_file: str, mode: Literal["read", "write"]) -> None:
     acquire = getattr(ReadWriteLock(lock_file), f"{mode}_lock")
 
-    with acquire(), acquire():
-        pass
-
     with acquire():
-        pass
+        with acquire():
+            pass
+        assert not writer_gets_in(lock_file)
+
+    assert writer_gets_in(lock_file)
 
 
 @pytest.mark.parametrize(
@@ -406,7 +407,8 @@ def test_sequential_lock_modes(
     lock = ReadWriteLock(lock_file)
     for mode in (first, second):
         with getattr(lock, f"{mode}_lock")():
-            pass
+            assert not writer_gets_in(lock_file)
+    assert writer_gets_in(lock_file)
 
 
 def test_read_write_lock_keeps_constructed_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

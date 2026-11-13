@@ -1133,15 +1133,16 @@ def _run_shared_threads(target: Callable[[int], None]) -> None:
 def test_shared_instance_released_on_another_thread_frees_the_acquirer(tmp_path: Path) -> None:
     shared = FileLock(tmp_path / "a.lock", thread_local=False)
 
-    def acquire_fresh() -> None:
-        with FileLock(tmp_path / "a.lock"):
-            pass
+    def acquire_fresh() -> bool:
+        with FileLock(tmp_path / "a.lock") as fresh:
+            return fresh.is_locked
 
     with ThreadPoolExecutor(max_workers=1) as acquirer:
         acquirer.submit(shared.acquire).result(_SHARED_WAIT)
         shared.release()
 
-        acquirer.submit(acquire_fresh).result(_SHARED_WAIT)
+        assert not shared.is_locked
+        assert acquirer.submit(acquire_fresh).result(_SHARED_WAIT)
 
 
 def test_shared_instance_release_behind_a_failed_acquire_is_a_no_op(tmp_path: Path) -> None:
