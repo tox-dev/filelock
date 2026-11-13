@@ -865,13 +865,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         #: Holder id in the deadlock registry; a stand-in that finishes the finalizer has another id(self).
         self._holder_id = id(self)
         self._transition_lock = RLock()
-        self._is_thread_local = settings.thread_local
-        self._is_singleton = settings.is_singleton
-        self._context_error_policy = settings.context_error_policy  # already validated by the metaclass
-        self._close_error_policy = settings.close_error_policy  # already validated by the metaclass
-        self._fallback_to_soft = settings.fallback_to_soft
-        self._preserve_lock_file = settings.preserve_lock_file  # already validated by the metaclass
-        self._on_acquired = settings.on_acquired  # already validated by the metaclass
+        self._settings = settings  # policies and callbacks already validated by the metaclass
 
     def __enter__(self) -> Self:
         """
@@ -1012,7 +1006,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         # state are plain attributes every thread reads and writes, so an unserialized loser clears the winner's
         # descriptor or double-closes it. Waiting in slices keeps cancel_check and the timeout live. A thread-local
         # context is never shared, so it skips the gate.
-        if self._is_thread_local:
+        if self._settings.thread_local:
             yield
             return
         deadline: Final = None if timeout < 0 else start_time + timeout
@@ -1241,10 +1235,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _invoke_on_acquired(self) -> None:
         # The wrapper runs in the backend executor for async locks, preserving the callback's documented thread.
-        if self._on_acquired is None or self._context.lock_counter != 1:
+        if self._settings.on_acquired is None or self._context.lock_counter != 1:
             return
         try:
-            self._on_acquired(cast("int", self._context.lock_file_fd))
+            self._settings.on_acquired(cast("int", self._context.lock_file_fd))
         except BaseException as callback_error:  # arbitrary caller code; roll back on any failure
             callback_context = callback_error.__context__
             try:
@@ -1344,7 +1338,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         try:
             self.release()
         except BaseException as release_error:
-            if body_error is None or self._context_error_policy == "chain":
+            if body_error is None or self._settings.context_error_policy == "chain":
                 raise
             raise_body_and_release(body_error, release_error)
 
@@ -1388,7 +1382,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             if self._context.lock_file_registry is not None:
                 self._finish_interrupted_release()
             return
-        with contextlib.nullcontext() if self._is_thread_local else self._transition_lock:
+        with contextlib.nullcontext() if self._settings.thread_local else self._transition_lock:
             state: Final = self._hold_state()
             # A signal handler can land between the backend's unlock and its clearing of the descriptor, where a second
             # release would close the number twice and could close a file that reused it. The flag holds the releasing
@@ -1481,7 +1475,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.13.0
 
         """
-        return self._is_singleton
+        return self._settings.is_singleton
 
     @property
     def context_error_policy(self) -> ContextErrorPolicy:
@@ -1491,7 +1485,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._context_error_policy
+        return self._settings.context_error_policy
 
     @property
     def close_error_policy(self) -> CloseErrorPolicy:
@@ -1501,7 +1495,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._close_error_policy
+        return self._settings.close_error_policy
 
     @property
     def fallback_to_soft(self) -> bool:
@@ -1514,7 +1508,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._fallback_to_soft
+        return self._settings.fallback_to_soft
 
     @property
     def preserve_lock_file(self) -> bool:
@@ -1527,7 +1521,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._preserve_lock_file
+        return self._settings.preserve_lock_file
 
     @property
     def on_acquired(self) -> Callable[[int], None] | None:
@@ -1540,7 +1534,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._on_acquired
+        return self._settings.on_acquired
 
     @property
     def timeout(self) -> float:
@@ -1686,7 +1680,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def is_thread_local(self) -> bool:
         """:returns: a flag indicating if this lock is thread local or not"""
-        return self._is_thread_local
+        return self._settings.thread_local
 
     def _close_released_fd(self, fd: int, *, default_suppresses: bool) -> None:
         # CPython never retries close() after EINTR because the descriptor number may already be reused, so neither does
@@ -1698,7 +1692,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 raise
 
     def _suppresses_close_error(self, *, default_suppresses: bool) -> bool:
-        return self._close_error_policy == "suppress" or (self._close_error_policy == "default" and default_suppresses)
+        return self._settings.close_error_policy == "suppress" or (
+            self._settings.close_error_policy == "default" and default_suppresses
+        )
 
     def _open_mode(self) -> int:
         # Mode for ``os.open``: 0o666 when unset so umask and ACLs decide, otherwise the explicit mode.

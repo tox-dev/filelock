@@ -188,7 +188,11 @@ else:  # pragma: win32 no cover
             # The filesystem does not implement flock. Fail closed when the caller opted out of existence-lock
             # semantics (#603), asked to preserve the pathname (#605), or set an on_acquired hook (#607), none of which
             # a soft lock can honor.
-            falls_back: Final = self._fallback_to_soft and not self._preserve_lock_file and self._on_acquired is None
+            falls_back: Final = (
+                self._settings.fallback_to_soft
+                and not self._settings.preserve_lock_file
+                and self._settings.on_acquired is None
+            )
             try:
                 # A file this attempt did not create may be a peer's live marker, so it stays. Our own placeholder goes
                 # before the close: the open descriptor keeps its inode number from a peer's marker, and an exchange
