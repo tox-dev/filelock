@@ -102,7 +102,10 @@ _CLAIM_READ_GRACE: Final[float] = 0.5
 _CLAIM_READ_RETRY: Final[float] = 0.002
 #: Rides out a peer replacing the lock path mid-inspection; a foreign node or unreadable record outlasting it is damage.
 _SENTINEL_READ_GRACE: Final[float] = 0.5
-_NODE_DESCRIPTIONS: Final[MappingProxyType[int, str]] = MappingProxyType({stat.S_IFDIR: "a directory", stat.S_IFLNK: "a symlink"})
+_NODE_DESCRIPTIONS: Final[MappingProxyType[int, str]] = MappingProxyType({
+    stat.S_IFDIR: "a directory",
+    stat.S_IFLNK: "a symlink",
+})
 #: Windows opens descriptors in text mode by default, which rewrites newlines and truncates a record at a control byte.
 #: The claim and sentinel records are exact binary, so every record descriptor must be binary; POSIX ignores the flag.
 _O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
