@@ -1098,6 +1098,23 @@ def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
     lock.release(force=True)  # a handed-back slot leaves nothing to release, so this must not raise
 
 
+def test_participant_reads_the_clock_patched_after_construction(lock_file: str, mocker: MockerFixture) -> None:
+    lock = _make_lock(lock_file)
+    clock = mocker.create_autospec(time.monotonic, side_effect=time.monotonic)
+    mocker.patch(
+        "filelock._soft_rw._sync.time",
+        new=SimpleNamespace(monotonic=clock, perf_counter=time.perf_counter, sleep=time.sleep),
+    )
+    try:
+        lock.acquire_write(timeout=2)
+        assert lock._hold is not None
+        assert lock._hold.participant._clock is clock
+    finally:
+        mocker.stopall()
+        lock.release(force=True)
+        lock.close()
+
+
 def test_short_attempts_still_evict_a_dead_holder(lock_file: str) -> None:
     # How long a peer's record has stayed unchanged is knowledge the lock keeps across attempts: a caller whose every
     # attempt is shorter than the stale threshold (a retry loop, blocking=False) must still get past a crashed holder.
