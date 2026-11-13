@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from capabilities import CAPABILITIES
 
-import filelock._util
+import filelock._util  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import SoftFileLock, Timeout
 from filelock._identity import host_name
 from filelock._util import break_lock_file
@@ -185,7 +185,9 @@ def test_break_lock_file_put_back_never_replaces_a_marker_at_the_path(  # pragma
 
     def peer_recreates_then_pin(
         path: str,
-    ) -> AbstractContextManager[object]:  # simplint: ignore[SMP602]  # mirrors src/filelock/_util.py:347
+    ) -> AbstractContextManager[
+        object  # simplint: ignore[imprecise-annotation]  # mirrors src/filelock/_util.py:347
+    ]:
         _rewrite_in_place(Path(path))  # Windows refuses an in-place rewrite once the pin holds the marker
         return pin(path)
 

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple, NoReturn
 import pytest
 from capabilities import CAPABILITIES
 
-import filelock._read_write
+import filelock._read_write  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import ReadWriteLock
 from tests.capability_marks import (
     NEEDS_AUDIT_EVENTS,
@@ -26,7 +26,7 @@ from tests.descriptor_helpers import descriptors_on
 from tests.read_write_helpers import OPPOSITE_MODE
 
 if TYPE_CHECKING:
-    from _typeshed import StrOrBytesPath
+    from _typeshed import StrOrBytesPath  # simplint: ignore[private-import-path]  # tests internal behavior
     from pytest_mock import MockerFixture
 
 _NEEDS_FD_DIRECTORY: Final[pytest.MarkDecorator] = pytest.mark.skipif(

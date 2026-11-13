@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
 __lazy_modules__ = [
     "filelock._error",
     "filelock._lease",
-    "filelock._soft_rw._protocol",
-    "filelock._soft_rw._storage",
     "math",
+    f"{__spec__.parent}._protocol",
+    f"{__spec__.parent}._storage",
 ]
 
 import atexit
@@ -20,28 +27,54 @@ from math import isfinite
 from typing import TYPE_CHECKING, ClassVar, Final, NamedTuple
 from weakref import WeakValueDictionary
 
-from filelock._api import (
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
     AcquireReturnProxy,
-    _acquire_thread_lock,
-    _canonical,
-    _check_blocking,
-    _check_timeout_max,
-    _ensure_current_process,
-    _register_fork_class,
-    _register_fork_object,
-    _resolve_read_write_timeout,
-    _seconds,
-    _timeout_behavior,
 )
-from filelock._error import Timeout
-from filelock._lease import LeaseCompromise
-from filelock._soft_rw._protocol import GenerationLog, Ledger, Mode, Participant
-from filelock._soft_rw._storage import OsFiles
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    acquire_thread_lock as _acquire_thread_lock,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    canonical as _canonical,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    check_blocking as _check_blocking,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    check_timeout_max as _check_timeout_max,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    ensure_current_process as _ensure_current_process,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    register_fork_class as _register_fork_class,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    register_fork_object as _register_fork_object,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    resolve_read_write_timeout as _resolve_read_write_timeout,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    seconds as _seconds,
+)
+from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
+    timeout_behavior as _timeout_behavior,
+)
+from filelock._error import Timeout  # simplint: ignore[private-import-path]  # internal dependency
+from filelock._lease import LeaseCompromise  # simplint: ignore[private-import-path]  # internal dependency
+
+from ._protocol import (
+    GenerationLog,
+    Ledger,
+    Mode,
+    Participant,
+)
+from ._storage import OsFiles
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    from filelock._lease import CompromiseReason
+    from filelock._lease import CompromiseReason  # simplint: ignore[private-import-path]  # internal dependency
 
 _ALL_INSTANCES: Final[WeakValueDictionary[int, SoftReadWriteLock]] = WeakValueDictionary()
 _ALL_INSTANCES_LOCK: threading.Lock = threading.Lock()
@@ -409,7 +442,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         # Publishing a hold clears the loss recorded for the one before, so a loss seen here is this hold's. Its
         # heartbeat has stopped and a peer may hold the lock, so a new level must not bypass the log.
         if (compromise := self._compromise) is not None:
-            raise _lost_hold_error(self.lock_file, mode, compromise)
+            raise lost_hold_error(self.lock_file, mode, compromise)
         if mode == "read":
             hold.read_depths[holder] = hold.read_depths.get(holder, 0) + 1
         hold.level += 1
@@ -719,7 +752,7 @@ class _HeartbeatThread(threading.Thread):
             self._stop_event.set()
 
 
-def _lost_hold_error(lock_file: str, mode: Mode, compromise: LeaseCompromise) -> RuntimeError:
+def lost_hold_error(lock_file: str, mode: Mode, compromise: LeaseCompromise) -> RuntimeError:
     return RuntimeError(
         f"Cannot acquire {mode} lock on {lock_file}: the current hold was lost ({compromise.reason}), "
         "release it before acquiring again"
@@ -787,7 +820,7 @@ class _Hold:
                 self.read_depths[owner] = depth
 
 
-def _cleanup_all_instances() -> None:  # pragma: no cover - runs from atexit at interpreter shutdown
+def _cleanup_all_instances() -> None:
     for instance in list(_ALL_INSTANCES.values()):
         with suppress(Exception):
             instance.release(force=True)
@@ -799,5 +832,5 @@ _register_fork_class(SoftReadWriteLock)
 
 __all__ = [
     "SoftReadWriteLock",
-    "_lost_hold_error",
+    "lost_hold_error",
 ]

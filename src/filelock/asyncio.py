@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
 __lazy_modules__ = [
     "asyncio",
     "concurrent",
     "contextlib",
-    "filelock._async",
-    "filelock._error",
-    "filelock._util",
     "functools",
     "inspect",
+    f"{__spec__.parent}._async",
+    f"{__spec__.parent}._error",
+    f"{__spec__.parent}._util",
 ]
 
 import asyncio
@@ -25,49 +32,99 @@ from dataclasses import dataclass, field, fields
 from inspect import iscoroutinefunction
 from typing import TYPE_CHECKING, Final, NoReturn, TypeVar, cast
 
-from filelock._api import (
-    _UNSET_FILE_MODE,
+from ._api import (
+    UNSET_FILE_MODE as _UNSET_FILE_MODE,
+)
+from ._api import (
     BaseFileLock,
     CloseErrorPolicy,
     ContextErrorPolicy,
     FileLockContext,
     FileLockMeta,
     ThreadLocalFileContext,
-    _append_exception_context,
-    _canonical,
-    _check_blocking,
-    _delegate_to_current,
-    _ExtraValue,
-    _fork_transition,
-    _grouped_errors,
-    _is_system_call_failure,
-    _LockSettings,
-    _raise_body_and_release,
-    _raise_chained_errors,
-    _raise_cleanup_errors,
-    _raise_grouped_errors,
-    _register_fork_object,
-    _resolve_poll_interval,
-    _resolve_timeout,
 )
-from filelock._async import (
-    _AsyncTransitionGate,
-    _AsyncTransitionUnavailableError,
-    _BackendOutcome,
-    _capture_awaitable,
-    _capture_call,
-    _drain_future,
-    _future_result,
-    _run_in_executor,
-    _wait_until_done,
+from ._api import (
+    ExtraValue as _ExtraValue,
 )
-from filelock._error import Timeout
-from filelock._lease import SoftFileLease
-from filelock._soft import SoftFileLock
-from filelock._strict import StrictSoftFileLock
-from filelock._unix import UnixFileLock
-from filelock._util import ensure_directory_exists
-from filelock._windows import WindowsFileLock
+from ._api import (
+    LockSettings as _LockSettings,
+)
+from ._api import (
+    append_exception_context as _append_exception_context,
+)
+from ._api import (
+    canonical as _canonical,
+)
+from ._api import (
+    check_blocking as _check_blocking,
+)
+from ._api import (
+    delegate_to_current as _delegate_to_current,
+)
+from ._api import (
+    fork_transition as _fork_transition,
+)
+from ._api import (
+    grouped_errors as _grouped_errors,
+)
+from ._api import (
+    is_system_call_failure as _is_system_call_failure,
+)
+from ._api import (
+    raise_body_and_release as _raise_body_and_release,
+)
+from ._api import (
+    raise_chained_errors as _raise_chained_errors,
+)
+from ._api import (
+    raise_cleanup_errors as _raise_cleanup_errors,
+)
+from ._api import (
+    raise_grouped_errors as _raise_grouped_errors,
+)
+from ._api import (
+    register_fork_object as _register_fork_object,
+)
+from ._api import (
+    resolve_poll_interval as _resolve_poll_interval,
+)
+from ._api import (
+    resolve_timeout as _resolve_timeout,
+)
+from ._async import (
+    AsyncTransitionGate as _AsyncTransitionGate,
+)
+from ._async import (
+    AsyncTransitionUnavailableError as _AsyncTransitionUnavailableError,
+)
+from ._async import (
+    BackendOutcome as _BackendOutcome,
+)
+from ._async import (
+    capture_awaitable as _capture_awaitable,
+)
+from ._async import (
+    capture_call as _capture_call,
+)
+from ._async import (
+    drain_future as _drain_future,
+)
+from ._async import (
+    future_result as _future_result,
+)
+from ._async import (
+    run_in_executor as _run_in_executor,
+)
+from ._async import (
+    wait_until_done as _wait_until_done,
+)
+from ._error import Timeout
+from ._lease import SoftFileLease
+from ._soft import SoftFileLock
+from ._strict import StrictSoftFileLock
+from ._unix import UnixFileLock
+from ._util import ensure_directory_exists
+from ._windows import WindowsFileLock
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Hashable, Mapping
@@ -85,9 +142,7 @@ _AT = TypeVar("_AT", bound="BaseAsyncFileLock")
 _T = TypeVar("_T")
 
 
-class AsyncFileLockMeta(FileLockMeta):
-    """Gives the async locks their constructor, which rejects ``run_in_executor`` together with ``thread_local``."""
-
+class AsyncFileLockMeta(FileLockMeta):  # simplint: ignore[unexported-public-name]  # existing module attribute
     def __call__(  # ruff:ignore[too-many-arguments]  # forwards the public constructor's documented parameters
         cls: type[_AT],  # ruff:ignore[invalid-first-argument-name-for-method]  # metaclass __call__ receives the class being constructed
         lock_file: str | os.PathLike[str],
@@ -407,7 +462,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         return self._async_context.executor
 
     @executor.setter
-    def executor(self, value: futures.Executor | None) -> None:  # pragma: no cover  # no test assigns the executor
+    def executor(self, value: futures.Executor | None) -> None:
         """
         Change the executor.
 
@@ -836,9 +891,11 @@ def _new_transition_gate() -> _AsyncTransitionGate:
     return _AsyncTransitionGate()
 
 
-@dataclass
+@dataclass  # simplint: ignore[dataclass-frozen, dataclass-slots, dataclass-kw-only]  # established mutable context
 class AsyncFileLockContext(FileLockContext):
-    """A dataclass which holds the context for a ``BaseAsyncFileLock`` object."""
+    """A dataclass which holds the context for a \
+``BaseAsyncFileLock`` object.\
+"""  # simplint: ignore[function-docstring]  # existing class documentation
 
     #: Whether run in executor
     run_in_executor: bool = True
@@ -854,22 +911,12 @@ class AsyncFileLockContext(FileLockContext):
     transition_gate: _AsyncTransitionGate = field(default_factory=_new_transition_gate)
 
 
-class AsyncThreadLocalFileContext(AsyncFileLockContext, ThreadLocalFileContext):
-    """
-    A thread local version of the ``FileLockContext`` class.
-
-    :param lock_file: The path of the lock file.
-    :param timeout: The timeout for acquiring the lock, ``-1`` for unlimited.
-    :param mode: The file mode of the lock file.
-    :param blocking: Whether acquiring the lock blocks.
-    :param poll_interval: The interval between attempts to acquire the lock.
-    :param lifetime: The lifetime of the lock, or ``None`` for no expiry.
-    :param run_in_executor: Whether the lock is acquired in an executor.
-    :param executor: The executor to use, or ``None`` for the loop's default.
-    :param loop: The event loop the lock is bound to.
-    :ivar current: The context of the calling thread.
-
-    """
+class AsyncThreadLocalFileContext(  # simplint: ignore[unexported-public-name]  # existing module attribute
+    AsyncFileLockContext, ThreadLocalFileContext
+):
+    """A thread local version of the \
+``FileLockContext`` class.\
+"""  # simplint: ignore[function-docstring]  # existing class documentation
 
     # threading.local runs __init__ again with these arguments the first time each thread touches the context.
     def __init__(  # ruff:ignore[too-many-arguments]  # mirrors the AsyncFileLockContext fields set at construction
@@ -953,12 +1000,9 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "AsyncAcquireReturnProxy",
-    "AsyncFileLockContext",
-    "AsyncFileLockMeta",
     "AsyncSoftFileLease",
     "AsyncSoftFileLock",
     "AsyncStrictSoftFileLock",
-    "AsyncThreadLocalFileContext",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",

@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
 __lazy_modules__ = [
     "contextlib",
-    "filelock._identity",
-    "filelock._soft_protocol",
-    "filelock._util",
     "itertools",
     "pathlib",
     "re",
     "secrets",
+    f"{__spec__.parent}._identity",
+    f"{__spec__.parent}._soft_protocol",
+    f"{__spec__.parent}._util",
+    f"{__spec__.parent}._windows",
 ]
 
 import os
@@ -24,10 +32,22 @@ from itertools import islice
 from pathlib import Path
 from typing import Final, NamedTuple
 
-from filelock._api import BaseFileLock, _raise_grouped_errors
-from filelock._identity import host_name, owner_is_current_process, owner_is_stale, process_start_token
-from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import (
+from ._api import (
+    BaseFileLock,
+)
+from ._api import (
+    raise_grouped_errors as _raise_grouped_errors,
+)
+from ._identity import (
+    host_name,
+    owner_is_current_process,
+    owner_is_stale,
+    process_start_token,
+)
+from ._soft_protocol import (
+    STRICT_SOFT_SENTINEL_RECORD,
+)
+from ._util import (
     break_lock_file,
     exchange_back,
     exchange_names,
@@ -39,10 +59,14 @@ from filelock._util import (
 )
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._windows import open_read_without_oplock_wait
-    from filelock._windows import unlink_without_oplock_wait as unlink_path
+    from ._windows import (
+        open_read_without_oplock_wait,
+    )
+    from ._windows import (
+        unlink_without_oplock_wait as unlink_path,
+    )
 else:  # pragma: win32 no cover
-    from filelock._util import unlink_path
+    from ._util import unlink_path
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
@@ -100,7 +124,7 @@ class SoftFileLock(BaseFileLock):
 
         """
         with suppress(OSError, ValueError):
-            if (holder := _parse_lock_holder(_read_lock_file(self._lock_path)[0])) is not None:
+            if (holder := parse_lock_holder(read_lock_file(self._lock_path)[0])) is not None:
                 return holder[0]
         return None
 
@@ -114,7 +138,7 @@ class SoftFileLock(BaseFileLock):
 
         """
         with suppress(OSError, ValueError):
-            if (holder := _parse_lock_holder(_read_lock_file(self._lock_path)[0])) is not None:
+            if (holder := parse_lock_holder(read_lock_file(self._lock_path)[0])) is not None:
                 return owner_is_current_process(*holder)
         return False
 
@@ -225,7 +249,7 @@ class SoftFileLock(BaseFileLock):
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError), pin_inode(self._lock_path) as pinned:
-            content, marker = _read_lock_file(self._lock_path)
+            content, marker = read_lock_file(self._lock_path)
             if pinned not in {None, marker.st_ino}:  # pragma: win32 no cover  # Windows pins nothing
                 return  # another node replaced the pinned one before the read, and nothing keeps its number from reuse
             if content == STRICT_SOFT_SENTINEL_RECORD:  # pragma: needs hard-link
@@ -233,7 +257,7 @@ class SoftFileLock(BaseFileLock):
             # Such a marker is held for as long as its owner runs, so being unchanged proves nobody gone.
             if content == _RECORDLESS_MARKER:
                 return
-            holder = _parse_lock_holder(content)
+            holder = parse_lock_holder(content)
 
             if holder is None:
                 # Unparsable: wrong line count, a non-integer PID or start token, empty, oversized or not UTF-8.
@@ -353,7 +377,7 @@ class SoftFileLock(BaseFileLock):
 
     def _restore_claimed(self, own: str, breaker_pid: int, marker: os.stat_result) -> bool:  # pragma: win32 no cover
         try:
-            content, _ = _read_lock_file(own)
+            content, _ = read_lock_file(own)
         except OSError:
             self._return_claim(own, breaker_pid)
             return True
@@ -389,7 +413,7 @@ class SoftFileLock(BaseFileLock):
             return True
         # The breaker's own marker names its PID on this host; the same number on another host is a holder.
         return (
-            (holder := _parse_lock_holder(content)) is not None
+            (holder := parse_lock_holder(content)) is not None
             and (holder[0] != breaker_pid or holder[1] != host_name())
             and not owner_is_stale(*holder)
         )
@@ -445,8 +469,8 @@ class SoftFileLock(BaseFileLock):
         if (lifetime := self._context.lifetime) is None:
             return
         with suppress(OSError), pin_inode(self._lock_path) as pinned:
-            # _read_lock_file takes the lstat, not stat: a symlink swapped in at the path must report its own mtime.
-            content, marker = _read_lock_file(self._lock_path)
+            # read_lock_file takes the lstat, not stat: a symlink swapped in at the path must report its own mtime.
+            content, marker = read_lock_file(self._lock_path)
             if pinned not in {None, marker.st_ino} or time.time() - marker.st_mtime < lifetime:
                 return
             holder = self._recorded_holder(content)
@@ -454,12 +478,12 @@ class SoftFileLock(BaseFileLock):
 
     @classmethod
     def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
-        return None if (holder := _parse_lock_holder(content)) is None else holder[:2]
+        return None if (holder := parse_lock_holder(content)) is None else holder[:2]
 
     def _unprobeable_holder(self) -> str | None:
         # This host cannot prove such a holder dead, so whoever decides whether it is gone needs its name.
         with suppress(OSError, ValueError):
-            if (content := _read_lock_file(self._lock_path)[0]) == _RECORDLESS_MARKER:
+            if (content := read_lock_file(self._lock_path)[0]) == _RECORDLESS_MARKER:
                 return "an owner that recorded no PID (a filelock release before 3.22, or one still writing its record)"
             if (holder := self._recorded_holder(content)) and holder[1] != host_name():
                 return f"pid {holder[0]} on {holder[1]}"
@@ -552,7 +576,7 @@ class SoftFileLock(BaseFileLock):
         return True
 
 
-def _parse_lock_holder(content: str | None) -> _LockHolder | None:
+def parse_lock_holder(content: str | None) -> _LockHolder | None:
     # A well-formed lock file is "<pid>\n<hostname>\n" with an optional "<start_token>\n" third line naming the holder's
     # process start instant (a filelock 3.29 marker wrote this only on Windows; every platform writes it now). Anything
     # else (wrong line count, a non-integer PID or start token, empty or unreadable content) is unparsable; returning
@@ -594,7 +618,7 @@ class _LockHolder(NamedTuple):
     start_token: int | None
 
 
-def _read_lock_file(path: str) -> tuple[str | None, os.stat_result]:
+def read_lock_file(path: str) -> tuple[str | None, os.stat_result]:
     # A legitimate lock file is always a regular file. Classify the path with lstat first, so any other node (symlink,
     # FIFO, socket, device) is reported as a malformed lock the caller can evict, without an os.open that would follow
     # a symlink, stall on a FIFO, or fail on a socket and leave acquisition wedged. The stat result still flows back
@@ -656,4 +680,6 @@ __all__ = [
     "MALFORMED_LOCK_AGE_THRESHOLD",
     "SoftFileLock",
     "parse_decimal",
+    "parse_lock_holder",
+    "read_lock_file",
 ]

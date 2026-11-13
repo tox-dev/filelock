@@ -34,7 +34,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 import filelock
-import filelock._soft
+import filelock._soft  # simplint: ignore[private-import-path]  # tests internal behavior
 import filelock.version
 from filelock import (
     BaseFileLock,
@@ -51,7 +51,7 @@ from filelock import (
     lock_descriptor,
     unlock_descriptor,
 )
-from filelock._api import _REGISTRY, _append_exception_context, _raise_grouped_errors
+from filelock._api import _REGISTRY, acquire_thread_lock, append_exception_context, raise_grouped_errors
 from tests.capability_marks import (
     NEEDS_FCNTL,
     NEEDS_FILE_MODE,
@@ -67,7 +67,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
     from contextlib import AbstractContextManager
 
-    from _typeshed import Unused
+    from _typeshed import Unused  # simplint: ignore[private-import-path]  # precise callback type
     from pytest_mock import MockerFixture, MockType
 
 
@@ -684,7 +684,7 @@ def test_concurrent_force_releases_free_an_exited_threads_hold_once(
         # A slow log handler holds the first releaser inside the release while the second one arrives.
         if record.getMessage().startswith("Attempting to release") and not first_inside.is_set():
             first_inside.set()
-            time.sleep(0.2)  # simplint: ignore[SMP808]  # needs a release-arrival signal
+            time.sleep(0.2)  # simplint: ignore[sleep-in-test]  # needs a release-arrival signal
         return True
 
     def record_close(fd: int) -> None:
@@ -1347,7 +1347,7 @@ def test_singleton_locks_survive_concurrent_first_construction(tmp_path: Path) -
 
     class _SlowLock(SoftFileLock):
         def __init__(self, lock_file: str, *, is_singleton: bool = True) -> None:
-            time.sleep(0.05)  # simplint: ignore[SMP808]  # needs a construction-start hook
+            time.sleep(0.05)  # simplint: ignore[sleep-in-test]  # needs a construction-start hook
             super().__init__(lock_file, is_singleton=is_singleton)
 
     results: list[BaseFileLock] = []
@@ -2041,6 +2041,22 @@ def test_lease_on_a_read_only_lock_file_is_contention(leased_lock_path: Path) ->
     assert time.monotonic() - started < 5
 
 
+def test_thread_lock_checks_cancellation_after_repolling() -> None:
+    gate = threading.Lock()
+    polls = 0
+
+    def cancel_after_two_polls() -> bool:
+        nonlocal polls
+        polls += 1
+        return polls == 2
+
+    with gate:
+        assert not acquire_thread_lock(
+            gate, blocking=True, timeout=-1, poll_interval=0, cancel_check=cancel_after_two_polls
+        )
+    assert polls == 2
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 def test_cancel_check_triggers(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_path = tmp_path / "a"
@@ -2317,7 +2333,7 @@ def test_timeout_at_exact_deadline_with_virtual_clock(
     lock_path = tmp_path / "test.lock"
     with lock_type(lock_path):
         mocker.patch(
-            "filelock._api.time", new=mocker.Mock(spec=time, perf_counter=lambda: elapsed, sleep=advance_clock)
+            "filelock._api.time", new=mocker.create_autospec(time, perf_counter=lambda: elapsed, sleep=advance_clock)
         )
         with pytest.raises(Timeout):
             lock_type(lock_path).acquire(timeout=1, poll_interval=0.25)
@@ -2674,7 +2690,7 @@ def test_unix_context_exit_propagates_unlock_failure(tmp_path: Path, mocker: Moc
 def test_windows_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
-    mocker.patch("filelock._windows._unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
+    mocker.patch("filelock._windows.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
     with pytest.raises(OSError, match="unlock failed"):
         lock.release()
     assert lock.is_locked
@@ -3737,7 +3753,7 @@ def test_lock_descriptor_blocking_wait_does_not_spin(tmp_path: Path) -> None:
             future = executor.submit(acquire)
             try:
                 assert started.wait(timeout=1)
-                time.sleep(0.2)  # simplint: ignore[SMP808]  # needs a poll-entered signal
+                time.sleep(0.2)  # simplint: ignore[sleep-in-test]  # needs a poll-entered signal
             finally:
                 unlock_descriptor(holder)
             assert future.result(timeout=2) < 0.05
@@ -3952,7 +3968,7 @@ def _failing_on_acquired(_fd: int) -> None:
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_on_acquired_and_release_failure_group(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"), on_acquired=_failing_on_acquired)
-    mocker.patch("filelock._unix._unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
+    mocker.patch("filelock._unix.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
     with pytest.raises(BaseExceptionGroup) as info:
         lock.acquire()
     assert {type(error) for error in info.value.exceptions} == {RuntimeError, OSError}
@@ -3993,7 +4009,7 @@ def test_grouped_errors_keep_a_context_that_is_a_distinct_group() -> None:
     member.__context__ = context
 
     with pytest.raises(BaseExceptionGroup) as info:
-        _raise_grouped_errors("grouped", member, RuntimeError("other"))
+        raise_grouped_errors("grouped", member, RuntimeError("other"))
 
     assert member.__context__ is context
     assert member in info.value.exceptions
@@ -4007,7 +4023,7 @@ def test_grouped_errors_detach_a_context_already_nested_in_a_sibling() -> None:
     member.__context__ = shared
 
     with pytest.raises(BaseExceptionGroup) as info:
-        _raise_grouped_errors("grouped", sibling, member)
+        raise_grouped_errors("grouped", sibling, member)
 
     assert member.__context__ is None
     assert set(info.value.exceptions) == {sibling, member}
@@ -4118,7 +4134,7 @@ def test_append_exception_context_terminates_on_a_cycle() -> None:
     first.__context__ = second
     second.__context__ = first  # a cycle that never reaches the context below
 
-    _append_exception_context(first, ValueError("context"))
+    append_exception_context(first, ValueError("context"))
 
     # The walk hit the already-seen tail and stopped instead of looping forever or threading context into the ring.
     assert first.__context__ is second

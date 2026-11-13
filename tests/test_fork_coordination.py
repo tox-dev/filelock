@@ -11,7 +11,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import BaseFileLock, Timeout, has_fcntl
-from filelock._api import _fork_transition
+from filelock._api import fork_transition
 from tests.capability_marks import (
     NEEDS_AUDIT_EVENTS,
     NEEDS_FORK,
@@ -877,42 +877,40 @@ if os.waitstatus_to_exitcode(status) != 0 or worker.is_alive() or os.getpid() !=
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@NEEDS_FORK  # pragma: needs fork
-@_FORK_WARNING
-def test_registration_transition_completes_after_fork_closes_admission(tmp_path: Path) -> None:
+@NEEDS_REGISTER_AT_FORK  # pragma: needs register-at-fork
+@pytest.mark.timeout(30)
+def test_registration_transition_completes_after_fork_hook_closes_admission(tmp_path: Path) -> None:
     script = """
 from __future__ import annotations
 
 import os
 import sys
 import threading
-import warnings
 from queue import Queue
 
-warnings.filterwarnings("ignore", message=".*multi-threaded, use of fork.*", category=DeprecationWarning)
+from filelock import BaseFileLock
+from filelock._api import _FORK_STATE, _pin_fork_objects, _resume_parent_after_fork
 
 admission_waiting = threading.Event()
 real_condition_wait = threading.Condition.wait
 
 def observed_wait(condition: threading.Condition, timeout: float | None = None) -> bool:
-    if threading.current_thread().name == "forker":
+    if condition is _FORK_STATE.gate and threading.current_thread() is threading.main_thread():
         admission_waiting.set()
     return real_condition_wait(condition, timeout)
 
 threading.Condition.wait = observed_wait
 
-from filelock import BaseFileLock
-
 entered = threading.Event()
+acquired = threading.Event()
 release = threading.Event()
 failures: Queue[str] = Queue()
-fork_status: Queue[int] = Queue()
 
 class BlockingLock(BaseFileLock):
     def _acquire(self) -> None:
         self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
         entered.set()
-        if not release.wait(timeout=5):
+        if not release.wait(timeout=10):
             raise RuntimeError("backend acquisition was not released")
 
     def _release(self) -> None:
@@ -924,32 +922,41 @@ lock = BlockingLock(sys.argv[1], is_singleton=False)
 def acquire() -> None:
     try:
         lock.acquire(timeout=0)
+        acquired.set()
     except BaseException as exception:
         failures.put(f"acquire: {exception!r}")
 
-def fork() -> None:
+def release_after_admission() -> None:
     try:
-        child_pid = os.fork()
-        if child_pid == 0:
-            os._exit(0)
-        _, status = os.waitpid(child_pid, 0)
-        fork_status.put(os.waitstatus_to_exitcode(status))
-    except BaseException as exception:
-        failures.put(f"fork: {exception!r}")
+        if not admission_waiting.wait(timeout=5):
+            failures.put("fork hook did not wait for the active transition")
+    finally:
+        release.set()
 
-worker = threading.Thread(target=acquire, name="acquirer")
+worker = threading.Thread(target=acquire, name="acquirer", daemon=True)
 worker.start()
 if not entered.wait(timeout=5):
-    sys.exit(1)
-forker = threading.Thread(target=fork, name="forker")
-forker.start()
-if not admission_waiting.wait(timeout=5):
-    sys.exit(2)
-release.set()
+    raise RuntimeError("backend acquisition did not start")
+releaser = threading.Thread(target=release_after_admission, name="releaser", daemon=True)
+releaser.start()
+try:
+    _pin_fork_objects()
+    if not _FORK_STATE.admission_closed:
+        raise RuntimeError("fork hook did not close admission")
+finally:
+    _resume_parent_after_fork()
 worker.join(timeout=5)
-forker.join(timeout=5)
-if worker.is_alive() or forker.is_alive() or not failures.empty() or fork_status.get(timeout=1) != 0:
-    sys.exit(3)
+releaser.join(timeout=5)
+if worker.is_alive() or releaser.is_alive():
+    raise RuntimeError("worker or releaser remained blocked")
+if not failures.empty():
+    raise RuntimeError(failures.get_nowait())
+if not acquired.is_set():
+    raise RuntimeError("worker did not finish acquiring the lock")
+if _FORK_STATE.admission_closed:
+    raise RuntimeError("fork hook did not reopen admission")
+lock.release()
+lock.acquire(timeout=0)
 lock.release()
 """
     result = subprocess.run(
@@ -957,7 +964,7 @@ lock.release()
         check=False,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=20,
     )
 
     assert (result.returncode, result.stderr) == (0, "")
@@ -1381,7 +1388,7 @@ def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) 
 @NEEDS_FORK
 def test_fork_transition_finished_on_another_thread_releases_the_entering_thread() -> None:  # pragma: needs fork
     # A generator suspended inside a transition can be finalized on any thread.
-    transition: Final = _fork_transition()
+    transition: Final = fork_transition()
     transition.__enter__()  # ruff:ignore[unnecessary-dunder-call]  # entered and left on different threads
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(transition.__exit__, None, None, None).result()

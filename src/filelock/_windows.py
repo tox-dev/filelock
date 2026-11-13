@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["filelock._util", "msvcrt", "struct"]
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
+__lazy_modules__ = ["msvcrt", "struct", f"{__spec__.parent}._util"]
 
 import os
 import struct
@@ -11,8 +18,8 @@ from errno import ENOENT, ENOTDIR, EWOULDBLOCK
 from functools import cache
 from typing import TYPE_CHECKING, Final, cast
 
-from filelock._api import BaseFileLock
-from filelock._util import raise_on_not_writable_file
+from ._api import BaseFileLock
+from ._util import raise_on_not_writable_file
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -246,7 +253,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     ]
     _KERNEL32.CreateFileW.restype = ctypes.c_void_p
 
-    def _lock_fd_nonblocking(fd: int) -> bool:
+    def lock_fd_nonblocking(fd: int) -> bool:
         # One nonblocking exclusive LockFileEx attempt shared by WindowsFileLock and lock_descriptor, over the one-byte
         # range at offset 0. True on acquisition, False on contention, raise otherwise. The caller owns fd; the handle
         # from get_osfhandle belongs to the CRT descriptor and must not be closed here.
@@ -260,7 +267,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         # A non-contention LockFileEx failure is not reproducible in-process.
         raise ctypes.WinError(err)  # pragma: no cover
 
-    def _unlock_fd(fd: int) -> None:
+    def unlock_fd(fd: int) -> None:
         overlapped = _OVERLAPPED()  # the same offset 0 and one-byte length the lock used
         if (  # pragma: no cover  # only an interrupted earlier release leaves our own range unlocked
             not _KERNEL32.UnlockFileEx(msvcrt.get_osfhandle(fd), 0, 1, 0, ctypes.byref(overlapped))
@@ -283,13 +290,13 @@ if sys.platform == "win32":  # pragma: win32 cover
             # The reparse test is bound to the opened handle, so a symlink or junction swapped in cannot defeat it
             # through a check-then-open TOCTOU race.
             try:
-                fd = _open_non_reparse_fd(self._lock_path, self._open_mode())
+                fd = open_non_reparse_fd(self._lock_path, self._open_mode())
             except BlockingIOError:
                 return  # an oplock holder has not answered its break; let the retry loop keep its deadline
             if fd is None:
                 return  # open contention (share conflict or a name pending deletion); let the retry loop try again
             try:
-                locked = _lock_fd_nonblocking(fd)
+                locked = lock_fd_nonblocking(fd)
                 if locked:
                     self._mark_descriptor_owned(fd)
             except BaseException:
@@ -305,14 +312,14 @@ if sys.platform == "win32":  # pragma: win32 cover
             # Retain the descriptor until the OS unlock succeeds: if UnlockFileEx raises, the byte-range lock is still
             # held, so is_locked must keep reporting held rather than losing the fd. Only after the unlock commits do
             # close and unlink run as post-unlock cleanup; their failure cannot make the lock held again.
-            _unlock_fd(fd)
+            unlock_fd(fd)
             self._mark_descriptor_released()
             self._close_released_fd(fd, default_suppresses=False)
             if not self._preserve_lock_file:  # preserve_lock_file keeps a stable file identity for the caller (#605)
                 with suppress(OSError):
                     unlink_without_oplock_wait(self._lock_path)
 
-    def _open_non_reparse_fd(path: str, mode: int, *, oplock_wait: float = _ACCESS_DENIED_GRACE) -> int | None:
+    def open_non_reparse_fd(path: str, mode: int, *, oplock_wait: float = _ACCESS_DENIED_GRACE) -> int | None:
         # Open *path* for locking while refusing reparse points, bound to the handle actually locked.
         #
         # The file is opened through ``NtCreateFile`` with ``FILE_OPEN_REPARSE_POINT`` so a symlink or junction planted
@@ -467,7 +474,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             _KERNEL32.CloseHandle(handle)
             raise
 
-    def _open_deletable_for_reading(path: str) -> int:
+    def open_deletable_for_reading(path: str) -> int:
         # Open *path* read-only without blocking a concurrent unlink and without following a reparse point.
         #
         # ``os.open`` omits ``FILE_SHARE_DELETE``, so while a process has a file open that way, a delete of it fails
@@ -484,8 +491,8 @@ if sys.platform == "win32":  # pragma: win32 cover
             _KERNEL32.CloseHandle(handle)
             raise
 
-    def _pin_directory(path: str) -> int:
-        # Open the directory at *path* so that no process can rename or remove it until :func:`_unpin_directory`.
+    def pin_directory(path: str) -> int:
+        # Open the directory at *path* so that no process can rename or remove it until :func:`unpin_directory`.
         #
         # Windows has no ``dir_fd``, so an operation resolves every path component by name again. A handle on each
         # directory of a record path, opened without following a reparse point, keeps that name bound to the directory
@@ -510,10 +517,10 @@ if sys.platform == "win32":  # pragma: win32 cover
             raise NotADirectoryError(ENOTDIR, "is a junction or symlink, not a directory", path)
         return handle
 
-    def _unpin_directory(handle: int) -> None:
+    def unpin_directory(handle: int) -> None:
         _KERNEL32.CloseHandle(handle)
 
-    def _is_unlinked(path: str) -> bool:
+    def is_unlinked(path: str) -> bool:
         # Report whether *path* is gone or pending deletion, which ``os.open`` reports as the same EACCES as a denial.
         #
         # NTFS keeps an unlinked name listed, refusing every open with ``STATUS_DELETE_PENDING``, until the last handle
@@ -599,7 +606,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             return 0, status
         return handle.value or 0, status
 
-    def _directory_is_private(path: str) -> bool:
+    def directory_is_private(path: str) -> bool:
         # Report whether only the current user, ``SYSTEM`` and ``Administrators`` can create or remove names in *path*.
         #
         # A directory whose owner is anyone else can have its ACL rewritten by that owner. Entries that only a child
@@ -680,7 +687,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     def _sid_at(address: int) -> bytes:
         return ctypes.string_at(address, 8 + 4 * ctypes.string_at(address + 1, 1)[0])
 
-    def _make_private_directory(path: str) -> None:
+    def make_private_directory(path: str) -> None:
         # Create *path* with the owner-only descriptor, so that nobody else can add a name to it.
         attributes = _SECURITY_ATTRIBUTES(
             nLength=ctypes.sizeof(_SECURITY_ATTRIBUTES),
@@ -691,16 +698,16 @@ if sys.platform == "win32":  # pragma: win32 cover
             raise ctypes.WinError(ctypes.get_last_error())
 
     @contextmanager
-    def _pinned(path: str) -> Generator[tuple[int, int]]:
+    def pinned(path: str) -> Generator[tuple[int, int]]:
         # Hold *path* open without delete sharing, which keeps its name from being renamed or removed.
         with _opened(path, _FILE_SHARE_READ_WRITE) as handle:
             yield _identity_of(handle)
 
-    def _identity_at(path: str) -> tuple[int, int]:
+    def identity_at(path: str) -> tuple[int, int]:
         with _opened(path, _FILE_SHARE_ALL) as handle:
             return _identity_of(handle)
 
-    def _identity_of_fd(fd: int) -> tuple[int, int]:
+    def identity_of_fd(fd: int) -> tuple[int, int]:
         return _identity_of(msvcrt.get_osfhandle(fd))
 
     @contextmanager
@@ -742,17 +749,19 @@ else:  # pragma: win32 no cover
 
 __all__ = [
     "WindowsFileLock",
-    "_directory_is_private",
-    "_identity_at",
-    "_identity_of_fd",
-    "_is_unlinked",
-    "_make_private_directory",
-    "_open_deletable_for_reading",
-    "_open_non_reparse_fd",
-    "_pin_directory",
-    "_pinned",
-    "_unpin_directory",
+    "directory_is_private",
+    "identity_at",
+    "identity_of_fd",
+    "is_unlinked",
+    "lock_fd_nonblocking",
+    "make_private_directory",
+    "open_deletable_for_reading",
     "open_for_delete_without_oplock_wait",
+    "open_non_reparse_fd",
     "open_read_without_oplock_wait",
+    "pin_directory",
+    "pinned",
     "unlink_without_oplock_wait",
+    "unlock_fd",
+    "unpin_directory",
 ]

@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from _typeshed import Unused
+    from _typeshed import Unused  # simplint: ignore[private-import-path]  # precise callback type
     from pytest_mock import MockerFixture
 
 #: Short enough to keep the suite quick, long enough that a loaded runner still refreshes twice before expiry.
@@ -130,7 +130,7 @@ _FORK_WARNING: Final[pytest.MarkDecorator] = pytest.mark.filterwarnings(
 
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
-@pytest.mark.parametrize("thread_local", [True, False], ids=["thread-local", "shared"])
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread-local"), pytest.param(False, id="shared")])
 def test_lease_claim_does_not_survive_fork(marker: Path, *, thread_local: bool) -> None:
     # fork copies the parent's claim, token, compromise and heartbeat included, into a child that holds nothing.
     lease = SoftFileLease(
@@ -167,7 +167,7 @@ def test_lease_token_names_no_claim_after_an_acquire_that_raises(tmp_path: Path)
 def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> None:
 
     with _lease(marker):
-        time.sleep(  # simplint: ignore[SMP808]  # needs a clock hook for lease duration
+        time.sleep(  # simplint: ignore[sleep-in-test]  # needs a clock hook for lease duration
             _DURATION * 1.5
         )  # only a refreshing heartbeat keeps the claim past this
         with pytest.raises(Timeout):
@@ -402,7 +402,7 @@ def _wait_until(condition: Callable[[], bool]) -> None:
     # Bounded, so a heartbeat that never gets there fails the assertion after it instead of hanging the run.
     deadline: Final = time.monotonic() + _DURATION * 20
     while not condition() and time.monotonic() < deadline:
-        time.sleep(_HEARTBEAT / 2)  # simplint: ignore[SMP808]  # needs a compromise signal
+        time.sleep(_HEARTBEAT / 2)  # simplint: ignore[sleep-in-test]  # needs a compromise signal
 
 
 def test_lease_holds_an_uncompromised_claim(marker: Path, mocker: MockerFixture) -> None:
@@ -558,7 +558,7 @@ def test_lease_keeps_its_claim_when_another_thread_fails_to_acquire(marker: Path
         contender.join()
 
         assert holder.token == token
-        time.sleep(  # simplint: ignore[SMP808]  # needs a thread-exit signal
+        time.sleep(  # simplint: ignore[sleep-in-test]  # needs a thread-exit signal
             _DURATION * 1.5
         )  # only a surviving heartbeat keeps the claim past this
         with pytest.raises(Timeout):
@@ -606,7 +606,7 @@ def test_lease_force_released_for_an_exited_thread_stops_that_holds_heartbeat(ma
     holder.join()
 
     lease.release(force=True)
-    time.sleep(_HEARTBEAT * 3)  # simplint: ignore[SMP808]  # needs a thread-exit signal
+    time.sleep(_HEARTBEAT * 3)  # simplint: ignore[sleep-in-test]  # needs a thread-exit signal
     assert (reports, marker.exists()) == ([], False)
 
 

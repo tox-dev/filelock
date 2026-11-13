@@ -220,11 +220,11 @@ else:  # pragma: win32 no cover
                 return None
             # psutil identifies a process by the same (pid, starttime) pair; the boot id extends that across reboots.
             fields = data[data.rfind(b")") + 1 :].split()
-            if len(fields) <= _STARTTIME_INDEX:  # pragma: no cover  # a truncated /proc read, never seen in practice
+            if len(fields) <= _STARTTIME_INDEX:
                 return None
             try:
                 starttime = int(fields[_STARTTIME_INDEX])
-            except ValueError:  # pragma: no cover  # /proc always renders starttime as an integer
+            except ValueError:
                 return None
             return (_BOOT_ID << 64) | starttime
 

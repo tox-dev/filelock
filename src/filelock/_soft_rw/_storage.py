@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["filelock._soft_rw._protocol", "filelock._strict", "filelock._util", "pathlib"]
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
+__lazy_modules__ = ["filelock._strict", "filelock._util", "pathlib", f"{__spec__.parent}._protocol"]
 
 import errno
 import os
@@ -14,14 +21,23 @@ from errno import ELOOP, EMLINK, ENOENT, ENOTDIR, ENXIO, ESTALE
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from filelock._soft_rw._protocol import (
-    _GENERATIONS_DIRECTORY,
-    _HOLDERS_DIRECTORY,
-    _MAX_RECORD_SIZE,
+from filelock._strict import (  # simplint: ignore[private-import-path]  # internal dependency
+    link_no_follow,
+    pin_directories,
+    raise_if_hard_links_unsupported,
+)
+from filelock._util import (  # simplint: ignore[private-import-path]  # internal dependency
+    ensure_directory_exists,
+    foreign_directory_owner,
+    write_all,
+)
+
+from ._protocol import (
+    GENERATIONS_DIRECTORY,
+    HOLDERS_DIRECTORY,
+    MAX_RECORD_SIZE,
     TreeReplacedError,
 )
-from filelock._strict import _link_no_follow, _pin_directories, _raise_if_hard_links_unsupported
-from filelock._util import ensure_directory_exists, foreign_directory_owner, write_all
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -58,7 +74,7 @@ class OsFiles:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 return b""
             chunks: list[bytes] = []
-            remaining = _MAX_RECORD_SIZE + 1
+            remaining = MAX_RECORD_SIZE + 1
             while remaining > 0 and (chunk := os.read(fd, remaining)):
                 chunks.append(chunk)
                 remaining -= len(chunk)
@@ -128,7 +144,7 @@ class OsFiles:
         else:
             # Without dir_fd, hold each of those directories open instead, so no process can rename or replace one.
             try:
-                pins = _pin_directories(*[Path(path), *Path(path).parents][:depth][::-1])
+                pins = pin_directories(*[Path(path), *Path(path).parents][:depth][::-1])
             except NotADirectoryError as error:  # pragma: win32 cover
                 msg = f"{error.filename} is not a directory or is a symlink; refusing to use it"
                 raise TreeReplacedError(msg) from error
@@ -177,11 +193,11 @@ class OsFiles:
         failure: NotImplementedError | OSError | None = None
         with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
             try:
-                _link_no_follow(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
+                link_no_follow(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
             except FileExistsError:
                 pass
             except (NotImplementedError, OSError) as error:
-                _raise_if_hard_links_unsupported(self._lock_file, error)
+                raise_if_hard_links_unsupported(self._lock_file, error)
                 failure = error
             # The file's identity decides, not the call's result: an NFS retransmit can report a link that landed as
             # failed, and an EEXIST can be this very link answered twice. Any other error on a link that did not land is
@@ -241,8 +257,8 @@ class OsFiles:
         ensure_directory_exists(root)
         for directory, depth in (
             (Path(root), 0),
-            (Path(root, _GENERATIONS_DIRECTORY), 1),
-            (Path(root, _HOLDERS_DIRECTORY), 1),
+            (Path(root, GENERATIONS_DIRECTORY), 1),
+            (Path(root, HOLDERS_DIRECTORY), 1),
         ):
             with self._relative(str(directory), depth) as (name, dir_fd):
                 with suppress(FileExistsError):

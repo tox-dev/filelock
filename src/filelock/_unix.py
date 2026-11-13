@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._util", "pathlib", "warnings"]
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
+__lazy_modules__ = ["contextlib", "pathlib", "warnings", f"{__spec__.parent}._util"]
 
 import os
 import sys
@@ -10,8 +17,8 @@ from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
 from typing import Final, NamedTuple, cast
 
-from filelock._api import BaseFileLock
-from filelock._util import remove_own_file
+from ._api import BaseFileLock
+from ._util import remove_own_file
 
 has_fcntl = False
 if sys.platform == "win32":  # pragma: win32 cover
@@ -33,10 +40,10 @@ else:  # pragma: win32 no cover
     except (ImportError, AttributeError):
         _FCNTL_UNAVAILABLE: Final[str] = "fcntl is unavailable"
 
-        def _lock_fd_nonblocking(_fd: int) -> bool:
+        def lock_fd_nonblocking(_fd: int) -> bool:
             raise OSError(ENOSYS, _FCNTL_UNAVAILABLE)
 
-        def _unlock_fd(_fd: int) -> None:
+        def unlock_fd(_fd: int) -> None:
             raise OSError(ENOSYS, _FCNTL_UNAVAILABLE)
 
     else:
@@ -45,7 +52,7 @@ else:  # pragma: win32 no cover
         # filesystems report EACCES instead, so treat it as contention too rather than a permanent error.
         _CONTENTION_ERRNOS: Final[frozenset[int]] = frozenset({EACCES, EAGAIN, EWOULDBLOCK})
 
-        def _lock_fd_nonblocking(fd: int) -> bool:
+        def lock_fd_nonblocking(fd: int) -> bool:
             # One nonblocking exclusive flock attempt shared by UnixFileLock and lock_descriptor, so both contend on
             # the same lock and classify errors identically. The caller owns fd; this never closes it.
             try:
@@ -56,12 +63,12 @@ else:  # pragma: win32 no cover
                 raise
             return True
 
-        def _unlock_fd(fd: int) -> None:
+        def unlock_fd(fd: int) -> None:
             fcntl.flock(fd, fcntl.LOCK_UN)
 
     def _flock_is_missing(fd: int) -> bool:
         try:
-            _lock_fd_nonblocking(fd)
+            lock_fd_nonblocking(fd)
         except OSError as exception:
             return exception.errno == ENOSYS
         return False  # a flock the probe won is released when the caller closes fd
@@ -103,13 +110,13 @@ else:  # pragma: win32 no cover
             # would otherwise leave an unreferenced descriptor, and its flock, open until the process exits.
             locked = False
             try:
-                locked = _lock_fd_nonblocking(fd)
+                locked = lock_fd_nonblocking(fd)
                 if locked and self._finalize_locked_fd(fd):
                     return None
             except BaseException as exception:
                 if not locked and isinstance(exception, OSError) and exception.errno == ENOSYS:
                     return _MissingFlock(fd, exception, created)
-                # Contention returns False from _lock_fd_nonblocking, so a raise here is a failure.
+                # Contention returns False from lock_fd_nonblocking, so a raise here is a failure.
                 self._mark_descriptor_released()
                 os.close(fd)
                 raise
@@ -200,7 +207,9 @@ else:  # pragma: win32 no cover
         def _fallback_to_soft_lock(self: BaseFileLock) -> None:
             # Import lazily: this runs only on the rare flock fallback, and asyncio imports _unix, so a
             # module-level import of it here would cycle.
-            from filelock._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]
+            from ._soft import (  # ruff:ignore[import-outside-top-level]  # import cycle
+                SoftFileLock,
+            )
 
             warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
             from filelock.asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # ruff:ignore[import-outside-top-level]  # asyncio imports this module
@@ -212,7 +221,7 @@ else:  # pragma: win32 no cover
             # Retain the descriptor until flock succeeds: a failed unlock leaves the kernel lock held, so is_locked
             # must keep reporting held for a retry. Once flock commits, clear held state and close as post-unlock
             # cleanup; a close failure (EIO on FUSE/Docker bind mounts) does not make the kernel lock held again.
-            _unlock_fd(fd)
+            unlock_fd(fd)
             self._mark_descriptor_released()
             self._close_released_fd(fd, default_suppresses=True)
 
@@ -220,4 +229,4 @@ else:  # pragma: win32 no cover
 if sys.platform == "win32":  # pragma: win32 cover
     __all__ = ["UnixFileLock", "has_fcntl"]
 else:  # pragma: win32 no cover
-    __all__ = ["UnixFileLock", "_lock_fd_nonblocking", "_unlock_fd", "has_fcntl"]
+    __all__ = ["UnixFileLock", "has_fcntl", "lock_fd_nonblocking", "unlock_fd"]

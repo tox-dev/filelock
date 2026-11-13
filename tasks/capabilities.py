@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
     from types import FrameType
 
-    from _typeshed import Unused
+    from _typeshed import Unused  # simplint: ignore[private-import-path]  # precise callback type
 
 
 def _supports_symlink() -> bool:

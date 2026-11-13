@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 import pytest
 from capabilities import CAPABILITIES
 
-import filelock._strict
+import filelock._strict  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import MarkerSoftFileLock, SoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock, Timeout
 from filelock._identity import host_name
 from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_link_follow_symlinks, _relative_identity
@@ -2292,7 +2292,7 @@ def test_strict_soft_claim_read_retries_after_a_slow_denied_attempt(tmp_path: Pa
         nonlocal denied
         if not denied and Path(os.fsdecode(path)).name == claim.name:
             denied = True
-            time.sleep(0.05)  # simplint: ignore[SMP808]  # needs a clock hook for grace window
+            time.sleep(0.05)  # simplint: ignore[sleep-in-test]  # needs a clock hook for grace window
             raise PermissionError(EACCES, "sharing violation")
         return real_open(path, flags, mode, dir_fd=dir_fd)
 

@@ -12,7 +12,7 @@ from contextlib import closing
 from errno import EWOULDBLOCK
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import pytest
 from capabilities import CAPABILITIES
@@ -30,7 +30,22 @@ from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, in
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._identity import host_name
     from filelock._read_write import _host_digest, _remove_link_directory_on_windows
-    from filelock._windows import _ADVAPI32, _directory_is_private, _make_private_directory
+    from filelock._windows import _ADVAPI32, directory_is_private, make_private_directory
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")  # pragma: win32 cover
+def test_windows_read_write_rejects_changed_database_link(tmp_path: Path, mocker: MockerFixture) -> None:
+    database = tmp_path / "database.db"
+    mocker.patch(
+        "filelock._read_write._directory_is_private",
+        side_effect=lambda path: path != os.fspath(tmp_path),
+        autospec=True,
+    )
+    mocker.patch("filelock._read_write._identity_at", return_value=(-1, -1), autospec=True)
+    with pytest.raises(OSError, match="lock database changed"):
+        ReadWriteLock(database, is_singleton=False)
+    assert [entry.name for entry in tmp_path.iterdir()] == [database.name]
+
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
 # slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
@@ -53,8 +68,6 @@ if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
 
     from pytest_mock import MockerFixture
-
-    from filelock._read_write import _LinkDirectory
 
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 5)
@@ -150,7 +163,7 @@ def test_lock_excludes_opposite_mode(
         contender.start()
         contender_started.set()
 
-        time.sleep(2)  # confirm the contender stays blocked  # simplint: ignore[SMP808]  # needs a blocked-poll signal
+        time.sleep(2)  # confirm the contender stays blocked  # simplint: ignore[sleep-in-test]  # no blocked signal
         assert not contender_acquired.is_set(), f"{contender_mode} lock should not be acquired while {holder_mode} held"
 
         release_holder.set()
@@ -809,7 +822,7 @@ def _write_intent_pending(prober: ReadWriteLock, deadline: float) -> bool:
         return False
     prober.release()
     assert time.monotonic() < deadline, "Writer never registered its write intent"
-    time.sleep(0.05)  # simplint: ignore[SMP808]  # needs a write-intent signal
+    time.sleep(0.05)  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
     return True
 
 
@@ -826,7 +839,7 @@ def chain_reader(
 
     with ReadWriteLock(lock_file).read_lock():
         if reader_index > 0:
-            time.sleep(  # simplint: ignore[SMP808]  # needs a write-intent signal
+            time.sleep(  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
                 2
             )  # overlap with earlier readers so the writer contends mid-chain
 
@@ -834,7 +847,7 @@ def chain_reader(
             next_reader_signal.set()
 
         if reader_index == 0:
-            time.sleep(  # simplint: ignore[SMP808]  # needs a write-intent signal
+            time.sleep(  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
                 1
             )  # hold briefly before releasing the writer
 
@@ -890,7 +903,7 @@ def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acqui
     with getattr(lock, f"{mode}_lock")():  # pragma: win32 no cover
         acquired_event.set()
         while True:  # pragma: win32 no cover
-            time.sleep(0.1)  # simplint: ignore[SMP808]  # a blocked lock wait can swallow SIGTERM
+            time.sleep(0.1)  # simplint: ignore[sleep-in-test]  # a blocked lock wait can swallow SIGTERM
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -1128,7 +1141,7 @@ def test_windows_directory_whose_acl_can_be_rewritten_gets_a_private_link(  # pr
     ReadWriteLock(directory / "lock.db", is_singleton=False).close()
 
     opened = Path(connect.call_args_list[0].args[0])
-    assert (_directory_is_private(os.fspath(directory)), opened.parent.parent.parent) == (False, directory)
+    assert (directory_is_private(os.fspath(directory)), opened.parent.parent.parent) == (False, directory)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
@@ -1140,7 +1153,7 @@ def test_windows_directory_only_the_account_can_write_connects_by_name(  # pragm
 
     ReadWriteLock(database, is_singleton=False).close()
 
-    assert (_directory_is_private(os.fspath(tmp_path)), connect.call_args_list[0].args[0]) == (True, str(database))
+    assert (directory_is_private(os.fspath(tmp_path)), connect.call_args_list[0].args[0]) == (True, str(database))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
@@ -1191,7 +1204,9 @@ def test_windows_shared_directory_release_keeps_a_directory_renamed_onto_the_lin
     (other / "notes.txt").write_text("keep")
     renamed: list[Path] = []
 
-    def swap_then_remove(link: _LinkDirectory) -> None:
+    def swap_then_remove(
+        link: Any,  # ruff:ignore[any-type]  # simplint: ignore[imprecise-annotation]  # private payload
+    ) -> None:
         link.path.rename(tmp_path / "aside")
         other.rename(link.path)
         renamed.append(link.path)
@@ -1209,7 +1224,7 @@ def test_windows_shared_directory_sweeps_the_link_of_a_dead_holder(  # pragma: w
 ) -> None:
     everyone_writable_database.touch()
     left = everyone_writable_database.parent / f".filelock-{2**31 - 1}--{_host_digest(host_name())}-x"
-    _make_private_directory(os.fspath(left))
+    make_private_directory(os.fspath(left))
     (left / "0123456789abcdef").mkdir()
     (left / "0123456789abcdef" / "lock.db").hardlink_to(everyone_writable_database)
 
@@ -1228,7 +1243,7 @@ def test_windows_shared_directory_sweep_keeps_a_file_that_is_not_a_link_to_the_d
     everyone_writable_database: Path,
 ) -> None:
     left = everyone_writable_database.parent / f".filelock-{2**31 - 1}--{_host_digest(host_name())}-x"
-    _make_private_directory(os.fspath(left))
+    make_private_directory(os.fspath(left))
     (left / "0123456789abcdef").mkdir()
     (left / "0123456789abcdef" / "lock.db").write_text("keep")
 
@@ -1352,7 +1367,7 @@ def test_private_directory_under_a_shared_parent_refuses_a_replaced_directory(  
 
     with pytest.raises(OSError, match="replaced while acquiring"):
         lock.acquire_write()
-    if replacement == "symlink":  # simplint: ignore[SMP803]  # symlink and directory swap leave different state
+    if replacement == "symlink":  # simplint: ignore[conditional-in-test]  # distinct outcomes
         # SQLite's open creates the missing name, which a symlink there sends to its target.
         assert ((tmp_path / "elsewhere.txt").read_bytes(), (moved / "notes.txt").read_text()) == (b"", "keep")
     else:

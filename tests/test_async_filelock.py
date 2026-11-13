@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
     from types import FrameType
 
-    from _typeshed import Unused
+    from _typeshed import Unused  # simplint: ignore[private-import-path]  # precise callback type
     from pytest_mock import MockerFixture, MockType
 
     _Enter = Callable[
@@ -237,6 +237,18 @@ async def test_non_executor(lock_type: type[BaseAsyncFileLock], thread_local: bo
         assert lock.is_locked
         assert lock is locked
     assert not lock.is_locked
+
+
+@pytest.mark.asyncio
+async def test_executor_can_be_reassigned(tmp_path: Path) -> None:
+    lock = AsyncFileLock(tmp_path / "a")
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        lock.executor = executor
+        assert lock.executor is executor
+        async with lock:
+            assert lock.is_locked
+    lock.executor = None
+    assert lock.executor is None
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -787,7 +799,7 @@ async def test_cross_task_blocking_acquire_queues(tmp_path: Path, lock_type: typ
         async with lock_type(lock_path):
             events.append("holder:acquired")
             holding.set()
-            await asyncio.sleep(  # simplint: ignore[SMP808]  # needs a queued-acquire signal
+            await asyncio.sleep(  # simplint: ignore[sleep-in-test]  # needs a queued-acquire signal
                 0.05
             )  # the waiter polls while the lock is held
             events.append("holder:released")

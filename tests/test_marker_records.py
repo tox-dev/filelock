@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock._marker
+import filelock._marker  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import MarkerSoftFileLock, OwnerRecord, SoftFileLease, Timeout
 from filelock._identity import host_name, process_start_token
 from filelock._marker import encode_marker

@@ -12,33 +12,53 @@ A platform independent file lock that supports the with-statement.
 
 from __future__ import annotations
 
-__lazy_modules__ = ["filelock._descriptor", "filelock._error", "importlib"]
+from typing import TYPE_CHECKING, cast  # simplint: ignore[init-module-content]  # lazy import spec
 
-import sys  # simplint: ignore[SMP407]  # lazy loader and platform selection live here
-import warnings  # simplint: ignore[SMP407]  # lazy loader and platform selection live here
-from importlib import import_module  # simplint: ignore[SMP407]  # PEP 562 loader imports submodules by name
-from typing import TYPE_CHECKING, Final  # simplint: ignore[SMP407]  # TYPE_CHECKING and Final for module constants
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
 
-from filelock._api import AcquireReturnProxy, BaseFileLock, CloseErrorPolicy, ContextErrorPolicy, LockOptions
-from filelock._descriptor import lock_descriptor, unlock_descriptor
-from filelock._error import LeaseSettingsMismatch, SoftFileLockLifetimeWarning, SoftFileLockProtocolError, Timeout
-from filelock._unix import UnixFileLock
-from filelock._unix import has_fcntl as _has_fcntl  # simplint: ignore[SMP407]  # private probe feeding public has_fcntl
-from filelock._windows import WindowsFileLock
+__spec__ = cast("ModuleSpec", __spec__)  # simplint: ignore[init-module-content]  # lazy import spec
+
+__lazy_modules__ = [
+    "importlib",
+    f"{__spec__.parent}._api",
+    f"{__spec__.parent}._descriptor",
+    f"{__spec__.parent}._error",
+]
+
+import sys  # simplint: ignore[init-module-content]  # lazy root API
+import warnings  # simplint: ignore[init-module-content]  # lazy root API
+from importlib import import_module  # simplint: ignore[init-module-content]  # lazy root API
+from typing import TYPE_CHECKING, Final  # simplint: ignore[init-module-content]  # lazy root API
 
 # Keeps ``filelock.version`` the string 4.0.12 exposed rather than the submodule.
-from filelock.version import version  # simplint: ignore[SMP407]  # API exposes filelock.version as this string
+from filelock.version import version  # simplint: ignore[init-module-content]  # lazy root API
 
-if TYPE_CHECKING:  # simplint: ignore[SMP407]  # type-checker platform lock aliases
+from ._api import (
+    AcquireReturnProxy,
+    BaseFileLock,
+    CloseErrorPolicy,
+    ContextErrorPolicy,
+    LockOptions,
+)
+from ._descriptor import (
+    lock_descriptor,
+    unlock_descriptor,
+)
+from ._error import (
+    LeaseSettingsMismatch,
+    SoftFileLockLifetimeWarning,
+    SoftFileLockProtocolError,
+    Timeout,
+)
+from ._unix import UnixFileLock
+from ._unix import (  # simplint: ignore[init-module-content]  # lazy root API
+    has_fcntl as _has_fcntl,
+)
+from ._windows import WindowsFileLock
+
+if TYPE_CHECKING:
     from filelock import asyncio
-    from filelock._async_read_write import AsyncAcquireReadWriteReturnProxy, AsyncReadWriteLock
-    from filelock._lease import CompromiseReason, LeaseCompromise, SoftFileLease
-    from filelock._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord
-    from filelock._read_write import ReadWriteLock
-    from filelock._soft import SoftFileLock
-    from filelock._soft_rw._async import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock
-    from filelock._soft_rw._sync import SoftReadWriteLock
-    from filelock._strict import StrictSoftFileClaim, StrictSoftFileClaimState, StrictSoftFileLock
     from filelock.asyncio import (
         AsyncAcquireReturnProxy,
         AsyncSoftFileLease,
@@ -49,28 +69,55 @@ if TYPE_CHECKING:  # simplint: ignore[SMP407]  # type-checker platform lock alia
         BaseAsyncFileLock,
     )
 
+    from ._async_read_write import (
+        AsyncAcquireReadWriteReturnProxy,
+        AsyncReadWriteLock,
+    )
+    from ._lease import (
+        CompromiseReason,
+        LeaseCompromise,
+        SoftFileLease,
+    )
+    from ._marker import (
+        MarkerSoftFileLock,
+        OwnerMode,
+        OwnerRecord,
+    )
+    from ._read_write import ReadWriteLock
+    from ._soft import SoftFileLock
+    from ._soft_rw import (
+        AsyncAcquireSoftReadWriteReturnProxy,
+        AsyncSoftReadWriteLock,
+        SoftReadWriteLock,
+    )
+    from ._strict import (
+        StrictSoftFileClaim,
+        StrictSoftFileClaimState,
+        StrictSoftFileLock,
+    )
+
 #: version of the project as a string
-__version__: Final[str] = version  # simplint: ignore[SMP407]  # public __version__ is a Final assignment
+__version__: Final[str] = version  # simplint: ignore[init-module-content]  # lazy root API
 
 #: ``True`` when :func:`fcntl.flock` is available. Off Windows, :data:`FileLock` then resolves to
 #: :class:`UnixFileLock`, otherwise to :class:`SoftFileLock`. Always ``False`` on Windows.
 #:
 #: :meta hide-value:
-has_fcntl: Final[bool] = _has_fcntl  # simplint: ignore[SMP102, SMP407]  # public name; renaming breaks importers
+has_fcntl: Final[bool] = _has_fcntl  # simplint: ignore[module-variable-case]  # public API
 
 
-if sys.platform == "win32":  # pragma: win32 cover  # simplint: ignore[SMP407]  # platform selection runs at import
+if sys.platform == "win32":  # pragma: win32 cover
     _FileLock: type[BaseFileLock] = WindowsFileLock
 else:  # pragma: win32 no cover # ruff:ignore[collapsible-else-if]  # the else carries the win32 no-cover pragma
     if has_fcntl:
         _FileLock: type[BaseFileLock] = UnixFileLock
     else:
-        from filelock._soft import SoftFileLock
+        from ._soft import SoftFileLock
 
         _FileLock = SoftFileLock
         warnings.warn("only soft file lock is available", stacklevel=2)
 
-if TYPE_CHECKING:  # simplint: ignore[SMP407]  # type-checker FileLock alias
+if TYPE_CHECKING:
     #: Alias for the lock, which should be used for the current platform.
     FileLock = SoftFileLock
     #: Alias for the async lock, which should be used for the current platform.
@@ -80,15 +127,15 @@ else:
     FileLock = _FileLock
 
 # Importing asyncio and sqlite3 costs more than the rest of the package, so names that need them load on first access.
-_LAZY_ATTRIBUTES: Final[dict[str, str]] = {  # simplint: ignore[SMP407]  # lookup read by PEP 562 __getattr__
+_LAZY_ATTRIBUTES: Final[dict[str, str]] = {
     "AsyncAcquireReadWriteReturnProxy": "._async_read_write",
     "AsyncAcquireReturnProxy": ".asyncio",
-    "AsyncAcquireSoftReadWriteReturnProxy": "._soft_rw._async",
+    "AsyncAcquireSoftReadWriteReturnProxy": "._soft_rw",
     "AsyncFileLock": ".asyncio",
     "AsyncReadWriteLock": "._async_read_write",
     "AsyncSoftFileLease": ".asyncio",
     "AsyncSoftFileLock": ".asyncio",
-    "AsyncSoftReadWriteLock": "._soft_rw._async",
+    "AsyncSoftReadWriteLock": "._soft_rw",
     "AsyncStrictSoftFileLock": ".asyncio",
     "AsyncUnixFileLock": ".asyncio",
     "AsyncWindowsFileLock": ".asyncio",
@@ -101,7 +148,7 @@ _LAZY_ATTRIBUTES: Final[dict[str, str]] = {  # simplint: ignore[SMP407]  # looku
     "ReadWriteLock": "._read_write",
     "SoftFileLease": "._lease",
     "SoftFileLock": "._soft",
-    "SoftReadWriteLock": "._soft_rw._sync",
+    "SoftReadWriteLock": "._soft_rw",
     "StrictSoftFileClaim": "._strict",
     "StrictSoftFileClaimState": "._strict",
     "StrictSoftFileLock": "._strict",
@@ -109,9 +156,9 @@ _LAZY_ATTRIBUTES: Final[dict[str, str]] = {  # simplint: ignore[SMP407]  # looku
 }
 
 
-def __getattr__(  # simplint: ignore[SMP407]  # PEP 562 __getattr__ lives here
+def __getattr__(
     name: str,
-) -> object:  # simplint: ignore[SMP602]  # lazy attributes span several types
+) -> object:  # simplint: ignore[imprecise-annotation]  # lazy attributes span several types
     if (module_name := _LAZY_ATTRIBUTES.get(name)) is None:
         msg = f"module {__name__!r} has no attribute {name!r}"
         raise AttributeError(msg)
@@ -133,7 +180,7 @@ def __getattr__(  # simplint: ignore[SMP407]  # PEP 562 __getattr__ lives here
     return value
 
 
-def __dir__() -> list[str]:  # simplint: ignore[SMP407]  # PEP 562 __dir__ lives here
+def __dir__() -> list[str]:
     return sorted({*globals(), *_LAZY_ATTRIBUTES})
 
 

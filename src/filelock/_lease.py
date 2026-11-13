@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
 __lazy_modules__ = [
     "contextlib",
-    "filelock._error",
-    "filelock._identity",
-    "filelock._soft",
-    "filelock._util",
     "math",
     "secrets",
     "threading",
     "weakref",
+    f"{__spec__.parent}._api",
+    f"{__spec__.parent}._error",
+    f"{__spec__.parent}._identity",
+    f"{__spec__.parent}._soft",
+    f"{__spec__.parent}._util",
 ]
 
 import os
@@ -23,18 +31,25 @@ from threading import Event, Thread, current_thread
 from typing import TYPE_CHECKING, Final, Literal, cast
 from weakref import WeakMethod
 
-from filelock._api import _check_timeout_max, _seconds
-from filelock._error import LeaseSettingsMismatch
-from filelock._identity import owner_is_stale
-from filelock._marker import MarkerSoftFileLock, OwnerMode, OwnerRecord, parse_marker
-from filelock._soft import _read_lock_file
-from filelock._util import pin_inode, touch
+from ._api import check_timeout_max as _check_timeout_max
+from ._api import seconds as _seconds
+from ._error import LeaseSettingsMismatch
+from ._identity import owner_is_stale
+from ._marker import (
+    MarkerSoftFileLock,
+    OwnerMode,
+    OwnerRecord,
+    parse_marker,
+)
+from ._soft import read_lock_file as _read_lock_file
+from ._util import pin_inode, touch
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from typing import Unpack
 
-    from filelock._api import LockOptions, _ExtraValue
+    from ._api import ExtraValue as _ExtraValue
+    from ._api import LockOptions
 
 #: ``evicted`` is a :class:`~filelock.SoftReadWriteLock` loss: a peer waited out the stale threshold and committed a
 #: generation without this holder.
@@ -68,7 +83,7 @@ class _Heartbeat:
     stop: Event
 
 
-class _LeaseClaim:
+class LeaseClaim:
     # The state of one claim: its token, its heartbeat, and how that claim was lost.
     __slots__ = ("compromise", "heartbeat", "token")
 
@@ -159,7 +174,7 @@ class SoftFileLease(MarkerSoftFileLock):
         self._on_compromise = on_compromise
         # Two threads lazily creating a shared claim could each get one, and release() would miss the heartbeat's.
         if not self.is_thread_local():
-            self._context.lease_claim = _LeaseClaim()
+            self._context.lease_claim = LeaseClaim()
 
     @property
     def lease_duration(self) -> float:
@@ -177,11 +192,11 @@ class SoftFileLease(MarkerSoftFileLock):
         return self._claim.token
 
     @property
-    def _claim(self) -> _LeaseClaim:
+    def _claim(self) -> LeaseClaim:
         # Per hold, so another thread's failed acquire cannot stop the holder's heartbeat.
         state: Final = self._hold_state()
         if (claim := state.lease_claim) is None:
-            claim = state.lease_claim = _LeaseClaim()
+            claim = state.lease_claim = LeaseClaim()
         return claim
 
     @property
@@ -249,7 +264,7 @@ class SoftFileLease(MarkerSoftFileLock):
         if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread() and not sys.is_finalizing():
             heartbeat.thread.join(timeout=self._heartbeat_interval)
 
-    def _start_heartbeat(self, claim: _LeaseClaim, fd: int, identity: tuple[int, int], token: str) -> None:
+    def _start_heartbeat(self, claim: LeaseClaim, fd: int, identity: tuple[int, int], token: str) -> None:
         # The thread watches the event it was handed rather than whatever the claim names later: a heartbeat that
         # outlives its join timeout would otherwise adopt the next acquisition's event and never stop.
         stop: Final = Event()
@@ -275,7 +290,7 @@ class SoftFileLease(MarkerSoftFileLock):
 
     def _report_compromise(
         self,
-        claim: _LeaseClaim,
+        claim: LeaseClaim,
         reason: CompromiseReason,
         error: OSError | None,
         token: str,
@@ -296,7 +311,7 @@ class SoftFileLease(MarkerSoftFileLock):
         super()._reset_after_fork_in_child()
         # As in __init__: two child threads lazily creating a shared claim could each get one.
         if not self.is_thread_local():
-            self._context.lease_claim = _LeaseClaim()
+            self._context.lease_claim = LeaseClaim()
 
     def _published_record(self) -> OwnerRecord:
         return super()._published_record()._replace(token=self._claim.token, lease_duration=self._lease_duration)
@@ -345,9 +360,9 @@ class SoftFileLease(MarkerSoftFileLock):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _RefreshLoop:
     # What a heartbeat thread needs to refresh one claim, holding the lease itself only weakly.
-    report: WeakMethod[Callable[[_LeaseClaim, CompromiseReason, OSError | None, str], None]]
+    report: WeakMethod[Callable[[LeaseClaim, CompromiseReason, OSError | None, str], None]]
     lock_file: str
-    claim: _LeaseClaim
+    claim: LeaseClaim
     fd: int
     identity: tuple[int, int]
     token: str
@@ -408,7 +423,7 @@ class _RefreshLoop:
 
 __all__ = [
     "CompromiseReason",
+    "LeaseClaim",
     "LeaseCompromise",
     "SoftFileLease",
-    "_LeaseClaim",
 ]

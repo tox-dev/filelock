@@ -157,21 +157,20 @@ lint.ignore = [
   "async-function-with-timeout",               # lock acquisition timeouts support polling; cancellation would change the public API
   "CPY",                                       # No copyright statements
   "DOC",                                       # no support yet
-  "escape-sequence-in-docstring",              # Use `r"""` if any backslashes in a docstring
-  "hardcoded-bind-all-interfaces",             # Possible binding to all interface
-  "incorrect-blank-line-before-class",         # `one-blank-line-before-class` (D203) and `no-blank-line-before-class` (D211) are incompatible
-  "missing-blank-line-after-summary",          # 1 blank line required between summary line and description
+  "incorrect-blank-line-before-class",         # Conflicts with `blank-line-before-class`
+  "missing-blank-line-after-summary",          # existing API docstrings
   "missing-trailing-comma",                    # Conflict with formatter
-  "multi-line-summary-first-line",             # `multi-line-summary-first-line` (D212) and `multi-line-summary-second-line` (D213) are incompatible
+  "multi-line-summary-first-line",             # Conflicts with `multi-line-summary-second-line`
   "non-empty-init-module",                     # `__init__` module should only contain docstrings and re-exports
-  "non-imperative-mood",                       # First line of docstring should be in imperative mood
+  "non-imperative-mood",                       # existing API docstrings
   "single-line-implicit-string-concatenation", # Conflict with formatter
-  "undocumented-magic-method",                 # undocumented-public-api (simplint SMP903) covers the public API instead
-  "undocumented-public-class",                 # undocumented-public-api (simplint SMP903) covers the public API instead
-  "undocumented-public-function",              # undocumented-public-api (simplint SMP903) covers the public API instead
-  "undocumented-public-init",                  # undocumented-public-api (simplint SMP903) covers the public API instead
-  "undocumented-public-method",                # undocumented-public-api (simplint SMP903) covers the public API instead
-  "undocumented-public-nested-class",          # undocumented-public-api (simplint SMP903) covers the public API instead
+  "undocumented-magic-method",                 # undocumented-public-api (simplint) covers the public API instead
+  "undocumented-public-class",                 # undocumented-public-api (simplint) covers the public API instead
+  "undocumented-public-function",              # undocumented-public-api (simplint) covers the public API instead
+  "undocumented-public-init",                  # undocumented-public-api (simplint) covers the public API instead
+  "undocumented-public-method",                # undocumented-public-api (simplint) covers the public API instead
+  "undocumented-public-nested-class",          # undocumented-public-api (simplint) covers the public API instead
+  "unnecessary-regular-expression-compile",    # conflicts with simplint inline-regex
 ]
 lint.per-file-ignores."tasks/**/*.py" = [
   "assert",                               # asserts state the platform a Windows-only script already refuses to run outside of, narrowing it for ty

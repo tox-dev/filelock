@@ -80,7 +80,7 @@ def pin_inode(lock_file: str) -> Generator[int | None]:
     # inside the block, gives up unless it read the yielded inode, and breaks the marker before leaving can rely on the
     # number.
     #
-    # :param lock_file: path to the lock file about to be read and perhaps broken.
+    # :param lock_file: path to the lock file to read and, if stale, break.
     #
     # :returns: the pinned inode number, or ``None`` where nothing can be pinned. Windows cannot rename a file this
     #     process holds open, so it needs no pin. Without ``O_PATH`` a symlink or a socket cannot be opened.
@@ -349,12 +349,16 @@ if sys.platform == "win32":  # pragma: win32 cover
         # A rename by path waits on a Level 1 or batch oplock holder until it answers or closes. Opening first with
         # FILE_COMPLETE_IF_OPLOCKED turns that wait into BlockingIOError, and the open handle shares delete, so the
         # rename then proceeds. Imported here because _windows imports this module.
-        from filelock._windows import open_for_delete_without_oplock_wait  # ruff:ignore[import-outside-top-level]
+        from ._windows import (  # ruff:ignore[import-outside-top-level]  # import cycle
+            open_for_delete_without_oplock_wait,
+        )
 
         return os.fdopen(open_for_delete_without_oplock_wait(path), "rb")
 
     def unlink_path(path: str) -> None:
-        from filelock._windows import unlink_without_oplock_wait  # ruff:ignore[import-outside-top-level]  # _windows binds Windows-only APIs on import
+        from ._windows import (  # ruff:ignore[import-outside-top-level]  # import cycle
+            unlink_without_oplock_wait,
+        )
 
         unlink_without_oplock_wait(path)
 

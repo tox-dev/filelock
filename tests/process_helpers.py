@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock._soft
+import filelock._soft  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import SoftFileLock
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ def break_then_hang_after_exchange(
         exchange(source, target)
         exchanged.set()
         while True:
-            time.sleep(_REAP_DEADLINE)  # simplint: ignore[SMP808]  # a blocked lock wait can swallow SIGTERM
+            time.sleep(_REAP_DEADLINE)  # simplint: ignore[sleep-in-test]  # a blocked lock wait can swallow SIGTERM
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(filelock._soft, "exchange_names", exchange_then_hang)

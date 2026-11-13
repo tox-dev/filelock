@@ -306,7 +306,9 @@ def test_fallback_treats_a_leased_marker_it_cannot_write_as_contention(tmp_path:
 
 
 @NEEDS_FCNTL
-@pytest.mark.parametrize("write_denied_lock_file", ["unlink"], ids=["unlinked-under-the-denial"], indirect=True)
+@pytest.mark.parametrize(
+    "write_denied_lock_file", [pytest.param("unlink", id="unlinked-under-the-denial")], indirect=True
+)
 @pytest.mark.usefixtures("write_denied_lock_file")
 def test_lock_file_unlinked_under_a_denied_open_is_retried(tmp_path: Path) -> None:  # pragma: needs fcntl
     (lock_path := tmp_path / "test.lock").touch()

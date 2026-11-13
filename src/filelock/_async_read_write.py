@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["asyncio", "concurrent.futures", "filelock._async", "filelock._error", "functools", "threading"]
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from importlib.machinery import ModuleSpec
+
+__spec__ = cast("ModuleSpec", __spec__)
+
+__lazy_modules__ = [
+    "asyncio",
+    "concurrent.futures",
+    "functools",
+    "threading",
+    f"{__spec__.parent}._api",
+    f"{__spec__.parent}._async",
+    f"{__spec__.parent}._error",
+    f"{__spec__.parent}._read_write",
+]
 
 import asyncio
 import functools
@@ -14,31 +30,51 @@ from concurrent.futures import thread as executor_threads
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar, cast
 
-from filelock._api import (
-    _append_exception_context,
-    _ensure_current_process,
-    _fork_transition,
-    _register_fork_object,
+from ._api import (
+    append_exception_context as _append_exception_context,
 )
-from filelock._async import (
-    _TASKS_THREAD_ID,
-    _BackendOutcome,
-    _capture_call,
-    _drain_future,
-    _future_result,
-    _raise_cancelled_error,
-    _task_owners_for,
-    _wait_until_done,
+from ._api import (
+    ensure_current_process as _ensure_current_process,
 )
-from filelock._error import Timeout
-from filelock._read_write import ReadWriteLock
+from ._api import (
+    fork_transition as _fork_transition,
+)
+from ._api import (
+    register_fork_object as _register_fork_object,
+)
+from ._async import (
+    TASKS_THREAD_ID as _TASKS_THREAD_ID,
+)
+from ._async import (
+    BackendOutcome as _BackendOutcome,
+)
+from ._async import (
+    capture_call as _capture_call,
+)
+from ._async import (
+    drain_future as _drain_future,
+)
+from ._async import (
+    future_result as _future_result,
+)
+from ._async import (
+    raise_cancelled_error as _raise_cancelled_error,
+)
+from ._async import (
+    task_owners_for as _task_owners_for,
+)
+from ._async import (
+    wait_until_done as _wait_until_done,
+)
+from ._error import Timeout
+from ._read_write import ReadWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, MutableMapping
     from concurrent import futures
     from types import TracebackType
 
-    from filelock._api import AcquireReturnProxy
+    from ._api import AcquireReturnProxy
 
 
 _P = ParamSpec("_P")
