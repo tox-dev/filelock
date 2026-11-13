@@ -735,12 +735,14 @@ def _signal_poll(polling: asyncio.Event) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_async_relative_release_uses_acquisition_directory(working_directories: tuple[Path, Path]) -> None:
+async def test_async_relative_release_uses_acquisition_directory(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     first, second = working_directories
     lock = AsyncSoftFileLock("resource.lock")
     await lock.acquire()
 
-    os.chdir(second)
+    monkeypatch.chdir(second)
     await lock.release()
 
     assert not (first / "resource.lock").exists()
@@ -749,12 +751,12 @@ async def test_async_relative_release_uses_acquisition_directory(working_directo
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_async_singleton_held_before_chdir_re_enters_by_absolute_path(
-    lock_type: type[BaseAsyncFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseAsyncFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first, second = working_directories
     held = lock_type("resource.lock", is_singleton=True)
     await held.acquire()
-    os.chdir(second)
+    monkeypatch.chdir(second)
     async with lock_type(first / "resource.lock", is_singleton=True) as again:
         assert (again is held, held.lock_counter) == (True, 2)
     await held.release(force=True)
@@ -980,16 +982,6 @@ async def test_soft_close_error_policy_cleans_marker(
     assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
-@pytest.mark.asyncio
-async def test_soft_close_error_suppress_policy_cleans_marker(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock_path = tmp_path / "a"
-    lock = AsyncSoftFileLock(lock_path, close_error_policy="suppress", run_in_executor=False)
-    await lock.acquire()
-    with _close_after_commit(mocker, lock) as (_, attempts):
-        await lock.release()
-    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
-
-
 @contextmanager
 def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Generator[tuple[OSError, list[int]]]:
     real_close = os.close
@@ -1019,6 +1011,16 @@ def _close_after_commit(mocker: MockerFixture, lock: AsyncSoftFileLock) -> Gener
         yield close_error, attempts
     finally:
         mocker.stop(close_mock)
+
+
+@pytest.mark.asyncio
+async def test_soft_close_error_suppress_policy_cleans_marker(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "a"
+    lock = AsyncSoftFileLock(lock_path, close_error_policy="suppress", run_in_executor=False)
+    await lock.acquire()
+    with _close_after_commit(mocker, lock) as (_, attempts):
+        await lock.release()
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
 @pytest.mark.asyncio

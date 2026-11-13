@@ -345,19 +345,6 @@ def raise_cleanup_errors(
 _RESOLVE_DIR: Final[Callable[[str], str]] = os.path.abspath if sys.platform == "win32" else os.path.realpath
 
 
-def canonical(path: str | os.PathLike[str]) -> str:
-    # Return one stable key for *path*, collapsing equivalent spellings without following a final symlink.
-    #
-    # Relative, absolute, and ``./`` spellings of one lock file must map to a single singleton instance,
-    # deadlock-registry entry, and removal key. Resolving the whole path with ``realpath`` would follow a final symlink
-    # and alias a lock target the backend deliberately rejects, so the registry identity would differ from the
-    # backend's. Resolving only the parent directory and re-appending the literal final component collapses the
-    # equivalent spellings while keeping a final symlink a distinct key. On Windows the parent is resolved with
-    # ``abspath`` so junctions and reparse points are not followed either.
-    parent, name = os.path.split(os.fspath(path))
-    return os.path.join(_RESOLVE_DIR(parent or os.curdir), name)  # ruff:ignore[os-path-join]  # string join matches abspath/realpath
-
-
 class _ThreadLocalRegistry(local):
     def __init__(self) -> None:
         super().__init__()
@@ -501,6 +488,22 @@ class FileLockMeta(ABCMeta):
         raise ValueError(msg)
 
 
+@cache
+def resolve_lazy_imports_before_shutdown() -> None:
+    if hasattr(types, "LazyImportType"):  # pragma: >=3.15 cover
+        atexit.register(_resolve_lazy_imports)
+
+
+def _resolve_lazy_imports() -> None:  # pragma: >=3.15 cover
+    # Interpreter shutdown clears sys.modules and sys.meta_path before it finalizes a lock still alive at exit, so a
+    # lazy import (PEP 810) that the release path in __del__ reaches first can no longer load. Load them while it can.
+    for name, module in list(sys.modules.items()):
+        if name == "filelock" or name.startswith("filelock."):
+            for attribute, value in list(module.__dict__.items()):
+                if type(value) is types.LazyImportType:
+                    getattr(module, attribute)
+
+
 def _resolve_lifetime(lifetime: float | None, cls: type[BaseFileLock], *, stacklevel: int) -> float | None:
     # Validate ``lifetime`` and drop a value the backend cannot honor.
     #
@@ -542,6 +545,13 @@ def resolve_poll_interval(poll_interval: float) -> float:
         raise ValueError(msg)
     check_timeout_max("poll_interval", poll_interval)
     return poll_interval
+
+
+def check_timeout_max(name: str, value: float) -> None:
+    # Lock.acquire, Event.wait and time.sleep raise OverflowError past this bound, which is only ~49.7 days on Windows.
+    if value > TIMEOUT_MAX:
+        msg = f"{name} must not exceed threading.TIMEOUT_MAX ({TIMEOUT_MAX}), got {value!r}"
+        raise ValueError(msg)
 
 
 def check_blocking(blocking: bool) -> None:  # ruff:ignore[boolean-type-hint-positional-argument]  # validates the option's own value
@@ -655,21 +665,37 @@ def _supported_init_params(
     return {name: value for name, value in params.items() if name in model.accepted_params}
 
 
-def timeout_behavior(timeout: float, *, any_negative: bool) -> float | str:
-    # inf, and for a BaseFileLock any negative value, wait without a limit like -1.
-    if math.isnan(timeout):
-        return "nan"
-    return -1.0 if timeout == math.inf or (any_negative and timeout < 0) else timeout
-
-
-def check_timeout_max(name: str, value: float) -> None:
-    # Lock.acquire, Event.wait and time.sleep raise OverflowError past this bound, which is only ~49.7 days on Windows.
-    if value > TIMEOUT_MAX:
-        msg = f"{name} must not exceed threading.TIMEOUT_MAX ({TIMEOUT_MAX}), got {value!r}"
-        raise ValueError(msg)
-
-
-_INIT_PARAMETER_MODELS: Final[WeakKeyDictionary[type[BaseFileLock], _InitParameterModel]] = WeakKeyDictionary()
+@contextmanager
+def fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Generator[None]:
+    # No fork follows exit, and a daemon thread stopped inside this bookkeeping holds its lock forever.
+    if not _HAS_REGISTER_AT_FORK or sys.is_finalizing():
+        yield  # pragma: lacks fork
+        return  # pragma: lacks fork
+    ensure_current_process()  # pragma: needs fork
+    creator_pid = os.getpid()  # pragma: needs fork
+    # A generator holding this transition can be finalized on another thread, which must close the entering thread's.
+    thread_id: Final = get_ident()  # pragma: needs fork
+    with _FORK_STATE.gate:  # pragma: needs fork
+        while (
+            _FORK_STATE.admission_closed
+            and thread_id not in _FORK_STATE.fork_owner_depths
+            and thread_id not in _FORK_STATE.transitions
+        ):
+            _FORK_STATE.gate.wait()  # pragma: no cover - exercised in isolated interpreter
+        token: Final = next(_TRANSITION_TOKENS)
+        _FORK_STATE.transitions.setdefault(thread_id, {})[token] = descriptor_owner
+        _FORK_STATE.active_transitions += 1
+    try:  # pragma: needs fork
+        yield
+    finally:
+        if os.getpid() == creator_pid:  # pragma: needs fork
+            with _FORK_STATE.gate:
+                owned: Final = _FORK_STATE.transitions[thread_id]
+                del owned[token]
+                if not owned:
+                    del _FORK_STATE.transitions[thread_id]
+                _FORK_STATE.active_transitions -= 1
+                _FORK_STATE.gate.notify_all()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -677,6 +703,29 @@ class _InitParameterModel:
     accepted_params: frozenset[str]
     accepts_kwargs: bool
     default_params: dict[str, inspect.Parameter]
+
+
+def canonical(path: str | os.PathLike[str]) -> str:
+    # Return one stable key for *path*, collapsing equivalent spellings without following a final symlink.
+    #
+    # Relative, absolute, and ``./`` spellings of one lock file must map to a single singleton instance,
+    # deadlock-registry entry, and removal key. Resolving the whole path with ``realpath`` would follow a final symlink
+    # and alias a lock target the backend deliberately rejects, so the registry identity would differ from the
+    # backend's. Resolving only the parent directory and re-appending the literal final component collapses the
+    # equivalent spellings while keeping a final symlink a distinct key. On Windows the parent is resolved with
+    # ``abspath`` so junctions and reparse points are not followed either.
+    parent, name = os.path.split(os.fspath(path))
+    return os.path.join(_RESOLVE_DIR(parent or os.curdir), name)  # ruff:ignore[os-path-join]  # string join matches abspath/realpath
+
+
+def timeout_behavior(timeout: float, *, any_negative: bool) -> float | str:
+    # inf, and for a BaseFileLock any negative value, wait without a limit like -1.
+    if math.isnan(timeout):
+        return "nan"
+    return -1.0 if timeout == math.inf or (any_negative and timeout < 0) else timeout
+
+
+_INIT_PARAMETER_MODELS: Final[WeakKeyDictionary[type[BaseFileLock], _InitParameterModel]] = WeakKeyDictionary()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -865,13 +914,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         #: Holder id in the deadlock registry; a stand-in that finishes the finalizer has another id(self).
         self._holder_id = id(self)
         self._transition_lock = RLock()
-        self._is_thread_local = settings.thread_local
-        self._is_singleton = settings.is_singleton
-        self._context_error_policy = settings.context_error_policy  # already validated by the metaclass
-        self._close_error_policy = settings.close_error_policy  # already validated by the metaclass
-        self._fallback_to_soft = settings.fallback_to_soft
-        self._preserve_lock_file = settings.preserve_lock_file  # already validated by the metaclass
-        self._on_acquired = settings.on_acquired  # already validated by the metaclass
+        self._settings = settings  # policies and callbacks already validated by the metaclass
 
     def __enter__(self) -> Self:
         """
@@ -1012,7 +1055,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         # state are plain attributes every thread reads and writes, so an unserialized loser clears the winner's
         # descriptor or double-closes it. Waiting in slices keeps cancel_check and the timeout live. A thread-local
         # context is never shared, so it skips the gate.
-        if self._is_thread_local:
+        if self._settings.thread_local:
             yield
             return
         deadline: Final = None if timeout < 0 else start_time + timeout
@@ -1241,10 +1284,10 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _invoke_on_acquired(self) -> None:
         # The wrapper runs in the backend executor for async locks, preserving the callback's documented thread.
-        if self._on_acquired is None or self._context.lock_counter != 1:
+        if self._settings.on_acquired is None or self._context.lock_counter != 1:
             return
         try:
-            self._on_acquired(cast("int", self._context.lock_file_fd))
+            self._settings.on_acquired(cast("int", self._context.lock_file_fd))
         except BaseException as callback_error:  # arbitrary caller code; roll back on any failure
             callback_context = callback_error.__context__
             try:
@@ -1344,7 +1387,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         try:
             self.release()
         except BaseException as release_error:
-            if body_error is None or self._context_error_policy == "chain":
+            if body_error is None or self._settings.context_error_policy == "chain":
                 raise
             raise_body_and_release(body_error, release_error)
 
@@ -1388,7 +1431,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             if self._context.lock_file_registry is not None:
                 self._finish_interrupted_release()
             return
-        with contextlib.nullcontext() if self._is_thread_local else self._transition_lock:
+        with contextlib.nullcontext() if self._settings.thread_local else self._transition_lock:
             state: Final = self._hold_state()
             # A signal handler can land between the backend's unlock and its clearing of the descriptor, where a second
             # release would close the number twice and could close a file that reused it. The flag holds the releasing
@@ -1481,7 +1524,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.13.0
 
         """
-        return self._is_singleton
+        return self._settings.is_singleton
 
     @property
     def context_error_policy(self) -> ContextErrorPolicy:
@@ -1491,7 +1534,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._context_error_policy
+        return self._settings.context_error_policy
 
     @property
     def close_error_policy(self) -> CloseErrorPolicy:
@@ -1501,7 +1544,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._close_error_policy
+        return self._settings.close_error_policy
 
     @property
     def fallback_to_soft(self) -> bool:
@@ -1514,7 +1557,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._fallback_to_soft
+        return self._settings.fallback_to_soft
 
     @property
     def preserve_lock_file(self) -> bool:
@@ -1527,7 +1570,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._preserve_lock_file
+        return self._settings.preserve_lock_file
 
     @property
     def on_acquired(self) -> Callable[[int], None] | None:
@@ -1540,7 +1583,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         .. versionadded:: 3.30.0
 
         """
-        return self._on_acquired
+        return self._settings.on_acquired
 
     @property
     def timeout(self) -> float:
@@ -1686,7 +1729,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def is_thread_local(self) -> bool:
         """:returns: a flag indicating if this lock is thread local or not"""
-        return self._is_thread_local
+        return self._settings.thread_local
 
     def _close_released_fd(self, fd: int, *, default_suppresses: bool) -> None:
         # CPython never retries close() after EINTR because the descriptor number may already be reused, so neither does
@@ -1698,7 +1741,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 raise
 
     def _suppresses_close_error(self, *, default_suppresses: bool) -> bool:
-        return self._close_error_policy == "suppress" or (self._close_error_policy == "default" and default_suppresses)
+        return self._settings.close_error_policy == "suppress" or (
+            self._settings.close_error_policy == "default" and default_suppresses
+        )
 
     def _open_mode(self) -> int:
         # Mode for ``os.open``: 0o666 when unset so umask and ACLs decide, otherwise the explicit mode.
@@ -1761,31 +1806,33 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         return tuple(descriptors)
 
 
-def resolve_read_write_timeout(timeout: float, *, blocking: bool) -> float:
-    # 0 would still get SQLite's full busy timeout, and a truthy "false" would turn one attempt into a blocking wait.
-    check_blocking(blocking)
-    if (timeout := resolve_timeout(timeout, blocking=blocking)) < 0 and timeout != -1 and blocking:
-        msg = f"timeout must be a non-negative number or -1, not {timeout!r}"
-        raise ValueError(msg)
-    return timeout
+def register_fork_class(cls: _ForkResettableClass) -> None:
+    if not _HAS_REGISTER_AT_FORK:
+        return  # pragma: lacks fork
+    with fork_transition(), _FORK_STATE.registry_lock:  # pragma: needs fork
+        _FORK_CLASSES[id(cls)] = cls
+        _refresh_owner_pins()
 
 
-def acquire_thread_lock(
-    lock: Lock, *, blocking: bool, timeout: float, poll_interval: float, cancel_check: Callable[[], bool] | None
-) -> bool:
-    # Take a read-write lock's in-process lock; with *cancel_check*, ask it every *poll_interval* while waiting.
-    if not blocking:
-        return lock.acquire(blocking=False)
-    if cancel_check is None:
-        # Lock.acquire raises OverflowError past TIMEOUT_MAX, which is 49.7 days on Windows.
-        return lock.acquire() if timeout == -1 else lock.acquire(timeout=min(timeout, TIMEOUT_MAX))
-    deadline = None if timeout == -1 else time.perf_counter() + timeout
-    while not lock.acquire(
-        timeout=poll_interval if deadline is None else min(poll_interval, max(deadline - time.perf_counter(), 0))
-    ):
-        if cancel_check() or (deadline is not None and time.perf_counter() >= deadline):
-            return False
-    return True
+def _refresh_owner_pins() -> None:  # pragma: needs fork
+    with _FORK_STATE.gate:
+        fork_owner_thread_ids = tuple(_FORK_STATE.fork_owner_depths)
+    if get_ident() not in fork_owner_thread_ids:  # pragma: no cover - at-fork callbacks disable tracing
+        return
+    objects = tuple(_FORK_OBJECTS.values())
+    classes = tuple(_FORK_CLASSES.values())
+    for thread_id in fork_owner_thread_ids:
+        if object_snapshots := _FORK_STATE.pinned_objects.get(thread_id):  # pragma: needs fork
+            object_snapshots[:] = [objects] * len(object_snapshots)
+            _FORK_STATE.pinned_classes[thread_id][:] = [classes] * len(object_snapshots)
+
+
+def register_fork_object(instance: _ForkResettable) -> None:
+    if not _HAS_REGISTER_AT_FORK:
+        return  # pragma: lacks fork
+    with fork_transition(), _FORK_STATE.registry_lock:  # pragma: needs fork
+        _FORK_OBJECTS[id(instance)] = instance
+        _refresh_owner_pins()
 
 
 def resolve_timeout(timeout: float, *, blocking: bool) -> float:
@@ -1795,40 +1842,6 @@ def resolve_timeout(timeout: float, *, blocking: bool) -> float:
         raise ValueError(msg)
     # The fail-fast deadlock check only sees a negative timeout as unlimited, so spell inf that way.
     return -1 if timeout == math.inf else timeout
-
-
-@dataclass(  # simplint: ignore[dataclass-frozen]  # state is reset to None on finalize
-    slots=True, weakref_slot=True, kw_only=True
-)
-class _FinalizerState:
-    # A finalized lock's state, held for the release that runs once the lock is unreachable.
-    state: (
-        dict[str, object] | None  # simplint: ignore[imprecise-annotation]  # the instance __dict__ holds any value
-    )
-
-
-#: Weak references whose callback finishes a singleton's finalizer once the cache no longer finds it.
-_UNREACHABLE_LOCKS: Final[set[ref[BaseFileLock]]] = set()
-
-
-def _finalize_unreachable(holder: ref[_FinalizerState], cls: type[BaseFileLock], reference: ref[BaseFileLock]) -> None:
-    _UNREACHABLE_LOCKS.discard(reference)
-    if (finalizer_state := holder()) is None or (state := finalizer_state.state) is None:
-        return  # pragma: no cover  # only a collector freeing a resurrected lock as part of a cycle drops the holder
-    # The lock's dictionary points back at the holder; that cycle ends here.
-    finalizer_state.state = None
-    # The release methods only read and write this state, so a fresh instance takes it over. Dropping that instance
-    # runs __del__ again, and the cache no longer finds the lock.
-    stand_in = object.__new__(cls)
-    stand_in.__dict__ = state
-    del stand_in
-
-
-def is_system_call_failure(error: BaseException) -> bool:
-    # A failed system call sets errno. A bare TimeoutError raised by a signal handler is an OSError without one.
-    if _is_exception_group(error):
-        return all(map(is_system_call_failure, cast("_ExceptionGroupProtocol", error).exceptions))
-    return isinstance(error, OSError) and error.errno is not None
 
 
 def _on_this_stack(frame: FrameType | None) -> bool:
@@ -1869,8 +1882,87 @@ class AcquireReturnProxy(Generic[_LockT]):
             lock.release()
 
 
+def is_system_call_failure(error: BaseException) -> bool:
+    # A failed system call sets errno. A bare TimeoutError raised by a signal handler is an OSError without one.
+    if _is_exception_group(error):
+        return all(map(is_system_call_failure, cast("_ExceptionGroupProtocol", error).exceptions))
+    return isinstance(error, OSError) and error.errno is not None
+
+
+def unregister_owned_descriptor(token: int) -> None:  # pragma: needs fork
+    # No fork follows exit, and a daemon thread stopped inside this bookkeeping holds its lock forever.
+    if sys.is_finalizing():  # pragma: no cover  # only exit reaches it, after coverage stops measuring
+        return
+    with fork_transition(), _FORK_STATE.registry_lock:
+        _OWNED_DESCRIPTORS.pop(token, None)
+
+
+def register_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int | None:
+    if not _HAS_REGISTER_AT_FORK:
+        return None  # pragma: lacks fork
+    with fork_transition():  # pragma: needs fork
+        if identity is None:
+            stat_result = os.fstat(fd)
+            identity = stat_result.st_dev, stat_result.st_ino
+        return _record_owned_descriptor(fd, identity)
+
+
+@dataclass(  # simplint: ignore[dataclass-frozen]  # state is reset to None on finalize
+    slots=True, weakref_slot=True, kw_only=True
+)
+class _FinalizerState:
+    # A finalized lock's state, held for the release that runs once the lock is unreachable.
+    state: (
+        dict[str, object] | None  # simplint: ignore[imprecise-annotation]  # the instance __dict__ holds any value
+    )
+
+
+def _finalize_unreachable(holder: ref[_FinalizerState], cls: type[BaseFileLock], reference: ref[BaseFileLock]) -> None:
+    _UNREACHABLE_LOCKS.discard(reference)
+    if (finalizer_state := holder()) is None or (state := finalizer_state.state) is None:
+        return  # pragma: no cover  # only a collector freeing a resurrected lock as part of a cycle drops the holder
+    # The lock's dictionary points back at the holder; that cycle ends here.
+    finalizer_state.state = None
+    # The release methods only read and write this state, so a fresh instance takes it over. Dropping that instance
+    # runs __del__ again, and the cache no longer finds the lock.
+    stand_in = object.__new__(cls)
+    stand_in.__dict__ = state
+    del stand_in
+
+
+def resolve_read_write_timeout(timeout: float, *, blocking: bool) -> float:
+    # 0 would still get SQLite's full busy timeout, and a truthy "false" would turn one attempt into a blocking wait.
+    check_blocking(blocking)
+    if (timeout := resolve_timeout(timeout, blocking=blocking)) < 0 and timeout != -1 and blocking:
+        msg = f"timeout must be a non-negative number or -1, not {timeout!r}"
+        raise ValueError(msg)
+    return timeout
+
+
+def acquire_thread_lock(
+    lock: Lock, *, blocking: bool, timeout: float, poll_interval: float, cancel_check: Callable[[], bool] | None
+) -> bool:
+    # Take a read-write lock's in-process lock; with *cancel_check*, ask it every *poll_interval* while waiting.
+    if not blocking:
+        return lock.acquire(blocking=False)
+    if cancel_check is None:
+        # Lock.acquire raises OverflowError past TIMEOUT_MAX, which is 49.7 days on Windows.
+        return lock.acquire() if timeout == -1 else lock.acquire(timeout=min(timeout, TIMEOUT_MAX))
+    deadline = None if timeout == -1 else time.perf_counter() + timeout
+    while not lock.acquire(
+        timeout=poll_interval if deadline is None else min(poll_interval, max(deadline - time.perf_counter(), 0))
+    ):
+        if cancel_check() or (deadline is not None and time.perf_counter() >= deadline):
+            return False
+    return True
+
+
+#: Weak references whose callback finishes a singleton's finalizer once the cache no longer finds it.
+_UNREACHABLE_LOCKS: Final[set[ref[BaseFileLock]]] = set()
+
+
 @dataclass  # simplint: ignore[dataclass-slots, dataclass-kw-only]  # base rejects slots; signature is public
-class FileLockContext:
+class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields are public API
     # Holds the context for a ``BaseFileLock`` object.
     # A separate class so ThreadLocalFileContext can make the whole context thread-local.
 
@@ -2012,22 +2104,6 @@ _FORK_AUDIT_EVENTS: Final[frozenset[str]] = frozenset({"os.fork", "os.forkpty"})
 _SETTRACE_SURVIVES_AUDIT_HOOKS: Final[bool] = sys.implementation.name != "cpython" or sys.version_info >= (3, 12)
 
 
-@cache
-def resolve_lazy_imports_before_shutdown() -> None:
-    if hasattr(types, "LazyImportType"):  # pragma: >=3.15 cover
-        atexit.register(_resolve_lazy_imports)
-
-
-def _resolve_lazy_imports() -> None:  # pragma: >=3.15 cover
-    # Interpreter shutdown clears sys.modules and sys.meta_path before it finalizes a lock still alive at exit, so a
-    # lazy import (PEP 810) that the release path in __del__ reaches first can no longer load. Load them while it can.
-    for name, module in list(sys.modules.items()):
-        if name == "filelock" or name.startswith("filelock."):
-            for attribute, value in list(module.__dict__.items()):
-                if type(value) is types.LazyImportType:
-                    getattr(module, attribute)
-
-
 def _register_fork_hooks() -> None:
     if _REGISTER_AT_FORK is None:
         return  # pragma: lacks fork
@@ -2040,65 +2116,6 @@ def _register_fork_hooks() -> None:
     )
 
 
-@contextmanager
-def fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Generator[None]:
-    # No fork follows exit, and a daemon thread stopped inside this bookkeeping holds its lock forever.
-    if not _HAS_REGISTER_AT_FORK or sys.is_finalizing():
-        yield  # pragma: lacks fork
-        return  # pragma: lacks fork
-    ensure_current_process()  # pragma: needs fork
-    creator_pid = os.getpid()  # pragma: needs fork
-    # A generator holding this transition can be finalized on another thread, which must close the entering thread's.
-    thread_id: Final = get_ident()  # pragma: needs fork
-    with _FORK_STATE.gate:  # pragma: needs fork
-        while (
-            _FORK_STATE.admission_closed
-            and thread_id not in _FORK_STATE.fork_owner_depths
-            and thread_id not in _FORK_STATE.transitions
-        ):
-            _FORK_STATE.gate.wait()  # pragma: no cover - exercised in isolated interpreter
-        token: Final = next(_TRANSITION_TOKENS)
-        _FORK_STATE.transitions.setdefault(thread_id, {})[token] = descriptor_owner
-        _FORK_STATE.active_transitions += 1
-    try:  # pragma: needs fork
-        yield
-    finally:
-        if os.getpid() == creator_pid:  # pragma: needs fork
-            with _FORK_STATE.gate:
-                owned: Final = _FORK_STATE.transitions[thread_id]
-                del owned[token]
-                if not owned:
-                    del _FORK_STATE.transitions[thread_id]
-                _FORK_STATE.active_transitions -= 1
-                _FORK_STATE.gate.notify_all()
-
-
-def register_fork_object(instance: _ForkResettable) -> None:
-    if not _HAS_REGISTER_AT_FORK:
-        return  # pragma: lacks fork
-    with fork_transition(), _FORK_STATE.registry_lock:  # pragma: needs fork
-        _FORK_OBJECTS[id(instance)] = instance
-        _refresh_owner_pins()
-
-
-def register_fork_class(cls: _ForkResettableClass) -> None:
-    if not _HAS_REGISTER_AT_FORK:
-        return  # pragma: lacks fork
-    with fork_transition(), _FORK_STATE.registry_lock:  # pragma: needs fork
-        _FORK_CLASSES[id(cls)] = cls
-        _refresh_owner_pins()
-
-
-def register_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int | None:
-    if not _HAS_REGISTER_AT_FORK:
-        return None  # pragma: lacks fork
-    with fork_transition():  # pragma: needs fork
-        if identity is None:
-            stat_result = os.fstat(fd)
-            identity = stat_result.st_dev, stat_result.st_ino
-        return _record_owned_descriptor(fd, identity)
-
-
 def _record_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int:  # pragma: needs fork
     with _FORK_STATE.registry_lock:
         token = next(_DESCRIPTOR_TOKENS)
@@ -2109,14 +2126,6 @@ def _record_owned_descriptor(fd: int, identity: tuple[int, int] | None) -> int: 
             inode=None if identity is None else identity[1],
         )
     return token
-
-
-def unregister_owned_descriptor(token: int) -> None:  # pragma: needs fork
-    # No fork follows exit, and a daemon thread stopped inside this bookkeeping holds its lock forever.
-    if sys.is_finalizing():  # pragma: no cover  # only exit reaches it, after coverage stops measuring
-        return
-    with fork_transition(), _FORK_STATE.registry_lock:
-        _OWNED_DESCRIPTORS.pop(token, None)
 
 
 def _pin_fork_objects() -> None:  # pragma: needs fork
@@ -2238,19 +2247,6 @@ def _detach_child_state(  # pragma: forked child
     for cls in pinned_classes:
         cls._reset_class_after_fork()
     _REGISTRY.held.clear()
-
-
-def _refresh_owner_pins() -> None:  # pragma: needs fork
-    with _FORK_STATE.gate:
-        fork_owner_thread_ids = tuple(_FORK_STATE.fork_owner_depths)
-    if get_ident() not in fork_owner_thread_ids:  # pragma: no cover - at-fork callbacks disable tracing
-        return
-    objects = tuple(_FORK_OBJECTS.values())
-    classes = tuple(_FORK_CLASSES.values())
-    for thread_id in fork_owner_thread_ids:
-        if object_snapshots := _FORK_STATE.pinned_objects.get(thread_id):  # pragma: needs fork
-            object_snapshots[:] = [objects] * len(object_snapshots)
-            _FORK_STATE.pinned_classes[thread_id][:] = [classes] * len(object_snapshots)
 
 
 # The defaults capture the module globals: the hook outlives them at interpreter shutdown, where CPython wipes the

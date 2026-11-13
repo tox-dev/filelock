@@ -81,7 +81,14 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
     try:
         outputs.extend(process.communicate(timeout=max(0.1, deadline - time.monotonic())) for process in processes)
     except subprocess.TimeoutExpired:  # pragma: no cover - test failure cleanup
-        _kill_processes(processes)
+        for process in processes:
+            if process.poll() is None:
+                if sys.platform == "win32":
+                    process.kill()
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
+        for process in processes:
+            process.communicate()
         pytest.fail(f"strict soft-lock stress workers exceeded {_WORKER_DEADLINE} seconds")
 
     assert counter_path.exists(), outputs
@@ -90,14 +97,3 @@ def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> 
         [0] * process_count,
         process_count * acquisitions_per_process,
     ), outputs
-
-
-def _kill_processes(processes: list[subprocess.Popen[str]]) -> None:  # pragma: no cover - test failure cleanup
-    for process in processes:
-        if process.poll() is None:
-            if sys.platform == "win32":
-                process.kill()
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-    for process in processes:
-        process.communicate()

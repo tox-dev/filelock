@@ -69,6 +69,49 @@ def test_child_cleanup_preserves_parent_lock(
     assert _probe_lock(lock_type, path)
 
 
+def _run_child_cleanup(
+    lock: BaseFileLock,
+    proxy: AcquireReturnProxy,
+    action: Literal["release", "context", "collect"],
+) -> NoReturn:
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    if action == "release":
+        lock.release(force=True)
+    elif action == "context":
+        proxy.__exit__(None, None, None)
+    else:
+        del proxy
+        del lock
+        gc.collect()
+    exit_child(0)
+
+
+def _probe_lock(lock_type: type[BaseFileLock], path: str) -> bool:  # pragma: needs fork
+    read_fd, write_fd = os.pipe()
+
+    def probe_child() -> NoReturn:
+        os.close(read_fd)
+        candidate = lock_type(path, is_singleton=False)
+        try:
+            candidate.acquire(timeout=0)
+        except Timeout:
+            acquired = False
+        else:
+            acquired = True
+            candidate.release()
+        os.write(write_fd, b"1" if acquired else b"0")
+        os.close(write_fd)
+        exit_child(0)
+
+    child_pid = fork_process(probe_child)
+    os.close(write_fd)
+    result = os.read(read_fd, 1)
+    os.close(read_fd)
+    _, status = os.waitpid(child_pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    return result == b"1"
+
+
 @NEEDS_FORK  # pragma: needs fork
 @_FORK_WARNING
 @pytest.mark.parametrize(
@@ -153,6 +196,14 @@ def test_child_closes_descriptor_held_by_vanished_thread(tmp_path: Path) -> None
     worker.join(timeout=5)
 
     assert (os.waitstatus_to_exitcode(status), worker.is_alive()) == (0, False)
+
+
+def _assert_descriptor_closed(fd: int) -> NoReturn:
+    try:
+        os.fstat(fd)
+    except OSError as exception:
+        exit_child(0 if exception.errno == EBADF else 1)
+    exit_child(1)
 
 
 @NEEDS_FORK  # pragma: needs fork
@@ -438,54 +489,3 @@ sys.exit(os.waitstatus_to_exitcode(status))
     )
 
     assert result.returncode == 0, result.stderr
-
-
-def _run_child_cleanup(
-    lock: BaseFileLock,
-    proxy: AcquireReturnProxy,
-    action: Literal["release", "context", "collect"],
-) -> NoReturn:
-    assert (lock.is_locked, lock.lock_counter) == (False, 0)
-    if action == "release":
-        lock.release(force=True)
-    elif action == "context":
-        proxy.__exit__(None, None, None)
-    else:
-        del proxy
-        del lock
-        gc.collect()
-    exit_child(0)
-
-
-def _probe_lock(lock_type: type[BaseFileLock], path: str) -> bool:  # pragma: needs fork
-    read_fd, write_fd = os.pipe()
-
-    def probe_child() -> NoReturn:
-        os.close(read_fd)
-        candidate = lock_type(path, is_singleton=False)
-        try:
-            candidate.acquire(timeout=0)
-        except Timeout:
-            acquired = False
-        else:
-            acquired = True
-            candidate.release()
-        os.write(write_fd, b"1" if acquired else b"0")
-        os.close(write_fd)
-        exit_child(0)
-
-    child_pid = fork_process(probe_child)
-    os.close(write_fd)
-    result = os.read(read_fd, 1)
-    os.close(read_fd)
-    _, status = os.waitpid(child_pid, 0)
-    assert os.waitstatus_to_exitcode(status) == 0
-    return result == b"1"
-
-
-def _assert_descriptor_closed(fd: int) -> NoReturn:
-    try:
-        os.fstat(fd)
-    except OSError as exception:
-        exit_child(0 if exception.errno == EBADF else 1)
-    exit_child(1)

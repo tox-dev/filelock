@@ -608,7 +608,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             )
 
     def _raise_acquire_rollback_errors(self, acquire_error: BaseException, rollback_error: BaseException) -> NoReturn:
-        if self._context_error_policy == "group":
+        if self._settings.context_error_policy == "group":
             _raise_grouped_errors("lock acquisition backend and rollback both failed", acquire_error, rollback_error)
         _raise_chained_errors(acquire_error, rollback_error)
 
@@ -629,10 +629,10 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             _raise_cleanup_errors("descriptor registration cleanup failed", registration_error, tracking_error)
 
     async def _invoke_on_acquired_async(self) -> None:
-        if self._on_acquired is None or self._context.lock_counter != 1:
+        if self._settings.on_acquired is None or self._context.lock_counter != 1:
             return
         try:
-            self._on_acquired(cast("int", self._context.lock_file_fd))
+            self._settings.on_acquired(cast("int", self._context.lock_file_fd))
         except BaseException as callback_error:  # caller control-flow errors must release the lock
             callback_context = callback_error.__context__
             try:
@@ -668,7 +668,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         first_error: BaseException,
         second_error: BaseException | None = None,
     ) -> NoReturn:
-        if self._context_error_policy == "group":
+        if self._settings.context_error_policy == "group":
             marker = (
                 (_ASYNC_RELEASE_CANCELLATION_MARKER_ATTR, _ASYNC_RELEASE_CANCELLATION_MARKER)
                 if message == _ASYNC_RELEASE_CANCELLATION_ERRORS
@@ -717,7 +717,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         except BaseException as release_error:
             if body_error is None:
                 raise
-            if self._context_error_policy == "chain":
+            if self._settings.context_error_policy == "chain":
                 _append_exception_context(release_error, body_error)
                 raise
             if (
@@ -839,7 +839,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         with contextlib.suppress(Exception):
             # A thread-local lock never uses an executor, so an in-place release matches the loop's and also reaches
             # threads whose loops it cannot schedule on.
-            if self._is_thread_local and not iscoroutinefunction(self._release):
+            if self._settings.thread_local and not iscoroutinefunction(self._release):
                 self._release_without_loop()
                 return
             try:
@@ -884,6 +884,28 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 return
         with contextlib.suppress(Exception):
             self._release_without_loop()
+
+
+class AsyncAcquireReturnProxy:
+    """
+    A context-aware object that will release the lock file when exiting.
+
+    :param lock: the lock to release on exit
+    """
+
+    def __init__(self, lock: BaseAsyncFileLock) -> None:  # trivial release-on-exit proxy
+        self.lock = lock
+
+    async def __aenter__(self) -> BaseAsyncFileLock:  # returns the wrapped lock
+        return self.lock
+
+    async def __aexit__(  # releases the wrapped lock on exit
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # releases the wrapped lock's context
 
 
 def _new_transition_gate() -> _AsyncTransitionGate:
@@ -947,28 +969,6 @@ class AsyncThreadLocalFileContext(  # simplint: ignore[unexported-public-name]  
 
 for _field in fields(AsyncFileLockContext):
     setattr(AsyncThreadLocalFileContext, _field.name, _delegate_to_current(_field.name))
-
-
-class AsyncAcquireReturnProxy:
-    """
-    A context-aware object that will release the lock file when exiting.
-
-    :param lock: the lock to release on exit
-    """
-
-    def __init__(self, lock: BaseAsyncFileLock) -> None:  # trivial release-on-exit proxy
-        self.lock = lock
-
-    async def __aenter__(self) -> BaseAsyncFileLock:  # returns the wrapped lock
-        return self.lock
-
-    async def __aexit__(  # releases the wrapped lock on exit
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # releases the wrapped lock's context
 
 
 class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):

@@ -406,15 +406,46 @@ class _OwnedConnection:
     # connection while the singleton cache still hands the lock out, and a thread given the lock would nest into a hold
     # with no database lock behind it. The lock alone refers to this holder, so the holder is collected once the cache
     # no longer finds the lock.
-    __slots__ = ("connection",)
+    __slots__ = ("connection", "identity", "transaction_released")
 
     def __init__(self) -> None:
         self.connection: _ForkSafeConnection | None = None
+        #: Whether the connection's transaction is known to be over, so a release does not roll back twice.
+        self.transaction_released = True
+        self.identity: _DatabaseIdentity | None = None
 
     def __del__(self) -> None:
         if (connection := self.connection) is not None:
             with suppress(sqlite3.Error, RuntimeError):
                 connection.close()
+
+
+class _Hold:
+    # The levels an instance holds and the threads holding them; level 0 when it holds none.
+    __slots__ = ("level", "mode", "read_depths", "write_thread_id")
+
+    def __init__(self) -> None:
+        self.level = 0
+        self.mode: Literal["read", "write"] | None = None
+        self.write_thread_id: int | None = None
+        self.read_depths: dict[int, int] = {}
+
+    def grant(self, mode: Literal["read", "write"], holder: int) -> None:
+        self.mode, self.level = mode, 1
+        if mode == "write":
+            self.write_thread_id = holder
+        else:
+            self.read_depths = {holder: 1}
+
+    def nest(self, mode: Literal["read", "write"], holder: int) -> None:
+        if mode == "read":
+            self.read_depths[holder] = self.read_depths.get(holder, 0) + 1
+        self.level += 1
+
+    def leave_one_level(self, thread_id: int) -> None:
+        self.level -= 1
+        if self.mode == "read" and (depth := self.read_depths.pop(thread_id) - 1):
+            self.read_depths[thread_id] = depth
 
 
 class _ReadWriteLockMeta(type):
@@ -545,15 +576,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self.timeout = timeout
         self.blocking = blocking
         self._transaction_lock = threading.Lock()  # serializes the (possibly blocking) SQLite transaction work
-        self._internal_lock = threading.Lock()  # protects _lock_level / _current_mode updates and rollback
-        self._lock_level = 0
-        self._current_mode: Literal["read", "write"] | None = None
-        self._write_thread_id: int | None = None
-        self._read_depths: dict[int, int] = {}
+        self._internal_lock = threading.Lock()  # protects _hold updates and rollback
+        self._hold = _Hold()
         self._acquisition_thread_ids: set[int] = set()
         self._owned_connection = _OwnedConnection()
-        self._connection_transaction_released = True
-        self._connection_identity: _DatabaseIdentity | None = None
         self._closed = False
         self._creator_pid = _GETPID()
         self._fork_invalidated = False
@@ -741,12 +767,12 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     def _holds_level(self) -> bool:
         # A release interrupted after its rollback, but before it recorded that, leaves a level with no transaction.
-        if self._lock_level > 0 and self._transaction_ended():
+        if self._hold.level > 0 and self._transaction_ended():
             self._clear_lock_state()
-        return self._lock_level > 0
+        return self._hold.level > 0
 
     def _transaction_ended(self) -> bool:
-        if self._connection_transaction_released or (connection := self._con) is None:
+        if self._owned_connection.transaction_released or (connection := self._con) is None:
             return True
         # An interrupt can land between the rollback and the flag that records it.
         return not connection.in_transaction
@@ -755,20 +781,13 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     def _con(self) -> _ForkSafeConnection | None:
         return self._owned_connection.connection
 
-    @_con.setter
-    def _con(self, connection: _ForkSafeConnection | None) -> None:
-        self._owned_connection.connection = connection
-
     def _clear_lock_state(self) -> None:
-        self._lock_level = 0
-        self._current_mode = None
-        self._write_thread_id = None
-        self._read_depths = {}
+        self._hold = _Hold()
 
     def _validate_reentrant(self, mode: Literal["read", "write"], cur: int) -> AcquireReturnProxy:
-        if self._current_mode != mode:
+        if self._hold.mode != mode:
             opposite = "write" if mode == "read" else "read"
-            if cur == self._write_thread_id or cur in self._read_depths:
+            if cur == self._hold.write_thread_id or cur in self._hold.read_depths:
                 direction = "downgrade" if mode == "read" else "upgrade"
                 reason = f"already holding a {opposite} lock ({direction} not allowed)"
             else:
@@ -778,15 +797,13 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 )
             msg = f"Cannot acquire {mode} lock on {self.lock_file} (lock id: {id(self)}): {reason}"
             raise RuntimeError(msg)
-        if mode == "write" and cur != self._write_thread_id:
+        if mode == "write" and cur != self._hold.write_thread_id:
             msg = (
                 f"Cannot acquire write lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {cur} while it is held by thread {self._write_thread_id}"
+                f"from thread {cur} while it is held by thread {self._hold.write_thread_id}"
             )
             raise RuntimeError(msg)
-        if mode == "read":
-            self._read_depths[cur] = self._read_depths.get(cur, 0) + 1
-        self._lock_level += 1
+        self._hold.nest(mode, cur)
         return AcquireReturnProxy(lock=self)
 
     def _acquire_transaction_lock(
@@ -841,12 +858,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             raise
         with self._internal_lock:
             self._raise_if_process_changed(operation_pid)
-            self._current_mode = mode
-            self._lock_level = 1
-            if mode == "write":
-                self._write_thread_id = holder
-            else:
-                self._read_depths = {holder: 1}
+            self._hold.grant(mode, holder)
         return AcquireReturnProxy(lock=self)
 
     def _finish_connection(self) -> None:
@@ -854,28 +866,28 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if (connection := self._con) is None:
                 return
             rollback_error: sqlite3.Error | None = None
-            if not self._connection_transaction_released:
+            if not self._owned_connection.transaction_released:
                 if connection.in_transaction:
                     try:
                         connection.rollback()
                     except sqlite3.Error as error:
                         if connection.in_transaction:
                             raise
-                        self._connection_transaction_released = True
+                        self._owned_connection.transaction_released = True
                         rollback_error = error
                     else:
-                        self._connection_transaction_released = True
+                        self._owned_connection.transaction_released = True
                 else:
-                    self._connection_transaction_released = True
+                    self._owned_connection.transaction_released = True
             try:
                 connection.close()
             except sqlite3.Error as close_error:
                 if rollback_error is not None:
                     _raise_chained_errors(rollback_error, close_error)
                 raise
-            self._con = None
-            self._connection_transaction_released = True
-            self._connection_identity = None
+            self._owned_connection.connection = None
+            self._owned_connection.transaction_released = True
+            self._owned_connection.identity = None
             if rollback_error is not None:
                 raise rollback_error
 
@@ -890,7 +902,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 / 1000
             )
             connection = self._open_connection(sqlite_timeout=sqlite_timeout)
-            self._con, self._connection_transaction_released, self._connection_identity = (
+            owned = self._owned_connection
+            owned.connection, owned.transaction_released, owned.identity = (
                 connection,
                 False,
                 _FORKED_DATABASES.identity(self._canonical_path),
@@ -1003,7 +1016,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         with self._transaction_lock, self._internal_lock:
             if not force:
                 self._raise_if_not_holder(thread_id)
-            if self._lock_level == 0:
+            if self._hold.level == 0:
                 if force and self._con is None:
                     if close:
                         self._closed = True
@@ -1011,8 +1024,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 if not force:
                     msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
                     raise RuntimeError(msg)
-            if not force and self._lock_level > 1:
-                self._leave_one_level(thread_id)
+            if not force and self._hold.level > 1:
+                self._hold.leave_one_level(thread_id)
                 return
             try:
                 self._finish_connection()
@@ -1029,24 +1042,19 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     def _raise_if_not_holder(self, thread_id: int) -> None:
         # The connection runs with check_same_thread=False, so a release from another thread would end the owner's
         # transaction under it and let a second writer in.
-        if self._current_mode == "write" and thread_id != self._write_thread_id:
+        if self._hold.mode == "write" and thread_id != self._hold.write_thread_id:
             msg = (
                 f"Cannot release write lock on {self.lock_file} (lock id: {id(self)}) "
-                f"from thread {thread_id} while it is held by thread {self._write_thread_id}"
+                f"from thread {thread_id} while it is held by thread {self._hold.write_thread_id}"
             )
             raise RuntimeError(msg)
         # Readers share that one transaction too, so a thread that holds no read level would end another's hold.
-        if self._current_mode == "read" and thread_id not in self._read_depths:
+        if self._hold.mode == "read" and thread_id not in self._hold.read_depths:
             msg = (
                 f"Cannot release read lock on {self.lock_file} (lock id: {id(self)}) "
                 f"from thread {thread_id}, which does not hold it"
             )
             raise RuntimeError(msg)
-
-    def _leave_one_level(self, thread_id: int) -> None:
-        self._lock_level -= 1
-        if self._current_mode == "read" and (depth := self._read_depths.pop(thread_id) - 1):
-            self._read_depths[thread_id] = depth
 
     @contextmanager
     def write_lock(self, timeout: float | None = None, *, blocking: bool | None = None) -> Generator[None]:
@@ -1132,7 +1140,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         # Read without the internal lock. The async wrapper asks from its event loop, which must not wait out a release
         # on another thread. A stale answer is what a caller asking a moment earlier would have had. A level whose
         # transaction ended is one an interrupted release left behind; it counts as gone, as _holds_level() treats it.
-        if thread_id != self._write_thread_id and thread_id not in self._read_depths:
+        if thread_id != self._hold.write_thread_id and thread_id not in self._hold.read_depths:
             return False
         try:
             return not self._transaction_ended()
@@ -1142,10 +1150,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         if self._con is not None:
-            _FORKED_DATABASES.poison_after_fork(self._canonical_path, self._connection_identity)
-        self._con = None
-        self._connection_transaction_released = True
-        self._connection_identity = None
+            _FORKED_DATABASES.poison_after_fork(self._canonical_path, self._owned_connection.identity)
+        self._owned_connection.connection = None
+        self._owned_connection.transaction_released = True
+        self._owned_connection.identity = None
         self._transaction_lock = threading.Lock()
         self._internal_lock = threading.Lock()
         self._clear_lock_state()

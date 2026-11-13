@@ -19,26 +19,6 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 
 
-class _CancellationObservedTask(asyncio.Task[_T]):  # pragma: needs fcntl
-    def __init__(
-        self,
-        coroutine: Coroutine[None, None, _T],
-        cancellation_seen: threading.Event,
-        *,
-        loop: asyncio.AbstractEventLoop,
-    ) -> None:
-        self._cancellation_seen = cancellation_seen
-        super().__init__(coroutine, loop=loop)
-
-    def cancel(
-        self,
-        msg: object | None = None,  # simplint: ignore[imprecise-annotation]  # Task.cancel accepts arbitrary payloads
-    ) -> bool:
-        # Task.cancel accepts arbitrary payloads; object is the narrowest accurate type for its public contract.
-        self._cancellation_seen.set()
-        return super().cancel(msg)
-
-
 @NEEDS_FCNTL
 def test_runner_shutdown_waits_for_executor_acquire_rollback(tmp_path: Path) -> None:  # pragma: needs fcntl
     hook_started = threading.Event()
@@ -85,6 +65,26 @@ def _run_unawaited_acquire(  # pragma: needs fcntl
         assert await asyncio.to_thread(hook_started.wait, 5)
 
     asyncio.run(start_acquire())
+
+
+class _CancellationObservedTask(asyncio.Task[_T]):  # pragma: needs fcntl
+    def __init__(
+        self,
+        coroutine: Coroutine[None, None, _T],
+        cancellation_seen: threading.Event,
+        *,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self._cancellation_seen = cancellation_seen
+        super().__init__(coroutine, loop=loop)
+
+    def cancel(
+        self,
+        msg: object | None = None,  # simplint: ignore[imprecise-annotation]  # Task.cancel accepts arbitrary payloads
+    ) -> bool:
+        # Task.cancel accepts arbitrary payloads; object is the narrowest accurate type for its public contract.
+        self._cancellation_seen.set()
+        return super().cancel(msg)
 
 
 @NEEDS_FCNTL

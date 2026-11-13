@@ -224,6 +224,15 @@ def test_rescan_skips_a_generation_removed_after_listing(
     assert fresh.latest().generation == 1
 
 
+def _committed(files: OsFiles, lock_file: str, root: str, writers: list[str | None]) -> GenerationLog:
+    # One log that read the head before each commit, as a participant does, and so remembers the last one.
+    files.prepare(root)
+    log = GenerationLog(files, lock_file, root)
+    for writer in writers:
+        assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=writer, readers=frozenset()))
+    return log
+
+
 def test_malformed_generation_raises(lock_file: str, files: OsFiles, root: str) -> None:
     files.prepare(root)
     Path(root, "gen", f"{1:020d}").write_bytes(b"filelock-rw/1\ngeneration=5\n")
@@ -274,7 +283,7 @@ def _participant(
 def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root: str, mocker: MockerFixture) -> None:
     # A peer can publish the next generation between leave() reading the latest one and linking its successor; the
     # holder then re-reads and commits itself out of whatever the peer published.
-    reader = _participant(files, lock_file, "read", stale_threshold=100)
+    reader = _participant(files, lock_file, "read")
     reader.publish()
     assert reader.advance()
     real_commit = GenerationLog.commit
@@ -298,10 +307,10 @@ def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root:
 def test_waiting_contender_republishes_a_swept_record(lock_file: str, files: OsFiles, root: str) -> None:
     # A record removed out from under a contender (a sweeper that mistook it, an operator) comes back on its next poll,
     # so peers always have a record to watch by the time the contender is admitted.
-    writer = _participant(files, lock_file, "write", stale_threshold=100)
+    writer = _participant(files, lock_file, "write")
     writer.publish()
     assert writer.advance()
-    reader = _participant(files, lock_file, "read", stale_threshold=100)
+    reader = _participant(files, lock_file, "read")
     reader.publish()
     record = Path(root, "holders", reader.token)
     record.unlink()
@@ -314,7 +323,7 @@ def test_waiting_contender_keeps_an_undeletable_record(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:
     # Windows can leave the record in place while refusing the rewrite; the contender carries on.
-    reader = _participant(files, lock_file, "read", stale_threshold=100)
+    reader = _participant(files, lock_file, "read")
     reader.publish()
     mocker.patch.object(OsFiles, "overwrite", return_value=False, autospec=True)
     assert reader.advance()
@@ -429,15 +438,6 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(
     listings = iter([[f"{generation:020d}" for generation in (4, 5)]])
     mocker.patch.object(OsFiles, "listdir", lambda self, path: next(listings, None) or real_listdir(self, path))
     assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
-
-
-def _committed(files: OsFiles, lock_file: str, root: str, writers: list[str | None]) -> GenerationLog:
-    # One log that read the head before each commit, as a participant does, and so remembers the last one.
-    files.prepare(root)
-    log = GenerationLog(files, lock_file, root)
-    for writer in writers:
-        assert log.commit(Snapshot(generation=log.latest().generation + 1, writer=writer, readers=frozenset()))
-    return log
 
 
 @pytest.mark.requires_hard_links
@@ -992,6 +992,13 @@ _FAIRNESS: Final[float] = 8 * _STEP
 _ROOT: Final[str] = "/lock.rw"
 
 
+#: Each seed with its crash probability and stale-listing rate: every third seed runs without crashes, every other one
+#: sees stale directory listings.
+_MODEL_CASES: Final[tuple[tuple[int, float, float], ...]] = tuple(
+    (seed, 0.0 if seed % 3 == 0 else 0.02, 0.3 if seed % 2 else 0.0) for seed in range(24)
+)
+
+
 @pytest.mark.parametrize(
     ("seed", "crash_probability", "stale_listings"),
     [
@@ -1001,9 +1008,7 @@ _ROOT: Final[str] = "/lock.rw"
             stale,
             id=f"seed{seed}-{'crashes' if probability else 'clean'}-{'stale-listings' if stale else 'fresh-listings'}",
         )
-        for seed in range(24)
-        for probability in (0.0 if seed % 3 == 0 else 0.02,)
-        for stale in (0.3 if seed % 2 else 0.0,)
+        for seed, probability, stale in _MODEL_CASES
     ],
 )
 @pytest.mark.timeout(120)

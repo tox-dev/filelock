@@ -1133,15 +1133,16 @@ def _run_shared_threads(target: Callable[[int], None]) -> None:
 def test_shared_instance_released_on_another_thread_frees_the_acquirer(tmp_path: Path) -> None:
     shared = FileLock(tmp_path / "a.lock", thread_local=False)
 
-    def acquire_fresh() -> None:
-        with FileLock(tmp_path / "a.lock"):
-            pass
+    def acquire_fresh() -> bool:
+        with FileLock(tmp_path / "a.lock") as fresh:
+            return fresh.is_locked
 
     with ThreadPoolExecutor(max_workers=1) as acquirer:
         acquirer.submit(shared.acquire).result(_SHARED_WAIT)
         shared.release()
 
-        acquirer.submit(acquire_fresh).result(_SHARED_WAIT)
+        assert not shared.is_locked
+        assert acquirer.submit(acquire_fresh).result(_SHARED_WAIT)
 
 
 def test_shared_instance_release_behind_a_failed_acquire_is_a_no_op(tmp_path: Path) -> None:
@@ -3154,6 +3155,15 @@ def test_singleton_rejects_different_context_policy(tmp_path: Path) -> None:
         first.release(force=True)
 
 
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a"))  # default policy
+    lock.acquire()
+    _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
+    lock.release()  # Unix default drops a FUSE/Docker EIO
+    assert not lock.is_locked
+
+
 def _fail_close_of(mocker: MockerFixture, lock: BaseFileLock, error: OSError) -> list[int]:
     # Fail os.close only for this lock's own descriptor, and record each attempt on it. A blanket patch would also hit
     # the close another test's lock runs from __del__ during this test, turning an unrelated garbage collection into a
@@ -3170,15 +3180,6 @@ def _fail_close_of(mocker: MockerFixture, lock: BaseFileLock, error: OSError) ->
 
     mocker.patch("filelock._api.os.close", side_effect=close, autospec=True)
     return attempts
-
-
-@NEEDS_FCNTL  # pragma: needs fcntl
-def test_close_error_default_suppressed_on_unix(tmp_path: Path, mocker: MockerFixture) -> None:
-    lock = FileLock(str(tmp_path / "a"))  # default policy
-    lock.acquire()
-    _fail_close_of(mocker, lock, OSError(EIO, "close failed"))
-    lock.release()  # Unix default drops a FUSE/Docker EIO
-    assert not lock.is_locked
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
@@ -3337,13 +3338,13 @@ def _signal_poll(polling: threading.Event) -> bool:
 
 @pytest.mark.parametrize("lock_type", [SoftFileLock, MarkerSoftFileLock, SoftFileLease])
 def test_relative_release_uses_acquisition_directory(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first, second = working_directories
     lock = lock_type("resource.lock")
     lock.acquire()
 
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock:  # re-entry joins the hold, so it keeps that hold's path
         pass
     lock.release()
@@ -3421,14 +3422,14 @@ def test_reentrant_acquire_after_directory_rename(
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_each_acquisition_resolves_the_working_directory(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, second = working_directories
     lock = lock_type("resource.lock")
     with lock:
         pass
 
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock:
         assert (lock.lock_file, (second / "resource.lock").exists()) == ("resource.lock", True)
 
@@ -3438,7 +3439,7 @@ def test_each_acquisition_resolves_the_working_directory(
 )  # pragma: win32 no cover
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_acquire_without_working_directory_leaves_no_hold(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     lock: Final[BaseFileLock] = lock_type("resource.lock")
     working_directories[0].rmdir()
@@ -3446,7 +3447,7 @@ def test_acquire_without_working_directory_leaves_no_hold(
     with pytest.raises(FileNotFoundError):
         lock.acquire()
     second: Final[Path] = working_directories[1]
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock:
         assert (lock.lock_counter, lock.is_locked, (second / "resource.lock").exists()) == (1, True, True)
 
@@ -3458,7 +3459,7 @@ def test_acquire_without_working_directory_leaves_no_hold(
 )  # pragma: win32 no cover
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_nested_acquire_without_working_directory_preserves_hold(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     lock: Final[BaseFileLock] = lock_type("resource.lock")
     lock.acquire()
@@ -3470,18 +3471,18 @@ def test_nested_acquire_without_working_directory_preserves_hold(
         lock.acquire()
     assert (lock.lock_counter, lock.is_locked) == (1, True)
 
-    os.chdir(working_directories[1])
+    monkeypatch.chdir(working_directories[1])
     lock.release()
     assert (lock.lock_counter, lock.is_locked) == (0, False)
 
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_singleton_after_chdir_locks_the_requested_file(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first, second = working_directories
     relative = lock_type("resource.lock", is_singleton=True)
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock_type(first / "resource.lock", is_singleton=True):
         assert ((first / "resource.lock").exists(), (second / "resource.lock").exists()) == (True, False)
     del relative
@@ -3489,12 +3490,12 @@ def test_singleton_after_chdir_locks_the_requested_file(
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_singleton_held_before_chdir_re_enters_by_absolute_path(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first, second = working_directories
     held = lock_type("resource.lock", is_singleton=True)
     held.acquire()
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock_type(first / "resource.lock", is_singleton=True) as again:
         assert (again is held, held.lock_counter) == (True, 2)
     held.release(force=True)

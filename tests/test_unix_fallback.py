@@ -258,7 +258,7 @@ def test_lock_file_it_cannot_write_stays_denied_where_flock_works(tmp_path: Path
 
 @NEEDS_FCNTL
 def test_denied_lock_file_is_reopened_in_the_acquisition_directory(  # pragma: needs fcntl
-    working_directories: tuple[Path, Path], mocker: MockerFixture
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
 ) -> None:
     # Resolved against the working directory of the moment, a chdir between the refused O_RDWR open and the read-only
     # reopen probes a file in another directory, or none.
@@ -270,7 +270,7 @@ def test_denied_lock_file_is_reopened_in_the_acquisition_directory(  # pragma: n
     def deny_write_then_chdir(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         if not flags & os.O_CREAT and "test.lock" in path:
             if flags & os.O_RDWR:
-                os.chdir(second)
+                monkeypatch.chdir(second)
                 raise PermissionError(EACCES, "Permission denied", path)
             read_only_opens.append(path)
         return real_open(path, flags, mode, dir_fd=dir_fd)

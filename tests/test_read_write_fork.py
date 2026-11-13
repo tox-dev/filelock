@@ -23,7 +23,7 @@ from tests.capability_marks import (
     NEEDS_FORK1,
 )
 from tests.descriptor_helpers import descriptors_on
-from tests.read_write_helpers import OPPOSITE_MODE
+from tests.read_write_helpers import OPPOSITE_MODE, writer_gets_in
 
 if TYPE_CHECKING:
     from _typeshed import StrOrBytesPath  # simplint: ignore[private-import-path]  # tests internal behavior
@@ -101,6 +101,35 @@ def test_read_write_lock_dropped_instances_leave_no_descriptors(tmp_path: Path) 
     )
 
     assert result == (0, "", "")
+
+
+def _run_fork_script(script: str, arguments: list[str], *, timeout: float) -> _ForkResult:
+    process = subprocess.Popen(  # executes this test's fixed interpreter and source
+        [sys.executable, "-c", script, *arguments],
+        start_new_session=True,
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        process_output, process_error = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        with contextlib.suppress(ProcessLookupError):
+            if sys.platform == "win32":  # pragma: win32 cover
+                process.kill()
+            else:  # pragma: win32 no cover
+                os.killpg(process.pid, signal.SIGKILL)
+        process_output, process_error = process.communicate()
+        msg = f"fork script exceeded {timeout} seconds: stdout={process_output!r}, stderr={process_error!r}"
+        raise AssertionError(msg) from error
+    assert process.returncode is not None  # pragma: needs fork
+    return _ForkResult(process.returncode, process_output, process_error)  # pragma: needs fork
+
+
+class _ForkResult(NamedTuple):
+    returncode: int
+    output: str
+    error: str
 
 
 @_NEEDS_FD_DIRECTORY
@@ -268,8 +297,7 @@ def test_read_write_lock_finalized_while_probes_are_recorded_does_not_deadlock( 
         ReadWriteLock(tmp_path / "other.db", is_singleton=False).close()
     finally:
         gc.enable()
-    with ReadWriteLock(tmp_path / "dropped.db", is_singleton=False).write_lock(blocking=False):
-        pass
+    assert writer_gets_in(tmp_path / "dropped.db")
 
 
 @NEEDS_FORK  # pragma: needs fork
@@ -1189,35 +1217,6 @@ def test_async_read_write_lock_fork_behavior(tmp_path: Path, state: Literal["idl
     )
 
     assert result == (0, "", "")
-
-
-def _run_fork_script(script: str, arguments: list[str], *, timeout: float) -> _ForkResult:
-    process = subprocess.Popen(  # executes this test's fixed interpreter and source
-        [sys.executable, "-c", script, *arguments],
-        start_new_session=True,
-        stderr=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        process_output, process_error = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        with contextlib.suppress(ProcessLookupError):
-            if sys.platform == "win32":  # pragma: win32 cover
-                process.kill()
-            else:  # pragma: win32 no cover
-                os.killpg(process.pid, signal.SIGKILL)
-        process_output, process_error = process.communicate()
-        msg = f"fork script exceeded {timeout} seconds: stdout={process_output!r}, stderr={process_error!r}"
-        raise AssertionError(msg) from error
-    assert process.returncode is not None  # pragma: needs fork
-    return _ForkResult(process.returncode, process_output, process_error)  # pragma: needs fork
-
-
-class _ForkResult(NamedTuple):
-    returncode: int
-    output: str
-    error: str
 
 
 _TRY_WRITE_SCRIPT: Final[str] = textwrap.dedent(

@@ -105,66 +105,6 @@ class _Files(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Snapshot:
-    # The lock's state at one generation: which token writes, which tokens read.
-    generation: int
-    writer: str | None
-    readers: frozenset[str]
-
-    @property
-    def members(self) -> frozenset[str]:
-        return self.readers if self.writer is None else self.readers | {self.writer}
-
-    def encode(self) -> bytes:
-        lines = [_PROTOCOL, f"generation={self.generation}"]
-        if self.writer is not None:
-            lines.append(f"writer={self.writer}")
-        lines.extend(f"reader={token}" for token in sorted(self.readers))
-        return "".join(f"{line}\n" for line in lines).encode("ascii")
-
-
-def parse_snapshot(data: bytes) -> Snapshot | None:
-    # The snapshot a ``gen/<N>`` record encodes, or ``None`` when the record is malformed.
-    if not data or len(data) > MAX_RECORD_SIZE:
-        return None
-    try:
-        lines = data.decode("ascii").split("\n")
-    except UnicodeDecodeError:
-        return None
-    if lines[0] != _PROTOCOL or lines[-1]:
-        return None
-    generation: int | None = None
-    writer: str | None = None
-    readers: set[str] = set()
-    for line in lines[1:-1]:
-        key, _, value = line.partition("=")
-        if (
-            key == "generation"
-            and generation is None
-            and len(value) <= _GENERATION_DIGITS
-            and value.isdigit()
-            and str(int(value)) == value
-        ):
-            generation = int(value)
-        elif key == "writer" and writer is None and _is_token(value):
-            writer = value
-        elif key == "reader" and _is_token(value) and value not in readers:
-            readers.add(value)
-        else:
-            return None
-    return None if generation is None else Snapshot(generation=generation, writer=writer, readers=frozenset(readers))
-
-
-def _is_token(value: str) -> bool:
-    # Whether *value* is a claim token: exactly 32 lowercase hex digits.
-    return len(value) == _TOKEN_HEX_LENGTH and all(character in "0123456789abcdef" for character in value)
-
-
-def new_token() -> str:
-    return secrets.token_hex(_TOKEN_HEX_LENGTH // 2)
-
-
 class Ledger:
     # How long each observed value has stayed the same, measured on this observer's monotonic clock.
     #
@@ -391,6 +331,66 @@ class GenerationLog:
             self._files.unlink(self._path(generation))
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Snapshot:
+    # The lock's state at one generation: which token writes, which tokens read.
+    generation: int
+    writer: str | None
+    readers: frozenset[str]
+
+    @property
+    def members(self) -> frozenset[str]:
+        return self.readers if self.writer is None else self.readers | {self.writer}
+
+    def encode(self) -> bytes:
+        lines = [_PROTOCOL, f"generation={self.generation}"]
+        if self.writer is not None:
+            lines.append(f"writer={self.writer}")
+        lines.extend(f"reader={token}" for token in sorted(self.readers))
+        return "".join(f"{line}\n" for line in lines).encode("ascii")
+
+
+def new_token() -> str:
+    return secrets.token_hex(_TOKEN_HEX_LENGTH // 2)
+
+
+def parse_snapshot(data: bytes) -> Snapshot | None:
+    # The snapshot a ``gen/<N>`` record encodes, or ``None`` when the record is malformed.
+    if not data or len(data) > MAX_RECORD_SIZE:
+        return None
+    try:
+        lines = data.decode("ascii").split("\n")
+    except UnicodeDecodeError:
+        return None
+    if lines[0] != _PROTOCOL or lines[-1]:
+        return None
+    generation: int | None = None
+    writer: str | None = None
+    readers: set[str] = set()
+    for line in lines[1:-1]:
+        key, _, value = line.partition("=")
+        if (
+            key == "generation"
+            and generation is None
+            and len(value) <= _GENERATION_DIGITS
+            and value.isdigit()
+            and str(int(value)) == value
+        ):
+            generation = int(value)
+        elif key == "writer" and writer is None and _is_token(value):
+            writer = value
+        elif key == "reader" and _is_token(value) and value not in readers:
+            readers.add(value)
+        else:
+            return None
+    return None if generation is None else Snapshot(generation=generation, writer=writer, readers=frozenset(readers))
+
+
+def _is_token(value: str) -> bool:
+    # Whether *value* is a claim token: exactly 32 lowercase hex digits.
+    return len(value) == _TOKEN_HEX_LENGTH and all(character in "0123456789abcdef" for character in value)
+
+
 class Participant:
     # One acquisition, from publishing a claim through holding the lock to leaving.
     #
@@ -419,13 +419,9 @@ class Participant:
         self._clock = clock
         self._ledger = ledger
         self._log = log
-        self._holder = self._holder_path(self.token)
         self._holder_identity: tuple[int, int] | None = None
         self._entered = False
         self._next_sweep = clock()
-
-    def _holder_path(self, token: str) -> str:
-        return str(Path(self._root, HOLDERS_DIRECTORY, token))
 
     def publish(self) -> None:
         # Create the holder record peers watch for liveness; it exists before the token appears in any snapshot.
@@ -434,11 +430,14 @@ class Participant:
 
     def _create_holder(self) -> None:
         try:
-            self._holder_identity = self._files.create(self._holder, self._record())
+            self._holder_identity = self._files.create(self._holder_path(self.token), self._record())
         except FileNotFoundError:
             # Removing the whole log takes the directories with it.
             self._files.prepare(self._root, force=True)
-            self._holder_identity = self._files.create(self._holder, self._record())
+            self._holder_identity = self._files.create(self._holder_path(self.token), self._record())
+
+    def _holder_path(self, token: str) -> str:
+        return str(Path(self._root, HOLDERS_DIRECTORY, token))
 
     def _record(self) -> bytes:
         return encode_holder(self.token, new_token(), self._stale_threshold)
@@ -495,7 +494,7 @@ class Participant:
     def _refresh_nonce(self) -> bool:
         if (identity := self._holder_identity) is None:
             return False
-        return self._files.overwrite(self._holder, self._record(), identity)
+        return self._files.overwrite(self._holder_path(self.token), self._record(), identity)
 
     def _sweep(self, latest: Snapshot) -> None:
         # A participant that crashed before its first commit leaves a record no snapshot names, and a commit that
@@ -580,7 +579,7 @@ class Participant:
             finally:
                 self._entered = False
                 self.generation = None
-                self._files.unlink(self._holder)
+                self._files.unlink(self._holder_path(self.token))
 
 
 def encode_holder(token: str, nonce: str, lease: float) -> bytes:

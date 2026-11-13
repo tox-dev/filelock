@@ -24,13 +24,14 @@ pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
 def test_strict_soft_relative_release_uses_acquisition_directory(
     working_directories: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first, second = working_directories
     lock = StrictSoftFileLock("resource.lock")
     lock.acquire()
     assert tuple(claim.state for claim in StrictSoftFileLock(first / "resource.lock").claims) == ("held", "intent")
 
-    os.chdir(second)
+    monkeypatch.chdir(second)
     lock.release()
 
     assert (
@@ -42,13 +43,14 @@ def test_strict_soft_relative_release_uses_acquisition_directory(
 @pytest.mark.asyncio
 async def test_async_strict_soft_relative_release_uses_acquisition_directory(
     working_directories: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first, second = working_directories
     lock = AsyncStrictSoftFileLock("resource.lock", run_in_executor=False)
     await lock.acquire()
     assert tuple(claim.state for claim in StrictSoftFileLock(first / "resource.lock").claims) == ("held", "intent")
 
-    os.chdir(second)
+    monkeypatch.chdir(second)
     await lock.release()
 
     assert (

@@ -55,12 +55,6 @@ _T = TypeVar("_T")
 TASKS_THREAD_ID: Final[int] = 0
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class BackendOutcome(Generic[_T]):
-    value: _T | None = None
-    error: BaseException | None = None
-
-
 class AsyncTransitionGate:
     # First-in, first-out admission for the calls that transition one lock context.
     #
@@ -497,6 +491,12 @@ def run_in_executor(
 
     loop.run_in_executor(executor, capture_call, func).add_done_callback(settle)
     return outcome
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BackendOutcome(Generic[_T]):
+    value: _T | None = None
+    error: BaseException | None = None
 
 
 def capture_call(func: Callable[[], _T]) -> BackendOutcome[_T]:

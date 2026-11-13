@@ -16,3 +16,4 @@ if TYPE_CHECKING:
 )
 def test_virtualenv(tmp_path: Path) -> None:
     cli_run([str(tmp_path), "--no-pip", "--no-setuptools", "--no-periodic-update"])
+    assert (tmp_path / "pyvenv.cfg").is_file()

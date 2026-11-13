@@ -12,6 +12,7 @@ __spec__ = cast("ModuleSpec", __spec__)
 __lazy_modules__ = [
     "filelock._error",
     "filelock._lease",
+    "functools",
     "math",
     f"{__spec__.parent}._protocol",
     f"{__spec__.parent}._storage",
@@ -23,6 +24,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from functools import partial
 from math import isfinite
 from typing import TYPE_CHECKING, ClassVar, Final, NamedTuple
 from weakref import WeakValueDictionary
@@ -153,7 +155,7 @@ class _SoftRWMeta(type):
                     f" cannot be changed to timeout={timeout}, blocking={blocking}"
                 )
                 raise ValueError(msg)
-            elif on_compromise is not None and instance._on_compromise != on_compromise:  # ruff: ignore[private-member-access]  # the metaclass owns the singleton it compares
+            elif on_compromise is not None and instance._losses.callback != on_compromise:  # ruff: ignore[private-member-access]  # the metaclass owns the singleton it compares
                 # A tuning difference keeps the first caller's values; a different loss callback is a different safety
                 # contract, and returning the cached instance would silently drop it.
                 msg = f"Singleton lock created with a different on_compromise callback for {lock_file!s}"
@@ -256,14 +258,19 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         # Resolved once: a relative lock path must keep naming the same log after the process changes directory. The
         # final component stays unresolved, as in 4.0.12, so every release shares one log on a symlinked lock path.
-        self._root = f"{_canonical(self.lock_file)}.rw"
-        self._files = OsFiles(self.lock_file)
-        self._ledger = Ledger(time.monotonic)
-        self._log = GenerationLog(self._files, self.lock_file, self._root)
-        self._on_compromise = on_compromise
+        root = f"{_canonical(self.lock_file)}.rw"
+        files = OsFiles(self.lock_file)
+        # The ledger and log outlive one acquisition, so every participant of this instance shares them.
+        self._new_participant: Final = partial(
+            Participant,
+            files,
+            root,
+            ledger=Ledger(time.monotonic),
+            log=GenerationLog(files, self.lock_file, root),
+        )
+        self._losses = _Losses(callback=on_compromise)
         self._locks = _Locks(internal=threading.Lock(), transaction=threading.Lock())
         self._hold: _Hold | None = None
-        self._compromise: LeaseCompromise | None = None
         self._closed: bool = False
 
         with _ALL_INSTANCES_LOCK:
@@ -321,7 +328,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         """
         with self._locks.internal:
-            return self._compromise
+            return self._losses.latest
 
     @classmethod
     def _reset_class_after_fork(cls) -> None:  # pragma: forked child
@@ -441,7 +448,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             raise RuntimeError(msg)
         # Publishing a hold clears the loss recorded for the one before, so a loss seen here is this hold's. Its
         # heartbeat has stopped and a peer may hold the lock, so a new level must not bypass the log.
-        if (compromise := self._compromise) is not None:
+        if (compromise := self._losses.latest) is not None:
             raise lost_hold_error(self.lock_file, mode, compromise)
         if mode == "read":
             hold.read_depths[holder] = hold.read_depths.get(holder, 0) + 1
@@ -460,15 +467,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         with self._locks.internal:
             if self._hold is not None:
                 return self._validate_reentrant(mode, holder)
-        participant = Participant(
-            self._files,
-            self._root,
-            mode,
-            stale_threshold=self.stale_threshold,
-            clock=time.monotonic,
-            ledger=self._ledger,
-            log=self._log,
-        )
+        participant = self._new_participant(mode, stale_threshold=self.stale_threshold, clock=time.monotonic)
         participant.publish()
         try:
             self._wait_for(participant.advance, deadline=deadline, blocking=blocking, cancel_check=cancel_check)
@@ -506,7 +505,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 start_error = self._closed_error()
             else:
                 self._hold = hold
-                self._compromise = None
+                self._losses.latest = None
                 try:
                     hold.heartbeat_thread.start()
                 except BaseException as error:  # ruff:ignore[blind-except]  # clear the slot below and re-raise
@@ -569,9 +568,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             compromise = LeaseCompromise(
                 lock_file=self.lock_file, token=hold.participant.token, reason=reason, error=error
             )
-            self._compromise = compromise
-        if self._on_compromise is not None:
-            self._on_compromise(compromise)
+            self._losses.latest = compromise
+        if self._losses.callback is not None:
+            self._losses.callback(compromise)
 
     def release(self, *, force: bool = False) -> None:
         """
@@ -790,6 +789,13 @@ def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None
         msg = f"poll_interval must be below stale_threshold ({stale_threshold}), got {poll_interval}"
         raise ValueError(msg)
     return _Intervals(heartbeat_interval, stale_threshold, poll_interval)
+
+
+@dataclass(slots=True, kw_only=True)
+class _Losses:
+    # The caller's handler for a lost hold and the latest loss, which stays readable until the next hold is published.
+    callback: Callable[[LeaseCompromise], None] | None
+    latest: LeaseCompromise | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -204,6 +204,7 @@ async def test_parked_caller_settles_a_head_whose_hand_off_was_lost(mocker: Mock
     async with asyncio.timeout(1):
         await second_entered.wait()
     await asyncio.gather(first_task, second_task)
+    assert calls > 1
 
 
 @pytest.mark.asyncio

@@ -315,7 +315,8 @@ if sys.platform == "win32":  # pragma: win32 cover
             unlock_fd(fd)
             self._mark_descriptor_released()
             self._close_released_fd(fd, default_suppresses=False)
-            if not self._preserve_lock_file:  # preserve_lock_file keeps a stable file identity for the caller (#605)
+            # preserve_lock_file keeps a stable file identity for the caller (#605)
+            if not self._settings.preserve_lock_file:
                 with suppress(OSError):
                     unlink_without_oplock_wait(self._lock_path)
 

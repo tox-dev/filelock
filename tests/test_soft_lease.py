@@ -62,6 +62,21 @@ def marker(tmp_path: Path) -> Path:
     return tmp_path / "a.lock"
 
 
+def test_lease_publishes_its_claim(marker: Path) -> None:
+    lease = _lease(marker)
+
+    with lease:
+        owner = lease.owner
+        assert owner is not None
+        assert (owner.pid, owner.hostname, owner.mode, owner.lease_duration) == (
+            os.getpid(),
+            host_name(),
+            "lease",
+            _DURATION,
+        )
+        assert owner.token == lease.token
+
+
 def _lease(
     marker: Path,
     *,
@@ -76,32 +91,6 @@ def _lease(
         heartbeat_interval=_HEARTBEAT,
         on_compromise=on_compromise,
     )
-
-
-class _Reports:
-    # Keeps the compromises a lease reports and wakes the test when the first one lands, instead of polling for it.
-    def __init__(self) -> None:
-        self.seen: list[LeaseCompromise] = []
-        self.landed: Final = Event()
-
-    def __call__(self, compromise: LeaseCompromise) -> None:
-        self.seen.append(compromise)
-        self.landed.set()
-
-
-def test_lease_publishes_its_claim(marker: Path) -> None:
-    lease = _lease(marker)
-
-    with lease:
-        owner = lease.owner
-        assert owner is not None
-        assert (owner.pid, owner.hostname, owner.mode, owner.lease_duration) == (
-            os.getpid(),
-            host_name(),
-            "lease",
-            _DURATION,
-        )
-        assert owner.token == lease.token
 
 
 def test_lease_token_names_the_claim_only_while_held(marker: Path) -> None:
@@ -174,14 +163,16 @@ def test_lease_heartbeat_keeps_a_live_claim_past_its_duration(marker: Path) -> N
             _lease(marker).acquire()
 
 
-def test_lease_heartbeat_uses_acquisition_directory(working_directories: tuple[Path, Path]) -> None:
+def test_lease_heartbeat_uses_acquisition_directory(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     first, second = working_directories
     compromised = Event()
     lease = SoftFileLease(
         "resource.lock", lease_duration=0.9, heartbeat_interval=0.05, on_compromise=lambda _: compromised.set()
     )
     with lease:
-        os.chdir(second)
+        monkeypatch.chdir(second)
         os.utime(first / "resource.lock", (0, 0))
 
         assert not compromised.wait(timeout=0.3)
@@ -265,6 +256,17 @@ def test_lease_reports_compromise_when_the_marker_vanishes(marker: Path) -> None
     assert [(c.reason, c.token, c.lock_file) for c in reports.seen] == [("marker-missing", token, str(marker))]
 
 
+class _Reports:
+    # Keeps the compromises a lease reports and wakes the test when the first one lands, instead of polling for it.
+    def __init__(self) -> None:
+        self.seen: list[LeaseCompromise] = []
+        self.landed: Final = Event()
+
+    def __call__(self, compromise: LeaseCompromise) -> None:
+        self.seen.append(compromise)
+        self.landed.set()
+
+
 @NEEDS_UNLINK_OPEN_FILE
 def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None:  # pragma: needs unlink-open-file
     reports = _Reports()
@@ -343,7 +345,8 @@ def test_lease_heartbeat_tolerates_one_refresh_under_a_peers_exchange(  # pragma
 
     def spy(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
         found: Final = lstat(path, dir_fd=dir_fd)
-        os.fspath(path) == str(marker) and refreshed.release()
+        if os.fspath(path) == str(marker):  # pragma: no branch  # guard: only the lease refresh calls lstat here
+            refreshed.release()
         return found
 
     with lease:

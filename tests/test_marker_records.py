@@ -192,6 +192,18 @@ def test_lease_ages_out_a_malformed_record(tmp_path: Path, mocker: MockerFixture
         lease.release()
 
 
+def _acquire_after_reclaim(lock: MarkerSoftFileLock) -> None:
+    # One poll per call: the first sees the marker, the second evicts a stale or aged-out one and the third takes the
+    # free path. Counting polls instead of timing them keeps a stalled runner from failing a reclaim that happens.
+    assert any(_polled_once_and_holds(lock) for _ in range(3)), "the marker was not reclaimed within three polls"
+
+
+def _polled_once_and_holds(lock: MarkerSoftFileLock) -> bool:
+    with suppress(Timeout):
+        lock.acquire(blocking=False)
+    return lock.is_locked
+
+
 def test_marker_pid_and_owner_are_none_without_marker(tmp_path: Path) -> None:
     lease = SoftFileLease(tmp_path / "a")
     assert (lease.pid, lease.owner, lease.is_lock_held_by_us) == (None, None, False)
@@ -282,6 +294,11 @@ def test_marker_lock_reclaims_dead_owner(marker: Path) -> None:
         lock.release()
 
 
+def _leave_marker(marker: Path) -> None:
+    with MarkerSoftFileLock(marker):
+        os._exit(0)
+
+
 @pytest.mark.timeout(_PROCESS_DEADLINE * 2)
 @NEEDS_STALE_RECLAIM
 def test_marker_lock_reclaims_dead_owner_before_its_process_is_closed(marker: Path) -> None:
@@ -323,23 +340,6 @@ def test_marker_lock_reclaims_malformed_record(marker: Path, record: str, mocker
         lock.release()
 
 
-def _acquire_after_reclaim(lock: MarkerSoftFileLock) -> None:
-    # One poll per call: the first sees the marker, the second evicts a stale or aged-out one and the third takes the
-    # free path. Counting polls instead of timing them keeps a stalled runner from failing a reclaim that happens.
-    assert any(_polled_once_and_holds(lock) for _ in range(3)), "the marker was not reclaimed within three polls"
-
-
-def _polled_once_and_holds(lock: MarkerSoftFileLock) -> bool:
-    with suppress(Timeout):
-        lock.acquire(blocking=False)
-    return lock.is_locked
-
-
 @pytest.fixture
 def marker(tmp_path: Path) -> Path:
     return tmp_path / "a"
-
-
-def _leave_marker(marker: Path) -> None:
-    with MarkerSoftFileLock(marker):
-        os._exit(0)

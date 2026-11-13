@@ -33,6 +33,16 @@ os.environ["PYTHONPATH"] = os.pathsep.join(
 _LockT = TypeVar("_LockT", bound=BaseFileLock)
 
 
+@contextmanager
+def held_after_reclaim(lock: _LockT) -> Generator[_LockT]:
+    # Hold *lock* through :func:`acquire_after_reclaim` and release it on exit.
+    acquire_after_reclaim(lock)
+    try:
+        yield lock
+    finally:
+        lock.release()
+
+
 def acquire_after_reclaim(lock: BaseFileLock) -> None:
     # Take a path whose stale marker the lock has to break first, without a wall-clock budget.
     #
@@ -44,16 +54,6 @@ def acquire_after_reclaim(lock: BaseFileLock) -> None:
             lock.acquire(blocking=False)
         if lock.is_locked:
             return
-
-
-@contextmanager
-def held_after_reclaim(lock: _LockT) -> Generator[_LockT]:
-    # Hold *lock* through :func:`acquire_after_reclaim` and release it on exit.
-    acquire_after_reclaim(lock)
-    try:
-        yield lock
-    finally:
-        lock.release()
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

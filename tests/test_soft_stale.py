@@ -99,10 +99,20 @@ def test_stale_lock_broken_when_process_dead(lock_path: Path, mocker: MockerFixt
     _assert_self_heals(lock_path)
 
 
+def _assert_self_heals(lock_path: Path) -> None:
+    with held_after_reclaim(SoftFileLock(lock_path)) as lock:
+        assert lock.is_locked
+
+
 def test_stale_lock_not_broken_when_process_alive(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(_holder(os.getpid()), encoding="utf-8")
     mocker.patch("filelock._identity.process_alive", return_value=True, autospec=True)
     _assert_times_out(lock_path)
+
+
+def _assert_times_out(lock_path: Path, *, timeout: float = 0.1) -> None:
+    with pytest.raises(TimeoutError):
+        SoftFileLock(lock_path, timeout=timeout).acquire()
 
 
 def test_stale_lock_not_broken_different_hostname(lock_path: Path) -> None:
@@ -217,6 +227,10 @@ def test_stale_break_restores_a_stranded_empty_marker(  # pragma: win32 no cover
         lock_type(lock).acquire(blocking=False)
 
     assert (lock.read_bytes(), list(tmp_path.glob("test.lock.break.*"))) == (b"", [])
+
+
+def _break_name(lock: Path, pid: int = _DEAD_PID) -> Path:  # pragma: win32 no cover
+    return lock.with_name(f"test.lock.break.{pid}.{'0' * 32}")
 
 
 def test_timeout_names_an_owner_that_recorded_no_pid(lock_path: Path) -> None:
@@ -356,10 +370,6 @@ def test_stale_break_keeps_the_lock_when_a_peer_swaps_its_marker_aside(  # pragm
     assert (lock.is_locked, lock.is_lock_held_by_us) == (True, True)
     lock.release()
     assert list(lock_path.parent.glob("test.lock*")) == []
-
-
-def _break_name(lock: Path, pid: int = _DEAD_PID) -> Path:  # pragma: win32 no cover
-    return lock.with_name(f"test.lock.break.{pid}.{'0' * 32}")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -1191,6 +1201,15 @@ def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixtur
     mock_read.assert_called()
 
 
+@_WINDOWS_ONLY
+def test_windows_stale_lock_uses_captured_process_error(  # pragma: win32 cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    _fail_open_process(mocker, _WIN_ERROR_INVALID_PARAMETER, _WIN_ERROR_ACCESS_DENIED)
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    _assert_self_heals(lock_path)
+
+
 def _fail_open_process(mocker: MockerFixture, captured_error: int, ambient_error: int) -> None:  # pragma: win32 cover
     if sys.platform != "win32":  # pragma: win32 cover  # narrows ctypes.windll for the type checker
         pytest.skip("windows-only")  # pragma: win32 no cover
@@ -1202,15 +1221,6 @@ def _fail_open_process(mocker: MockerFixture, captured_error: int, ambient_error
 
     # ctypes function pointers do not expose a Python signature for autospec.
     mocker.patch("filelock._identity._KERNEL32.OpenProcess", side_effect=fail_open_process, autospec=True)
-
-
-@_WINDOWS_ONLY
-def test_windows_stale_lock_uses_captured_process_error(  # pragma: win32 cover
-    lock_path: Path, mocker: MockerFixture
-) -> None:
-    _fail_open_process(mocker, _WIN_ERROR_INVALID_PARAMETER, _WIN_ERROR_ACCESS_DENIED)
-    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    _assert_self_heals(lock_path)
 
 
 @_WINDOWS_ONLY
@@ -1260,6 +1270,24 @@ def test_windows_process_probe_closes_handles(lock_path: Path) -> None:  # pragm
         assert _current_process_handle_count() <= handle_count + 5
     finally:
         lock.release()
+
+
+def _current_process_handle_count() -> int:  # pragma: win32 cover
+    if sys.platform != "win32":  # pragma: win32 cover
+        pytest.skip("windows-only")  # pragma: no cover  # only ever called on win32, so this guard never runs
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessHandleCount.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetProcessHandleCount.restype = wintypes.BOOL
+    count = wintypes.DWORD()
+    assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count)), ctypes.WinError(
+        ctypes.get_last_error()
+    )
+    return count.value
 
 
 def test_pid_without_a_lock_file(lock_path: Path) -> None:
@@ -1344,34 +1372,6 @@ def test_write_failure_rolls_back_acquire(lock_path: Path, mocker: MockerFixture
         lock.acquire()
     assert not lock.is_locked
     assert not lock_path.exists()
-
-
-def _assert_self_heals(lock_path: Path) -> None:
-    with held_after_reclaim(SoftFileLock(lock_path)) as lock:
-        assert lock.is_locked
-
-
-def _assert_times_out(lock_path: Path, *, timeout: float = 0.1) -> None:
-    with pytest.raises(TimeoutError):
-        SoftFileLock(lock_path, timeout=timeout).acquire()
-
-
-def _current_process_handle_count() -> int:  # pragma: win32 cover
-    if sys.platform != "win32":  # pragma: win32 cover
-        pytest.skip("windows-only")  # pragma: no cover  # only ever called on win32, so this guard never runs
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetCurrentProcess.argtypes = []
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.GetProcessHandleCount.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    kernel32.GetProcessHandleCount.restype = wintypes.BOOL
-    count = wintypes.DWORD()
-    assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count)), ctypes.WinError(
-        ctypes.get_last_error()
-    )
-    return count.value
 
 
 def _hold_reports_foreign_identity(mocker: MockerFixture) -> None:
@@ -1597,14 +1597,6 @@ def test_close_error_policy_cleans_marker(lock_path: Path, mocker: MockerFixture
     assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
-def test_close_error_suppress_policy_cleans_marker(lock_path: Path, mocker: MockerFixture) -> None:
-    lock = SoftFileLock(lock_path, close_error_policy="suppress")
-    lock.acquire()
-    with _close_after_commit(mocker, lock) as (_, attempts):
-        lock.release()
-    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
-
-
 @contextmanager
 def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[tuple[OSError, list[int]]]:
     real_close = os.close
@@ -1635,6 +1627,14 @@ def _close_after_commit(mocker: MockerFixture, lock: SoftFileLock) -> Generator[
         yield close_error, attempts
     finally:
         mocker.stop(close_mock)
+
+
+def test_close_error_suppress_policy_cleans_marker(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(lock_path, close_error_policy="suppress")
+    lock.acquire()
+    with _close_after_commit(mocker, lock) as (_, attempts):
+        lock.release()
+    assert (len(attempts), lock.is_locked, lock.lock_counter, lock_path.exists()) == (1, False, 0, False)
 
 
 def test_close_error_suppression_releases_nested_acquisitions_once(lock_path: Path, mocker: MockerFixture) -> None:

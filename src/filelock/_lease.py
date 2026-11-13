@@ -59,40 +59,6 @@ _RefreshOutcome = Literal["ok", "transient", "marker-missing", "owner-changed"]
 _DEFAULT_LEASE_DURATION: Final[float] = 30.0
 
 
-@dataclass(frozen=True)
-class LeaseCompromise:
-    """
-    Why a held lease stopped being this process's to hold, and the error that ended its refresh, if any.
-
-    :param lock_file: the path of the lock the lease was held on
-    :param token: the token of the claim that was lost
-    :param reason: what took the claim away: the marker vanished, its owner changed, a refresh failed, or it was evicted
-    :param error: the error that ended the refresh, when a refresh failed with one
-    """
-
-    lock_file: str
-    token: str
-    reason: CompromiseReason
-    error: Exception | None = None
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _Heartbeat:
-    # A running heartbeat and the event that stops it, which only ever exist together.
-    thread: Thread
-    stop: Event
-
-
-class LeaseClaim:
-    # The state of one claim: its token, its heartbeat, and how that claim was lost.
-    __slots__ = ("compromise", "heartbeat", "token")
-
-    def __init__(self) -> None:
-        self.token: str | None = None
-        self.compromise: LeaseCompromise | None = None
-        self.heartbeat: _Heartbeat | None = None
-
-
 class SoftFileLease(MarkerSoftFileLock):
     """
     Existence lock whose claim expires, so a peer may take it while the previous holder still runs.
@@ -357,6 +323,16 @@ class SoftFileLease(MarkerSoftFileLock):
         return None
 
 
+class LeaseClaim:
+    # The state of one claim: its token, its heartbeat, and how that claim was lost.
+    __slots__ = ("compromise", "heartbeat", "token")
+
+    def __init__(self) -> None:
+        self.token: str | None = None
+        self.compromise: LeaseCompromise | None = None
+        self.heartbeat: _Heartbeat | None = None
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _RefreshLoop:
     # What a heartbeat thread needs to refresh one claim, holding the lease itself only weakly.
@@ -419,6 +395,30 @@ class _RefreshLoop:
         except OSError as error:
             return "transient", error
         return "ok", None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Heartbeat:
+    # A running heartbeat and the event that stops it, which only ever exist together.
+    thread: Thread
+    stop: Event
+
+
+@dataclass(frozen=True)
+class LeaseCompromise:
+    """
+    Why a held lease stopped being this process's to hold, and the error that ended its refresh, if any.
+
+    :param lock_file: the path of the lock the lease was held on
+    :param token: the token of the claim that was lost
+    :param reason: what took the claim away: the marker vanished, its owner changed, a refresh failed, or it was evicted
+    :param error: the error that ended the refresh, when a refresh failed with one
+    """
+
+    lock_file: str
+    token: str
+    reason: CompromiseReason
+    error: Exception | None = None
 
 
 __all__ = [
