@@ -877,25 +877,25 @@ def recursive_lock(lock_file: str, mode: Literal["read", "write"], success_flag:
     lock = ReadWriteLock(lock_file)
     acquire = getattr(lock, f"{mode}_lock")
     with acquire():
-        assert lock._lock_level == 1
-        assert lock._current_mode == mode
+        assert lock._hold.level == 1
+        assert lock._hold.mode == mode
 
         with acquire():
-            assert lock._lock_level == 2
-            assert lock._current_mode == mode
+            assert lock._hold.level == 2
+            assert lock._hold.mode == mode
 
             with acquire():
-                assert lock._lock_level == 3
-                assert lock._current_mode == mode
+                assert lock._hold.level == 3
+                assert lock._hold.mode == mode
 
-            assert lock._lock_level == 2
-            assert lock._current_mode == mode
+            assert lock._hold.level == 2
+            assert lock._hold.mode == mode
 
-        assert lock._lock_level == 1
-        assert lock._current_mode == mode
+        assert lock._hold.level == 1
+        assert lock._hold.mode == mode
 
-    assert lock._lock_level == 0
-    assert lock._current_mode is None
+    assert lock._hold.level == 0
+    assert lock._hold.mode is None
 
     success_flag.value = 1
 

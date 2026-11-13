@@ -154,30 +154,30 @@ def test_init_sets_attributes(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, timeout=5.0, blocking=False, is_singleton=False)
     assert (lock.lock_file, lock.timeout) == (lock_file, pytest.approx(5.0))
     assert lock.blocking is False
-    assert lock._lock_level == 0
-    assert lock._current_mode is None
-    assert lock._write_thread_id is None
+    assert lock._hold.level == 0
+    assert lock._hold.mode is None
+    assert lock._hold.write_thread_id is None
     assert Path(lock_file).is_file()
 
 
 def test_acquire_release_read(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     proxy = lock.acquire_read()
-    assert (lock._lock_level, lock._current_mode) == (1, "read")
+    assert (lock._hold.level, lock._hold.mode) == (1, "read")
     lock.release()
-    assert lock._lock_level == 0
-    assert lock._current_mode is None
+    assert lock._hold.level == 0
+    assert lock._hold.mode is None
     assert isinstance(proxy, object)
 
 
 def test_acquire_release_write(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock.acquire_write()
-    assert (lock._lock_level, lock._current_mode, lock._write_thread_id) == (1, "write", threading.get_ident())
+    assert (lock._hold.level, lock._hold.mode, lock._hold.write_thread_id) == (1, "write", threading.get_ident())
     lock.release()
-    assert lock._lock_level == 0
-    assert lock._current_mode is None
-    assert lock._write_thread_id is None
+    assert lock._hold.level == 0
+    assert lock._hold.mode is None
+    assert lock._hold.write_thread_id is None
 
 
 @pytest.mark.parametrize(
@@ -192,11 +192,11 @@ def test_reentrant_lock(lock_file: str, mode: Literal["read", "write"]) -> None:
     acquire = getattr(lock, f"acquire_{mode}")
     acquire()
     acquire()
-    assert lock._lock_level == 2
+    assert lock._hold.level == 2
     lock.release()
-    assert (lock._lock_level, lock._current_mode) == (1, mode)
+    assert (lock._hold.level, lock._hold.mode) == (1, mode)
     lock.release()
-    assert lock._lock_level == 0
+    assert lock._hold.level == 0
 
 
 def test_upgrade_read_to_write_prohibited(lock_file: str) -> None:
@@ -232,19 +232,19 @@ def test_release_force_resets_level(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock.acquire_write()
     lock.acquire_write()
-    assert lock._lock_level == 2
+    assert lock._hold.level == 2
     lock.release(force=True)
-    assert lock._lock_level == 0
-    assert lock._current_mode is None
+    assert lock._hold.level == 0
+    assert lock._hold.mode is None
 
 
 def test_release_force_closes_lingering_connection_at_zero_level(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock.acquire_write()
-    lock._lock_level = 0
+    lock._hold.level = 0
     lock.release(force=True)
     assert lock._con is None
-    assert lock._lock_level == 0
+    assert lock._hold.level == 0
 
 
 @pytest.mark.parametrize(
@@ -257,9 +257,9 @@ def test_release_force_closes_lingering_connection_at_zero_level(lock_file: str)
 def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     with getattr(lock, f"{mode}_lock")():
-        assert (lock._lock_level, lock._current_mode) == (1, mode)
-    assert lock._lock_level == 0
-    assert lock._current_mode is None
+        assert (lock._hold.level, lock._hold.mode) == (1, mode)
+    assert lock._hold.level == 0
+    assert lock._hold.mode is None
 
 
 @pytest.mark.parametrize(
@@ -272,33 +272,33 @@ def test_lock_context_manager(lock_file: str, mode: Literal["read", "write"]) ->
 def test_lock_uses_instance_defaults(lock_file: str, mode: Literal["read", "write"]) -> None:
     lock = ReadWriteLock(lock_file, timeout=3.0, blocking=True, is_singleton=False)
     with getattr(lock, f"{mode}_lock")():
-        assert lock._current_mode == mode
+        assert lock._hold.mode == mode
 
 
 def test_read_lock_custom_timeout(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     with lock.read_lock(timeout=5.0):
-        assert lock._current_mode == "read"
+        assert lock._hold.mode == "read"
 
 
 def test_write_lock_custom_blocking(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     with lock.write_lock(blocking=True):
-        assert lock._current_mode == "write"
+        assert lock._hold.mode == "write"
 
 
 def test_read_lock_context_manager_overrides_defaults(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, timeout=10.0, blocking=False, is_singleton=False)
     with lock.read_lock(timeout=5.0, blocking=True):
-        assert lock._current_mode == "read"
+        assert lock._hold.mode == "read"
 
 
 def test_close_releases_lock_and_closes_connection(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     lock.acquire_write()
-    assert lock._lock_level == 1
+    assert lock._hold.level == 1
     lock.close()
-    assert lock._lock_level == 0
+    assert lock._hold.level == 0
     with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
         lock.acquire_read()
 
@@ -510,24 +510,24 @@ def test_timeout_read_expires(lock_file: str) -> None:
 def test_nested_read_context_managers(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     with lock.read_lock():
-        assert lock._lock_level == 1
+        assert lock._hold.level == 1
         with lock.read_lock():
-            assert lock._lock_level == 2
+            assert lock._hold.level == 2
             with lock.read_lock():
-                assert lock._lock_level == 3
-            assert lock._lock_level == 2
-        assert lock._lock_level == 1
-    assert lock._lock_level == 0
+                assert lock._hold.level == 3
+            assert lock._hold.level == 2
+        assert lock._hold.level == 1
+    assert lock._hold.level == 0
 
 
 def test_nested_write_context_managers(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     with lock.write_lock():
-        assert lock._lock_level == 1
+        assert lock._hold.level == 1
         with lock.write_lock():
-            assert lock._lock_level == 2
-        assert lock._lock_level == 1
-    assert lock._lock_level == 0
+            assert lock._hold.level == 2
+        assert lock._hold.level == 1
+    assert lock._hold.level == 0
 
 
 @pytest.mark.parametrize(
@@ -587,8 +587,8 @@ def test_double_check_read_reentrance(lock_file: str, mocker: MockerFixture) -> 
     mock_lock = mocker.create_autospec(real_lock)
 
     def fake_acquire(blocking: bool = True, timeout: float = -1) -> bool:
-        lock._lock_level = 1
-        lock._current_mode = "read"
+        lock._hold.level = 1
+        lock._hold.mode = "read"
         _fake_open_transaction(lock, mocker)
         return real_lock.acquire(blocking, timeout)
 
@@ -596,18 +596,18 @@ def test_double_check_read_reentrance(lock_file: str, mocker: MockerFixture) -> 
     mock_lock.release = real_lock.release
     lock._transaction_lock = mock_lock
     proxy = lock.acquire_read()
-    assert lock._lock_level == 2
+    assert lock._hold.level == 2
     assert proxy is not None
-    lock._lock_level = 0
-    lock._current_mode = None
-    lock._con, lock._connection_transaction_released = None, True
+    lock._hold.level = 0
+    lock._hold.mode = None
+    lock._owned_connection.connection, lock._owned_connection.transaction_released = None, True
     lock.release(force=True)
 
 
 def _fake_open_transaction(lock: ReadWriteLock, mocker: MockerFixture) -> None:
     # A level stands only while its transaction does, so a faked level needs a transaction behind it too.
-    lock._con = mocker.create_autospec(sqlite3.Connection, instance=True, in_transaction=True)
-    lock._connection_transaction_released = False
+    lock._owned_connection.connection = mocker.create_autospec(sqlite3.Connection, instance=True, in_transaction=True)
+    lock._owned_connection.transaction_released = False
 
 
 def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) -> None:
@@ -616,9 +616,9 @@ def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) ->
     mock_lock = mocker.create_autospec(real_lock)
 
     def fake_acquire(blocking: bool = True, timeout: float = -1) -> bool:
-        lock._lock_level = 1
-        lock._current_mode = "write"
-        lock._write_thread_id = threading.get_ident()
+        lock._hold.level = 1
+        lock._hold.mode = "write"
+        lock._hold.write_thread_id = threading.get_ident()
         _fake_open_transaction(lock, mocker)
         return real_lock.acquire(blocking, timeout)
 
@@ -626,12 +626,12 @@ def test_double_check_write_reentrance(lock_file: str, mocker: MockerFixture) ->
     mock_lock.release = real_lock.release
     lock._transaction_lock = mock_lock
     proxy = lock.acquire_write()
-    assert lock._lock_level == 2
+    assert lock._hold.level == 2
     assert proxy is not None
-    lock._lock_level = 0
-    lock._current_mode = None
-    lock._con, lock._connection_transaction_released = None, True
-    lock._write_thread_id = None
+    lock._hold.level = 0
+    lock._hold.mode = None
+    lock._owned_connection.connection, lock._owned_connection.transaction_released = None, True
+    lock._hold.write_thread_id = None
     lock.release(force=True)
 
 
@@ -654,8 +654,8 @@ def test_double_check_wrong_mode_raises(
     mock_lock = mocker.create_autospec(real_lock)
 
     def fake_acquire(blocking: bool = True, timeout: float = -1) -> bool:
-        lock._lock_level = 1
-        lock._current_mode = conflicting_mode
+        lock._hold.level = 1
+        lock._hold.mode = conflicting_mode
         _fake_open_transaction(lock, mocker)
         return real_lock.acquire(blocking, timeout)
 
@@ -664,15 +664,15 @@ def test_double_check_wrong_mode_raises(
     lock._transaction_lock = mock_lock
     with pytest.raises(RuntimeError, match=match):
         getattr(lock, f"acquire_{acquire_mode}")()
-    lock._lock_level = 0
-    lock._current_mode = None
-    lock._con, lock._connection_transaction_released = None, True
+    lock._hold.level = 0
+    lock._hold.mode = None
+    lock._owned_connection.connection, lock._owned_connection.transaction_released = None, True
 
 
 def test_write_lock_context_manager_overrides_defaults(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, timeout=10.0, blocking=False, is_singleton=False)
     with lock.write_lock(timeout=5.0, blocking=True):
-        assert lock._current_mode == "write"
+        assert lock._hold.mode == "write"
 
 
 @pytest.mark.parametrize(
@@ -785,8 +785,8 @@ def test_finish_connection_chains_rollback_then_close_error(lock_file: str, mock
     )
     con.rollback.side_effect = sqlite3.OperationalError("rollback boom")
     con.close.side_effect = sqlite3.OperationalError("close boom")
-    lock._con = con
-    lock._connection_transaction_released = False
+    lock._owned_connection.connection = con
+    lock._owned_connection.transaction_released = False
 
     with pytest.raises(sqlite3.OperationalError, match="close boom") as excinfo:
         lock._finish_connection()
@@ -802,7 +802,7 @@ def test_finish_connection_skips_rollback_when_already_released(lock_file: str) 
     lock.acquire_write()
     con = lock._con
     assert con is not None
-    lock._connection_transaction_released = True
+    lock._owned_connection.transaction_released = True
 
     lock._finish_connection()
 
