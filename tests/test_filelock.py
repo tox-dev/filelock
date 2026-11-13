@@ -3337,13 +3337,13 @@ def _signal_poll(polling: threading.Event) -> bool:
 
 @pytest.mark.parametrize("lock_type", [SoftFileLock, MarkerSoftFileLock, SoftFileLease])
 def test_relative_release_uses_acquisition_directory(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first, second = working_directories
     lock = lock_type("resource.lock")
     lock.acquire()
 
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock:  # re-entry joins the hold, so it keeps that hold's path
         pass
     lock.release()
@@ -3421,14 +3421,14 @@ def test_reentrant_acquire_after_directory_rename(
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_each_acquisition_resolves_the_working_directory(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, second = working_directories
     lock = lock_type("resource.lock")
     with lock:
         pass
 
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock:
         assert (lock.lock_file, (second / "resource.lock").exists()) == ("resource.lock", True)
 
@@ -3438,7 +3438,7 @@ def test_each_acquisition_resolves_the_working_directory(
 )  # pragma: win32 no cover
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_acquire_without_working_directory_leaves_no_hold(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     lock: Final[BaseFileLock] = lock_type("resource.lock")
     working_directories[0].rmdir()
@@ -3446,7 +3446,7 @@ def test_acquire_without_working_directory_leaves_no_hold(
     with pytest.raises(FileNotFoundError):
         lock.acquire()
     second: Final[Path] = working_directories[1]
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock:
         assert (lock.lock_counter, lock.is_locked, (second / "resource.lock").exists()) == (1, True, True)
 
@@ -3458,7 +3458,7 @@ def test_acquire_without_working_directory_leaves_no_hold(
 )  # pragma: win32 no cover
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_nested_acquire_without_working_directory_preserves_hold(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     lock: Final[BaseFileLock] = lock_type("resource.lock")
     lock.acquire()
@@ -3470,18 +3470,18 @@ def test_nested_acquire_without_working_directory_preserves_hold(
         lock.acquire()
     assert (lock.lock_counter, lock.is_locked) == (1, True)
 
-    os.chdir(working_directories[1])
+    monkeypatch.chdir(working_directories[1])
     lock.release()
     assert (lock.lock_counter, lock.is_locked) == (0, False)
 
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_singleton_after_chdir_locks_the_requested_file(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first, second = working_directories
     relative = lock_type("resource.lock", is_singleton=True)
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock_type(first / "resource.lock", is_singleton=True):
         assert ((first / "resource.lock").exists(), (second / "resource.lock").exists()) == (True, False)
     del relative
@@ -3489,12 +3489,12 @@ def test_singleton_after_chdir_locks_the_requested_file(
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_singleton_held_before_chdir_re_enters_by_absolute_path(
-    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first, second = working_directories
     held = lock_type("resource.lock", is_singleton=True)
     held.acquire()
-    os.chdir(second)
+    monkeypatch.chdir(second)
     with lock_type(first / "resource.lock", is_singleton=True) as again:
         assert (again is held, held.lock_counter) == (True, 2)
     held.release(force=True)

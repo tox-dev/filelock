@@ -735,12 +735,14 @@ def _signal_poll(polling: asyncio.Event) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_async_relative_release_uses_acquisition_directory(working_directories: tuple[Path, Path]) -> None:
+async def test_async_relative_release_uses_acquisition_directory(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     first, second = working_directories
     lock = AsyncSoftFileLock("resource.lock")
     await lock.acquire()
 
-    os.chdir(second)
+    monkeypatch.chdir(second)
     await lock.release()
 
     assert not (first / "resource.lock").exists()
@@ -749,12 +751,12 @@ async def test_async_relative_release_uses_acquisition_directory(working_directo
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
 async def test_async_singleton_held_before_chdir_re_enters_by_absolute_path(
-    lock_type: type[BaseAsyncFileLock], working_directories: tuple[Path, Path]
+    lock_type: type[BaseAsyncFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first, second = working_directories
     held = lock_type("resource.lock", is_singleton=True)
     await held.acquire()
-    os.chdir(second)
+    monkeypatch.chdir(second)
     async with lock_type(first / "resource.lock", is_singleton=True) as again:
         assert (again is held, held.lock_counter) == (True, 2)
     await held.release(force=True)
