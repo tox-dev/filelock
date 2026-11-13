@@ -999,7 +999,6 @@ def test_writer_evicted_while_draining_queues_behind_its_evictor(
         swapped.set()
         # The peer evicts the draining writer and takes the slot; the reader leaves so only the slot blocks the writer.
         log = GenerationLog(OsFiles(lock_file), lock_file, f"{lock_file}.rw")
-        latest = log.latest()
         peer.append(_plant_holder(lock_file, mode="read"))
         latest = log.latest()
         assert log.commit(Snapshot(generation=latest.generation + 1, writer=peer[0], readers=frozenset()))
