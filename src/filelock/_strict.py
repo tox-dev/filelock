@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -101,7 +102,7 @@ _CLAIM_READ_GRACE: Final[float] = 0.5
 _CLAIM_READ_RETRY: Final[float] = 0.002
 #: Rides out a peer replacing the lock path mid-inspection; a foreign node or unreadable record outlasting it is damage.
 _SENTINEL_READ_GRACE: Final[float] = 0.5
-_NODE_DESCRIPTIONS: Final[dict[int, str]] = {stat.S_IFDIR: "a directory", stat.S_IFLNK: "a symlink"}
+_NODE_DESCRIPTIONS: Final[MappingProxyType[int, str]] = MappingProxyType({stat.S_IFDIR: "a directory", stat.S_IFLNK: "a symlink"})
 #: Windows opens descriptors in text mode by default, which rewrites newlines and truncates a record at a control byte.
 #: The claim and sentinel records are exact binary, so every record descriptor must be binary; POSIX ignores the flag.
 _O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)
@@ -706,7 +707,7 @@ def _parse_claim(
         pid = int(pid_text)
         start = int(start_text) if start_text else None
         hostname = bytes.fromhex(hostname_hex).decode("utf-8")
-    except (UnicodeDecodeError, ValueError) as error:
+    except ValueError as error:
         raise SoftFileLockProtocolError(lock_file, name, "malformed claim record") from error
     if not all((
         not trailing,

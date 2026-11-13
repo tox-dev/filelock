@@ -603,7 +603,7 @@ async def test_async_soft_close_after_a_sync_end_of_the_shared_singleton_returns
 
     await lock.close()
 
-    assert _members(tmp_path, "foo.lock") == []
+    assert _members(tmp_path) == []
 
 
 @pytest.mark.asyncio

@@ -343,7 +343,8 @@ def test_lease_heartbeat_tolerates_one_refresh_under_a_peers_exchange(  # pragma
 
     def spy(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
         found: Final = lstat(path, dir_fd=dir_fd)
-        os.fspath(path) == str(marker) and refreshed.release()
+        if os.fspath(path) == str(marker):
+            refreshed.release()
         return found
 
     with lease:

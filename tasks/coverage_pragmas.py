@@ -14,6 +14,7 @@ List this after covdefaults in ``[tool.coverage] run.plugins``; both merge into 
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, cast
 
 from capabilities import CAPABILITIES
@@ -58,7 +59,7 @@ class _CapabilityPragmas(CoveragePlugin):
 
 
 #: Modules a missing capability makes unrunnable in full; marking every line would restate one module-level gate.
-_CAPABILITY_MODULES: Final[dict[str, tuple[str, ...]]] = {
+_CAPABILITY_MODULES: Final[MappingProxyType[str, tuple[str, ...]]] = MappingProxyType({
     "posix-hard-link": (
         "*/tests/test_read_write_private_link.py",
         "*\\tests\\test_read_write_private_link.py",
@@ -73,7 +74,7 @@ _CAPABILITY_MODULES: Final[dict[str, tuple[str, ...]]] = {
         "*/filelock/_soft_rw/*.py",
         "*\\filelock\\_soft_rw\\*.py",
     ),
-}
+})
 
 #: A forked child exits through os._exit without writing coverage data, so no job in the matrix can see these.
 _ALWAYS_EXCLUDED: Final[tuple[str, ...]] = (r"# pragma: forked child\b",)

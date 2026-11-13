@@ -1086,7 +1086,7 @@ def test_short_attempts_still_evict_a_dead_holder(lock_file: str) -> None:
     # How long a peer's record has stayed unchanged is knowledge the lock keeps across attempts: a caller whose every
     # attempt is shorter than the stale threshold (a retry loop, blocking=False) must still get past a crashed holder.
     _plant_holder(lock_file, mode="write")
-    lock = _make_lock(lock_file, heartbeat_interval=0.1, stale_threshold=0.3)
+    lock = _make_lock(lock_file, stale_threshold=0.3)
     try:
 
         def attempt() -> bool:
@@ -1239,7 +1239,7 @@ def test_foreign_host_holder_is_evicted_after_the_stale_threshold(lock_file: str
     # The report behind #725: a pod dies on another host holding the lock, and a replacement pod under a different
     # hostname must still get in. Liveness is a nonce that stopped changing, so the hostname plays no part in it.
     _plant_holder(lock_file, mode="write")
-    lock = _make_lock(lock_file, heartbeat_interval=0.1, stale_threshold=0.3)
+    lock = _make_lock(lock_file, stale_threshold=0.3)
     try:
         started = time.monotonic()
         with pytest.raises(Timeout):
@@ -1327,7 +1327,7 @@ def test_a_contender_waiting_when_the_log_is_removed_starts_over(
 def test_malformed_holder_record_is_evicted(lock_file: str) -> None:
     # A record that cannot be parsed still identifies nobody who refreshes it, so it ages out like any other.
     Path(f"{lock_file}.rw", "holders", _plant_holder(lock_file, mode="write")).write_bytes(b"\x00garbage")
-    lock = _make_lock(lock_file, heartbeat_interval=0.1, stale_threshold=0.3)
+    lock = _make_lock(lock_file, stale_threshold=0.3)
     try:
         with lock.write_lock(timeout=5):
             pass

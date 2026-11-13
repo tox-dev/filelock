@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import gc
 import os
 import pickle  # ruff:ignore[suspicious-pickle-import]  # round-trip uses bytes produced in this test
@@ -2146,6 +2147,7 @@ def test_strict_soft_claim_removed_between_inspection_and_open_is_skipped(
     claim: Final = _write_held_claim(Path(f"{tmp_path / 'resource.lock'}.filelock") / "claims")
 
     def remove_after_inspection(inspect: _Inspect) -> _Inspect:
+        @functools.wraps(inspect)
         def inspect_then_remove(path: _PathValue, **options: int | bool | None) -> os.stat_result:
             found = inspect(path, **options)
             # Windows inspects nothing else in this scan; with dir_fd the claim directory is stat-ed too.
@@ -2214,6 +2216,7 @@ def test_strict_soft_coordination_directory_swapped_for_a_junction_leaves_target
     swapped: list[bool] = []
 
     def swap_after_the_inspection(inspect: _Inspect) -> _Inspect:
+        @functools.wraps(inspect)
         def inspect_then_swap(path: _PathValue, **options: int | bool | None) -> os.stat_result:
             # The name was a real directory at inspection; by the time the lock creates claims in it, it is a junction.
             found = inspect(path, **options)

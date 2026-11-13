@@ -294,13 +294,13 @@ def test_timeout_behavior(lock_file: str) -> None:
         writer.start()
         assert write_acquired.wait(timeout=_PROCESS_DEADLINE), "Write lock not acquired"
 
-        start_time = time.time()
+        start_time = time.perf_counter()
         reader.start()
 
         assert not read_acquired.wait(timeout=1), "Read lock should not be acquired"
         reader.join(timeout=_PROCESS_DEADLINE)
 
-        elapsed = time.time() - start_time
+        elapsed = time.perf_counter() - start_time
         assert 0.4 <= elapsed <= 10.0, f"Timeout was not respected: {elapsed}s"
 
         release_write.set()
@@ -318,12 +318,12 @@ def test_non_blocking_behavior(lock_file: str) -> None:
         writer.start()
         assert write_acquired.wait(timeout=_PROCESS_DEADLINE), "Write lock not acquired"
 
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         with pytest.raises(Timeout):
             ReadWriteLock(lock_file).acquire_read(blocking=False)
 
-        elapsed = time.time() - start_time
+        elapsed = time.perf_counter() - start_time
 
         assert elapsed < 0.1, f"Non-blocking took too long: {elapsed}s"
 
