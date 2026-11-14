@@ -12,12 +12,12 @@ A platform independent file lock that supports the with-statement.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast  # simplint: ignore[init-module-content]  # lazy import spec
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from importlib.machinery import ModuleSpec
 
-__spec__ = cast("ModuleSpec", __spec__)  # simplint: ignore[init-module-content]  # lazy import spec
+__spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [
     "importlib",
@@ -26,13 +26,13 @@ __lazy_modules__ = [
     f"{__spec__.parent}._error",
 ]
 
-import sys  # simplint: ignore[init-module-content]  # lazy root API
-import warnings  # simplint: ignore[init-module-content]  # lazy root API
-from importlib import import_module  # simplint: ignore[init-module-content]  # lazy root API
-from typing import TYPE_CHECKING, Final  # simplint: ignore[init-module-content]  # lazy root API
+import sys
+import warnings
+from importlib import import_module
+from typing import TYPE_CHECKING, Final
 
 # Keeps ``filelock.version`` the string 4.0.12 exposed rather than the submodule.
-from filelock.version import version  # simplint: ignore[init-module-content]  # lazy root API
+from filelock.version import version
 
 from ._api import (
     AcquireReturnProxy,
@@ -52,7 +52,7 @@ from ._error import (
     Timeout,
 )
 from ._unix import UnixFileLock
-from ._unix import (  # simplint: ignore[init-module-content]  # lazy root API
+from ._unix import (
     has_fcntl as _has_fcntl,
 )
 from ._windows import WindowsFileLock
@@ -97,7 +97,7 @@ if TYPE_CHECKING:
     )
 
 #: version of the project as a string
-__version__: Final[str] = version  # simplint: ignore[init-module-content]  # lazy root API
+__version__: Final[str] = version
 
 #: ``True`` when :func:`fcntl.flock` is available. Off Windows, :data:`FileLock` then resolves to
 #: :class:`UnixFileLock`, otherwise to :class:`SoftFileLock`. Always ``False`` on Windows.

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast  # simplint: ignore[init-module-content]  # lazy import spec
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from importlib.machinery import ModuleSpec
 
-__spec__ = cast("ModuleSpec", __spec__)  # simplint: ignore[init-module-content]  # lazy import spec
+__spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [f"{__spec__.parent}._async", f"{__spec__.parent}._sync"]
 
