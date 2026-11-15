@@ -581,6 +581,22 @@ def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_del_survives_module_teardown(
+    lock_type: type[BaseFileLock], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # At interpreter shutdown, module teardown can set filelock._api's globals to None before a dropped lock is
+    # finalized. __del__ must not reach them then, or CPython prints an ignored AttributeError on every exit.
+    lock: Final = lock_type(str(tmp_path / "a"))
+    lock.acquire()
+    with monkeypatch.context() as patch:
+        patch.setattr(filelock._api, "os", None)  # simplint: ignore[private-import-path]  # mimics module teardown
+        patch.setattr(filelock._api, "sys", None)  # simplint: ignore[private-import-path]  # mimics module teardown
+        lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
+    lock.release(force=True)
+    assert not lock.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize(
     "drop",
     [

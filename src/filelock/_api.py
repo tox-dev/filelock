@@ -1488,14 +1488,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 finally:
                     context.current = own
 
-    def __del__(self) -> None:
+    def __del__(
+        self, _getpid: Callable[[], int] = os.getpid, _is_finalizing: Callable[[], bool] = sys.is_finalizing
+    ) -> None:
         """Force-release so a dropped reference never leaks a held lock, including every thread's hold."""
-        if self.__dict__.get("_creator_pid") != os.getpid():
+        # Bound at definition: module teardown at interpreter shutdown can set this module's globals to None first.
+        if self.__dict__.get("_creator_pid") != _getpid():
             return  # pragma: forked child
         # CPython runs __del__ before it clears weak references. Until then the singleton cache still hands this lock
         # out, and a thread that takes a hold through it would lose that hold to a release here. The cycle collector
         # clears the references first, and at exit no other thread runs.
-        if (key := self._singleton_key) is not None and not sys.is_finalizing() and self._instances.get(key) is self:
+        if (key := self._singleton_key) is not None and not _is_finalizing() and self._instances.get(key) is self:
             self._release_once_unreachable()
         else:
             self._release_abandoned_holds()
