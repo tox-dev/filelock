@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
-from capabilities import CAPABILITIES
+from capabilities import CAPABILITIES, _lists_every_open_descriptor
 
+from tests.capability_marks import NEEDS_FCNTL
 from tests.descriptor_helpers import descriptors_on
 
 if TYPE_CHECKING:
@@ -29,3 +31,31 @@ def test_descriptors_on_probes_every_number_behind_an_incomplete_directory(  # p
             os.close(second)
         assert descriptors_on(node) == 1
     assert descriptors_on(node) == 0
+
+
+@NEEDS_FCNTL
+@pytest.mark.skipif(not CAPABILITIES["fd-directory"], reason="counting open descriptors needs a /dev/fd view")
+def test_descriptors_on_counts_a_descriptor_numbered_above_the_static_nodes(  # pragma: needs fd-directory
+    tmp_path: Path,
+) -> None:
+    # typeshed hides fcntl's members off POSIX, so state the invariant the capability gate already enforces.
+    assert sys.platform != "win32"
+    import fcntl
+
+    with (tmp_path / "held").open("w+b") as first:
+        node = os.fstat(first.fileno())
+        high = fcntl.fcntl(first.fileno(), fcntl.F_DUPFD, 100)
+        try:
+            assert descriptors_on(node) == 2
+        finally:
+            os.close(high)
+
+
+def test_complete_fd_directory_probe_rejects_a_static_view(tmp_path: Path) -> None:
+    for number in range(64):
+        (tmp_path / str(number)).touch()
+    assert _lists_every_open_descriptor(str(tmp_path)) is False
+
+
+def test_complete_fd_directory_probe_needs_a_view() -> None:
+    assert _lists_every_open_descriptor(None) is False
