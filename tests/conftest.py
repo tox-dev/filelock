@@ -34,6 +34,17 @@ os.environ["PYTHONPATH"] = os.pathsep.join(
 _LockT = TypeVar("_LockT", bound=BaseFileLock)
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    if sys.implementation.name == "graalpy":  # pragma: no cover  # only GraalPy's semaphore finalizer raises this
+        # GraalPy keeps a fork-context semaphore's name after the immediate unlink, so its finalizer unlinks it again
+        # and fails with ENOENT. pytest's warning names only the finalizer object, not the function, so this matches
+        # every dead finalizer on GraalPy. Upstream: https://github.com/oracle/graalpython/issues/1316
+        config.addinivalue_line(
+            "filterwarnings",
+            "ignore:Exception ignored in.+<Finalize object, dead>:pytest.PytestUnraisableExceptionWarning",
+        )
+
+
 @contextmanager
 def held_after_reclaim(lock: _LockT) -> Generator[_LockT]:
     # Hold *lock* through :func:`acquire_after_reclaim` and release it on exit.
