@@ -48,7 +48,7 @@ def break_then_hang_after_exchange(
         go.wait()
         exchange(source, target)
         exchanged.set()
-        while True:
+        while True:  # pragma: no cover  # the test kills this child, and the kill can land before this line is traced
             time.sleep(_REAP_DEADLINE)  # simplint: ignore[sleep-in-test]  # a blocked lock wait can swallow SIGTERM
 
     with pytest.MonkeyPatch.context() as patch:
