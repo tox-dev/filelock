@@ -484,7 +484,7 @@ def acquire_lock_and_crash(lock_file: str, mode: Literal["read", "write"], acqui
     lock = ReadWriteLock(lock_file)  # pragma: win32 no cover
     with getattr(lock, f"{mode}_lock")():  # pragma: win32 no cover
         acquired_event.set()
-        while True:  # pragma: win32 no cover
+        while True:  # pragma: no cover  # the test kills this child, and the kill can land before this line is traced
             time.sleep(0.1)  # simplint: ignore[sleep-in-test]  # a blocked lock wait can swallow SIGTERM
 
 
