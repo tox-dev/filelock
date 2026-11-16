@@ -2077,6 +2077,7 @@ class _ForkState:
         self.pinned_objects: dict[int, list[tuple[_ForkResettable, ...]]] = {}
         self.pinned_classes: dict[int, list[tuple[_ForkResettableClass, ...]]] = {}
         self.provisional_descriptor_tokens: dict[int, list[tuple[int, ...]]] = {}
+        self.undrained_forks: set[int] = set()
         self.pid = os.getpid()
 
     def reset_synchronization(self) -> None:  # pragma: forked child
@@ -2098,6 +2099,8 @@ _OWNED_DESCRIPTORS: Final[dict[int, _OwnedDescriptor]] = {}
 _DESCRIPTOR_TOKENS: Final[count[int]] = count()
 _TRANSITION_TOKENS: Final[count[int]] = count()
 _FORK_STATE: Final[_ForkState] = _ForkState()
+# A transition still open after this long has an owner that cannot finish it, so it must not hold every fork back.
+_FORK_DRAIN_TIMEOUT: Final[float] = 30.0
 _FORK_AUDIT_EVENTS: Final[frozenset[str]] = frozenset({"os.fork", "os.forkpty"})
 # CPython before 3.12 guards sys.settrace with one process-wide flag that stays set while audit hooks run, so a thread
 # switch inside a Python hook makes a concurrent settrace raise. Coverage and debuggers call it on every thread start.
@@ -2138,8 +2141,11 @@ def _pin_fork_objects() -> None:  # pragma: needs fork
         with _FORK_STATE.gate:
             _FORK_STATE.fork_owner_depths[thread_id] = _FORK_STATE.fork_owner_depths.get(thread_id, 0) + 1
             _FORK_STATE.admission_closed = True
-            while _FORK_STATE.active_transitions > len(_FORK_STATE.transitions.get(thread_id, ())):
-                _FORK_STATE.gate.wait()
+            if not _FORK_STATE.gate.wait_for(
+                lambda: _FORK_STATE.active_transitions <= len(_FORK_STATE.transitions.get(thread_id, ())),
+                timeout=_FORK_DRAIN_TIMEOUT,
+            ):
+                _FORK_STATE.undrained_forks.add(thread_id)
             transition_owners = tuple(_FORK_STATE.transitions.get(thread_id, {}).values())
         with _FORK_STATE.registry_lock:
             for token, descriptor in tuple(_OWNED_DESCRIPTORS.items()):
@@ -2192,6 +2198,7 @@ def _resume_parent_after_fork() -> None:  # pragma: needs fork
             else:  # pragma: no cover - earlier at-fork callbacks may deadlock first
                 _FORK_STATE.fork_owner_depths[thread_id] = depth - 1
             _FORK_STATE.admission_closed = bool(_FORK_STATE.fork_owner_depths)
+            _FORK_STATE.undrained_forks.discard(thread_id)
             _FORK_STATE.gate.notify_all()
 
 
@@ -2203,6 +2210,9 @@ def _reset_child_after_fork() -> None:  # pragma: forked child
     if (pid := os.getpid()) == _FORK_STATE.pid:
         return
     thread_id = get_ident()
+    if thread_id in _FORK_STATE.undrained_forks:
+        os.write(2, b"filelock: fork child exits: another thread was still changing a lock's descriptor ownership\n")
+        os._exit(70)  # the inherited descriptor state is unsafe; the parent continues
     pinned_objects = _FORK_STATE.pinned_objects.get(thread_id, [()])[-1]
     pinned_classes = _FORK_STATE.pinned_classes.get(thread_id, [()])[-1]
     descriptors: list[_OwnedDescriptor] = []

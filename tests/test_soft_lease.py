@@ -1102,3 +1102,33 @@ def test_lease_takes_over_a_dead_owners_marker_with_its_own_lease_record(  # pra
         )
     finally:
         lease.release()
+
+
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+def test_lease_dropped_on_its_heartbeat_thread_is_released_there(marker: Path, mocker: MockerFixture) -> None:
+    # The last reference drops on the heartbeat thread, so __del__ releases the lease there. It must finish without
+    # waiting on that thread's own stop event.
+    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    holder: list[SoftFileLease] = []
+    heartbeats: list[Thread] = []
+
+    def drop_the_last_reference(_: LeaseCompromise) -> None:
+        heartbeats.append(threading.current_thread())
+        holder.clear()
+
+    lease = SoftFileLease(
+        str(marker),
+        is_singleton=False,
+        thread_local=False,
+        lease_duration=_DURATION,
+        heartbeat_interval=_HEARTBEAT,
+        on_compromise=drop_the_last_reference,
+    )
+    holder.append(lease)
+    del lease
+    holder[0].acquire()
+
+    _wait_until(lambda: bool(heartbeats))
+    heartbeats[0].join(_DEADLINE)
+
+    assert not heartbeats[0].is_alive()

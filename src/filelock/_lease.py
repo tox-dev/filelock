@@ -223,11 +223,15 @@ class SoftFileLease(MarkerSoftFileLock):
         claim = self._claim
         if (heartbeat := claim.heartbeat) is None:
             return
-        heartbeat.stop.set()
         claim.heartbeat = None
-        # An unstarted thread has nothing to join, on_compromise may release from the heartbeat thread itself, and
-        # during finalization a daemon thread is frozen, so joining it raises PythonFinalizationError (3.14+).
-        if heartbeat.thread.ident is not None and heartbeat.thread is not current_thread() and not sys.is_finalizing():
+        # A finalizer can release the lease on its own heartbeat thread while that thread holds the stop event's lock
+        # inside wait(), so set() would wait on itself forever. The loop checks the cleared token before each refresh.
+        if heartbeat.thread is current_thread():
+            return
+        heartbeat.stop.set()
+        # An unstarted thread has nothing to join, and during finalization a daemon thread is frozen, so joining it
+        # raises PythonFinalizationError (3.14+).
+        if heartbeat.thread.ident is not None and not sys.is_finalizing():
             heartbeat.thread.join(timeout=self._heartbeat_interval)
 
     def _start_heartbeat(self, claim: LeaseClaim, fd: int, identity: tuple[int, int], token: str) -> None:
@@ -236,8 +240,9 @@ class SoftFileLease(MarkerSoftFileLock):
         stop: Final = Event()
         loop: Final = _RefreshLoop(
             # A strong reference from a running thread would keep a dropped lease alive, so __del__ would never release
-            # it and its marker would outlive the process. The callback stops a heartbeat that __del__ could not reach.
-            report=WeakMethod(self._report_compromise, lambda _: stop.set()),
+            # it and its marker would outlive the process. The callback clears the token rather than setting the stop
+            # event, since it can run on the heartbeat thread from inside wait().
+            report=WeakMethod(self._report_compromise, lambda _: setattr(claim, "token", None)),
             lock_file=self._lock_path,
             claim=claim,
             fd=fd,
@@ -350,7 +355,7 @@ class _RefreshLoop:
         # A transient error (ESTALE / EIO on the NFS-style filesystems a lease targets) is not a loss. Like restic, call
         # the claim unrefreshable once failures run long enough that a contender could take it before the next success.
         last_success, missing = time.monotonic(), False
-        while not self.stop.wait(self.interval):
+        while not self.stop.wait(self.interval) and self.claim.token == self.token:
             outcome, error = self._refresh()
             if outcome == "ok":
                 last_success, missing = time.monotonic(), False

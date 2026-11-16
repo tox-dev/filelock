@@ -8,7 +8,7 @@ import sys
 import threading
 from errno import EBADF
 from queue import Queue
-from typing import TYPE_CHECKING, Final, Literal, NoReturn
+from typing import TYPE_CHECKING, Final, Literal, NoReturn, cast
 
 import pytest
 
@@ -489,3 +489,39 @@ sys.exit(os.waitstatus_to_exitcode(status))
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@NEEDS_FORK  # pragma: needs fork
+@_FORK_WARNING
+def test_fork_child_exits_when_another_threads_transition_never_drains(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: win32 no cover
+    mocker.patch("filelock._api._FORK_DRAIN_TIMEOUT", 0.1)
+    entered: Final = threading.Event()
+    never: Final = threading.Event()
+
+    class StuckReleaseLock(BaseFileLock):
+        def _acquire(self) -> None:
+            self._context.lock_file_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+
+        def _release(self) -> None:
+            entered.set()
+            never.wait()
+            os.close(cast("int", self._context.lock_file_fd))
+            self._context.lock_file_fd = None
+
+    lock = StuckReleaseLock(str(tmp_path / "stuck.lock"), is_singleton=False, thread_local=False)
+    lock.acquire()
+    releaser = threading.Thread(target=lock.release, daemon=True)
+    releaser.start()
+    try:
+        assert entered.wait(timeout=5)
+        child_pid = os.fork()
+        if child_pid == 0:  # pragma: forked child
+            os._exit(0)
+        _, status = os.waitpid(child_pid, 0)
+    finally:
+        never.set()
+        releaser.join(timeout=5)
+
+    assert os.waitstatus_to_exitcode(status) == 70
