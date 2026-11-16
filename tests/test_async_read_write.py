@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 import pytest_asyncio
 
-from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, XFAIL_WITHOUT_COROUTINE_CANCELLATION
+from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, NEEDS_GC_OBJECTS, XFAIL_WITHOUT_COROUTINE_CANCELLATION
 from tests.read_write_helpers import (
     ACQUIRE_SETTINGS,
     INVALID_TIMEOUTS,
@@ -1033,6 +1033,7 @@ async def test_async_close_that_fails_before_any_acquire_leaves_the_wrapper_clos
         await lock.acquire_read()
 
 
+@NEEDS_GC_OBJECTS
 @pytest.mark.asyncio
 async def test_async_reads_giving_up_behind_a_writer_leave_nothing_behind(lock_file: str) -> None:
     lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)

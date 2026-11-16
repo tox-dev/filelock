@@ -1710,11 +1710,30 @@ def test_close_error_spares_successor_marker(lock_path: Path, mocker: MockerFixt
 
 @NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 def test_released_record_write_error_spares_successor_marker(lock_path: Path, mocker: MockerFixture) -> None:
+    holder: Final = _release_over_a_successor_marker(lock_path)
+    mocker.patch("filelock._soft.write_at_start", side_effect=PermissionError(EACCES, "record denied"), autospec=True)
+
+    holder.release()
+
+    assert not holder.is_locked
+    assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
+
+
+def _release_over_a_successor_marker(lock_path: Path) -> SoftFileLock:  # pragma: needs unlink-open-file
     holder: Final = SoftFileLock(lock_path)
     holder.acquire()
     lock_path.unlink()
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    mocker.patch("filelock._soft.os.pwrite", side_effect=PermissionError(EACCES, "record denied"), autospec=True)
+    return holder
+
+
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+def test_released_record_rewrite_error_spares_successor_marker_without_pwrite(
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    holder: Final = _release_over_a_successor_marker(lock_path)
+    mocker.patch("os.pwrite", new=None, create=True)
+    mocker.patch("filelock._util.os.write", side_effect=PermissionError(EACCES, "record denied"), autospec=True)
 
     holder.release()
 

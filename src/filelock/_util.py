@@ -322,6 +322,21 @@ def _exchange_until_aside(lock_file: str, aside: str, own: os.stat_result) -> bo
     return True
 
 
+def write_at_start(fd: int, data: bytes) -> None:  # pragma: win32 no cover
+    # Overwrite the start of *fd* with *data*. GraalPy 25.4.4 has no os.pwrite, so there the descriptor is rewound and
+    # written instead. Nothing reads the offset that leaves behind: the caller truncates and closes the descriptor next.
+    #
+    # :param fd: file descriptor open for writing.
+    # :param data: bytes to write at offset zero.
+    #
+    # :raises OSError: if the write fails.
+    if (pwrite := getattr(os, "pwrite", None)) is not None:
+        pwrite(fd, data, 0)
+    else:
+        os.lseek(fd, 0, os.SEEK_SET)
+        write_all(fd, data)
+
+
 def foreign_directory_owner(directory: os.stat_result, parent: os.stat_result) -> int | None:
     # Return the uid that owns *directory* when another account controls it under a sticky parent.
     #
@@ -403,4 +418,5 @@ __all__ = [
     "touch",
     "unlink_path",
     "write_all",
+    "write_at_start",
 ]

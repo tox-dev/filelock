@@ -56,6 +56,7 @@ from ._util import (
     raise_on_not_writable_file,
     remove_own_file,
     write_all,
+    write_at_start,
 )
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -569,7 +570,8 @@ class SoftFileLock(BaseFileLock):
                 # lets contenders age it out instead of waiting on this live PID. The write comes before the truncate
                 # so the file is never empty.
                 if sys.platform != "win32":  # pragma: win32 no cover
-                    os.pwrite(fd, released := b"filelock/released\n", 0)
+                    released: Final = b"filelock/released\n"
+                    write_at_start(fd, released)
                     os.ftruncate(fd, len(released))
             except OSError:
                 return False
