@@ -142,13 +142,19 @@ class OsFiles:
             finally:
                 os.close(fd)
         else:
-            # Without dir_fd, hold each of those directories open instead, so no process can rename or replace one.
+            # Without dir_fd, Windows holds each directory open so no process can rename or replace one. Elsewhere
+            # nothing is held, so the owner of what the names resolve to is checked on every call.
+            directories = [Path(path), *Path(path).parents][:depth][::-1]
             try:
-                pins = pin_directories(*[Path(path), *Path(path).parents][:depth][::-1])
+                pins = pin_directories(*directories)
             except NotADirectoryError as error:  # pragma: win32 cover
                 msg = f"{error.filename} is not a directory or is a symlink; refusing to use it"
                 raise TreeReplacedError(msg) from error
             with pins:
+                for directory in directories:
+                    if (owner := foreign_directory_owner(directory.lstat(), directory.parent.stat())) is not None:
+                        msg = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
+                        raise TreeReplacedError(msg)
                 yield None
 
     def _admit(self, fd: int, path: str, parent_fd: int | None) -> None:  # pragma: needs link-dir-fd

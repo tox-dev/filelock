@@ -243,6 +243,7 @@ def test_prepare_creates_missing_parents(tmp_path: Path) -> None:
 
 
 @NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.parametrize("name_only", [pytest.param(False, id="descriptors"), pytest.param(True, id="names")])
 @pytest.mark.parametrize(
     "call",
     [
@@ -253,8 +254,9 @@ def test_prepare_creates_missing_parents(tmp_path: Path) -> None:
     ],
 )
 def test_record_operations_recheck_the_owner_of_a_replaced_directory(  # pragma: needs foreign-sticky-tmp
-    lock_path_in_shared_tmp: Path, mocker: MockerFixture, call: Callable[[OsFiles, str], object]
+    lock_path_in_shared_tmp: Path, mocker: MockerFixture, call: Callable[[OsFiles, str], object], name_only: bool
 ) -> None:
+    mocker.patch.object(storage_mod, "_SUPPORTS_DIR_FD", new=not name_only and storage_mod._SUPPORTS_DIR_FD)
     files = OsFiles(str(lock_path_in_shared_tmp))
     files.prepare(root := f"{lock_path_in_shared_tmp}.rw")
     Path(root).rename(aside := f"{root}.aside")
@@ -268,3 +270,15 @@ def test_record_operations_recheck_the_owner_of_a_replaced_directory(  # pragma:
         assert list(Path(root, "holders").iterdir()) == []
     finally:
         shutil.rmtree(aside, ignore_errors=True)
+
+
+def test_record_operations_round_trip_without_dir_fd(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch.object(storage_mod, "_SUPPORTS_DIR_FD", new=False)
+    files = OsFiles(str(tmp_path / "x.lock"))
+    files.prepare(str(tmp_path / "x.lock.rw"))
+    record: Final = str(tmp_path / "x.lock.rw" / "holders" / "record")
+    files.create(record, b"data")
+    assert files.read(record) == b"data"
+    assert files.listdir(str(Path(record).parent)) == ["record"]
+    files.unlink(record)
+    assert files.read(record) is None
