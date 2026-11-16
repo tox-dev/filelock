@@ -3299,12 +3299,10 @@ def test_singleton_shares_across_windows_drive_case(tmp_path: Path, lock_type: t
 def test_windows_drive_case_does_not_bypass_deadlock_detection(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
     lock_path = tmp_path / "Resource.lock"
     drive, tail = os.path.splitdrive(lock_path)
-    canceled = threading.Event()
-    canceled.set()
     with lock_type(lock_path):
         other = lock_type(drive.swapcase() + tail)
         with pytest.raises(RuntimeError, match="Deadlock"):
-            other.acquire(cancel_check=canceled.is_set)
+            other.acquire(cancel_check=lambda: True)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows drive letters are case-insensitive")  # pragma: win32 cover

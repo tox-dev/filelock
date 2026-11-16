@@ -109,7 +109,8 @@ the same file polls forever instead of raising; give that acquire a timeout.
 Detection compares path spellings after resolving the parent directory, not the files they name. Two spellings that one
 filesystem maps to the same file, such as ``Work.lock`` and ``work.lock`` on a case-insensitive volume (APFS and NTFS
 by default) or the NFC and NFD forms of an accented name on APFS, count as different locks: the second acquire waits
-forever instead of raising. ``is_singleton=True`` keys on the same spelling, so spell each lock path one way.
+forever instead of raising. ``is_singleton=True`` keys on the same spelling, so spell each lock path one way. Both
+checks ignore the case of a Windows drive or UNC share prefix, so ``C:\work.lock`` and ``c:\work.lock`` are one lock.
 
 ************************
  How file locking works
