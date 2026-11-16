@@ -1037,6 +1037,9 @@ fresh ones and marks the instance fork-invalidated. ``release()`` on an invalida
 inherited ``with lock.read_lock():`` block can unwind in the child without raising. The child must construct a
 fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMongo's connection-pool semantics.
 
+Forking waits up to 30 seconds for lock-state changes already running in other threads. If one is still running at the
+deadline, the child exits with status 70 rather than inherit a half-finished descriptor state; the parent continues.
+
 **Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
 permissions can exclude another UID. Under a sticky parent such as ``/tmp``, acquisition raises :class:`RuntimeError`
 when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent. The refusal
