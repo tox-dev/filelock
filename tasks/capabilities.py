@@ -327,14 +327,19 @@ def _has_a_sticky_tmp_of_another_user() -> bool:
     return bool(tmp.st_mode & stat.S_ISVTX) and tmp.st_uid != os.geteuid()
 
 
-def _lists_every_open_descriptor() -> bool:
+def _lists_every_open_descriptor(view: str | None) -> bool:
     # FreeBSD's devfs and NetBSD provide only the standard streams under /dev/fd until fdescfs is mounted, so a listing
-    # there misses every descriptor a test opened.
-    view: Final = next((view for view in ("/dev/fd", "/proc/self/fd") if Path(view).is_dir()), None)
+    # there misses every descriptor a test opened. NetBSD's static nodes also keep a closed descriptor listed, so the
+    # probe has to disappear once closed as well.
+    if view is None:
+        return False
     with Path(os.devnull).open("rb") as probe:
-        return view is not None and Path(view, str(probe.fileno())).exists()
+        number: Final = probe.fileno()
+        listed: Final = Path(view, str(number)).exists()
+    return listed and not Path(view, str(number)).exists()
 
 
+_FD_VIEW: Final[str | None] = next((view for view in ("/dev/fd", "/proc/self/fd") if Path(view).is_dir()), None)
 _LINK_FOLLOW_SYMLINKS: Final[bool] = _honors_link_follow_symlinks()
 
 
@@ -363,8 +368,8 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "audit-events": _delivers_audit_events(),
     "settrace-safe-audit-hooks": _survives_settrace_inside_audit_hook(),
     "profile-interrupted-generator-finishes": _finishes_a_generator_a_profile_hook_interrupts_on_resume(),
-    "fd-directory": any(Path(view).is_dir() for view in ("/dev/fd", "/proc/self/fd")),
-    "complete-fd-directory": _lists_every_open_descriptor(),
+    "fd-directory": _FD_VIEW is not None,
+    "complete-fd-directory": _lists_every_open_descriptor(_FD_VIEW),
     "fifo": hasattr(os, "mkfifo"),
     "foreign-sticky-tmp": _has_a_sticky_tmp_of_another_user(),
     "af-unix": hasattr(socket, "AF_UNIX"),
