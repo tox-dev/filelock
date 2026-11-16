@@ -201,121 +201,80 @@ def test_lock_excludes_opposite_mode(
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 8)
 def test_write_non_starvation(lock_file: str) -> None:
-    # A writer that joins after the first reader must acquire before the reader chain drains.
-    #
-    # Seven readers overlap in a chain and the writer contends mid-chain. It should win the lock while readers still
-    # hold it, so it is not starved.
-    NUM_READERS: Final[int] = 7
+    # A waiting writer must acquire before any reader that arrives after it, even while earlier readers hold the lock.
+    # Every phase waits on an event, so the outcome does not depend on how long a process takes to start.
+    NUM_EARLY_READERS: Final[int] = 2
+    NUM_LATE_READERS: Final[int] = 5
 
-    chain_forward = [Event() for _ in range(NUM_READERS)]
-    chain_backward = [Event() for _ in range(NUM_READERS)]
-    writer_ready = Event()
+    early_acquired = [Event() for _ in range(NUM_EARLY_READERS)]
+    early_release = [Event() for _ in range(NUM_EARLY_READERS)]
+    late_announced = [Event() for _ in range(NUM_LATE_READERS)]
     writer_contending = Event()
     writer_acquired = Event()
+    writer_release = Event()
+    late_entries = Value("i", 0)
 
-    release_count = Value("i", 0)
-
-    next_readers: Final = [*chain_forward[1:], None]
-    prev_or_writers: Final = [writer_ready, *chain_backward[:-1]]
-    readers = []
-    for idx in range(NUM_READERS):
-        reader = Process(
-            target=chain_reader,
-            args=(
-                idx,
-                lock_file,
-                release_count,
-                chain_forward[idx],
-                chain_backward[idx],
-                next_readers[idx],
-                prev_or_writers[idx],
-            ),
-        )
-        readers.append(reader)
-
-    # The last reader holds until its own wait expires, since the test only releases the chain once the writer is in,
-    # so the writer has to outwait that hold rather than time out first.
+    early = [
+        Process(target=acquire_lock, args=(lock_file, "read", early_acquired[idx], early_release[idx]))
+        for idx in range(NUM_EARLY_READERS)
+    ]
+    late = [
+        Process(target=_late_reader, args=(lock_file, late_announced[idx], late_entries))
+        for idx in range(NUM_LATE_READERS)
+    ]
     writer = Process(
         target=acquire_lock,
-        args=(lock_file, "write", writer_acquired, None, _PROCESS_DEADLINE * 2, True, writer_ready, writer_contending),
+        args=(
+            lock_file,
+            "write",
+            writer_acquired,
+            writer_release,
+            _PROCESS_DEADLINE * 2,
+            True,
+            None,
+            writer_contending,
+        ),
     )
 
-    with cleanup_processes([*readers, writer]):
-        for reader in readers:
+    prober = ReadWriteLock(lock_file, is_singleton=False)
+    with cleanup_processes([*early, *late, writer]):
+        for reader in early:
             reader.start()
-
-        chain_forward[0].set()
-
-        assert writer_ready.wait(timeout=_PROCESS_DEADLINE), "First reader did not acquire lock"
-
-        # Count only the releases the writer actually waited through; a slow interpreter start is not starvation.
-        # The contending event says the writer process booted, not that its write intent reached the database, and
-        # only the intent bars new readers. The probe observes that boundary: a non-blocking read acquire times out
-        # exactly once the intent is registered, so the count starts there. Probing before the writer exists pins
-        # the still-pending arc, which the loop alone cannot promise: on a fast host the first in-loop probe
-        # already times out.
-        prober = ReadWriteLock(lock_file, is_singleton=False)
-        probe_deadline = time.monotonic() + _PROCESS_DEADLINE
-        assert _write_intent_pending(prober, probe_deadline)
+        for acquired in early_acquired:
+            assert acquired.wait(timeout=_PROCESS_DEADLINE), "Early reader did not acquire lock"
+        assert _write_intent_pending(prober, time.monotonic() + _PROCESS_DEADLINE)
 
         writer.start()
-
         assert writer_contending.wait(timeout=_PROCESS_DEADLINE), "Writer process did not reach the lock"
-        while _write_intent_pending(prober, probe_deadline):  # pragma: no branch  # exits at the writer's speed
+        probe_deadline = time.monotonic() + _PROCESS_DEADLINE
+        while _write_intent_pending(prober, probe_deadline):  # pragma: no branch  # exits once the intent blocks reads
             pass  # pragma: no cover  # runs only when the first probe precedes the writer's intent
         prober.close()
-        with release_count.get_lock():
-            releases_before_contending = release_count.value
 
+        for reader in late:
+            reader.start()
+        for announced in late_announced:
+            assert announced.wait(timeout=_PROCESS_DEADLINE), "Late reader did not start"
+
+        for release in early_release:
+            release.set()
         assert writer_acquired.wait(timeout=_PROCESS_DEADLINE * 2), "Writer couldn't acquire lock - possible starvation"
+        with late_entries.get_lock():
+            admitted = late_entries.value
+        assert admitted == 0, f"{admitted} readers arrived after the writer and got in before it"
 
-        with release_count.get_lock():
-            read_releases = release_count.value - releases_before_contending
-
-        assert read_releases < 3, f"Writer acquired after {read_releases} readers released - this indicates starvation"
-
+        writer_release.set()
         writer.join(timeout=_PROCESS_DEADLINE)
         assert not writer.is_alive(), "Writer did not exit cleanly"
-
-        for event in chain_backward:
-            event.set()
-
-        for idx, reader in enumerate(readers):
+        for idx, reader in enumerate([*early, *late]):
             reader.join(timeout=_PROCESS_DEADLINE)
             assert not reader.is_alive(), f"Reader {idx} did not exit cleanly"
 
 
-def chain_reader(
-    reader_index: int,
-    lock_file: str,
-    release_count: Synchronized[int],
-    start_signal: EventType,
-    release_signal: EventType,
-    next_reader_signal: EventType | None,
-    writer_or_prev_signal: EventType,
-) -> None:
-    start_signal.wait(timeout=_PROCESS_DEADLINE)
-
-    with ReadWriteLock(lock_file).read_lock():
-        if reader_index > 0:
-            time.sleep(  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
-                2
-            )  # overlap with earlier readers so the writer contends mid-chain
-
-        if next_reader_signal is not None:
-            next_reader_signal.set()
-
-        if reader_index == 0:
-            time.sleep(  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
-                1
-            )  # hold briefly before releasing the writer
-
-        writer_or_prev_signal.set()
-
-        release_signal.wait(timeout=_PROCESS_DEADLINE)
-
-        with release_count.get_lock():
-            release_count.value += 1
+def _late_reader(lock_file: str, announced: EventType, entries: Synchronized[int]) -> None:
+    announced.set()
+    with ReadWriteLock(lock_file).read_lock(), entries.get_lock():
+        entries.value += 1
 
 
 def _write_intent_pending(prober: ReadWriteLock, deadline: float) -> bool:
