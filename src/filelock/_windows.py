@@ -463,7 +463,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             err = ctypes.get_last_error()
             _KERNEL32.CloseHandle(handle)
             raise ctypes.WinError(err)
-        if info.dwFileAttributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+        if info.dwFileAttributes & _FILE_ATTRIBUTE_REPARSE_POINT:  # pragma: needs symlink
             _KERNEL32.CloseHandle(handle)
             msg = f"Lock file is a reparse point (symlink/junction): {path}"
             raise OSError(msg)
