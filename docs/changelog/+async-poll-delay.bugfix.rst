@@ -1,3 +1,2 @@
-:class:`~filelock.asyncio.BaseAsyncFileLock` now invokes the ``_poll_delay`` hook and tracks attempt counts
-during contended acquisitions, ensuring consistent backoff behavior and hook customization across sync and async
-locks.
+:class:`~filelock.asyncio.AsyncStrictSoftFileLock` with a ``poll_interval`` below 0.05 seconds now spreads contended
+retries across a jittered, widening window like :class:`~filelock.StrictSoftFileLock`, instead of a fixed interval.
