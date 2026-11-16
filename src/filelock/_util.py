@@ -322,7 +322,7 @@ def _exchange_until_aside(lock_file: str, aside: str, own: os.stat_result) -> bo
     return True
 
 
-def write_at_start(fd: int, data: bytes) -> None:
+def write_at_start(fd: int, data: bytes) -> None:  # pragma: win32 no cover
     # Overwrite the start of *fd* with *data*. GraalPy 25.4.4 has no os.pwrite, so there the descriptor is rewound and
     # written instead. Nothing reads the offset that leaves behind: the caller truncates and closes the descriptor next.
     #

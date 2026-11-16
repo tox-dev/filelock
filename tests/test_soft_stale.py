@@ -1719,7 +1719,7 @@ def test_released_record_write_error_spares_successor_marker(lock_path: Path, mo
     assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
 
 
-def _release_over_a_successor_marker(lock_path: Path) -> SoftFileLock:
+def _release_over_a_successor_marker(lock_path: Path) -> SoftFileLock:  # pragma: needs unlink-open-file
     holder: Final = SoftFileLock(lock_path)
     holder.acquire()
     lock_path.unlink()

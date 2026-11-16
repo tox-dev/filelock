@@ -151,7 +151,7 @@ class OsFiles:
                 msg = f"{error.filename} is not a directory or is a symlink; refusing to use it"
                 raise TreeReplacedError(msg) from error
             with pins:
-                for directory in directories:
+                for directory in directories:  # pragma: needs foreign-sticky-tmp
                     if (owner := foreign_directory_owner(directory.lstat(), directory.parent.stat())) is not None:
                         msg = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
                         raise TreeReplacedError(msg)
