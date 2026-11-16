@@ -340,7 +340,8 @@ def test_threaded_shared_lock_obj(lock_type: type[BaseFileLock], tmp_path: Path)
         for _ in range(10):
             with lock:
                 holders.append(name)
-                time.sleep(0)  # give up the GIL so an overlapping holder has a chance to show in the slot
+                # GraalPy 25.4.4 sleeps up to a second for int 0 and returns at once for 0.0
+                time.sleep(0.0)  # give up the GIL so an overlapping holder has a chance to show in the slot
                 assert holders == [name]
                 assert lock.is_locked
                 holders.pop()
@@ -403,7 +404,8 @@ def test_threaded_lock_different_lock_obj(lock_type: type[BaseFileLock], tmp_pat
         for _ in range(100):
             with lock:
                 holders.append(name)
-                time.sleep(0)  # give up the GIL so an overlapping holder has a chance to show in the slot
+                # GraalPy 25.4.4 sleeps up to a second for int 0 and returns at once for 0.0
+                time.sleep(0.0)  # give up the GIL so an overlapping holder has a chance to show in the slot
                 assert holders == [name]
                 assert lock.is_locked
                 holders.pop()
