@@ -516,8 +516,9 @@ def test_fork_child_exits_when_another_threads_transition_never_drains(
     releaser.start()
     try:
         assert entered.wait(timeout=5)
+        assert sys.platform != "win32"  # narrows os.fork for the type checker
         child_pid = os.fork()
-        if child_pid == 0:  # pragma: forked child
+        if child_pid == 0:  # pragma: forked child  # simplint: ignore[conditional-in-test]  # exits before cleanup
             os._exit(0)
         _, status = os.waitpid(child_pid, 0)
     finally:
