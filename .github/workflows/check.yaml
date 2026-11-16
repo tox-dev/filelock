@@ -87,9 +87,10 @@ jobs:
           retention-days: 3
   graalpy:
     name: "🧪 Test graalpy3.13 - ubuntu-24.04 (weekly)"
-    # GraalPy 25.4.4 can freeze every thread at once under the threaded lock tests, so it stays off pull requests and
-    # pushes. A weekly run keeps the capability probes the suite gates on honest on a second runtime. It runs on one
-    # Linux job because those probes are a per-OS answer, and unmeasured, so the 100% gate stays CPython's.
+    # GraalPy 25.4.4 sleeps up to a second for time.sleep(0) with an int, so every GIL yield in the threaded lock tests
+    # could cost a second, and the weekly run exceeded its timeout. The job stays off pull requests and pushes. A weekly
+    # run keeps the capability probes the suite gates on honest on a second runtime. It runs on one Linux job because
+    # those probes are a per-OS answer, and unmeasured, so the 100% gate stays CPython's.
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '51 11 * * 1'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
