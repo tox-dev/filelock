@@ -381,6 +381,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "link-follow-symlinks": _LINK_FOLLOW_SYMLINKS,
     "posix-hard-link": sys.platform != "win32" and _LINK_FOLLOW_SYMLINKS,
     "tracemalloc-object-traceback": _reports_object_tracebacks(),
+    "gc-objects": hasattr(gc, "get_objects"),
     # Only the tox env that installs a released filelock sets this.
     "old-client": bool(os.environ.get("FILELOCK_OLD_CLIENT_PATH")),
 }

@@ -95,6 +95,10 @@ NEEDS_COLLECTED_FINALIZATION: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     reason="gc.collect() does not run __del__ on this runtime",
 )
 
+NEEDS_GC_OBJECTS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    not CAPABILITIES["gc-objects"], reason="counting live objects needs gc.get_objects"
+)
+
 NEEDS_CLASS_COLLECTION: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["class-collection"],
     reason="gc.collect() does not reclaim classes instantiated through a custom metaclass",
