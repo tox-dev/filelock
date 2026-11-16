@@ -18,6 +18,7 @@ import filelock._identity  # simplint: ignore[private-import-path]  # tests inte
 from filelock import BaseFileLock, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name
 from tests.descriptor_helpers import descriptors_on
+from tests.fork_helpers import exit_child
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -65,6 +66,17 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         for item in items:
             if item.get_closest_marker("requires_hard_links") is not None:
                 item.add_marker(skip)
+
+
+# Captured at import, before any test forks, so a fork child can tell it is not the session.
+_SESSION_PID: Final[int] = os.getpid()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> None:  # pragma: needs fork
+    if (pid := os.getpid()) != _SESSION_PID:
+        os.write(2, f"fork child {pid} escaped into pytest at {item.nodeid} ({call.when})\n".encode())
+        exit_child(70)
 
 
 @pytest.fixture(autouse=True, scope="session")

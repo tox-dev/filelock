@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import traceback
 from typing import TYPE_CHECKING, Final, NoReturn, cast
 
 from capabilities import CAPABILITIES
@@ -32,8 +33,13 @@ def fork_process(child: Callable[[], NoReturn]) -> int:  # pragma: win32 no cove
         msg = "os.fork is unavailable"
         raise RuntimeError(msg)
     child_pid = _FORK()
-    if child_pid == 0:  # pragma: win32 no cover
-        child()  # pragma: no cover - child coverage starts after fork returns to this frame
+    if child_pid == 0:  # pragma: forked child
+        # A child that raises or returns must never resume the parent's test run.
+        try:
+            child()
+        except BaseException:
+            traceback.print_exc()
+        exit_child(70)
     return child_pid
 
 
