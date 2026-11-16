@@ -589,7 +589,9 @@ async def test_poll_wait_stays_within_timeout(tmp_path: Path, lock_type: type[Ba
 
 @pytest.mark.requires_hard_links
 @pytest.mark.asyncio
-async def test_strict_contention_backs_off_across_a_widening_window(tmp_path: Path, mocker: MockerFixture) -> None:
+async def test_strict_contention_backs_off_across_a_widening_window(  # pragma: needs hard-link
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
     # The widest draw makes each retry wait out its whole window, which doubles from poll_interval up to the cap.
     windows = mocker.patch("filelock._api.secrets.randbelow", side_effect=lambda bound: bound - 1, autospec=True)
     sleep = mocker.spy(filelock.asyncio.asyncio, "sleep")
