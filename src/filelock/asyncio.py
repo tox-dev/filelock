@@ -25,7 +25,6 @@ import contextlib
 import functools
 import logging
 import os
-import sys
 import time
 from concurrent import futures
 from dataclasses import dataclass, field, fields
@@ -66,6 +65,9 @@ from ._api import (
 )
 from ._api import (
     grouped_errors as _grouped_errors,
+)
+from ._api import (
+    interpreter_exiting as _interpreter_exiting,
 )
 from ._api import (
     is_system_call_failure as _is_system_call_failure,
@@ -848,7 +850,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 # At interpreter exit daemon threads no longer run, so a loop running in one never runs the release.
-                if (loop := self._async_context.loop) is None or loop.is_closed() or sys.is_finalizing():
+                if (loop := self._async_context.loop) is None or loop.is_closed() or _interpreter_exiting():
                     self._release_without_loop()
                     return
                 if not loop.is_running():

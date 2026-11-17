@@ -44,6 +44,7 @@ from filelock import (
     SoftFileLease,
     SoftFileLock,
     SoftFileLockProtocolError,
+    SoftReadWriteLock,
     StrictSoftFileLock,
     Timeout,
     UnixFileLock,
@@ -578,6 +579,26 @@ def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     assert lock_2.is_locked
 
     lock_2.release()
+
+
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        pytest.param(FileLock, id="native"),
+        pytest.param(SoftFileLock, id="soft"),
+        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links, id="strict"),
+    ],
+)
+def test_lock_held_at_exit_is_released_silently(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    # Module teardown at shutdown empties the globals the release path reads, so a lock still referenced at exit
+    # must be released before it, without printing an ignored exception.
+    lock_path = tmp_path / "a.lock"
+    script = f"import sys, filelock; sys.held = filelock.{lock_type.__name__}({str(lock_path)!r}); sys.held.acquire()"
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+
+    assert not result.stderr
+    with lock_type(lock_path).acquire(timeout=0):
+        pass
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -1436,10 +1457,9 @@ def test_singleton_locks_are_deleted_when_no_external_references_exist(
     lock_type: type[BaseFileLock],
     tmp_path: Path,
 ) -> None:
-    lock_path = tmp_path / "a"
-    lock = lock_type(str(lock_path), is_singleton=True)
+    lock = lock_type(str(tmp_path / "a"), is_singleton=True)
 
-    assert lock_type._instances == {str(lock_path): lock}
+    assert list(lock_type._instances.values()) == [lock]
     del lock
     assert lock_type._instances == {}
 
@@ -3272,6 +3292,45 @@ def test_singleton_shares_across_equivalent_spellings(tmp_path: Path) -> None:
         assert absolute is dot is dotdot  # one instance for equivalent spellings of one path
     finally:
         absolute.release(force=True)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows drive letters are case-insensitive")  # pragma: win32 cover
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_singleton_shares_across_windows_drive_case(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
+    lock_path = tmp_path / "Resource.lock"
+    lock_path.touch()
+    drive, tail = os.path.splitdrive(lock_path)
+    alternate = Path(drive.swapcase() + tail)
+    assert alternate.samefile(lock_path)
+    lock_path.unlink()
+    original = lock_type(lock_path, is_singleton=True)
+    other = lock_type(alternate, is_singleton=True)
+    try:
+        assert original is other
+        with original, other.acquire(timeout=0):
+            assert original.lock_counter == 2
+    finally:
+        original.release(force=True)
+        other.release(force=True)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows drive letters are case-insensitive")  # pragma: win32 cover
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_windows_drive_case_does_not_bypass_deadlock_detection(tmp_path: Path, lock_type: type[BaseFileLock]) -> None:
+    lock_path = tmp_path / "Resource.lock"
+    drive, tail = os.path.splitdrive(lock_path)
+    with lock_type(lock_path):
+        other = lock_type(drive.swapcase() + tail)
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            other.acquire(cancel_check=lambda: True)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows drive letters are case-insensitive")  # pragma: win32 cover
+def test_soft_rw_singleton_shares_across_windows_drive_case(tmp_path: Path) -> None:
+    lock_path = tmp_path / "Resource.lock"
+    drive, tail = os.path.splitdrive(lock_path)
+    original = SoftReadWriteLock(lock_path)
+    assert SoftReadWriteLock(drive.swapcase() + tail) is original
 
 
 @NEEDS_PARENT_SYMLINK_COLLAPSE  # pragma: win32 no cover
