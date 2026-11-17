@@ -337,24 +337,25 @@ def write_at_start(fd: int, data: bytes) -> None:  # pragma: win32 no cover
         write_all(fd, data)
 
 
-def foreign_directory_owner(directory: os.stat_result, parent: os.stat_result) -> int | None:
-    # Return the uid that owns *directory* when another account controls it under a sticky parent.
+def foreign_owner(node: os.stat_result, parent: os.stat_result) -> int | None:
+    # Return the uid that owns *node* when another account controls it under a sticky parent.
     #
-    # A lock that keeps its ownership records in a directory relies on them staying in place. The sticky bit (a
+    # A lock relies on its file, or the directory holding its ownership records, staying in place. The sticky bit (a
     # directory flag that lets only a file's owner remove it) on a parent such as ``/tmp`` stops other accounts from
-    # renaming the directory away. A directory that this account or the parent's owner owns is therefore safe there.
+    # renaming or removing the node. One that this account or the parent's owner owns is therefore safe there.
     #
-    # One that another account owns is outside the lock's control. Without the sticky bit, any process that can create
-    # the directory can also rename this account's own one away, so a refusal there would change nothing.
+    # One that another account owns is outside the lock's control: its owner can remove it while the lock is held.
+    # Without the sticky bit, any process that can create the node can also remove this account's own one, so a refusal
+    # there would change nothing.
     #
     # Linux applies the same rule for ``fs.protected_regular``.
     #
-    # :param directory: ``lstat`` of the directory found in place.
+    # :param node: ``lstat`` or ``fstat`` of the file or directory found in place.
     # :param parent: ``stat`` of the directory that holds it.
     #
-    # :returns: the owning uid when another account controls the directory, otherwise ``None``.
+    # :returns: the owning uid when another account controls the node, otherwise ``None``.
     if sys.platform != "win32" and parent.st_mode & stat.S_ISVTX:  # pragma: needs foreign-sticky-tmp
-        return None if directory.st_uid in {os.geteuid(), parent.st_uid} else directory.st_uid
+        return None if node.st_uid in {os.geteuid(), parent.st_uid} else node.st_uid
     return None
 
 
@@ -411,7 +412,7 @@ __all__ = [
     "exchange_back",
     "exchange_names",
     "exchange_supported",
-    "foreign_directory_owner",
+    "foreign_owner",
     "pin_inode",
     "raise_on_not_writable_file",
     "remove_own_file",
