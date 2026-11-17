@@ -619,6 +619,14 @@ writes ``filelock: fork child exits: ...`` to stderr and leaves through ``os._ex
 half-finished descriptor state, so no ``atexit`` handler or ``finally`` block runs in it. An operation that never
 finishes delays every later fork by the same 30 seconds.
 
+On normal interpreter exit, an ``atexit`` handler registered when filelock is imported releases every lock the process
+still references, before module teardown can break the release; handlers registered earlier run after it. Daemon
+threads still run while ``atexit`` handlers do, so a hold of one that is alive stays in place, and a lock built with
+``thread_local=False``, which cannot tell whose hold it has, stays held whenever any other thread is alive.
+``os._exit``, a signal that kills the process and a crash skip the handler: native locks still go with the descriptor,
+soft markers stay for contenders to reclaim, and a strict claim stays until
+:meth:`force_break <filelock.StrictSoftFileLock.force_break>`.
+
 Task cancellation
 =================
 
@@ -1106,7 +1114,8 @@ each thread gets its own context via ``threading.local``. This means:
   place it is ever set and ``lock.mode = ...`` raises ``AttributeError``.
 - The instance still keeps track of every thread's hold. ``release(force=True)``
   also releases holds left by threads that exited, and garbage collecting the
-  lock releases every thread's hold.
+  lock releases every thread's hold. Interpreter exit releases a lock still
+  referenced, except holds of daemon threads that are still running.
 
 When ``thread_local=False``, all threads share the same context, including
 configuration values. This is useful for objects passed between threads or

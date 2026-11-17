@@ -39,9 +39,9 @@ from decimal import Decimal
 from functools import cache, partial
 from itertools import count, starmap
 from numbers import Real
-from threading import TIMEOUT_MAX, Condition, Event, RLock, Thread, current_thread, get_ident, local
+from threading import TIMEOUT_MAX, Condition, RLock, Thread, active_count, current_thread, get_ident, local
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
-from weakref import WeakKeyDictionary, WeakSet, WeakValueDictionary, ref
+from weakref import WeakKeyDictionary, WeakValueDictionary, ref
 
 from ._error import (
     SoftFileLockLifetimeWarning,
@@ -666,8 +666,9 @@ def _supported_init_params(
 
 @contextmanager
 def fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Generator[None]:
-    # No fork follows exit, and a daemon thread stopped inside this bookkeeping holds its lock forever.
-    if not _HAS_REGISTER_AT_FORK or sys.is_finalizing():
+    # A daemon thread stopped inside this bookkeeping holds its lock through exit. Only the exit release and
+    # finalization skip it: daemon threads still run, and fork, while atexit handlers do.
+    if not _HAS_REGISTER_AT_FORK or interpreter_exiting():
         yield  # pragma: lacks fork
         return  # pragma: lacks fork
     ensure_current_process()  # pragma: needs fork
@@ -695,6 +696,10 @@ def fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Gen
                     del _FORK_STATE.transitions[thread_id]
                 _FORK_STATE.active_transitions -= 1
                 _FORK_STATE.gate.notify_all()
+
+
+def interpreter_exiting() -> bool:
+    return _EXIT_RELEASE.running or sys.is_finalizing()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -916,7 +921,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _adopt_settings(self, settings: LockSettings) -> None:
         self._creator_pid = os.getpid()
-        _LIVE_LOCKS.add(self)
+        _LIVE_LOCKS[id(self)] = self
         #: Holder id in the deadlock registry; a stand-in that finishes the finalizer has another id(self).
         self._holder_id = id(self)
         self._transition_lock = RLock()
@@ -1405,7 +1410,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         :param force: If true, the lock counter is ignored and the lock is released in every case. On a thread-local
             lock it also releases the holds of threads that exited without releasing; a hold of a thread still running
-            stays with that thread. Dropping the last reference to the lock releases every thread's hold.
+            stays with that thread. Dropping the last reference to the lock releases every thread's hold. A lock
+            still referenced when the interpreter exits is released too, except holds of daemon threads still
+            running, and a ``thread_local=False`` lock while any other thread runs.
 
         """
         counter_before: int | None = None
@@ -1513,7 +1520,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         else:
             # Teardown may also have cleared the globals the release path reads, here or in a subclass's module.
             with _suppress(Exception):
-                self._release_abandoned_holds()
+                self._release_abandoned_holds(exited_only=False)
 
     def _release_once_unreachable(self) -> None:
         # The callback runs once the lock is gone, so it reads the state through a holder. The state alone keeps the
@@ -1521,15 +1528,15 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._finalizer_state = _FinalizerState(state=self.__dict__)
         _UNREACHABLE_LOCKS.add(ref(self, partial(_finalize_unreachable, ref(self._finalizer_state), type(self))))
 
-    def _release_abandoned_holds(self) -> None:
+    def _release_abandoned_holds(self, *, exited_only: bool) -> None:
         # A finalizer must not raise. A release error during garbage collection would otherwise surface as an
         # unraisable-exception warning, attributed to whichever code triggered collection. The dropped lock still gets
         # best-effort cleanup; an explicit release() reports the same error to a caller who can act on it.
         with contextlib.suppress(Exception):
             self.release(force=True)
-        # Nothing references the lock any more, so no thread can still be inside it through this instance.
+        # A dropped lock has no thread left inside it; at exit, a live daemon thread still is, so its hold stays.
         with contextlib.suppress(Exception):
-            self._release_thread_holds(exited_only=False)
+            self._release_thread_holds(exited_only=exited_only)
 
     @property
     def is_singleton(self) -> bool:
@@ -1905,8 +1912,8 @@ def is_system_call_failure(error: BaseException) -> bool:
 
 
 def unregister_owned_descriptor(token: int) -> None:  # pragma: needs fork
-    # No fork follows exit, and a daemon thread stopped inside this bookkeeping holds its lock forever.
-    if sys.is_finalizing():  # pragma: no cover  # only exit reaches it, after coverage stops measuring
+    # The exit release skips this bookkeeping for the same reason fork_transition does.
+    if interpreter_exiting():  # pragma: no cover  # only exit reaches it, after coverage stops measuring
         return
     with fork_transition(), _FORK_STATE.registry_lock:
         _OWNED_DESCRIPTORS.pop(token, None)
@@ -1977,23 +1984,37 @@ _UNREACHABLE_LOCKS: Final[set[ref[BaseFileLock]]] = set()
 
 
 #: Every lock this process built, so exit can release the ones still alive before teardown empties module globals.
-_LIVE_LOCKS: Final[WeakSet[BaseFileLock]] = WeakSet()
+#: Keyed by identity: a subclass can define __eq__ without __hash__.
+_LIVE_LOCKS: Final[WeakValueDictionary[int, BaseFileLock]] = WeakValueDictionary()
 
 
-#: Set once exit starts releasing live locks, after which no other thread's event loop runs a scheduled release.
-_EXITING: Final[Event] = Event()
+class _ExitRelease(local):
+    # Per thread, so a daemon thread still running at exit, and a child it forks, keep their fork bookkeeping.
+    running = False
 
 
-def interpreter_exiting() -> bool:
-    return _EXITING.is_set() or sys.is_finalizing()
+#: Marks the thread releasing live locks at exit, where no other thread's event loop runs a scheduled release.
+_EXIT_RELEASE: Final[_ExitRelease] = _ExitRelease()
 
 
 def _release_live_locks() -> None:
     # A lock still referenced at exit is finalized only after module teardown, when the release path can no longer run.
-    _EXITING.set()
     pid = os.getpid()
-    for lock in [lock for lock in _LIVE_LOCKS if lock._creator_pid == pid]:  # ruff:ignore[private-member-access]  # ditto
-        lock._release_abandoned_holds()  # ruff:ignore[private-member-access]  # the module owns the locks it tracks
+    # Exit handlers run while daemon threads still do, so a hold one of them owns is kept. A shared lock cannot tell
+    # whose hold it has, so it is kept whenever another thread is alive.
+    sole_thread = active_count() == 1
+    _EXIT_RELEASE.running = True
+    try:
+        for lock in [
+            lock
+            for lock in _LIVE_LOCKS.values()
+            if lock._creator_pid == pid  # ruff:ignore[private-member-access]  # the module owns the locks it tracks
+            and (sole_thread or lock.is_thread_local())
+        ]:
+            lock._release_abandoned_holds(exited_only=True)  # ruff:ignore[private-member-access]  # ditto
+    finally:
+        # A later exit handler may still fork, and its child is not exiting.
+        _EXIT_RELEASE.running = False
 
 
 atexit.register(_release_live_locks)

@@ -602,6 +602,32 @@ def test_lock_held_at_exit_is_released_silently(lock_type: type[BaseFileLock], t
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread-local"), pytest.param(False, id="shared")])
+def test_lock_a_daemon_thread_holds_at_exit_stays_held(
+    lock_type: type[BaseFileLock], tmp_path: Path, *, thread_local: bool
+) -> None:
+    # Exit handlers run while daemon threads still do, so releasing their hold would let another process in mid-section.
+    lock_path = str(tmp_path / "a.lock")
+    contender = f"import filelock; filelock.{lock_type.__name__}({lock_path!r}).acquire(timeout=0)"
+    script = f"""
+import atexit, subprocess, sys, threading
+atexit.register(lambda: print(subprocess.run([sys.executable, "-c", {contender!r}], capture_output=True).returncode))
+import filelock
+lock = filelock.{lock_type.__name__}({lock_path!r}, thread_local={thread_local})
+entered = threading.Event()
+def hold():
+    with lock:
+        entered.set()
+        threading.Event().wait()
+threading.Thread(target=hold, daemon=True).start()
+entered.wait()
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+
+    assert (result.stdout, result.stderr) == ("1\n", "")
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize(
     "drop",
     [
