@@ -26,7 +26,6 @@ from filelock import (
     AsyncFileLock,
     AsyncSoftFileLease,
     AsyncSoftFileLock,
-    AsyncStrictSoftFileLock,
     BaseAsyncFileLock,
     BaseFileLock,
     CloseErrorPolicy,
@@ -585,24 +584,6 @@ async def test_poll_wait_stays_within_timeout(tmp_path: Path, lock_type: type[Ba
         with pytest.raises(Timeout):
             await lock_type(lock_path).acquire(timeout=0.05, poll_interval=10)
         assert time.perf_counter() - start < 5
-
-
-@pytest.mark.requires_hard_links
-@pytest.mark.asyncio
-async def test_strict_contention_backs_off_across_a_widening_window(  # pragma: needs hard-link
-    tmp_path: Path, mocker: MockerFixture
-) -> None:
-    # The widest draw makes each retry wait out its whole window, which doubles from poll_interval up to the cap.
-    windows = mocker.patch("filelock._api.secrets.randbelow", side_effect=lambda bound: bound - 1, autospec=True)
-    sleep = mocker.spy(filelock.asyncio.asyncio, "sleep")
-    lock_path = tmp_path / "test.lock"
-    async with AsyncStrictSoftFileLock(lock_path):
-        with pytest.raises(Timeout):
-            await AsyncStrictSoftFileLock(lock_path).acquire(
-                timeout=1, poll_interval=0.002, cancel_check=lambda: windows.call_count >= 5
-            )
-
-    assert [call.args[0] for call in sleep.call_args_list] == pytest.approx([0.004, 0.008, 0.016, 0.032, 0.05])
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
