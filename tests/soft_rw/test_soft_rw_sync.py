@@ -1541,7 +1541,6 @@ def _junction_the_tree(  # pragma: win32 cover
 def test_protocol_tree_with_a_junction_is_refused_after_first_acquire(  # pragma: win32 cover
     lock_file: str, tmp_path: Path, create_junction: Callable[[Path, Path], None], swapped: str
 ) -> None:
-    # The normal heartbeat interval keeps tree replacement independent of heartbeat activity.
     with closing(SoftReadWriteLock(lock_file, is_singleton=False)) as lock:
         with lock.write_lock(timeout=2):
             pass
