@@ -384,13 +384,13 @@ class StrictSoftFileLock(BaseFileLock):
         if cleanup_error is not None:  # pragma: needs dir-fd
             raise cleanup_error
 
-    def _release_abandoned_holds(self) -> None:
+    def _release_abandoned_holds(self, *, exited_only: bool) -> None:
         self._finalizing = True
-        super()._release_abandoned_holds()
+        super()._release_abandoned_holds(exited_only=exited_only)
         # release() skips a doorway whose cleanup failed, as it is no hold, so a dropped instance would strand claims.
         with contextlib.suppress(Exception):
             # GraalPy defers finalizers to the host collector, so its tests cannot drive this cleanup.
-            self._discard_pending_doorways(exited_only=False)  # pragma: needs collected-finalization
+            self._discard_pending_doorways(exited_only=exited_only)  # pragma: needs collected-finalization
 
     def _reconcile_failed_acquire(self, canonical: str) -> None:
         # The acquisition is over, so the next one resolves the working directory again rather than reuse this one's.

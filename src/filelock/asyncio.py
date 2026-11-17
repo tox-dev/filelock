@@ -836,20 +836,21 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """The event loop."""
         return self._async_context.loop
 
-    def _release_abandoned_holds(self) -> None:
+    def _release_abandoned_holds(self, *, exited_only: bool) -> None:
         # Runs from garbage collection, where no event loop may be running.
         with contextlib.suppress(Exception):
             # A thread-local lock never uses an executor, so an in-place release matches the loop's and also reaches
             # threads whose loops it cannot schedule on.
             if self._settings.thread_local and not iscoroutinefunction(self._release):
-                self._release_without_loop()
+                self._release_without_loop(exited_only=exited_only)
                 return
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                # At interpreter exit daemon threads no longer run, so a loop running in one never runs the release.
+                # Once finalizing, daemon threads no longer run, so a loop running in one never runs the release. The
+                # exit release releases in place too: it skips a shared lock while any other thread is alive.
                 if (loop := self._async_context.loop) is None or loop.is_closed() or _interpreter_exiting():
-                    self._release_without_loop()
+                    self._release_without_loop(exited_only=exited_only)
                     return
                 if not loop.is_running():
                     loop.run_until_complete(self.release(force=True))
@@ -865,7 +866,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             _FINALIZER_RELEASES.add(pending)
             pending.add_done_callback(self._settle_finalizer_release)
 
-    def _release_without_loop(self) -> None:
+    def _release_without_loop(self, *, exited_only: bool) -> None:
         # No loop can run a release here, so call a sync backend directly as BaseFileLock.__del__ does; a coroutine
         # backend cannot run and keeps its lock.
         if iscoroutinefunction(self._release):
@@ -876,7 +877,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             finally:
                 self._commit_release_if_released()
         # A thread-local lock also holds for the threads that ran its loops, and nothing else releases those now.
-        self._release_thread_holds(exited_only=False)
+        self._release_thread_holds(exited_only=exited_only)
 
     def _settle_finalizer_release(self, pending: asyncio.Task[None] | futures.Future[None]) -> None:
         _FINALIZER_RELEASES.discard(pending)
@@ -885,7 +886,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             if pending.exception() is None:
                 return
         with contextlib.suppress(Exception):
-            self._release_without_loop()
+            self._release_without_loop(exited_only=False)
 
 
 class AsyncAcquireReturnProxy:

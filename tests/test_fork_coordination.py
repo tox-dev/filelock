@@ -341,6 +341,40 @@ inside.wait()
     assert (result.returncode, result.stderr) == (0, "")
 
 
+@NEEDS_REGISTER_AT_FORK  # pragma: needs register-at-fork
+def test_child_forked_by_a_daemon_thread_at_exit_keeps_its_fork_bookkeeping(tmp_path: Path) -> None:
+    # Daemon threads still run, and fork, while atexit handlers do; their children are not exiting.
+    script: Final = """
+import atexit, os, sys, threading
+exiting, forked = threading.Event(), threading.Event()
+atexit.register(lambda: (exiting.set(), forked.wait(10)))
+from filelock import FileLock
+from filelock._api import _OWNED_DESCRIPTORS
+
+def fork_during_exit():
+    exiting.wait()
+    if (pid := os.fork()) == 0:
+        for _ in range(20):
+            with FileLock(sys.argv[1]):
+                pass
+        print(len(_OWNED_DESCRIPTORS), flush=True)
+        os._exit(0)
+    os.waitpid(pid, 0)
+    forked.set()
+
+threading.Thread(target=fork_during_exit, daemon=True).start()
+"""
+    result: Final = subprocess.run(
+        [sys.executable, "-W", "ignore::DeprecationWarning", "-c", script, str(tmp_path / "a")],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert (result.stdout, result.stderr) == ("0\n", "")
+
+
 @NEEDS_FORK  # pragma: needs fork
 @NEEDS_AUDIT_EVENTS
 def test_import_adds_audit_hook_only_where_settrace_survives_it() -> None:
