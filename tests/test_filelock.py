@@ -580,20 +580,24 @@ def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_2.release()
 
 
-@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
-def test_del_survives_module_teardown(
-    lock_type: type[BaseFileLock], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # At interpreter shutdown, module teardown can set filelock._api's globals to None before a dropped lock is
-    # finalized. __del__ must not reach them then, or CPython prints an ignored AttributeError on every exit.
-    lock: Final = lock_type(str(tmp_path / "a"))
-    lock.acquire()
-    with monkeypatch.context() as patch:
-        patch.setattr(filelock._api, "os", None)  # simplint: ignore[private-import-path]  # mimics module teardown
-        patch.setattr(filelock._api, "sys", None)  # simplint: ignore[private-import-path]  # mimics module teardown
-        lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
-    lock.release(force=True)
-    assert not lock.is_locked
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        pytest.param(FileLock, id="native"),
+        pytest.param(SoftFileLock, id="soft"),
+        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links, id="strict"),
+    ],
+)
+def test_lock_held_at_exit_is_released_silently(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    # Module teardown at shutdown empties the globals the release path reads, so a lock still referenced at exit
+    # must be released before it, without printing an ignored exception.
+    lock_path = tmp_path / "a.lock"
+    script = f"import sys, filelock; sys.held = filelock.{lock_type.__name__}({str(lock_path)!r}); sys.held.acquire()"
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+
+    assert not result.stderr
+    with lock_type(lock_path).acquire(timeout=0):
+        pass
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
