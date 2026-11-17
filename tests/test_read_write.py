@@ -584,12 +584,7 @@ def _grant_everyone_write(directory: Path) -> None:  # pragma: win32 cover
 @NEEDS_SYMLINK
 def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:  # pragma: needs symlink
     # Following it would let anyone who can create names in the lock directory make the victim create the target.
-    target = tmp_path / "target.db"
-    link = tmp_path / "lock.db"
-    try:
-        link.symlink_to(target)
-    except OSError as error:  # pragma: no cover - platform policy can deny symlink creation
-        pytest.skip(str(error))
+    (link := tmp_path / "lock.db").symlink_to(target := tmp_path / "target.db")
     # Construction opens a connection, so the refusal lands there; acquiring reopens and refuses the same way.
     with pytest.raises(OSError, match=re.escape(str(link))):
         ReadWriteLock(link, is_singleton=False).acquire_read()
