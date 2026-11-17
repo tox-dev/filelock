@@ -1146,6 +1146,7 @@ def test_lease_finalized_inside_its_heartbeat_wait_is_released(marker: Path, moc
             heartbeats.append(threading.current_thread())
             with event._cond:  # ty: ignore[missing-attribute]  # typeshed omits the lock wait() holds
                 holder.clear()
+                gc.collect()
         return real_wait(event, timeout)
 
     mocker.patch.object(Event, "wait", autospec=True, side_effect=collect_inside_wait)
