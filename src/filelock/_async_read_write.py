@@ -134,10 +134,11 @@ class AsyncReadWriteLock:
                 msg = "AsyncReadWriteLock construction cannot continue after fork"
                 raise RuntimeError(msg)
 
-    def __del__(self) -> None:
+    def __del__(self, _getpid: Callable[[], int] = os.getpid) -> None:
         # Safety net when close() was never called: shut down the executor we own so its worker thread does not
-        # outlive the lock. shutdown(wait=False) never blocks.
-        if os.getpid() == getattr(self, "_creator_pid", None) and getattr(self, "_owns_executor", False):
+        # outlive the lock. shutdown(wait=False) never blocks. Bound at definition: module teardown at interpreter
+        # shutdown can empty os first.
+        if _getpid() == getattr(self, "_creator_pid", None) and getattr(self, "_owns_executor", False):
             self._executor.shutdown(wait=False)
 
     @property

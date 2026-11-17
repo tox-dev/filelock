@@ -1,1 +1,2 @@
-A lock dropped during interpreter shutdown no longer prints an ignored ``AttributeError`` at exit.
+A lock dropped during interpreter shutdown, including a ``ReadWriteLock`` or ``AsyncReadWriteLock``, no longer prints an
+ignored exception at exit.
