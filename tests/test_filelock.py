@@ -580,6 +580,26 @@ def test_del(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
     lock_2.release()
 
 
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        pytest.param(FileLock, id="native"),
+        pytest.param(SoftFileLock, id="soft"),
+        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links, id="strict"),
+    ],
+)
+def test_lock_held_at_exit_is_released_silently(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    # Module teardown at shutdown empties the globals the release path reads, so a lock still referenced at exit
+    # must be released before it, without printing an ignored exception.
+    lock_path = tmp_path / "a.lock"
+    script = f"import sys, filelock; sys.held = filelock.{lock_type.__name__}({str(lock_path)!r}); sys.held.acquire()"
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+
+    assert not result.stderr
+    with lock_type(lock_path).acquire(timeout=0):
+        pass
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize(
     "drop",

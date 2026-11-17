@@ -8,7 +8,6 @@ if TYPE_CHECKING:
 __spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [
-    "atexit",
     "decimal",
     "inspect",
     "math",
@@ -40,9 +39,9 @@ from decimal import Decimal
 from functools import cache, partial
 from itertools import count, starmap
 from numbers import Real
-from threading import TIMEOUT_MAX, Condition, RLock, Thread, current_thread, get_ident, local
+from threading import TIMEOUT_MAX, Condition, Event, RLock, Thread, current_thread, get_ident, local
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
-from weakref import WeakKeyDictionary, WeakValueDictionary, ref
+from weakref import WeakKeyDictionary, WeakSet, WeakValueDictionary, ref
 
 from ._error import (
     SoftFileLockLifetimeWarning,
@@ -911,6 +910,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _adopt_settings(self, settings: LockSettings) -> None:
         self._creator_pid = os.getpid()
+        _LIVE_LOCKS.add(self)
         #: Holder id in the deadlock registry; a stand-in that finishes the finalizer has another id(self).
         self._holder_id = id(self)
         self._transition_lock = RLock()
@@ -1488,17 +1488,25 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 finally:
                     context.current = own
 
-    def __del__(self) -> None:
+    def __del__(
+        self,
+        _getpid: Callable[[], int] = os.getpid,
+        _is_finalizing: Callable[[], bool] = sys.is_finalizing,
+        _suppress: type[contextlib.suppress] = contextlib.suppress,
+    ) -> None:
         """Force-release so a dropped reference never leaks a held lock, including every thread's hold."""
-        if self.__dict__.get("_creator_pid") != os.getpid():
+        # Bound at definition: module teardown at interpreter shutdown can set this module's globals to None first.
+        if self.__dict__.get("_creator_pid") != _getpid():
             return  # pragma: forked child
         # CPython runs __del__ before it clears weak references. Until then the singleton cache still hands this lock
         # out, and a thread that takes a hold through it would lose that hold to a release here. The cycle collector
         # clears the references first, and at exit no other thread runs.
-        if (key := self._singleton_key) is not None and not sys.is_finalizing() and self._instances.get(key) is self:
+        if (key := self._singleton_key) is not None and not _is_finalizing() and self._instances.get(key) is self:
             self._release_once_unreachable()
         else:
-            self._release_abandoned_holds()
+            # Teardown may also have cleared the globals the release path reads, here or in a subclass's module.
+            with _suppress(Exception):
+                self._release_abandoned_holds()
 
     def _release_once_unreachable(self) -> None:
         # The callback runs once the lock is gone, so it reads the state through a holder. The state alone keeps the
@@ -1961,6 +1969,29 @@ def acquire_thread_lock(
 _UNREACHABLE_LOCKS: Final[set[ref[BaseFileLock]]] = set()
 
 
+#: Every lock this process built, so exit can release the ones still alive before teardown empties module globals.
+_LIVE_LOCKS: Final[WeakSet[BaseFileLock]] = WeakSet()
+
+
+#: Set once exit starts releasing live locks, after which no other thread's event loop runs a scheduled release.
+_EXITING: Final[Event] = Event()
+
+
+def interpreter_exiting() -> bool:
+    return _EXITING.is_set() or sys.is_finalizing()
+
+
+def _release_live_locks() -> None:
+    # A lock still referenced at exit is finalized only after module teardown, when the release path can no longer run.
+    _EXITING.set()
+    pid = os.getpid()
+    for lock in [lock for lock in _LIVE_LOCKS if lock._creator_pid == pid]:  # ruff:ignore[private-member-access]  # ditto
+        lock._release_abandoned_holds()  # ruff:ignore[private-member-access]  # the module owns the locks it tracks
+
+
+atexit.register(_release_live_locks)
+
+
 @dataclass  # simplint: ignore[dataclass-slots, dataclass-kw-only]  # base rejects slots; signature is public
 class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields are public API
     # Holds the context for a ``BaseFileLock`` object.
@@ -2302,6 +2333,7 @@ __all__ = [
     "ensure_current_process",
     "fork_transition",
     "grouped_errors",
+    "interpreter_exiting",
     "is_system_call_failure",
     "raise_body_and_release",
     "raise_chained_errors",
