@@ -6,6 +6,38 @@
 
 .. towncrier release notes start
 
+.. _release-4-2-11:
+
+*********************
+ 4.2.11 (2026-11-17)
+*********************
+
+.. _release-4-2-11-fixed:
+
+Fixed
+=====
+
+- :class:`~filelock.AsyncStrictSoftFileLock` with a ``poll_interval`` below 0.05 seconds now spreads contended retries
+  across a jittered, widening window like :class:`~filelock.StrictSoftFileLock`, instead of a fixed interval (:pr:`928`)
+  by :user:`feiiiiii5` and :user:`gaborbernat`.
+- :class:`~filelock.SoftReadWriteLock` on runtimes without ``dir_fd`` other than Windows, such as GraalPy, now refuses a
+  protocol directory another account owns under a sticky parent, as the other platforms already do (:pr:`940`) by
+  :user:`gaborbernat`.
+- A :class:`~filelock.SoftFileLease` garbage collected on its own heartbeat thread no longer deadlocks that thread,
+  which left every later ``os.fork()`` in the process waiting forever (:pr:`949`) by :user:`gaborbernat`.
+- A lock dropped during interpreter shutdown, including a ``ReadWriteLock`` or ``AsyncReadWriteLock``, no longer prints
+  an ignored exception at exit (:pr:`933`) by :user:`kushaldave002` and :user:`gaborbernat`.
+- A lock still referenced when the interpreter exits is released from an ``atexit`` handler before module teardown,
+  except holds of daemon threads that are still running, and a ``thread_local=False`` lock while any other thread runs
+  (:pr:`964`) by :user:`gaborbernat`.
+- On Windows, lock paths that differ only in drive letter or UNC share case, such as ``C:\work.lock`` and
+  ``c:\work.lock``, now share one :class:`~filelock.FileLock` or :class:`~filelock.SoftReadWriteLock` singleton and
+  trigger ``FileLock``'s same-thread deadlock detection (:pr:`929`) by :user:`subotac` and :user:`gaborbernat`.
+- Releasing a soft lock whose marker a peer replaced no longer raises ``AttributeError`` on GraalPy, which lacks
+  ``os.pwrite`` (:pr:`940`) by :user:`gaborbernat`.
+- ``os.fork()`` no longer waits forever for a lock transition another thread never finishes; after 30 seconds the child
+  exits with status 70 and the parent continues (:pr:`949`) by :user:`gaborbernat`.
+
 .. _release-4-2-10:
 
 *********************
