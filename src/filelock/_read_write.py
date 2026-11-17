@@ -356,8 +356,11 @@ class _ForkSafeConnection(sqlite3.Connection):
         connection._database_directory = None
         return connection
 
-    def __del__(self) -> None:
-        with suppress(sqlite3.Error, RuntimeError, OSError):
+    def __del__(
+        self, _is_finalizing: Callable[[], bool] = sys.is_finalizing, _suppress: type[suppress] = suppress
+    ) -> None:
+        # Bound at definition: at shutdown, teardown empties the modules close() reads, so any error can surface there.
+        with _suppress(*((Exception,) if _is_finalizing() else (sqlite3.Error, RuntimeError, OSError))):
             self.close()
 
     def close(self) -> None:
@@ -414,9 +417,12 @@ class _OwnedConnection:
         self.transaction_released = True
         self.identity: _DatabaseIdentity | None = None
 
-    def __del__(self) -> None:
+    def __del__(
+        self, _is_finalizing: Callable[[], bool] = sys.is_finalizing, _suppress: type[suppress] = suppress
+    ) -> None:
+        # Bound at definition: at shutdown, teardown empties the modules close() reads, so any error can surface there.
         if (connection := self.connection) is not None:
-            with suppress(sqlite3.Error, RuntimeError):
+            with _suppress(*((Exception,) if _is_finalizing() else (sqlite3.Error, RuntimeError))):
                 connection.close()
 
 

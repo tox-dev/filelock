@@ -581,6 +581,22 @@ def _grant_everyone_write(directory: Path) -> None:  # pragma: win32 cover
     subprocess.run([icacls, directory, "/grant", "*S-1-1-0:(OI)(CI)(M)"], capture_output=True, check=True)
 
 
+def test_locks_alive_at_shutdown_finalize_silently(tmp_path: Path) -> None:
+    # sys.excepthook outlives the stdlib module dicts teardown empties, so the finalizers run after os.getpid and
+    # sqlite3.Error read as None.
+    script = f"""
+import sys
+from filelock import AsyncReadWriteLock, ReadWriteLock
+held = ReadWriteLock({str(tmp_path / "a.db")!r}, is_singleton=False)
+held.acquire_read()
+locks = held, AsyncReadWriteLock({str(tmp_path / "b.db")!r}, is_singleton=False)
+sys.excepthook = lambda *args, _keep=locks, _hook=sys.excepthook: _hook(*args)
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+
+    assert not result.stderr
+
+
 @NEEDS_SYMLINK
 def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:  # pragma: needs symlink
     # Following it would let anyone who can create names in the lock directory make the victim create the target.
