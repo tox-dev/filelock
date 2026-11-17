@@ -562,6 +562,12 @@ reached the old one keep using it while new contenders use the replacement, so t
 neither learns of it. No check inside the lock can rule that out, because the owner of such a directory controls every name
 in it. Keep locks in a directory that only the lock's users can write, or in a sticky one such as ``/tmp``.
 
+A sticky directory protects only the names an account owns. The owner of a lock file there can remove it while another
+account holds its lock, and the next contender then locks a new file at the same path. On Unix,
+:class:`FileLock <filelock.FileLock>` therefore raises :class:`PermissionError` for a lock file that belongs to neither
+the caller's account nor the directory's owner. Accounts that share a lock in ``/tmp`` need the directory's owner,
+usually ``root``, to create the file, or a directory of their own.
+
 Native locks are advisory
 ==========================
 

@@ -63,7 +63,7 @@ from ._soft_protocol import (
     STRICT_SOFT_SENTINEL_RECORD,
 )
 from ._util import (
-    foreign_directory_owner,
+    foreign_owner,
     write_all,
 )
 
@@ -912,9 +912,7 @@ def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, paren
     except FileExistsError:
         try:
             found = _lstat_relative((os.fspath(directory.parent), parent_fd), directory.name)
-            owner = foreign_directory_owner(
-                found, directory.parent.stat() if parent_fd is None else os.fstat(parent_fd)
-            )
+            owner = foreign_owner(found, directory.parent.stat() if parent_fd is None else os.fstat(parent_fd))
         except OSError as error:
             raise SoftFileLockProtocolError(lock_file, None, f"cannot inspect {directory}") from error
         if (

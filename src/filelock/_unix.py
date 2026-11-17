@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Final, NamedTuple, cast
 
 from ._api import BaseFileLock
-from ._util import remove_own_file
+from ._util import foreign_owner, remove_own_file
 
 has_fcntl = False
 if sys.platform == "win32":  # pragma: win32 cover
@@ -181,6 +181,12 @@ else:  # pragma: win32 no cover
             # it and let the retry loop start over.
             if (stat_result := os.fstat(fd)).st_nlink == 0:
                 return False
+            # The owner of a file under a sticky parent may unlink it during the hold. A contender then locks a new
+            # inode at the path, and both hold the lock.
+            parent = Path(self._lock_path).parent.stat()
+            if (owner := foreign_owner(stat_result, parent)) is not None:  # pragma: needs foreign-sticky-tmp
+                reason = f"lock file belongs to uid {owner}, not to this process's account or the directory's owner"
+                raise PermissionError(EACCES, reason, self._lock_path)
             self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
             return True
 
