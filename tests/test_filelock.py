@@ -2003,11 +2003,8 @@ def test_lock_file_of_another_account_under_sticky_parent_is_refused(  # pragma:
 
     with pytest.raises(PermissionError, match="not to this process's account") as raised:
         lock.acquire()
-    assert (raised.value.filename, lock.is_locked, lock_path_in_shared_tmp.exists()) == (
-        str(lock_path_in_shared_tmp),
-        False,
-        True,
-    )
+    # The lock resolves its path, and /tmp is a symlink on macOS.
+    assert (raised.value.filename, lock.is_locked, lock_path_in_shared_tmp.exists()) == (lock.lock_file, False, True)
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
