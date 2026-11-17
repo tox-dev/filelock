@@ -1515,7 +1515,11 @@ def test_release_under_a_peers_exchange_leaves_no_marker_naming_this_process(  #
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @NEEDS_STALE_RECLAIM
-def test_release_under_a_peers_exchange_leaves_the_peers_marker(lock_path: Path) -> None:  # pragma: win32 no cover
+@pytest.mark.parametrize("missing", [pytest.param({}, id="pwrite"), pytest.param({"pwrite": None}, id="no-pwrite")])
+def test_release_under_a_peers_exchange_leaves_the_peers_marker(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture, missing: dict[str, None]
+) -> None:
+    mocker.patch.dict(os.__dict__, missing)
     lock: Final = SoftFileLock(lock_path)
     lock.acquire()
     (peer := lock_path.with_name("peer")).write_text(_holder(_DEAD_PID), encoding="utf-8")
