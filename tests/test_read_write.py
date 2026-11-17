@@ -250,6 +250,8 @@ def test_write_non_starvation(lock_file: str) -> None:
         while _write_intent_pending(prober, probe_deadline):  # pragma: no branch  # exits once the intent blocks reads
             pass  # pragma: no cover  # runs only when the first probe precedes the writer's intent
         prober.close()
+        # A held write lock refuses the probe too, so only a writer still waiting proves its intent blocks readers.
+        assert not writer_acquired.is_set(), "Probe was refused by the held write lock, not by a pending intent"
 
         for reader in late:
             reader.start()
