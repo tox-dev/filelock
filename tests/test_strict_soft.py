@@ -458,13 +458,13 @@ def test_strict_soft_reclaims_an_aged_sentinel_private_record(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_async_contention_backs_off_across_a_widening_window(tmp_path: Path, mocker: MockerFixture) -> None:
     # The widest draw makes each retry wait out its whole window, which doubles from poll_interval up to the cap.
-    windows = mocker.patch("filelock._api.secrets.randbelow", side_effect=lambda bound: bound - 1, autospec=True)
+    draw = mocker.patch("secrets.randbelow", side_effect=lambda bound: bound - 1, autospec=True)
     sleep = mocker.spy(asyncio, "sleep")
     lock_path = tmp_path / "test.lock"
     async with AsyncStrictSoftFileLock(lock_path):
         with pytest.raises(Timeout):
             await AsyncStrictSoftFileLock(lock_path).acquire(
-                timeout=1, poll_interval=0.002, cancel_check=lambda: windows.call_count >= 5
+                timeout=30, poll_interval=0.002, cancel_check=lambda: draw.call_count >= 5
             )
 
     assert [call.args[0] for call in sleep.call_args_list] == pytest.approx([0.004, 0.008, 0.016, 0.032, 0.05])

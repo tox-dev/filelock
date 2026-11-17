@@ -171,8 +171,9 @@ The ``blocking`` parameter takes precedence over ``timeout``. If you set both, `
 
 When waiting for a lock, filelock retries at regular intervals. By default it waits 0.05 seconds between attempts.
 :class:`~filelock.StrictSoftFileLock` and :class:`~filelock.AsyncStrictSoftFileLock` publish several files per
-attempt, so with a ``poll_interval`` below 0.05 seconds they wait a random time between ``poll_interval`` and a window
-that doubles after each failed attempt, up to 0.05 seconds, and contending processes stop retrying in step.
+attempt. With a ``poll_interval`` below 0.05 seconds, each retry waits a random time between ``poll_interval`` and an
+upper bound that starts at twice ``poll_interval`` and doubles after each failed attempt, up to 0.05 seconds, so
+contending processes stop retrying in step.
 
 Increase the poll interval for long-lived locks to reduce CPU usage:
 
