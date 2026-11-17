@@ -37,11 +37,12 @@ _LockT = TypeVar("_LockT", bound=BaseFileLock)
 def pytest_configure(config: pytest.Config) -> None:
     if sys.implementation.name == "graalpy":  # pragma: no cover  # only GraalPy's semaphore finalizer raises this
         # GraalPy keeps a fork-context semaphore's name after the immediate unlink, so its finalizer unlinks it again
-        # and fails with ENOENT. pytest's warning names only the finalizer object, not the function, so this matches
-        # every dead finalizer on GraalPy. Upstream: https://github.com/oracle/graalpython/issues/1316
+        # and fails with ENOENT. The warning text carries the traceback, so only that cleanup's ENOENT is ignored.
+        # Upstream: https://github.com/oracle/graalpython/issues/1316
         config.addinivalue_line(
             "filterwarnings",
-            "ignore:Exception ignored in.+<Finalize object, dead>:pytest.PytestUnraisableExceptionWarning",
+            "ignore:(?s)Exception ignored in.+<Finalize object, dead>.+ in _cleanup\\n.+FileNotFoundError"
+            ":pytest.PytestUnraisableExceptionWarning",
         )
 
 
