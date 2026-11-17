@@ -110,7 +110,9 @@ Detection compares path spellings after resolving the parent directory, not the 
 filesystem maps to the same file, such as ``Work.lock`` and ``work.lock`` on a case-insensitive volume (APFS and NTFS
 by default) or the NFC and NFD forms of an accented name on APFS, count as different locks: the second acquire waits
 forever instead of raising. ``is_singleton=True`` keys on the same spelling, so spell each lock path one way. Both
-checks ignore the case of a Windows drive or UNC share prefix, so ``C:\work.lock`` and ``c:\work.lock`` are one lock.
+checks, and the ``SoftReadWriteLock`` singleton cache, ignore the case of a Windows drive or UNC share prefix, so
+``C:\work.lock`` and ``c:\work.lock`` are one lock. ``ReadWriteLock`` keys its singleton on a :class:`pathlib.Path`,
+which on Windows ignores case across the whole path.
 
 ************************
  How file locking works
@@ -466,10 +468,12 @@ The defense differs by platform:
   ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
   directory after the check cannot redirect where claims are created, listed or removed.
 - :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` opens ``<path>.rw`` and then ``gen`` or ``holders`` without
-  following symlinks for every record operation on platforms that support ``dir_fd``. A tree swapped in after an
-  earlier acquire cannot redirect its writes. It rewrites a holder record only when the name still leads to the file it
-  created and that file has no second name, and it opens the record without blocking. It leaves alone a hard link (a
-  second name for the same file) or a FIFO (a named pipe) renamed over the record.
+  following symlinks for every record operation on platforms that support ``dir_fd``. A tree swapped in after an earlier
+  acquire cannot redirect its writes. Without ``dir_fd``, Windows holds those directories open for each operation so
+  they cannot be renamed; other such runtimes (GraalPy) open them by name and repeat the owner check on every operation,
+  which leaves a swap between that check and the open possible. It rewrites a holder record only when the name still
+  leads to the file it created and that file has no second name, and it opens the record without blocking. It leaves
+  alone a hard link (a second name for the same file) or a FIFO (a named pipe) renamed over the record.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path. In a directory that processes of
 other accounts can write, it opens SQLite through a hard link (a second name for the same file) in a directory only the
@@ -607,6 +611,13 @@ Ownership scope per lock
      - A peer evicts a holder whose record has not changed within ``stale_threshold`` and the holder's next heartbeat
        reports the loss through ``on_compromise``. A forked child loses the lock; the inherited instance is
        fork-invalidated and its ``release()`` is a no-op.
+
+On POSIX, ``os.fork()`` (``multiprocessing``'s fork start method included) waits up to 30 seconds for any acquire,
+release or construction bookkeeping another thread of the process is running, for every lock type, and threads that
+start a lock operation meanwhile wait too. If one is still running at the deadline, the parent continues and the child
+writes ``filelock: fork child exits: ...`` to stderr and leaves through ``os._exit(70)`` rather than inherit a
+half-finished descriptor state, so no ``atexit`` handler or ``finally`` block runs in it. An operation that never
+finishes delays every later fork by the same 30 seconds.
 
 Task cancellation
 =================
@@ -1038,15 +1049,13 @@ fresh ones and marks the instance fork-invalidated. ``release()`` on an invalida
 inherited ``with lock.read_lock():`` block can unwind in the child without raising. The child must construct a
 fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMongo's connection-pool semantics.
 
-Forking waits up to 30 seconds for lock-state changes already running in other threads. If one is still running at the
-deadline, the child exits with status 70 rather than inherit a half-finished descriptor state; the parent continues.
-
 **Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
 permissions can exclude another UID. Under a sticky parent such as ``/tmp``, acquisition raises :class:`RuntimeError`
 when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent. The refusal
 also applies to a lock object that used an earlier tree: it repeats the check whenever a directory it opens is not the
-one it prepared. A process with the same effective UID can alter the records. A filesystem that delays a rewrite's
-visibility past ``stale_threshold`` can also trigger expiry while a holder remains active.
+one it prepared, and on every operation where ``dir_fd`` is unavailable. A process with the same effective UID can alter
+the records. A filesystem that delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a
+holder remains active.
 
 ****************************
  File permissions and mode
