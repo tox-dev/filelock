@@ -1132,3 +1132,31 @@ def test_lease_dropped_on_its_heartbeat_thread_is_released_there(marker: Path, m
     heartbeats[0].join(_DEADLINE)
 
     assert not heartbeats[0].is_alive()
+
+
+def test_lease_finalized_inside_its_heartbeat_wait_is_released(marker: Path, mocker: MockerFixture) -> None:
+    # PyPy's collector can run __del__ on the heartbeat thread while wait() holds the stop event's lock, so the release
+    # must not set that event.
+    real_wait: Final = Event.wait
+    holder: list[SoftFileLease] = []
+    heartbeats: list[Thread] = []
+
+    def collect_inside_wait(event: Event, timeout: float | None = None) -> bool:
+        if holder and threading.current_thread().name.startswith("filelock-lease"):
+            heartbeats.append(threading.current_thread())
+            with event._cond:  # ty: ignore[missing-attribute]  # typeshed omits the lock wait() holds
+                holder.clear()
+        return real_wait(event, timeout)
+
+    mocker.patch.object(Event, "wait", autospec=True, side_effect=collect_inside_wait)
+    lease = SoftFileLease(
+        str(marker), is_singleton=False, thread_local=False, lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT
+    )
+    lease.acquire()
+    holder.append(lease)
+    del lease
+
+    _wait_until(lambda: bool(heartbeats))
+    heartbeats[0].join(_DEADLINE)
+
+    assert not heartbeats[0].is_alive()
