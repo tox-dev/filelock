@@ -23,7 +23,7 @@ import sqlite3
 
 from filelock import ReadWriteLock, Timeout
 from filelock._read_write import _ForkSafeConnection
-from tests.capability_marks import NEEDS_FIFO, SKIP_ON_UNRELIABLE_PROCESS_SYNC
+from tests.capability_marks import NEEDS_FIFO, NEEDS_SYMLINK, SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.process_helpers import cleanup_processes
 from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, interrupt_once, writer_gets_in
 
@@ -581,7 +581,8 @@ def _grant_everyone_write(directory: Path) -> None:  # pragma: win32 cover
     subprocess.run([icacls, directory, "/grant", "*S-1-1-0:(OI)(CI)(M)"], capture_output=True, check=True)
 
 
-def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:
+@NEEDS_SYMLINK
+def test_read_write_lock_refuses_a_symlinked_path(tmp_path: Path) -> None:  # pragma: needs symlink
     # Following it would let anyone who can create names in the lock directory make the victim create the target.
     target = tmp_path / "target.db"
     link = tmp_path / "lock.db"

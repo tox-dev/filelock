@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, nullcontext, suppress
 from errno import EIO
 from functools import partial
+from itertools import count
 from multiprocessing import Event, Process
 from pathlib import Path
 from types import SimpleNamespace
@@ -1206,7 +1207,7 @@ def test_short_attempts_still_evict_a_dead_holder(lock_file: str) -> None:
 
 
 @NEEDS_SYMLINK
-def test_a_symlinked_lock_path_keeps_its_log_beside_the_symlink(tmp_path: Path) -> None:
+def test_a_symlinked_lock_path_keeps_its_log_beside_the_symlink(tmp_path: Path) -> None:  # pragma: needs symlink
     # 4.0.12 kept the log next to the path as spelled, so a fleet that mixes releases must find it there.
     (alias := tmp_path / "alias.lock").symlink_to(tmp_path / "real.lock")
     lock = _make_lock(str(alias))
@@ -1218,7 +1219,7 @@ def test_a_symlinked_lock_path_keeps_its_log_beside_the_symlink(tmp_path: Path) 
 
 
 @NEEDS_SYMLINK
-def test_a_symlink_and_its_target_are_separate_singletons(tmp_path: Path) -> None:
+def test_a_symlink_and_its_target_are_separate_singletons(tmp_path: Path) -> None:  # pragma: needs symlink
     # One singleton across two logs would let two non-singleton instances on the two spellings both hold write.
     (alias := tmp_path / "alias.lock").symlink_to(target := tmp_path / "real.lock")
     via_alias = SoftReadWriteLock(alias)
@@ -1538,17 +1539,18 @@ def _junction_the_tree(  # pragma: win32 cover
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name, through junctions")
 @pytest.mark.parametrize("swapped", ["gen", "holders"])
 def test_protocol_tree_with_a_junction_is_refused_after_first_acquire(  # pragma: win32 cover
-    lock_file: str, tmp_path: Path, lock: SoftReadWriteLock, create_junction: Callable[[Path, Path], None], swapped: str
+    lock_file: str, tmp_path: Path, create_junction: Callable[[Path, Path], None], swapped: str
 ) -> None:
-    with lock.write_lock(timeout=2):
-        pass
-    root = Path(f"{lock_file}.rw")
-    root.rename(tmp_path / "aside")
-    _junction_the_tree(root, swapped, target := tmp_path / "target", create_junction)
+    with closing(SoftReadWriteLock(lock_file, is_singleton=False)) as lock:
+        with lock.write_lock(timeout=2):
+            pass
+        root = Path(f"{lock_file}.rw")
+        root.rename(tmp_path / "aside")
+        _junction_the_tree(root, swapped, target := tmp_path / "target", create_junction)
 
-    with pytest.raises(RuntimeError, match="is not a directory or is a symlink"):
-        lock.acquire_write(timeout=0.5)
-    assert list(target.iterdir()) == []
+        with pytest.raises(RuntimeError, match="is not a directory or is a symlink"):
+            lock.acquire_write(timeout=0.5)
+        assert list(target.iterdir()) == []
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows reaches records by name")
@@ -1855,12 +1857,13 @@ def test_contention_obeys_acquisition_policy(
         assert 0 < seconds <= timeout
         real_sleep(seconds)
 
+    sleep_mock = mocker.create_autospec(time.sleep, side_effect=sleep)
     mocker.patch(
         "filelock._soft_rw._sync.time",
         new=SimpleNamespace(
             monotonic=time.monotonic,
-            perf_counter=time.perf_counter,
-            sleep=mocker.create_autospec(time.sleep, side_effect=sleep),
+            perf_counter=mocker.create_autospec(time.perf_counter, side_effect=(reading / 100 for reading in count())),
+            sleep=sleep_mock,
         ),
     )
     with closing(SoftReadWriteLock(lock_file, timeout=timeout, blocking=blocking, poll_interval=10)) as lock:
@@ -1869,6 +1872,7 @@ def test_contention_obeys_acquisition_policy(
             acquire()
         assert caught.value.lock_file == lock_file
     assert _state(lock_file).readers == frozenset()
+    assert sleep_mock.call_count == int(blocking and timeout > 0)
 
 
 @pytest.mark.asyncio
