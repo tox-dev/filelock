@@ -6,6 +6,22 @@
 
 .. towncrier release notes start
 
+.. _release-4-2-12:
+
+*********************
+ 4.2.12 (2026-11-18)
+*********************
+
+.. _release-4-2-12-fixed:
+
+Fixed
+=====
+
+- :class:`~filelock.UnixFileLock` refuses, with ``PermissionError``, a lock file that another account owns under a
+  sticky parent such as ``/tmp``. Its owner could remove it during a hold, after which a second process locked a new
+  file at the same path and both held the lock. A file owned by the directory's owner, such as ``root`` in ``/tmp``, is
+  still accepted (:pr:`968`) by :user:`gaborbernat`.
+
 .. _release-4-2-11:
 
 *********************
