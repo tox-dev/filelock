@@ -3737,7 +3737,7 @@ def test_lock_descriptor_rejects_non_bool_blocking(blocking: str | int) -> None:
 @pytest.mark.parametrize("poll_interval", [pytest.param(True, id="bool"), pytest.param("0.05", id="str")])
 def test_lock_descriptor_rejects_non_number_blocking_poll_interval(poll_interval: bool | str) -> None:
     with pytest.raises(TypeError, match="poll_interval must be a number of seconds"):
-        lock_descriptor(-1, poll_interval=poll_interval)  # ty: ignore[invalid-argument-type]
+        lock_descriptor(-1, poll_interval=poll_interval)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
 
 
 @pytest.mark.parametrize(
