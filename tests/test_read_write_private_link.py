@@ -313,13 +313,13 @@ def test_private_link_sweep_keeps_a_directory_left_without_a_link(
 
 
 def test_private_link_sweep_keeps_empty_directories_renamed_to_a_dead_holder(database: Path) -> None:
-    victim: Final = database.parent / "victim-work"
+    victim: Final[Path] = database.parent / "victim-work"
     victim.mkdir()
     (victim / "incoming").mkdir()
     (victim / "outgoing").mkdir()
     (victim / "data").mkdir()
     (victim / "data" / "notes.txt").write_text("keep")
-    named: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     victim.rename(named)
 
     ReadWriteLock(database, is_singleton=False).close()
