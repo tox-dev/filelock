@@ -386,14 +386,18 @@ def test_stale_break_restores_a_live_marker_a_dead_breaker_left_under_its_break_
     assert (lock.read_text(encoding="utf-8"), list(tmp_path.glob("test.lock.break.*"))) == (_live(record), [])
 
 
+def _live(record: str) -> str:  # pragma: win32 no cover
+    return record.replace(str(_DEAD_PID), str(os.getpid()))
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @pytest.mark.skipif(process_start_token(os.getpid()) is None, reason="the process start token is unavailable")
 def test_stale_break_keeps_a_live_breakers_name(tmp_path: Path) -> None:  # pragma: win32 no cover
-    lock: Final = tmp_path / "test.lock"
-    stale: Final = _holder(os.getpid(), start=0)
+    lock: Final[Path] = tmp_path / "test.lock"
+    stale: Final[str] = _holder(os.getpid(), start=0)
     lock.write_text(stale, encoding="utf-8")
-    break_name: Final = _break_name(lock, os.getpid())
-    live: Final = _holder(os.getpid(), start=process_start_token(os.getpid()))
+    break_name: Final[Path] = _break_name(lock, os.getpid())
+    live: Final[str] = _holder(os.getpid(), start=process_start_token(os.getpid()))
     break_name.write_text(live, encoding="utf-8")
 
     with pytest.raises(Timeout):
@@ -405,13 +409,13 @@ def test_stale_break_keeps_a_live_breakers_name(tmp_path: Path) -> None:  # prag
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @pytest.mark.usefixtures("unchanged_past_grace")
 def test_stale_break_keeps_a_live_breakers_placeholder(tmp_path: Path) -> None:  # pragma: win32 no cover
-    lock: Final = tmp_path / "test.lock"
-    placeholder: Final = f"filelock/break\n{os.getpid()}\n"
+    lock: Final[Path] = tmp_path / "test.lock"
+    placeholder: Final[str] = f"filelock/break\n{os.getpid()}\n"
     lock.write_text(placeholder, encoding="utf-8")
-    break_name: Final = _break_name(lock, os.getpid())
-    live: Final = _holder(os.getpid())
+    break_name: Final[Path] = _break_name(lock, os.getpid())
+    live: Final[str] = _holder(os.getpid())
     break_name.write_text(live, encoding="utf-8")
-    contender: Final = SoftFileLock(lock)
+    contender: Final[SoftFileLock] = SoftFileLock(lock)
 
     with pytest.raises(Timeout):
         contender.acquire(blocking=False)
@@ -419,10 +423,6 @@ def test_stale_break_keeps_a_live_breakers_placeholder(tmp_path: Path) -> None: 
         contender.acquire(blocking=False)
 
     assert (lock.read_text(encoding="utf-8"), break_name.read_text(encoding="utf-8")) == (placeholder, live)
-
-
-def _live(record: str) -> str:  # pragma: win32 no cover
-    return record.replace(str(_DEAD_PID), str(os.getpid()))
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
