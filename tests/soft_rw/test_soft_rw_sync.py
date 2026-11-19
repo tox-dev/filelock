@@ -1251,7 +1251,7 @@ def test_release_from_on_compromise_leaves_cleanly(lock_file: str, force: bool, 
         lock_file,
         is_singleton=False,
         heartbeat_interval=0.05,
-        stale_threshold=0.2,
+        stale_threshold=_PROCESS_DEADLINE,
         poll_interval=0.02,
         on_compromise=lambda _compromise: lock.release(force=force),
     )
