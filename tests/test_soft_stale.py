@@ -414,37 +414,35 @@ def test_stale_break_restores_under_an_exclusive_claim(  # pragma: win32 no cove
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     foreign: Final[str] = record.replace(_HOST, "elsewhere")
     _break_name(lock).write_text(foreign, encoding="utf-8")
-    first_has_checked: Final[threading.Event] = threading.Event()
+    rival_settled: Final[threading.Event] = threading.Event()
     release_rival: Final[threading.Event] = threading.Event()
     rival_timeouts: Final[list[bool]] = []
 
     def rival_recovers() -> None:
-        with pytest.raises(Timeout):
-            lock_type(lock).acquire(blocking=False)
-        rival_timeouts.append(True)
+        try:
+            with pytest.raises(Timeout):
+                lock_type(lock).acquire(blocking=False)
+            rival_timeouts.append(True)
+        finally:
+            rival_settled.set()
 
     rival: Final[threading.Thread] = threading.Thread(target=rival_recovers)
     main: Final[threading.Thread] = threading.current_thread()
     exchange = exchange_names
     unlink = Path.unlink
 
-    def settle(until: threading.Event | None = None) -> None:
-        while rival.is_alive() and not (until and until.is_set()):
-            rival.join(0.001)
-
     def exchange_with_a_rival_between_check_and_exchange(first: str, second: str) -> bool:
         if threading.current_thread() is main:
             rival.start()
-            settle(first_has_checked)
+            rival_settled.wait()
             return exchange(first, second)
-        first_has_checked.set()  # pragma: no cover  # only a recovery race lets two contenders share a record
-        while not release_rival.is_set():  # pragma: no cover  # only a recovery race lets two contenders share a record
-            release_rival.wait(0.001)  # pragma: no cover  # only a recovery race lets two contenders share a record
+        rival_settled.set()  # pragma: no cover  # only a recovery race lets two contenders share a record
+        release_rival.wait()  # pragma: no cover  # only a recovery race lets two contenders share a record
         return exchange(first, second)  # pragma: no cover  # only a recovery race lets two contenders share a record
 
     def unlink_after_the_rival_finished(path: Path, *, missing_ok: bool = False) -> None:
         release_rival.set()
-        settle()
+        rival.join()
         unlink(path, missing_ok=missing_ok)
 
     mocker.patch("filelock._soft.exchange_names", new=exchange_with_a_rival_between_check_and_exchange)
@@ -452,7 +450,7 @@ def test_stale_break_restores_under_an_exclusive_claim(  # pragma: win32 no cove
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
     release_rival.set()
-    settle()
+    rival.join()
 
     assert (
         rival_timeouts,
