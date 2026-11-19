@@ -1044,6 +1044,24 @@ def _hot_journal(super_journal: Path) -> bytes:  # pragma: needs posix-hard-link
 
 @pytest.mark.requires_hard_links
 @_NEEDS_POSIX_HARD_LINK
+def test_closed_directory_ignores_a_journal_left_beside_the_database(  # pragma: needs posix-hard-link
+    shared_database: Path, tmp_path: Path
+) -> None:
+    named = tmp_path / "notes.txt"
+    named.write_text("keep")
+    with closing(sqlite3.connect(shared_database)) as connection:
+        connection.execute("CREATE TABLE application (value)")
+    Path(f"{shared_database}-journal").write_bytes(_hot_journal(named))
+    shared_database.parent.chmod(0o755)
+
+    with ReadWriteLock(shared_database, is_singleton=False).read_lock():
+        pass
+
+    assert named.read_text() == "keep"
+
+
+@pytest.mark.requires_hard_links
+@_NEEDS_POSIX_HARD_LINK
 def test_shared_directory_ignores_a_directory_at_the_wal_name(  # pragma: needs posix-hard-link
     shared_database: Path,
 ) -> None:
@@ -1136,6 +1154,23 @@ def test_windows_directory_only_the_account_can_write_connects_by_name(  # pragm
     ReadWriteLock(database, is_singleton=False).close()
 
     assert (directory_is_private(os.fspath(tmp_path)), connect.call_args_list[0].args[0]) == (True, str(database))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_private_directory_ignores_a_journal_left_beside_the_database(  # pragma: win32 cover
+    tmp_path: Path,
+) -> None:
+    named = tmp_path / "notes.txt"
+    named.write_text("keep")
+    database = tmp_path / "lock.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE application (value)")
+    Path(f"{database}-journal").write_bytes(_hot_journal(named))
+
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        pass
+
+    assert named.read_text() == "keep"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
