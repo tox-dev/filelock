@@ -801,8 +801,10 @@ A contender that finds the breaker's marker dead first looks in the lock's direc
 ``<lock>.restore.<pid>.<token>`` with its own PID, so only one of several contenders acts on it; a record whose
 recoverer died there is claimable again, and a claim a failed put-back left in the same process is retried on the next
 poll. It then exchanges back a marker whose owner is alive or cannot be proven dead, and removes one whose owner is
-dead. Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. The
-placeholder a break writes while it works carries the same PID, so a contender that evicts a placeholder a killed
+dead. Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. A
+record another account owns under a sticky parent stays under its break name: that account could otherwise unlink it
+from the lock path before a displaced holder's marker is put back. The placeholder a break writes while it works
+carries the same PID, so a contender that evicts a placeholder a killed
 process left finds the same names.
 
 The contender holds the judged marker open from before it reads the record until the break ends. ext4 gives a freed
