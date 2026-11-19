@@ -39,48 +39,20 @@ from weakref import WeakValueDictionary
 
 from ._api import (
     AcquireReturnProxy,
-)
-from ._api import (
-    acquire_thread_lock as _acquire_thread_lock,
-)
-from ._api import (
-    canonical as _canonical,
-)
-from ._api import (
-    check_blocking as _check_blocking,
-)
-from ._api import (
-    ensure_current_process as _ensure_current_process,
-)
-from ._api import (
-    fork_transition as _fork_transition,
-)
-from ._api import (
-    raise_chained_errors as _raise_chained_errors,
-)
-from ._api import (
-    register_fork_class as _register_fork_class,
-)
-from ._api import (
-    register_fork_object as _register_fork_object,
-)
-from ._api import (
-    register_owned_descriptor as _register_owned_descriptor,
-)
-from ._api import (
-    resolve_lazy_imports_before_shutdown as _resolve_lazy_imports_before_shutdown,
-)
-from ._api import (
-    resolve_read_write_timeout as _resolve_read_write_timeout,
-)
-from ._api import (
-    seconds as _seconds,
-)
-from ._api import (
-    timeout_behavior as _timeout_behavior,
-)
-from ._api import (
-    unregister_owned_descriptor as _unregister_owned_descriptor,
+    acquire_thread_lock,
+    canonical,
+    check_blocking,
+    ensure_current_process,
+    fork_transition,
+    raise_chained_errors,
+    register_fork_class,
+    register_fork_object,
+    register_owned_descriptor,
+    resolve_lazy_imports_before_shutdown,
+    resolve_read_write_timeout,
+    seconds,
+    timeout_behavior,
+    unregister_owned_descriptor,
 )
 from ._error import Timeout
 from ._identity import (
@@ -91,22 +63,12 @@ from ._identity import (
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
-        directory_is_private as _directory_is_private,
-    )
-    from ._windows import (
-        identity_at as _identity_at,
-    )
-    from ._windows import (
-        identity_of_fd as _identity_of_fd,
-    )
-    from ._windows import (
-        make_private_directory as _make_private_directory,
-    )
-    from ._windows import (
-        open_non_reparse_fd as _open_non_reparse_fd,
-    )
-    from ._windows import (
-        pinned as _pinned,
+        directory_is_private,
+        identity_at,
+        identity_of_fd,
+        make_private_directory,
+        open_non_reparse_fd,
+        pinned,
     )
 
 if TYPE_CHECKING:
@@ -135,8 +97,6 @@ _MAX_TRANSITION_WAIT: Final[float] = 0.05
 # O_NONBLOCK keeps an open from blocking on a FIFO planted at the path; the regular-file check then rejects it.
 _DB_OPEN_FLAGS: Final[int] = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 _DIRECTORY_FLAGS: Final[int] = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-# Header bytes 18 and 19 hold the file format versions, 2 in WAL mode: https://www.sqlite.org/fileformat.html
-_SQLITE_MAGIC: Final[bytes] = b"SQLite format 3\x00"
 _FORMAT_VERSIONS: Final[slice] = slice(18, 20)
 
 
@@ -248,10 +208,10 @@ class _ProbeDescriptors:
         # Reuse a probe no live connection holds: each connect would otherwise keep another descriptor open until the
         # inode's last close.
         try:
-            stat_result: Final = os.lstat(database)
+            stat_result: Final[os.stat_result] = os.lstat(database)
         except OSError:
             return None
-        identity: Final = stat_result.st_dev, stat_result.st_ino
+        identity: Final[tuple[int, int]] = stat_result.st_dev, stat_result.st_ino
         with self._lock:
             if not stat.S_ISREG(stat_result.st_mode) or not (probes := self._inodes.get(identity)) or not probes.idle:
                 return None
@@ -260,9 +220,9 @@ class _ProbeDescriptors:
         return adopted
 
     def retain(self, fd: int, claimed: list[_Probe]) -> _Probe:  # pragma: win32 no cover
-        stat_result: Final = os.fstat(fd)
-        identity: Final = stat_result.st_dev, stat_result.st_ino
-        token: Final = _register_owned_descriptor(fd, identity)
+        stat_result: Final[os.stat_result] = os.fstat(fd)
+        identity: Final[tuple[int, int]] = stat_result.st_dev, stat_result.st_ino
+        token: Final[int | None] = register_owned_descriptor(fd, identity)
         with self._lock:
             (probes := self._inodes.setdefault(identity, _InodeProbes())).descriptors.append((fd, token))
             claimed.append(retained := _Probe(identity, fd, next(self._leases)))
@@ -299,7 +259,7 @@ class _ProbeDescriptors:
         while probes.descriptors:
             fd, token = probes.descriptors[-1]
             if token is not None:  # pragma: needs fork
-                _unregister_owned_descriptor(token)
+                unregister_owned_descriptor(token)
             # Forgotten before the close: after an interrupt, a leaked descriptor beats closing a reused number.
             probes.descriptors.pop()
             # The descriptor is gone even when close reports an error, and no lock of this process depends on it.
@@ -367,7 +327,7 @@ class _ForkSafeConnection(sqlite3.Connection):
         with _sqlite_transition():
             if _GETPID() != self._creator_pid:  # pragma: needs fork
                 return
-            with _fork_transition():
+            with fork_transition():
                 sqlite3.Connection.close(self)
                 try:
                     if (directory := self._database_directory) is not None:  # pragma: needs posix-hard-link
@@ -472,11 +432,11 @@ class _ReadWriteLockMeta(type):
         blocking: bool = True,
         is_singleton: bool = True,
     ) -> ReadWriteLock:
-        _ensure_current_process()
-        _resolve_lazy_imports_before_shutdown()
+        ensure_current_process()
+        resolve_lazy_imports_before_shutdown()
         # Reject a bad default at construction, as FileLock does, rather than at its first acquire.
-        _check_blocking(blocking)
-        timeout = _seconds("timeout", timeout)
+        check_blocking(blocking)
+        timeout = seconds("timeout", timeout)
         if cls._instances_pid != _GETPID():
             cls._reset_class_after_fork()
         construction_pid = _GETPID()
@@ -488,7 +448,7 @@ class _ReadWriteLockMeta(type):
             return instance
 
         # Resolve only the parent, so a symlink at the lock path stays its own key instead of aliasing its target.
-        normalized = pathlib.Path(_canonical(lock_file))
+        normalized = pathlib.Path(canonical(lock_file))
         with cls._instances_lock:
             # One lookup, since another thread can drop the last reference between a membership check and a read.
             if (instance := cls._instances.get(normalized)) is None:
@@ -508,8 +468,7 @@ class _ReadWriteLockMeta(type):
                 cls._instances[normalized] = instance
 
             if (
-                _timeout_behavior(instance.timeout, any_negative=False)
-                != _timeout_behavior(timeout, any_negative=False)
+                timeout_behavior(instance.timeout, any_negative=False) != timeout_behavior(timeout, any_negative=False)
                 or instance.blocking != blocking
             ):
                 msg = (
@@ -566,7 +525,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         cls._instances_lock = threading.RLock()
         cls._instances_pid = _GETPID()
         cls._instances_under_construction = set()
-        _register_fork_class(cls)
+        register_fork_class(cls)
 
     def __init__(
         self,
@@ -577,7 +536,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         is_singleton: bool = True,  # ruff:ignore[unused-method-argument]  # consumed by _ReadWriteLockMeta.__call__
     ) -> None:
         self.lock_file = os.fspath(lock_file)
-        self._canonical_path = pathlib.Path(_canonical(lock_file))
+        self._canonical_path = pathlib.Path(canonical(lock_file))
         _FORKED_DATABASES.raise_if_poisoned(self._canonical_path)
         self.timeout = timeout
         self.blocking = blocking
@@ -589,8 +548,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._closed = False
         self._creator_pid = _GETPID()
         self._fork_invalidated = False
-        _register_fork_object(self)
-        with _fork_transition(), _sqlite_transition():
+        register_fork_object(self)
+        with fork_transition(), _sqlite_transition():
             self._open_connection(sqlite_timeout=5.0).close()
 
     def _open_connection(self, *, sqlite_timeout: float) -> _ForkSafeConnection:
@@ -690,8 +649,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         holder: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> AcquireReturnProxy:
-        timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
-        start_time: Final = time.monotonic()
+        timeout = resolve_read_write_timeout(timeout, blocking=blocking)
+        start_time: Final[float] = time.monotonic()
         remaining = timeout  # -1 waits up to SQLite's busy-timeout cap
         while True:
             # A fork waits for the open transitions and admits no new one meanwhile. A wait for the database inside one
@@ -728,7 +687,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         holder: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> AcquireReturnProxy:
-        with _fork_transition():
+        with fork_transition():
             self._raise_if_unusable()
             operation_pid = _GETPID()
             thread_id = threading.get_ident()
@@ -759,7 +718,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     self._acquisition_thread_ids.discard(thread_id)
 
     def _raise_if_unusable(self) -> None:
-        _ensure_current_process()
+        ensure_current_process()
         if self._inherited:  # pragma: needs fork
             msg = f"ReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
             raise RuntimeError(msg)
@@ -815,7 +774,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
     def _acquire_transaction_lock(
         self, *, blocking: bool, timeout: float, cancel_check: Callable[[], bool] | None
     ) -> None:
-        if not _acquire_thread_lock(
+        if not acquire_thread_lock(
             self._transaction_lock,
             blocking=blocking,
             timeout=timeout,
@@ -858,7 +817,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             try:
                 self._finish_connection()
             except sqlite3.Error as cleanup_error:
-                _raise_chained_errors(acquisition_error, cleanup_error)
+                raise_chained_errors(acquisition_error, cleanup_error)
             if acquisition_error is not error:
                 raise acquisition_error from None
             raise
@@ -889,7 +848,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 connection.close()
             except sqlite3.Error as close_error:
                 if rollback_error is not None:
-                    _raise_chained_errors(rollback_error, close_error)
+                    raise_chained_errors(rollback_error, close_error)
                 raise
             self._owned_connection.connection = None
             self._owned_connection.transaction_released = True
@@ -1003,8 +962,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             no level of the current lock and *force* is ``False``
 
         """
-        with _fork_transition():
-            _ensure_current_process()
+        with fork_transition():
+            ensure_current_process()
             if self._inherited:  # pragma: needs fork
                 return
             self._raise_if_acquiring("release")
@@ -1116,8 +1075,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         thread's hold on this instance, whichever thread calls it.
 
         """
-        with _fork_transition():
-            _ensure_current_process()
+        with fork_transition():
+            ensure_current_process()
             if self._inherited:  # pragma: needs fork
                 return
             self._raise_if_acquiring("close")
@@ -1137,8 +1096,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         return self._acquire(mode, timeout, blocking=blocking, holder=holder, cancel_check=cancel_check)
 
     def _release_level_of(self, thread_id: int) -> None:
-        with _fork_transition():
-            _ensure_current_process()
+        with fork_transition():
+            ensure_current_process()
             self._raise_if_acquiring("release")
             self._release(force=False, close=False, thread_id=thread_id)
 
@@ -1172,14 +1131,14 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
     # A symlink at the path would make SQLite open, lock, or create its target, so connect through a descriptor that
     # refuses one.
     if sys.platform == "win32":  # pragma: win32 cover
-        fd: Final = _open_lock_database(database, oplock_wait=timeout)
+        fd = _open_lock_database(database, oplock_wait=timeout)
         link: _LinkDirectory | None = None
         # A Windows lock belongs to the handle that took it, so closing this one leaves SQLite's locks in place.
         try:
             _raise_if_wal(fd, database)
             target = database
-            if not _directory_is_private(os.fspath(pathlib.Path(database).parent)):
-                link = _link_beside_on_windows(database, _identity_of_fd(fd))
+            if not directory_is_private(os.fspath(pathlib.Path(database).parent)):
+                link = _link_beside_on_windows(database, identity_of_fd(fd))
                 target = os.fspath(link.database)
             try:
                 connection = sqlite3.connect(
@@ -1216,9 +1175,9 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         # SQLite opens the name it is given, following symlinks, and uses the -journal, -wal and -shm names beside it,
         # so the database name is safe only where no process of another account can create names. A descriptor path
         # such as /proc/self/fd/<n> is no better: SQLite reads it back into the name the kernel reports.
-        status: Final = os.lstat(pathlib.Path(database).parent)  # pragma: needs posix-hard-link
+        status: Final[os.stat_result] = os.lstat(pathlib.Path(database).parent)  # pragma: needs posix-hard-link
         # The sticky bit still lets others create names, so a directory anyone else may write to never qualifies.
-        writable_by_others: Final = status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)  # pragma: needs posix-hard-link
+        writable_by_others: Final[int] = status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)  # pragma: needs posix-hard-link
         if status.st_uid not in {owner, 0} or writable_by_others:  # pragma: needs posix-hard-link
             link = _link_beside(database, identity, owner)
             target = os.fspath(link.database)
@@ -1252,14 +1211,14 @@ def _link_beside(  # pragma: needs posix-hard-link
     database: str, identity: _DatabaseIdentity, owner: int
 ) -> _LinkDirectory:
     # Beside the database because a link cannot cross filesystems, and TMPDIR is often on another one.
-    parent: Final = pathlib.Path(database).parent
+    parent: Final[pathlib.Path] = pathlib.Path(database).parent
     _sweep_links_of_the_dead(parent, identity, owner)
-    path: Final = pathlib.Path(tempfile.mkdtemp(prefix=_link_prefix(), dir=parent))
-    fd: Final = os.open(path, _DIRECTORY_FLAGS)
+    path: Final[pathlib.Path] = pathlib.Path(tempfile.mkdtemp(prefix=_link_prefix(), dir=parent))
+    fd: Final[int] = os.open(path, _DIRECTORY_FLAGS)
     try:
-        made: Final = os.fstat(fd)
+        made: Final[os.stat_result] = os.fstat(fd)
         # Whoever can rename in the parent can put another directory under the new name before it opens.
-        loose: Final = made.st_mode & 0o077
+        loose: Final[int] = made.st_mode & 0o077
         if made.st_uid != owner or (loose and os.listdir(fd)):  # ruff:ignore[os-listdir]  # pathlib cannot list a descriptor
             msg = f"link directory {os.fspath(path)!r} was replaced while opening"
             raise OSError(msg)
@@ -1276,11 +1235,11 @@ def _link_beside(  # pragma: needs posix-hard-link
                 raise OSError(msg) from exc
             if os.fstat(fd).st_mode & 0o077:
                 raise OSError(msg)
-        link: Final = _LinkDirectory(path, (made.st_dev, made.st_ino), secrets.token_hex(8))
+        link: Final[_LinkDirectory] = _LinkDirectory(path, (made.st_dev, made.st_ino), secrets.token_hex(8))
         try:
             os.mkdir(link.name, 0o700, dir_fd=fd)
             os.link(database, link.database, follow_symlinks=False)
-            linked: Final = link.database.stat(follow_symlinks=False)
+            linked: Final[os.stat_result] = link.database.stat(follow_symlinks=False)
         except BaseException:
             _remove_link_directory(link)
             raise
@@ -1303,7 +1262,7 @@ def _sweep_links_of_the_dead(
     _SWEPT_DATABASES.add(identity)
     try:
         with os.scandir(parent) as entries:
-            names: Final = [
+            names: Final[list[str]] = [
                 entry.name
                 for entry in entries
                 if entry.name.startswith(_LINK_PREFIX) and entry.is_dir(follow_symlinks=False)
@@ -1324,14 +1283,14 @@ def _remove_dead_links(
         return
     # Any directory can carry a dead holder's name after a rename in the parent, so only hard links to this database
     # go, and the directory only once that leaves it empty.
-    fd: Final = os.open(path, _DIRECTORY_FLAGS)
+    fd: Final[int] = os.open(path, _DIRECTORY_FLAGS)
     try:
         # Only a directory this account made carries a holder of its own; a name another account chose is never
         # parsed, so no PID is probed on its behalf.
         if os.fstat(fd).st_uid != owner or not _owner_is_gone(path.name):
             return
         with os.scandir(fd) as entries:
-            names: Final = [entry.name for entry in entries]
+            names: Final[list[str]] = [entry.name for entry in entries]
         for entry in names:
             # Releases up to 4.2.0 linked the database right inside the directory.
             if entry == _LINK_NAME:
@@ -1355,7 +1314,7 @@ def _remove_dead_links(
 
 def _unlink_link_to(identity: _DatabaseIdentity, dir_fd: int) -> None:  # pragma: needs posix-hard-link
     try:
-        linked: Final = os.stat(_LINK_NAME, dir_fd=dir_fd, follow_symlinks=False)
+        linked: Final[os.stat_result] = os.stat(_LINK_NAME, dir_fd=dir_fd, follow_symlinks=False)
     except OSError:
         return
     if (linked.st_dev, linked.st_ino) == identity:
@@ -1369,7 +1328,7 @@ def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
         ):
             if not 1 <= (owner_pid := int(pid)) <= 2**31 - 1:
                 return False
-            host: Final = host_name()
+            host: Final[str] = host_name()
             return digest == _host_digest(host) and owner_is_stale(owner_pid, host, int(start) if start else None)
         case _:
             return False
@@ -1377,7 +1336,7 @@ def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
 
 def _link_prefix() -> str:  # pragma: needs posix-hard-link
     # The owner rides in the name, which mkdtemp creates in one step, so no directory ever exists without it.
-    start: Final = process_start_token(pid := os.getpid())
+    start: Final[int | None] = process_start_token(pid := os.getpid())
     return f"{_LINK_PREFIX}{pid}-{'' if start is None else start}-{_host_digest(host_name())}-"
 
 
@@ -1393,11 +1352,11 @@ def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix
     # A rename in the parent may have put any directory under this name, so entries go through a descriptor checked
     # to be the directory made, and the name goes only through rmdir, which refuses a non-empty directory.
     try:
-        fd: Final = os.open(link.path, _DIRECTORY_FLAGS)
+        fd: Final[int] = os.open(link.path, _DIRECTORY_FLAGS)
     except OSError:
         return
     try:
-        opened: Final = os.fstat(fd)
+        opened: Final[os.stat_result] = os.fstat(fd)
         if (opened.st_dev, opened.st_ino) != link.identity:
             return
         for suffix in ("", "-journal", "-wal", "-shm"):
@@ -1415,15 +1374,15 @@ def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix
 if sys.platform == "win32":  # pragma: win32 cover
 
     def _link_beside_on_windows(database: str, identity: _DatabaseIdentity) -> _LinkDirectory:
-        parent: Final = pathlib.Path(database).parent
+        parent: Final[pathlib.Path] = pathlib.Path(database).parent
         # No uid exists here: a directory is a dead holder's only if its ACL admits nobody but the trusted accounts.
         _sweep_links_of_the_dead(parent, identity, 0)
-        path: Final = parent / f"{_link_prefix()}{secrets.token_hex(8)}"
-        _make_private_directory(os.fspath(path))
+        path: Final[pathlib.Path] = parent / f"{_link_prefix()}{secrets.token_hex(8)}"
+        make_private_directory(os.fspath(path))
         link: _LinkDirectory | None = None
         try:
             # The handle keeps a rename in the parent from swapping the directory while the link is made inside it.
-            with _pinned(os.fspath(path)) as directory_identity:
+            with pinned(os.fspath(path)) as directory_identity:
                 link = _LinkDirectory(path, directory_identity, secrets.token_hex(8))
                 _fill_link_directory(link, database, identity)
         except BaseException:
@@ -1433,22 +1392,22 @@ if sys.platform == "win32":  # pragma: win32 cover
         return link
 
     def _fill_link_directory(link: _LinkDirectory, database: str, identity: _DatabaseIdentity) -> None:
-        if not _directory_is_private(os.fspath(link.path)):
+        if not directory_is_private(os.fspath(link.path)):
             msg = f"link directory {os.fspath(link.path)!r} was replaced while opening"
             raise OSError(msg)
-        _make_private_directory(os.fspath(link.path / link.name))
+        make_private_directory(os.fspath(link.path / link.name))
         os.link(database, link.database)
         # The open database handle pins its path against a rename, so only a file index that is not unique can differ.
-        if _identity_at(os.fspath(link.database)) != identity:
+        if identity_at(os.fspath(link.database)) != identity:
             msg = f"lock database changed while opening: {database!r}"
             raise OSError(msg)
 
     def _remove_dead_links_on_windows(path: pathlib.Path, identity: _DatabaseIdentity) -> None:
-        with _pinned(os.fspath(path)):
-            if not _directory_is_private(os.fspath(path)) or not _owner_is_gone(path.name):
+        with pinned(os.fspath(path)):
+            if not directory_is_private(os.fspath(path)) or not _owner_is_gone(path.name):
                 return
             with os.scandir(path) as entries:
-                nested: Final = [pathlib.Path(entry.path) for entry in entries]
+                nested = [pathlib.Path(entry.path) for entry in entries]
             for directory in nested:
                 _unlink_link_to_on_windows(identity, directory / _LINK_NAME)
                 with suppress(OSError):
@@ -1458,13 +1417,13 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     def _unlink_link_to_on_windows(identity: _DatabaseIdentity, path: pathlib.Path) -> None:
         with suppress(OSError):
-            if _identity_at(os.fspath(path)) == identity:
+            if identity_at(os.fspath(path)) == identity:
                 path.unlink()
 
     def _remove_link_directory_on_windows(link: _LinkDirectory) -> None:
         # A removal never fails a release: SQLite or a scanner may still hold a name, and the next sweep retries.
         with suppress(OSError):
-            with _pinned(os.fspath(link.path)) as directory_identity:
+            with pinned(os.fspath(link.path)) as directory_identity:
                 if directory_identity != link.identity:
                     return
                 for suffix in ("", "-journal", "-wal", "-shm"):
@@ -1478,7 +1437,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 def _open_lock_database(database: str, *, oplock_wait: float = 0) -> int:
     if sys.platform == "win32":  # pragma: win32 cover
         # The handle refuses a reparse point and omits delete sharing, so the name cannot be swapped while it is open.
-        if (fd := _open_non_reparse_fd(database, 0o600, oplock_wait=oplock_wait)) is None:
+        if (fd := open_non_reparse_fd(database, 0o600, oplock_wait=oplock_wait)) is None:
             msg = f"lock database {database!r} is held without sharing or pending deletion"
             raise PermissionError(msg)
         return fd
@@ -1494,10 +1453,12 @@ def _raise_if_wal(fd: int, database: str) -> None:
     # SQLite derives the -wal name from the path it connects through, a descriptor name on POSIX, and WAL never blocks
     # readers behind a writer, so the lock cannot work on such a database.
     # pread: an adopted probe is shared, so its file offset is not this connect's to move.
-    header_size: Final = 20
-    wal_format_version: Final = 2
-    header: Final = os.pread(fd, header_size, 0) if hasattr(os, "pread") else os.read(fd, header_size)
-    if header.startswith(_SQLITE_MAGIC) and wal_format_version in header[_FORMAT_VERSIONS]:
+    header_size: Final[int] = 20
+    wal_format_version: Final[int] = 2
+    header: Final[bytes] = os.pread(fd, header_size, 0) if hasattr(os, "pread") else os.read(fd, header_size)
+    # Header bytes 18 and 19 hold the file format versions, 2 in WAL mode: https://www.sqlite.org/fileformat.html
+    sqlite_magic: bytes = b"SQLite format 3\x00"
+    if header.startswith(sqlite_magic) and wal_format_version in header[_FORMAT_VERSIONS]:
         msg = f"refusing a WAL-mode lock database: {database!r}; give ReadWriteLock a file of its own"
         raise ValueError(msg)
 
@@ -1506,8 +1467,8 @@ def _raise_if_wal(fd: int, database: str) -> None:
 def _bounded_schema(connection: sqlite3.Connection, database: str) -> Generator[None]:
     # The first statement loads the file's complete schema, which no timeout bounds, and a lock database has none.
     # Waiting for a lock runs no virtual machine steps, so a step budget bounds only that load.
-    calls: Final = count()
-    max_calls: Final = 10
+    calls: Final[count[int]] = count()
+    max_calls: Final[int] = 10
     connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 4096)
     connection.set_progress_handler(lambda: next(calls) >= max_calls, 1000)
     try:
@@ -1536,7 +1497,7 @@ def _sqlite_transition() -> Generator[None]:
 
 def _abort_forked_sqlite_transition() -> None:  # pragma: forked child
     if _SQLITE_TRANSITION_CONTEXT.depth:
-        unsafe_fork_exit_status: Final = 70
+        unsafe_fork_exit_status: Final[int] = 70
         os._exit(unsafe_fork_exit_status)  # inherited SQLite handles cannot be used or closed safely
 
 
@@ -1563,10 +1524,10 @@ def timeout_for_sqlite(timeout: float, *, blocking: bool, already_waited: float)
     return timeout_ms
 
 
-_register_fork_object(_CONNECTION_ESCROW)
-_register_fork_object(_FORKED_DATABASES)
-_register_fork_object(_PROBE_DESCRIPTORS)
-_register_fork_class(ReadWriteLock)
+register_fork_object(_CONNECTION_ESCROW)
+register_fork_object(_FORKED_DATABASES)
+register_fork_object(_PROBE_DESCRIPTORS)
+register_fork_class(ReadWriteLock)
 if _IS_PYPY:
     sys.addaudithook(_track_sqlite_use)  # pragma: pypy cover
 if hasattr(os, "register_at_fork"):  # pragma: needs fork

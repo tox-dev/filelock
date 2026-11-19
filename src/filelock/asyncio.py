@@ -32,93 +32,41 @@ from inspect import iscoroutinefunction
 from typing import TYPE_CHECKING, Final, NoReturn, TypeVar, cast
 
 from ._api import (
-    UNSET_FILE_MODE as _UNSET_FILE_MODE,
-)
-from ._api import (
+    UNSET_FILE_MODE,
     BaseFileLock,
     CloseErrorPolicy,
     ContextErrorPolicy,
+    ExtraValue,
     FileLockContext,
     FileLockMeta,
+    LockSettings,
     ThreadLocalFileContext,
-)
-from ._api import (
-    ExtraValue as _ExtraValue,
-)
-from ._api import (
-    LockSettings as _LockSettings,
-)
-from ._api import (
-    append_exception_context as _append_exception_context,
-)
-from ._api import (
-    canonical as _canonical,
-)
-from ._api import (
-    check_blocking as _check_blocking,
-)
-from ._api import (
-    delegate_to_current as _delegate_to_current,
-)
-from ._api import (
-    fork_transition as _fork_transition,
-)
-from ._api import (
-    grouped_errors as _grouped_errors,
-)
-from ._api import (
-    interpreter_exiting as _interpreter_exiting,
-)
-from ._api import (
-    is_system_call_failure as _is_system_call_failure,
-)
-from ._api import (
-    raise_body_and_release as _raise_body_and_release,
-)
-from ._api import (
-    raise_chained_errors as _raise_chained_errors,
-)
-from ._api import (
-    raise_cleanup_errors as _raise_cleanup_errors,
-)
-from ._api import (
-    raise_grouped_errors as _raise_grouped_errors,
-)
-from ._api import (
-    register_fork_object as _register_fork_object,
-)
-from ._api import (
-    resolve_poll_interval as _resolve_poll_interval,
-)
-from ._api import (
-    resolve_timeout as _resolve_timeout,
+    append_exception_context,
+    canonical,
+    check_blocking,
+    delegate_to_current,
+    fork_transition,
+    grouped_errors,
+    interpreter_exiting,
+    is_system_call_failure,
+    raise_body_and_release,
+    raise_chained_errors,
+    raise_cleanup_errors,
+    raise_grouped_errors,
+    register_fork_object,
+    resolve_poll_interval,
+    resolve_timeout,
 )
 from ._async import (
-    AsyncTransitionGate as _AsyncTransitionGate,
-)
-from ._async import (
-    AsyncTransitionUnavailableError as _AsyncTransitionUnavailableError,
-)
-from ._async import (
-    BackendOutcome as _BackendOutcome,
-)
-from ._async import (
-    capture_awaitable as _capture_awaitable,
-)
-from ._async import (
-    capture_call as _capture_call,
-)
-from ._async import (
-    drain_future as _drain_future,
-)
-from ._async import (
-    future_result as _future_result,
-)
-from ._async import (
-    run_in_executor as _run_in_executor,
-)
-from ._async import (
-    wait_until_done as _wait_until_done,
+    AsyncTransitionGate,
+    AsyncTransitionUnavailableError,
+    BackendOutcome,
+    capture_awaitable,
+    capture_call,
+    drain_future,
+    future_result,
+    run_in_executor,
+    wait_until_done,
 )
 from ._error import Timeout
 from ._lease import SoftFileLease
@@ -149,7 +97,7 @@ class AsyncFileLockMeta(FileLockMeta):  # simplint: ignore[unexported-public-nam
         cls: type[_AT],  # ruff:ignore[invalid-first-argument-name-for-method]  # metaclass __call__ receives the class being constructed
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
-        mode: int = _UNSET_FILE_MODE,
+        mode: int = UNSET_FILE_MODE,
         thread_local: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         *,
         blocking: bool = True,
@@ -164,7 +112,7 @@ class AsyncFileLockMeta(FileLockMeta):  # simplint: ignore[unexported-public-nam
         loop: asyncio.AbstractEventLoop | None = None,
         run_in_executor: bool = True,
         executor: futures.Executor | None = None,
-        **kwargs: _ExtraValue,
+        **kwargs: ExtraValue,
     ) -> _AT:
         if thread_local and run_in_executor:
             msg = "run_in_executor is not supported when thread_local is True"
@@ -205,7 +153,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self,
         lock_file: str | os.PathLike[str],
         timeout: float = -1,
-        mode: int = _UNSET_FILE_MODE,
+        mode: int = UNSET_FILE_MODE,
         thread_local: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         *,
         blocking: bool = True,
@@ -282,7 +230,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
         """
         self._adopt_settings(
-            _LockSettings(
+            LockSettings(
                 thread_local=thread_local,
                 is_singleton=is_singleton,
                 context_error_policy=context_error_policy,
@@ -311,7 +259,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         )
         # BaseFileLock declares _context as FileLockContext; narrowing that writable attribute here is unsound.
         self._context = self._async_context
-        _register_fork_object(self)
+        register_fork_object(self)
 
     def __enter__(self) -> NoReturn:
         """Sync context manager entry is not supported because lock acquisition is a coroutine."""
@@ -388,12 +336,12 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         if blocking is None:
             blocking = self._context.blocking
 
-        _check_blocking(blocking)
+        check_blocking(blocking)
 
         if poll_interval is None:
             poll_interval = self._context.poll_interval
-        poll_interval = _resolve_poll_interval(poll_interval)
-        timeout = _resolve_timeout(timeout, blocking=blocking)
+        poll_interval = resolve_poll_interval(poll_interval)
+        timeout = resolve_timeout(timeout, blocking=blocking)
 
         start_time = time.perf_counter()
         try:
@@ -404,7 +352,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 poll_interval=poll_interval,
                 start_time=start_time,
             )
-        except _AsyncTransitionUnavailableError:
+        except AsyncTransitionUnavailableError:
             raise Timeout(self.lock_file) from None
 
     async def _acquire_with_admission(
@@ -427,10 +375,10 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 self._context.lock_counter += 1
                 return AsyncAcquireReturnProxy(lock=self)
             # A canceled provisional acquire must finish rollback before another caller can claim its descriptor.
-            canonical = await self._off_loop(functools.partial(_canonical, self.lock_file))
+            canonical_path = await self._off_loop(functools.partial(canonical, self.lock_file))
             self._context.lock_counter += 1
-            self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
-            self._pin_lock_path(canonical)
+            self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
+            self._pin_lock_path(canonical_path)
             try:
                 await self._async_poll_until_acquired(
                     blocking=blocking,
@@ -440,18 +388,18 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                     start_time=start_time,
                 )
             except BaseException:
-                self._reconcile_failed_acquire(canonical)
+                self._reconcile_failed_acquire(canonical_path)
                 raise
-            self._commit_acquire(canonical)
+            self._commit_acquire(canonical_path)
             return AsyncAcquireReturnProxy(lock=self)
 
     async def _off_loop(self, call: Callable[[], _T]) -> _T:
         # A slow mount stalls a filesystem call, and the loop with it; a coroutine backend runs on the loop anyway.
         if not self.run_in_executor or iscoroutinefunction(self._acquire):
             return call()
-        future = _run_in_executor(asyncio.get_running_loop(), self.executor, call)
-        await _wait_until_done(future)
-        return _future_result(future)
+        future = run_in_executor(asyncio.get_running_loop(), self.executor, call)
+        await wait_until_done(future)
+        return future_result(future)
 
     @property
     def run_in_executor(self) -> bool:
@@ -515,18 +463,18 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             else self._break_expired_and_acquire
         )
         try:
-            await _wait_until_done(acquire_future)
+            await wait_until_done(acquire_future)
         except asyncio.CancelledError as cancellation:
             acquire_error: BaseException | None = None
             try:
-                await _drain_future(acquire_future)
+                await drain_future(acquire_future)
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 acquire_error = error
 
             rollback_error: BaseException | None = None
             if self.is_locked:
                 try:
-                    await _drain_future(self._start_tracked_release())
+                    await drain_future(self._start_tracked_release())
                 except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                     rollback_error = error
 
@@ -547,26 +495,26 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 )
             raise
         try:
-            _future_result(acquire_future)
+            future_result(acquire_future)
         except asyncio.CancelledError as acquire_error:
             await self._rollback_backend_cancelled_acquire(acquire_error)
 
     def _start_internal_method(
         self, method: Callable[[], None] | Callable[[], Coroutine[None, None, None]]
-    ) -> asyncio.Future[_BackendOutcome[None]]:
+    ) -> asyncio.Future[BackendOutcome[None]]:
         if iscoroutinefunction(method):
-            return asyncio.create_task(_capture_awaitable(cast("Callable[[], Coroutine[None, None, None]]", method)()))
+            return asyncio.create_task(capture_awaitable(cast("Callable[[], Coroutine[None, None, None]]", method)()))
         loop = asyncio.get_running_loop()
         sync_method = cast("Callable[[], None]", method)
         if self.run_in_executor:
-            return _run_in_executor(loop, self.executor, sync_method)
-        future: asyncio.Future[_BackendOutcome[None]] = loop.create_future()
-        future.set_result(_capture_call(sync_method))
+            return run_in_executor(loop, self.executor, sync_method)
+        future: asyncio.Future[BackendOutcome[None]] = loop.create_future()
+        future.set_result(capture_call(sync_method))
         return future
 
     async def _acquire_with_fork_tracking_async(self) -> None:
         self._try_break_expired_lock()
-        with _fork_transition(self):
+        with fork_transition(self):
             try:
                 await cast("Callable[[], Awaitable[None]]", self._acquire)()
             except BaseException as acquisition_error:
@@ -595,11 +543,11 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
                 tracking_error = error
         try:
-            await _drain_future(self._start_tracked_release())
+            await drain_future(self._start_tracked_release())
         except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and acquisition failures
             if registration_error is None and tracking_error is None:
                 self._raise_acquire_rollback_errors(acquisition_error, rollback_error)
-            _raise_cleanup_errors(
+            raise_cleanup_errors(
                 "lock acquisition cleanup failed",
                 acquisition_error,
                 registration_error,
@@ -607,14 +555,14 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 rollback_error,
             )
         if registration_error is not None:
-            _raise_cleanup_errors(
+            raise_cleanup_errors(
                 "lock acquisition cleanup failed", acquisition_error, registration_error, tracking_error
             )
 
     def _raise_acquire_rollback_errors(self, acquire_error: BaseException, rollback_error: BaseException) -> NoReturn:
         if self._settings.context_error_policy == "group":
-            _raise_grouped_errors("lock acquisition backend and rollback both failed", acquire_error, rollback_error)
-        _raise_chained_errors(acquire_error, rollback_error)
+            raise_grouped_errors("lock acquisition backend and rollback both failed", acquire_error, rollback_error)
+        raise_chained_errors(acquire_error, rollback_error)
 
     async def _rollback_failed_registration_async(self, registration_error: BaseException) -> None:
         tracking_error: BaseException | None = None
@@ -624,13 +572,13 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
             tracking_error = error
         try:
-            await _drain_future(self._start_tracked_release())
+            await drain_future(self._start_tracked_release())
         except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and registration failures
-            _raise_cleanup_errors(
+            raise_cleanup_errors(
                 "descriptor registration cleanup failed", registration_error, tracking_error, rollback_error
             )
         if tracking_error is not None:  # pragma: no cover - requires failed in-memory fallback
-            _raise_cleanup_errors("descriptor registration cleanup failed", registration_error, tracking_error)
+            raise_cleanup_errors("descriptor registration cleanup failed", registration_error, tracking_error)
 
     async def _invoke_on_acquired_async(self) -> None:
         if self._settings.on_acquired is None or self._context.lock_counter != 1:
@@ -640,9 +588,9 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         except BaseException as callback_error:  # caller control-flow errors must release the lock
             callback_context = callback_error.__context__
             try:
-                await _drain_future(self._start_tracked_release())
+                await drain_future(self._start_tracked_release())
             except BaseException as release_error:  # ruff:ignore[blind-except]  # both errors surface via the group below
-                _raise_body_and_release(callback_error, release_error)
+                raise_body_and_release(callback_error, release_error)
             callback_error.__context__ = callback_context
             raise
 
@@ -651,7 +599,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         self._try_break_expired_lock()
         self._acquire_with_fork_tracking()
 
-    def _start_tracked_release(self) -> asyncio.Future[_BackendOutcome[None]]:
+    def _start_tracked_release(self) -> asyncio.Future[BackendOutcome[None]]:
         return self._start_internal_method(
             self._release_with_fork_tracking_async
             if iscoroutinefunction(self._release)
@@ -659,7 +607,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         )
 
     async def _release_with_fork_tracking_async(self) -> None:
-        with _fork_transition(self):
+        with fork_transition(self):
             try:
                 await cast("Callable[[], Awaitable[None]]", self._release)()
             finally:
@@ -679,19 +627,19 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 else None
             )
             if second_error is None:
-                _raise_grouped_errors(message, cancellation, first_error, marker=marker)
-            _raise_grouped_errors(message, cancellation, first_error, second_error, marker=marker)
+                raise_grouped_errors(message, cancellation, first_error, marker=marker)
+            raise_grouped_errors(message, cancellation, first_error, second_error, marker=marker)
         if (context := first_error.__context__) is not None and context is not cancellation:
             if (cancellation_context := cancellation.__context__) is not None:
-                _append_exception_context(context, cancellation_context)
+                append_exception_context(context, cancellation_context)
             cancellation.__context__ = context
         first_error.__context__ = cancellation
-        _raise_chained_errors(first_error, second_error)
+        raise_chained_errors(first_error, second_error)
 
     async def _rollback_backend_cancelled_acquire(self, acquire_error: asyncio.CancelledError) -> NoReturn:
         if self.is_locked:
             try:
-                await _drain_future(self._start_tracked_release())
+                await drain_future(self._start_tracked_release())
             except BaseException as rollback_error:  # ruff:ignore[blind-except]  # both backend errors must surface
                 self._raise_acquire_rollback_errors(acquire_error, rollback_error)
         raise acquire_error
@@ -722,10 +670,10 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             if body_error is None:
                 raise
             if self._settings.context_error_policy == "chain":
-                _append_exception_context(release_error, body_error)
+                append_exception_context(release_error, body_error)
                 raise
             if (
-                errors := _grouped_errors(
+                errors := grouped_errors(
                     release_error,
                     _ASYNC_RELEASE_CANCELLATION_ERRORS,
                     (_ASYNC_RELEASE_CANCELLATION_MARKER_ATTR, _ASYNC_RELEASE_CANCELLATION_MARKER),
@@ -734,13 +682,13 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 match errors:
                     # The marker is only ever set on a (CancelledError, backend_error) pair, so this always matches.
                     case (asyncio.CancelledError() as cancellation, backend_error):  # pragma: no branch
-                        _raise_grouped_errors(
+                        raise_grouped_errors(
                             "context body, release cancellation, and backend release failed",
                             body_error,
                             cancellation,
                             backend_error,
                         )
-            _raise_body_and_release(body_error, release_error)
+            raise_body_and_release(body_error, release_error)
 
     async def release(self, force: bool = False) -> None:  # ty: ignore[incompatible-method-override]  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         """
@@ -756,7 +704,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             await self._release_serialized(force=force)
 
     async def _release_serialized(self, *, force: bool) -> None:
-        counter_before: Final = self._context.lock_counter
+        counter_before: Final[int] = self._context.lock_counter
         if not self.is_locked:
             return
         if not force and self._context.lock_counter > 1:
@@ -777,17 +725,17 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         _LOGGER.debug("Attempting to release lock %s on %s", lock_id, lock_filename)
         release_future = self._start_tracked_release()
         try:
-            await _wait_until_done(release_future)
+            await wait_until_done(release_future)
         except asyncio.CancelledError as cancellation:
             try:
-                await _drain_future(release_future)
+                await drain_future(release_future)
             except BaseException as release_error:  # ruff:ignore[blind-except]  # cancellation and backend failure must both surface
                 self._commit_release_if_released()
                 self._raise_cancelled_errors(_ASYNC_RELEASE_CANCELLATION_ERRORS, cancellation, release_error)
             self._commit_release()
             raise
         try:
-            _future_result(release_future)
+            future_result(release_future)
         except BaseException:  # state follows the backend for control-flow exceptions too
             self._commit_release_if_released()
             raise
@@ -804,7 +752,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             and not self.run_in_executor
             and not iscoroutinefunction(self._release)
             and not isinstance(release_error, asyncio.CancelledError)
-            and not _is_system_call_failure(release_error)
+            and not is_system_call_failure(release_error)
         )
 
     def _commit_release_if_released(self) -> None:
@@ -821,7 +769,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         # fast, so scope holders to the task.
         return asyncio.current_task()
 
-    def _singleton_extra_mismatches(self, kwargs: Mapping[str, _ExtraValue], /) -> dict[str, tuple[str, str]]:
+    def _singleton_extra_mismatches(self, kwargs: Mapping[str, ExtraValue], /) -> dict[str, tuple[str, str]]:
         mismatches = super()._singleton_extra_mismatches(kwargs)
         # Loops and executors compare by identity: a different one schedules the lock's work elsewhere.
         mismatches.update(
@@ -851,7 +799,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             except RuntimeError:
                 # Once finalizing, daemon threads no longer run, so a loop running in one never runs the release. The
                 # exit release releases in place too: it skips a shared lock while any other thread is alive.
-                if (loop := self._async_context.loop) is None or loop.is_closed() or _interpreter_exiting():
+                if (loop := self._async_context.loop) is None or loop.is_closed() or interpreter_exiting():
                     self._release_without_loop(exited_only=exited_only)
                     return
                 if not loop.is_running():
@@ -913,9 +861,9 @@ class AsyncAcquireReturnProxy:
         await self.lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # releases the wrapped lock's context
 
 
-def _new_transition_gate() -> _AsyncTransitionGate:
+def _new_transition_gate() -> AsyncTransitionGate:
     # Called per context rather than passed as the factory, so the lazy import resolves on first use, not at import.
-    return _AsyncTransitionGate()
+    return AsyncTransitionGate()
 
 
 @dataclass  # simplint: ignore[dataclass-frozen, dataclass-slots, dataclass-kw-only]  # established mutable context
@@ -935,7 +883,7 @@ class AsyncFileLockContext(FileLockContext):
 
     #: Serializes the tasks that transition this context. An acquire keeps it while it polls, so a thread-local lock
     #: needs one per thread. A thread waiting for the lock must not keep the thread that holds it from releasing.
-    transition_gate: _AsyncTransitionGate = field(default_factory=_new_transition_gate)
+    transition_gate: AsyncTransitionGate = field(default_factory=_new_transition_gate)
 
 
 class AsyncThreadLocalFileContext(  # simplint: ignore[unexported-public-name]  # existing module attribute
@@ -973,7 +921,7 @@ class AsyncThreadLocalFileContext(  # simplint: ignore[unexported-public-name]  
 
 
 for _field in fields(AsyncFileLockContext):
-    setattr(AsyncThreadLocalFileContext, _field.name, _delegate_to_current(_field.name))
+    setattr(AsyncThreadLocalFileContext, _field.name, delegate_to_current(_field.name))
 
 
 class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):

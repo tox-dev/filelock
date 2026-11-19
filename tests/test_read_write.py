@@ -37,11 +37,11 @@ if sys.platform == "win32":  # pragma: win32 cover
 def test_windows_read_write_rejects_changed_database_link(tmp_path: Path, mocker: MockerFixture) -> None:
     database = tmp_path / "database.db"
     mocker.patch(
-        "filelock._read_write._directory_is_private",
+        "filelock._read_write.directory_is_private",
         side_effect=lambda path: path != os.fspath(tmp_path),
         autospec=True,
     )
-    mocker.patch("filelock._read_write._identity_at", return_value=(-1, -1), autospec=True)
+    mocker.patch("filelock._read_write.identity_at", return_value=(-1, -1), autospec=True)
     with pytest.raises(OSError, match="lock database changed"):
         ReadWriteLock(database, is_singleton=False)
     assert [entry.name for entry in tmp_path.iterdir()] == [database.name]
@@ -51,9 +51,6 @@ def test_windows_read_write_rejects_changed_database_link(tmp_path: Path, mocker
 # slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
 # has to outlast the waits it makes, so those are multiples of this rather than bare seconds.
 _PROCESS_DEADLINE: Final[int] = 30
-# Reaping a process that has already been signaled is not a startup wait, and it has to stay under the suite's own
-# per-test timeout so the guard still reports the hang it was put there for.
-_REAP_DEADLINE: Final[int] = 5
 
 pytestmark: Final[pytest.MarkDecorator] = SKIP_ON_UNRELIABLE_PROCESS_SYNC
 
@@ -429,9 +426,12 @@ def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read
     write_acquired = Event()
     successor = Process(target=acquire_lock, args=(lock_file, "write", write_acquired))
 
+    # Reaping a process that has already been signaled is not a startup wait, and it has to stay under the suite's own
+    # per-test timeout so the guard still reports the hang it was put there for.
+    reap_deadline: int = 5
     with cleanup_processes([crashing, successor]):
         crashing.terminate()
-        crashing.join(timeout=_REAP_DEADLINE)
+        crashing.join(timeout=reap_deadline)
 
         successor.start()
 
@@ -899,8 +899,8 @@ def test_read_write_lock_after_an_interrupted_release_locks_again(
     real: Callable[[sqlite3.Connection | ReadWriteLock], None],
     before: bool,
 ) -> None:
-    lock: Final = ReadWriteLock(lock_file, is_singleton=False)
-    acquire: Final = getattr(lock, f"acquire_{mode}")
+    lock: Final[ReadWriteLock] = ReadWriteLock(lock_file, is_singleton=False)
+    acquire = getattr(lock, f"acquire_{mode}")
     acquire()
     mocker.patch.object(owner, name, new=interrupt_once(real, before=before))
     with pytest.raises(Interrupt):
@@ -908,7 +908,7 @@ def test_read_write_lock_after_an_interrupted_release_locks_again(
 
     acquire()
 
-    contender: Final = ReadWriteLock(lock_file, is_singleton=False)
+    contender: Final[ReadWriteLock] = ReadWriteLock(lock_file, is_singleton=False)
     with pytest.raises(Timeout):
         contender.acquire_write(blocking=False)
     lock.release()
@@ -1169,7 +1169,7 @@ def test_windows_shared_directory_removes_the_link_after_a_failure(  # pragma: w
 def test_windows_shared_directory_refuses_a_link_directory_others_can_write(  # pragma: win32 cover
     everyone_writable_database: Path, mocker: MockerFixture
 ) -> None:
-    mocker.patch("filelock._read_write._directory_is_private", autospec=True, return_value=False)
+    mocker.patch("filelock._read_write.directory_is_private", autospec=True, return_value=False)
 
     with pytest.raises(OSError, match="replaced while opening"):
         ReadWriteLock(everyone_writable_database, is_singleton=False)

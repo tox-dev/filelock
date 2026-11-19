@@ -497,8 +497,8 @@ def test_fork_child_exits_when_another_threads_transition_never_drains(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: win32 no cover
     mocker.patch("filelock._api._FORK_DRAIN_TIMEOUT", 0.1)
-    entered: Final = threading.Event()
-    never: Final = threading.Event()
+    entered: Final[threading.Event] = threading.Event()
+    never: Final[threading.Event] = threading.Event()
 
     class StuckReleaseLock(BaseFileLock):
         def _acquire(self) -> None:

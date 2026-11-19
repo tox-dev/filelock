@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _clear_singleton_caches() -> Generator[None]:
-    caches: Final = (ReadWriteLock._instances, SoftReadWriteLock._instances)
+    caches = (ReadWriteLock._instances, SoftReadWriteLock._instances)
     for cache in caches:
         cache.clear()
     yield

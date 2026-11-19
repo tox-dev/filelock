@@ -39,12 +39,8 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple, cast
 from ._api import (
     BaseFileLock,
     ThreadLocalFileContext,
-)
-from ._api import (
-    canonical as _canonical,
-)
-from ._api import (
-    raise_cleanup_errors as _raise_cleanup_errors,
+    canonical,
+    raise_cleanup_errors,
 )
 from ._error import SoftFileLockProtocolError
 from ._identity import (
@@ -55,9 +51,7 @@ from ._identity import (
 from ._marker import parse_marker
 from ._soft import (
     MALFORMED_LOCK_AGE_THRESHOLD,
-)
-from ._soft import (
-    parse_lock_holder as _parse_lock_holder,
+    parse_lock_holder,
 )
 from ._soft_protocol import (
     STRICT_SOFT_SENTINEL_RECORD,
@@ -69,16 +63,10 @@ from ._util import (
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
-        is_unlinked as _is_unlinked,
-    )
-    from ._windows import (
-        open_deletable_for_reading as _open_deletable_for_reading,
-    )
-    from ._windows import (
-        pin_directory as _pin_directory,
-    )
-    from ._windows import (
-        unpin_directory as _unpin_directory,
+        is_unlinked,
+        open_deletable_for_reading,
+        pin_directory,
+        unpin_directory,
     )
 
 if TYPE_CHECKING:
@@ -186,7 +174,7 @@ class StrictSoftFileLock(BaseFileLock):
     def _claim_directory(self) -> Path:
         if self._context.owner_claim_paths:
             return Path(self._context.owner_claim_paths[0]).parent
-        return Path(f"{_canonical(self.lock_file)}{_COORDINATION_SUFFIX}") / _CLAIM_DIRECTORY_NAME
+        return Path(f"{canonical(self.lock_file)}{_COORDINATION_SUFFIX}") / _CLAIM_DIRECTORY_NAME
 
     @property
     def lock_path_occupant(self) -> str | None:
@@ -199,7 +187,7 @@ class StrictSoftFileLock(BaseFileLock):
         raise :class:`~filelock.SoftFileLockProtocolError` instead and needs an operator to remove it.
         """
         try:
-            fd, _, occupant = _inspect_lock_path(Path(_canonical(self.lock_file)))
+            fd, _, occupant = _inspect_lock_path(Path(canonical(self.lock_file)))
         except FileNotFoundError:
             return None
         if fd is None:
@@ -215,7 +203,7 @@ class StrictSoftFileLock(BaseFileLock):
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
         # A process that can write these directories can remove claims from them, so they take the lock's mode plus
         # search permission where the mode grants read.
-        directory_mode: Final = (mode := self._open_mode()) | (mode & 0o444) >> 2
+        directory_mode: Final[int] = (mode := self._open_mode()) | (mode & 0o444) >> 2
         _ensure_protocol_directory(self.lock_file, coordination_directory, directory_mode)
         _ensure_claim_directory(self.lock_file, claim_directory, directory_mode)
         if (
@@ -230,7 +218,7 @@ class StrictSoftFileLock(BaseFileLock):
             try:
                 os.close(sentinel_fd)
             except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve inspection and descriptor cleanup errors
-                _raise_cleanup_errors("strict sentinel inspection cleanup failed", inspection_error, close_error)
+                raise_cleanup_errors("strict sentinel inspection cleanup failed", inspection_error, close_error)
             raise
         self._mark_descriptor_pending(sentinel_fd, sentinel_identity)
         try:
@@ -250,7 +238,7 @@ class StrictSoftFileLock(BaseFileLock):
         if not isinstance(context := self._context, ThreadLocalFileContext):
             return
         # Only this registry reaches an exited thread's thread-local doorway; a live thread finishes its own.
-        own: Final = context.current
+        own = context.current
         with self._transition_lock:
             for pending, thread in self._thread_pending.copy().values():
                 if exited_only and thread.is_alive():
@@ -447,13 +435,13 @@ def _read_existing_claims(
 def _read_claims(
     lock_file: str, directory_ref: tuple[str, int | None], *, probe_clock: bool, verify_server: bool
 ) -> tuple[StrictSoftFileClaim, ...]:
-    names: Final = _list_claim_names(lock_file, directory_ref, probe_clock=probe_clock)
+    names: Final[list[str]] = _list_claim_names(lock_file, directory_ref, probe_clock=probe_clock)
     name_parts: dict[str, tuple[StrictSoftFileClaimState, str]] = {}
     for name in names:
         if (parts := _parse_claim_name(name)) is None:
             raise SoftFileLockProtocolError(lock_file, name, "unknown claim name or protocol version")
         name_parts[name] = parts
-    records: Final = _read_claim_records(lock_file, directory_ref, names, probe_clock=probe_clock)
+    records: Final[dict[str, bytes]] = _read_claim_records(lock_file, directory_ref, names, probe_clock=probe_clock)
     return tuple(
         _parse_claim(lock_file, name, name_parts[name], records[name])
         for name in names
@@ -571,7 +559,7 @@ def _reclaim_private_record(
     if not stat.S_ISREG(private_stat.st_mode):
         msg = f"{Path(directory, private_name)} is not a regular private record"
         raise OSError(msg)
-    private_record_grace: Final = 2.0
+    private_record_grace: Final[float] = 2.0
     if private_stat.st_nlink == 1 and (
         (current := now()) is None or current - private_stat.st_mtime < private_record_grace
     ):
@@ -589,8 +577,8 @@ def _parse_claim_name(name: str) -> tuple[StrictSoftFileClaimState, str] | None:
     if not name.endswith(".claim"):
         return None
     parts = name.removesuffix(".claim").split("-")
-    claim_states: Final = frozenset({"intent", "held"})
-    claim_name_part_count: Final = 3
+    claim_states: Final[frozenset[str]] = frozenset({"intent", "held"})
+    claim_name_part_count: Final[int] = 3
     if len(parts) != claim_name_part_count or parts[0] not in claim_states or parts[1] != "v1":
         return None
     token = parts[2]
@@ -636,7 +624,7 @@ def _read_claim_records(
     # like ENOENT. Skipping a vanished claim overcounts contention at worst; it cannot free a held lock.
     if denied := [name for name, error in pending.items() if error.errno != ESTALE]:
         # Windows can deny opens after a peer removes the claim from the directory.
-        listed: Final = set(_list_claim_names(lock_file, directory_ref, probe_clock=probe_clock))
+        listed: Final[set[str]] = set(_list_claim_names(lock_file, directory_ref, probe_clock=probe_clock))
         if still_listed := [name for name in denied if name in listed]:
             error = pending[still_listed[0]]
             reason = f"cannot read claim: {error.strerror or str(error) or type(error).__name__}"
@@ -655,7 +643,7 @@ def _attempt_claim_read(
     except FileNotFoundError:
         return None, None
     except PermissionError as error:
-        if sys.platform == "win32" and _is_unlinked(str(Path(directory_ref[0], name))):  # pragma: win32 cover
+        if sys.platform == "win32" and is_unlinked(str(Path(directory_ref[0], name))):  # pragma: win32 cover
             return None, None
         return None, error
     except OSError as error:
@@ -682,7 +670,7 @@ def _open_record(
     if deletable and sys.platform == "win32":  # pragma: win32 cover
         # A claim's owner must be able to unlink it while another process reads it. The sentinel stays for the lock's
         # lifetime, so it keeps os.open.
-        fd = _open_deletable_for_reading(str(path))
+        fd = open_deletable_for_reading(str(path))
     else:
         flags = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         fd = _open_relative(directory_ref, name, flags, 0)
@@ -692,7 +680,7 @@ def _open_record(
         try:
             os.close(fd)
         except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve read and descriptor cleanup errors
-            _raise_cleanup_errors("strict record read cleanup failed", read_error, close_error)
+            raise_cleanup_errors("strict record read cleanup failed", read_error, close_error)
         raise
     return fd, record
 
@@ -894,7 +882,7 @@ def _describe_soft_marker(content: str) -> tuple[_OccupantState, str]:
     # marker is contention. One this host proves gone is named, never removed: strict never acts on an inferred death.
     if (record := parse_marker(content)) is not None:
         pid, hostname, start = record.pid, record.hostname, record.start
-    elif (holder := _parse_lock_holder(content)) is not None:
+    elif (holder := parse_lock_holder(content)) is not None:
         pid, hostname, start = holder
     else:
         return "unparsable", "a file that is neither the sentinel nor a soft-lock marker it can parse"
@@ -980,7 +968,7 @@ def pin_directories(*directories: Path) -> contextlib.ExitStack[bool | None]:
     if sys.platform == "win32":  # pragma: win32 cover
         with stack:
             for directory in directories:
-                stack.callback(_unpin_directory, _pin_directory(str(directory)))
+                stack.callback(unpin_directory, pin_directory(str(directory)))
             return stack.pop_all()
     return stack  # pragma: win32 no cover
 
@@ -1081,7 +1069,7 @@ def _publish_record(
             if directory_fd is not None:  # pragma: needs dir-fd
                 os.close(directory_fd)
         except BaseException as close_error:  # ruff:ignore[blind-except]  # pragma: needs dir-fd  # preserve publication and directory cleanup errors
-            _raise_cleanup_errors("strict publication directory cleanup failed", publication_error, close_error)
+            raise_cleanup_errors("strict publication directory cleanup failed", publication_error, close_error)
         raise
     if directory_fd is not None:  # pragma: needs dir-fd
         try:
@@ -1114,7 +1102,7 @@ def _publish_record_in_directory(
             private_identity,
         )
         if close_error is not None or unlink_error is not None:
-            _raise_cleanup_errors(
+            raise_cleanup_errors(
                 "strict record publication cleanup failed",
                 publication_error,
                 close_error,
@@ -1180,7 +1168,7 @@ def _raise_record_finalization_errors(
 ) -> None:
     errors = [error for error in (close_error, unlink_error) if error is not None]
     if len(errors) > 1:
-        _raise_cleanup_errors("strict record finalization failed", errors[0], *errors[1:])
+        raise_cleanup_errors("strict record finalization failed", errors[0], *errors[1:])
     raise errors[0]
 
 
@@ -1210,7 +1198,7 @@ class _PrivateRecordReclaimedError(Exception):
 
 
 def raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:
-    windows_hard_link_unsupported: Final = frozenset({1, 17, 50})
+    windows_hard_link_unsupported: Final[frozenset[int]] = frozenset({1, 17, 50})
     unsupported = (
         isinstance(error, NotImplementedError)
         or error.errno in _HARD_LINK_UNSUPPORTED_ERRNOS
@@ -1230,7 +1218,7 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
             try:
                 os.close(directory_fd)
             except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve link and directory cleanup errors
-                _raise_cleanup_errors("strict link directory cleanup failed", link_error, close_error)
+                raise_cleanup_errors("strict link directory cleanup failed", link_error, close_error)
             raise
         try:
             os.close(directory_fd)
@@ -1248,7 +1236,7 @@ def _claim_token_key(name: str) -> str:
 
 def _raise_recorded_errors(message: str, errors: list[BaseException]) -> None:
     if len(errors) > 1:
-        _raise_cleanup_errors(message, errors[0], *errors[1:])
+        raise_cleanup_errors(message, errors[0], *errors[1:])
     raise errors[0]
 
 
@@ -1282,7 +1270,7 @@ def _unlink_in_directory(directory: Path, name: str) -> BaseException | None:
             try:
                 os.close(directory_fd)
             except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve unlink and directory cleanup errors
-                _raise_cleanup_errors("strict unlink directory cleanup failed", unlink_error, close_error)
+                raise_cleanup_errors("strict unlink directory cleanup failed", unlink_error, close_error)
             raise
         try:
             os.close(directory_fd)
@@ -1293,7 +1281,7 @@ def _unlink_in_directory(directory: Path, name: str) -> BaseException | None:
         Path(directory / name).unlink()
         return None
     retry_delay = 0.001  # pragma: win32 cover
-    max_retries: Final = 10  # pragma: win32 cover
+    max_retries: Final[int] = 10  # pragma: win32 cover
     for attempt in range(max_retries):  # pragma: win32 cover
         if (error := _unlink_error(directory / name)) is None:
             return None

@@ -206,9 +206,9 @@ def test_soft_lifetime_warning_shows_under_default_filters(tmp_path: Path) -> No
         "from filelock import SoftFileLock\n\ndef configure(path):\n    return SoftFileLock(path, lifetime=5)\n",
         encoding="utf-8",
     )
-    script: Final = "import sys; sys.path.insert(0, sys.argv[1]); import library; library.configure(sys.argv[2])"
+    script: Final[str] = "import sys; sys.path.insert(0, sys.argv[1]); import library; library.configure(sys.argv[2])"
 
-    result: Final = subprocess.run(
+    result: Final[subprocess.CompletedProcess[str]] = subprocess.run(
         [sys.executable, "-c", script, str(tmp_path), str(tmp_path / "test.lock")],
         check=True,
         capture_output=True,

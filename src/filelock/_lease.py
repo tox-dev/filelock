@@ -31,8 +31,7 @@ from threading import Event, Thread, current_thread
 from typing import TYPE_CHECKING, Final, Literal, cast
 from weakref import WeakMethod
 
-from ._api import check_timeout_max as _check_timeout_max
-from ._api import seconds as _seconds
+from ._api import check_timeout_max, seconds
 from ._error import LeaseSettingsMismatch
 from ._identity import owner_is_stale
 from ._marker import (
@@ -41,15 +40,14 @@ from ._marker import (
     OwnerRecord,
     parse_marker,
 )
-from ._soft import read_lock_file as _read_lock_file
+from ._soft import read_lock_file
 from ._util import pin_inode, touch
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from typing import Unpack
 
-    from ._api import ExtraValue as _ExtraValue
-    from ._api import LockOptions
+    from ._api import ExtraValue, LockOptions
 
 #: ``evicted`` is a :class:`~filelock.SoftReadWriteLock` loss: a peer waited out the stale threshold and committed a
 #: generation without this holder.
@@ -124,16 +122,16 @@ class SoftFileLease(MarkerSoftFileLock):
 
         """
         # A plain float: the marker records its repr, which NumPy's float64 spells in a form no parser reads.
-        if not isfinite(lease_duration := _seconds("lease_duration", lease_duration)) or lease_duration <= 0:
+        if not isfinite(lease_duration := seconds("lease_duration", lease_duration)) or lease_duration <= 0:
             msg = f"lease_duration must be positive and finite, got {lease_duration!r}"
             raise ValueError(msg)
         heartbeat_interval = (
-            lease_duration / 3 if heartbeat_interval is None else _seconds("heartbeat_interval", heartbeat_interval)
+            lease_duration / 3 if heartbeat_interval is None else seconds("heartbeat_interval", heartbeat_interval)
         )
         if not 0 < heartbeat_interval < lease_duration:
             msg = f"heartbeat_interval must be positive and below lease_duration, got {heartbeat_interval!r}"
             raise ValueError(msg)
-        _check_timeout_max("heartbeat_interval", heartbeat_interval)
+        check_timeout_max("heartbeat_interval", heartbeat_interval)
         super().__init__(lock_file, **kwargs)
         self._lease_duration = lease_duration
         self._heartbeat_interval = heartbeat_interval
@@ -160,7 +158,7 @@ class SoftFileLease(MarkerSoftFileLock):
     @property
     def _claim(self) -> LeaseClaim:
         # Per hold, so another thread's failed acquire cannot stop the holder's heartbeat.
-        state: Final = self._hold_state()
+        state = self._hold_state()
         if (claim := state.lease_claim) is None:
             claim = state.lease_claim = LeaseClaim()
         return claim
@@ -179,18 +177,18 @@ class SoftFileLease(MarkerSoftFileLock):
         """
         return self._claim.compromise
 
-    def _singleton_extra_mismatches(self, kwargs: Mapping[str, _ExtraValue], /) -> dict[str, tuple[str, str]]:
+    def _singleton_extra_mismatches(self, kwargs: Mapping[str, ExtraValue], /) -> dict[str, tuple[str, str]]:
         mismatches = super()._singleton_extra_mismatches(kwargs)
-        lease_duration: Final = _seconds(
+        lease_duration: Final[float] = seconds(
             "lease_duration", cast("float", kwargs.get("lease_duration", _DEFAULT_LEASE_DURATION))
         )
         if lease_duration != self._lease_duration:
             mismatches["lease_duration"] = (str(lease_duration), str(self._lease_duration))
         # An omitted heartbeat_interval resolves as in __init__; a differing duration is already reported above.
-        heartbeat_interval: Final = (
+        heartbeat_interval: Final[float] = (
             self._lease_duration / 3
             if (passed := kwargs.get("heartbeat_interval")) is None
-            else _seconds("heartbeat_interval", cast("float", passed))
+            else seconds("heartbeat_interval", cast("float", passed))
         )
         if heartbeat_interval != self._heartbeat_interval:
             mismatches["heartbeat_interval"] = (str(passed), str(self._heartbeat_interval))
@@ -237,8 +235,8 @@ class SoftFileLease(MarkerSoftFileLock):
     def _start_heartbeat(self, claim: LeaseClaim, fd: int, identity: tuple[int, int], token: str) -> None:
         # The thread watches the event it was handed rather than whatever the claim names later: a heartbeat that
         # outlives its join timeout would otherwise adopt the next acquisition's event and never stop.
-        stop: Final = Event()
-        loop: Final = _RefreshLoop(
+        stop: Final[Event] = Event()
+        loop: Final[_RefreshLoop] = _RefreshLoop(
             # A strong reference from a running thread would keep a dropped lease alive, so __del__ would never release
             # it and its marker would outlive the process. The callback clears the token rather than setting the stop
             # event, since it can run on the heartbeat thread from inside wait().
@@ -252,7 +250,7 @@ class SoftFileLease(MarkerSoftFileLock):
             interval=self._heartbeat_interval,
             duration=self._lease_duration,
         )
-        thread: Final = Thread(target=loop.run, name=f"filelock-lease-{os.getpid()}", daemon=True)
+        thread: Final[Thread] = Thread(target=loop.run, name=f"filelock-lease-{os.getpid()}", daemon=True)
         # Record the heartbeat before starting the thread so a release racing this acquire on a shared,
         # non-thread-local claim always sees it and sets the stop event; the thread then exits at its first wait
         # instead of outliving the release. A start that raises leaves the unstarted thread for _stop_heartbeat.
@@ -322,7 +320,7 @@ class SoftFileLease(MarkerSoftFileLock):
 
     def _read_peer(self) -> tuple[OwnerRecord, os.stat_result] | None:
         with suppress(OSError, ValueError):
-            content, marker = _read_lock_file(self._lock_path)
+            content, marker = read_lock_file(self._lock_path)
             if (owner := parse_marker(content)) is not None:
                 return owner, marker
         return None

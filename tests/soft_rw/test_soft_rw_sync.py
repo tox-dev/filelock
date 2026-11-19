@@ -164,7 +164,7 @@ def test_release_interrupted_while_joining_the_heartbeat_still_leaves(lock_file:
 def test_rejects_an_interval_it_cannot_use(
     tmp_path: Path, name: str, value: float, error: type[Exception], problem: str
 ) -> None:
-    settings: Final = {name: value}
+    settings: Final[dict[str, float]] = {name: value}
     with pytest.raises(error, match=f"{name} must {problem}"):
         SoftReadWriteLock(
             tmp_path / "a.lock",
@@ -201,7 +201,7 @@ def test_rejects_invalid_intervals(
     settings: dict[str, float],
     message: str,
 ) -> None:
-    path: Final = tmp_path / "timing.lock"
+    path: Final[Path] = tmp_path / "timing.lock"
     # Keep the weakly cached instance alive through the second construction.
     with keep(path), pytest.raises(ValueError, match=rf"{message} must .*finite"):
         lock_type(
@@ -1557,7 +1557,7 @@ def test_protocol_tree_with_a_junction_is_refused_after_first_acquire(  # pragma
 def test_protocol_tree_stays_in_place_while_a_record_is_written(  # pragma: win32 cover
     lock_file: str, tmp_path: Path, lock: SoftReadWriteLock, mocker: MockerFixture
 ) -> None:
-    real_write: Final = storage_mod.write_all
+    real_write = storage_mod.write_all
     refused: list[bool] = []
 
     def try_to_move_the_tree_aside(fd: int, data: bytes) -> None:
@@ -1850,7 +1850,7 @@ def test_contention_obeys_acquisition_policy(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"], timeout: float, *, blocking: bool
 ) -> None:
     _plant_holder(lock_file, mode="write")
-    real_sleep: Final = time.sleep
+    real_sleep = time.sleep
 
     def sleep(seconds: float) -> None:
         assert blocking
@@ -1867,7 +1867,7 @@ def test_contention_obeys_acquisition_policy(
         ),
     )
     with closing(SoftReadWriteLock(lock_file, timeout=timeout, blocking=blocking, poll_interval=10)) as lock:
-        acquire: Final = getattr(lock, f"acquire_{mode}")
+        acquire = getattr(lock, f"acquire_{mode}")
         with pytest.raises(Timeout) as caught:
             acquire()
         assert caught.value.lock_file == lock_file
@@ -1879,9 +1879,9 @@ def test_contention_obeys_acquisition_policy(
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 async def test_async_contention_reports_public_path(lock_file: str, mode: Literal["read", "write"]) -> None:
     _plant_holder(lock_file, mode="write")
-    lock: Final = AsyncSoftReadWriteLock(lock_file, timeout=0.02)
+    lock: Final[AsyncSoftReadWriteLock] = AsyncSoftReadWriteLock(lock_file, timeout=0.02)
     try:
-        acquire: Final = getattr(lock, f"acquire_{mode}")
+        acquire = getattr(lock, f"acquire_{mode}")
         with pytest.raises(Timeout) as caught:
             await acquire()
         assert caught.value.lock_file == lock_file

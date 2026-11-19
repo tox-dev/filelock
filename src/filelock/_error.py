@@ -29,7 +29,7 @@ class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # p
         return self.__class__, (self._lock_file,), self.__dict__
 
     def __str__(self) -> str:  # pragma: needs hard-link
-        message: Final = f"The file lock '{self._lock_file}' could not be acquired."
+        message: Final[str] = f"The file lock '{self._lock_file}' could not be acquired."
         if self._holder is None:
             return message
         return f"{message} It is held by {self._holder}, which this host cannot probe."

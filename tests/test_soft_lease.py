@@ -219,7 +219,7 @@ def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) 
 @NEEDS_STALE_RECLAIM
 def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture) -> None:
     # The pytest timeout bounds recovery while the mocked clock controls marker expiry.
-    clock: Final = mocker.patch("filelock._soft.time", autospec=True)
+    clock = mocker.patch("filelock._soft.time", autospec=True)
     clock.monotonic.side_effect = itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD)
     marker.write_text("not a protocol 2 record\n", encoding="utf-8")
 
@@ -310,7 +310,7 @@ def test_lease_tolerates_a_transient_refresh_error(
     # A transient ESTALE/EIO on the refresh path that recovers before the lease could lapse must not raise a
     # compromise: the marker was ours last tick, so retry rather than tell the holder to abandon its work.
     ticks = itertools.count()
-    refreshes: Final = Semaphore(0)
+    refreshes: Final[Semaphore] = Semaphore(0)
 
     def flaky(path: str, *args: object, **kwargs: object) -> os.stat_result | None:
         marked = path.endswith(marker.name)
@@ -325,7 +325,7 @@ def test_lease_tolerates_a_transient_refresh_error(
     mocker.patch(f"filelock._lease.{target}", side_effect=flaky, autospec=True)
     reports = _Reports()
     # A long lease keeps a slow runner's two failed ticks inside the window; the deadline has its own test above.
-    lease: Final = _lease(marker, lease_duration=30, on_compromise=reports)
+    lease: Final[SoftFileLease] = _lease(marker, lease_duration=30, on_compromise=reports)
     with lease:
         for _ in range(6):  # the first two fail, the rest recover
             assert refreshes.acquire(timeout=_DEADLINE)
@@ -339,12 +339,14 @@ def test_lease_heartbeat_tolerates_one_refresh_under_a_peers_exchange(  # pragma
     marker: Path, mocker: MockerFixture
 ) -> None:
     reports = _Reports()
-    lease: Final = SoftFileLease(marker, lease_duration=2, heartbeat_interval=0.05, on_compromise=reports)
-    refreshed: Final = Semaphore(0)
-    lstat: Final = os.lstat
+    lease: Final[SoftFileLease] = SoftFileLease(
+        marker, lease_duration=2, heartbeat_interval=0.05, on_compromise=reports
+    )
+    refreshed: Final[Semaphore] = Semaphore(0)
+    lstat = os.lstat
 
     def spy(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
-        found: Final = lstat(path, dir_fd=dir_fd)
+        found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
         if os.fspath(path) == str(marker):  # pragma: no branch  # guard: only the lease refresh calls lstat here
             refreshed.release()
         return found
@@ -366,7 +368,9 @@ def test_lease_heartbeat_tolerates_one_refresh_under_a_peers_exchange(  # pragma
 @NEEDS_STALE_RECLAIM
 def test_lease_heartbeat_reports_an_owner_changed_that_persists(marker: Path) -> None:  # pragma: win32 no cover
     reports = _Reports()
-    lease: Final = SoftFileLease(marker, lease_duration=2, heartbeat_interval=0.05, on_compromise=reports)
+    lease: Final[SoftFileLease] = SoftFileLease(
+        marker, lease_duration=2, heartbeat_interval=0.05, on_compromise=reports
+    )
 
     with lease:
         (peer := marker.with_name("peer")).write_text("peer", encoding="utf-8")
@@ -403,7 +407,7 @@ def test_lease_records_the_compromise_without_a_callback(marker: Path) -> None: 
 
 def _wait_until(condition: Callable[[], bool]) -> None:
     # Bounded, so a heartbeat that never gets there fails the assertion after it instead of hanging the run.
-    deadline: Final = time.monotonic() + _DURATION * 20
+    deadline: Final[float] = time.monotonic() + _DURATION * 20
     while not condition() and time.monotonic() < deadline:
         time.sleep(_HEARTBEAT / 2)  # simplint: ignore[sleep-in-test]  # needs a compromise signal
 
@@ -420,8 +424,8 @@ def test_lease_holds_an_uncompromised_claim(marker: Path, mocker: MockerFixture)
 
 def _count_refreshes(mocker: MockerFixture) -> Semaphore:
     # Releases one permit per refresh the heartbeat makes, so a test waits for ticks rather than sleeping through them.
-    refreshes: Final = Semaphore(0)
-    real: Final = lease_mod.touch
+    refreshes: Final[Semaphore] = Semaphore(0)
+    real = lease_mod.touch
 
     def touch_and_count(name: str, *, fd: int) -> None:
         real(name, fd=fd)
@@ -437,7 +441,7 @@ def test_lease_can_be_released_from_the_compromise_callback(marker: Path) -> Non
     # not deadlock joining itself.
     holder: list[SoftFileLease] = []
 
-    released: Final = Event()
+    released: Final[Event] = Event()
 
     def release_the_claim(_: LeaseCompromise) -> None:
         holder[0].release()
@@ -466,7 +470,7 @@ def test_lease_release_from_the_callback_needs_a_shared_context(marker: Path) ->
     # nothing. Pin the trap the docstring warns about.
     holder: list[SoftFileLease] = []
 
-    released: Final = Event()
+    released: Final[Event] = Event()
 
     def release_the_claim(_: LeaseCompromise) -> None:
         holder[0].release()
@@ -503,7 +507,7 @@ def test_lease_release_from_the_callback_does_not_join_itself(marker: Path, mock
     mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
     holder: list[SoftFileLease] = []
 
-    released: Final = Event()
+    released: Final[Event] = Event()
 
     def release_the_claim(_: LeaseCompromise) -> None:
         holder[0].release()
@@ -538,8 +542,10 @@ class _Seconds(float):
 
 def test_lease_singleton_accepts_the_same_decimal_heartbeat_again(marker: Path) -> None:
     # 4.0.12 took any real number; the annotation stays float.
-    heartbeat: Final = cast("float", Decimal("0.1"))
-    lease: Final = SoftFileLease(str(marker), is_singleton=True, lease_duration=_DURATION, heartbeat_interval=heartbeat)
+    heartbeat: Final[float] = cast("float", Decimal("0.1"))
+    lease: Final[SoftFileLease] = SoftFileLease(
+        str(marker), is_singleton=True, lease_duration=_DURATION, heartbeat_interval=heartbeat
+    )
     assert (
         SoftFileLease(str(marker), is_singleton=True, lease_duration=_DURATION, heartbeat_interval=heartbeat) is lease
     )
@@ -569,7 +575,7 @@ def test_lease_keeps_its_claim_when_another_thread_fails_to_acquire(marker: Path
 
 
 def test_lease_shared_across_threads_has_one_claim(marker: Path) -> None:
-    lease: Final = SoftFileLease(
+    lease: Final[SoftFileLease] = SoftFileLease(
         str(marker), thread_local=False, lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT
     )
     inside, resume = Event(), Event()
@@ -587,7 +593,7 @@ def test_lease_shared_across_threads_has_one_claim(marker: Path) -> None:
         finally:
             sys.setprofile(None)
 
-    reader: Final = Thread(target=read_compromise)
+    reader: Final[Thread] = Thread(target=read_compromise)
     reader.start()
     # A claim built on first use would park the reader here, and acquire would then build a second one.
     inside.wait(0.5)
@@ -603,8 +609,8 @@ def test_lease_shared_across_threads_has_one_claim(marker: Path) -> None:
 def test_lease_force_released_for_an_exited_thread_stops_that_holds_heartbeat(marker: Path) -> None:
     # A heartbeat left running would find its marker gone and report a compromise nobody suffered.
     reports: Final[list[LeaseCompromise]] = []
-    lease: Final = _lease(marker, on_compromise=reports.append)
-    holder: Final = Thread(target=lease.acquire)
+    lease: Final[SoftFileLease] = _lease(marker, on_compromise=reports.append)
+    holder: Final[Thread] = Thread(target=lease.acquire)
     holder.start()
     holder.join()
 
@@ -792,8 +798,8 @@ def test_lease_reports_marker_missing_when_a_refresh_cannot_stat_it(marker: Path
     lease = _lease(marker, on_compromise=reports)
     lease.acquire()
     token = lease.token
-    real_lstat: Final = os.lstat
-    real_fstat: Final = os.fstat
+    real_lstat = os.lstat
+    real_fstat = os.fstat
     missing = False
 
     def lstat(path: str) -> os.stat_result:
@@ -823,8 +829,8 @@ def test_lease_reports_refresh_failed_when_a_missing_marker_cannot_be_inspected(
     reports = _Reports()
     lease = _lease(marker, on_compromise=reports)
     lease.acquire()
-    real_lstat: Final = os.lstat
-    real_fstat: Final = os.fstat
+    real_lstat = os.lstat
+    real_fstat = os.fstat
     missing = False
     name_lost = False
 
@@ -857,10 +863,10 @@ def test_lease_reports_refresh_failed_when_a_missing_marker_cannot_be_inspected(
 def test_lease_rides_out_a_marker_missing_for_one_refresh(marker: Path, mocker: MockerFixture) -> None:
     # A peer's stale break moves a live marker aside and links it back; a refresh between the two finds no marker.
     reports = _Reports()
-    lease: Final = _lease(marker, on_compromise=reports)
-    real_lstat: Final = os.lstat
-    misses: Final = iter([True])
-    refreshes: Final = Semaphore(0)
+    lease: Final[SoftFileLease] = _lease(marker, on_compromise=reports)
+    real_lstat = os.lstat
+    misses = iter([True])
+    refreshes: Final[Semaphore] = Semaphore(0)
 
     def lstat(path: str) -> os.stat_result:
         refreshes.release()
@@ -943,13 +949,13 @@ def test_lease_keeps_a_claim_refreshed_by_a_host_whose_clock_lags(marker: Path, 
         f"filelock/2\npid={os.getpid()}\nhost={host_name()}\nmode=lease\ntoken=skewed\nduration={_DURATION!r}\n",
         encoding="utf-8",
     )
-    stop: Final = Event()
+    stop: Final[Event] = Event()
 
     def refresh_an_hour_behind() -> None:
         while not stop.wait(_HEARTBEAT):
             os.utime(marker, (lagging := time.time() - 3600, lagging))
 
-    refresher: Final = Thread(target=refresh_an_hour_behind)
+    refresher: Final[Thread] = Thread(target=refresh_an_hour_behind)
     refresher.start()
     try:
         with pytest.raises(Timeout):
@@ -979,18 +985,18 @@ def test_lease_dropped_while_held_releases_its_marker(marker: Path) -> None:
 def test_lease_dropped_where_it_cannot_be_released_stops_its_heartbeat(marker: Path) -> None:
     # The thread-local context hides the claim from the thread that drops the last reference, so __del__ there cannot
     # release it; the heartbeat must still stop, letting the unrefreshed claim age out for a peer.
-    before: Final = _lease_heartbeats()
+    before: Final[set[Thread]] = _lease_heartbeats()
     leases: Final[list[SoftFileLease]] = []
 
     def acquire() -> None:
-        lease: Final = _lease(marker)
+        lease: Final[SoftFileLease] = _lease(marker)
         lease.acquire()
         leases.append(lease)
 
-    acquirer: Final = Thread(target=acquire)
+    acquirer: Final[Thread] = Thread(target=acquire)
     acquirer.start()
     acquirer.join()
-    heartbeats: Final = _lease_heartbeats() - before
+    heartbeats: Final[set[Thread]] = _lease_heartbeats() - before
     assert heartbeats
 
     leases.clear()
@@ -1028,7 +1034,7 @@ def _lease_heartbeats() -> set[threading.Thread]:
     ],
 )
 def test_lease_held_at_interpreter_exit_releases_its_marker(marker: Path, script: str) -> None:
-    result: Final = subprocess.run(
+    result: Final[subprocess.CompletedProcess[str]] = subprocess.run(
         [sys.executable, "-c", script, str(marker)], check=True, capture_output=True, text=True, timeout=10
     )
 
@@ -1042,7 +1048,7 @@ def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
     # The last reference goes while the heartbeat is mid-refresh, past the wait the collection would have stopped, and
     # the refresh then finds the marker gone. There is no holder left to tell, so the heartbeat just ends.
     reports = _Reports()
-    leases: Final = [
+    leases: Final[list[SoftFileLease]] = [
         SoftFileLease(
             str(marker),
             thread_local=False,
@@ -1051,14 +1057,14 @@ def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
             on_compromise=reports,
         )
     ]
-    before: Final = _lease_heartbeats()
-    open_spy: Final = mocker.spy(os, "open")
+    before: Final[set[Thread]] = _lease_heartbeats()
+    open_spy = mocker.spy(os, "open")
     leases[0].acquire()
-    heartbeats: Final = _lease_heartbeats() - before
-    lease_fd: Final = open_spy.spy_return
-    real_lstat: Final = os.lstat
-    real_fstat: Final = os.fstat
-    misses: Final = itertools.count()
+    heartbeats: Final[set[Thread]] = _lease_heartbeats() - before
+    lease_fd = open_spy.spy_return
+    real_lstat = os.lstat
+    real_fstat = os.fstat
+    misses: Final[itertools.count[int]] = itertools.count()
 
     def lstat(path: str) -> os.stat_result:
         if leases and path.endswith(marker.name):
@@ -1089,10 +1095,10 @@ def test_lease_takes_over_a_dead_owners_marker_with_its_own_lease_record(  # pra
     (lock := tmp_path / "a.lock").write_text(
         f"filelock/2\npid={2**22 + 1}\nhost={host_name()}\nmode=exclusive\n", encoding="utf-8"
     )
-    lease: Final = SoftFileLease(lock, lease_duration=5)
+    lease: Final[SoftFileLease] = SoftFileLease(lock, lease_duration=5)
     lease.acquire(blocking=False)
     try:
-        owner: Final = lease.owner
+        owner = lease.owner
         assert owner is not None
         assert (owner.mode, owner.token, owner.lease_duration, lease.is_lock_held_by_us) == (
             "lease",
@@ -1137,7 +1143,7 @@ def test_lease_dropped_on_its_heartbeat_thread_is_released_there(marker: Path, m
 def test_lease_finalized_inside_its_heartbeat_wait_is_released(marker: Path, mocker: MockerFixture) -> None:
     # PyPy's collector can run __del__ on the heartbeat thread while wait() holds the stop event's lock, so the release
     # must not set that event.
-    real_wait: Final = Event.wait
+    real_wait = Event.wait
     holder: list[SoftFileLease] = []
     heartbeats: list[Thread] = []
 

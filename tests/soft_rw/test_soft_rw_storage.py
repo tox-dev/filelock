@@ -276,7 +276,7 @@ def test_record_operations_round_trip_without_dir_fd(tmp_path: Path, mocker: Moc
     mocker.patch.object(storage_mod, "_SUPPORTS_DIR_FD", new=False)
     files = OsFiles(str(tmp_path / "x.lock"))
     files.prepare(str(tmp_path / "x.lock.rw"))
-    record: Final = str(tmp_path / "x.lock.rw" / "holders" / "record")
+    record: Final[str] = str(tmp_path / "x.lock.rw" / "holders" / "record")
     files.create(record, b"data")
     assert files.read(record) == b"data"
     assert files.listdir(str(Path(record).parent)) == ["record"]

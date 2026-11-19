@@ -24,9 +24,7 @@ from ._identity import (
 from ._soft import (
     SoftFileLock,
     parse_decimal,
-)
-from ._soft import (
-    read_lock_file as _read_lock_file,
+    read_lock_file,
 )
 from ._util import pin_inode, write_all
 
@@ -68,7 +66,7 @@ class MarkerSoftFileLock(SoftFileLock):
 
     def _read_owner(self) -> OwnerRecord | None:
         with suppress(OSError, ValueError):
-            return parse_marker(_read_lock_file(self._lock_path)[0])
+            return parse_marker(read_lock_file(self._lock_path)[0])
         return None
 
     @property
@@ -103,7 +101,7 @@ class MarkerSoftFileLock(SoftFileLock):
 
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError), pin_inode(self._lock_path) as pinned:
-            content, marker = _read_lock_file(self._lock_path)
+            content, marker = read_lock_file(self._lock_path)
             owner: OwnerRecord | None
             if pinned not in {None, marker.st_ino}:  # pragma: win32 no cover  # Windows pins nothing
                 return  # replaced before the read, so nothing keeps the number read from reuse

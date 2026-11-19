@@ -312,7 +312,7 @@ sys.exit(0 if fired and not later.is_alive() else 1)
 def test_lock_finalized_at_exit_skips_fork_bookkeeping_a_frozen_daemon_thread_holds(tmp_path: Path, held: str) -> None:
     # Daemon threads stop wherever they are at exit; one stopped inside the fork bookkeeping keeps its lock forever.
     # The lock lives in a module of its own: the daemon thread's function keeps __main__'s globals alive past exit.
-    script: Final = """
+    script: Final[str] = """
 import sys, threading, types
 from filelock import FileLock
 from filelock._api import _FORK_STATE
@@ -330,7 +330,7 @@ holder.lock.acquire()
 threading.Thread(target=stop_inside_fork_bookkeeping, daemon=True).start()
 inside.wait()
 """
-    result: Final = subprocess.run(
+    result: Final[subprocess.CompletedProcess[str]] = subprocess.run(
         [sys.executable, "-c", script, str(tmp_path / "a"), held],
         check=False,
         capture_output=True,
@@ -344,7 +344,7 @@ inside.wait()
 @NEEDS_REGISTER_AT_FORK  # pragma: needs register-at-fork
 def test_child_forked_by_a_daemon_thread_at_exit_keeps_its_fork_bookkeeping(tmp_path: Path) -> None:
     # Daemon threads still run, and fork, while atexit handlers do; their children are not exiting.
-    script: Final = """
+    script: Final[str] = """
 import atexit, os, sys, threading
 exiting, forked = threading.Event(), threading.Event()
 atexit.register(lambda: (exiting.set(), forked.wait(10)))
@@ -364,7 +364,7 @@ def fork_during_exit():
 
 threading.Thread(target=fork_during_exit, daemon=True).start()
 """
-    result: Final = subprocess.run(
+    result: Final[subprocess.CompletedProcess[str]] = subprocess.run(
         [sys.executable, "-W", "ignore::DeprecationWarning", "-c", script, str(tmp_path / "a")],
         check=True,
         capture_output=True,
@@ -1422,7 +1422,7 @@ def test_child_replaces_singleton_mutex_held_by_vanished_thread(tmp_path: Path) 
 @NEEDS_FORK
 def test_fork_transition_finished_on_another_thread_releases_the_entering_thread() -> None:  # pragma: needs fork
     # A generator suspended inside a transition can be finalized on any thread.
-    transition: Final = fork_transition()
+    transition = fork_transition()
     transition.__enter__()  # ruff:ignore[unnecessary-dunder-call]  # entered and left on different threads
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(transition.__exit__, None, None, None).result()

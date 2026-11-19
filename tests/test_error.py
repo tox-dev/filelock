@@ -33,7 +33,9 @@ def test_timeout_names_a_holder_it_cannot_probe() -> None:
 
 
 def test_timeout_subclass_taking_only_the_lock_file_pickles() -> None:
-    restored: Final = _pickle_round_trip(_LockFileOnlyTimeout("/path/to/lock"), protocol=pickle.DEFAULT_PROTOCOL)
+    restored: Final[Timeout | SoftFileLockProtocolError] = _pickle_round_trip(
+        _LockFileOnlyTimeout("/path/to/lock"), protocol=pickle.DEFAULT_PROTOCOL
+    )
     assert (type(restored), restored.lock_file) == (_LockFileOnlyTimeout, "/path/to/lock")
 
 
@@ -48,7 +50,7 @@ def test_exception_serialization_preserves_diagnostics(
 ) -> None:
     error.add_note("while acquiring the build cache")
     error.__dict__["request_id"] = "request-1"
-    restored: Final = clone(error)
+    restored: Final[Timeout | SoftFileLockProtocolError] = clone(error)
     assert (
         type(restored),
         str(restored),
@@ -81,7 +83,7 @@ def test_exception_serialization_preserves_note_alias(
 ) -> None:
     error.__notes__ = ["original"]
     error.__dict__["diagnostics"] = error.__notes__
-    restored: Final = clone(error)
+    restored: Final[Timeout | SoftFileLockProtocolError] = clone(error)
     assert restored.__dict__["diagnostics"] is restored.__notes__
 
 
@@ -102,7 +104,7 @@ def test_exception_serialization_preserves_cycle(
     clone: Callable[[Timeout | SoftFileLockProtocolError], Timeout | SoftFileLockProtocolError],
 ) -> None:
     error.__dict__["related"] = error
-    restored: Final = clone(error)
+    restored: Final[Timeout | SoftFileLockProtocolError] = clone(error)
     related_after_clone = {copy.copy: error}.get(clone, restored)
     assert restored.__dict__["related"] is related_after_clone
 
@@ -110,7 +112,9 @@ def test_exception_serialization_preserves_cycle(
 def test_protocol_error_serialization_preserves_claim(
     clone: Callable[[Timeout | SoftFileLockProtocolError], Timeout | SoftFileLockProtocolError],
 ) -> None:
-    restored: Final = clone(SoftFileLockProtocolError("/lock", "claim", "invalid marker"))
+    restored: Final[Timeout | SoftFileLockProtocolError] = clone(
+        SoftFileLockProtocolError("/lock", "claim", "invalid marker")
+    )
     assert isinstance(restored, SoftFileLockProtocolError)
     assert (restored.claim_name, restored.reason) == ("claim", "invalid marker")
 

@@ -38,9 +38,11 @@ class _CapabilityPragmas(CoveragePlugin):
         excluded = [
             rf"# pragma: {'lacks' if present else 'needs'} {name}\b" for name, present in sorted(CAPABILITIES.items())
         ]
-        self._extend(config, "report:exclude_lines", [*excluded, *_ALWAYS_EXCLUDED])
+        # A forked child exits through os._exit without writing coverage data, so no job in the matrix can see these.
+        always_excluded: tuple[str, ...] = (r"# pragma: forked child\b",)
+        self._extend(config, "report:exclude_lines", [*excluded, *always_excluded])
         # A guarded clause header only ever takes one arc, as covdefaults already assumes for its own pragmas.
-        self._extend(config, "report:partial_branches", [_CAPABILITY_PRAGMA, *_ALWAYS_EXCLUDED])
+        self._extend(config, "report:partial_branches", [_CAPABILITY_PRAGMA, *always_excluded])
         unrunnable = [
             pattern
             for name, patterns in sorted(_CAPABILITY_MODULES.items())
@@ -75,9 +77,6 @@ _CAPABILITY_MODULES: Final[MappingProxyType[str, tuple[str, ...]]] = MappingProx
         "*\\filelock\\_soft_rw\\*.py",
     ),
 })
-
-#: A forked child exits through os._exit without writing coverage data, so no job in the matrix can see these.
-_ALWAYS_EXCLUDED: Final[tuple[str, ...]] = (r"# pragma: forked child\b",)
 
 _CAPABILITY_PRAGMA: Final[str] = rf"# pragma: (needs|lacks) ({'|'.join(sorted(CAPABILITIES))})\b"
 

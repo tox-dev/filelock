@@ -47,10 +47,10 @@ INVALID_TIMEOUTS: Final[pytest.MarkDecorator] = pytest.mark.parametrize(
 
 
 def assert_read_write_lock_state(lock_file: str, mode: Literal["read", "write"], *, available: bool) -> None:
-    context: Final = multiprocessing.get_context("spawn")
+    context = multiprocessing.get_context("spawn")
     # Pipes avoid GraalPy's multiprocessing semaphore failures.
     receiving, sending = context.Pipe(duplex=False)
-    probe: Final = context.Process(target=_probe_read_write_lock, args=(lock_file, mode, sending))
+    probe = context.Process(target=_probe_read_write_lock, args=(lock_file, mode, sending))
     probe.start()
     sending.close()
     try:
@@ -58,7 +58,7 @@ def assert_read_write_lock_state(lock_file: str, mode: Literal["read", "write"],
         assert receiving.poll(timeout=10), "read-write lock probe did not start"
         receiving.recv_bytes()
         assert receiving.poll(timeout=5), "read-write lock probe did not finish"
-        acquired: Final = receiving.recv_bytes()
+        acquired: Final[bytes] = receiving.recv_bytes()
         probe.join(timeout=10)
         assert not probe.is_alive(), "read-write lock probe did not exit"
         assert (probe.exitcode, acquired) == (0, bytes([available]))
@@ -72,7 +72,7 @@ def assert_read_write_lock_state(lock_file: str, mode: Literal["read", "write"],
 
 def _probe_read_write_lock(lock_file: str, mode: Literal["read", "write"], sending: Connection) -> None:
     with sending:
-        lock: Final = ReadWriteLock(lock_file, is_singleton=False)
+        lock: Final[ReadWriteLock] = ReadWriteLock(lock_file, is_singleton=False)
         sending.send_bytes(b"")
         acquired = False
         try:
@@ -88,7 +88,7 @@ def _probe_read_write_lock(lock_file: str, mode: Literal["read", "write"], sendi
 
 
 def writer_gets_in(lock_file: str | os.PathLike[str]) -> bool:
-    contender: Final = ReadWriteLock(lock_file, is_singleton=False)
+    contender: Final[ReadWriteLock] = ReadWriteLock(lock_file, is_singleton=False)
     try:
         contender.acquire_write(blocking=False)
     except Timeout:

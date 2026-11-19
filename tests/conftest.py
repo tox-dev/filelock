@@ -161,8 +161,8 @@ def break_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
 def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None]], None]:
     # Schedule an action for right after the stale break re-reads the lock file and before it takes the marker.
     def schedule(lock: Path, action: Callable[[], None]) -> None:
-        alive: Final = filelock._identity.process_alive
-        lstat: Final = os.lstat
+        alive = filelock._identity.process_alive
+        lstat = os.lstat
         state: list[str] = []
 
         def judged(pid: int) -> bool:
@@ -171,7 +171,7 @@ def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None
             return alive(pid)
 
         def lstat_then_act(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
-            found: Final = lstat(path, dir_fd=dir_fd)
+            found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
             if state == ["judged"] and os.fspath(path) == os.fspath(lock):
                 state.append("acted")
                 action()
@@ -190,15 +190,15 @@ def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]
     # A tmpfs test directory never reuses a number. The stand-in makes ``os.lstat`` report a successor under the number
     # of the unlinked file it is given, once no descriptor in this process keeps that inode allocated.
     def stand_in(successor: Path, freed: os.stat_result) -> None:
-        created: Final = successor.lstat()
-        lstat: Final = os.lstat
+        created: Final[os.stat_result] = successor.lstat()
+        lstat = os.lstat
 
         def lstat_with_reuse(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
-            found: Final = lstat(path, dir_fd=dir_fd)
+            found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
             if (found.st_dev, found.st_ino) != (created.st_dev, created.st_ino) or descriptors_on(freed):
                 return found
             # The tuple carries the integer fields up to st_size; the float and nanosecond times ride in the mapping.
-            extra: Final = {
+            extra = {
                 name: getattr(found, name)
                 for name in dir(found)
                 if name.startswith("st_")

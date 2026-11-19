@@ -55,9 +55,6 @@ UNSET_FILE_MODE: Final[int] = -1
 
 _PERMISSION_BITS: Final[int] = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
 
-#: Ceiling on the retry counter used as a power of two, so a long contended wait cannot overflow the backoff multiply.
-_MAX_BACKOFF_EXPONENT: Final[int] = 20
-
 #: How a context manager reconciles a body failure with a release failure on exit (see the property of this name).
 ContextErrorPolicy = Literal["chain", "group"]
 
@@ -72,7 +69,7 @@ if TYPE_CHECKING:
 
     from _typeshed import Unused  # simplint: ignore[private-import-path]  # precise callback type
 
-    from ._lease import LeaseClaim as _LeaseClaim
+    from ._lease import LeaseClaim
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
 
@@ -154,7 +151,7 @@ def raise_grouped_errors(
 ) -> NoReturn:
     errors = (first_error, second_error, *additional_errors)
     _detach_grouped_contexts(errors)
-    group: Final = BaseExceptionGroup(message, errors)
+    group: Final[BaseExceptionGroup[BaseException]] = BaseExceptionGroup(message, errors)
     if marker is not None:
         setattr(group, marker[0], marker[1])
     raise group from None
@@ -397,7 +394,7 @@ class FileLockMeta(ABCMeta):
         )
         on_acquired = _resolve_on_acquired(on_acquired, supported=cls._on_acquired_supported, cls_name=cls.__name__)
         # Checked before the singleton lookup so a cache hit rejects a misspelled option just like a fresh build does.
-        params: Final = _supported_init_params(
+        params = _supported_init_params(
             cls,
             {
                 "timeout": timeout,
@@ -568,7 +565,7 @@ def seconds(name: str, value: float) -> float:
     if isinstance(value, Decimal) and value.is_snan():
         return math.nan
     try:
-        seconds: Final = float(value)
+        seconds: Final[float] = float(value)
     except OverflowError:
         msg = f"{name} is too large to be a number of seconds: {value!r}"
         raise ValueError(msg) from None
@@ -674,7 +671,7 @@ def fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Gen
     ensure_current_process()  # pragma: needs fork
     creator_pid = os.getpid()  # pragma: needs fork
     # A generator holding this transition can be finalized on another thread, which must close the entering thread's.
-    thread_id: Final = get_ident()  # pragma: needs fork
+    thread_id: Final[int] = get_ident()  # pragma: needs fork
     with _FORK_STATE.gate:  # pragma: needs fork
         while (
             _FORK_STATE.admission_closed
@@ -682,7 +679,7 @@ def fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Gen
             and thread_id not in _FORK_STATE.transitions
         ):
             _FORK_STATE.gate.wait()  # pragma: no cover - exercised in isolated interpreter
-        token: Final = next(_TRANSITION_TOKENS)
+        token: Final[int] = next(_TRANSITION_TOKENS)
         _FORK_STATE.transitions.setdefault(thread_id, {})[token] = descriptor_owner
         _FORK_STATE.active_transitions += 1
     try:  # pragma: needs fork
@@ -690,7 +687,7 @@ def fork_transition(descriptor_owner: _ForkDescriptorOwner | None = None) -> Gen
     finally:
         if os.getpid() == creator_pid:  # pragma: needs fork
             with _FORK_STATE.gate:
-                owned: Final = _FORK_STATE.transitions[thread_id]
+                owned: Final[dict[int, _ForkDescriptorOwner | None]] = _FORK_STATE.transitions[thread_id]
                 del owned[token]
                 if not owned:
                     del _FORK_STATE.transitions[thread_id]
@@ -1069,8 +1066,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         if self._settings.thread_local:
             yield
             return
-        deadline: Final = None if timeout < 0 else start_time + timeout
-        wait: Final = poll_interval if blocking else 0.0
+        deadline: Final[float | None] = None if timeout < 0 else start_time + timeout
+        wait: Final[float] = poll_interval if blocking else 0.0
         # wait leads the min() so a non-blocking call, whose nan timeout goes unchecked, waits 0 rather than nan.
         while not self._transition_lock.acquire(
             timeout=wait if deadline is None else min(wait, max(deadline - time.perf_counter(), 0.0))
@@ -1340,8 +1337,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             return poll_interval
         # Cap the exponent before doubling: under heavy contention attempt reaches the thousands, and 2**attempt would
         # overflow the float multiply long before the window itself stops growing past the cap.
+        max_backoff_exponent = 20  # pragma: needs hard-link
         window = min(
-            self._poll_backoff_cap, poll_interval * 2 ** min(attempt, _MAX_BACKOFF_EXPONENT)
+            self._poll_backoff_cap, poll_interval * 2 ** min(attempt, max_backoff_exponent)
         )  # pragma: needs hard-link
         return max(poll_interval, secrets.randbelow(int(window * 1_000_000) + 1) / 1_000_000)  # pragma: needs hard-link
 
@@ -1446,7 +1444,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 self._finish_interrupted_release()
             return
         with contextlib.nullcontext() if self._settings.thread_local else self._transition_lock:
-            state: Final = self._hold_state()
+            state: Final[FileLockContext] = self._hold_state()
             # A signal handler can land between the backend's unlock and its clearing of the descriptor, where a second
             # release would close the number twice and could close a file that reused it. The flag holds the releasing
             # frame, so only a release still on this stack stops it, and a flag a cut-short frame left set does not.
@@ -1492,7 +1490,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             return
         # Serialized, or two threads would both close an exited thread's descriptor; copy() is atomic free-threaded.
         with self._transition_lock:
-            own: Final = context.current
+            own: Final[FileLockContext] = context.current
             for held, thread in self._thread_holds.copy().values():
                 if exited_only and thread.is_alive():
                     continue
@@ -1772,7 +1770,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         return 0o666 if self._context.mode == UNSET_FILE_MODE else self._context.mode
 
     def _mark_descriptor_owned(self, fd: int, identity: tuple[int, int] | None = None) -> None:
-        state: Final = self._hold_state()
+        state: Final[FileLockContext] = self._hold_state()
         # Held first, pending cleared second: an interrupt between the two then leaves the descriptor recorded.
         state.lock_file_fd = fd
         state.lock_file_fd_identity = identity
@@ -1783,14 +1781,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             self._thread_holds[id(state)] = state, current_thread()
 
     def _mark_descriptor_pending(self, fd: int, identity: tuple[int, int] | None = None) -> None:
-        state: Final = self._hold_state()
+        state: Final[FileLockContext] = self._hold_state()
         state.pending_lock_file_fd = fd
         state.pending_lock_file_fd_identity = identity
         if isinstance(self._context, ThreadLocalFileContext):
             self._thread_pending[id(state)] = state, current_thread()
 
     def _mark_descriptor_released(self) -> None:
-        state: Final = self._hold_state()
+        state: Final[FileLockContext] = self._hold_state()
         state.pending_lock_file_fd = None
         state.pending_lock_file_fd_identity = None
         state.lock_file_fd = None
@@ -1897,7 +1895,9 @@ class AcquireReturnProxy(Generic[_LockT]):
         traceback: TracebackType | None,
     ) -> None:
         # Widen to the bound: ty narrows the else branch to the type variable minus BaseFileLock, not to the union rest.
-        lock: Final = cast("BaseFileLock | ReadWriteLock | SoftReadWriteLock", self.lock)
+        lock: Final[BaseFileLock | ReadWriteLock | SoftReadWriteLock] = cast(
+            "BaseFileLock | ReadWriteLock | SoftReadWriteLock", self.lock
+        )
         if isinstance(lock, BaseFileLock):
             lock._release_in_context(exc_value)  # ruff:ignore[private-member-access]  # forwards __exit__ to the owned lock's context release
         else:  # a reader/writer lock does not carry a context_error_policy
@@ -2073,7 +2073,7 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
     claim_root: str | None = None
 
     #: The lease claim of this hold, kept with it so a cross-thread release stops the right heartbeat.
-    lease_claim: _LeaseClaim | None = None
+    lease_claim: LeaseClaim | None = None
 
 
 class ThreadLocalFileContext(FileLockContext, local):

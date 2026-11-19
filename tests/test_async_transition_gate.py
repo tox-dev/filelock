@@ -142,8 +142,8 @@ class _Interrupt(BaseException):
 async def test_hold_interrupted_while_joining_leaves_the_gate_free(
     mocker: MockerFixture, entry: str, *, joined: bool
 ) -> None:
-    gate: Final = AsyncTransitionGate()
-    real_join: Final = AsyncTransitionGate._join
+    gate: Final[AsyncTransitionGate] = AsyncTransitionGate()
+    real_join = AsyncTransitionGate._join
     interrupted = False
 
     def join_then_interrupt(instance: AsyncTransitionGate, ticket: ConcurrentFuture[None]) -> None:
@@ -173,8 +173,8 @@ async def test_hold_interrupted_while_joining_leaves_the_gate_free(
 
 @pytest.mark.asyncio
 async def test_parked_caller_settles_a_head_whose_hand_off_was_lost(mocker: MockerFixture) -> None:
-    gate: Final = AsyncTransitionGate()
-    real_settle: Final = AsyncTransitionGate._settle_head_locked
+    gate: Final[AsyncTransitionGate] = AsyncTransitionGate()
+    real_settle = AsyncTransitionGate._settle_head_locked
     calls = 0
 
     def lose_first_hand_off(instance: AsyncTransitionGate) -> None:
