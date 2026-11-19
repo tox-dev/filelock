@@ -31,7 +31,7 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: "🏗️ Build distributions"
-        uses: tox-dev/github-workflows/build-python-distribution@6.8.4
+        uses: tox-dev/github-workflows/build-python-distribution@6.8.5
       - name: "📤 Upload distributions"
         uses: actions/upload-artifact@v7.0.2
         with:
@@ -41,13 +41,13 @@ jobs:
   tag-build:
     name: 🏗️ Build
     if: startsWith(github.ref, 'refs/tags/')
-    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@9334311ad92f91f7f5c937b3ab218da4d317116e # 6.8.4
+    uses: tox-dev/github-workflows/.github/workflows/validate-python-release.yaml@b34c57a8a06e7b043c2ddd0b6b7a8a778d7aa8f7 # 6.8.5
     permissions:
       contents: read
   github-notes:
     name: "📝 Render GitHub Release notes"
     if: startsWith(github.ref, 'refs/tags/')
-    uses: tox-dev/github-workflows/.github/workflows/release-notes.yaml@9334311ad92f91f7f5c937b3ab218da4d317116e # 6.8.4
+    uses: tox-dev/github-workflows/.github/workflows/release-notes.yaml@b34c57a8a06e7b043c2ddd0b6b7a8a778d7aa8f7 # 6.8.5
     permissions:
       contents: read
     with:
@@ -77,7 +77,7 @@ jobs:
     name: "🚀 Publish GitHub Release"
     needs: [tag-build, publish, github-notes]
     if: startsWith(github.ref, 'refs/tags/')
-    uses: tox-dev/github-workflows/.github/workflows/github-release.yaml@9334311ad92f91f7f5c937b3ab218da4d317116e # 6.8.4
+    uses: tox-dev/github-workflows/.github/workflows/github-release.yaml@b34c57a8a06e7b043c2ddd0b6b7a8a778d7aa8f7 # 6.8.5
     permissions:
       contents: write
     with:
