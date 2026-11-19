@@ -353,10 +353,28 @@ def foreign_owner(node: os.stat_result, parent: os.stat_result) -> int | None:
     # :param node: ``lstat`` or ``fstat`` of the file or directory found in place.
     # :param parent: ``stat`` of the directory that holds it.
     #
+    # Unmapped accounts in a Linux user namespace share one reported uid, which cannot establish ownership.
+    #
     # :returns: the owning uid when another account controls the node, otherwise ``None``.
     if sys.platform != "win32" and parent.st_mode & stat.S_ISVTX:  # pragma: needs foreign-sticky-tmp
-        return None if node.st_uid in {os.geteuid(), parent.st_uid} else node.st_uid
+        owner = node.st_uid
+        return None if owner in {os.geteuid(), parent.st_uid} and not _is_overflow_uid(owner) else owner
     return None
+
+
+def _is_overflow_uid(uid: int) -> bool:  # pragma: win32 no cover
+    if sys.platform not in {"linux", "android"}:
+        return False
+    try:
+        overflow_uid = int(Path("/proc/sys/kernel/overflowuid").read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        overflow_uid = 65534
+    if uid != overflow_uid:
+        return False
+    try:
+        return Path("/proc/self/uid_map").read_text(encoding="ascii").split() != ["0", "0", "4294967295"]
+    except OSError:
+        return True
 
 
 if sys.platform == "win32":  # pragma: win32 cover

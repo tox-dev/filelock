@@ -29,6 +29,7 @@ from tests.capability_marks import (
     NEEDS_FOREIGN_STICKY_TMP,
     NEEDS_SYMLINK,
     NEEDS_UNLINK_OPEN_FILE,
+    NEEDS_USER_NAMESPACES,
 )
 from tests.descriptor_helpers import descriptors_on
 
@@ -1514,6 +1515,19 @@ def test_strict_soft_symlinked_protocol_directory_is_neither_listed_nor_broken(t
 @NEEDS_FOREIGN_STICKY_TMP
 @pytest.mark.usefixtures("directories_of_another_account")
 def test_strict_soft_refuses_coordination_directory_of_another_account(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path,
+) -> None:
+    (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()
+
+    with pytest.raises(SoftFileLockProtocolError, match="not to this process's account"):
+        StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0).acquire()
+    assert list(coordination.iterdir()) == []
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+@NEEDS_USER_NAMESPACES
+@pytest.mark.usefixtures("uid_shared_with_unmapped_accounts")
+def test_strict_soft_refuses_coordination_directory_with_an_unmapped_owner(  # pragma: needs foreign-sticky-tmp
     lock_path_in_shared_tmp: Path,
 ) -> None:
     (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()

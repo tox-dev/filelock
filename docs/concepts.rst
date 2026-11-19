@@ -562,6 +562,11 @@ reached the old one keep using it while new contenders use the replacement, so t
 neither learns of it. No check inside the lock can rule that out, because the owner of such a directory controls every name
 in it. Keep locks in a directory that only the lock's users can write, or in a sticky one such as ``/tmp``.
 
+A Linux user namespace reports every unmapped file owner as one overflow UID, usually 65534. Under a sticky parent,
+``UnixFileLock``, ``StrictSoftFileLock`` and ``SoftReadWriteLock`` refuse a lock file or protocol directory reported with
+that UID in a partially mapped namespace: its real owner cannot be determined from ``stat``. This can also refuse a
+file the locking account owns if that account runs as the overflow UID. A private lock directory avoids that ambiguity.
+
 A sticky directory protects only the names an account owns. The owner of a lock file there can remove it while another
 account holds its lock, and the next contender then locks a new file at the same path. On Unix,
 :class:`FileLock <filelock.FileLock>` therefore raises :class:`PermissionError` for a lock file that belongs to neither
