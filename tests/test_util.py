@@ -117,13 +117,13 @@ def test_break_lock_file_leaves_a_marker_recreated_since_the_stale_check(
     stale_lock: Path, mocker: MockerFixture, recreate: Callable[[Path], None]
 ) -> None:
     def read_then_peer_recreates(fd: int, length: int) -> bytes:
-        data: Final = real_read(fd, length)
+        data: Final[bytes] = real_read(fd, length)
         recreate(stale_lock)
         return data
 
-    real_read: Final = os.read
+    real_read = os.read
     mocker.patch("os.read", autospec=True, side_effect=read_then_peer_recreates)
-    rename: Final = mocker.spy(Path, "rename")
+    rename = mocker.spy(Path, "rename")
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
     # Moving the live marker aside would empty the path until it is linked back, long enough for a third holder.
@@ -144,16 +144,16 @@ def test_stale_break_admits_no_third_holder_beside_a_recreated_marker(
 ) -> None:
     # A peer broke the stale marker and the next holder acquired after the recheck. A third contender then polls at
     # every step of the break, including between taking the marker and checking whose it is.
-    holder: Final = SoftFileLock(stale_lock)
+    holder: Final[SoftFileLock] = SoftFileLock(stale_lock)
     overlaps: list[bool] = []
     polling: list[bool] = []
-    real: Final = getattr(os, point)
+    real = getattr(os, point)
 
     def third_contender_polls(path: str | os.PathLike[str], *args: int, **kwargs: int | None) -> int | None:
-        result: Final = real(path, *args, **kwargs)
+        result = real(path, *args, **kwargs)
         if holder.is_locked and not polling and os.fspath(path).startswith(os.fspath(stale_lock)):
             polling.append(True)
-            third: Final = SoftFileLock(stale_lock)
+            third: Final[SoftFileLock] = SoftFileLock(stale_lock)
             with suppress(Timeout):
                 third.acquire(blocking=False)
             overlaps.append(third.is_locked)
@@ -180,8 +180,8 @@ def test_break_lock_file_put_back_never_replaces_a_marker_at_the_path(  # pragma
     stale_lock: Path, mocker: MockerFixture
 ) -> None:
     assert sys.platform == "win32"
-    rename: Final = Path.rename
-    pin: Final = filelock._util._pinned_for_rename
+    rename = Path.rename
+    pin = filelock._util._pinned_for_rename
 
     def peer_recreates_then_pin(
         path: str,
@@ -233,13 +233,13 @@ def test_break_lock_file_never_links_a_symlink_swapped_in_under_the_break_name( 
     stale_lock: Path, mocker: MockerFixture
 ) -> None:
     (target := stale_lock.with_name("target")).write_text("private", encoding="utf-8")
-    lstat: Final = os.lstat
+    lstat = os.lstat
 
     def peer_recreates_then_swaps_in_a_symlink(path: str, *, dir_fd: int | None = None) -> os.stat_result:
         if ".break." not in os.fspath(path):
             return lstat(path, dir_fd=dir_fd)
         _rewrite_in_place(Path(path))
-        found: Final = lstat(path, dir_fd=dir_fd)
+        found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
         Path(path).unlink()
         Path(path).symlink_to(target)
         return found
@@ -262,7 +262,7 @@ def test_stale_break_spares_a_successor_on_the_freed_inode_number(  # pragma: wi
     record: str,
 ) -> None:
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
-    stale: Final = lock.lstat()
+    stale: Final[os.stat_result] = lock.lstat()
 
     def owner_gone_and_successor_acquired(pid: int, signal: int) -> None:
         # Between the stale read and the break the marker goes and the next holder's marker takes the freed inode
@@ -287,11 +287,11 @@ def test_stale_break_skips_a_marker_swapped_in_after_the_pin(  # pragma: win32 n
     tmp_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock], record: str
 ) -> None:
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
-    fstat: Final = os.fstat
+    fstat = os.fstat
     swapped: list[bool] = []
 
     def pin_then_peer_swaps_the_marker(fd: int) -> os.stat_result:
-        found: Final = fstat(fd)
+        found: Final[os.stat_result] = fstat(fd)
         if not swapped:
             swapped.append(True)
             (replacement := lock.with_name("replacement")).write_text(record, encoding="utf-8")
@@ -299,7 +299,7 @@ def test_stale_break_skips_a_marker_swapped_in_after_the_pin(  # pragma: win32 n
         return found
 
     mocker.patch("os.fstat", side_effect=pin_then_peer_swaps_the_marker, autospec=True)
-    rename: Final = mocker.spy(Path, "rename")
+    rename = mocker.spy(Path, "rename")
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
     mocker.stopall()
@@ -316,7 +316,7 @@ def test_stale_break_reclaims_a_marker_it_cannot_pin(  # pragma: win32 no cover
 ) -> None:
     # Without O_PATH a symlink or a socket cannot be opened, and the check falls back to the number it read.
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
-    open_: Final = os.open
+    open_ = os.open
     pinned: list[bool] = []
 
     def pin_refused(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
@@ -337,7 +337,7 @@ def test_stale_break_lets_acquire_retry_after_the_marker_vanishes_before_the_pin
     tmp_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock], record: str
 ) -> None:
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
-    open_: Final = os.open
+    open_ = os.open
     released: list[bool] = []
 
     def holder_releases_then_open(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
@@ -371,11 +371,11 @@ def test_stale_take_over_keeps_the_lock_when_a_rename_replaces_its_marker(  # pr
     stale_lock: Path, mocker: MockerFixture, lifetime: float | None
 ) -> None:
     os.utime(stale_lock, (0, 0))
-    lstat: Final = os.lstat
+    lstat = os.lstat
     replaced: list[bool] = []
 
     def peer_replaces_the_swapped_in_file(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
-        found: Final = lstat(path, dir_fd=dir_fd)
+        found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
         if ".break." in os.fspath(path) and not replaced:
             replaced.append(True)
             (other := stale_lock.with_name("other")).write_text("other", encoding="utf-8")
@@ -383,10 +383,10 @@ def test_stale_take_over_keeps_the_lock_when_a_rename_replaces_its_marker(  # pr
         return found
 
     mocker.patch.object(os, "lstat", new=peer_replaces_the_swapped_in_file)
-    lock: Final = SoftFileLock(stale_lock, lifetime=lifetime)
+    lock: Final[SoftFileLock] = SoftFileLock(stale_lock, lifetime=lifetime)
     lock.acquire(blocking=False)
     mocker.stopall()
-    held: Final = lock.is_locked
+    held: Final[bool] = lock.is_locked
     lock.release()
 
     assert (held, stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("*.break.*"))) == (
@@ -402,7 +402,7 @@ def test_remove_own_file_placeholder_names_this_process(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: win32 no cover
     mocker.patch("filelock._soft.os.fchmod", side_effect=OSError(EIO, "Input/output error"), autospec=True)
-    exchange: Final = filelock._util.exchange_names
+    exchange = filelock._util.exchange_names
     placeholders: Final[list[bytes]] = []
 
     def record_the_placeholder(source: str, target: str) -> bool:
@@ -423,7 +423,7 @@ def test_stale_break_takes_the_lock_over_in_one_poll(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
-    contender: Final = lock_type(lock)
+    contender: Final[SoftFileLock] = lock_type(lock)
     contender.acquire(blocking=False)
 
     assert (contender.is_lock_held_by_us, list(tmp_path.glob("test.lock.break.*"))) == (True, [])
@@ -437,7 +437,7 @@ def test_stale_break_spares_a_successor_on_the_freed_inode_number_across_the_exc
     reuse_inode: Callable[[Path, os.stat_result], None],
     on_break_recheck: Callable[[Path, Callable[[], None]], None],
 ) -> None:
-    stale: Final = stale_lock.lstat()
+    stale: Final[os.stat_result] = stale_lock.lstat()
 
     def successor_takes_the_freed_number() -> None:
         # A peer broke the stale marker after the recheck and the next holder's marker got its inode number, created in
@@ -480,7 +480,7 @@ def test_break_lock_file_leaves_the_marker_where_the_exchange_fails(  # pragma: 
     stale_lock: Path, mocker: MockerFixture, error: int
 ) -> None:
     # NFS and SMB refuse the exchange; renaming the marker aside instead would empty the path beside a live holder.
-    renamer: Final = mocker.create_autospec(_exchange_call, return_value=error)
+    renamer = mocker.create_autospec(_exchange_call, return_value=error)
     mocker.patch("filelock._util._rename_call", return_value=(renamer, 2), autospec=True)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
@@ -507,7 +507,7 @@ def test_stale_take_over_interrupted_before_the_check_puts_the_marker_back(  # p
 ) -> None:
     # Between the exchange and the check the lock path names the contender's own marker; an interrupt there must not
     # leave it, naming a live PID that holds nothing, nor keep the marker it took.
-    lstat: Final = os.lstat
+    lstat = os.lstat
     interrupted: list[bool] = []
 
     def interrupt_after_the_exchange(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
@@ -517,7 +517,7 @@ def test_stale_take_over_interrupted_before_the_check_puts_the_marker_back(  # p
         return lstat(path, dir_fd=dir_fd)
 
     mocker.patch.object(os, "lstat", new=interrupt_after_the_exchange)
-    lock: Final = SoftFileLock(stale_lock)
+    lock: Final[SoftFileLock] = SoftFileLock(stale_lock)
     with pytest.raises(KeyboardInterrupt):
         lock.acquire(blocking=False)
     mocker.stopall()
@@ -538,7 +538,7 @@ def test_break_lock_file_break_name_is_unguessable(stale_lock: Path, mocker: Moc
     # A second breaker in this process could compute <lock>.break.<pid> and rename a recreated live lock onto it
     # between our lstat and unlink. Were that our break name, our unlink would delete the live lock.
     guessable: Final[Path] = stale_lock.with_name(f"test.lock.break.{os.getpid()}")
-    lstat: Final = os.lstat
+    lstat = os.lstat
 
     def peer_moves_a_live_lock_onto_the_guessable_name(path: str | os.PathLike[str]) -> os.stat_result:
         result: Final[os.stat_result] = lstat(path)
@@ -620,8 +620,8 @@ def test_writability_uses_open_credentials(
         assert (filename, permission) == (str(readonly_marker), os.W_OK)
         return effective_ids == supported
 
-    supported: Final = effective_ids
-    probe: Final = mocker.patch("os.access", autospec=True, side_effect=access)
+    supported: Final[bool] = effective_ids
+    probe = mocker.patch("os.access", autospec=True, side_effect=access)
     mocker.patch("os.supports_effective_ids", {True: {probe}, False: set()}[effective_ids])
     with pytest.raises(Timeout):
         SoftFileLock(readonly_marker).acquire(timeout=0)
@@ -646,8 +646,8 @@ def test_writability_check_ignores_symlink_swapped_in_after_lstat(readonly_marke
         Path(filename).symlink_to(readonly_marker.with_name("missing"))
         return real_access(filename, permission, **kwargs)
 
-    real_access: Final = os.access
-    probe: Final = mocker.patch("os.access", autospec=True, side_effect=swap_then_access)
+    real_access = os.access
+    probe = mocker.patch("os.access", autospec=True, side_effect=swap_then_access)
     mocker.patch("os.supports_follow_symlinks", {*os.supports_follow_symlinks, probe})
     # Following the symlink would find no target and raise PermissionError; the link itself is writable.
     with pytest.raises(Timeout):
@@ -662,7 +662,7 @@ def test_writability_rejects_denied_marker(readonly_marker: Path, mocker: Mocker
 
 @pytest.fixture
 def readonly_marker(tmp_path: Path) -> Generator[Path]:
-    path: Final = tmp_path / "test.lock"
+    path: Final[Path] = tmp_path / "test.lock"
     path.write_text(f"424242\n{host_name()}-other\n", encoding="utf-8")
     path.chmod(0o444)
     try:

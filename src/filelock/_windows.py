@@ -657,8 +657,8 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     def _user_sid() -> bytes:
         token = wintypes.HANDLE()
-        token_query: Final = 0x0008
-        open_as_self: Final = True
+        token_query: Final[int] = 0x0008
+        open_as_self: Final[bool] = True
         # An impersonating thread acts as the account it impersonates, which is the one whose names the lock creates.
         if not (
             _ADVAPI32.OpenThreadToken(_KERNEL32.GetCurrentThread(), token_query, open_as_self, ctypes.byref(token))

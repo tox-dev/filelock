@@ -29,7 +29,7 @@ pytestmark: Final[pytest.MarkDecorator] = XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 @pytest.fixture(autouse=True)
 def _clear_singleton_caches() -> Generator[None]:
-    caches: Final = (ReadWriteLock._instances, SoftReadWriteLock._instances)
+    caches = (ReadWriteLock._instances, SoftReadWriteLock._instances)
     for cache in caches:
         cache.clear()
     yield

@@ -643,10 +643,10 @@ async def test_same_instance_reentrant_works(tmp_path: Path, lock_type: type[Bas
 async def test_same_instance_reentrant_acquire_skips_the_executor(
     tmp_path: Path, lock_type: type[BaseAsyncFileLock], mocker: MockerFixture
 ) -> None:
-    executor: Final = ThreadPoolExecutor(max_workers=1)
-    lock: Final = lock_type(tmp_path / "test.lock", executor=executor)
+    executor: Final[ThreadPoolExecutor] = ThreadPoolExecutor(max_workers=1)
+    lock: Final[BaseAsyncFileLock] = lock_type(tmp_path / "test.lock", executor=executor)
     async with lock:
-        submit: Final = mocker.spy(executor, "submit")
+        submit = mocker.spy(executor, "submit")
         async with lock:
             assert (lock.lock_counter, submit.call_count) == (2, 0)
     executor.shutdown()
@@ -1498,7 +1498,7 @@ async def test_async_del_inside_a_running_loop_falls_back_when_the_release_does_
     tmp_path: Path, schedule: MockType, stop: Callable[[MockType, ThreadPoolExecutor], object]
 ) -> None:
     with ThreadPoolExecutor(max_workers=1) as executor:
-        lock: Final = AsyncSoftFileLock(str(tmp_path / "a"), executor=executor)
+        lock: Final[AsyncSoftFileLock] = AsyncSoftFileLock(str(tmp_path / "a"), executor=executor)
         await lock.acquire()
 
         lock.__del__()  # ruff:ignore[unnecessary-dunder-call]  # a finalizer test cannot ride on collection timing
@@ -1522,12 +1522,14 @@ async def test_async_del_never_waits_on_the_singleton_cache_lock(tmp_path: Path,
                 inside.set()
                 leave.wait()
 
-    constructions: Final = count()
-    inside: Final = threading.Event()
-    leave: Final = threading.Event()
+    constructions: Final[count[int]] = count()
+    inside: Final[threading.Event] = threading.Event()
+    leave: Final[threading.Event] = threading.Event()
     lock = StallingLock(tmp_path / "a", is_singleton=True)
     await lock.acquire()
-    holder: Final = threading.Thread(target=StallingLock, args=(tmp_path / "b",), kwargs={"is_singleton": True})
+    holder: Final[threading.Thread] = threading.Thread(
+        target=StallingLock, args=(tmp_path / "b",), kwargs={"is_singleton": True}
+    )
     holder.start()
     inside.wait()
     try:
@@ -1542,9 +1544,9 @@ async def test_async_del_never_waits_on_the_singleton_cache_lock(tmp_path: Path,
 
 @pytest.mark.asyncio
 async def test_async_thread_local_del_inside_a_running_loop_releases_another_threads_hold(tmp_path: Path) -> None:
-    lock_path: Final = tmp_path / "a"
-    lock: Final = AsyncSoftFileLock(lock_path, thread_local=True, run_in_executor=False)
-    holder: Final = threading.Thread(target=asyncio.run, args=(lock.acquire(),))
+    lock_path: Final[Path] = tmp_path / "a"
+    lock: Final[AsyncSoftFileLock] = AsyncSoftFileLock(lock_path, thread_local=True, run_in_executor=False)
+    holder: Final[threading.Thread] = threading.Thread(target=asyncio.run, args=(lock.acquire(),))
     holder.start()
     holder.join()
 
@@ -1557,13 +1559,13 @@ async def test_async_thread_local_del_inside_a_running_loop_releases_another_thr
 @NEEDS_PROMPT_FINALIZATION
 @pytest.mark.asyncio
 async def test_async_del_hands_the_singleton_slot_to_a_new_lock(tmp_path: Path, schedule: MockType) -> None:
-    lock_path: Final = tmp_path / "a"
+    lock_path: Final[Path] = tmp_path / "a"
     # An executor worker keeps the call it ran until it picks up the next one, which would keep the lock alive.
     dying = AsyncSoftFileLock(lock_path, is_singleton=True, run_in_executor=False)
     await dying.acquire()
 
     del dying
-    successor: Final = AsyncSoftFileLock(lock_path, is_singleton=True, run_in_executor=False)
+    successor: Final[AsyncSoftFileLock] = AsyncSoftFileLock(lock_path, is_singleton=True, run_in_executor=False)
     await successor.acquire()
     await asyncio.wait([schedule.spy_return])
 
@@ -1574,7 +1576,7 @@ async def test_async_del_hands_the_singleton_slot_to_a_new_lock(tmp_path: Path, 
 @NEEDS_PROMPT_FINALIZATION
 @pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
 def test_async_singleton_handed_out_while_finalizing_keeps_its_hold(tmp_path: Path, thread_local: bool) -> None:
-    lock_path: Final = str(tmp_path / "a")
+    lock_path: Final[str] = str(tmp_path / "a")
     handed_out: Final[list[AsyncFileLock]] = []
 
     # The cache still finds a lock whose finalizer is starting, as another thread asking at that moment would.
@@ -1607,7 +1609,7 @@ async def schedule(mocker: MockerFixture) -> MockType:  # ruff:ignore[unused-asy
 def test_async_lock_on_a_daemon_loop_thread_held_at_interpreter_exit_releases_its_marker(
     tmp_path: Path, thread_local: bool
 ) -> None:
-    script: Final = (
+    script: Final[str] = (
         "import asyncio, sys, threading\n"
         "from filelock import AsyncSoftFileLock\n"
         "loop = asyncio.new_event_loop()\n"

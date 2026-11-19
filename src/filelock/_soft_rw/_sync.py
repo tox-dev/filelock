@@ -31,39 +31,17 @@ from weakref import WeakValueDictionary
 
 from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
     AcquireReturnProxy,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    acquire_thread_lock as _acquire_thread_lock,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    canonical as _canonical,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    check_blocking as _check_blocking,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    check_timeout_max as _check_timeout_max,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    ensure_current_process as _ensure_current_process,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    path_key as _path_key,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    register_fork_class as _register_fork_class,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    register_fork_object as _register_fork_object,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    resolve_read_write_timeout as _resolve_read_write_timeout,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    seconds as _seconds,
-)
-from filelock._api import (  # simplint: ignore[private-import-path]  # shared parent helper
-    timeout_behavior as _timeout_behavior,
+    acquire_thread_lock,
+    canonical,
+    check_blocking,
+    check_timeout_max,
+    ensure_current_process,
+    path_key,
+    register_fork_class,
+    register_fork_object,
+    resolve_read_write_timeout,
+    seconds,
+    timeout_behavior,
 )
 from filelock._error import Timeout  # simplint: ignore[private-import-path]  # internal dependency
 from filelock._lease import LeaseCompromise  # simplint: ignore[private-import-path]  # internal dependency
@@ -102,10 +80,10 @@ class _SoftRWMeta(type):
         poll_interval: float = 0.25,
         on_compromise: Callable[[LeaseCompromise], None] | None = None,
     ) -> SoftReadWriteLock:
-        _ensure_current_process()
+        ensure_current_process()
         # Reject a bad default at construction, as FileLock does, rather than at its first acquire.
-        _check_blocking(blocking)
-        timeout = _seconds("timeout", timeout)
+        check_blocking(blocking)
+        timeout = seconds("timeout", timeout)
         # Passed through only when set, so a subclass that declares its own constructor without it keeps working.
         extra = {} if on_compromise is None else {"on_compromise": on_compromise}
         if not is_singleton:
@@ -121,7 +99,7 @@ class _SoftRWMeta(type):
             )
 
         # Keyed like the log root, so one instance never spans two logs.
-        normalized = _path_key(_canonical(lock_file))
+        normalized = path_key(canonical(lock_file))
         with cls._instances_lock:
             instance = cls._instances.get(normalized)
             if instance is None:
@@ -149,8 +127,7 @@ class _SoftRWMeta(type):
                     raise RuntimeError(msg)
                 cls._instances[normalized] = instance
             elif (
-                _timeout_behavior(instance.timeout, any_negative=False)
-                != _timeout_behavior(timeout, any_negative=False)
+                timeout_behavior(instance.timeout, any_negative=False) != timeout_behavior(timeout, any_negative=False)
                 or instance.blocking != blocking
             ):
                 msg = (
@@ -233,7 +210,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         cls._instances = WeakValueDictionary()
         cls._instances_lock = threading.RLock()
         cls._instances_under_construction = set()
-        _register_fork_class(cls)
+        register_fork_class(cls)
 
     def __init__(  # ruff:ignore[too-many-arguments]  # public constructor: one parameter per documented lock option
         self,
@@ -261,7 +238,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         # Resolved once: a relative lock path must keep naming the same log after the process changes directory. The
         # final component stays unresolved, as in 4.0.12, so every release shares one log on a symlinked lock path.
-        root = f"{_canonical(self.lock_file)}.rw"
+        root = f"{canonical(self.lock_file)}.rw"
         files = OsFiles(self.lock_file)
         # The ledger and log outlive one acquisition, so every participant of this instance shares them.
         self._new_participant: Final = partial(
@@ -278,7 +255,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
         with _ALL_INSTANCES_LOCK:
             _ALL_INSTANCES[id(self)] = self
-        _register_fork_object(self)
+        register_fork_object(self)
 
     @classmethod
     def get_lock(
@@ -411,12 +388,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         with self._locks.internal:
             if self._closed:
                 raise self._closed_error()
-            timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
+            timeout = resolve_read_write_timeout(timeout, blocking=blocking)
             if self._hold is not None:
                 return self._validate_reentrant(mode, holder)
 
         deadline = None if timeout == -1 else time.perf_counter() + timeout
-        if not _acquire_thread_lock(
+        if not acquire_thread_lock(
             self._locks.transaction,
             blocking=blocking,
             timeout=timeout,
@@ -768,25 +745,23 @@ class _Intervals(NamedTuple):
 
 
 def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None, poll_interval: float) -> _Intervals:
-    heartbeat_interval = _seconds("heartbeat_interval", heartbeat_interval)
+    heartbeat_interval = seconds("heartbeat_interval", heartbeat_interval)
     if not isfinite(heartbeat_interval) or heartbeat_interval <= 0:
         msg = f"heartbeat_interval must be positive and finite, got {heartbeat_interval}"
         raise ValueError(msg)
     # The heartbeat thread waits this long between refreshes, and Event.wait overflows past TIMEOUT_MAX.
-    _check_timeout_max("heartbeat_interval", heartbeat_interval)
-    stale_threshold = (
-        heartbeat_interval * 3 if stale_threshold is None else _seconds("stale_threshold", stale_threshold)
-    )
+    check_timeout_max("heartbeat_interval", heartbeat_interval)
+    stale_threshold = heartbeat_interval * 3 if stale_threshold is None else seconds("stale_threshold", stale_threshold)
     if not isfinite(stale_threshold) or stale_threshold <= heartbeat_interval:
         msg = (
             f"stale_threshold must exceed heartbeat_interval ({heartbeat_interval}) "
             f"and be finite, got {stale_threshold}"
         )
         raise ValueError(msg)
-    if not isfinite(poll_interval := _seconds("poll_interval", poll_interval)) or poll_interval <= 0:
+    if not isfinite(poll_interval := seconds("poll_interval", poll_interval)) or poll_interval <= 0:
         msg = f"poll_interval must be positive and finite, got {poll_interval}"
         raise ValueError(msg)
-    _check_timeout_max("poll_interval", poll_interval)
+    check_timeout_max("poll_interval", poll_interval)
     # A waiting writer refreshes its record once per poll, so a poll slower than the threshold reads as dead.
     if poll_interval >= stale_threshold:
         msg = f"poll_interval must be below stale_threshold ({stale_threshold}), got {poll_interval}"
@@ -836,7 +811,7 @@ def _cleanup_all_instances() -> None:
 
 
 atexit.register(_cleanup_all_instances)
-_register_fork_class(SoftReadWriteLock)
+register_fork_class(SoftReadWriteLock)
 
 
 __all__ = [

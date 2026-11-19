@@ -17,13 +17,26 @@ if TYPE_CHECKING:
 # twenty-eight on a ten-core machine, and the CI runners have far fewer, so it is sized for the slowest interpreter on
 # the smallest runner rather than for the fastest, which is what a seventy-five second guard encoded.
 _WORKER_DEADLINE: Final[int] = 300
-# Catch overlap two independent ways. An occupancy marker fails immediately the instant a second holder enters the
-# critical section, and a counter read-modify-write fails afterwards when two holders read the same value and one
-# increment vanishes. Both beat an O_EXCL create/unlink pair, which tripped over Windows' delete-pending lag where the
-# previous holder's unlink had not finished before the next holder's create ran. The check lives in the worker's exit
-# status, not in its stderr: interpreters are free to print to stderr (PyPy warns when it cannot size the CPU cache),
-# so demanding empty stderr flakes without proving anything about exclusion.
-_WORKER: Final[str] = """
+
+
+pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
+
+
+@pytest.mark.timeout(_WORKER_DEADLINE + 60)
+def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> None:
+    lock_path = tmp_path / "resource.lock"
+    start_path = tmp_path / "start"
+    counter_path = tmp_path / "counter"
+    occupied_path = tmp_path / "occupied"
+    process_count: int = 8
+    acquisitions_per_process: int = 500
+    # Catch overlap two independent ways. An occupancy marker fails immediately the instant a second holder enters the
+    # critical section, and a counter read-modify-write fails afterwards when two holders read the same value and one
+    # increment vanishes. Both beat an O_EXCL create/unlink pair, which tripped over Windows' delete-pending lag where
+    # the previous holder's unlink had not finished before the next holder's create ran. The check lives in the worker's
+    # exit status, not in its stderr: interpreters are free to print to stderr (PyPy warns when it cannot size the CPU
+    # cache), so demanding empty stderr flakes without proving anything about exclusion.
+    worker = """
 import sys
 import time
 from pathlib import Path
@@ -42,25 +55,12 @@ for _ in range(int(sys.argv[5])):
         counter_path.write_text(str(count + 1))
         occupied_path.unlink()
 """
-
-
-pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
-
-
-@pytest.mark.timeout(_WORKER_DEADLINE + 60)
-def test_strict_soft_eight_process_contention_has_no_overlap(tmp_path: Path) -> None:
-    lock_path = tmp_path / "resource.lock"
-    start_path = tmp_path / "start"
-    counter_path = tmp_path / "counter"
-    occupied_path = tmp_path / "occupied"
-    process_count: int = 8
-    acquisitions_per_process: int = 500
     processes = [
         subprocess.Popen(
             [
                 sys.executable,
                 "-c",
-                _WORKER,
+                worker,
                 str(lock_path),
                 str(start_path),
                 str(counter_path),

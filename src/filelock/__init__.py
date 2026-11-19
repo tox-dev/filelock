@@ -52,9 +52,7 @@ from ._error import (
     Timeout,
 )
 from ._unix import UnixFileLock
-from ._unix import (
-    has_fcntl as _has_fcntl,
-)
+from ._unix import has_fcntl as unix_has_fcntl
 from ._windows import WindowsFileLock
 
 if TYPE_CHECKING:
@@ -103,7 +101,7 @@ __version__: Final[str] = version
 #: :class:`UnixFileLock`, otherwise to :class:`SoftFileLock`. Always ``False`` on Windows.
 #:
 #: :meta hide-value:
-has_fcntl: Final[bool] = _has_fcntl  # simplint: ignore[module-variable-case]  # public API
+has_fcntl: Final[bool] = unix_has_fcntl  # simplint: ignore[module-variable-case]  # public API
 
 
 if sys.platform == "win32":  # pragma: win32 cover

@@ -203,9 +203,9 @@ def test_fallback_keeps_peer_soft_marker(tmp_path: Path) -> None:  # pragma: nee
 def test_fallback_spares_a_peer_marker_that_replaced_its_placeholder(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    lock_path: Final = tmp_path / "test.lock"
-    peer_marker: Final = f"{os.getpid()}\n{host_name()}\n"
-    lstat: Final = os.lstat
+    lock_path: Final[Path] = tmp_path / "test.lock"
+    peer_marker: Final[str] = f"{os.getpid()}\n{host_name()}\n"
+    lstat = os.lstat
     stalled: list[bool] = []
 
     def flock_missing(fd: int, operation: int) -> None:
@@ -213,7 +213,7 @@ def test_fallback_spares_a_peer_marker_that_replaced_its_placeholder(  # pragma:
         raise OSError(ENOSYS, f"Function not implemented for {fd} with {operation}")
 
     def lstat_then_peer_replaces_placeholder(path: str, *, dir_fd: int | None = None) -> os.stat_result:
-        found: Final = lstat(path, dir_fd=dir_fd)
+        found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
         if stalled == [False] and os.fspath(path) == os.fspath(lock_path):
             # The cleanup stalls past the grace a waiting soft lock gives an empty file, which evicts the placeholder
             # and publishes its own marker.
@@ -264,7 +264,7 @@ def test_denied_lock_file_is_reopened_in_the_acquisition_directory(  # pragma: n
     # reopen probes a file in another directory, or none.
     first, second = working_directories
     (first / "test.lock").touch()
-    real_open: Final = os.open
+    real_open = os.open
     read_only_opens: list[str] = []
 
     def deny_write_then_chdir(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:

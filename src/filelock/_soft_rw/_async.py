@@ -26,36 +26,20 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 
 from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
-    TASKS_THREAD_ID as _TASKS_THREAD_ID,
-)
-from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
-    BackendOutcome as _BackendOutcome,
-)
-from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
-    capture_call as _capture_call,
-)
-from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
-    drain_future as _drain_future,
-)
-from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
-    future_result as _future_result,
-)
-from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
-    raise_cancelled_error as _raise_cancelled_error,
-)
-from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
-    task_owners_for as _task_owners_for,
-)
-from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
-    wait_until_done as _wait_until_done,
+    TASKS_THREAD_ID,
+    BackendOutcome,
+    capture_call,
+    drain_future,
+    future_result,
+    raise_cancelled_error,
+    task_owners_for,
+    wait_until_done,
 )
 from filelock._error import Timeout  # simplint: ignore[private-import-path]  # internal dependency
 
 from ._sync import (
     SoftReadWriteLock,
-)
-from ._sync import (
-    lost_hold_error as _lost_hold_error,
+    lost_hold_error,
 )
 
 if TYPE_CHECKING:
@@ -127,7 +111,7 @@ class AsyncSoftReadWriteLock:
             poll_interval=poll_interval,
             on_compromise=on_compromise,
         )
-        self._owners = _task_owners_for(self._lock)
+        self._owners = task_owners_for(self._lock)
         self._loop = loop
         self._executor = executor
 
@@ -229,7 +213,7 @@ class AsyncSoftReadWriteLock:
             await self._run_acquire(
                 functools.partial(
                     self._lock._acquire_level_of,  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
-                    _TASKS_THREAD_ID,
+                    TASKS_THREAD_ID,
                     mode,
                     remaining,
                     blocking=blocking,
@@ -239,7 +223,7 @@ class AsyncSoftReadWriteLock:
         def joinable() -> bool:
             self._raise_if_unusable()
             if (compromise := self._lock.compromise) is not None:
-                raise _lost_hold_error(self.lock_file, mode, compromise)
+                raise lost_hold_error(self.lock_file, mode, compromise)
             return self._backend_holds()
 
         await self._owners.acquire(
@@ -259,37 +243,37 @@ class AsyncSoftReadWriteLock:
         abandoned = threading.Event()
         acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
         try:
-            await _wait_until_done(acquire_future)
+            await wait_until_done(acquire_future)
         except asyncio.CancelledError as cancellation:
             # Stops a backend wait on another process's hold, which would otherwise outlast the caller by as long.
             abandoned.set()
             try:
-                await _drain_future(acquire_future)
+                await drain_future(acquire_future)
             except Timeout:
                 # Nothing was taken, so the caller's cancellation is the whole outcome.
                 raise cancellation from None
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                _raise_cancelled_error(cancellation, error)
+                raise_cancelled_error(cancellation, error)
             try:
-                await _drain_future(self._submit(self._leave_backend))
+                await drain_future(self._submit(self._leave_backend))
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                _raise_cancelled_error(cancellation, error)
+                raise_cancelled_error(cancellation, error)
             raise
-        _future_result(acquire_future)
+        future_result(acquire_future)
 
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
-    ) -> asyncio.Future[_BackendOutcome[_R]]:
+    ) -> asyncio.Future[BackendOutcome[_R]]:
         loop = self._loop or asyncio.get_running_loop()
-        return loop.run_in_executor(self._executor, _capture_call, functools.partial(func, *args, **kwargs))
+        return loop.run_in_executor(self._executor, capture_call, functools.partial(func, *args, **kwargs))
 
     def _leave_backend(self) -> None:
         # Only the tasks' level: a sync user of the same singleton keeps its own.
-        self._lock._release_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+        self._lock._release_level_of(TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     def _backend_holds(self) -> bool:
         # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
-        return self._lock._holds_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+        return self._lock._holds_level_of(TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     async def release(self, *, force: bool = False) -> None:
         """

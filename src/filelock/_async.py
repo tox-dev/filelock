@@ -28,16 +28,10 @@ from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypeVar, ca
 from weakref import WeakKeyDictionary
 
 from ._api import (
-    append_exception_context as _append_exception_context,
-)
-from ._api import (
-    fork_transition as _fork_transition,
-)
-from ._api import (
-    raise_chained_errors as _raise_chained_errors,
-)
-from ._api import (
-    resolve_read_write_timeout as _resolve_read_write_timeout,
+    append_exception_context,
+    fork_transition,
+    raise_chained_errors,
+    resolve_read_write_timeout,
 )
 from ._error import Timeout
 
@@ -159,7 +153,7 @@ _TASK_OWNERS_LOCK: Final[Lock] = Lock()
 
 def task_owners_for(sync_lock: ReadWriteLock | SoftReadWriteLock) -> _TaskOwners:
     # Singleton wrappers share one sync lock, so they must share its task holds too.
-    with _fork_transition(), _TASK_OWNERS_LOCK:
+    with fork_transition(), _TASK_OWNERS_LOCK:
         if (owners := _TASK_OWNERS.get(sync_lock)) is None:
             owners = _TASK_OWNERS[sync_lock] = _TaskOwners()
         return owners
@@ -197,7 +191,7 @@ class _TaskOwners:
         joinable: Callable[[], bool],
     ) -> None:
         task = _current_task()
-        timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
+        timeout = resolve_read_write_timeout(timeout, blocking=blocking)
         deadline = None if not blocking or timeout < 0 else time.perf_counter() + timeout
         waiting_writer = False
         try:
@@ -452,10 +446,10 @@ def raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseExcep
     # the cancellation that triggered it survive. Shared by the async wrappers so cancellations report the same way.
     if (context := error.__context__) is not None and context is not cancellation:
         if (cancellation_context := cancellation.__context__) is not None:
-            _append_exception_context(context, cancellation_context)
+            append_exception_context(context, cancellation_context)
         cancellation.__context__ = context
     error.__context__ = cancellation
-    _raise_chained_errors(error)
+    raise_chained_errors(error)
 
 
 def future_result(future: asyncio.Future[BackendOutcome[_T]]) -> _T:

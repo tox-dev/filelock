@@ -41,12 +41,12 @@ pytestmark: Final[list[pytest.MarkDecorator]] = [
 async def test_private_link_connects_through_the_validated_inode(
     database: Path, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
-    connect: Final = mocker.spy(sqlite3, "connect")
-    lock: Final = AsyncReadWriteLock(database, is_singleton=False)
+    connect = mocker.spy(sqlite3, "connect")
+    lock: Final[AsyncReadWriteLock] = AsyncReadWriteLock(database, is_singleton=False)
     try:
         async with getattr(lock, f"{mode}_lock")():
-            opened: Final = Path(connect.call_args.args[0])
-            link_directory: Final = opened.parent.parent
+            opened: Final[Path] = Path(connect.call_args.args[0])
+            link_directory: Final[Path] = opened.parent.parent
             assert (
                 opened.name,
                 link_directory.parent,
@@ -60,7 +60,7 @@ async def test_private_link_connects_through_the_validated_inode(
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 def test_private_link_preserves_contention(database: Path, mode: Literal["read", "write"]) -> None:
-    lock: Final = ReadWriteLock(database, is_singleton=False)
+    lock: Final[ReadWriteLock] = ReadWriteLock(database, is_singleton=False)
     with getattr(lock, f"{mode}_lock")():
         assert_read_write_lock_state(str(database), "write", available=False)
 
@@ -80,14 +80,14 @@ def test_private_link_failure_preserves_a_peer_lock(database: Path, mocker: Mock
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 async def test_private_link_preserves_async_contention(database: Path, mode: Literal["read", "write"]) -> None:
-    lock: Final = AsyncReadWriteLock(database, is_singleton=False)
+    lock: Final[AsyncReadWriteLock] = AsyncReadWriteLock(database, is_singleton=False)
     async with getattr(lock, f"{mode}_lock")():
         assert_read_write_lock_state(str(database), "write", available=False)
     await lock.close()
 
 
 def test_private_link_is_removed_after_release(database: Path, created_directories: list[Path]) -> None:
-    lock: Final = ReadWriteLock(database, is_singleton=False)
+    lock: Final[ReadWriteLock] = ReadWriteLock(database, is_singleton=False)
     lock.acquire_read()
     assert [directory.exists() for directory in created_directories] == [False, True]
     lock.release()
@@ -101,7 +101,7 @@ def test_private_link_sits_beside_the_database(database: Path, created_directori
 
 
 def test_private_link_release_survives_a_removed_alias(database: Path, created_directories: list[Path]) -> None:
-    lock: Final = ReadWriteLock(database, is_singleton=False)
+    lock: Final[ReadWriteLock] = ReadWriteLock(database, is_singleton=False)
     lock.acquire_read()
     shutil.rmtree(created_directories[-1])
     lock.release()
@@ -137,9 +137,9 @@ def test_private_link_rejects_replaced_database(
     make_replacement: Callable[[Path], object],
     created_directories: list[Path],
 ) -> None:
-    replacement: Final = tmp_path / "replacement.db"
+    replacement: Final[Path] = tmp_path / "replacement.db"
     make_replacement(replacement)
-    link: Final = os.link
+    link = os.link
 
     def replace_and_link(source: str, destination: Path, *, follow_symlinks: bool) -> None:
         replacement.replace(source)
@@ -158,10 +158,10 @@ def test_private_link_refuses_a_directory_swapped_in_before_it_opens(
     database: Path, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     swapped_in: Final[list[Path]] = []
-    mkdtemp: Final = tempfile.mkdtemp
+    mkdtemp = tempfile.mkdtemp
 
     def create_then_swap(*, prefix: str, dir: Path) -> str:  # ruff:ignore[builtin-argument-shadowing]  # mirrors tempfile.mkdtemp
-        directory: Final = Path(mkdtemp(prefix=prefix, dir=dir))
+        directory: Final[Path] = Path(mkdtemp(prefix=prefix, dir=dir))
         directory.rename(tmp_path / "aside")
         directory.mkdir(mode=0o755)
         (directory / "notes.txt").write_text("keep")
@@ -175,7 +175,7 @@ def test_private_link_refuses_a_directory_swapped_in_before_it_opens(
 
 
 def test_private_link_closes_a_mode_an_inherited_acl_opened(database: Path, loosened_directories: list[Path]) -> None:
-    lock: Final = ReadWriteLock(database, is_singleton=False)
+    lock: Final[ReadWriteLock] = ReadWriteLock(database, is_singleton=False)
     with lock.read_lock():
         assert [stat.S_IMODE(directory.stat().st_mode) for directory in loosened_directories[1:]] == [0o700]
 
@@ -201,8 +201,8 @@ def test_private_link_opens_nothing_through_a_swapped_link_directory(
     database: Path, tmp_path: Path, mocker: MockerFixture, created_directories: list[Path]
 ) -> None:
     # Whoever can rename in the lock directory may swap the link directory for one of its own before SQLite opens it.
-    target: Final = tmp_path / "target.db"
-    connect: Final = sqlite3.connect
+    target: Final[Path] = tmp_path / "target.db"
+    connect = sqlite3.connect
 
     def swap_then_connect(
         database: str,
@@ -230,7 +230,7 @@ def test_private_link_opens_nothing_through_a_swapped_link_directory(
 
 
 def test_private_link_release_keeps_a_directory_renamed_onto_the_link(database: Path, tmp_path: Path) -> None:
-    other: Final = database.parent / "project"
+    other: Final[Path] = database.parent / "project"
     other.mkdir()
     (other / "notes.txt").write_text("keep")
     with ReadWriteLock(database, is_singleton=False).write_lock():
@@ -248,7 +248,7 @@ def _link_directories(database: Path) -> list[Path]:
 def test_private_link_sweeps_the_link_of_a_killed_holder(database: Path, holder: subprocess.Popen[str]) -> None:
     holder.kill()
     holder.wait(timeout=_PROCESS_DEADLINE)
-    left: Final = _link_directories(database)
+    left: Final[list[Path]] = _link_directories(database)
     with ReadWriteLock(database, is_singleton=False).read_lock():
         pass
 
@@ -258,7 +258,7 @@ def test_private_link_sweeps_the_link_of_a_killed_holder(database: Path, holder:
 def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: Path) -> None:
     # Releases up to 4.2.0 linked the database right inside the directory.
     database.touch()
-    left: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     left.mkdir(mode=0o700)
     (left / "lock.db").hardlink_to(database)
     with ReadWriteLock(database, is_singleton=False).read_lock():
@@ -269,7 +269,7 @@ def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: 
 
 def _host_digest(database: Path) -> str:
     # Taken from a link of another database, so the sweep for this one has not run yet.
-    seed: Final = database.parent.with_name("seed")
+    seed: Final[Path] = database.parent.with_name("seed")
     seed.mkdir(mode=0o777)
     seed.chmod(0o777)
     with ReadWriteLock(seed / "lock.db", is_singleton=False).read_lock():
@@ -285,7 +285,7 @@ def _host_digest(database: Path) -> str:
     ],
 )
 def test_private_link_sweep_keeps_a_directory_named_like_a_dead_holder(database: Path, entry: str) -> None:
-    named: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     (named / entry).parent.mkdir(parents=True)
     (named / entry).write_text("keep")
     (named / "notes.txt").write_text("keep")
@@ -301,7 +301,7 @@ def test_private_link_sweep_keeps_a_directory_named_like_a_dead_holder(database:
 def test_private_link_sweep_removes_a_directory_left_without_a_link(
     database: Path, subdirectories: tuple[str, ...]
 ) -> None:
-    left: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     left.mkdir(mode=0o700)
     for name in subdirectories:
         (left / name).mkdir(mode=0o700)
@@ -313,11 +313,11 @@ def test_private_link_sweep_removes_a_directory_left_without_a_link(
 
 def test_private_link_sweep_never_parses_a_directory_of_another_account(database: Path, mocker: MockerFixture) -> None:
     database.touch()
-    planted: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    planted: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     planted.mkdir(mode=0o700)
     (planted / "inner").mkdir()
     (planted / "inner" / "lock.db").hardlink_to(database)
-    real_fstat: Final = os.fstat
+    real_fstat = os.fstat
 
     def fstat_with_other_owner(fd: int) -> os.stat_result:
         status = real_fstat(fd)
@@ -336,7 +336,7 @@ def test_private_link_sweep_never_parses_a_directory_of_another_account(database
 def test_private_link_sweep_skips_a_symlink_under_a_dead_holder_name(database: Path) -> None:
     # The symlink leads to the database's own directory.
     database.touch()
-    named: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     named.mkdir()
     (named / "inner").symlink_to(database.parent)
     ReadWriteLock(database, is_singleton=False).close()
@@ -347,7 +347,7 @@ def test_private_link_sweep_skips_a_symlink_under_a_dead_holder_name(database: P
 def test_private_link_sweep_skips_a_symlink_to_a_live_holder(database: Path, holder: subprocess.Popen[str]) -> None:
     (held,) = _link_directories(database)
     (inner,) = list(held.iterdir())
-    named: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     named.mkdir()
     (named / "inner").symlink_to(inner)
     ReadWriteLock(database, is_singleton=False).close()
@@ -357,14 +357,14 @@ def test_private_link_sweep_skips_a_symlink_to_a_live_holder(database: Path, hol
 
 @pytest.mark.usefixtures("holder")
 def test_private_link_sweep_keeps_the_link_of_a_live_holder(database: Path) -> None:
-    held: Final = _link_directories(database)
+    held: Final[list[Path]] = _link_directories(database)
     with ReadWriteLock(database, is_singleton=False).read_lock():
         pass
     assert (len(held), _link_directories(database)) == (1, held)
 
 
 def test_private_link_sweep_keeps_a_directory_it_did_not_name(database: Path) -> None:
-    foreign: Final = database.parent / ".filelock-not-ours"
+    foreign: Final[Path] = database.parent / ".filelock-not-ours"
     foreign.mkdir()
     with ReadWriteLock(database, is_singleton=False).read_lock():
         pass
@@ -384,7 +384,7 @@ def test_private_link_sweep_keeps_a_directory_it_did_not_name(database: Path) ->
 def test_private_link_sweep_survives_a_malformed_link_name(
     database: Path, mocker: MockerFixture, pid_text: str, start_text: str
 ) -> None:
-    malformed: Final = database.parent / f".filelock-{pid_text}-{start_text}-{_host_digest(database)}-x"
+    malformed: Final[Path] = database.parent / f".filelock-{pid_text}-{start_text}-{_host_digest(database)}-x"
     malformed.mkdir()
     mocker.patch("os.kill", autospec=True, side_effect=AssertionError("invalid PID probed"))
     with ReadWriteLock(database, is_singleton=False).read_lock():
@@ -407,7 +407,7 @@ _PROCESS_DEADLINE: Final[int] = 30
 
 @pytest.fixture
 def holder(database: Path) -> Generator[subprocess.Popen[str]]:
-    script: Final = (
+    script: Final[str] = (
         "import sys, time\n"
         "from filelock import ReadWriteLock\n"
         "lock = ReadWriteLock(sys.argv[1], is_singleton=False)\n"
@@ -428,7 +428,7 @@ def holder(database: Path) -> Generator[subprocess.Popen[str]]:
 @pytest.fixture
 def database(tmp_path: Path) -> Path:
     # Others may create names in this directory, so SQLite connects through a private link instead of the name.
-    shared: Final = tmp_path / "shared"
+    shared: Final[Path] = tmp_path / "shared"
     shared.mkdir()
     shared.chmod(0o777)
     return shared / "lock.db"
@@ -437,10 +437,10 @@ def database(tmp_path: Path) -> Path:
 @pytest.fixture
 def created_directories(mocker: MockerFixture) -> list[Path]:
     directories: Final[list[Path]] = []
-    mkdtemp: Final = tempfile.mkdtemp
+    mkdtemp = tempfile.mkdtemp
 
     def create_directory(*, prefix: str, dir: Path) -> str:  # ruff:ignore[builtin-argument-shadowing]  # mirrors tempfile.mkdtemp
-        directory: Final = mkdtemp(prefix=prefix, dir=dir)
+        directory: Final[str] = mkdtemp(prefix=prefix, dir=dir)
         directories.append(Path(directory))
         return directory
 
@@ -451,11 +451,11 @@ def created_directories(mocker: MockerFixture) -> list[Path]:
 @pytest.fixture
 def loosened_directories(mocker: MockerFixture) -> list[Path]:
     directories: Final[list[Path]] = []
-    mkdtemp: Final = tempfile.mkdtemp
+    mkdtemp = tempfile.mkdtemp
 
     def create_with_group_access(*, prefix: str, dir: Path) -> str:  # ruff:ignore[builtin-argument-shadowing]  # mirrors tempfile.mkdtemp
         # Stands in for an inheritable ACL entry that grants the group access to every new directory.
-        directory: Final = Path(mkdtemp(prefix=prefix, dir=dir))
+        directory: Final[Path] = Path(mkdtemp(prefix=prefix, dir=dir))
         directory.chmod(0o770)
         directories.append(directory)
         return str(directory)

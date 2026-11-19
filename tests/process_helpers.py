@@ -41,7 +41,7 @@ def break_then_hang_after_exchange(
     lock_file: str, ready: Event, go: Event, exchanged: Event
 ) -> None:  # pragma: win32 no cover
     # Break a stale marker, pausing right before the exchange and hanging right after it, until the test kills it.
-    exchange: Final = filelock._soft.exchange_names
+    exchange = filelock._soft.exchange_names
 
     def exchange_then_hang(source: str, target: str) -> bool:
         ready.set()

@@ -19,13 +19,13 @@ def pin_pid_namespace(mocker: MockerFixture, namespace: int | OSError) -> None:
 
 
 def _pin_namespace(mocker: MockerFixture, link: Path, namespace: int | OSError) -> None:
-    answer: Final = (
+    answer = (
         mocker.create_autospec(os.stat, side_effect=namespace)
         if isinstance(namespace, OSError)
         else mocker.create_autospec(os.stat, return_value=os.stat_result((0, namespace, 0, 0, 0, 0, 0, 0, 0, 0)))
     )
     # A plain function, not an autospec: a test that moves to another namespace pins again over this patch.
-    stat: Final = Path.stat
+    stat = Path.stat
     mocker.patch.object(Path, "stat", new=lambda path, **kwargs: answer(path) if path == link else stat(path, **kwargs))
 
 
@@ -39,12 +39,12 @@ def pin_time_namespace(  # pragma: linux cover
     # :param for_children: the inode of ``/proc/self/ns/time_for_children``, when an unshare made it differ
     _pin_namespace(mocker, Path("/proc/self/ns/time"), namespace)
     _pin_namespace(mocker, Path("/proc/self/ns/time_for_children"), namespace if for_children is None else for_children)
-    answer: Final = (
+    answer = (
         mocker.create_autospec(Path.read_text, side_effect=offsets)
         if isinstance(offsets, OSError)
         else mocker.create_autospec(Path.read_text, return_value=offsets)
     )
-    read_text: Final = Path.read_text
+    read_text = Path.read_text
     mocker.patch.object(
         Path,
         "read_text",

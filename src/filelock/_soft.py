@@ -34,9 +34,7 @@ from typing import Final, NamedTuple
 
 from ._api import (
     BaseFileLock,
-)
-from ._api import (
-    raise_grouped_errors as _raise_grouped_errors,
+    raise_grouped_errors,
 )
 from ._identity import (
     host_name,
@@ -218,7 +216,7 @@ class SoftFileLock(BaseFileLock):
                 raise
 
     def _windows_unlink_if_ours(self, identity: tuple[int, int]) -> None:  # pragma: win32 cover
-        max_retries: Final = 10
+        max_retries: Final[int] = 10
         retry_delay = 0.001
         for attempt in range(max_retries):
             # Windows doesn't immediately release file handles after close, causing EACCES/EPERM on unlink. Recheck
@@ -276,8 +274,8 @@ class SoftFileLock(BaseFileLock):
         # would expire a fresh marker. Only watch it for change, timed on this process's monotonic clock. The owner of a
         # file sets its mtime, and ext4 reuses a freed inode number, so a new marker can repeat both. The change time
         # cannot be set and moves with every create, which keeps a new marker from inheriting an old one's age.
-        now: Final = time.monotonic()
-        key: Final = marker.st_mtime, marker.st_ino, marker.st_ctime_ns
+        now: Final[float] = time.monotonic()
+        key: Final[tuple[float, int, int]] = marker.st_mtime, marker.st_ino, marker.st_ctime_ns
         if (seen := self._marker_seen) is None or seen[0] != key:
             self._marker_seen = key, now
             return 0.0
@@ -299,13 +297,13 @@ class SoftFileLock(BaseFileLock):
             return
         if breaker_pid is not None and self._restore_stranded_marker(breaker_pid, marker):
             return
-        aside: Final = f"{self._lock_path}.break.{os.getpid()}.{secrets.token_hex(16)}"
-        flags: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        fd: Final = os.open(aside, flags, self._open_mode() & ~_OTHERS_WRITE)
+        aside: Final[str] = f"{self._lock_path}.break.{os.getpid()}.{secrets.token_hex(16)}"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd: Final[int] = os.open(aside, flags, self._open_mode() & ~_OTHERS_WRITE)
         self._mark_descriptor_pending(fd)
         exchanged = held = False
         try:
-            identity: Final = _file_identity(os.fstat(fd))
+            identity: Final[tuple[int, int]] = _file_identity(os.fstat(fd))
             self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
             # The scan and the write take long enough for a peer to have taken the marker since the check above, and an
@@ -339,9 +337,9 @@ class SoftFileLock(BaseFileLock):
 
     def _stranded_candidates(self, breaker_pid: int) -> list[tuple[str, bool]] | None:  # pragma: win32 no cover
         directory, name = os.path.split(self._lock_path)
-        stranded: Final = re.compile(rf"{re.escape(name)}\.break\.{breaker_pid}\.[0-9a-f]{{32}}")
+        stranded: Final[re.Pattern[str]] = re.compile(rf"{re.escape(name)}\.break\.{breaker_pid}\.[0-9a-f]{{32}}")
         # [0-9], not \d: a str pattern's \d takes any Unicode digit, and int() reads fullwidth ones as another number.
-        claimed: Final = re.compile(rf"{re.escape(name)}\.restore\.([0-9]+)\.[0-9a-f]{{32}}")
+        claimed: Final[re.Pattern[str]] = re.compile(rf"{re.escape(name)}\.restore\.([0-9]+)\.[0-9a-f]{{32}}")
         candidates: list[tuple[str, bool]] = []
         with os.scandir(directory or os.curdir) as entries:
             for entry in entries:
@@ -363,7 +361,7 @@ class SoftFileLock(BaseFileLock):
     ) -> bool:  # pragma: win32 no cover
         # One try/finally owns the registration from the first step to the last, so no interruption can leave it set.
         # Registered before the rename publishes the name, so a thread that scans meanwhile sees a claim in progress.
-        own: Final = path if adopt else f"{self._lock_path}.restore.{os.getpid()}.{secrets.token_hex(16)}"
+        own: Final[str] = path if adopt else f"{self._lock_path}.restore.{os.getpid()}.{secrets.token_hex(16)}"
         if not _begin_claim(own):
             return True
         try:
@@ -428,7 +426,7 @@ class SoftFileLock(BaseFileLock):
         finally:
             try:
                 # Whichever name still holds our marker loses it: the descriptor keeps its inode number ours.
-                own: Final = os.fstat(fd)
+                own: Final[os.stat_result] = os.fstat(fd)
                 for name in (self._lock_path, aside):
                     if name == self._lock_path and not put_back_done:
                         continue
@@ -516,7 +514,7 @@ class SoftFileLock(BaseFileLock):
         else:  # pragma: win32 no cover
             # Our open descriptor keeps the inode allocated, so its number cannot name a successor's marker yet, and an
             # interrupt before the unlink lands leaves the lock held for the retried release to finish.
-            unlinked: Final = self._unlink_open_marker(fd, identity)
+            unlinked: Final[bool] = self._unlink_open_marker(fd, identity)
             # A failed close may already have released and recycled the descriptor number. Relinquish it before the
             # one close attempt so no later release can close an unrelated descriptor that reused the same integer.
             self._mark_descriptor_released()
@@ -542,7 +540,7 @@ class SoftFileLock(BaseFileLock):
                 try:
                     self._finish_marker_cleanup()
                 except BaseException as cleanup_error:  # ruff:ignore[blind-except]  # keep control-flow failures
-                    _raise_grouped_errors(
+                    raise_grouped_errors(
                         "lock descriptor close and marker cleanup both failed",
                         close_error,
                         cleanup_error,
@@ -570,7 +568,7 @@ class SoftFileLock(BaseFileLock):
                 # lets contenders age it out instead of waiting on this live PID. The write comes before the truncate
                 # so the file is never empty.
                 if sys.platform != "win32":  # pragma: win32 no cover
-                    released: Final = b"filelock/released\n"
+                    released: Final[bytes] = b"filelock/released\n"
                     write_at_start(fd, released)
                     os.ftruncate(fd, len(released))
             except OSError:
@@ -588,7 +586,7 @@ def parse_lock_holder(content: str | None) -> _LockHolder | None:
     # a holder it would name a foreign host no one reclaims, or a start token that lets a contender break a live lock.
     if not content or not content.endswith("\n") or len(lines := content.strip().splitlines()) not in {2, 3}:
         return None
-    start_token_line_count: Final = 3
+    start_token_line_count: Final[int] = 3
     try:
         pid = parse_decimal(lines[0])
         start_token = parse_decimal(lines[2]) if len(lines) == start_token_line_count else None
