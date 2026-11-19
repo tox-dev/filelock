@@ -298,7 +298,7 @@ def test_private_link_sweep_keeps_a_directory_named_like_a_dead_holder(database:
     "subdirectories",
     [pytest.param((), id="empty"), pytest.param(("0123456789abcdef",), id="empty-subdirectory")],
 )
-def test_private_link_sweep_removes_a_directory_left_without_a_link(
+def test_private_link_sweep_keeps_a_directory_left_without_a_link(
     database: Path, subdirectories: tuple[str, ...]
 ) -> None:
     left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
@@ -308,7 +308,23 @@ def test_private_link_sweep_removes_a_directory_left_without_a_link(
     with ReadWriteLock(database, is_singleton=False).read_lock():
         pass
 
-    assert _link_directories(database) == []
+    assert _link_directories(database) == [left]
+    assert all((left / name).is_dir() for name in subdirectories)
+
+
+def test_private_link_sweep_keeps_empty_directories_renamed_to_a_dead_holder(database: Path) -> None:
+    victim: Final = database.parent / "victim-work"
+    victim.mkdir()
+    (victim / "incoming").mkdir()
+    (victim / "outgoing").mkdir()
+    (victim / "data").mkdir()
+    (victim / "data" / "notes.txt").write_text("keep")
+    named: Final = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    victim.rename(named)
+
+    ReadWriteLock(database, is_singleton=False).close()
+
+    assert sorted(entry.name for entry in named.iterdir()) == ["data", "incoming", "outgoing"]
 
 
 def test_private_link_sweep_never_parses_a_directory_of_another_account(database: Path, mocker: MockerFixture) -> None:

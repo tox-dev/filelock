@@ -1281,44 +1281,49 @@ def _remove_dead_links(
     if sys.platform == "win32":  # pragma: win32 cover
         _remove_dead_links_on_windows(path, identity)
         return
-    # Any directory can carry a dead holder's name after a rename in the parent, so only hard links to this database
-    # go, and the directory only once that leaves it empty.
+    # Another account can rename an unrelated directory onto a dead holder's name in a shared parent.
+    # Remove a directory only after finding this database's hard link inside it.
     fd: Final[int] = os.open(path, _DIRECTORY_FLAGS)
     try:
-        # Only a directory this account made carries a holder of its own; a name another account chose is never
-        # parsed, so no PID is probed on its behalf.
+        # A directory owned by another account cannot hold this account's link; do not probe its named PID.
         if os.fstat(fd).st_uid != owner or not _owner_is_gone(path.name):
             return
         with os.scandir(fd) as entries:
             names: Final[list[str]] = [entry.name for entry in entries]
+        removed_link = False
         for entry in names:
             # Releases up to 4.2.0 linked the database right inside the directory.
             if entry == _LINK_NAME:
-                _unlink_link_to(identity, fd)
+                removed_link = _unlink_link_to(identity, fd) or removed_link
                 continue
             try:
                 nested = os.open(entry, _DIRECTORY_FLAGS, dir_fd=fd)
             except OSError:
                 continue
             try:
-                _unlink_link_to(identity, nested)
+                removed_nested_link = _unlink_link_to(identity, nested)
             finally:
                 os.close(nested)
-            with suppress(OSError):
-                os.rmdir(entry, dir_fd=fd)
+            if removed_nested_link:
+                removed_link = True
+                with suppress(OSError):
+                    os.rmdir(entry, dir_fd=fd)
     finally:
         os.close(fd)
-    with suppress(OSError):
-        path.rmdir()
+    if removed_link:
+        with suppress(OSError):
+            path.rmdir()
 
 
-def _unlink_link_to(identity: _DatabaseIdentity, dir_fd: int) -> None:  # pragma: needs posix-hard-link
+def _unlink_link_to(identity: _DatabaseIdentity, dir_fd: int) -> bool:  # pragma: needs posix-hard-link
     try:
         linked: Final[os.stat_result] = os.stat(_LINK_NAME, dir_fd=dir_fd, follow_symlinks=False)
     except OSError:
-        return
+        return False
     if (linked.st_dev, linked.st_ino) == identity:
         os.unlink(_LINK_NAME, dir_fd=dir_fd)
+        return True
+    return False
 
 
 def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
