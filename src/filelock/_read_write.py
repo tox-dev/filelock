@@ -16,6 +16,7 @@ __lazy_modules__ = [
     "tempfile",
     f"{__spec__.parent}._error",
     f"{__spec__.parent}._identity",
+    f"{__spec__.parent}._util",
     f"{__spec__.parent}._windows",
 ]
 
@@ -33,6 +34,7 @@ import time
 from collections import deque
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
+from errno import EACCES
 from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
 from weakref import WeakValueDictionary
@@ -60,6 +62,7 @@ from ._identity import (
     owner_is_stale,
     process_start_token,
 )
+from ._util import foreign_owner
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
@@ -1457,10 +1460,17 @@ def _open_lock_database(database: str, *, oplock_wait: float = 0) -> int:
             raise PermissionError(msg)
         return fd
     fd = os.open(database, _DB_OPEN_FLAGS, 0o600)  # pragma: win32 no cover
-    if not stat.S_ISREG(os.fstat(fd).st_mode):  # pragma: win32 no cover
+    if not stat.S_ISREG((found := os.fstat(fd)).st_mode):  # pragma: win32 no cover
         os.close(fd)
         msg = f"refusing a non-regular lock database: {database!r}"
         raise OSError(msg)
+    # The owner of a database under a sticky parent may unlink it during a hold. A contender then opens a new database
+    # at the path, and both hold the lock.
+    owner: Final = foreign_owner(found, pathlib.Path(database).parent.stat())  # pragma: win32 no cover
+    if owner is not None:  # pragma: needs foreign-sticky-tmp
+        os.close(fd)
+        reason = f"lock database belongs to uid {owner}, not to this process's account or the directory's owner"
+        raise PermissionError(EACCES, reason, database)
     return fd  # pragma: win32 no cover
 
 

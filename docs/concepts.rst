@@ -582,9 +582,10 @@ directory avoids these refusals, including for accounts that use the overflow UI
 
 A sticky directory protects only the names an account owns. The owner of a lock file there can remove it while another
 account holds its lock, and the next contender then locks a new file at the same path. On Unix,
-:class:`FileLock <filelock.FileLock>` therefore raises :class:`PermissionError` for a lock file that belongs to neither
-the caller's account nor the directory's owner. Accounts that share a lock in ``/tmp`` need the directory's owner,
-usually ``root``, to create the file, or a directory of their own.
+:class:`FileLock <filelock.FileLock>` and :class:`ReadWriteLock <filelock.ReadWriteLock>` therefore raise
+:class:`PermissionError` for a lock file or database that belongs to neither the caller's account nor the directory's
+owner. Accounts that share a lock in ``/tmp`` need the directory's owner, usually ``root``, to create the file, or a
+directory of their own.
 
 Native locks are advisory
 ==========================
