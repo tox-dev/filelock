@@ -797,8 +797,9 @@ If the filesystem refuses the return exchange, it leaves its marker at the lock 
 The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID, then 32 random hex digits. A breaker killed
 between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under that name.
 A contender that finds the breaker's marker dead first looks in the lock's directory for names that start with
-``<lock>.break.<pid>.``, where ``<pid>`` is the dead breaker's. It first renames the record to
-``<lock>.restore.<pid>.<token>`` with its own PID, so only one of several contenders acts on it; a record whose
+``<lock>.break.<pid>.``, where ``<pid>`` names the breaker. If a process with that PID runs now, the contender waits:
+a stale start token in the marker does not prove that the break name belongs to a dead process. Otherwise it renames
+the record to ``<lock>.restore.<pid>.<token>`` with its own PID, so only one contender acts on it. A record whose
 recoverer died there is claimable again, and a claim a failed put-back left in the same process is retried on the next
 poll. It then exchanges back a marker whose owner is alive or cannot be proven dead, and removes one whose owner is
 dead. Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. The
