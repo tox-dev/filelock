@@ -1839,6 +1839,45 @@ def test_acquire_after_one_interrupted_once_held_excludes_another_process(tmp_pa
 
 
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, SoftFileLease])
+def test_handler_release_during_acquire_preserves_depth(
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[BaseFileLock]
+) -> None:
+    path = tmp_path / "a.lock"
+    lock = lock_type(path, is_singleton=False)
+    released: list[int] = []
+
+    def release_in_handler(_signum: int, _frame: FrameType | None) -> None:
+        released.append(lock.lock_counter)
+        lock.release()
+
+    original_acquire = lock._acquire
+
+    def interrupt_acquire() -> None:
+        original_acquire()
+        if lock.is_locked and not released:
+            signal.raise_signal(signal.SIGINT)
+
+    mocker.patch.object(lock, "_acquire", side_effect=interrupt_acquire, autospec=True)
+    previous = signal.signal(signal.SIGINT, release_in_handler)
+    try:
+        lock.acquire(timeout=1)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+    assert released == [1]
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    lock.acquire()
+    lock.release()
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    with pytest.raises(Timeout):
+        lock_type(path, blocking=False, is_singleton=False).acquire()
+    lock.release()
+    with lock_type(path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
 def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Path, mocker: MockerFixture) -> None:
     lock: Final[SoftFileLock] = SoftFileLock(str(tmp_path / "a"))
 

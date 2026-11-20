@@ -1,0 +1,2 @@
+An acquisition that retries after a signal handler releases its new hold now restores the recursion count. A later
+nested release no longer drops the outer hold.

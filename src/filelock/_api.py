@@ -1150,6 +1150,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             if not self.is_locked:
                 ensure_directory_exists(self._lock_path)
             while True:
+                # A handler can release a published hold before this acquire retries, resetting its count.
+                if self._context.lock_counter == 0:
+                    self._context.lock_counter = 1
                 self._raise_if_inherited()
                 if not self.is_locked:
                     self._try_break_expired_lock()
