@@ -6,8 +6,10 @@ import stat
 import sys
 import time
 from contextlib import suppress
-from errno import EACCES, EINVAL, EIO, ELOOP, ENOENT, ENOSPC, EPERM, ESRCH
+from errno import EACCES, EINVAL, EIO, ELOOP, ENOENT, EPERM, ESRCH
+from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -22,6 +24,7 @@ from tests.conftest import DEAD_HOLDER, STALE_BREAKERS
 from tests.process_helpers import call_within
 
 if TYPE_CHECKING:
+    import ctypes
     from collections.abc import Callable, Generator
     from contextlib import AbstractContextManager
 
@@ -66,6 +69,156 @@ def test_foreign_owner_refuses_uid_when_overflowuid_is_unreadable(  # pragma: wi
     parent = os.stat_result((stat.S_IFDIR | 0o1777, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 
     assert filelock._util.foreign_owner(owner, parent) == 65534
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "android"}, reason="mount IDs and UID maps are Linux procfs files")
+@pytest.mark.parametrize(
+    ("uid_map", "fdinfo", "mountinfo", "allow"),
+    [
+        pytest.param(b"0 0 4294967295", b"mnt_id:\t18", b"18 4 0:3 / /tmp rw - tmpfs tmpfs rw", True, id="mapped"),
+        pytest.param(
+            b"0 0 4294967295", b"mnt_id:\t18", b"18 4 0:3 / /tmp rw - overlay overlay rw", False, id="overlay"
+        ),
+        pytest.param(b"0 0 65535", b"mnt_id:\t18", b"18 4 0:3 / /tmp rw - tmpfs tmpfs rw", False, id="partial"),
+        pytest.param(
+            b"0 0 4294967295", b"mnt_id:\t18", b"18 4 0:3 / /tmp rw,idmapped - tmpfs tmpfs rw", False, id="idmapped"
+        ),
+        pytest.param(b"0 0 4294967295", b"mnt_id:\t18", b"19 4 0:3 / /tmp rw - tmpfs tmpfs rw", False, id="detached"),
+        pytest.param(b"0 0 4294967295", b"pos:\t0", b"", False, id="no-mount-id"),
+    ],
+)
+def test_open_file_with_unknown_overflow_uid(  # pragma: win32 no cover  # pragma: darwin no cover
+    tmp_path: Path, mocker: MockerFixture, uid_map: bytes, fdinfo: bytes, mountinfo: bytes, allow: bool
+) -> None:
+    mocker.patch("filelock._util._linux_owner_probe", autospec=True, return_value=None)
+    proc = tmp_path / "thread-self"
+    (proc / "fdinfo").mkdir(parents=True)
+    (proc / "uid_map").write_bytes(uid_map)
+    (proc / "mountinfo").write_bytes(mountinfo)
+    paths = {"/proc/thread-self": proc, "/proc/sys/kernel/overflowuid": tmp_path / "missing"}
+    mocker.patch("filelock._util.Path", autospec=True, side_effect=paths.__getitem__)
+    tmp_path.chmod(0o1700)
+    with (tmp_path / "lock").open("xb") as marker:
+        fd = marker.fileno()
+        (proc / "fdinfo" / str(fd)).write_bytes(fdinfo)
+        owner = os.fstat(fd)
+        assert (filelock._util.foreign_owner(owner, tmp_path.stat(), fd=fd) is None) is allow
+
+
+@pytest.fixture
+def sticky_fd(tmp_path: Path) -> Generator[int]:  # pragma: linux cover
+    tmp_path.chmod(0o1700)
+    with (tmp_path / "marker").open("xb") as marker:
+        yield marker.fileno()
+
+
+@pytest.fixture
+def reported_owner(  # pragma: linux cover
+    sticky_fd: int, tmp_path: Path, mocker: MockerFixture
+) -> Callable[[], int | None]:
+    # Each test changes the native bindings, which production looks up once.
+    mocker.patch.object(filelock._util, "_linux_owner_probe", new=filelock._util._linux_owner_probe.__wrapped__)
+    mocker.patch.object(Path, "read_text", autospec=True, side_effect=FileNotFoundError)
+    mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=FileNotFoundError)
+    return partial(filelock._util.foreign_owner, os.fstat(sticky_fd), tmp_path.stat(), fd=sticky_fd)
+
+
+@pytest.fixture
+def local_filesystem(mocker: MockerFixture, fs_type: int | bytes, capability: int) -> None:  # pragma: linux cover
+    ctypes_mod = pytest.importorskip("ctypes")
+    libc = ctypes_mod.CDLL(None)
+    if isinstance(fs_type, bytes):
+        mocker.patch.object(sys, "byteorder", new="big")
+        mocker.patch("platform.machine", autospec=True, return_value="s390x")
+        header = fs_type
+    else:
+        mocker.patch.object(sys, "byteorder", new="little")
+        header = fs_type.to_bytes(8, "little")
+
+    def statfs(_fd: int, info: ctypes.Array[ctypes.c_long]) -> int:
+        ctypes_mod.memmove(info, header, len(header))
+        return 0
+
+    def capget(_version: ctypes.Array[ctypes.c_uint32], caps: ctypes.Array[ctypes.c_uint32]) -> int:
+        caps[0] = capability
+        return 0
+
+    mocker.patch.object(libc, "fstatfs", new=mocker.create_autospec(statfs, side_effect=statfs))
+    mocker.patch.object(libc, "capget", new=mocker.create_autospec(capget, side_effect=capget))
+    mocker.patch.object(ctypes_mod, "CDLL", autospec=True, return_value=libc)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
+@pytest.mark.parametrize(
+    ("fs_type", "capability", "allowed"),
+    [
+        pytest.param(0x01021994, 0, True, id="local"),
+        pytest.param(0x794C7630, 0, True, id="overlay"),
+        pytest.param(bytes.fromhex("794c7630 00001000"), 0, True, id="s390x-overlay"),
+        pytest.param(bytes.fromhex("65735546 01021994"), 0, False, id="s390x-unsupported"),
+        pytest.param(0x65735546, 0, False, id="fuse"),
+        pytest.param(0x6969, 0, False, id="nfs"),
+        pytest.param(0x01021994, 1 << 3, False, id="privileged"),
+    ],
+)
+@pytest.mark.usefixtures("local_filesystem")
+def test_descriptor_ownership_preserves_flags(  # pragma: linux cover
+    sticky_fd: int, reported_owner: Callable[[], int | None], allowed: bool
+) -> None:
+    fcntl = pytest.importorskip("ctypes").CDLL(None).fcntl
+    before = fcntl(sticky_fd, 3)
+    assert (reported_owner() is None, fcntl(sticky_fd, 3)) == (allowed, before)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
+@pytest.mark.parametrize(("fs_type", "capability"), [(0x01021994, 0)])
+@pytest.mark.parametrize(
+    "responses",
+    [
+        pytest.param([getattr(os, "O_NOATIME", 0)], id="already-set"),
+        pytest.param([0, -1], id="permission-denied"),
+    ],
+)
+@pytest.mark.usefixtures("local_filesystem")
+def test_descriptor_ownership_needs_a_new_permission_check(  # pragma: linux cover
+    mocker: MockerFixture, sticky_fd: int, reported_owner: Callable[[], int | None], responses: list[int]
+) -> None:
+    mocker.patch.object(pytest.importorskip("ctypes").CDLL(None), "fcntl", autospec=True, side_effect=responses)
+    assert reported_owner() == os.fstat(sticky_fd).st_uid
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
+@pytest.mark.parametrize(("fs_type", "capability"), [(0x01021994, 0)])
+@pytest.mark.usefixtures("local_filesystem")
+def test_descriptor_ownership_propagates_a_flag_restore_error(  # pragma: linux cover
+    mocker: MockerFixture, reported_owner: Callable[[], int | None]
+) -> None:
+    ctypes_mod = pytest.importorskip("ctypes")
+    mocker.patch.object(ctypes_mod.CDLL(None), "fcntl", autospec=True, side_effect=[0, 0, -1])
+    mocker.patch.object(ctypes_mod, "get_errno", autospec=True, return_value=EIO)
+    with pytest.raises(OSError, match=os.strerror(EIO)):
+        reported_owner()
+
+
+@pytest.fixture(params=["ctypes", "dynamic-loader", "O_NOATIME", "capget"])
+def unavailable_owner_check(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:  # pragma: linux cover
+    match request.param:
+        case "ctypes":
+            mocker.patch.dict(sys.modules, {"ctypes": None})
+        case "dynamic-loader":
+            mocker.patch("ctypes.CDLL", autospec=True, side_effect=OSError("dynamic loading unavailable"))
+        case "O_NOATIME":
+            mocker.patch.object(os, "O_NOATIME", new=0)
+        case _:
+            mocker.patch("ctypes.CDLL", autospec=True, return_value=SimpleNamespace(fstatfs=None, fcntl=None))
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
+@pytest.mark.usefixtures("unavailable_owner_check")
+def test_ownership_without_native_bindings(  # pragma: linux cover
+    sticky_fd: int, reported_owner: Callable[[], int | None]
+) -> None:
+    assert reported_owner() == os.fstat(sticky_fd).st_uid
 
 
 @pytest.fixture
@@ -134,6 +287,28 @@ def test_break_lock_file_keeps_a_marker_recreated_after_the_recheck(
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
     mocker.stopall()
+
+    assert (stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("test.lock.break.*"))) == ("live", [])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
+def test_break_lock_file_restores_a_peer_marker_taken_by_exchange(  # pragma: win32 no cover
+    stale_lock: Path, mocker: MockerFixture
+) -> None:
+    stale = stale_lock.stat()
+    exchange = filelock._util.exchange_names
+    replaced: list[bool] = []
+
+    def replace_before_exchange(source: str, target: str) -> bool:
+        if not replaced:
+            replaced.append(True)
+            stale_lock.unlink()
+            stale_lock.write_text("live", encoding="utf-8")
+        return exchange(source, target)
+
+    mocker.patch("filelock._util.exchange_names", side_effect=replace_before_exchange, autospec=True)
+    break_lock_file(str(stale_lock), stale.st_mtime, stale.st_ino)
 
     assert (stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("test.lock.break.*"))) == ("live", [])
 
@@ -450,25 +625,6 @@ def test_remove_own_file_placeholder_names_this_process(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
-@NEEDS_STALE_RECLAIM
-def test_remove_own_file_unlinks_when_break_fails_with_enospc(
-    tmp_path: Path, mocker: MockerFixture
-) -> None:  # pragma: win32 no cover
-    lock_file = tmp_path / "test.lock"
-    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        mocker.patch(
-            "filelock._util.break_lock_file",
-            side_effect=OSError(ENOSPC, "No space left on device"),
-            autospec=True,
-        )
-        filelock._util.remove_own_file(str(lock_file), fd)
-        assert not lock_file.exists()
-    finally:
-        os.close(fd)
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
 def test_stale_break_takes_the_lock_over_in_one_poll(  # pragma: win32 no cover
@@ -550,6 +706,41 @@ def test_break_lock_file_leaves_the_marker_where_the_exchange_fails(  # pragma: 
 
 def _exchange_call(source: bytes, target: bytes, flags: int) -> int:
     raise NotImplementedError  # pragma: no cover  # the autospec answers the call, so only the signature matters
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
+@pytest.mark.parametrize(
+    "expected", [pytest.param({}, id="own-marker"), pytest.param({"test.lock": b"live"}, id="peer-marker")]
+)
+@pytest.mark.parametrize("inspect", [pytest.param(False, id="exchange"), pytest.param(True, id="identity-check")])
+def test_interrupted_rollback_removes_only_its_own_marker(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture, expected: dict[str, bytes], inspect: bool
+) -> None:
+    path = tmp_path / "test.lock"
+    mocker.patch("filelock._soft.os.fchmod", side_effect=OSError(EIO, "cannot set mode"), autospec=True)
+    exchange = filelock._util.exchange_names
+
+    def interrupt_check(_path: str) -> os.stat_result:
+        mocker.stopall()
+        raise KeyboardInterrupt
+
+    def interrupt_after_exchange(source: str, target: str) -> bool:
+        mocker.stopall()
+        if expected:
+            (peer := tmp_path / "peer").write_bytes(b"live")
+            peer.replace(path)
+        assert exchange(source, target)
+        if inspect:
+            mocker.patch("os.lstat", autospec=True, side_effect=interrupt_check)
+            return True
+        raise KeyboardInterrupt
+
+    mocker.patch("filelock._util.exchange_names", autospec=True, side_effect=interrupt_after_exchange)
+    with pytest.raises(KeyboardInterrupt):
+        SoftFileLock(path, mode=0o600).acquire(blocking=False)
+
+    assert {entry.name: entry.read_bytes() for entry in tmp_path.iterdir()} == expected
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")

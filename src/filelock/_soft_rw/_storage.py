@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 __spec__ = cast("ModuleSpec", __spec__)
 
-__lazy_modules__ = ["filelock._strict", "filelock._util", "pathlib", f"{__spec__.parent}._protocol"]
+__lazy_modules__ = ["filelock._strict", "filelock._util", "itertools", "pathlib", f"{__spec__.parent}._protocol"]
 
 import errno
 import os
@@ -18,6 +18,7 @@ import sys
 import time
 from contextlib import contextmanager, suppress
 from errno import ELOOP, EMLINK, ENOENT, ENOTDIR, ENXIO, ESTALE
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -35,6 +36,7 @@ from filelock._util import (  # simplint: ignore[private-import-path]  # interna
 from ._protocol import (
     GENERATIONS_DIRECTORY,
     HOLDERS_DIRECTORY,
+    MAX_LISTED_NAMES,
     MAX_RECORD_SIZE,
     TreeReplacedError,
 )
@@ -161,7 +163,7 @@ class OsFiles:
         # A removed tree's inode may be reused, so every open needs an ownership check.
         found = os.fstat(fd)
         parent = os.fstat(parent_fd) if parent_fd is not None else Path(path).parent.stat()
-        _raise_if_untrusted_directory(path, found, parent, Path(self._lock_file).parent.stat())
+        _raise_if_untrusted_directory(path, found, parent, Path(self._lock_file).parent.stat(), fd=fd)
 
     def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
         with self._relative(path) as (name, dir_fd):
@@ -179,9 +181,11 @@ class OsFiles:
         os.close(fd)
         return created.st_dev, created.st_ino
 
-    def unlink(self, path: str) -> None:
+    def unlink(self, path: str, *, witness: str | None = None) -> None:
         try:
             with self._relative(path) as (name, dir_fd):
+                if witness is not None:
+                    os.stat(witness if dir_fd is None else Path(witness).name, dir_fd=dir_fd, follow_symlinks=False)
                 os.unlink(name, dir_fd=dir_fd)
         except OSError as error:
             # Windows refuses to remove a file another process holds open; the record then outlives its owner until
@@ -191,9 +195,12 @@ class OsFiles:
 
     def link(self, source: str, target: str) -> bool:
         failure: NotImplementedError | OSError | None = None
-        with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
+        # The temporary and public names are siblings. Resolving them through separate directories could carry an
+        # old snapshot into the new log when a reset renames their parent between the two opens.
+        with self._relative(source) as (source_name, directory):
+            target_name = target if directory is None else Path(target).name
             try:
-                link_no_follow(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
+                link_no_follow(source_name, target_name, src_dir_fd=directory, dst_dir_fd=directory)
             except FileExistsError:
                 pass
             except (NotImplementedError, OSError) as error:
@@ -202,8 +209,8 @@ class OsFiles:
             # The file's identity decides, not the call's result: an NFS retransmit can report a link that landed as
             # failed, and an EEXIST can be this very link answered twice. Any other error on a link that did not land is
             # a fault, not a peer winning the race, and a retry would spin.
-            if (identity := _identity(source_name, source_fd)) is not None and identity == _identity(
-                target_name, target_fd
+            if (identity := _identity(source_name, directory)) is not None and identity == _identity(
+                target_name, directory
             ):
                 return True
         if failure is not None:
@@ -254,7 +261,7 @@ class OsFiles:
     def listdir(self, path: str) -> list[str]:
         try:
             with self._directory(path) as dir_fd, os.scandir(path if dir_fd is None else dir_fd) as entries:
-                return [entry.name for entry in entries]
+                return [entry.name for entry in islice(entries, MAX_LISTED_NAMES + 1)]
         except FileNotFoundError:
             return []
 
@@ -262,33 +269,27 @@ class OsFiles:
         if self._prepared and not force:
             return
         ensure_directory_exists(root)
-        lock_directory = Path(root).parent.stat()
         for directory, depth in (
             (Path(root), 0),
             (Path(root, GENERATIONS_DIRECTORY), 1),
             (Path(root, HOLDERS_DIRECTORY), 1),
         ):
-            with self._relative(str(directory), depth) as (name, dir_fd):
-                with suppress(FileExistsError):
-                    os.mkdir(name, 0o700, dir_fd=dir_fd)
-                # mkdir has no O_NOFOLLOW, so check what the name resolves to before the lock creates anything in it.
-                found = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                parent = directory.parent.stat() if dir_fd is None else os.fstat(dir_fd)
-            if (
-                not stat.S_ISDIR(found.st_mode)
-                or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
-            ):
-                msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
-                raise TreeReplacedError(msg)
-            _raise_if_untrusted_directory(str(directory), found, parent, lock_directory)
+            with self._relative(str(directory), depth) as (name, dir_fd), suppress(FileExistsError):
+                os.mkdir(name, 0o700, dir_fd=dir_fd)
+            # mkdir has no O_NOFOLLOW. Validate the directory with the same checks that protect later opens.
+            with self._directory(str(directory), depth + 1):
+                pass
         self._prepared = True
 
 
 def _raise_if_untrusted_directory(
-    path: str, found: os.stat_result, parent: os.stat_result, lock_directory: os.stat_result
+    path: str, found: os.stat_result, parent: os.stat_result, lock_directory: os.stat_result, *, fd: int | None = None
 ) -> None:
-    for above in (parent, lock_directory):
-        if (owner := foreign_owner(found, above)) is not None:  # pragma: needs foreign-sticky-tmp
+    if not stat.S_ISDIR(found.st_mode) or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        msg = f"{path} is not a directory or is a symlink; refusing to use it"
+        raise TreeReplacedError(msg)
+    for above in dict.fromkeys((parent, lock_directory)):
+        if (owner := foreign_owner(found, above, fd=fd)) is not None:  # pragma: needs foreign-sticky-tmp
             msg = f"{path} belongs to uid {owner}, not to this process's account or the parent's owner"
             raise TreeReplacedError(msg)
         if above.st_mode & stat.S_ISVTX and found.st_mode & (stat.S_IWGRP | stat.S_IWOTH):  # pragma: win32 no cover

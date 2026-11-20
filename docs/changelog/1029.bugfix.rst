@@ -1,4 +1,2 @@
-Ensure ``remove_own_file`` unlinks the lock marker even when ``break_lock_file``
-fails due to ``ENOSPC`` or another :class:`OSError`. This prevents an empty
-:class:`~filelock.SoftFileLock` marker from lingering on disk and blocking
-subsequent acquires when filesystem space is exhausted.
+On POSIX, if a full filesystem prevents :class:`~filelock.SoftFileLock` from removing a failed marker, cleanup tries
+to leave a one-byte record. On filesystems with atomic exchange, a later caller can reclaim it once space is available.

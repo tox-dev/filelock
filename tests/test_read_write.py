@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import itertools
 import os
 import re
 import struct
@@ -8,7 +9,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only fixed-arg
 import sys
 import threading
 import time
-from contextlib import closing
+from contextlib import ExitStack, closing
 from errno import EWOULDBLOCK
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
@@ -20,17 +21,23 @@ from capabilities import CAPABILITIES
 pytest.importorskip("sqlite3")
 
 import sqlite3
+import string
 
 from filelock import ReadWriteLock, Timeout
 from filelock._read_write import _ForkSafeConnection
-from tests.capability_marks import NEEDS_FIFO, NEEDS_SYMLINK, SKIP_ON_UNRELIABLE_PROCESS_SYNC
+from tests.capability_marks import (
+    NEEDS_FIFO,
+    NEEDS_FOREIGN_STICKY_TMP,
+    NEEDS_SYMLINK,
+    SKIP_ON_UNRELIABLE_PROCESS_SYNC,
+)
 from tests.process_helpers import cleanup_processes
 from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, interrupt_once, writer_gets_in
 
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._identity import host_name
     from filelock._read_write import _host_digest, _remove_link_directory_on_windows
-    from filelock._windows import _ADVAPI32, directory_is_private, make_private_directory
+    from filelock._windows import _ADVAPI32, directory_is_private, make_private_directory, pinned
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")  # pragma: win32 cover
@@ -45,6 +52,66 @@ def test_windows_read_write_rejects_changed_database_link(tmp_path: Path, mocker
     with pytest.raises(OSError, match="lock database changed"):
         ReadWriteLock(database, is_singleton=False)
     assert [entry.name for entry in tmp_path.iterdir()] == [database.name]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles enforce rename sharing")
+def test_windows_private_link_pin_blocks_rename(tmp_path: Path) -> None:  # pragma: win32 cover
+    directory = tmp_path / "link"
+    directory.mkdir()
+
+    with pinned(os.fspath(directory)), pytest.raises(PermissionError) as error:
+        directory.rename(tmp_path / "moved")
+
+    assert getattr(error.value, "winerror", None) == 32
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles enforce rename sharing")
+def test_windows_read_write_keeps_private_link_pinned_until_sqlite_opens(  # pragma: win32 cover
+    everyone_writable_database: Path, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    connect = sqlite3.connect
+    opened: list[Path] = []
+
+    def connect_while_pinned(
+        database: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        directory = Path(database).parent.parent
+        with pytest.raises(PermissionError) as error:
+            directory.rename(tmp_path / "moved")
+        assert getattr(error.value, "winerror", None) == 32
+        opened.append(directory)
+        return connect(
+            database,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+
+    mocker.patch.object(sqlite3, "connect", side_effect=connect_while_pinned, autospec=True)
+    with ReadWriteLock(everyone_writable_database, is_singleton=False).write_lock(), pytest.raises(PermissionError):
+        opened[-1].rename(tmp_path / "moved")
+
+    assert opened
+    assert not opened[-1].exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles can reject junctions")
+def test_windows_private_link_pin_rejects_junction(  # pragma: win32 cover
+    tmp_path: Path, create_junction: Callable[[Path, Path], None]
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    create_junction(link, target)
+
+    with pytest.raises(NotADirectoryError), ExitStack() as stack:
+        stack.enter_context(pinned(os.fspath(link)))
 
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
@@ -621,6 +688,36 @@ def test_read_write_lock_refuses_a_non_regular_path(tmp_path: Path) -> None:
         ReadWriteLock(lock_path, is_singleton=False)
 
 
+@NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.usefixtures("directories_of_another_account")
+def test_read_write_lock_refuses_a_database_of_another_account(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path,
+) -> None:
+    # Its owner could unlink it during a hold, letting a second process open a new database at the same path.
+    lock_path_in_shared_tmp.touch()
+    with pytest.raises(PermissionError, match="not to this process's account") as raised:
+        ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
+    # The error names the path the lock resolved, and /tmp is a symlink to /private/tmp on macOS.
+    assert (raised.value.filename, lock_path_in_shared_tmp.exists()) == (str(lock_path_in_shared_tmp.resolve()), True)
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+def test_read_write_lock_checks_owner_of_reused_probe(  # pragma: needs foreign-sticky-tmp
+    tmp_path: Path, lock_path_in_shared_tmp: Path, mocker: MockerFixture
+) -> None:
+    source = tmp_path / "source.db"
+    source.touch()
+    os.link(source, lock_path_in_shared_tmp)
+    first = ReadWriteLock(source, is_singleton=False)
+    second = ReadWriteLock(source, is_singleton=False)
+    with first.read_lock():
+        with second.read_lock():
+            pass
+        mocker.patch("filelock._read_write.foreign_owner", autospec=True, return_value=source.stat().st_uid + 1)
+        with pytest.raises(PermissionError, match="not to this process's account"):
+            ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
+
+
 def test_read_write_lock_refuses_a_wal_database(lock_file: str) -> None:
     _convert_to_wal(lock_file)
     with pytest.raises(ValueError, match="WAL-mode"):
@@ -647,6 +744,18 @@ def test_read_write_lock_refuses_read_only_sqlite_header(tmp_path: Path, version
     with pytest.raises(ValueError, match="unsupported SQLite format versions"):
         ReadWriteLock(database, is_singleton=False)
     assert database.read_bytes() == page
+
+
+def test_writer_refuses_a_read_only_connection(lock_file: str, mocker: MockerFixture) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    with closing(sqlite3.connect(f"{Path(lock_file).as_uri()}?mode=ro", uri=True, factory=_ForkSafeConnection)) as conn:
+        patched = mocker.patch.object(sqlite3, "connect", return_value=conn, autospec=True)
+        with pytest.raises(ValueError, match="SQLite opened the lock database read-only"):
+            lock.acquire_write(timeout=0)
+        mocker.stop(patched)
+    lock.acquire_write(timeout=0)
+    lock.release()
+    assert Path(lock_file).read_bytes() == b""
 
 
 def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(lock_file: str) -> None:
@@ -1043,6 +1152,57 @@ def _varint(value: int) -> bytes:
     while value := value >> 7:
         groups.insert(0, value & 0x7F | 0x80)
     return bytes(groups)
+
+
+@pytest.mark.parametrize(
+    ("rows", "unique_per_row", "row_length"),
+    [
+        pytest.param(100, 0, 0, id="many-tables"),
+        pytest.param(20, 0, 4000, id="long-plain-rows"),
+        pytest.param(20, 270, 4000, id="many-unique-constraints"),
+    ],
+)
+def test_read_write_lock_refuses_large_application_schema(
+    tmp_path: Path, rows: int, unique_per_row: int, row_length: int
+) -> None:
+    database = tmp_path / "lock.db"
+    columns = string.ascii_lowercase
+    constraints = "".join(
+        f",UNIQUE({first},{second})"
+        for first, second in itertools.islice(itertools.permutations(columns, 2), unique_per_row)
+    )
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE application (value)")
+        connection.execute("PRAGMA writable_schema=ON")
+        connection.executemany(
+            "INSERT INTO sqlite_master VALUES('table', ?, ?, 2, ?)",
+            (
+                (
+                    f"t{number}",
+                    f"t{number}",
+                    f"CREATE TABLE t{number}({','.join(columns)}{constraints})".ljust(row_length),
+                )
+                for number in range(rows)
+            ),
+        )
+        connection.commit()
+
+    with pytest.raises(ValueError, match="schema"):
+        ReadWriteLock(database, is_singleton=False).acquire_read(timeout=1)
+
+
+def test_read_write_lock_accepts_small_application_schema(tmp_path: Path) -> None:
+    database = tmp_path / "lock.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.executescript("".join(f"CREATE TABLE t{number}(value);" for number in range(20)))
+
+    with (
+        closing(ReadWriteLock(database, is_singleton=False)) as reader,
+        closing(ReadWriteLock(database, is_singleton=False)) as writer,
+        reader.read_lock(),
+        pytest.raises(Timeout),
+    ):
+        writer.acquire_write(blocking=False)
 
 
 # https://www.sqlite.org/fileformat.html

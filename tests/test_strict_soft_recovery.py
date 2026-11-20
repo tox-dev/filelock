@@ -84,7 +84,7 @@ def test_strict_soft_reclaims_crash_before_private_publication(tmp_path: Path) -
     assert (result.returncode, result.stdout, result.stderr, len(private_records)) == (_CRASH_STATUS, "", "", 1)
     os.utime(private_records[0], (0, 0))
     with StrictSoftFileLock(lock_path, timeout=0):
-        assert tuple(tmp_path.glob("**/.*.private-v1-*.tmp")) == ()
+        assert tuple(tmp_path.glob("**/.*.private-v1-*.tmp")) == (private_records if os.name == "nt" else ())
 
 
 def _crash_during_private_publication(stage: str) -> str:
@@ -137,7 +137,7 @@ def test_strict_soft_reclaims_crash_after_private_publication(tmp_path: Path) ->
         1,
         1,
     )
-    assert tuple(tmp_path.glob("**/.*.private-v1-*.tmp")) == ()
+    assert tuple(tmp_path.glob("**/.*.private-v1-*.tmp")) == (private_records if os.name == "nt" else ())
     lock.force_break(claims[0].name)
     with lock:
         assert lock.is_locked

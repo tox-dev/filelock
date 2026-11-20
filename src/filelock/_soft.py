@@ -37,6 +37,7 @@ from ._api import (
     raise_grouped_errors,
 )
 from ._identity import (
+    describe_host_name,
     host_name,
     owner_is_current_process,
     owner_is_stale,
@@ -311,9 +312,11 @@ class SoftFileLock(BaseFileLock):
             # exchange now would move that peer's live marker aside.
             if (current := os.lstat(self._lock_path)).st_mtime != marker.st_mtime or current.st_ino != marker.st_ino:
                 return
-            if not exchange_names(aside, self._lock_path):
-                return  # NFS, SMB and the like refuse it; renaming the marker aside would empty the path
+            # A signal can raise after the exchange syscall and before its result reaches this frame.
             exchanged = True
+            if not exchange_names(aside, self._lock_path):
+                exchanged = False
+                return  # NFS, SMB and the like refuse it; renaming the marker aside would empty the path
             if (taken := os.lstat(aside)).st_mtime != marker.st_mtime or taken.st_ino != marker.st_ino:
                 return  # a peer recreated the marker, which the cleanup below swaps back
             Path(aside).unlink()
@@ -341,10 +344,11 @@ class SoftFileLock(BaseFileLock):
         stranded: Final[re.Pattern[str]] = re.compile(rf"{re.escape(name)}\.break\.{breaker_pid}\.[0-9a-f]{{32}}")
         # [0-9], not \d: a str pattern's \d takes any Unicode digit, and int() reads fullwidth ones as another number.
         claimed: Final[re.Pattern[str]] = re.compile(rf"{re.escape(name)}\.restore\.([0-9]+)\.[0-9a-f]{{32}}")
+        prefix = f"{name}."
         candidates: list[tuple[str, bool]] = []
         with os.scandir(directory or os.curdir) as entries:
             for entry in entries:
-                if not entry.is_file(follow_symlinks=False):
+                if not entry.name.startswith(prefix) or not entry.is_file(follow_symlinks=False):
                     continue
                 path = str(Path(directory) / entry.name)
                 if stranded.fullmatch(entry.name):
@@ -428,7 +432,10 @@ class SoftFileLock(BaseFileLock):
         put_back_done = not put_back
         try:
             if put_back:
-                put_back_done = exchange_back(self._lock_path, aside, fd)
+                put_back_done = exchange_back(self._lock_path, aside, fd, unlink_settled_aside=False)
+                if put_back_done:
+                    with suppress(OSError):
+                        Path(aside).unlink(missing_ok=True)
         finally:
             try:
                 # Whichever name still holds our marker loses it: the descriptor keeps its inode number ours.
@@ -491,7 +498,7 @@ class SoftFileLock(BaseFileLock):
             if (content := read_lock_file(self._lock_path)[0]) == _RECORDLESS_MARKER:
                 return "an owner that recorded no PID (a filelock release before 3.22, or one still writing its record)"
             if (holder := self._recorded_holder(content)) and holder[1] != host_name():
-                return f"pid {holder[0]} on {holder[1]}"
+                return f"pid {holder[0]} on {describe_host_name(holder[1])}"
         return None
 
     def break_lock(self) -> None:

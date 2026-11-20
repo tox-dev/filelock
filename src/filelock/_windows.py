@@ -304,7 +304,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             # The reparse test is bound to the opened handle, so a symlink or junction swapped in cannot defeat it
             # through a check-then-open TOCTOU race.
             try:
-                fd = open_non_reparse_fd(self._lock_path, self._open_mode())
+                fd = open_non_reparse_fd(self._lock_path, self._open_mode(), oplock_wait=0)
             except BlockingIOError:
                 return  # an oplock holder has not answered its break; let the retry loop keep its deadline
             if fd is None:
@@ -334,7 +334,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 with suppress(OSError):
                     unlink_without_oplock_wait(self._lock_path)
 
-    def open_non_reparse_fd(path: str, mode: int, *, oplock_wait: float = _ACCESS_DENIED_GRACE) -> int | None:
+    def open_non_reparse_fd(path: str, mode: int, *, oplock_wait: float) -> int | None:
         # Open *path* for locking while refusing reparse points, bound to the handle actually locked.
         #
         # The file is opened through ``NtCreateFile`` with ``FILE_OPEN_REPARSE_POINT`` so a symlink or junction planted
@@ -747,9 +747,11 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     @contextmanager
     def pinned(path: str) -> Generator[tuple[int, int]]:
-        # Hold *path* open without delete sharing, which keeps its name from being renamed or removed.
-        with _opened(path, _FILE_SHARE_READ_WRITE) as handle:
+        handle = pin_directory(path)
+        try:
             yield _identity_of(handle)
+        finally:
+            unpin_directory(handle)
 
     def identity_at(path: str) -> tuple[int, int]:
         with _opened(path, _FILE_SHARE_ALL) as handle:
