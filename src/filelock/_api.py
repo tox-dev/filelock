@@ -1023,6 +1023,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             if _on_this_stack(self._context.releasing):
                 msg = f"lock '{self.lock_file}' is acquired again while this thread's release of it runs"
                 raise RuntimeError(msg)
+            if self.is_locked:
+                self._raise_if_hold_lost()
             canonical_path = canonical(self.lock_file)
             self._context.lock_counter += 1
 
@@ -1098,6 +1100,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def lock_file(self) -> str:
         """Path to the lock file."""
         return self._context.lock_file
+
+    def _raise_if_hold_lost(self) -> None: ...
 
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         # Fail fast when a *different* live instance already holds this path in the current deadlock scope.

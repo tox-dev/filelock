@@ -13,6 +13,8 @@ from filelock import AsyncSoftFileLease, AsyncStrictSoftFileLock, LeaseCompromis
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from pytest_mock import MockerFixture
+
 _DURATION: Final[float] = 0.9
 _HEARTBEAT: Final[float] = 0.1
 
@@ -83,3 +85,30 @@ async def test_async_lease_reports_compromise_when_the_marker_vanishes(marker: P
             await asyncio.wait_for(reported.wait(), _DURATION * 20)
 
     assert [c.reason for c in seen] == ["marker-missing"]
+
+
+@pytest.mark.asyncio
+async def test_async_lease_refuses_a_task_joining_a_lost_claim(marker: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    reported = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def report(_: LeaseCompromise) -> None:
+        loop.call_soon_threadsafe(reported.set)
+
+    lease = AsyncSoftFileLease(
+        str(marker),
+        lease_duration=_DURATION,
+        heartbeat_interval=_HEARTBEAT,
+        on_compromise=report,
+    )
+
+    async with lease:
+        lost = lease.token
+        await asyncio.wait_for(reported.wait(), _DURATION * 20)
+        with pytest.raises(RuntimeError, match="current claim was lost"):
+            await asyncio.create_task(lease.acquire())
+        assert lease.lock_counter == 1
+
+    async with lease:
+        assert lease.token not in {None, lost}

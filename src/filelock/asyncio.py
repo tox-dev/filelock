@@ -372,6 +372,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         ):
             # Re-entry only counts, so it skips the executor round trip that resolving the path costs.
             if self.is_locked:
+                self._raise_if_hold_lost()
                 self._context.lock_counter += 1
                 return AsyncAcquireReturnProxy(lock=self)
             # A canceled provisional acquire must finish rollback before another caller can claim its descriptor.
