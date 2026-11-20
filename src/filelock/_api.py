@@ -960,7 +960,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         :returns: a context object that will unlock the file when the context is exited
 
         :raises Timeout: if fails to acquire lock within the timeout period
-        :raises RuntimeError: if the lock was inherited across a fork, or this thread already waits on or releases it
+        :raises RuntimeError: if the lock was inherited across a fork, this thread already waits on or releases it, or
+            a failed native unlock needs an explicit ``release()`` retry
         :raises TypeError: if *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` timeout, or *poll_interval* exceeds
             :data:`threading.TIMEOUT_MAX`
@@ -1023,6 +1024,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             if _on_this_stack(self._context.releasing):
                 msg = f"lock '{self.lock_file}' is acquired again while this thread's release of it runs"
                 raise RuntimeError(msg)
+            self._raise_if_unlock_uncertain()
             canonical_path = canonical(self.lock_file)
             self._context.lock_counter += 1
 
@@ -1084,7 +1086,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     @property
     def is_locked(self) -> bool:
         """
-        A boolean indicating if the lock file is holding the lock currently.
+        Whether this instance still records a hold. After a native unlock raises, this can remain ``True`` until an
+        explicit ``release()`` retry, even if the kernel already released the lock.
 
         .. versionchanged:: 2.0.0
 
@@ -1098,6 +1101,11 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def lock_file(self) -> str:
         """Path to the lock file."""
         return self._context.lock_file
+
+    def _raise_if_unlock_uncertain(self) -> None:
+        if self._context.lock_file_fd is not None and self._context.unlock_uncertain:  # pragma: win32 no cover
+            msg = f"lock '{self.lock_file}' may have been released; call release() again before acquiring it"
+            raise RuntimeError(msg)
 
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         # Fail fast when a *different* live instance already holds this path in the current deadlock scope.
@@ -1248,7 +1256,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 self._release()
             except BaseException as release_error:
                 # A backend unlocks first and clears the descriptor second. A signal handler that raises in between
-                # leaves a hold the OS dropped. A failed system call alone shows the lock is still held, so it keeps it.
+                # leaves a hold the OS dropped. An errno-bearing error can also come from that handler, so only a
+                # non-system-call error gets an automatic retry. An uncertain unlock needs an explicit retry.
                 if self._context.lock_file_fd is not None and not is_system_call_failure(release_error):
                     with contextlib.suppress(Exception):
                         self._release()
@@ -1450,7 +1459,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             # frame, so only a release still on this stack stops it, and a flag a cut-short frame left set does not.
             if self._creator_pid != os.getpid() or state.lock_file_fd is None or _on_this_stack(state.releasing):
                 return
-            if not force and state.lock_counter > 1:
+            if not force and state.lock_counter > 1 and not state.unlock_uncertain:
                 state.lock_counter -= 1
                 return
             state.releasing = inspect.currentframe()
@@ -1460,7 +1469,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             finally:
                 # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
                 # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
-                # A failure that left the lock held keeps the counter so a later release can retry the OS unlock.
+                # A failure with a live descriptor keeps the counter for an explicit unlock retry.
                 if state.lock_file_fd is None:  # pragma: no branch  # a release that returns cleared the descriptor
                     self._commit_release()
                 state.releasing = None
@@ -1773,6 +1782,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         state: Final[FileLockContext] = self._hold_state()
         # Held first, pending cleared second: an interrupt between the two then leaves the descriptor recorded.
         state.lock_file_fd = fd
+        state.unlock_uncertain = False
         state.lock_file_fd_identity = identity
         state.pending_lock_file_fd = None
         state.pending_lock_file_fd_identity = None
@@ -1792,6 +1802,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         state.pending_lock_file_fd = None
         state.pending_lock_file_fd_identity = None
         state.lock_file_fd = None
+        state.unlock_uncertain = False
         state.lock_file_fd_identity = None
         if isinstance(self._context, ThreadLocalFileContext):
             self._thread_pending.pop(id(state), None)
@@ -1806,6 +1817,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.owner_claim_paths = ()
         self._context.claim_root = None
         self._context.lock_file_fd = None
+        self._context.unlock_uncertain = False
         self._context.lock_file_fd_token = None
         self._context.lock_file_fd_identity = None
         self._context.pending_lock_file_fd = None
@@ -2036,6 +2048,9 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
 
     #: File descriptor from os.open for the lock file; not None while the lock is held.
     lock_file_fd: int | None = None
+
+    #: A failed native unlock may have released the kernel lock before raising.
+    unlock_uncertain: bool = False
 
     #: Registry token for the descriptor owned by this thread's context.
     lock_file_fd_token: int | None = None
