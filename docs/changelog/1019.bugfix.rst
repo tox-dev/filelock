@@ -1,0 +1,2 @@
+``ReadWriteLock`` now raises ``RuntimeError`` if a directory change makes a singleton's SQLite database differ from
+its cache key. It no longer returns that instance for an unrelated lock path.
