@@ -1781,6 +1781,65 @@ def test_interrupted_release_retries_after_another_thread_nests(tmp_path: Path, 
         lock.release(force=True)
 
 
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_errno_after_unix_unlock_refuses_reentrant_acquire(tmp_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform != "win32"
+    import fcntl
+
+    lock_path = tmp_path / "a.lock"
+    lock = FileLock(lock_path, timeout=0)
+    lock.acquire()
+    real_flock = fcntl.flock
+    interrupted = False
+
+    def unlock_then_raise(fd: int, operation: int) -> None:
+        nonlocal interrupted
+        real_flock(fd, operation)
+        if operation == fcntl.LOCK_UN and not interrupted:
+            interrupted = True
+            raise OSError(EIO, "signal handler")
+
+    mocker.patch("fcntl.flock", autospec=True, side_effect=unlock_then_raise)
+    with pytest.raises(OSError, match="signal handler"):
+        lock.release()
+    with FileLock(lock_path, timeout=0), pytest.raises(RuntimeError, match=r"call release\(\) again"):
+        lock.acquire()
+    lock.release()
+    with lock:
+        assert lock.is_locked
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_errno_before_unix_unlock_keeps_explicit_retry(tmp_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform != "win32"
+    import fcntl
+
+    lock_path = tmp_path / "a.lock"
+    lock = FileLock(lock_path, timeout=0)
+    lock.acquire()
+    lock.acquire()
+    real_flock = fcntl.flock
+    interrupted = False
+
+    def raise_then_unlock(fd: int, operation: int) -> None:
+        nonlocal interrupted
+        if operation == fcntl.LOCK_UN and not interrupted:
+            interrupted = True
+            raise OSError(EIO, "unlock failed")
+        real_flock(fd, operation)
+
+    mocker.patch("fcntl.flock", autospec=True, side_effect=raise_then_unlock)
+    with pytest.raises(OSError, match="unlock failed"):
+        lock.release(force=True)
+    with pytest.raises(Timeout):
+        FileLock(lock_path, timeout=0).acquire()
+    with pytest.raises(RuntimeError, match=r"call release\(\) again"):
+        lock.acquire()
+    lock.release()
+    with FileLock(lock_path, timeout=0):
+        assert not lock.is_locked
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease])
 @pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
 def test_release_interrupted_at_any_call_leaves_the_lock_usable(

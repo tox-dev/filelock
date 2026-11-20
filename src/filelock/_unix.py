@@ -228,9 +228,10 @@ else:  # pragma: win32 no cover
 
         def _release(self) -> None:
             fd = cast("int", self._context.lock_file_fd)
-            # Retain the descriptor until flock succeeds: a failed unlock leaves the kernel lock held, so is_locked
-            # must keep reporting held for a retry. Once flock commits, clear held state and close as post-unlock
-            # cleanup; a close failure (EIO on FUSE/Docker bind mounts) does not make the kernel lock held again.
+            # Mark uncertainty before the syscall: an errno-bearing signal handler can raise after flock unlocked but
+            # before descriptor cleanup. Keep the descriptor for an explicit retry; once flock returns, close errors
+            # cannot make the kernel lock held again.
+            self._context.unlock_uncertain = True
             unlock_fd(fd)
             self._mark_descriptor_released()
             self._close_released_fd(fd, default_suppresses=True)

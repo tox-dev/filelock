@@ -1361,9 +1361,12 @@ thread returns without doing anything, and the interrupted release finishes the 
 while the interrupted code is still acquiring that lock raises :class:`RuntimeError`: the interrupted acquire cannot go
 on until the handler returns.
 
-A ``release()`` that a handler interrupts after it has started finishes releasing before the handler's exception
-propagates, so the ``with`` block above never leaves the lock held. Only a handler that fires at the very entry of
-``release()`` leaves the hold for the next call.
+If a handler raises ``KeyboardInterrupt`` during release, the lock finishes releasing before the exception propagates.
+A handler that fires as ``release()`` begins can leave the hold for the next call.
+
+If a native Unix unlock raises an exception with an ``errno``, the instance cannot tell whether the kernel released the
+lock. It keeps the descriptor for an explicit ``release()`` retry and refuses another ``acquire()`` on the
+same instance until that retry succeeds. The first exception still propagates.
 
 *******************************
  Check your own lock state
@@ -1382,8 +1385,9 @@ lock, and :attr:`~filelock.BaseFileLock.lock_counter` to see the reentrant depth
         with lock:
             print(f"Lock depth: {lock.lock_counter}")
 
-These properties reflect the state of your lock instance only. To check if *another* process holds the lock, try to
-acquire with ``blocking=False``:
+These properties reflect the state of your lock instance only. After a failed native Unix unlock, ``is_locked`` can
+remain ``True`` even if the kernel released the lock. Call ``release()`` again before reusing the instance. To check if
+*another* process holds the lock, try to acquire with ``blocking=False``:
 
 .. code-block:: python
 
