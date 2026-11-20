@@ -1028,10 +1028,15 @@ def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> No
         assert isinstance(lock, SoftFileLock)
 
 
-def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("os.open", side_effect=OSError(ENOSYS, "mock error"), autospec=True)
+def test_soft_errors(tmp_path: Path, mocker: MockerFixture, soft_create_path: str) -> None:
+    mocker.patch(soft_create_path, side_effect=OSError(ENOSYS, "mock error"), autospec=True)
     with pytest.raises(OSError, match="mock error"):
         SoftFileLock(tmp_path / "a.lock").acquire()
+
+
+@pytest.fixture
+def soft_create_path() -> str:
+    return "filelock._soft.create_exclusive_non_reparse_fd" if sys.platform == "win32" else "os.open"
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
@@ -1839,14 +1844,20 @@ def test_acquire_after_one_interrupted_once_held_excludes_another_process(tmp_pa
 
 
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
-def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(
+    tmp_path: Path, mocker: MockerFixture, soft_create_path: str
+) -> None:
     lock: Final[SoftFileLock] = SoftFileLock(str(tmp_path / "a"))
 
     def acquire_in_handler(_signum: int, _frame: FrameType | None) -> None:
         lock.acquire()
 
     # A handler's acquire used to take the lock under the interrupted acquire, which then waited on that hold forever.
-    mocker.patch("os.open", autospec=True, side_effect=lambda *_args, **_kwargs: signal.raise_signal(signal.SIGINT))
+    mocker.patch(
+        soft_create_path,
+        autospec=True,
+        side_effect=lambda *_args, **_kwargs: signal.raise_signal(signal.SIGINT),
+    )
     previous = signal.signal(signal.SIGINT, acquire_in_handler)
     try:
         with pytest.raises(RuntimeError, match="acquired again while this thread's acquire of it waits"):
