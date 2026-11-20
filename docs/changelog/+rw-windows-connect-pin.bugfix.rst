@@ -1,2 +1,2 @@
-Keep each Windows private link directory pinned until SQLite opens its database handle, so a rename cannot redirect the
-connection after the link is made.
+On Windows, :class:`~filelock.ReadWriteLock` rejects junctions in the private database alias path and prevents the alias
+directories from being renamed until SQLite opens the database.
