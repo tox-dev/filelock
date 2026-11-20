@@ -1232,6 +1232,28 @@ def test_heartbeat_reports_refresh_failures_that_outlast_the_margin(lock_file: s
         lock.close()
 
 
+@pytest.mark.skipif(not CAPABILITIES["suspend-clock"], reason="needs a clock that counts host suspension")
+def test_heartbeat_reports_refresh_failure_after_host_suspend(
+    lock_file: str, mocker: MockerFixture
+) -> None:  # pragma: needs suspend-clock
+    seen: list[LeaseCompromise] = []
+    lock = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=30, on_compromise=seen.append)
+    lock.acquire_write(timeout=2)
+    try:
+        hold = lock._hold
+        assert hold is not None
+        mocker.patch.object(
+            Participant, "heartbeat", autospec=True, return_value=("transient", OSError(EIO, "stale filesystem"))
+        )
+        mocker.patch.object(sync_mod.time, "clock_gettime", autospec=True, return_value=sync_mod._lease_clock() + 31)
+        assert not lock._refresh(hold.participant, hold)
+        assert [compromise.reason for compromise in seen] == ["refresh-failed"]
+    finally:
+        mocker.stopall()
+        lock.release(force=True)
+        lock.close()
+
+
 @pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
 def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
     lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture, mode: Literal["read", "write"]
@@ -1492,6 +1514,8 @@ def test_a_contender_waiting_when_the_log_is_removed_starts_over(
     lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture
 ) -> None:
     lock.acquire_write(timeout=2)
+    root = f"{lock_file}.rw"
+    old_epoch = Path(root, "gen", "epoch").read_bytes()
     real_advance = Participant.advance
     removed: list[str] = []
 
@@ -1506,7 +1530,10 @@ def test_a_contender_waiting_when_the_log_is_removed_starts_over(
     try:
         waiter.acquire_write(timeout=_PROCESS_DEADLINE)
         assert removed
-        assert waiter.generation == 1
+        latest = GenerationLog(OsFiles(lock_file), lock_file, root).latest()
+        assert Path(root, "gen", "epoch").read_bytes() != old_epoch
+        assert latest.generation == waiter.generation
+        assert {latest.writer} == {entry.name for entry in Path(root, "holders").iterdir()}
     finally:
         waiter.close()
 

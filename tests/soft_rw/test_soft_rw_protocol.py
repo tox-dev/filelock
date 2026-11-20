@@ -4,16 +4,23 @@ import errno
 import os
 import random
 import shutil
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # tracing state stays in a child interpreter
+import sys
 import threading
+import time
 from errno import EIO
 from itertools import cycle, islice
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
+from filelock._soft_rw import _protocol as protocol_mod
+from filelock._soft_rw import _storage as storage_mod
+from filelock._soft_rw import _sync as sync_mod
 from filelock._soft_rw._protocol import (
     _RETAINED_GENERATIONS,
     GenerationLog,
@@ -133,6 +140,21 @@ def test_ledger_measures_how_long_a_value_stays_unchanged() -> None:
     assert ledger.observe("a", None) == pytest.approx(1.0)
     ledger.forget("a")
     assert ledger.observe("a", None) == pytest.approx(0.0)
+
+
+def test_ledger_keeps_large_observations_with_bounded_memory() -> None:
+    pytest.importorskip("tracemalloc")
+    script = (
+        "import tracemalloc\n"
+        "from filelock._soft_rw._protocol import Ledger\n"
+        "ledger = Ledger(lambda: 0.0)\n"
+        "tracemalloc.start()\n"
+        "baseline = tracemalloc.get_traced_memory()[0]\n"
+        "for number in range(32):\n"
+        "    ledger.observe(str(number), bytes((number,)) * (1 << 20))\n"
+        "print(tracemalloc.get_traced_memory()[0] - baseline)\n"
+    )
+    assert int(subprocess.check_output([sys.executable, "-c", script], text=True)) < 4 << 20
 
 
 def test_ledger_counts_no_time_past_the_moment_the_observer_asked() -> None:
@@ -266,6 +288,7 @@ def _participant(
     *,
     stale_threshold: float = 100,
     clock: Callable[[], float] = lambda: 0.0,
+    lease_clock: Callable[[], float] | None = None,
 ) -> Participant:
     # Each participant gets its own ledger and log, the way separate processes do.
     root = f"{lock_file}.rw"
@@ -275,6 +298,7 @@ def _participant(
         mode,
         stale_threshold=stale_threshold,
         clock=clock,
+        lease_clock=clock if lease_clock is None else lease_clock,
         ledger=Ledger(clock),
         log=GenerationLog(files, lock_file, root),
     )
@@ -350,6 +374,133 @@ def test_waiting_contender_republishes_a_swept_record(lock_file: str, files: OsF
     record.unlink()
     assert not reader.advance()
     assert record.exists()
+
+
+@pytest.mark.requires_hard_links
+def test_sweep_cannot_remove_a_resumed_waiters_hold(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    clock = [0.0]
+    holder = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
+    holder.publish()
+    assert holder.advance()
+    waiter = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
+    waiter.publish()
+    assert not waiter.advance()
+    sweeper = _participant(files, lock_file, "write", stale_threshold=1, clock=lambda: clock[0])
+    sweeper.publish()
+    assert not sweeper.advance()
+    judged = str(Path(root, "holders", waiter.token))
+    real_unlink = files.unlink
+    granted: list[bool] = []
+
+    def unlink_after_waiter_resumes(path: str) -> None:
+        if path == judged and not granted:
+            granted.append(False)
+            holder.leave()
+            granted[0] = waiter.advance()
+        real_unlink(path)
+
+    mocker.patch.object(files, "unlink", autospec=True, side_effect=unlink_after_waiter_resumes)
+    clock[0] = 10.0
+    assert not sweeper.advance()
+    assert granted == [True]
+    assert Path(root, "holders", waiter.token).exists()
+    assert waiter.heartbeat() == ("ok", None)
+    clock[0] = 12.0
+    assert not sweeper.advance()
+    assert GenerationLog(files, lock_file, root).latest().writer == waiter.token
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.skipif(not CAPABILITIES["suspend-clock"], reason="needs a clock that counts host suspension")
+def test_host_suspend_renews_a_waiters_token(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:  # pragma: needs suspend-clock
+    host_elapsed = [0.0]
+    host_monotonic = [0.0]
+    peer_elapsed = [0.0]
+    boottime = getattr(time, "CLOCK_MONOTONIC" if sys.platform == "darwin" else "CLOCK_BOOTTIME", None)
+    assert boottime is not None
+
+    def boot_clock(clock_id: int) -> float:
+        assert clock_id == boottime
+        return host_elapsed[0]
+
+    mocker.patch.object(
+        sync_mod,
+        "time",
+        new=SimpleNamespace(
+            clock_gettime=boot_clock,
+            monotonic=lambda: host_monotonic[0],
+        ),
+    )
+    holder = _participant(
+        files,
+        lock_file,
+        "write",
+        stale_threshold=10,
+        clock=lambda: host_monotonic[0],
+        lease_clock=sync_mod._lease_clock,
+    )
+    holder.publish()
+    assert holder.advance()
+    waiter = _participant(
+        files,
+        lock_file,
+        "write",
+        stale_threshold=10,
+        clock=lambda: host_monotonic[0],
+        lease_clock=sync_mod._lease_clock,
+    )
+    waiter.publish()
+    assert not waiter.advance()
+    sweeper = _participant(files, lock_file, "write", stale_threshold=1, clock=lambda: peer_elapsed[0])
+    sweeper.publish()
+    assert not sweeper.advance()
+    old_token = waiter.token
+    old_path = str(Path(root, "holders", old_token))
+    real_unlink = files.unlink
+    granted: list[bool] = []
+
+    def unlink_after_resume(path: str) -> None:
+        if path == old_path and not granted:
+            granted.append(False)
+            holder.leave()
+            host_elapsed[0] = 11.0
+            host_monotonic[0] = 0.1
+            granted[0] = waiter.advance()
+        real_unlink(path)
+
+    mocker.patch.object(files, "unlink", autospec=True, side_effect=unlink_after_resume)
+    peer_elapsed[0] = 11.0
+    assert not sweeper.advance()
+    assert granted == [True]
+    assert waiter.token != old_token
+    assert Path(root, "holders", waiter.token).exists()
+    assert waiter.heartbeat() == ("ok", None)
+
+
+@pytest.mark.requires_hard_links
+def test_commit_after_a_stale_pause_restarts_the_claim(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    clock = [0.0]
+    reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
+    reader.publish()
+    judged = reader.token
+    real_commit = GenerationLog.commit
+
+    def commit_after_pause(log: GenerationLog, successor: Snapshot) -> bool:
+        clock[0] = 10.0
+        return real_commit(log, successor)
+
+    mocker.patch.object(GenerationLog, "commit", autospec=True, side_effect=commit_after_pause)
+    assert reader.advance()
+    assert reader.token != judged
+    assert not Path(root, "holders", judged).exists()
+    assert reader.generation == 3
+    assert GenerationLog(files, lock_file, root).latest().readers == frozenset({reader.token})
 
 
 @pytest.mark.requires_hard_links
@@ -489,6 +640,124 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(
     listings = iter([[f"{generation:020d}" for generation in (4, 5)]])
     mocker.patch.object(OsFiles, "listdir", lambda self, path: next(listings, None) or real_listdir(self, path))
     assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
+
+
+@pytest.mark.requires_hard_links
+def test_an_overfull_generation_list_collects_temporary_files(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    files.prepare(root)
+    for module in (protocol_mod, storage_mod):
+        mocker.patch.object(module, "MAX_LISTED_NAMES", 3)
+    for number in range(3):
+        Path(root, "gen", f".commit-{number:032x}").touch()
+    clock = [0.0]
+    reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
+    reader.publish()
+    with pytest.raises(SoftFileLockProtocolError, match="holds more than 3 names"):
+        reader.advance()
+    clock[0] = 10.0
+    with pytest.raises(SoftFileLockProtocolError, match="holds more than 3 names"):
+        reader.advance()
+    assert not list(Path(root, "gen").glob(".commit-*"))
+    assert reader.advance()
+
+
+@pytest.mark.requires_hard_links
+def test_commit_keeps_a_published_generation_when_listing_overflows(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    files.prepare(root)
+    log = GenerationLog(files, lock_file, root)
+    assert log.latest().generation == 0
+    mocker.patch.object(protocol_mod, "MAX_LISTED_NAMES", 1)
+    snapshot = Snapshot(generation=1, writer=_FIRST, readers=frozenset())
+
+    assert not log.commit(snapshot)
+    assert Path(root, "gen", f"{1:020d}").read_bytes() == snapshot.encode()
+
+
+@pytest.mark.requires_hard_links
+def test_heartbeat_collects_temporary_files_when_the_generation_list_is_overfull(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    clock = [0.0]
+    reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
+    reader.publish()
+    assert reader.advance()
+    for module in (protocol_mod, storage_mod):
+        mocker.patch.object(module, "MAX_LISTED_NAMES", 3)
+    temporary = Path(root, "gen", f".commit-{_FIRST}")
+    temporary.touch()
+    clock[0] = 5.0
+    assert reader.heartbeat() == ("ok", None)
+    clock[0] = 15.0
+    assert reader.heartbeat() == ("ok", None)
+    assert not temporary.exists()
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(OSError(EIO, "read failed"), id="io-error"),
+        pytest.param(TreeReplacedError("tree replaced"), id="tree-replaced"),
+    ],
+)
+def test_heartbeat_ignores_a_sweep_error_after_generation_list_overflow(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture, error: OSError | TreeReplacedError
+) -> None:
+    clock = [0.0]
+    reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
+    reader.publish()
+    assert reader.advance()
+    for module in (protocol_mod, storage_mod):
+        mocker.patch.object(module, "MAX_LISTED_NAMES", 3)
+    Path(root, "gen", f".commit-{_FIRST}").touch()
+    holder = Path(root, "holders", reader.token)
+    record = holder.read_bytes()
+    clock[0] = 5.0
+    mocker.patch.object(OsFiles, "listdir", autospec=True, side_effect=[files.listdir(str(Path(root, "gen"))), error])
+    assert reader.heartbeat() == ("ok", None)
+    assert holder.read_bytes() != record
+
+
+def test_overfull_generation_sweep_forgets_missing_temporary_files(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    files.prepare(root)
+    for module in (protocol_mod, storage_mod):
+        mocker.patch.object(module, "MAX_LISTED_NAMES", 2)
+    clock = [0.0]
+    ledger = Ledger(lambda: clock[0])
+    reader = Participant(
+        files,
+        root,
+        "read",
+        stale_threshold=10,
+        clock=lambda: clock[0],
+        lease_clock=lambda: clock[0],
+        ledger=ledger,
+        log=GenerationLog(files, lock_file, root),
+    )
+    reader.publish()
+    first = Path(root, "gen", f".commit-{_FIRST}")
+    second = Path(root, "gen", f".commit-{_SECOND}")
+    first.touch()
+    second.touch()
+    ledger.observe(_FIRST, b"member")
+    with pytest.raises(SoftFileLockProtocolError, match="holds more than 2 names"):
+        reader.advance()
+    first.unlink()
+    Path(root, "gen", f".commit-{reader.token}").touch()
+    clock[0] = 5.0
+    with pytest.raises(SoftFileLockProtocolError, match="holds more than 2 names"):
+        reader.advance()
+    assert (
+        ledger.observe(f"temporary:{first.name}", b""),
+        ledger.observe(f"temporary:{second.name}", b""),
+        ledger.observe(_FIRST, b"member"),
+    ) == (0.0, 5.0, 5.0)
 
 
 @pytest.mark.requires_hard_links
@@ -893,6 +1162,38 @@ def test_compaction_removes_a_stalled_survivor_before_the_window_edge(
 
 
 @pytest.mark.requires_hard_links
+def test_a_listing_removes_old_generations_a_batch_at_a_time(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # Seventy commits leave gen/6 upward, and gen/6 is already outside the window a listing keeps.
+    log = _committed(files, lock_file, root, [None] * 70)
+    mocker.patch.object(protocol_mod, "_HOUSEKEEPING_BATCH", 2)
+    for generation in range(1, 6):
+        Path(root, "gen", f"{generation:020d}").touch()
+    oldest: list[int] = []
+    for _ in range(3):
+        log.latest()
+        oldest.append(min(int(entry.name) for entry in Path(root, "gen").iterdir() if entry.name.isdigit()))
+    assert oldest == [3, 5, 7]
+
+
+@pytest.mark.requires_hard_links
+def test_compaction_leaves_more_survivors_than_a_batch_to_the_listing(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # Walking down through every record below the window edge would take as long as whoever planted them chose, and
+    # removing gen/6 alone would leave them below a hole.
+    log = _committed(files, lock_file, root, [None] * 70)
+    mocker.patch.object(protocol_mod, "_HOUSEKEEPING_BATCH", 2)
+    for generation in (3, 4, 5):
+        Path(root, "gen", f"{generation:020d}").touch()
+    assert (
+        log.commit(Snapshot(generation=71, writer=None, readers=frozenset())),
+        sorted(int(entry.name) for entry in Path(root, "gen").iterdir() if entry.name.isdigit())[:4],
+    ) == (True, [3, 4, 5, 6])
+
+
+@pytest.mark.requires_hard_links
 def test_a_commit_flushes_only_its_generation_record(
     lock_file: str, files: OsFiles, root: str, flushes: MockType
 ) -> None:
@@ -967,7 +1268,16 @@ def test_the_sweep_forgets_peers_that_left(lock_file: str, files: OsFiles, root:
 
     def waiter() -> Participant:
         log = GenerationLog(files, lock_file, root)
-        return Participant(files, root, "read", stale_threshold=10, clock=lambda: clock[0], ledger=ledger, log=log)
+        return Participant(
+            files,
+            root,
+            "read",
+            stale_threshold=10,
+            clock=lambda: clock[0],
+            lease_clock=lambda: clock[0],
+            ledger=ledger,
+            log=log,
+        )
 
     writer = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
     writer.publish()
@@ -983,6 +1293,43 @@ def test_the_sweep_forgets_peers_that_left(lock_file: str, files: OsFiles, root:
     second.leave()
     # Had the writer's entry survived the sweep, the same bytes six seconds later would read as six seconds unchanged.
     assert ledger.observe(writer.token, record) == pytest.approx(0.0)
+
+
+@pytest.mark.requires_hard_links
+def test_the_sweep_collects_orphans_a_batch_at_a_time(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    mocker.patch.object(protocol_mod, "_HOUSEKEEPING_BATCH", 2)
+    clock = [0.0]
+    real_listdir = OsFiles.listdir
+    mocker.patch.object(
+        OsFiles,
+        "listdir",
+        autospec=True,
+        side_effect=lambda self, path: sorted(real_listdir(self, path), reverse=bool(int(clock[0] / 10) % 2)),
+    )
+    files.prepare(root)
+    for number in range(5):
+        Path(root, "holders", f"{number:032x}").touch()
+        Path(root, "gen", f".commit-{number:032x}").touch()
+    ledger = Ledger(lambda: clock[0])
+    left: list[tuple[int, int]] = []
+    for clock[0] in (0.0, 10.0, 20.0, 30.0, 40.0, 50.0):
+        reader = Participant(
+            files,
+            root,
+            "read",
+            stale_threshold=10,
+            clock=lambda: clock[0],
+            lease_clock=lambda: clock[0],
+            ledger=ledger,
+            log=GenerationLog(files, lock_file, root),
+        )
+        reader.publish()
+        assert reader.advance()
+        reader.leave()
+        left.append((len(list(Path(root, "holders").iterdir())), len(list(Path(root, "gen").glob(".commit-*")))))
+    assert left == [(5, 5), (5, 5), (5, 5), (3, 3), (1, 1), (0, 0)]
 
 
 @pytest.mark.requires_hard_links
@@ -1329,6 +1676,7 @@ class _Model:
             outcome.mode,
             stale_threshold=1.0,
             clock=lambda: self.scheduler.clock,
+            lease_clock=lambda: self.scheduler.clock,
             ledger=Ledger(lambda: self.scheduler.clock),
             log=GenerationLog(self.files, "/lock", _ROOT),
         )

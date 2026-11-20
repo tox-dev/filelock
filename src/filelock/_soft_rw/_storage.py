@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 __spec__ = cast("ModuleSpec", __spec__)
 
-__lazy_modules__ = ["filelock._strict", "filelock._util", "pathlib", f"{__spec__.parent}._protocol"]
+__lazy_modules__ = ["filelock._strict", "filelock._util", "itertools", "pathlib", f"{__spec__.parent}._protocol"]
 
 import errno
 import os
@@ -18,6 +18,7 @@ import sys
 import time
 from contextlib import contextmanager, suppress
 from errno import ELOOP, EMLINK, ENOENT, ENOTDIR, ENXIO, ESTALE
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -35,6 +36,7 @@ from filelock._util import (  # simplint: ignore[private-import-path]  # interna
 from ._protocol import (
     GENERATIONS_DIRECTORY,
     HOLDERS_DIRECTORY,
+    MAX_LISTED_NAMES,
     MAX_RECORD_SIZE,
     TreeReplacedError,
 )
@@ -259,7 +261,7 @@ class OsFiles:
     def listdir(self, path: str) -> list[str]:
         try:
             with self._directory(path) as dir_fd, os.scandir(path if dir_fd is None else dir_fd) as entries:
-                return [entry.name for entry in entries]
+                return [entry.name for entry in islice(entries, MAX_LISTED_NAMES + 1)]
         except FileNotFoundError:
             return []
 

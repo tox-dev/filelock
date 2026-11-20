@@ -271,6 +271,15 @@ def test_read_refused_on_windows_is_missing_after_the_grace(
     assert time.monotonic() - started >= storage_mod._WINDOWS_OPEN_GRACE - 0.05
 
 
+def test_listdir_stops_one_name_past_the_limit(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch.object(storage_mod, "MAX_LISTED_NAMES", 2)
+    files = OsFiles(str(tmp_path / "x.lock"))
+    files.prepare(root := str(tmp_path / "x.lock.rw"))
+    for number in range(5):
+        Path(root, "holders", str(number)).touch()
+    assert len(files.listdir(str(Path(root, "holders")))) == 3
+
+
 def test_prepare_checks_the_directories_once_unless_forced(tmp_path: Path, mocker: MockerFixture) -> None:
     files = OsFiles(str(tmp_path / "x.lock"))
     ensure = mocker.spy(storage_mod, "ensure_directory_exists")
