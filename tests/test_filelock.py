@@ -35,6 +35,7 @@ from capabilities import CAPABILITIES
 
 import filelock
 import filelock._soft  # simplint: ignore[private-import-path]  # tests internal behavior
+import filelock._unix  # simplint: ignore[private-import-path]  # tests internal behavior
 import filelock.version
 from filelock import (
     BaseFileLock,
@@ -2734,7 +2735,11 @@ def test_forced_release_drops_all_holds(tmp_path: Path) -> None:
 def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
+    mocker.patch(
+        "filelock._unix.fcntl.flock",
+        side_effect=[OSError(EIO, "unlock failed"), OSError(EIO, "unlock failed"), None],
+        autospec=True,
+    )
     with pytest.raises(OSError, match="unlock failed"):
         lock.release()
     assert lock.is_locked
@@ -2744,9 +2749,59 @@ def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: 
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
+def test_unix_release_retries_an_errno_after_unlock(tmp_path: Path, mocker: MockerFixture) -> None:
+    path = tmp_path / "a"
+    lock = FileLock(str(path), is_singleton=False)
+    lock.acquire()
+    real_unlock = filelock._unix.unlock_fd
+    interrupted: list[int] = []
+
+    def unlock_then_raise(fd: int) -> None:
+        real_unlock(fd)
+        if not interrupted:
+            interrupted.append(fd)
+            raise OSError(EIO, "signal after unlock")
+
+    mocker.patch("filelock._unix.unlock_fd", side_effect=unlock_then_raise, autospec=True)
+    lock.release()
+    assert len(interrupted) == 1
+    assert not lock.is_locked
+    assert lock.lock_counter == 0
+    with FileLock(str(path), is_singleton=False), pytest.raises(Timeout):
+        lock.acquire(blocking=False)
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_unix_release_retries_an_errno_before_state_change(tmp_path: Path, mocker: MockerFixture) -> None:
+    path = tmp_path / "a"
+    lock = FileLock(str(path), is_singleton=False)
+    lock.acquire()
+    real_mark = lock._mark_descriptor_released
+    interrupted: list[bool] = []
+
+    def mark_or_raise() -> None:
+        if not interrupted:
+            interrupted.append(True)
+            raise OSError(EIO, "signal after unlock")
+        real_mark()
+
+    mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_or_raise, autospec=True)
+    lock.release()
+    assert interrupted == [True]
+    assert not lock.is_locked
+    assert lock.lock_counter == 0
+    with FileLock(str(path), is_singleton=False), pytest.raises(Timeout):
+        lock.acquire(blocking=False)
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
 def test_unix_context_exit_propagates_unlock_failure(tmp_path: Path, mocker: MockerFixture) -> None:
-    # One LOCK_EX for acquire, then one LOCK_UN per release; fail only the first unlock so __exit__ propagates it.
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=[None, OSError(EIO, "unlock failed"), None], autospec=True)
+    # One LOCK_EX for acquire, then two failed LOCK_UN attempts before __exit__ propagates the error.
+    mocker.patch(
+        "filelock._unix.fcntl.flock",
+        side_effect=[None, OSError(EIO, "unlock failed"), OSError(EIO, "unlock failed"), None],
+        autospec=True,
+    )
     lock = FileLock(str(tmp_path / "a"))
     with pytest.raises(OSError, match="unlock failed"), lock:
         assert lock.is_locked
@@ -3320,7 +3375,11 @@ def test_close_not_reached_when_unlock_fails(tmp_path: Path, mocker: MockerFixtu
     lock = FileLock(str(tmp_path / "a"), close_error_policy="raise")
     lock.acquire()
     fd = lock._context.lock_file_fd
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
+    mocker.patch(
+        "filelock._unix.fcntl.flock",
+        side_effect=[OSError(EIO, "unlock failed"), OSError(EIO, "unlock failed"), None],
+        autospec=True,
+    )
     real_close = os.close
     closed: list[int] = []
     mocker.patch(
@@ -4123,7 +4182,11 @@ def _failing_on_acquired(_fd: int) -> None:
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_on_acquired_and_release_failure_group(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"), on_acquired=_failing_on_acquired)
-    mocker.patch("filelock._unix.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
+    mocker.patch(
+        "filelock._unix.unlock_fd",
+        side_effect=[OSError(EIO, "unlock failed"), OSError(EIO, "unlock failed"), None],
+        autospec=True,
+    )
     with pytest.raises(BaseExceptionGroup) as info:
         lock.acquire()
     assert {type(error) for error in info.value.exceptions} == {RuntimeError, OSError}

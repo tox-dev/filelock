@@ -113,20 +113,21 @@ def _shutdown_with_failed_release(  # pragma: needs fcntl
 ) -> BaseException | None:
     release_started = threading.Event()
     finish_release = threading.Event()
-    failed = False
+    failures = 0
     fcntl = get_fcntl()
     real_flock = fcntl.flock
 
-    def fail_first_unlock(fd: int, operation: int) -> None:
-        nonlocal failed
-        if operation & fcntl.LOCK_UN and not failed:
-            failed = True
-            release_started.set()
-            assert finish_release.wait(timeout=5)
+    def fail_first_two_unlocks(fd: int, operation: int) -> None:
+        nonlocal failures
+        if operation & fcntl.LOCK_UN and failures < 2:
+            failures += 1
+            if failures == 1:
+                release_started.set()
+                assert finish_release.wait(timeout=5)
             raise release_error
         real_flock(fd, operation)
 
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_two_unlocks, autospec=True)
     runner, task, cancellation_seen = _start_unawaited_context_failure(lock, body_error, release_started)
     try:
         assert release_started.wait(timeout=5)

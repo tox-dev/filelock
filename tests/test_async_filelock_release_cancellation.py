@@ -181,15 +181,16 @@ async def _cancel_release_after_failed_unlock(  # pragma: needs fcntl
     release_error = OSError(EIO, "release failed")
     release_count = 0
 
-    def fail_first_unlock(_fd: int, _operation: int) -> None:
+    def fail_first_two_unlocks(_fd: int, _operation: int) -> None:
         nonlocal release_count
         release_count += 1
         if release_count == 1:
             loop.call_soon_threadsafe(release_started.set)
             assert finish_release.wait(timeout=5)
+        if release_count <= 2:
             raise release_error
 
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_two_unlocks, autospec=True)
     task = asyncio.create_task(lock.release())
     await release_started.wait()
     task.cancel("cancel release")

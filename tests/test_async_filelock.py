@@ -948,7 +948,11 @@ async def test_force_release_clears_registry(tmp_path: Path, lock_type: type[Bas
 async def test_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(str(tmp_path / "a"))
     await lock.acquire()
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
+    mocker.patch(
+        "filelock._unix.fcntl.flock",
+        side_effect=[OSError(EIO, "unlock failed"), OSError(EIO, "unlock failed"), None],
+        autospec=True,
+    )
     with pytest.raises(OSError, match="unlock failed"):
         await lock.release()
     assert lock.is_locked

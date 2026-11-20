@@ -226,6 +226,15 @@ else:  # pragma: win32 no cover
 
             self.__class__ = AsyncSoftFileLock if isinstance(self, BaseAsyncFileLock) else SoftFileLock
 
+        def _release_with_fork_tracking(self) -> None:
+            try:
+                super()._release_with_fork_tracking()
+            except OSError:
+                # An errno-bearing signal can interrupt the gap between flock and the descriptor state change.
+                if self._context.lock_file_fd is None:
+                    raise
+                super()._release_with_fork_tracking()
+
         def _release(self) -> None:
             fd = cast("int", self._context.lock_file_fd)
             # Retain the descriptor until flock succeeds: a failed unlock leaves the kernel lock held, so is_locked
