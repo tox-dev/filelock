@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["hashlib", "pathlib", "socket", "typing"]
+__lazy_modules__ = ["contextlib", "hashlib", "pathlib", "socket", "typing"]
 
 import hashlib
 import os
 import socket
 import sys
+from contextlib import suppress
 from errno import EPERM, ESRCH
 from pathlib import Path
 from typing import Final
@@ -57,10 +58,11 @@ def host_name() -> str:
     #
     # An over-long name ends in a digest of the part cut to fit the limit. A bare cut gives every name that shares the
     # kept prefix one identity, and :func:`owner_is_stale` would then probe a local PID for another host's holder.
-    try:
-        namespace = Path("/proc/self/ns/pid").stat().st_ino
-    except OSError:  # only Linux 3.8+ has the file, and a sandbox may hide it; nothing else tells namespaces apart
-        namespace = _INITIAL_PID_NAMESPACE
+    namespace = _INITIAL_PID_NAMESPACE
+    if sys.platform in {"linux", "android"}:  # pragma: linux cover
+        # Kernels before Linux 3.8 lack this file, and sandboxes can hide it.
+        with suppress(OSError):
+            namespace = Path("/proc/self/ns/pid").stat().st_ino
     name = "".join(
         chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
         for byte in socket.gethostname().encode("utf-8", "surrogateescape")

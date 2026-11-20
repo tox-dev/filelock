@@ -1,0 +1,2 @@
+On Windows, soft-lock recovery no longer depends on a drive-root entry named ``proc/self/ns/pid``. The PID namespace
+probe now runs only on Linux and Android, so that entry cannot change the host identity recorded in a lock marker.
