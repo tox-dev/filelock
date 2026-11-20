@@ -226,13 +226,13 @@ else:  # pragma: win32 no cover
                 return False
             if namespace == _INITIAL_TIME_NAMESPACE:
                 return True
-            # A container runtime may give each container a time namespace without offsets. timens_offsets describes
-            # the namespace this process's children get, its own unless it unshared one since. It has no task entry;
-            # when the group leader has exited, an unreadable offset leaves the token unknown.
+            # timens_offsets describes the namespace for children. Only /proc/<tid> exposes it for a worker that
+            # outlives the group leader. thread-self supplies the TID used by this procfs.
             try:
                 if Path("/proc/thread-self/ns/time_for_children").stat().st_ino != namespace:
                     return False
-                offsets: Final[str] = Path("/proc/self/timens_offsets").read_text(encoding="ascii")
+                tid = Path("/proc/thread-self").readlink().name
+                offsets: Final[str] = Path(f"/proc/{tid}/timens_offsets").read_text(encoding="ascii")
             except OSError:
                 return False
             # The clock goes by name since Linux 5.8 and by clock id before.

@@ -788,18 +788,14 @@ A malformed or unparsable record follows a separate rule: a waiter may remove it
 seconds, so a half-written marker never wedges acquisition. An empty marker is the exception and always reads as held.
 This is the rule PostgreSQL, Qt ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
 
-Two Linux processes do not always read the same token for one task. Since Linux 5.6 the kernel adds the reader's
-boottime offset (the shift a time namespace applies to the boot clock) to ``starttime``. A process in a time namespace
-with such an offset therefore records no start token and reads none. It falls back to the PID alone, so a recycled PID
-keeps a dead owner's marker until ``timeout``, ``lifetime`` or ``break_lock()``. A time namespace without an offset, as
-container runtimes create, keeps the token. A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's
-``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
-whenever either side lacks the boot id.
+Since Linux 5.6, the kernel adds the reader's time namespace boottime offset to ``starttime``. Workers read their own
+offset through ``/proc/<tid>/timens_offsets``, which remains available after the main thread exits. At zero offset, a
+worker can still recognize its own start token. With a nonzero or unreadable offset, filelock omits the token and
+relies on the PID. If a live process reuses a dead owner's PID, the marker can remain until ``lifetime`` expires or
+an operator calls ``break_lock()``.
 
-If the main thread exits while a worker keeps a lock, ``/proc/self/timens_offsets`` is unavailable. The worker checks
-its own time namespace through ``/proc/thread-self`` and records no start token when it cannot rule out a boottime
-offset. The live PID keeps the marker held; a reused PID may keep a dead marker until ``timeout``, ``lifetime`` or
-``break_lock()``.
+A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's ``ProcSubset=pid`` hides it) records
+``starttime`` without the boot id. A contender then compares ``starttime`` alone whenever either side lacks the boot id.
 
 A procfs numbers tasks by the PID namespace of the process that mounted it. A process in a PID namespace that still sees
 an outer ``/proc`` (``unshare --pid`` without ``--mount-proc``, ``nsenter --pid`` without ``--mount``) finds an

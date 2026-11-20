@@ -62,7 +62,7 @@ def pin_time_namespace(  # pragma: linux cover
     # Answer for this process's time namespace.
     #
     # :param namespace: the inode a stat of ``/proc/thread-self/ns/time`` reports, or the error it raises
-    # :param offsets: what reading ``/proc/self/timens_offsets`` returns, or the error it raises
+    # :param offsets: what reading the worker's ``/proc/<tid>/timens_offsets`` returns, or the error it raises
     # :param for_children: the inode of ``/proc/thread-self/ns/time_for_children``, when an unshare made it differ
     _pin_namespace(mocker, Path("/proc/thread-self/ns/time"), namespace)
     _pin_namespace(
@@ -72,6 +72,12 @@ def pin_time_namespace(  # pragma: linux cover
     )
     if leader_exited:
         _pin_namespace(mocker, Path("/proc/self/ns/time"), FileNotFoundError(ENOENT, "leader exited"))
+    readlink = Path.readlink
+    mocker.patch.object(
+        Path,
+        "readlink",
+        new=lambda path: Path("4711/task/4712") if path == Path("/proc/thread-self") else readlink(path),
+    )
     answer = (
         mocker.create_autospec(Path.read_text, side_effect=offsets)
         if isinstance(offsets, OSError)
@@ -83,7 +89,7 @@ def pin_time_namespace(  # pragma: linux cover
         "read_text",
         new=lambda path, *args, **kwargs: (
             answer(path, *args, **kwargs)
-            if path == Path("/proc/self/timens_offsets")
+            if path == Path("/proc/4712/timens_offsets")
             else read_text(path, *args, **kwargs)
         ),
     )

@@ -188,14 +188,24 @@ def test_process_start_token_read_only_without_a_boottime_offset(
 
 
 @_LINUX_ONLY  # pragma: linux cover
-def test_process_start_token_unknown_after_main_thread_exits(mocker: MockerFixture) -> None:
+@pytest.mark.parametrize(
+    ("offsets", "readable"),
+    [
+        pytest.param(_BOOTTIME_UNSHIFTED, True, id="unshifted"),
+        pytest.param(_BOOTTIME_SHIFTED, False, id="shifted"),
+        pytest.param(FileNotFoundError(ENOENT, "offsets unreadable"), False, id="unreadable"),
+    ],
+)
+def test_process_start_token_after_main_thread_exits(
+    offsets: str | OSError, readable: bool, mocker: MockerFixture
+) -> None:
     pin_time_namespace(
         mocker,
         _ANOTHER_TIME_NAMESPACE,
-        FileNotFoundError(ENOENT, "leader exited"),
+        offsets,
         leader_exited=True,
     )
-    assert process_start_token(os.getpid()) is None
+    assert (process_start_token(os.getpid()) is not None) is readable
 
 
 @_LINUX_ONLY  # pragma: linux cover
