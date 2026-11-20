@@ -166,13 +166,15 @@ class SoftFileLease(MarkerSoftFileLock):
     @property
     def compromise(self) -> LeaseCompromise | None:
         """
-        The loss of claim the heartbeat observed.
+        The loss of claim the heartbeat observed or release could prove.
 
         The value outlives ``release()``, so a holder can check after leaving the ``with`` block whether its work may
         have overlapped a successor; the next acquisition resets it, as :attr:`SoftReadWriteLock.compromise
         <filelock.SoftReadWriteLock.compromise>` does.
 
-        The :class:`LeaseCompromise` of the latest claim, or ``None`` while that claim holds or held to its release.
+        The :class:`LeaseCompromise` of the latest claim, or ``None`` when no loss was observed. Release can record a
+        claim taken before the heartbeat's second check. It does not call ``on_compromise``: that callback runs on the
+        heartbeat thread to stop work in progress.
 
         """
         return self._claim.compromise
@@ -273,8 +275,33 @@ class SoftFileLease(MarkerSoftFileLock):
 
     def _release(self) -> None:
         self._stop_heartbeat()
+        if sys.platform != "win32":  # pragma: win32 no cover
+            self._record_unreported_loss()
         self._claim.token = None
         super()._release()
+
+    def _record_unreported_loss(self) -> None:  # pragma: win32 no cover
+        if (
+            (token := self._claim.token) is None
+            or self._claim.compromise is not None
+            or (identity := self._context.lock_file_fd_identity) is None
+        ):
+            return
+        fd = self._context.lock_file_fd
+        assert fd is not None  # ruff:ignore[assert]  # _release runs only while the descriptor is held
+        with suppress(OSError):
+            try:
+                marker = os.lstat(self._lock_path)
+            except FileNotFoundError:
+                reason: CompromiseReason = "marker-missing"
+            else:
+                if (marker.st_dev, marker.st_ino) == identity:
+                    return
+                reason = "owner-changed"
+            # A peer's provisional exchange keeps our inode linked until it commits; a release must not report that
+            # temporary name change as a lost claim.
+            if os.fstat(fd).st_nlink == 0:
+                self._claim.compromise = LeaseCompromise(lock_file=self.lock_file, token=token, reason=reason)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         super()._reset_after_fork_in_child()

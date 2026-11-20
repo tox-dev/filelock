@@ -28,6 +28,7 @@ from filelock import (
     Timeout,
 )
 from filelock._identity import host_name
+from filelock._lease import _RefreshLoop, _RefreshOutcome
 from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD
 from filelock._util import exchange_names
 from tests.capability_marks import (
@@ -410,6 +411,118 @@ def _wait_until(condition: Callable[[], bool]) -> None:
     deadline: Final[float] = time.monotonic() + _DURATION * 20
     while not condition() and time.monotonic() < deadline:
         time.sleep(_HEARTBEAT / 2)  # simplint: ignore[sleep-in-test]  # needs a compromise signal
+
+
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+def test_lease_release_records_a_missing_marker_before_the_next_heartbeat(
+    marker: Path,
+) -> None:
+    reports = _Reports()
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29, on_compromise=reports)
+
+    with lease:
+        token = lease.token
+        assert token is not None
+        marker.unlink()
+
+    assert lease.compromise == LeaseCompromise(lock_file=str(marker), token=token, reason="marker-missing")
+    assert reports.seen == []
+
+
+@NEEDS_UNLINK_OPEN_FILE
+def test_lease_release_records_a_replacement_before_the_next_heartbeat(  # pragma: needs unlink-open-file
+    marker: Path,
+) -> None:
+    reports = _Reports()
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29, on_compromise=reports)
+    peer = SoftFileLease(marker, timeout=0, lease_duration=30, heartbeat_interval=29)
+
+    try:
+        with lease:
+            token = lease.token
+            assert token is not None
+            marker.unlink()
+            peer.acquire()
+        assert lease.compromise == LeaseCompromise(lock_file=str(marker), token=token, reason="owner-changed")
+        assert reports.seen == []
+    finally:
+        peer.release()
+
+
+@NEEDS_UNLINK_OPEN_FILE
+def test_lease_release_records_loss_after_the_first_heartbeat_miss(  # pragma: needs unlink-open-file
+    marker: Path, mocker: MockerFixture
+) -> None:
+    first_miss = Event()
+    refresh = _RefreshLoop._refresh
+
+    def signal_first_miss(loop: _RefreshLoop) -> tuple[_RefreshOutcome, OSError | None]:
+        result = refresh(loop)
+        if result[0] == "owner-changed":
+            first_miss.set()
+        return result
+
+    mocker.patch.object(_RefreshLoop, "_refresh", signal_first_miss)
+    reports = _Reports()
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=2, on_compromise=reports)
+    peer = SoftFileLease(marker, timeout=0, lease_duration=30, heartbeat_interval=29)
+
+    try:
+        with lease:
+            token = lease.token
+            assert token is not None
+            marker.unlink()
+            peer.acquire()
+            assert first_miss.wait(5)
+            assert reports.seen == []
+        assert lease.compromise == LeaseCompromise(lock_file=str(marker), token=token, reason="owner-changed")
+        assert reports.seen == []
+    finally:
+        peer.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
+def test_lease_release_does_not_report_a_transient_exchange(marker: Path) -> None:  # pragma: win32 no cover
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+
+    with lease:
+        (peer := marker.with_name("peer")).write_text("peer", encoding="utf-8")
+        exchange_names(str(marker), str(peer))
+
+    assert lease.compromise is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot rename a directory with an open marker")
+def test_lease_release_does_not_report_a_renamed_directory(marker: Path) -> None:  # pragma: win32 no cover
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+    moved = marker.parent.with_name(f"{marker.parent.name}-moved")
+
+    with lease:
+        marker.parent.rename(moved)
+
+    assert lease.compromise is None
+    (moved / marker.name).unlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Release probes the marker only on POSIX")
+def test_lease_release_does_not_report_an_unreadable_marker(
+    marker: Path, mocker: MockerFixture
+) -> None:  # pragma: win32 no cover
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+    lstat = os.lstat
+    first = iter([True])
+
+    def fail_once(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
+        if os.fspath(path) == str(marker) and next(first, False):
+            raise OSError(EIO, "Input/output error")
+        return lstat(path, dir_fd=dir_fd)
+
+    with lease:
+        mocker.patch("filelock._lease.os.lstat", side_effect=fail_once, autospec=True)
+
+    assert lease.compromise is None
+    assert not marker.exists()
 
 
 def test_lease_holds_an_uncompromised_claim(marker: Path, mocker: MockerFixture) -> None:
