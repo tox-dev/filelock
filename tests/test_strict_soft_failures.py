@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import functools
 import gc
 import os
@@ -13,7 +14,6 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a finished chi
 import sys
 import threading
 import time
-from contextlib import nullcontext
 from errno import EACCES, EEXIST, EIO, ENOENT, ENOSPC, EPERM, ESTALE, EWOULDBLOCK, EXDEV
 from pathlib import Path
 from types import SimpleNamespace
@@ -410,7 +410,7 @@ def test_strict_soft_sentinel_scan_skips_unrelated_entries(  # pragma: win32 no 
 
     def unrelated_first(path: int | str | Path) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
         with real_scandir(path) as entries:
-            return nullcontext(iter(sorted(entries, key=lambda entry: entry.name, reverse=True)))
+            return contextlib.nullcontext(iter(sorted(entries, key=lambda entry: entry.name, reverse=True)))
 
     mocker.patch("filelock._strict.os.scandir", autospec=True, side_effect=unrelated_first)
     with StrictSoftFileLock(lock_path, blocking=False):
