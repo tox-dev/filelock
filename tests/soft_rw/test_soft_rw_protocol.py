@@ -1512,3 +1512,14 @@ def test_fencing_generations_are_strictly_increasing_across_grants() -> None:
     assert len(set(writers)) == len(writers)
     assert all(outcome.granted_at is not None for outcome in model.outcomes)
     assert [outcome for outcome in model.outcomes if outcome.mode == "read" and outcome.granted_at in writers] == []
+
+
+def test_a_stale_listing_cannot_prune_the_only_generation_of_a_rebuilt_log(mocker: MockerFixture) -> None:
+    files = _MemoryFiles(_Scheduler(seed=7, crash_probability=0, max_crashes=0))
+    mocker.patch.object(_Scheduler, "yield_turn", autospec=True)
+    log = GenerationLog(files, "model.lock", _ROOT)
+    assert log.latest().generation == 0
+    writer = Snapshot(generation=1, writer=_SECOND, readers=frozenset())
+    assert log.commit(writer)
+    mocker.patch.object(files, "listdir", autospec=True, return_value=[f"{n:020d}" for n in range(1, 71)])
+    assert log.latest() == writer
