@@ -57,10 +57,12 @@ def host_name() -> str:
     #
     # An over-long name ends in a digest of the part cut to fit the limit. A bare cut gives every name that shares the
     # kept prefix one identity, and :func:`owner_is_stale` would then probe a local PID for another host's holder.
-    try:
-        namespace = Path("/proc/self/ns/pid").stat().st_ino
-    except OSError:  # only Linux 3.8+ has the file, and a sandbox may hide it; nothing else tells namespaces apart
-        namespace = _INITIAL_PID_NAMESPACE
+    namespace = _INITIAL_PID_NAMESPACE
+    if sys.platform in {"linux", "android"}:  # pragma: linux cover
+        try:
+            namespace = Path("/proc/self/ns/pid").stat().st_ino
+        except OSError:  # Linux 3.8+ may hide the file; nothing else tells namespaces apart
+            namespace = _INITIAL_PID_NAMESPACE
     name = "".join(
         chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
         for byte in socket.gethostname().encode("utf-8", "surrogateescape")
