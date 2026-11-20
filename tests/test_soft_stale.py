@@ -24,6 +24,7 @@ from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import exchange_names
 from tests.capability_marks import (
     NEEDS_FIFO,
+    NEEDS_FOREIGN_STICKY_TMP,
     NEEDS_POSIX_SIGNALS,
     NEEDS_STALE_RECLAIM,
     NEEDS_SYMLINK,
@@ -388,6 +389,29 @@ def test_stale_break_restores_a_live_marker_a_dead_breaker_left_under_its_break_
 
 def _live(record: str) -> str:  # pragma: win32 no cover
     return record.replace(str(_DEAD_PID), str(os.getpid()))
+
+
+@NEEDS_FOREIGN_STICKY_TMP  # pragma: needs foreign-sticky-tmp
+@pytest.mark.usefixtures("directories_of_another_account")
+def test_stale_break_keeps_a_foreign_record_off_the_lock_path(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path,
+) -> None:
+    lock: Final[Path] = lock_path_in_shared_tmp
+    stale: Final[str] = _holder(_DEAD_PID)
+    lock.write_text(stale, encoding="utf-8")
+    break_name: Final[Path] = lock.with_name(f"{lock.name}.break.{_DEAD_PID}.{'0' * 32}")
+    live: Final[str] = _holder(os.getpid())
+    break_name.write_text(live, encoding="utf-8")
+    try:
+        with pytest.raises(Timeout):
+            SoftFileLock(lock).acquire(blocking=False)
+        assert (
+            lock.read_text(encoding="utf-8"),
+            [path.read_text(encoding="utf-8") for path in lock.parent.glob(f"{lock.name}.break.*")],
+        ) == (stale, [live])
+    finally:
+        for path in lock.parent.glob(f"{lock.name}.*"):
+            path.unlink(missing_ok=True)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
