@@ -98,6 +98,30 @@ def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixtur
     assert OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
+@pytest.mark.skipif(not CAPABILITIES["link-dir-fd"], reason="requires descriptor-relative hard links")
+def test_link_stays_in_the_open_generation_directory(  # pragma: needs link-dir-fd
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    files = OsFiles(str(tmp_path / "data.lock"))
+    root = tmp_path / "data.lock.rw"
+    files.prepare(str(root))
+    directory = root / "gen"
+    archived = root / "previous"
+    (source := directory / "stage").write_bytes(b"snapshot")
+    open_fd = os.open
+
+    def rotate_after_open(path: str, flags: int, *, dir_fd: int | None = None) -> int:
+        fd = open_fd(path, flags, dir_fd=dir_fd)
+        if path == "gen" and not archived.exists():
+            directory.rename(archived)
+            directory.mkdir()
+        return fd
+
+    mocker.patch.object(os, "open", autospec=True, side_effect=rotate_after_open)
+    assert files.link(str(source), str(target := directory / "generation"))
+    assert ((archived / "generation").read_bytes(), target.exists()) == (b"snapshot", False)
+
+
 def test_link_reports_an_unsupported_filesystem(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch.object(
         storage_mod,

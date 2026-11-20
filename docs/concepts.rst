@@ -939,22 +939,27 @@ re-reads and tries again, and the record is complete before the name exists. The
 critical section for a crash on any host to leave half done. A dead process leaves behind either a snapshot that still
 names it, which a contender evicts, or an orphaned record, which a sweep collects.
 
-A participant finds the latest generation by reading the newest generation that ``gen/HEAD``, its listing of the
-directory, or its memory names, then probing forward by name across a window of sixty-four generations. The probe
-bridges a generation removed between the listing and the read and a hole left by a committer that died before it
-compacted. It is not a bound on how stale a listing may be: an NFS client may serve a directory listing and negative
-lookups from its cache for up to ``acdirmax`` (60 seconds by default), long enough for peers to compact far past the
-window. ``HEAD`` covers that case, because opening a file by name makes the client check it against the server
-(close-to-open consistency), so a stale listing can never pull the start below the head the last commit published.
-``HEAD`` and memory only say where to look. The participant reads the generation they name from disk like any other,
-because a committer stalled between its link and its rename can put ``HEAD`` back on a generation peers have compacted
-since. When the generation ``HEAD`` names does read back, the window past it has no holes, so the probe stops at the
-first missing name. Both are bound to the epoch, so an instance never continues a removed log's numbering into its
-replacement. A listing, ``HEAD`` or memory that names generations of which none can be read marks a client too far
-behind the log to trust anything it reads; the acquire then raises :class:`SoftFileLockProtocolError
-<filelock.SoftFileLockProtocolError>` rather than restart the sequence. A commit also re-reads the epoch and checks that
-the generation it extends still exists, and counts as lost otherwise, so the participant re-reads the log instead of
-linking into a new one or into a slot compaction freed.
+A participant starts at the newest generation named by the directory listing, its memory or ``gen/HEAD``. It reads that
+snapshot and probes forward by name across a window of sixty-four generations. The probe spans holes left by a crash
+during compaction or a generation removed between listing and reading.
+
+An NFS client may cache a listing and negative lookups for up to ``acdirmax`` (60 seconds by default), long enough for
+peers to compact past the window. Opening ``HEAD`` by name checks it against the server through close-to-open
+consistency. When the generation it names is readable, later generations have no holes and the probe stops at the
+first missing name. A delayed rename can put ``HEAD`` back on a compacted generation, so the participant always checks
+the named snapshot on disk.
+
+The epoch identifies the log that ``HEAD`` and the participant's memory describe. If none of the generations named by
+the listing, ``HEAD`` or memory can be read, acquisition raises :class:`SoftFileLockProtocolError
+<filelock.SoftFileLockProtocolError>`.
+
+A committer writes a private snapshot, checks its epoch, then links it into the same generation directory. It checks the
+epoch again after the link. If the log was replaced, the committer retries against the current log. At cold start a peer
+can build on the first snapshot before its publisher finishes those checks. Keeping that slot occupied prevents a
+delayed writer from claiming the same generation.
+
+During recovery, renaming the whole log takes its epoch, snapshots and staged writes out of use together. Editing
+``gen/epoch`` or deleting individual records while peers use the log can mix records from two logs.
 
 Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
 new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers

@@ -92,8 +92,8 @@ class _Files(Protocol):
         # so the file must also still start with *header*, the bytes every rewrite keeps.
         ...
 
-    def unlink(self, path: str) -> None:
-        # Remove the file, tolerating one that is already gone.
+    def unlink(self, path: str, *, witness: str | None = None) -> None:
+        # A generation can be pruned only while its newer witness still exists in the same directory.
         ...
 
     def listdir(self, path: str) -> list[str]:
@@ -204,7 +204,7 @@ class GenerationLog:
     def _list(self) -> list[int]:
         listed = self._listed()
         for generation in listed[:-_RETAINED_GENERATIONS]:
-            self._files.unlink(self._path(generation))
+            self._files.unlink(self._path(generation), witness=self._path(listed[-1]))
         return listed[-_RETAINED_GENERATIONS:]
 
     def _listed(self) -> list[int]:
@@ -270,40 +270,31 @@ class GenerationLog:
         # only one link to ``gen/<N+1>`` can ever succeed. The link's return code is not trusted, because an NFS retry
         # can report a link that did land as failed; the file's identity after the call is what decides.
         #
-        # A log whose epoch changed since the snapshot was read is a different log, so the commit is refused as lost and
-        # the caller re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the
-        # link. A slot compaction freed is refused the same way, before the link and again after it, since a committer
-        # can stall in between.
-        #
-        # After the link a surviving predecessor proves little: it may be a record another stalled committer linked into
-        # its own freed slot and has yet to remove.
-        #
-        # A slot comes free once the log is a whole window past it, and the head stays, so a record the listing or
-        # ``HEAD`` leads by a window is refused as well. A record refused after it landed is removed when nothing was
-        # built on it. One that peers lead by less than a window stays, or its slot would come free early.
-        if self._files.read(self._epoch_path) != self._epoch or not self._extends_the_log(successor.generation):
+        # Compaction can free this slot, or a peer can replace the log, while the committer is paused at the link.
+        # A surviving predecessor can itself be a delayed write. Check the lead against both the listing and HEAD.
+        if not self._extends_the_log(successor.generation):
             return False
-        if not self._publish(
-            self._path(successor.generation), data := successor.encode(), self._files.link, durable=True
-        ):
+        if not self._publish(self._path(successor.generation), data := successor.encode()):
             return False
-        lead = max([*self._listed(), self._head_generation() or 0]) - successor.generation
-        if lead >= _RETAINED_GENERATIONS or not self._extends_the_log(successor.generation):
-            if not 0 < lead < _RETAINED_GENERATIONS:
-                self._files.unlink(self._path(successor.generation))
+        newest = max([*self._listed(), self._head_generation() or 0])
+        extends = self._extends_the_log(successor.generation)
+        if self._files.read(self._epoch_path) != self._epoch:
+            # The same generation number may now name the replacement log's record.
+            return False
+        if newest - successor.generation >= _RETAINED_GENERATIONS:
+            self._files.unlink(self._path(successor.generation), witness=self._path(newest))
+            return False
+        if not extends:
+            # A peer can already have extended this record. Keep its slot occupied until compaction.
             return False
         self._latest = successor
         # Readers verify the generation HEAD names, so a failed rename costs a probe, not the commit. A late one would
         # move HEAD back past later commits, so HEAD only ever moves forward.
         with suppress(OSError):
-            if (
-                (epoch := self._valid_epoch()) is not None
-                and self._files.read(self._epoch_path) == epoch
-                and (self._head_generation() or 0) < successor.generation
-            ):
-                self._publish(self._head_path, epoch + data, self._files.replace, durable=False)
+            if (epoch := self._valid_epoch()) is not None and (self._head_generation() or 0) < successor.generation:
+                self._publish(self._head_path, epoch + data)
         if (expired := successor.generation - _RETAINED_GENERATIONS - 1) > 0:
-            self._compact_through(expired)
+            self._compact_through(expired, successor.generation)
         return True
 
     def _extends_the_log(self, generation: int) -> bool:
@@ -313,26 +304,38 @@ class GenerationLog:
             return self._files.read(self._path(generation - 1)) is not None
         return self._head_record() is None
 
-    def _publish(self, target: str, data: bytes, place: Callable[[str, str], bool], *, durable: bool) -> bool:
+    def _publish(self, target: str, data: bytes) -> bool:
+        generation = target != self._head_path
         temporary = str(self._directory / f"{_TEMPORARY_PREFIX}{new_token()}")
         try:
-            self._files.create(temporary, data, durable=durable)
+            self._files.create(temporary, data, durable=generation)
         except FileNotFoundError:
             # No gen/: the log was removed, or nobody has prepared it yet. Either way there is nothing to publish into
             # until a participant's prepare() creates it, and the caller re-reads whatever log exists by then.
             return False
         try:
-            return place(temporary, target)
+            if not generation:
+                return self._files.replace(temporary, target)
+            # A reset before staging can leave the private file in a new log. A reset after this check takes the
+            # private name with the old directory, so a link in the new log has no source.
+            if self._files.read(self._epoch_path) != self._epoch:
+                return False
+            try:
+                return self._files.link(temporary, target)
+            except FileNotFoundError:
+                if self._files.read(temporary) is not None:
+                    raise
+                return False
         finally:
             self._files.unlink(temporary)
 
-    def _compact_through(self, expired: int) -> None:
+    def _compact_through(self, expired: int, newest: int) -> None:
         # Oldest first, so survivors stay contiguous: a stalled committer's leftover would otherwise sit below a hole.
         oldest = expired
         while oldest > 1 and self._files.read(self._path(oldest - 1)) is not None:
             oldest -= 1
         for generation in range(oldest, expired + 1):
-            self._files.unlink(self._path(generation))
+            self._files.unlink(self._path(generation), witness=self._path(newest))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
