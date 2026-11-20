@@ -210,6 +210,33 @@ def test_process_start_token_after_main_thread_exits(
 
 @_LINUX_ONLY  # pragma: linux cover
 @pytest.mark.parametrize(
+    ("create", "cached"),
+    [pytest.param(Path.touch, True, id="pin-opened"), pytest.param(Path.mkdir, False, id="pin-open-failed")],
+)
+def test_zero_offset_cache_requires_the_same_pinned_namespace(
+    create: Callable[[Path], None], *, cached: bool, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    namespace = tmp_path / "time"
+    create(namespace)
+    offsets = tmp_path / "offsets"
+    offsets.write_text(_BOOTTIME_UNSHIFTED, encoding="ascii")
+    mapped = {
+        "/proc/thread-self/ns/time": namespace,
+        "/proc/thread-self/ns/time_for_children": namespace,
+        f"/proc/{Path('/proc/thread-self').readlink().name}/timens_offsets": offsets,
+    }
+    mocker.patch("filelock._identity.Path", autospec=True, side_effect=lambda name: mapped.get(name, Path(name)))
+    pid = os.getpid()
+    assert (token := process_start_token(pid)) is not None
+    offsets.unlink()
+    assert (process_start_token(pid) == token) is cached
+    namespace.rename(tmp_path / "previous")
+    namespace.touch()
+    assert process_start_token(pid) is None
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize(
     ("self_link", "status", "readable"),
     [
         pytest.param("{pid}", "Name:\tpython\nNSpid:\t{pid}\n", True, id="own"),

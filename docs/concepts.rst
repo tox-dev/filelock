@@ -789,10 +789,11 @@ seconds, so a half-written marker never wedges acquisition. An empty marker is t
 This is the rule PostgreSQL, Qt ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
 
 Since Linux 5.6, the kernel adds the reader's time namespace boottime offset to ``starttime``. Workers read their own
-offset through ``/proc/<tid>/timens_offsets``, which remains available after the main thread exits. At zero offset, a
-worker can still recognize its own start token. With a nonzero or unreadable offset, filelock omits the token and
-relies on the PID. If a live process reuses a dead owner's PID, the marker can remain until ``lifetime`` expires or
-an operator calls ``break_lock()``.
+offset through ``/proc/<tid>/timens_offsets``, which remains available after the main thread exits. At zero offset, the
+worker can still recognize its own start token. Filelock keeps one namespace handle open to reuse that result.
+
+With a nonzero or unknown offset, filelock omits the token and relies on the PID. If a live process reuses a dead
+owner's PID, the marker can remain until ``lifetime`` expires or an operator calls ``break_lock()``.
 
 A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's ``ProcSubset=pid`` hides it) records
 ``starttime`` without the boot id. A contender then compares ``starttime`` alone whenever either side lacks the boot id.
