@@ -109,6 +109,18 @@ def test_dangling_symlink_does_not_create_its_target(lock_path: Path) -> None:
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
+def test_marker_create_reports_a_removed_directory(tmp_path: Path, mocker: MockerFixture) -> None:
+    parent = tmp_path / "removed"
+    parent.mkdir()
+    marker = parent / "job.lock"
+    mocker.patch.object(sys, "audit", autospec=True, side_effect=lambda *_: parent.rmdir())
+
+    with pytest.raises(FileNotFoundError) as caught:
+        SoftFileLock(marker).acquire(timeout=0)
+    assert caught.value.filename == str(marker)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
 def test_audit_veto_does_not_leave_a_marker(lock_path: Path) -> None:
     code = textwrap.dedent(f"""
         import sys
