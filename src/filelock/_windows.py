@@ -304,7 +304,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             # The reparse test is bound to the opened handle, so a symlink or junction swapped in cannot defeat it
             # through a check-then-open TOCTOU race.
             try:
-                fd = open_non_reparse_fd(self._lock_path, self._open_mode())
+                fd = open_non_reparse_fd(self._lock_path, self._open_mode(), oplock_wait=0)
             except BlockingIOError:
                 return  # an oplock holder has not answered its break; let the retry loop keep its deadline
             if fd is None:
