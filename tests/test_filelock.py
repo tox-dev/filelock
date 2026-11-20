@@ -1983,6 +1983,32 @@ def _release_before_acquire_commit(lock: BaseFileLock, mocker: MockerFixture) ->
         signal.signal(signal.SIGINT, previous)
 
 
+def test_release_during_backend_acquire_preserves_depth(tmp_path: Path, mocker: MockerFixture) -> None:
+    path = tmp_path / "a.lock"
+    lock = SoftFileLock(path, is_singleton=False)
+    released: list[int] = []
+    original_acquire = lock._acquire
+
+    def release_after_backend() -> None:
+        original_acquire()
+        if lock.is_locked and not released:
+            released.append(lock.lock_counter)
+            lock.release()
+
+    mocker.patch.object(lock, "_acquire", side_effect=release_after_backend, autospec=True)
+    lock.acquire(timeout=1)
+    assert released == [1]
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    lock.acquire()
+    lock.release()
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    with pytest.raises(Timeout):
+        SoftFileLock(path, blocking=False, is_singleton=False).acquire()
+    lock.release()
+    with SoftFileLock(path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, SoftFileLease])
 def test_handler_release_before_acquire_commit_nonblocking_cleans_registry(
