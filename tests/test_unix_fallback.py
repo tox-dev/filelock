@@ -7,7 +7,7 @@ import threading
 import warnings
 from errno import EACCES, EIO, ENOSYS, EWOULDBLOCK
 from textwrap import dedent
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 import pytest
 
@@ -17,8 +17,12 @@ from tests.capability_marks import NEEDS_FCNTL
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from typing import Protocol
 
     from pytest_mock import MockerFixture, MockType
+
+    class BreakableLock(Protocol):
+        def break_lock(self) -> None: ...
 
 
 @NEEDS_FCNTL
@@ -232,7 +236,7 @@ def test_fallback_break_lock_removes_recordless_marker(tmp_path: Path) -> None: 
 
     with pytest.raises(Timeout):
         lock.acquire(timeout=0)
-    lock.break_lock()
+    cast("BreakableLock", lock).break_lock()
 
     assert not lock_path.exists()
 
@@ -242,7 +246,7 @@ def test_native_break_lock_does_not_remove_file(tmp_path: Path) -> None:
     (lock_path := tmp_path / "test.lock").touch()
 
     with pytest.raises(RuntimeError, match="requires a soft fallback"):
-        UnixFileLock(lock_path).break_lock()
+        cast("BreakableLock", UnixFileLock(lock_path)).break_lock()
 
     assert lock_path.exists()
 
@@ -280,7 +284,7 @@ def test_fallback_recovery_does_not_apply_after_chdir(
     (second / "test.lock").touch()
 
     with pytest.raises(RuntimeError, match="requires a soft fallback"):
-        lock.break_lock()
+        cast("BreakableLock", lock).break_lock()
     with pytest.warns(UserWarning, match="lifetime is ignored for UnixFileLock"):
         lock.lifetime = 0
 
@@ -306,7 +310,7 @@ def test_fallback_recovery_remembers_earlier_path(
         lock.acquire(timeout=0)
     monkeypatch.chdir(first)
 
-    lock.break_lock()
+    cast("BreakableLock", lock).break_lock()
 
     assert not (first / "test.lock").exists()
     (first / "test.lock").touch()
