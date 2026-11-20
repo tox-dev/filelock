@@ -188,7 +188,6 @@ def test_concurrent_fallback_keeps_both_acquires_valid(tmp_path: Path, mocker: M
     lock = UnixFileLock(lock_path)
     in_flock, fell_back = threading.Event(), threading.Event()
     acquired: list[bool] = []
-    errors: list[Exception] = []
 
     def flock_missing(fd: int, operation: int) -> None:
         if threading.current_thread() is waiter:
@@ -197,11 +196,8 @@ def test_concurrent_fallback_keeps_both_acquires_valid(tmp_path: Path, mocker: M
         raise OSError(ENOSYS, f"Function not implemented for {fd} with {operation}")
 
     def acquire_after_peer_fallback() -> None:
-        try:
-            with lock.acquire(timeout=1):
-                acquired.append(SoftFileLock(lock_path).is_lock_held_by_us)
-        except Exception as exception:
-            errors.append(exception)
+        with lock.acquire(timeout=1):
+            acquired.append(SoftFileLock(lock_path).is_lock_held_by_us)
 
     mocker.patch("filelock._unix.fcntl.flock", side_effect=flock_missing, autospec=True)
     waiter = threading.Thread(target=acquire_after_peer_fallback)
@@ -213,7 +209,6 @@ def test_concurrent_fallback_keeps_both_acquires_valid(tmp_path: Path, mocker: M
     waiter.join(timeout=5)
 
     assert not waiter.is_alive()
-    assert not errors
     assert acquired == [True]
     assert not lock_path.exists()
 
