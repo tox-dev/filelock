@@ -824,11 +824,15 @@ For a shared filesystem whose marker and cache behavior has been verified, use
     async with rw.read_lock():
         data = await get_shared_data()
 
-It takes the same tuning as its synchronous peer plus the async pair, so the full signature is
-``AsyncSoftReadWriteLock(lock_file, timeout=-1, *, blocking=True, is_singleton=True, heartbeat_interval=30.0,
-stale_threshold=None, poll_interval=0.25, on_compromise=None, loop=None, executor=None)``. It has no SQLite thread
-affinity to respect, so ``executor=None`` means the loop's default executor: it creates nothing and owns nothing. Its
-``close()`` ends this wrapper's holds and wakes acquires waiting for another async wrapper's hold.
+By default, each wrapper starts a worker thread on its first backend call. Call ``await rw.close()`` when you finish
+with the wrapper to shut down its executor. If you pass an executor, reserve capacity for releases while acquires are
+waiting, and shut it down yourself.
+
+When async wrappers share a lock instance in one process, they serve queued writers in arrival order before admitting
+new readers. Closing a wrapper wakes tasks waiting through it and interrupts a contended backend acquire on its next
+poll. If an acquire obtains the
+lock while close is in progress, it waits for the outcome. A successful close releases the hold. If close fails with
+the lock still held, the acquiring task keeps it and can release it.
 
 **************************************
  Detect stale locks (soft locks only)

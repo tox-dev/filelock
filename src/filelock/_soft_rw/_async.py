@@ -24,6 +24,8 @@ import functools
 import os
 import threading
 from concurrent.futures import Future as ConcurrentFuture
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import thread as executor_threads
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 
@@ -47,7 +49,7 @@ from ._sync import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable
+    from collections.abc import AsyncGenerator, Callable, MutableMapping
     from concurrent import futures
     from types import TracebackType
 
@@ -80,7 +82,9 @@ class AsyncSoftReadWriteLock:
     :param on_compromise: called from the heartbeat thread with a :class:`~filelock.LeaseCompromise` when the hold is
         lost
     :param loop: event loop for ``run_in_executor``; ``None`` uses the running loop
-    :param executor: executor for ``run_in_executor``; ``None`` uses the default executor
+    :param executor: executor for ``run_in_executor``. When ``None`` this lock creates and owns a dedicated
+        single-thread executor and shuts it down in :meth:`close`. A caller-supplied executor is not shut down and
+        needs enough workers for each concurrent wait and release.
 
     .. versionadded:: 3.27.0
 
@@ -118,8 +122,14 @@ class AsyncSoftReadWriteLock:
         )
         self._owners = task_owners_for(self._lock)
         self._loop = loop
-        self._executor = executor
+        self._owns_executor = executor is None
+        self._executor = ThreadPoolExecutor(max_workers=1) if executor is None else executor
         register_fork_object(self)
+
+    def __del__(self, _getpid: Callable[[], int] = os.getpid) -> None:
+        # Keep getpid available after module globals are cleared during interpreter shutdown.
+        if _getpid() == getattr(self, "_creator_pid", None) and getattr(self, "_owns_executor", False):
+            self._executor.shutdown(wait=False)
 
     @property
     def timeout(self) -> float:
@@ -147,8 +157,8 @@ class AsyncSoftReadWriteLock:
         return self._loop
 
     @property
-    def executor(self) -> futures.Executor | None:
-        """The executor used for ``run_in_executor``, or ``None`` for the default executor."""
+    def executor(self) -> futures.Executor:
+        """The executor used for ``run_in_executor`` (a dedicated single-thread one if none was supplied)."""
         return self._executor
 
     @asynccontextmanager
@@ -405,14 +415,27 @@ class AsyncSoftReadWriteLock:
             # Only a failed backend call can leave the level held, and then a retried close() has to find it.
             if not isinstance(error, asyncio.CancelledError) and self._backend_holds():
                 self._closed = False
+            elif self._owns_executor:
+                self._executor.shutdown(wait=False)
             raise
         finally:
             self._closing = None
             closing.set_result(None)
             self._owners.wake_via(self._via)
+        if self._owns_executor:
+            self._executor.shutdown(wait=False)
 
-    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+    # The fork registry calls this method by name.
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child  # simplint: ignore[unused-definition]
         self._creator_pid = -1
+        if self._owns_executor:
+            # The worker did not survive the fork, but older runtimes still try to wake it at child exit.
+            registry = cast(
+                "MutableMapping[threading.Thread, object]",
+                executor_threads._threads_queues,  # ruff:ignore[private-member-access]  # the exit hook's registry
+            )
+            for worker in cast("ThreadPoolExecutor", self._executor)._threads:  # ruff:ignore[private-member-access]  # only the executor lists its workers
+                registry.pop(worker, None)
 
 
 class AsyncAcquireSoftReadWriteReturnProxy:

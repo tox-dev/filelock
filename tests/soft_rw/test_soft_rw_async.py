@@ -90,7 +90,7 @@ async def test_async_exposes_configuration(tmp_path: Path) -> None:
         assert lock.timeout == 5
         assert lock.blocking is False
         assert lock.loop is None
-        assert lock.executor is None
+        assert isinstance(lock.executor, ThreadPoolExecutor)
         assert lock.generation is None
         assert lock.compromise is None
     finally:
@@ -211,6 +211,71 @@ async def test_async_custom_loop_and_executor(tmp_path: Path) -> None:
                 pass
         finally:
             await lock.close()
+        assert await loop.run_in_executor(executor, lambda: True)
+
+
+@pytest.mark.asyncio
+async def test_async_owned_executor_stops_after_close(tmp_path: Path) -> None:
+    lock = _make(tmp_path)
+    async with lock.write_lock(timeout=2):
+        pass
+    executor = lock.executor
+    await lock.close()
+
+    with pytest.raises(RuntimeError, match="shutdown"):
+        executor.submit(lambda: None)
+
+
+def test_async_close_after_default_executor_shutdown(tmp_path: Path) -> None:
+    async def run() -> None:
+        lock = _make(tmp_path)
+        async with lock.write_lock(timeout=2):
+            pass
+        await asyncio.get_running_loop().shutdown_default_executor()
+        await lock.close()
+
+        with pytest.raises(RuntimeError, match="shutdown"):
+            lock.executor.submit(lambda: None)
+
+    asyncio.run(run())
+
+
+def test_async_default_executor_wait_does_not_block_another_release(tmp_path: Path, mocker: MockerFixture) -> None:
+    async def run() -> None:
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            asyncio.get_running_loop().set_default_executor(worker)
+            holder = _make(tmp_path, "private.lock")
+            waiter = _make(tmp_path, "shared.lock")
+            holding = asyncio.Event()
+            release_requested = asyncio.Event()
+
+            async def hold() -> None:
+                await holder.acquire_write(timeout=2)
+                holding.set()
+                await release_requested.wait()
+                await holder.release()
+
+            holder_task = asyncio.create_task(hold())
+            await holding.wait()
+            gate = _Gate(mocker, "_acquire_level_of", SoftReadWriteLock._acquire_level_of)
+
+            async def wait() -> None:
+                await waiter.acquire_write(timeout=5)
+                await waiter.release()
+
+            waiting = asyncio.create_task(wait())
+            await gate.started.wait()
+            release_requested.set()
+            try:
+                await asyncio.wait_for(asyncio.shield(holder_task), 0.5)
+            finally:
+                gate.resume()
+                await holder_task
+                await waiting
+                await holder.close()
+                await waiter.close()
+
+    asyncio.run(run())
 
 
 @pytest.mark.asyncio
