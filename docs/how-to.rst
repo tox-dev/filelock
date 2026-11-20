@@ -452,6 +452,10 @@ or by others. Otherwise, filelock opens SQLite through a hard link (a second nam
 still selects this route. The directory must be writable by the locking account, and the filesystem must support hard
 links; when the link cannot be made, the lock raises :class:`OSError`.
 
+On its first connection to a database in a shared directory, filelock looks for hard links left by dead holders. It
+checks a 50 ms deadline between directory entries. If time runs out, a later connection can try again. A leftover
+hard link does not keep the lock held.
+
 On POSIX, SQLite refuses to create a database if its private link disappears before the connection opens. On Linux,
 when procfs cannot establish the process's PID namespace, filelock leaves private links from other processes in place.
 Upgrade all processes that share the database together. Older releases can create a separate database if their private

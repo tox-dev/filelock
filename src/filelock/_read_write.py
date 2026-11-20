@@ -1276,19 +1276,16 @@ def _sweep_links_of_the_dead(
     if identity in _SWEPT_DATABASES:
         return
     _SWEPT_DATABASES.add(identity)
-    try:
-        with os.scandir(parent) as entries:
-            names: Final[list[str]] = [
-                entry.name
-                for entry in entries
-                if entry.name.startswith(_LINK_PREFIX) and entry.is_dir(follow_symlinks=False)
-            ]
-    except OSError:
-        return
-    for name in names:
-        # A peer sweeping alongside, or a directory this user cannot remove, must not fail the connect.
-        with suppress(OSError):
-            _remove_dead_links(parent / name, identity, owner)
+    deadline: Final[float] = time.monotonic() + _MAX_TRANSITION_WAIT
+    with suppress(OSError), os.scandir(parent) as entries:
+        for entry in entries:
+            if time.monotonic() >= deadline:
+                _SWEPT_DATABASES.discard(identity)
+                return
+            if entry.name.startswith(_LINK_PREFIX) and entry.is_dir(follow_symlinks=False):
+                # A peer sweeping alongside, or a directory this user cannot remove, must not fail the connect.
+                with suppress(OSError):
+                    _remove_dead_links(parent / entry.name, identity, owner)
 
 
 def _remove_dead_links(

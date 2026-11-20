@@ -9,6 +9,8 @@ import stat
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # runs this test's own interpreter
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 from urllib.parse import unquote, urlsplit
@@ -27,7 +29,7 @@ from tests.pid_namespace_helpers import pin_pid_namespace, pin_proc_pid_namespac
 from tests.read_write_helpers import assert_read_write_lock_state
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Generator, Iterator
 
     from pytest_mock import MockerFixture
 
@@ -302,12 +304,40 @@ def test_private_link_sweeps_the_link_of_a_killed_holder(database: Path, holder:
     assert (len(left), _link_directories(database), database.stat().st_nlink) == (1, [], 1)
 
 
-def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: Path) -> None:
+def test_private_link_sweep_bounds_a_crowded_directory(database: Path, mocker: MockerFixture) -> None:
+    for number in range(300):
+        (database.parent / f".filelock-{number}").mkdir()
+    scandir = os.scandir
+
+    @contextmanager
+    def slow_scandir(path: str | os.PathLike[str] | int) -> Generator[Iterator[os.DirEntry[str]]]:
+        with scandir(path) as entries:
+
+            def delayed_entry(entry: os.DirEntry[str]) -> os.DirEntry[str]:
+                time.sleep(0.005)
+                return entry
+
+            yield map(delayed_entry, entries)
+
+    mocker.patch("os.scandir", autospec=True, side_effect=slow_scandir)
+    started = time.monotonic()
+    with ReadWriteLock(database, is_singleton=False).write_lock(blocking=False):
+        assert database.exists()
+    assert time.monotonic() - started < 0.5
+
+
+def test_private_link_sweep_retries_an_earlier_release_link_after_timeout(
+    database: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Releases up to 4.2.0 linked the database right inside the directory.
     database.touch()
     left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     left.mkdir(mode=0o700)
     (left / "lock.db").hardlink_to(database)
+    with monkeypatch.context() as patch:
+        patch.setattr("filelock._read_write._MAX_TRANSITION_WAIT", 0)
+        with ReadWriteLock(database, is_singleton=False).read_lock():
+            assert left.is_dir()
     with ReadWriteLock(database, is_singleton=False).read_lock():
         pass
 
