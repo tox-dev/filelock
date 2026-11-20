@@ -1028,6 +1028,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
             self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
             if not self.is_locked:
+                self._context.lock_generation += 1
                 self._pin_lock_path(canonical_path)
 
             try:
@@ -1413,22 +1414,25 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             running, and a ``thread_local=False`` lock while any other thread runs.
 
         """
-        counter_before: int | None = None
-        try:
-            counter_before = self._context.lock_counter
-            self._release_current(force=force)
-        except BaseException as release_error:
-            # A handler that raised after release() began and before the backend changed anything leaves the counter as
-            # it was; only then does a second attempt release the hold the caller gave up. A failed system call keeps it
-            # for an explicit retry, and a changed counter means a nested level or the backend's own retry already ran.
-            if (
-                counter_before is not None
-                and counter_before == self._context.lock_counter
-                and self._context.lock_file_fd is not None
-                and not is_system_call_failure(release_error)
+        release_snapshot: tuple[int, int] | None = None
+        transition_entered = False
+        try:  # ruff:ignore[too-many-statements-in-try-clause]  # gate-entry signals and release failures need separate recovery
+            release_snapshot = (self._context.lock_generation, self._context.lock_counter)
+            with (
+                contextlib.nullcontext()
+                if self._settings.thread_local or self._context.lock_file_fd is None
+                else self._transition_lock
             ):
-                with contextlib.suppress(Exception):
+                try:
+                    transition_entered = True
+                    release_snapshot = (self._context.lock_generation, self._context.lock_counter)
                     self._release_current(force=force)
+                except BaseException as release_error:
+                    self._retry_interrupted_release(release_snapshot, release_error, force=force, transition_held=True)
+                    raise
+        except BaseException as release_error:
+            if not transition_entered:
+                self._retry_interrupted_release(release_snapshot, release_error, force=force, transition_held=False)
             raise
         if force:
             self._release_thread_holds(exited_only=True)
@@ -1484,6 +1488,19 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.lock_counter = 0
         self._drop_registry_entry()
         self._context.claim_root = None
+
+    def _retry_interrupted_release(
+        self, snapshot: tuple[int, int] | None, release_error: BaseException, *, force: bool, transition_held: bool
+    ) -> None:
+        # A retry can only touch the original hold; a later acquirer may restore the same recursion depth.
+        if snapshot is None or self._context.lock_file_fd is None or is_system_call_failure(release_error):
+            return
+        with (
+            contextlib.suppress(Exception),
+            contextlib.nullcontext() if transition_held or self._settings.thread_local else self._transition_lock,
+        ):
+            if snapshot == (self._context.lock_generation, self._context.lock_counter):
+                self._release_current(force=force)
 
     def _release_thread_holds(self, *, exited_only: bool) -> None:
         if not isinstance(context := self._context, ThreadLocalFileContext):
@@ -2051,6 +2068,9 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
 
     #: Depth of nested acquisitions; the lock is released only when it returns to 0.
     lock_counter: int = 0
+
+    #: Distinguishes synchronous physical acquisitions even when recursion depth repeats.
+    lock_generation: int = 0
 
     #: Canonical registry key captured when the first physical acquisition commits.
     lock_file_key: Hashable | None = None
