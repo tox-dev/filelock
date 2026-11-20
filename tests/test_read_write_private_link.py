@@ -315,7 +315,7 @@ def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: 
 
 
 def _host_digest(database: Path, *, legacy: bool = False) -> str:
-    if legacy:
+    if legacy:  # pragma: linux cover
         return hashlib.sha256(host_name().encode()).hexdigest()[:16]
     # Taken from a link of another database, so the sweep for this one has not run yet.
     seed: Final[Path] = database.parent.with_name("seed")
@@ -328,7 +328,7 @@ def _host_digest(database: Path, *, legacy: bool = False) -> str:
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux PID namespaces need procfs to identify their owners")
 @pytest.mark.parametrize("procfs", [pytest.param("hidden", id="hidden"), pytest.param("foreign", id="foreign")])
 @pytest.mark.parametrize("legacy", [pytest.param(False, id="current"), pytest.param(True, id="legacy")])
-def test_private_link_sweep_keeps_a_holder_when_pid_namespace_is_unknown(
+def test_private_link_sweep_keeps_a_holder_when_pid_namespace_is_unknown(  # pragma: linux cover
     database: Path, mocker: MockerFixture, procfs: str, *, legacy: bool
 ) -> None:
     if procfs == "hidden":  # simplint: ignore[conditional-in-test]  # distinct procfs states

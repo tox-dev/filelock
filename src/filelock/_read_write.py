@@ -1370,15 +1370,14 @@ def _link_prefix() -> str:  # pragma: needs posix-hard-link
 
 def _link_host() -> tuple[str, bool]:  # pragma: needs posix-hard-link
     host = host_name()
-    if sys.platform not in {"linux", "android"}:  # pragma: linux no cover
-        return host, True
-    try:
-        pathlib.Path("/proc/self/ns/pid").stat()
-    except OSError:
-        # An unreadable procfs gives different PID namespaces the same hostname; none can prove a peer dead.
-        return f"{host}?pidns-unknown", False
-    if not proc_numbers_tasks_as_here():
-        return f"{host}?pidns-unknown", False
+    if sys.platform in {"linux", "android"}:  # pragma: darwin no cover
+        try:
+            pathlib.Path("/proc/self/ns/pid").stat()
+        except OSError:
+            # An unreadable procfs gives different PID namespaces the same hostname; none can prove a peer dead.
+            return f"{host}?pidns-unknown", False
+        if not proc_numbers_tasks_as_here():
+            return f"{host}?pidns-unknown", False
     return host, True
 
 
