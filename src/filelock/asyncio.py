@@ -692,8 +692,10 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
 
     async def release(self, force: bool = False) -> None:  # ty: ignore[incompatible-method-override]  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]  # public API: positional bool kept for backwards compatibility
         """
-        Release the file lock. The lock is only completely released when the lock counter reaches 0. The lock file
-        itself may be deleted automatically, the behavior is platform-specific.
+        Release one lock level. The final release unlocks the file and may delete it, depending on the platform.
+
+        If cancellation interrupts this call while a release is owed, the release finishes before cancellation
+        propagates. Retrying it can release another task's level when tasks share the lock.
 
         :param force: If true, the lock counter is ignored and the lock is released in every case.
 
