@@ -1072,8 +1072,8 @@ permissions can exclude another UID. Under a sticky parent such as ``/tmp``, acq
 when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent, or when any
 of these directories is writable by another account. This also covers a group-writable tree of the lock's account moved
 into place by another account. Remove such a tree so the lock can create private directories. The refusal applies to a
-lock object that used an earlier tree: it repeats the check whenever a directory it opens is not the one it prepared,
-and on every operation where ``dir_fd`` is unavailable. A process with the same effective UID can alter the records. A
+lock object that used an earlier tree: it repeats the check for every directory it opens, including one with a reused
+inode number or a changed mode. A process with the same effective UID can alter the records. A
 filesystem that delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a holder remains
 active.
 

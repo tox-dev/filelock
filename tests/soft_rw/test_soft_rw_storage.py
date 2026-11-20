@@ -282,6 +282,36 @@ def test_replaced_tree_cannot_be_writable_under_sticky_parent(
 
 
 @NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.parametrize("level", [pytest.param(".", id="root"), pytest.param("holders", id="holders")])
+@pytest.mark.parametrize("name_only", [pytest.param(False, id="descriptors"), pytest.param(True, id="names")])
+def test_live_tree_refuses_writable_mode_change(
+    lock_path_in_shared_tmp: Path, mocker: MockerFixture, level: str, *, name_only: bool
+) -> None:  # pragma: needs foreign-sticky-tmp
+    mocker.patch.object(storage_mod, "_SUPPORTS_DIR_FD", new=not name_only and storage_mod._SUPPORTS_DIR_FD)
+    root = Path(f"{lock_path_in_shared_tmp}.rw")
+    files = OsFiles(str(lock_path_in_shared_tmp))
+    files.prepare(str(root))
+    (root / level).chmod(0o770)
+
+    with pytest.raises(TreeReplacedError, match="writable by other accounts"):
+        files.listdir(str(root / "holders"))
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+def test_live_tree_rechecks_owner_with_same_inode(
+    lock_path_in_shared_tmp: Path, mocker: MockerFixture
+) -> None:  # pragma: needs foreign-sticky-tmp
+    root = Path(f"{lock_path_in_shared_tmp}.rw")
+    files = OsFiles(str(lock_path_in_shared_tmp))
+    files.prepare(str(root))
+    assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
+    mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+
+    with pytest.raises(TreeReplacedError, match="not to this process's account"):
+        files.listdir(str(root / "holders"))
+
+
+@NEEDS_FOREIGN_STICKY_TMP
 @pytest.mark.parametrize("name_only", [pytest.param(False, id="descriptors"), pytest.param(True, id="names")])
 @pytest.mark.parametrize(
     "call",
