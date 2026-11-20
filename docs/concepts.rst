@@ -669,6 +669,11 @@ writes ``filelock: fork child exits: ...`` to stderr and leaves through ``os._ex
 half-finished descriptor state, so no ``atexit`` handler or ``finally`` block runs in it. An operation that never
 finishes delays every later fork by the same 30 seconds.
 
+On Linux and Android, a child in a new PID namespace can have the same numeric PID as its parent. The child
+invalidates inherited locks even in that case. Construct a new lock in the child before acquiring it. If you register
+a child callback before importing filelock, defer lock operations until after the fork when procfs is unavailable.
+Such a callback runs before filelock can invalidate inherited locks with matching PIDs.
+
 On normal interpreter exit, an ``atexit`` handler registered when filelock is imported releases every lock the process
 still references unless another live thread owns a hold. An async soft reader/writer hold stays while its owning event
 loop runs, even if the task has finished. A lock built with ``thread_local=False`` cannot identify its owner, so its
