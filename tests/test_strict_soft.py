@@ -7,6 +7,7 @@ import socket
 import time
 from errno import EBADF, ENOSYS, EXDEV
 from pathlib import Path
+from stat import filemode
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -24,7 +25,7 @@ from filelock import (
 )
 from filelock._identity import host_name, process_start_token
 from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_hard_link_unsupported_errnos
-from tests.capability_marks import NEEDS_FILE_PERMISSIONS
+from tests.capability_marks import NEEDS_FILE_MODE, NEEDS_FILE_PERMISSIONS
 from tests.process_helpers import call_within
 
 if TYPE_CHECKING:
@@ -55,6 +56,32 @@ def test_strict_soft_acquire_publishes_owner_claim(tmp_path: Path) -> None:
             StrictSoftFileClaim(name=intent.name, state="intent", **owner),
         )
     assert (lock_path.read_bytes(), lock.claims, lock.is_locked) == (_SENTINEL, (), False)
+
+
+@NEEDS_FILE_MODE
+@pytest.mark.parametrize(
+    "make_lock",
+    [
+        pytest.param(lambda path: StrictSoftFileLock(path, mode=0o666), id="explicit-mode"),
+        pytest.param(StrictSoftFileLock, id="default-mode"),
+    ],
+)
+def test_strict_soft_lets_only_the_owner_write_its_records(  # pragma: needs file-mode
+    make_lock: Callable[[Path], StrictSoftFileLock], tmp_path: Path
+) -> None:
+    # Contenders act on the record in the sentinel and in each claim, so no other account may rewrite one.
+    lock_path = tmp_path / "resource.lock"
+    lock = make_lock(lock_path)
+
+    initial_umask = os.umask(0)
+    try:
+        with lock:
+            records = [lock_path, *Path(f"{lock_path}.filelock", "claims").iterdir()]
+            modes = [filemode(record.stat().st_mode) for record in records]
+    finally:
+        os.umask(initial_umask)
+
+    assert modes == ["-rw-r--r--"] * 3
 
 
 def test_strict_soft_is_reentrant(tmp_path: Path) -> None:
