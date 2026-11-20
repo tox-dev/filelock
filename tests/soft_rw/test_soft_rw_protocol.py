@@ -14,6 +14,8 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
+from filelock._soft_rw import _protocol as protocol_mod
+from filelock._soft_rw import _storage as storage_mod
 from filelock._soft_rw._protocol import (
     _RETAINED_GENERATIONS,
     GenerationLog,
@@ -488,6 +490,18 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(
     assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
 
 
+def test_a_listing_cut_short_fails_closed(lock_file: str, files: OsFiles, root: str, mocker: MockerFixture) -> None:
+    # Whoever can write gen/ decides how many names it holds. A listing that stopped at the limit may lack the head, so
+    # nothing is read from it.
+    files.prepare(root)
+    for module in (protocol_mod, storage_mod):
+        mocker.patch.object(module, "MAX_LISTED_NAMES", 3)
+    for number in range(3):  # the epoch file is the fourth name
+        Path(root, "gen", f"planted-{number}").touch()
+    with pytest.raises(SoftFileLockProtocolError, match="holds more than 3 names"):
+        GenerationLog(files, lock_file, root).latest()
+
+
 @pytest.mark.requires_hard_links
 @pytest.mark.parametrize(
     ("writers", "expected"),
@@ -787,6 +801,38 @@ def test_compaction_removes_a_stalled_survivor_before_the_window_edge(
 
 
 @pytest.mark.requires_hard_links
+def test_a_listing_removes_old_generations_a_batch_at_a_time(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # Seventy commits leave gen/6 upward, and gen/6 is already outside the window a listing keeps.
+    log = _committed(files, lock_file, root, [None] * 70)
+    mocker.patch.object(protocol_mod, "_HOUSEKEEPING_BATCH", 2)
+    for generation in range(1, 6):
+        Path(root, "gen", f"{generation:020d}").touch()
+    oldest: list[int] = []
+    for _ in range(3):
+        log.latest()
+        oldest.append(min(int(entry.name) for entry in Path(root, "gen").iterdir() if entry.name.isdigit()))
+    assert oldest == [3, 5, 7]
+
+
+@pytest.mark.requires_hard_links
+def test_compaction_leaves_more_survivors_than_a_batch_to_the_listing(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # Walking down through every record below the window edge would take as long as whoever planted them chose, and
+    # removing gen/6 alone would leave them below a hole.
+    log = _committed(files, lock_file, root, [None] * 70)
+    mocker.patch.object(protocol_mod, "_HOUSEKEEPING_BATCH", 2)
+    for generation in (3, 4, 5):
+        Path(root, "gen", f"{generation:020d}").touch()
+    assert (
+        log.commit(Snapshot(generation=71, writer=None, readers=frozenset())),
+        sorted(int(entry.name) for entry in Path(root, "gen").iterdir() if entry.name.isdigit())[:4],
+    ) == (True, [3, 4, 5, 6])
+
+
+@pytest.mark.requires_hard_links
 def test_a_commit_flushes_only_its_generation_record(
     lock_file: str, files: OsFiles, root: str, flushes: MockType
 ) -> None:
@@ -877,6 +923,31 @@ def test_the_sweep_forgets_peers_that_left(lock_file: str, files: OsFiles, root:
     second.leave()
     # Had the writer's entry survived the sweep, the same bytes six seconds later would read as six seconds unchanged.
     assert ledger.observe(writer.token, record) == pytest.approx(0.0)
+
+
+@pytest.mark.requires_hard_links
+def test_the_sweep_collects_orphans_a_batch_at_a_time(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    # A sweep reads one batch of records however many names the directories hold. Those it watched are collected a
+    # threshold later, and only then does it reach the ones behind them.
+    mocker.patch.object(protocol_mod, "_HOUSEKEEPING_BATCH", 2)
+    real_listdir = OsFiles.listdir
+    mocker.patch.object(OsFiles, "listdir", lambda self, path: sorted(real_listdir(self, path)))
+    files.prepare(root)
+    for number in range(5):
+        Path(root, "holders", f"{number:032x}").touch()
+        Path(root, "gen", f".commit-{number:032x}").touch()
+    clock = [0.0]
+    reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
+    reader.publish()
+    assert reader.advance()
+    left: list[tuple[int, int]] = []
+    for clock[0] in (10.0, 20.0, 30.0, 40.0, 50.0):
+        assert reader.heartbeat() == ("ok", None)
+        orphans = [entry for entry in Path(root, "holders").iterdir() if entry.name != reader.token]
+        left.append((len(orphans), len(list(Path(root, "gen").glob(".commit-*")))))
+    assert left == [(3, 3), (3, 3), (1, 1), (1, 1), (0, 0)]
 
 
 @pytest.mark.requires_hard_links

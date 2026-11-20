@@ -20,12 +20,13 @@ participant that outlives a removal of the log reads the new one instead of cont
 
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._error", "filelock._identity", "math", "pathlib", "secrets"]
+__lazy_modules__ = ["contextlib", "filelock._error", "filelock._identity", "itertools", "math", "pathlib", "secrets"]
 
 import os
 import secrets
 from contextlib import suppress
 from dataclasses import dataclass
+from itertools import islice
 from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol
@@ -44,6 +45,13 @@ _GENERATION_DIGITS: Final[int] = 20
 _TOKEN_HEX_LENGTH: Final[int] = 32
 #: A snapshot line is ``reader=`` plus a token, so this bounds a hostile record without capping real reader counts.
 MAX_RECORD_SIZE: Final[int] = 1 << 20
+#: A listing stops one name past this, as a read stops one byte past ``MAX_RECORD_SIZE``. The largest snapshot names
+#: some 26,000 members, each with one holder record and at most one commit in flight, so no real directory is cut short.
+MAX_LISTED_NAMES: Final[int] = 1 << 16
+#: How many names one pass of housekeeping (a sweep, the pruning after a listing, a compaction) reads or removes; the
+#: rest wait for the next pass. The caller looks at its deadline only between polls, and whoever can write a directory
+#: decides how many names it holds.
+_HOUSEKEEPING_BATCH: Final[int] = 1 << 8
 #: Snapshots older than this many generations behind the latest are removed by whoever commits. The window is also how
 #: far ``latest`` probes past a gap before it trusts that nothing newer exists; ``gen/HEAD``, not the window, is what
 #: keeps a listing served further behind from passing an old generation off as the head.
@@ -97,6 +105,9 @@ class _Files(Protocol):
 
     def listdir(self, path: str) -> list[str]:
         # The names in the directory, or an empty list when it does not exist.
+        #
+        # At most one more than ``MAX_LISTED_NAMES``, which tells the caller that the directory holds names it did not
+        # get.
         ...
 
     def prepare(self, root: str, *, force: bool = False) -> None:
@@ -202,16 +213,20 @@ class GenerationLog:
 
     def _list(self) -> list[int]:
         listed = self._listed()
-        for generation in listed[:-_RETAINED_GENERATIONS]:
+        # Oldest first, as compaction removes them, and one batch per listing.
+        for generation in listed[:-_RETAINED_GENERATIONS][:_HOUSEKEEPING_BATCH]:
             self._files.unlink(self._path(generation))
         return listed[-_RETAINED_GENERATIONS:]
 
     def _listed(self) -> list[int]:
+        # A listing cut short may lack the newest generations, and only HEAD would then keep an old one from passing
+        # for the head, so it is refused instead.
+        if len(names := self._files.listdir(str(self._directory))) > MAX_LISTED_NAMES:
+            reason = f"generation log holds more than {MAX_LISTED_NAMES} names"
+            raise SoftFileLockProtocolError(self.lock_file, None, reason)
         # isdigit() alone admits Unicode digits: superscripts int() rejects, fullwidth ones it parses to another number.
         return sorted(
-            int(name)
-            for name in self._files.listdir(str(self._directory))
-            if len(name) == _GENERATION_DIGITS and name.isascii() and name.isdigit()
+            int(name) for name in names if len(name) == _GENERATION_DIGITS and name.isascii() and name.isdigit()
         )
 
     def _path(self, generation: int) -> str:
@@ -330,6 +345,10 @@ class GenerationLog:
         oldest = expired
         while oldest > 1 and self._files.read(self._path(oldest - 1)) is not None:
             oldest -= 1
+            if expired - oldest >= _HOUSEKEEPING_BATCH:
+                # More records than committers leave behind. Removing only the newest of them would put the rest below
+                # a hole, so all are left to the listings, which remove them a batch at a time from the oldest up.
+                return
         for generation in range(oldest, expired + 1):
             self._files.unlink(self._path(generation))
 
@@ -505,20 +524,27 @@ class Participant:
         # A participant that crashed before its first commit leaves a record no snapshot names, and a commit that
         # crashed between creating and unlinking its temporary file leaves that too. Neither blocks anyone, so they are
         # collected on the same unchanged-for-a-threshold rule as a member, and only every half threshold at most.
+        #
+        # Each sweep reads one batch of either kind, in listing order. A directory holding more is swept from the front:
+        # what this sweep watches the next one finds again, and collecting it brings up the names behind it.
         if (now := self._clock()) < self._next_sweep:
             return
         self._next_sweep = now + self._stale_threshold / 2
         watched = set(latest.members)
         holders = Path(self._root, HOLDERS_DIRECTORY)
-        for name in self._files.listdir(str(holders)):
-            if name != self.token and name not in latest.members and _is_token(name):
-                watched.add(key := f"holder:{name}")
-                self._collect(key, str(holders / name))
+        unnamed = (
+            name
+            for name in self._files.listdir(str(holders))
+            if name != self.token and name not in latest.members and _is_token(name)
+        )
+        for name in islice(unnamed, _HOUSEKEEPING_BATCH):
+            watched.add(key := f"holder:{name}")
+            self._collect(key, str(holders / name))
         generations = Path(self._root, GENERATIONS_DIRECTORY)
-        for name in self._files.listdir(str(generations)):
-            if name.startswith(_TEMPORARY_PREFIX):
-                watched.add(key := f"temporary:{name}")
-                self._collect(key, str(generations / name))
+        temporary = (name for name in self._files.listdir(str(generations)) if name.startswith(_TEMPORARY_PREFIX))
+        for name in islice(temporary, _HOUSEKEEPING_BATCH):
+            watched.add(key := f"temporary:{name}")
+            self._collect(key, str(generations / name))
         self._ledger.retain(watched)
 
     def _collect(self, key: str, path: str) -> None:
@@ -628,6 +654,7 @@ class TreeReplacedError(RuntimeError):
 __all__ = [
     "GENERATIONS_DIRECTORY",
     "HOLDERS_DIRECTORY",
+    "MAX_LISTED_NAMES",
     "MAX_RECORD_SIZE",
     "GenerationLog",
     "HeartbeatOutcome",
