@@ -6,7 +6,8 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interp
 import sys
 import threading
 import warnings
-from errno import EACCES, EIO, ENOSYS, EWOULDBLOCK
+from concurrent.futures import ThreadPoolExecutor
+from errno import EACCES, EBADF, EIO, ENOSYS, EWOULDBLOCK
 from textwrap import dedent
 from typing import TYPE_CHECKING, Final, cast
 
@@ -14,6 +15,7 @@ import pytest
 
 from filelock import SoftFileLock, SoftFileLockLifetimeWarning, Timeout, UnixFileLock
 from filelock._identity import host_name, process_start_token
+from filelock._util import exchange_names
 from tests.capability_marks import NEEDS_FCNTL, NEEDS_STALE_RECLAIM
 
 if TYPE_CHECKING:
@@ -127,7 +129,7 @@ def test_interrupted_unix_create_marks_fallback_placeholder(
 ) -> None:  # pragma: needs fcntl
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
     lock_path = tmp_path / "test.lock"
-    _interrupt_unix_create(UnixFileLock(lock_path))
+    _interrupt_unix_create(UnixFileLock(lock_path, mode=0o600))
     assert lock_path.read_bytes().startswith(b"filelock/break\n")
 
 
@@ -270,10 +272,28 @@ def test_fallback_reprobes_after_chdir(
 
 
 @NEEDS_FCNTL
+def test_fallback_skips_flock_in_another_thread(  # pragma: needs fcntl
+    tmp_path: Path, unsupported_flock: MockType
+) -> None:
+    lock = UnixFileLock(tmp_path / "test.lock")
+
+    def holder_pid() -> int | None:
+        with lock.acquire(timeout=0):
+            return cast("BreakableLock", lock).pid
+
+    with pytest.warns(UserWarning, match="flock not supported"):
+        assert holder_pid() == os.getpid()
+    unsupported_flock.reset_mock()
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        assert worker.submit(holder_pid).result(timeout=5) == os.getpid()
+    unsupported_flock.assert_not_called()
+
+
+@NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")  # pragma: needs fcntl
 def test_concurrent_fallback_keeps_both_acquires_valid(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
-    lock = UnixFileLock(lock_path)
+    lock = UnixFileLock(lock_path, mode=0o600)
     in_flock, fell_back = threading.Event(), threading.Event()
     acquired: list[bool] = []
 
@@ -475,8 +495,27 @@ def test_interrupted_open_preserves_marker_when_exchange_fails(  # pragma: needs
 ) -> None:
     mocker.patch("filelock._unix.exchange_names", autospec=True, return_value=False)
     lock_path = tmp_path / "test.lock"
-    _interrupt_unix_create(UnixFileLock(lock_path))
+    _interrupt_unix_create(UnixFileLock(lock_path, mode=0o600))
     assert (list(tmp_path.iterdir()), lock_path.read_bytes()) == ([lock_path], b"")
+
+
+@NEEDS_FCNTL
+@NEEDS_STALE_RECLAIM
+@pytest.mark.usefixtures("unsupported_flock")
+def test_interrupted_exchange_keeps_the_recovery_marker(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    def exchange_then_interrupt(source: str, target: str) -> bool:
+        assert exchange_names(source, target)
+        raise KeyboardInterrupt
+
+    mocker.patch("filelock._unix.exchange_names", side_effect=exchange_then_interrupt, autospec=True)
+    lock_path = tmp_path / "test.lock"
+    _interrupt_unix_create(UnixFileLock(lock_path, mode=0o600))
+    assert (list(tmp_path.iterdir()), lock_path.read_bytes()) == (
+        [lock_path],
+        f"filelock/break\n{os.getpid()}\n".encode(),
+    )
 
 
 @NEEDS_FCNTL
@@ -489,7 +528,7 @@ def test_interrupted_open_keeps_existing_private_name(  # pragma: needs fcntl
     lock_path = tmp_path / "test.lock"
     other = tmp_path / f"test.lock.break.{os.getpid()}.fixed"
     other.write_bytes(b"other record")
-    _interrupt_unix_create(UnixFileLock(lock_path))
+    _interrupt_unix_create(UnixFileLock(lock_path, mode=0o600))
     assert (other.read_bytes(), lock_path.read_bytes()) == (b"other record", b"")
 
 
@@ -504,7 +543,7 @@ def test_interrupted_open_keeps_existing_private_name(  # pragma: needs fcntl
         pytest.param(UnixFileLock, 0, id="umask"),
     ],
 )
-def test_fallback_replaces_writable_native_marker(  # pragma: needs fcntl
+def test_fallback_creates_marker_with_restricted_writes(  # pragma: needs fcntl
     tmp_path: Path, make_lock: Callable[[Path], UnixFileLock], umask: int
 ) -> None:
     lock_path = tmp_path / "test.lock"
@@ -519,20 +558,67 @@ def test_fallback_replaces_writable_native_marker(  # pragma: needs fcntl
 
 @NEEDS_FCNTL
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_denies_writable_marker_without_exchange(  # pragma: needs fcntl
+def test_fallback_restricts_writable_marker_without_exchange(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
     mocker.patch("filelock._unix.exchange_supported", autospec=True, return_value=False)
-    with pytest.warns(UserWarning, match="falling back"), pytest.raises(PermissionError, match="private marker"):
-        UnixFileLock(tmp_path / "test.lock", mode=0o666).acquire(timeout=0)
+    lock_path = tmp_path / "test.lock"
+    with pytest.warns(UserWarning, match="falling back"), UnixFileLock(lock_path, mode=0o666) as lock:
+        assert (cast("BreakableLock", lock).pid, stat.S_IMODE(lock_path.stat().st_mode)) == (os.getpid(), 0o644)
+    assert list(tmp_path.iterdir()) == []
+
+
+@NEEDS_FCNTL
+@NEEDS_STALE_RECLAIM
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+def test_fallback_closes_the_displaced_native_descriptor(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    # A mount can report different flock support for the private probe and the public file.
+    mocker.patch("filelock._unix._flock_is_missing", autospec=True, return_value=False)
+    flock = mocker.patch("filelock._unix.lock_fd_nonblocking", autospec=True, side_effect=OSError(ENOSYS, "no flock"))
+
+    with UnixFileLock(tmp_path / "test.lock", mode=0o666) as lock:
+        assert cast("BreakableLock", lock).is_lock_held_by_us
+        with pytest.raises(OSError, match=os.strerror(EBADF)) as closed:
+            os.fstat(flock.call_args.args[0])
+        assert closed.value.errno == EBADF
+    assert list(tmp_path.iterdir()) == []
+
+
+@NEEDS_FCNTL
+def test_native_file_works_when_directory_denies_a_probe(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    mocker.patch("filelock._unix.tempfile.TemporaryFile", autospec=True, side_effect=PermissionError("probe denied"))
+    lock_path = tmp_path / "test.lock"
+    with UnixFileLock(lock_path, mode=0o666) as lock:
+        assert (lock.is_locked, stat.S_IMODE(lock_path.stat().st_mode)) == (True, 0o666)
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+@pytest.mark.parametrize("platform_exchange", [pytest.param(False, id="unavailable"), pytest.param(True, id="refused")])
+def test_target_rejects_flock_after_a_denied_probe(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture, platform_exchange: bool
+) -> None:
+    mocker.patch("filelock._unix.tempfile.TemporaryFile", autospec=True, side_effect=PermissionError("probe denied"))
+    mocker.patch("filelock._unix.exchange_supported", autospec=True, return_value=platform_exchange)
+    mocker.patch("filelock._unix.exchange_names", autospec=True, return_value=False)
+    mocker.patch("filelock._soft.exchange_names", autospec=True, return_value=False)
+    lock_path = tmp_path / "test.lock"
+    with pytest.raises(PermissionError, match="soft fallback needs a private marker"):
+        UnixFileLock(lock_path, mode=0o666).acquire(timeout=0)
+    assert (list(tmp_path.iterdir()), lock_path.read_bytes()) == ([lock_path], b"")
 
 
 @NEEDS_FCNTL
 @pytest.mark.parametrize("name", ["pid", "is_lock_held_by_us"])
 def test_native_path_has_no_soft_holder(tmp_path: Path, name: str) -> None:  # pragma: needs fcntl
     lock = UnixFileLock(tmp_path / "test.lock")
-    with lock, pytest.raises(RuntimeError, match="requires a soft fallback"):
-        getattr(lock, name)
+    with lock:
+        assert getattr(lock, name, None) is None
 
 
 @NEEDS_FCNTL

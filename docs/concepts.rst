@@ -256,13 +256,13 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     exclusion; remove the file only after the complete lock protocol has stopped using it.
 
     On filesystems where ``flock`` returns ``ENOSYS``, the lock emits a warning and uses the
-    :class:`SoftFileLock <filelock.SoftFileLock>` protocol. It remembers each resolved path in the current lock context.
+    :class:`SoftFileLock <filelock.SoftFileLock>` protocol. Threads sharing the lock also share its list of fallback paths.
     Changing directories can take a relative path to a different filesystem, where the lock tries ``flock`` again.
 
-    The fallback writes its PID into the file it just created. If another account could write that file, the fallback
-    exchanges it for a fresh marker with group and other write permissions removed. Filesystems that refuse the
-    exchange raise :class:`PermissionError`. A file already at the lock path may belong to a peer. An empty one can
-    belong to a holder using a release before 3.22.
+    When the native creation mode permits group or other writes, the lock checks for ``flock`` on a private file in
+    the same directory first. The fallback creates a write-protected marker for other accounts and publishes the
+    holder's PID through its descriptor. An existing file may already belong to a peer. An empty one can belong to a
+    holder using a release before 3.22.
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,

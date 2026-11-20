@@ -1461,8 +1461,18 @@ the native backend, construct ``UnixFileLock`` with ``fallback_to_soft=False`` s
 :data:`errno.ENOSYS`; filelock does not wrap it.
 
 After fallback, ``UnixFileLock`` keeps its class. Use ``pid`` and ``is_lock_held_by_us`` to inspect the soft marker,
-``lifetime`` to set its expiry, and ``break_lock()`` to clear it. On a native path, reading the marker properties or
-calling ``break_lock()`` raises :class:`RuntimeError`. A ``lifetime`` assignment on that path emits a warning.
+``lifetime`` to set its expiry, and ``break_lock()`` to clear it. On a native path, the marker properties raise
+:class:`AttributeError`, ``break_lock()`` raises :class:`RuntimeError`, and assigning ``lifetime`` emits a warning.
+
+If the requested mode permits writes by other accounts, filelock probes a private file in the same directory before
+creating the lock file. On a filesystem without ``flock``, the new marker excludes group and other writes from creation.
+Existing lock files need no private probe. If the directory denies the probe or only the target rejects ``flock``,
+filelock needs atomic exchange to replace a writable target. Without exchange it raises :class:`PermissionError`
+and can leave an empty marker.
+
+Where atomic exchange is unavailable, an interrupt during publication may leave an empty marker or the acquiring
+process's PID after the acquire failed. Check that no process holds the lock before clearing that marker with
+``break_lock()``.
 
 Two other options imply the same refusal, because a soft lock cannot honor either: ``preserve_lock_file=True`` (a soft
 lock releases by unlinking its marker) and ``on_acquired`` (a soft lock keeps protocol state in the marker and has no

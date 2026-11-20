@@ -922,6 +922,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         #: Holder id in the deadlock registry; a stand-in that finishes the finalizer has another id(self).
         self._holder_id = id(self)
         self._transition_lock = RLock()
+        self._flockless_roots: frozenset[str] = frozenset()
         self._settings = settings  # policies and callbacks already validated by the metaclass
 
     def __enter__(self) -> Self:
@@ -1804,7 +1805,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             self._thread_holds.clear()
             self._thread_pending.clear()
         self._context.soft_fallback = False
-        self._context.flockless_roots = frozenset()
+        self._flockless_roots = frozenset()
         self._context.owner_claim_paths = ()
         self._context.claim_root = None
         self._context.lock_file_fd = None
@@ -2038,9 +2039,6 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
 
     #: Whether this acquisition uses the soft protocol after flock returned ENOSYS for its path.
     soft_fallback: bool = field(default=False, init=False)
-
-    #: Resolved paths whose flock returned ENOSYS in this context.
-    flockless_roots: frozenset[str] = field(default=frozenset(), init=False)
 
     #: File descriptor from os.open for the lock file; not None while the lock is held.
     lock_file_fd: int | None = None

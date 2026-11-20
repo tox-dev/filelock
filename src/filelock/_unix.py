@@ -10,12 +10,13 @@ if TYPE_CHECKING:
 
 __spec__ = cast("ModuleSpec", __spec__)
 
-__lazy_modules__ = ["pathlib", "secrets", "warnings", f"{__spec__.parent}._util"]
+__lazy_modules__ = ["pathlib", "secrets", "tempfile", "warnings", f"{__spec__.parent}._util"]
 
 import os
 import secrets
 import stat
 import sys
+import tempfile
 import warnings
 from contextlib import contextmanager, suppress
 from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
@@ -104,7 +105,7 @@ else:  # pragma: win32 no cover
         def _soft_fallback_for_path(self) -> bool:
             if self._context.claim_root is not None:
                 return self._context.soft_fallback
-            return canonical(self.lock_file) in self._context.flockless_roots
+            return canonical(self.lock_file) in self._flockless_roots
 
         @property
         def pid(self) -> int | None:
@@ -116,7 +117,7 @@ else:  # pragma: win32 no cover
         def _soft_marker(self) -> Generator[SoftFileLock]:
             if not self._soft_fallback_for_path():
                 msg = "marker access requires a soft fallback on the current lock path"
-                raise RuntimeError(msg)
+                raise AttributeError(msg)
             with self._soft_lock() as soft:
                 yield soft
 
@@ -140,7 +141,7 @@ else:  # pragma: win32 no cover
 
         def _pin_lock_path(self, canonical: str) -> None:
             super()._pin_lock_path(canonical)
-            self._context.soft_fallback = canonical in self._context.flockless_roots
+            self._context.soft_fallback = canonical in self._flockless_roots
 
         def _acquire(self) -> None:
             if self._context.soft_fallback or self._acquire_native():
@@ -152,7 +153,7 @@ else:  # pragma: win32 no cover
             existing: list[int] = []
             try:
                 fd = self._open_lock_file(created, existing)
-                return fd is not None and self._needs_soft_acquire(fd, created=bool(created))
+                return fd is not None and self._needs_soft_acquire(fd, created)
             except BaseException:
                 if created and not self.is_locked:
                     self._discard_interrupted_open(created[0])
@@ -160,7 +161,7 @@ else:  # pragma: win32 no cover
             finally:
                 if (opened := created or existing) and self._context.lock_file_fd != opened[0]:
                     try:
-                        if not self.is_locked:
+                        if self._context.pending_lock_file_fd == opened[0]:
                             self._mark_descriptor_released()
                     finally:
                         os.close(opened[0])
@@ -175,6 +176,13 @@ else:  # pragma: win32 no cover
             if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
                 open_flags |= o_nofollow
             open_mode = self._open_mode()
+            if open_mode & (stat.S_IWGRP | stat.S_IWOTH) and self._allows_soft_fallback():
+                if os.path.lexists(self._lock_path):
+                    return self._open_existing_lock_file(existing, open_flags, open_mode)
+                # A later chmod cannot revoke a descriptor opened before flock reports ENOSYS.
+                if self._directory_lacks_flock():
+                    self._fallback_to_soft_lock()
+                    open_mode &= ~(stat.S_IWGRP | stat.S_IWOTH)
             try:
                 return open_into(created, self._lock_path, open_flags | os.O_CREAT | os.O_EXCL, open_mode)
             except OSError as exception:
@@ -193,6 +201,13 @@ else:  # pragma: win32 no cover
                 ):
                     raise
             return self._open_existing_lock_file(existing, open_flags, open_mode)
+
+        def _allows_soft_fallback(self) -> bool:
+            return (
+                self._settings.fallback_to_soft
+                and not self._settings.preserve_lock_file
+                and self._settings.on_acquired is None
+            )
 
         def _open_existing_lock_file(self, existing: list[int], open_flags: int, open_mode: int) -> int | None:
             try:
@@ -213,55 +228,47 @@ else:  # pragma: win32 no cover
                     return fd
                 raise
 
-        def _needs_soft_acquire(self, fd: int, *, created: bool) -> bool:
-            self._mark_descriptor_pending(fd)
-            if created:
-                self._apply_explicit_mode(fd)
+        def _directory_lacks_flock(self) -> bool:
             try:
-                locked = lock_fd_nonblocking(fd)
-            except OSError as exception:
-                if exception.errno != ENOSYS or not self._allows_soft_fallback():
-                    raise
-                self._fallback_to_soft_lock()
+                probe = tempfile.TemporaryFile(  # ruff:ignore[open-file-with-context-handler]  # catch only open errors
+                    dir=str(Path(self._lock_path).parent)
+                )
+            except OSError:
+                # A directory policy may allow the lock name alone. Probe that file after opening it.
+                return False
+            with probe:
+                return _flock_is_missing(probe.fileno())
+
+        def _fallback_to_soft_lock(self) -> None:
+            with self._transition_lock:
+                if self._lock_path not in self._flockless_roots:
+                    warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
+                    self._flockless_roots |= {self._lock_path}
+            self._context.soft_fallback = True
+
+        def _needs_soft_acquire(self, fd: int, created: list[int]) -> bool:
+            self._mark_descriptor_pending(fd)
+            if not self._context.soft_fallback:
                 if created:
-                    self._adopt_created_file(fd)
-                return not self.is_locked
-            if locked:
-                self._finalize_locked_fd(fd)
-            return False
+                    self._apply_explicit_mode(fd)
+                try:
+                    locked = lock_fd_nonblocking(fd)
+                except OSError as exception:
+                    if exception.errno != ENOSYS or not self._allows_soft_fallback():
+                        raise
+                    self._fallback_to_soft_lock()
+                else:
+                    if locked:
+                        self._finalize_locked_fd(fd)
+                    return False
+            if created:
+                self._adopt_created_file(fd, created)
+            return not self.is_locked
 
         def _apply_explicit_mode(self, fd: int) -> None:
             if self.has_explicit_mode:
                 with suppress(PermissionError):
                     os.fchmod(fd, self._context.mode)
-
-        def _allows_soft_fallback(self) -> bool:
-            return (
-                self._settings.fallback_to_soft
-                and not self._settings.preserve_lock_file
-                and self._settings.on_acquired is None
-            )
-
-        def _fallback_to_soft_lock(self) -> None:
-            warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
-            self._context.soft_fallback = True
-            self._context.flockless_roots |= {self._lock_path}
-
-        def _adopt_created_file(self, fd: int) -> None:
-            marker = os.fstat(fd)
-            with self._soft_lock() as soft, suppress(FileNotFoundError):
-                if not os.path.samestat(os.lstat(self._lock_path), marker):
-                    return
-                if marker.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-                    # chmod cannot revoke write access through an already-open descriptor.
-                    if exchange_supported():
-                        soft._take_over_by_exchange(marker, None)  # ruff:ignore[private-member-access]  # same lock state
-                    if not self.is_locked and os.path.samestat(os.lstat(self._lock_path), marker):
-                        raise PermissionError(EACCES, "soft fallback needs a private marker", self._lock_path)
-                    return
-                soft._write_lock_info(fd)  # ruff:ignore[private-member-access]  # same lock state
-                if os.path.samestat(os.lstat(self._lock_path), marker):
-                    self._mark_descriptor_owned(fd, (marker.st_dev, marker.st_ino))
 
         def _finalize_locked_fd(self, fd: int) -> None:
             # Runs with the flock held; the caller closes fd on failure. A concurrent _release() may have unlinked
@@ -276,6 +283,31 @@ else:  # pragma: win32 no cover
                 reason = f"lock file belongs to uid {owner}, not to this process's account or the directory's owner"
                 raise PermissionError(EACCES, reason, self._lock_path)
             self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
+
+        def _adopt_created_file(self, fd: int, created: list[int]) -> None:
+            marker = os.fstat(fd)
+            with self._soft_lock() as soft, suppress(FileNotFoundError):
+                if not os.path.samestat(os.lstat(self._lock_path), marker):
+                    return
+                if marker.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                    # chmod cannot revoke write access through an already-open descriptor.
+                    if exchange_supported():
+                        self._exchange_created_file(soft, marker, created)
+                    if not self.is_locked and os.path.samestat(os.lstat(self._lock_path), marker):
+                        raise PermissionError(EACCES, "soft fallback needs a private marker", self._lock_path)
+                    return
+                soft._apply_explicit_mode(fd)  # ruff:ignore[private-member-access]  # same lock state
+                soft._write_lock_info(fd)  # ruff:ignore[private-member-access]  # same lock state
+                if os.path.samestat(os.lstat(self._lock_path), marker):
+                    self._mark_descriptor_owned(fd, (marker.st_dev, marker.st_ino))
+
+        def _exchange_created_file(self, soft: SoftFileLock, marker: os.stat_result, created: list[int]) -> None:
+            try:
+                soft._take_over_by_exchange(marker, None)  # ruff:ignore[private-member-access]  # same lock state
+            finally:
+                if self.is_locked:
+                    # Pop and close in one chain of C calls, so an interrupt cannot leak or double-close the pin.
+                    list(map(os.close, map(created.pop, (0,))))
 
         def _discard_interrupted_open(self, fd: int) -> None:
             if not self._allows_soft_fallback() or not (self._context.soft_fallback or _flock_is_missing(fd)):
@@ -293,13 +325,14 @@ else:  # pragma: win32 no cover
             try:
                 pin = open_into(opened, aside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 write_all(pin, f"filelock/break\n{os.getpid()}\n".encode())
-                if exchange_names(aside, self._lock_path) and os.path.samestat(os.lstat(aside), marker):
-                    Path(aside).unlink()
+                exchange_names(aside, self._lock_path)
             finally:
                 for pin in opened:
                     try:
-                        # An interruption may have moved a peer's marker aside. Restore it before dropping the pin.
-                        exchange_back(self._lock_path, aside, pin)
+                        if os.path.samestat(os.lstat(aside), marker):
+                            Path(aside).unlink()
+                        else:
+                            exchange_back(self._lock_path, aside, pin)
                     finally:
                         os.close(pin)
 
