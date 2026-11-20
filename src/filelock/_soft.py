@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 from contextlib import suppress
-from errno import EACCES, EEXIST, EPERM
+from errno import EACCES, EBUSY, EEXIST, EPERM
 from itertools import islice
 from pathlib import Path
 from typing import Final, NamedTuple
@@ -465,7 +465,7 @@ class SoftFileLock(BaseFileLock):
                 self._windows_unlink_if_ours(identity)
         else:  # pragma: win32 no cover
             for name in self._marker_names():
-                with suppress(OSError):
+                with suppress(FileNotFoundError):
                     if _file_identity(os.lstat(name)) == identity:
                         Path(name).unlink()
                         return
@@ -556,24 +556,33 @@ class SoftFileLock(BaseFileLock):
     def _unlink_open_marker(self, fd: int, identity: tuple[int, int]) -> bool:  # pragma: win32 no cover
         replaced = False
         for name in self._marker_names():
-            try:
-                if _file_identity(os.lstat(name)) == identity:
-                    Path(name).unlink()
-                    return True
+            if (current := _marker_identity_at(name)) is None:
+                continue
+            if current != identity:
                 replaced = True
+                continue
+            try:
+                Path(name).unlink()
             except FileNotFoundError:
                 continue
-            except OSError:
-                return False
+            except OSError as error:
+                # A handler can raise after unlink succeeds. Keep the descriptor pinned until the name is checked.
+                still_ours = _marker_identity_at(name) == identity
+                if error.errno in {EACCES, EBUSY, EPERM}:
+                    return not still_ours
+                if not still_ours:
+                    self._mark_descriptor_released()
+                    self._close_released_fd(fd, default_suppresses=False)
+                raise
+            return True
         if replaced:
             try:
                 # A peer's exchange holds our marker under its break name and will put it back. Overwriting the record
                 # lets contenders age it out instead of waiting on this live PID. The write comes before the truncate
                 # so the file is never empty.
-                if sys.platform != "win32":  # pragma: win32 no cover
-                    released: Final[bytes] = b"filelock/released\n"
-                    write_at_start(fd, released)
-                    os.ftruncate(fd, len(released))
+                released: Final[bytes] = b"filelock/released\n"
+                write_at_start(fd, released)
+                os.ftruncate(fd, len(released))
             except OSError:
                 return False
         return True
@@ -677,6 +686,13 @@ def _begin_claim(name: str | Path) -> bool:  # pragma: win32 no cover
 def _end_claim(name: str | Path) -> None:  # pragma: win32 no cover
     with _CLAIMS_LOCK:
         _CLAIMS_IN_PROGRESS.discard(Path(name).name)
+
+
+def _marker_identity_at(name: str) -> tuple[int, int] | None:  # pragma: win32 no cover
+    try:
+        return _file_identity(os.lstat(name))
+    except FileNotFoundError:
+        return None
 
 
 __all__ = [

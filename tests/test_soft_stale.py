@@ -1794,15 +1794,58 @@ def test_released_record_rewrite_error_spares_successor_marker_without_pwrite(
     assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
 
 
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+def test_release_finishes_when_marker_disappears_before_unlink(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    unlink = Path.unlink
+
+    def remove_before_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        unlink(path)
+        unlink(path, missing_ok=missing_ok)
+
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=remove_before_unlink)
+    lock.release()
+    assert (lock.is_locked, lock_path.exists()) == (False, False)
+
+
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@pytest.mark.parametrize(
+    "share_refusal", [pytest.param(False, id="before-close"), pytest.param(True, id="after-close")]
+)
+def test_release_propagates_deadline_after_unlink(
+    lock_path: Path, mocker: MockerFixture, *, share_refusal: bool
+) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    unlink = Path.unlink
+
+    def unlink_then_signal(path: Path, *, missing_ok: bool = False) -> None:
+        nonlocal share_refusal
+        if share_refusal:
+            share_refusal = False
+            raise PermissionError(EACCES, "file in use")
+        unlink(path, missing_ok=missing_ok)
+        raise TimeoutError(EINTR, "deadline")
+
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=unlink_then_signal)
+    with pytest.raises(TimeoutError, match="deadline"):
+        lock.release()
+    assert (lock.is_locked, lock_path.exists()) == (False, False)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows closes the descriptor before it can unlink the marker")
+@pytest.mark.parametrize(
+    "cleanup_error",
+    [pytest.param(RuntimeError("cleanup failed"), id="handler"), pytest.param(OSError(EIO, "cleanup failed"), id="io")],
+)
 def test_marker_cleanup_failure_keeps_the_lock_held_for_a_retry(  # pragma: win32 no cover
-    lock_path: Path, mocker: MockerFixture
+    lock_path: Path, mocker: MockerFixture, cleanup_error: Exception
 ) -> None:
     lock: Final[SoftFileLock] = SoftFileLock(lock_path)
     lock.acquire()
-    cleanup_error: Final[RuntimeError] = RuntimeError("cleanup failed")
     unlink = mocker.patch("filelock._soft.Path.unlink", autospec=True, side_effect=cleanup_error)
-    with pytest.raises(RuntimeError) as info:
+    with pytest.raises(type(cleanup_error)) as info:
         lock.release()
     held: Final[tuple[bool, bool]] = (lock.is_locked, lock_path.exists())
     mocker.stop(unlink)
