@@ -10,7 +10,7 @@ leaves at most an unlinked temporary file, never a state that another participan
 Liveness rests on a nonce, not a clock. Each participant keeps ``holders/<token>`` and rewrites its nonce every
 heartbeat. A contender records the bytes it read there and the moment it read them on its own monotonic clock; a
 member whose bytes have not changed for ``stale_threshold`` is evicted by committing a snapshot without it. Two hosts
-never compare clocks, so a skewed file server or a suspended virtual machine cannot make a live holder look dead.
+never compare clocks, so skew between hosts or against the file server cannot make a live holder look dead.
 
 The generation number is monotonic and unique to one transition within one incarnation of the log, so the generation at
 which a hold was granted fences it: a resource that rejects anything carrying a lower generation than the highest it has
@@ -412,6 +412,7 @@ class Participant:
         *,
         stale_threshold: float,
         clock: Callable[[], float],
+        lease_clock: Callable[[], float],
         ledger: Ledger,
         log: GenerationLog,
     ) -> None:
@@ -421,7 +422,7 @@ class Participant:
         self._files = files
         self._root = root
         self._stale_threshold = stale_threshold
-        self._clock = clock
+        self._clocks = _ParticipantClocks(observe=clock, lease=lease_clock)
         self._ledger = ledger
         self._log = log
         self._holder: _HolderRecord | None = None
@@ -434,7 +435,7 @@ class Participant:
         self._create_holder()
 
     def _create_holder(self) -> None:
-        asked = self._clock()
+        asked = self._clocks.lease()
         try:
             identity = self._files.create(self._holder_path(self.token), self._record())
         except FileNotFoundError:
@@ -511,7 +512,7 @@ class Participant:
     def _refresh_nonce(self) -> bool:
         if (holder := self._holder) is None:
             return False
-        asked = self._clock()
+        asked = self._clocks.lease()
         if kept := self._files.overwrite(
             self._holder_path(self.token), self._record(), holder.identity, _holder_header(self.token)
         ):
@@ -522,7 +523,7 @@ class Participant:
         # A participant that crashed before its first commit leaves a record no snapshot names, and a commit that
         # crashed between creating and unlinking its temporary file leaves that too. Neither blocks anyone, so they are
         # collected on the same unchanged-for-a-threshold rule as a member, and only every half threshold at most.
-        if (now := self._clock()) < self._next_sweep:
+        if (now := self._clocks.observe()) < self._next_sweep:
             return
         self._next_sweep = now + self._stale_threshold / 2
         watched = set(latest.members)
@@ -544,7 +545,7 @@ class Participant:
             self._ledger.forget(key)
 
     def _unchanged_for_its_lease(self, key: str, path: str) -> bool:
-        asked = self._clock()
+        asked = self._clocks.observe()
         record = self._files.read(path)
         return self._ledger.observe(key, record, asked=asked) >= max(self._stale_threshold, holder_lease(record) or 0.0)
 
@@ -563,7 +564,7 @@ class Participant:
         return successor.generation
 
     def _outlived_its_lease(self, holder: _HolderRecord | None) -> bool:
-        return holder is not None and self._clock() - holder.refreshed >= self._stale_threshold
+        return holder is not None and self._clocks.lease() - holder.refreshed >= self._stale_threshold
 
     def _start_over(self) -> None:
         # A peer may have judged the old record before its refresh and can still unlink that name.
@@ -577,7 +578,7 @@ class Participant:
         # and a member still named ages out the same way with or without one.
         # A tree that was swapped out leaves no record this participant can reach, so there is nothing to commit out of.
         # Peers may evict this record after its stale threshold, so retrying longer cannot preserve the hold.
-        give_up = self._clock() + self._stale_threshold
+        give_up = self._clocks.observe() + self._stale_threshold
         with suppress(TreeReplacedError):
             try:
                 while self.token in (latest := self._log.latest()).members:
@@ -588,7 +589,7 @@ class Participant:
                     )
                     if self._log.commit(successor):
                         break
-                    if self._clock() >= give_up:
+                    if self._clocks.observe() >= give_up:
                         msg = "could not withdraw holder from generation log before its stale threshold"
                         raise SoftFileLockProtocolError(self._log.lock_file, None, msg)
             finally:
@@ -616,6 +617,12 @@ class Participant:
         except (OSError, TreeReplacedError):
             return "ok", None
         return ("ok" if self.token in latest.members else "lost"), None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _ParticipantClocks:
+    observe: Callable[[], float]
+    lease: Callable[[], float]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

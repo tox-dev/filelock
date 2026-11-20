@@ -1036,6 +1036,10 @@ nonce:
 - A waiting participant that goes at least its own ``stale_threshold`` between record writes, or between a write and
   its commit, withdraws and starts under a new token. A peer may have judged its old record stale and can still remove
   that name after the participant resumes.
+  The lease clock counts time spent asleep on macOS (`CLOCK_MONOTONIC
+  <https://github.com/apple-oss-distributions/Libc/blob/main/gen/clock_gettime.3>`_) and on systems with
+  `CLOCK_BOOTTIME <https://man7.org/linux/man-pages/man3/clock_gettime.3.html>`_. Elsewhere, the clock uses
+  ``time.monotonic()``, which may pause during sleep.
 
 A writer on ``node-17`` that crashes mid-hold leaves a snapshot naming it and a heartbeat that stops. A contender on
 ``node-42`` cannot ask ``node-17`` whether the process is still alive, so it watches the nonce instead, and evicts once

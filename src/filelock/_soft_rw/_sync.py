@@ -20,6 +20,7 @@ __lazy_modules__ = [
 
 import atexit
 import os
+import sys
 import threading
 import time
 from contextlib import contextmanager, suppress
@@ -58,6 +59,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
     from filelock._lease import CompromiseReason  # simplint: ignore[private-import-path]  # internal dependency
+
+_LEASE_CLOCK_ID: Final[int | None] = getattr(
+    time, "CLOCK_MONOTONIC" if sys.platform == "darwin" else "CLOCK_BOOTTIME", None
+)
 
 _ALL_INSTANCES: Final[WeakValueDictionary[int, SoftReadWriteLock]] = WeakValueDictionary()
 _ALL_INSTANCES_LOCK: threading.Lock = threading.Lock()
@@ -160,7 +165,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     Each participant also keeps ``foo.lock.rw/holders/<token>``, a record whose nonce a daemon heartbeat thread rewrites
     every ``heartbeat_interval`` seconds. A contender evicts a member whose record has not changed for
     ``stale_threshold`` seconds of the contender's own monotonic clock; no clock is ever compared across hosts, so skew
-    between hosts or against the file server cannot make a live holder look dead.
+    between hosts or against the file server cannot make a live holder look dead. On macOS and systems with ``CLOCK_BOOTTIME``,
+    a waiter's own record-age check includes time spent asleep.
 
     Writer acquire is writer-preferring: a writer enters the snapshot as soon as no live writer is named, which blocks
     any new reader, then waits for the named readers to leave. Writer starvation is impossible.
@@ -447,7 +453,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         with self._locks.internal:
             if self._hold is not None:
                 return self._validate_reentrant(mode, holder)
-        participant = self._new_participant(mode, stale_threshold=self.stale_threshold, clock=time.monotonic)
+        participant = self._new_participant(
+            mode, stale_threshold=self.stale_threshold, clock=time.monotonic, lease_clock=_lease_clock
+        )
         participant.publish()
         try:
             self._wait_for(participant.advance, deadline=deadline, blocking=blocking, cancel_check=cancel_check)
@@ -472,7 +480,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 name=f"filelock-heartbeat-{id(self):x}",
             ),
             heartbeat_stop=stop_event,
-            last_refresh=time.monotonic(),
+            last_refresh=_lease_clock(),
         )
         # Publish the hold and start its heartbeat under one internal-lock section, so a concurrent release() never
         # observes a hold whose thread has not started and joins it. If the OS refuses the thread, clear the hold and
@@ -530,12 +538,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             self._report_compromise(hold, "refresh-failed", failure)
             return False
         if outcome == "ok":
-            hold.last_refresh = time.monotonic()
+            hold.last_refresh = _lease_clock()
             return True
         if outcome == "lost":
             self._report_compromise(hold, "evicted", None)
             return False
-        if time.monotonic() - hold.last_refresh >= self.stale_threshold - self.heartbeat_interval:
+        if _lease_clock() - hold.last_refresh >= self.stale_threshold - self.heartbeat_interval:
             self._report_compromise(hold, "refresh-failed", error)
             return False
         return True
@@ -743,6 +751,19 @@ class _Intervals(NamedTuple):
     heartbeat_interval: float
     stale_threshold: float
     poll_interval: float
+
+
+def _lease_clock() -> float:
+    # A peer can judge a record stale while this host sleeps, so renewal must count that elapsed time.
+    if (
+        _LEASE_CLOCK_ID is not None
+        and (  # pragma: needs suspend-clock
+            clock_gettime := getattr(time, "clock_gettime", None)
+        )
+        is not None
+    ):
+        return clock_gettime(_LEASE_CLOCK_ID)
+    return time.monotonic()  # pragma: lacks suspend-clock
 
 
 def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None, poll_interval: float) -> _Intervals:
