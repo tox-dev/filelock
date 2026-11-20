@@ -343,8 +343,9 @@ class GenerationLog:
         try:
             self._files.create(temporary, data, durable=generation)
         except FileNotFoundError:
-            # No gen/: the log was removed, or nobody has prepared it yet. Either way there is nothing to publish into
-            # until a participant's prepare() creates it, and the caller re-reads whatever log exists by then.
+            # If only gen/ vanished, the holder record still exists and won't trigger directory creation on retry.
+            if generation:
+                self._files.prepare(str(self._directory.parent), force=True)
             return False
         try:
             if not generation:

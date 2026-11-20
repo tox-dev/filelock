@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     from multiprocessing.synchronize import Event as EventType
 
-    from pytest_mock import MockerFixture
+    from pytest_mock import MockerFixture, MockType
 
 pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
 
@@ -1508,6 +1508,70 @@ def _remove_log(lock_file: str) -> None:
     # The documented recovery: a rename takes the whole log away at once, so no participant reads it half deleted.
     Path(f"{lock_file}.rw").rename(removed := Path(f"{lock_file}.rw.removed"))
     shutil.rmtree(removed)
+
+
+@pytest.mark.parametrize("missing", ["tree", "gen", "temporary"])
+@pytest.mark.parametrize(
+    "hold",
+    [pytest.param(SoftReadWriteLock.read_lock, id="read"), pytest.param(SoftReadWriteLock.write_lock, id="write")],
+)
+def test_acquire_after_a_staged_snapshot_disappears(
+    lock_file: str,
+    lock: SoftReadWriteLock,
+    mocker: MockerFixture,
+    missing: str,
+    hold: Callable[[SoftReadWriteLock, float], AbstractContextManager[None]],
+) -> None:
+    removed = _remove_at_next_link(lock_file, missing, mocker)
+    with hold(lock, 2):
+        removed.assert_called_once()
+        assert not _writer_gets_in(lock_file)
+    assert _writer_gets_in(lock_file)
+
+
+def _remove_at_next_link(lock_file: str, missing: str, mocker: MockerFixture) -> MockType:
+    link = OsFiles.link
+
+    def remove_before_link(files: OsFiles, source: str, target: str) -> bool:
+        mocker.stop(interrupt)
+        if missing == "tree":
+            _remove_log(lock_file)
+        elif missing == "gen":
+            shutil.rmtree(Path(source).parent)
+        else:
+            Path(source).unlink()
+        return link(files, source, target)
+
+    interrupt = mocker.patch.object(OsFiles, "link", autospec=True, side_effect=remove_before_link)
+    return interrupt
+
+
+@pytest.mark.parametrize("missing", ["tree", "gen", "temporary"])
+def test_release_after_a_staged_snapshot_disappears(
+    lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture, missing: str
+) -> None:
+    lock.acquire_write(timeout=2)
+    removed = _remove_at_next_link(lock_file, missing, mocker)
+    lock.release()
+    removed.assert_called_once()
+    assert _writer_gets_in(lock_file)
+
+
+def test_missing_generation_directory_before_staging(
+    lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture
+) -> None:
+    create = OsFiles.create
+
+    def remove_before_create(files: OsFiles, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
+        if Path(path).name.startswith(".commit-"):
+            mocker.stop(interrupt)
+            shutil.rmtree(Path(path).parent)
+        return create(files, path, data, durable=durable)
+
+    interrupt = mocker.patch.object(OsFiles, "create", autospec=True, side_effect=remove_before_create)
+    with lock.write_lock(timeout=2):
+        assert not _writer_gets_in(lock_file)
+    assert _writer_gets_in(lock_file)
 
 
 def test_a_contender_waiting_when_the_log_is_removed_starts_over(
