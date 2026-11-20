@@ -716,17 +716,18 @@ def test_fallback_retries_if_created_marker_disappears(  # pragma: needs fcntl
     vanished: list[bool] = []
 
     def disappear_before_publish(path: str, *, dir_fd: int | None = None) -> os.stat_result:
+        marker = lstat(path, dir_fd=dir_fd)
         if os.fspath(path) == os.fspath(lock_path) and not vanished:
             vanished.append(True)
             lock_path.unlink()
             raise FileNotFoundError(path)
-        return lstat(path, dir_fd=dir_fd)
+        return marker
 
     mocker.patch("os.lstat", side_effect=disappear_before_publish, autospec=True)
     lock = UnixFileLock(lock_path)
     try:
         lock.acquire(timeout=0)
-        assert lock.is_locked
+        assert (vanished, lock.is_locked) == ([True], True)
         assert lock_path.read_bytes().startswith(f"{os.getpid()}\n".encode())
     finally:
         mocker.stopall()
@@ -795,7 +796,7 @@ def test_denied_lock_file_is_reopened_in_the_acquisition_directory(  # pragma: n
 
     mocker.patch("os.open", side_effect=deny_write_then_chdir, autospec=True)
     with pytest.raises(PermissionError):
-        UnixFileLock("test.lock").acquire(timeout=0)
+        UnixFileLock("test.lock", mode=0o600).acquire(timeout=0)
 
     assert read_only_opens == [str(first.resolve() / "test.lock")]
 

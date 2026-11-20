@@ -2054,7 +2054,7 @@ def test_existing_lock_file_open_that_would_block_is_contention(tmp_path: Path, 
 
     mocker.patch("os.open", side_effect=open_would_block, autospec=True)
     with pytest.raises(Timeout):
-        FileLock(str(lock_path), is_singleton=False).acquire(timeout=0)
+        FileLock(str(lock_path), is_singleton=False, mode=0o600).acquire(timeout=0)
 
 
 _SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
