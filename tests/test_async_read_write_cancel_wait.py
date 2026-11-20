@@ -209,3 +209,23 @@ async def test_async_acquire_behind_a_sync_acquire_of_the_same_instance_times_ou
     holder.release()
     await asyncio.to_thread(waiting.join, _HOLD * 2)
     await lock.close()
+
+
+@_FAMILIES
+@pytest.mark.asyncio
+async def test_singleton_close_returns_while_another_wrapper_enters(tmp_path: Path, make: _Make) -> None:
+    holder, waiting = make(tmp_path, is_singleton=False)
+    shared, idle = make(tmp_path, is_singleton=True)
+    with holder.write_lock():
+        acquiring = asyncio.create_task(waiting.acquire_write())
+        await asyncio.sleep(0)
+        closing = asyncio.create_task(idle.close())
+        done, _ = await asyncio.wait({closing}, timeout=2)
+    try:
+        await acquiring
+        await closing
+        assert closing in done
+    finally:
+        await waiting.close()
+        shared.close()
+        holder.close()
