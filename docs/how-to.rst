@@ -443,9 +443,6 @@ mode or with unsupported SQLite file-format versions raises :class:`ValueError`:
 write hold. A database whose schema takes more than a few kilobytes to load also raises :class:`ValueError`, because
 the acquire timeout does not bound that load.
 
-A write lock also raises :class:`ValueError` if SQLite opens the database read-only after the header check. A writer
-checks that its transaction can write before entering the critical section.
-
 On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
 ``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
 names the database directly only when no process of another account can create names in its directory and none of those
@@ -488,6 +485,9 @@ other accounts cannot create files in. The per-user temporary directory and ``%L
     # Only one process can write at a time
     with rw.write_lock():
         update_shared_data()
+
+A write lock raises :class:`ValueError` if SQLite opens the database read-only after the header check. A writer
+checks that its transaction can write before entering the critical section.
 
 You can pass ``timeout`` and ``blocking`` to the context managers:
 
