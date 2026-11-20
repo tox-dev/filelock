@@ -60,10 +60,6 @@ if TYPE_CHECKING:
 
     from filelock._lease import CompromiseReason  # simplint: ignore[private-import-path]  # internal dependency
 
-_LEASE_CLOCK_ID: Final[int | None] = getattr(
-    time, "CLOCK_MONOTONIC" if sys.platform == "darwin" else "CLOCK_BOOTTIME", None
-)
-
 _ALL_INSTANCES: Final[WeakValueDictionary[int, SoftReadWriteLock]] = WeakValueDictionary()
 _ALL_INSTANCES_LOCK: threading.Lock = threading.Lock()
 
@@ -165,8 +161,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     Each participant also keeps ``foo.lock.rw/holders/<token>``, a record whose nonce a daemon heartbeat thread rewrites
     every ``heartbeat_interval`` seconds. A contender evicts a member whose record has not changed for
     ``stale_threshold`` seconds of the contender's own monotonic clock; no clock is ever compared across hosts, so skew
-    between hosts or against the file server cannot make a live holder look dead. On macOS and systems with ``CLOCK_BOOTTIME``,
-    a waiter's own record-age check includes time spent asleep.
+    between hosts or against the file server cannot make a live holder look dead. On macOS and systems with
+    ``CLOCK_BOOTTIME``, a waiter counts time spent asleep when it checks its own record.
 
     Writer acquire is writer-preferring: a writer enters the snapshot as soon as no live writer is named, which blocks
     any new reader, then waits for the named readers to leave. Writer starvation is impossible.
@@ -753,16 +749,16 @@ class _Intervals(NamedTuple):
     poll_interval: float
 
 
+_LEASE_CLOCK_ID: Final[int | None] = getattr(
+    time, "CLOCK_MONOTONIC" if sys.platform == "darwin" else "CLOCK_BOOTTIME", None
+)
+
+
 def _lease_clock() -> float:
     # A peer can judge a record stale while this host sleeps, so renewal must count that elapsed time.
-    if (
-        _LEASE_CLOCK_ID is not None
-        and (  # pragma: needs suspend-clock
-            clock_gettime := getattr(time, "clock_gettime", None)
-        )
-        is not None
-    ):
-        return clock_gettime(_LEASE_CLOCK_ID)
+    read_clock = getattr(time, "clock_gettime", None)
+    if _LEASE_CLOCK_ID is not None and read_clock is not None:  # pragma: needs suspend-clock
+        return read_clock(_LEASE_CLOCK_ID)
     return time.monotonic()  # pragma: lacks suspend-clock
 
 

@@ -926,6 +926,14 @@ behind the log to trust anything it reads; the acquire then raises :class:`SoftF
 the generation it extends still exists, and counts as lost otherwise, so the participant re-reads the log instead of
 linking into a new one or into a slot compaction freed.
 
+Each sweep reads at most 256 orphaned holder records and 256 temporary commit files. The next sweep continues after
+the last name it examined in each directory. Cleanup also removes up to 256 obsolete generations per listing.
+
+A listing reads at most 65,537 names. If ``gen`` contains more than 65,536, the lock raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>`. A generation linked before the overflow
+remains on disk because a peer may already have used it. Sweeps can still collect temporary commit files visible in
+the listing. Names beyond the limit may need manual cleanup.
+
 Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
 new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers
 preference among cooperating participants.
@@ -1023,14 +1031,11 @@ nonce:
 
 - Each holder's daemon heartbeat thread rewrites the nonce in its record every ``heartbeat_interval`` seconds (default
   30 s), and a contender waiting to enter rewrites its own on every poll.
-- A contender records the bytes it read from each member's record and the moment it read them on its own
-  ``time.monotonic()``. Once a member's bytes have stayed unchanged for ``stale_threshold`` seconds (default 90 s), the
-  contender evicts it by committing a snapshot without it, in the same commit that admits the contender, and removes
-  its record.
-- The protocol compares no timestamp across hosts. A heartbeat's ``mtime`` would carry the file server's clock and be
-  read against the client's, so it plays no part; the one clock in the protocol measures the gap between two
-  observations made by one process. Clock skew between hosts, or against the file server, cannot make a live holder
-  look dead.
+- A contender stores a digest of each member's record and the local monotonic time of the observation. If the digest
+  stays unchanged for ``stale_threshold`` seconds (default 90 s), the contender can evict that member in the snapshot
+  that admits the contender, then remove the old record.
+- Each contender measures time between its own observations. It can detect stale records even when the file server's
+  clock and the hosts' clocks disagree.
 - The heartbeat also re-reads the latest snapshot, so an evicted holder learns it on its next tick: the thread stops,
   the lock sets :attr:`compromise <filelock.SoftReadWriteLock.compromise>`, and ``on_compromise`` runs.
 - A waiting participant that goes at least its own ``stale_threshold`` between record writes, or between a write and

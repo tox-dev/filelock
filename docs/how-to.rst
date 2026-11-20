@@ -689,14 +689,16 @@ out of the snapshot, so its own timeout does not leave readers blocked. The next
 a holder that died on another host once ``stale_threshold`` has passed. Filesystem calls on an unresponsive
 network mount can still outlast the acquisition timeout.
 
-Every generation snapshot is flushed to stable storage before it is linked into place, so a crash cannot leave one
-empty. A snapshot that still fails to parse (a write from outside filelock, a corrupted disk) makes every acquire raise
-:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming it, because guessing past it could admit
-two writers. To recover, rename the whole ``<path>.rw`` directory aside, then delete it; the rename takes it away in one
-step, where a recursive delete would let a participant read it half removed and fail. Every participant, including
-instances that stay alive, sees a new log whose first committed snapshot has generation 1. A waiter may enter at a later generation. A holder at that moment loses the lock: its
-next heartbeat reports it through ``on_compromise``, so remove the directory while nobody holds if you can. Generations
-restart too, so reset the high-water mark of any resource you fence with ``generation``.
+Each generation snapshot is flushed to stable storage before publication. If a snapshot is corrupt, acquisition raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` with its name. Skipping a corrupt snapshot
+could admit two writers.
+
+To recover, rename the whole ``<path>.rw`` directory aside, then delete it. Renaming removes the tree in one step.
+A recursive delete on the live path can leave other participants reading a partial log. Wait until all holders finish
+if possible. A holder that loses the tree learns of the loss through ``on_compromise`` at its next heartbeat.
+
+The first snapshot in the new log has generation 1. A waiter may enter at a later generation. Reset the high-water
+mark of any resource you fence with ``generation``.
 
 .. warning::
 

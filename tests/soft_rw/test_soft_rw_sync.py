@@ -1202,7 +1202,7 @@ def test_participant_reads_the_clock_patched_after_construction(lock_file: str, 
     try:
         lock.acquire_write(timeout=2)
         assert lock._hold is not None
-        assert lock._hold.participant._clocks.observe is clock
+        assert lock._hold.participant._clock is clock
     finally:
         mocker.stopall()
         lock.release(force=True)
