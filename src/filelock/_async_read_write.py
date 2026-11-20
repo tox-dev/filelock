@@ -39,10 +39,10 @@ from ._api import (
 from ._async import (
     TASKS_THREAD_ID,
     BackendOutcome,
-    capture_call,
     drain_future,
     future_result,
     raise_cancelled_error,
+    submit_call,
     task_owners_for,
     wait_until_done,
 )
@@ -262,10 +262,8 @@ class AsyncReadWriteLock:
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
     ) -> asyncio.Future[BackendOutcome[_R]]:
-        return (self._loop or asyncio.get_running_loop()).run_in_executor(
-            self._executor,
-            capture_call,
-            functools.partial(func, *args, **kwargs),
+        return submit_call(
+            self._loop or asyncio.get_running_loop(), self._executor, functools.partial(func, *args, **kwargs)
         )
 
     def _leave_backend(self) -> None:
