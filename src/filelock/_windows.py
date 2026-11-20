@@ -23,7 +23,7 @@ from ._api import BaseFileLock
 from ._util import raise_on_not_writable_file
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
 if sys.platform == "win32":  # pragma: win32 cover
     import ctypes
@@ -334,7 +334,13 @@ if sys.platform == "win32":  # pragma: win32 cover
                 with suppress(OSError):
                     unlink_without_oplock_wait(self._lock_path)
 
-    def open_non_reparse_fd(path: str, mode: int, *, oplock_wait: float = _ACCESS_DENIED_GRACE) -> int | None:
+    def open_non_reparse_fd(
+        path: str,
+        mode: int,
+        *,
+        oplock_wait: float = _ACCESS_DENIED_GRACE,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> int | None:
         # Open *path* for locking while refusing reparse points, bound to the handle actually locked.
         #
         # The file is opened through ``NtCreateFile`` with ``FILE_OPEN_REPARSE_POINT`` so a symlink or junction planted
@@ -383,7 +389,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                     break
                 denied_probes += 1
             elif status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
-                if time.monotonic() >= oplock_deadline:
+                if time.monotonic() >= oplock_deadline or (cancel_check is not None and cancel_check()):
                     break
             else:
                 break

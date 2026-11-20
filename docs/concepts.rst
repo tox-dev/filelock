@@ -658,6 +658,8 @@ The async wrappers (:class:`AsyncFileLock <filelock.AsyncFileLock>` and the asyn
 variants) run each blocking step on a worker thread. Canceling the awaiting task while an acquisition is in flight rolls
 the attempt back atomically, so a canceled ``acquire`` never leaves a half-held lock. A task holding a lock that is
 canceled still owns releasing it; cancellation does not release the lock for you.
+On Windows, canceling an :class:`AsyncReadWriteLock <filelock.AsyncReadWriteLock>` acquire stops its database oplock wait.
+A synchronous :class:`ReadWriteLock <filelock.ReadWriteLock>` keeps its own ``timeout``.
 
 Strict claims, leases, and fencing
 ==================================

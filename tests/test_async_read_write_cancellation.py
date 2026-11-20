@@ -95,8 +95,10 @@ def _patch_async_connection(
         *,
         factory: type[sqlite3.Connection],
         timeout: float,
+        cancel_check: Callable[[], bool] | None,
     ) -> sqlite3.Connection:
         nonlocal connection_count
+        assert cancel_check is None or callable(cancel_check)
         real_connection = real_connect(
             database,
             check_same_thread=False,

@@ -825,8 +825,10 @@ def _patch_rollback_failure(mocker: MockerFixture, *, after_rollback: bool) -> s
         *,
         factory: type[sqlite3.Connection],
         timeout: float,
+        cancel_check: Callable[[], bool] | None,
     ) -> sqlite3.Connection:
         nonlocal connection_count
+        assert cancel_check is None
         connection_count += 1
         real_connection = real_connect(
             database,

@@ -552,7 +552,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         with fork_transition(), _sqlite_transition():
             self._open_connection(sqlite_timeout=5.0).close()
 
-    def _open_connection(self, *, sqlite_timeout: float) -> _ForkSafeConnection:
+    def _open_connection(
+        self, *, sqlite_timeout: float, cancel_check: Callable[[], bool] | None = None
+    ) -> _ForkSafeConnection:
         with _sqlite_transition():
             creator_pid = _GETPID()
             functions = _CONNECTION_ESCROW.functions()
@@ -564,6 +566,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     os.fspath(self._canonical_path),
                     factory=_ForkSafeConnection,
                     timeout=sqlite_timeout,
+                    cancel_check=cancel_check,
                 )
             except BlockingIOError:
                 raise Timeout(self.lock_file) from None
@@ -792,7 +795,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         blocking: bool,
         operation: _Operation,
     ) -> AcquireReturnProxy:
-        operation_pid, start_time, _ = operation
         # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
         with self._internal_lock:
             if self._holds_level():
@@ -803,11 +805,10 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             self._open_for_acquisition(
                 timeout,
                 blocking=blocking,
-                operation_pid=operation_pid,
-                start_time=start_time,
+                operation=operation,
             )
             self._configure_and_begin(mode, timeout, blocking=blocking, operation=operation)
-            self._raise_if_process_changed(operation_pid)
+            self._raise_if_process_changed(operation.pid)
         except BaseException as error:
             acquisition_error: BaseException
             if isinstance(error, sqlite3.OperationalError) and error.sqlite_errorcode == sqlite3.SQLITE_BUSY:
@@ -822,7 +823,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 raise acquisition_error from None
             raise
         with self._internal_lock:
-            self._raise_if_process_changed(operation_pid)
+            self._raise_if_process_changed(operation.pid)
             self._hold.grant(mode, holder)
         return AcquireReturnProxy(lock=self)
 
@@ -856,24 +857,24 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if rollback_error is not None:
                 raise rollback_error
 
-    def _open_for_acquisition(self, timeout: float, *, blocking: bool, operation_pid: int, start_time: float) -> None:
+    def _open_for_acquisition(self, timeout: float, *, blocking: bool, operation: _Operation) -> None:
         with _sqlite_transition():
             sqlite_timeout = (
                 timeout_for_sqlite(
                     timeout,
                     blocking=blocking,
-                    already_waited=time.perf_counter() - start_time,
+                    already_waited=time.perf_counter() - operation.start_time,
                 )
                 / 1000
             )
-            connection = self._open_connection(sqlite_timeout=sqlite_timeout)
+            connection = self._open_connection(sqlite_timeout=sqlite_timeout, cancel_check=operation.cancel_check)
             owned = self._owned_connection
             owned.connection, owned.transaction_released, owned.identity = (
                 connection,
                 False,
                 _FORKED_DATABASES.identity(self._canonical_path),
             )
-            self._raise_if_process_changed(operation_pid)
+            self._raise_if_process_changed(operation.pid)
 
     def _configure_and_begin(
         self,
@@ -1131,12 +1132,18 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._fork_invalidated = True
 
 
-def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: float) -> _ForkSafeConnection:
+def _connect(
+    database: str,
+    *,
+    factory: type[_ForkSafeConnection],
+    timeout: float,
+    cancel_check: Callable[[], bool] | None = None,
+) -> _ForkSafeConnection:
     _FORKED_DATABASES.note_sqlite_use()
     # A symlink at the path would make SQLite open, lock, or create its target, so connect through a descriptor that
     # refuses one.
     if sys.platform == "win32":  # pragma: win32 cover
-        fd = _open_lock_database(database, oplock_wait=timeout)
+        fd = _open_lock_database(database, oplock_wait=timeout, cancel_check=cancel_check)
         link: _LinkDirectory | None = None
         # A Windows lock belongs to the handle that took it, so closing this one leaves SQLite's locks in place.
         try:
@@ -1449,10 +1456,12 @@ if sys.platform == "win32":  # pragma: win32 cover
             link.path.rmdir()
 
 
-def _open_lock_database(database: str, *, oplock_wait: float = 0) -> int:
+def _open_lock_database(
+    database: str, *, oplock_wait: float = 0, cancel_check: Callable[[], bool] | None = None
+) -> int:
     if sys.platform == "win32":  # pragma: win32 cover
         # The handle refuses a reparse point and omits delete sharing, so the name cannot be swapped while it is open.
-        if (fd := open_non_reparse_fd(database, 0o600, oplock_wait=oplock_wait)) is None:
+        if (fd := open_non_reparse_fd(database, 0o600, oplock_wait=oplock_wait, cancel_check=cancel_check)) is None:
             msg = f"lock database {database!r} is held without sharing or pending deletion"
             raise PermissionError(msg)
         return fd
