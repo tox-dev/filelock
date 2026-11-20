@@ -332,8 +332,22 @@ if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma
         return False
 
 
+def link_host() -> tuple[str, bool]:  # pragma: needs posix-hard-link
+    host = host_name()
+    if sys.platform in {"linux", "android"}:  # pragma: darwin no cover
+        try:
+            Path("/proc/self/ns/pid").stat()
+        except OSError:
+            # An unreadable procfs gives different PID namespaces the same hostname; none can prove a peer dead.
+            return f"{host}?pidns-unknown", False
+        if not _proc_numbers_tasks_as_here():
+            return f"{host}?pidns-unknown", False
+    return host, True
+
+
 __all__ = [
     "host_name",
+    "link_host",
     "owner_is_current_process",
     "owner_is_stale",
     "process_alive",

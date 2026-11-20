@@ -823,6 +823,7 @@ def test_read_lock_avoids_sqlite_schema_alias(lock_file: str, mocker: MockerFixt
         factory: type[sqlite3.Connection],
         cached_statements: int,
         timeout: float,
+        uri: bool = False,
     ) -> sqlite3.Connection:
         connection = real_connect(
             database,
@@ -830,6 +831,7 @@ def test_read_lock_avoids_sqlite_schema_alias(lock_file: str, mocker: MockerFixt
             factory=factory,
             cached_statements=cached_statements,
             timeout=timeout,
+            uri=uri,
         )
         connection.set_trace_callback(statements.append)
         return connection
