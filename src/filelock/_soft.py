@@ -347,6 +347,9 @@ class SoftFileLock(BaseFileLock):
                     continue
                 path = str(Path(directory) / entry.name)
                 if stranded.fullmatch(entry.name):
+                    # A stale marker may name a recycled PID whose current process is still breaking another marker.
+                    if 1 <= breaker_pid <= 2**31 - 1 and not owner_is_stale(breaker_pid, host_name(), None):
+                        return None
                     candidates.append((path, False))
                 elif (found := claimed.fullmatch(entry.name)) and 1 <= (recoverer := int(found[1])) <= 2**31 - 1:
                     # No filelock writes a claim outside the pid range; os.kill would raise OverflowError on one.
