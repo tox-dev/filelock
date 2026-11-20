@@ -831,6 +831,10 @@ from the lock path before a displaced holder's marker is put back. The placehold
 carries the same PID, so a contender that evicts a placeholder a killed
 process left finds the same names.
 
+Recovery examines at most 4,096 directory entries and 64 matching records in one poll. If a directory exceeds either
+limit, the lock remains held until the directory is cleaned or an operator calls ``break_lock()``. Keep lock files in a
+private directory when crash recovery must continue despite other files nearby.
+
 The contender holds the judged marker open from before it reads the record until the break ends. ext4 gives a freed
 inode number to the next file created, so a successor's marker could otherwise carry the number of the marker judged
 stale.

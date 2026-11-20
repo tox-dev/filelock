@@ -550,6 +550,28 @@ def _restore_name(lock: Path, pid: int | str) -> Path:  # pragma: win32 no cover
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+@pytest.mark.parametrize(
+    ("record_count", "unrelated_count"),
+    [pytest.param(65, 0, id="records"), pytest.param(1, 4096, id="directory")],
+)
+def test_stale_break_refuses_large_recovery_scan(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str, record_count: int, unrelated_count: int
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    for number in range(record_count):
+        lock.with_name(f"test.lock.restore.{_DEAD_PID}.{number:032x}").write_text(record, encoding="utf-8")
+    for number in range(unrelated_count):
+        lock.with_name(f"test.lock.unrelated.{number:08x}").touch()
+
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert lock.read_text(encoding="utf-8") == record
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
 def test_stale_break_waits_when_the_record_cannot_be_claimed(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
