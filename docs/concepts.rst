@@ -1150,8 +1150,8 @@ each thread gets its own context via ``threading.local``. This means:
 - ``mode`` is the one exception: it has no setter, so construction is the only
   place it is ever set and ``lock.mode = ...`` raises ``AttributeError``.
 - The instance still keeps track of every thread's hold. ``release(force=True)``
-  also releases holds left by threads that exited, and garbage collecting the
-  lock releases every thread's hold. Interpreter exit releases a lock still
+  also releases holds left by worker threads that exited. The main thread keeps its hold through shutdown for its exit
+  callbacks. Garbage collecting the lock releases every thread's hold. Interpreter exit releases a lock still
   referenced, except holds of daemon threads that are still running.
 
 When ``thread_local=False``, all threads share the same context, including

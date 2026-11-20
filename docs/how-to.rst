@@ -1329,9 +1329,9 @@ regardless of the counter, pass ``force=True``:
     lock.release(force=True)
     print(lock.is_locked)  # False, fully released
 
-On a thread-local synchronous lock (the default), ``force=True`` also releases holds left by threads that exited
-without releasing. Holds of threads still running stay theirs. Dropping the last reference to the lock releases every
-thread's hold. A thread-local async lock releases only the calling thread's hold.
+On a thread-local synchronous lock (the default), ``force=True`` also releases holds left by worker threads that exited.
+The main thread keeps its hold through shutdown so its exit callbacks can use it. Running workers keep their holds.
+Dropping the last reference to the lock releases every thread's hold. A thread-local async lock releases only the calling thread's hold.
 
 During a synchronous ``acquire()``, a hook or signal handler can enter and leave its own nested ``with lock:`` block.
 Calling ``release()`` to drop the level that ``acquire()`` is still taking raises :exc:`RuntimeError`. If the exception

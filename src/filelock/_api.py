@@ -41,7 +41,7 @@ from functools import cache, partial
 from itertools import count, starmap
 from numbers import Real
 from pathlib import PurePath
-from threading import TIMEOUT_MAX, Condition, RLock, Thread, active_count, current_thread, get_ident, local
+from threading import TIMEOUT_MAX, Condition, RLock, Thread, active_count, current_thread, get_ident, local, main_thread
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary, ref
 
@@ -1473,8 +1473,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         itself may be deleted automatically, the behavior is platform-specific.
 
         :param force: If true, the lock counter is ignored and the lock is released in every case. On a thread-local
-            lock it also releases the holds of threads that exited without releasing; a hold of a thread still running
-            stays with that thread. Dropping the last reference to the lock releases every thread's hold. A lock
+            lock it also releases holds left by worker threads that exited. The main thread keeps its hold until
+            interpreter exit. A running worker keeps its hold. Dropping the last reference releases every
+            thread's hold. A lock
             still referenced when the interpreter exits is released too, except holds of daemon threads still
             running, and a ``thread_local=False`` lock while any other thread runs.
 
@@ -1578,7 +1579,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         with self._transition_lock:
             own: Final[FileLockContext] = context.current
             for held, thread in self._thread_holds.copy().values():
-                if exited_only and thread.is_alive():
+                # threading marks main done before atexit, while its callbacks may still use the hold.
+                if exited_only and (thread.is_alive() or thread is main_thread()):
                     continue
                 context.current = held
                 try:
