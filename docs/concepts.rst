@@ -256,12 +256,15 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     exclusion; remove the file only after the complete lock protocol has stopped using it.
 
     Filesystems without ``flock``: when ``flock`` fails with ``ENOSYS``, the lock switches to :class:`SoftFileLock
-    <filelock.SoftFileLock>` and emits a warning, unless constructed with ``fallback_to_soft=False``. Before switching
-    it removes the empty file only if this acquire created it. It does so while still holding the file open, with the
-    exchange a stale break uses, so a peer's marker that replaced it is put back rather than deleted. A file that
-    already existed may be another process's soft marker, so it stays and the soft lock waits on it. An empty file there
-    reads as a holder that recorded nothing, as a release before 3.22 writes. A leftover one therefore waits for
-    ``timeout``, ``lifetime`` or ``break_lock()``.
+    <filelock.SoftFileLock>` and emits a warning, unless constructed with ``fallback_to_soft=False``. If this acquire
+    created the file and its mode has no group or other write bits, the fallback writes the soft record through the same
+    open descriptor. A group- or other-writable file cannot become a soft marker: an already-open writer would retain
+    access after a mode change, so the fallback raises :class:`PermissionError` and leaves a malformed record. A failed
+    record write may leave an empty or malformed marker; the fallback keeps it rather than unlinking a peer's
+    replacement. With atomic exchange, malformed records can age out, while empty records require ``lifetime`` or
+    ``break_lock()``. Without atomic exchange, neither can be reclaimed automatically. A file that already existed may
+    be another process's soft marker, so it stays and the soft lock waits on it. An empty file there also reads as a
+    holder that recorded nothing, as a release before 3.22 writes.
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,

@@ -1454,6 +1454,10 @@ construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propaga
 ``ENOSYS`` then propagates as the original :class:`OSError` from :func:`fcntl.flock`, with
 :data:`errno.ENOSYS`; filelock does not wrap it.
 
+If the newly created lock file has group or other write permissions, the fallback instead raises
+:class:`PermissionError`. A process that opened the file before ``flock`` returned could still rewrite the soft marker
+after a mode change. Use a mode and umask that leave the created file owner-writable only.
+
 Two other options imply the same refusal, because a soft lock cannot honor either: ``preserve_lock_file=True`` (a soft
 lock releases by unlinking its marker) and ``on_acquired`` (a soft lock keeps protocol state in the marker and has no
 native descriptor to lend). Setting either makes ``UnixFileLock`` raise on ``ENOSYS`` even with the default

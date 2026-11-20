@@ -10,6 +10,7 @@ __spec__ = cast("ModuleSpec", __spec__)
 __lazy_modules__ = ["contextlib", "pathlib", "warnings", f"{__spec__.parent}._util"]
 
 import os
+import stat
 import sys
 import warnings
 from contextlib import suppress
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Final, NamedTuple, cast
 
 from ._api import BaseFileLock
-from ._util import foreign_owner, remove_own_file
+from ._util import foreign_owner, write_all
 
 has_fcntl = False
 if sys.platform == "win32":  # pragma: win32 cover
@@ -128,7 +129,7 @@ else:  # pragma: win32 no cover
             # No O_TRUNC: a contender that loses the flock must not truncate the holder's file (#591), and neither may
             # the winner, since a file renamed or hard-linked to the lock path is indistinguishable from a lock file.
             # O_EXCL tells whether this attempt created the inode: only then does it get the explicit mode, and the
-            # ENOSYS fallback removes only its own placeholder. O_NONBLOCK: a lease (Linux F_SETLEASE) on the file would
+            # ENOSYS fallback adopts only its own marker. O_NONBLOCK: a lease (Linux F_SETLEASE) on the file would
             # otherwise block the open for up to fs.lease-break-time, beyond timeout, blocking=False and cancel_check.
             open_flags = os.O_RDWR | os.O_NONBLOCK
             if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:
@@ -199,20 +200,65 @@ else:  # pragma: win32 no cover
                 and not self._settings.preserve_lock_file
                 and self._settings.on_acquired is None
             )
+            if created and falls_back:
+                self._adopt_created_file(fd)
+                return
             try:
-                # A file this attempt did not create may be a peer's live marker, so it stays. Our own placeholder goes
-                # before the close: the open descriptor keeps its inode number from a peer's marker, and an exchange
-                # puts back a peer's marker that replaced it.
-                if created and falls_back:
-                    with suppress(OSError):
-                        remove_own_file(self._lock_path, fd)
-            finally:
                 self._mark_descriptor_released()
+            finally:
                 os.close(fd)
             if not falls_back:
                 raise missing_flock
             self._fallback_to_soft_lock()
             self._acquire()
+
+        def _adopt_created_file(self, fd: int) -> None:
+            from ._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]  # asyncio imports this module
+
+            try:
+                marker = os.fstat(fd)
+                same_marker = os.path.samestat(os.lstat(self._lock_path), marker)
+            except FileNotFoundError:
+                same_marker = False
+            except BaseException:
+                self._mark_descriptor_released()
+                os.close(fd)
+                raise
+            if not same_marker:
+                self._mark_descriptor_released()
+                os.close(fd)
+                self._fallback_to_soft_lock()
+                self._acquire()
+                return
+            if marker.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                try:
+                    write_all(fd, b"filelock/fallback-refused\n")
+                finally:
+                    self._mark_descriptor_released()
+                    os.close(fd)
+                raise PermissionError(EACCES, "soft fallback needs an owner-writable marker", self._lock_path)
+            try:  # ruff:ignore[too-many-statements-in-try-clause]  # publication and cleanup share the descriptor
+                self._fallback_to_soft_lock()
+                SoftFileLock._write_lock_info(fd)  # ruff:ignore[private-member-access]  # class switched above
+                same_marker = False
+                with suppress(FileNotFoundError):
+                    same_marker = os.path.samestat(os.lstat(self._lock_path), marker)
+                if same_marker:
+                    self._mark_descriptor_owned(fd, (marker.st_dev, marker.st_ino))
+            except BaseException:
+                self._mark_descriptor_released()
+                try:
+                    with suppress(OSError):
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        os.ftruncate(fd, 0)
+                        write_all(fd, b"filelock/fallback-aborted\n")
+                finally:
+                    os.close(fd)
+                raise
+            if not same_marker:
+                self._mark_descriptor_released()
+                os.close(fd)
+                self._acquire()
 
         def _fallback_to_soft_lock(self: BaseFileLock) -> None:
             # Import lazily: this runs only on the rare flock fallback, and asyncio imports _unix, so a
