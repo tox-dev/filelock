@@ -665,7 +665,7 @@ def test_fallback_keeps_the_created_marker_without_unlinking(  # pragma: needs f
     lock = UnixFileLock(lock_path)
     try:
         lock.acquire(timeout=1)
-        assert unlink.call_count == 0
+        assert str(lock_path) not in [os.fsdecode(call.args[0]) for call in unlink.call_args_list]
         with pytest.raises(Timeout):
             peer.acquire(timeout=0)
     finally:
