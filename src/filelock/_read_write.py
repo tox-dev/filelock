@@ -18,6 +18,7 @@ __lazy_modules__ = [
     f"{__spec__.parent}._windows",
 ]
 
+import collections
 import hashlib
 import logging
 import os
@@ -29,7 +30,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections import OrderedDict, deque
+from collections import deque
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from itertools import count
@@ -199,8 +200,8 @@ _SweepKey: TypeAlias = tuple[pathlib.Path, int, int, _DatabaseIdentity, int]
 class _LinkSweeps:
     def __init__(self) -> None:
         self._gate = threading.Lock()
-        self._retry_at: OrderedDict[_SweepKey, float] = OrderedDict()
-        self._pending: OrderedDict[_SweepKey, Generator[None]] = OrderedDict()
+        self._retry_at: collections.OrderedDict[_SweepKey, float] = collections.OrderedDict()
+        self._pending: collections.OrderedDict[_SweepKey, Generator[None]] = collections.OrderedDict()
 
     def sweep(
         self, parent: pathlib.Path, identity: _DatabaseIdentity, owner: int
