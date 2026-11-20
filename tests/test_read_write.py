@@ -652,11 +652,8 @@ def test_read_write_lock_checks_owner_of_reused_probe(  # pragma: needs foreign-
         with second.read_lock():
             pass
         mocker.patch("filelock._read_write.foreign_owner", autospec=True, return_value=os.geteuid() + 1)
-        with (
-            pytest.raises(PermissionError, match="not to this process's account"),
-            ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False).read_lock(),
-        ):
-            pass
+        with pytest.raises(PermissionError, match="not to this process's account"):
+            ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX opens the database by descriptor")
