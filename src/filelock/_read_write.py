@@ -31,7 +31,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from contextlib import contextmanager, suppress
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
@@ -905,6 +905,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     # sqlite_schema is an alias added in SQLite 3.33.0; sqlite_master works on every version.
                     statements += " SELECT name FROM sqlite_master LIMIT 1;"
                 self._execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
+                # SQLite rereads the header while BEGIN waits; a pre-connect check can miss a switch to WAL.
+                with closing(connection.execute("PRAGMA journal_mode;")) as cursor:
+                    if ("wal",) in cursor.fetchall():
+                        msg = f"refusing a lock database switched to WAL mode while acquiring: {self.lock_file!r}"
+                        raise ValueError(msg)
             self._raise_if_database_replaced(connection)
 
     def _raise_if_database_replaced(self, connection: _ForkSafeConnection) -> None:
