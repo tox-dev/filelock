@@ -258,8 +258,7 @@ else:  # pragma: win32 no cover
         def _fallback_to_soft_lock(self) -> None:
             warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
             self._context.soft_fallback = True
-            if (root := self._context.claim_root) is not None:
-                self._context.flockless_roots |= {root}
+            self._context.flockless_roots |= {self._lock_path}
 
         def _unprobeable_holder(self) -> str | None:
             if not self._context.soft_fallback:
