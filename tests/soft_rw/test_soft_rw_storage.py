@@ -248,7 +248,6 @@ def test_read_refused_on_windows_is_missing_after_the_grace(
 
 
 def test_listdir_stops_one_name_past_the_limit(tmp_path: Path, mocker: MockerFixture) -> None:
-    # One name more than the limit tells the caller the listing is incomplete; nothing past it is read.
     mocker.patch.object(storage_mod, "MAX_LISTED_NAMES", 2)
     files = OsFiles(str(tmp_path / "x.lock"))
     files.prepare(root := str(tmp_path / "x.lock.rw"))

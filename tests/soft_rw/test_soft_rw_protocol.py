@@ -490,16 +490,104 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(
     assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
 
 
-def test_a_listing_cut_short_fails_closed(lock_file: str, files: OsFiles, root: str, mocker: MockerFixture) -> None:
-    # Whoever can write gen/ decides how many names it holds. A listing that stopped at the limit may lack the head, so
-    # nothing is read from it.
+def test_an_overfull_generation_list_collects_temporary_files(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
     files.prepare(root)
     for module in (protocol_mod, storage_mod):
         mocker.patch.object(module, "MAX_LISTED_NAMES", 3)
-    for number in range(3):  # the epoch file is the fourth name
-        Path(root, "gen", f"planted-{number}").touch()
+    for number in range(3):
+        Path(root, "gen", f".commit-{number:032x}").touch()
+    clock = [0.0]
+    reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
+    reader.publish()
     with pytest.raises(SoftFileLockProtocolError, match="holds more than 3 names"):
-        GenerationLog(files, lock_file, root).latest()
+        reader.advance()
+    clock[0] = 10.0
+    with pytest.raises(SoftFileLockProtocolError, match="holds more than 3 names"):
+        reader.advance()
+    assert not list(Path(root, "gen").glob(".commit-*"))
+    assert reader.advance()
+
+
+def test_heartbeat_collects_temporary_files_when_the_generation_list_is_overfull(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    clock = [0.0]
+    reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
+    reader.publish()
+    assert reader.advance()
+    for module in (protocol_mod, storage_mod):
+        mocker.patch.object(module, "MAX_LISTED_NAMES", 3)
+    temporary = Path(root, "gen", f".commit-{_FIRST}")
+    temporary.touch()
+    clock[0] = 5.0
+    assert reader.heartbeat() == ("ok", None)
+    clock[0] = 15.0
+    assert reader.heartbeat() == ("ok", None)
+    assert not temporary.exists()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(OSError(EIO, "read failed"), id="io-error"),
+        pytest.param(TreeReplacedError("tree replaced"), id="tree-replaced"),
+    ],
+)
+def test_heartbeat_ignores_a_sweep_error_after_generation_list_overflow(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture, error: OSError | TreeReplacedError
+) -> None:
+    clock = [0.0]
+    reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
+    reader.publish()
+    assert reader.advance()
+    for module in (protocol_mod, storage_mod):
+        mocker.patch.object(module, "MAX_LISTED_NAMES", 3)
+    Path(root, "gen", f".commit-{_FIRST}").touch()
+    holder = Path(root, "holders", reader.token)
+    record = holder.read_bytes()
+    clock[0] = 5.0
+    mocker.patch.object(OsFiles, "listdir", autospec=True, side_effect=[files.listdir(str(Path(root, "gen"))), error])
+    assert reader.heartbeat() == ("ok", None)
+    assert holder.read_bytes() != record
+
+
+def test_overfull_generation_sweep_forgets_missing_temporary_files(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    files.prepare(root)
+    for module in (protocol_mod, storage_mod):
+        mocker.patch.object(module, "MAX_LISTED_NAMES", 2)
+    clock = [0.0]
+    ledger = Ledger(lambda: clock[0])
+    reader = Participant(
+        files,
+        root,
+        "read",
+        stale_threshold=10,
+        clock=lambda: clock[0],
+        ledger=ledger,
+        log=GenerationLog(files, lock_file, root),
+    )
+    reader.publish()
+    first = Path(root, "gen", f".commit-{_FIRST}")
+    second = Path(root, "gen", f".commit-{_SECOND}")
+    first.touch()
+    second.touch()
+    ledger.observe(_FIRST, b"member")
+    with pytest.raises(SoftFileLockProtocolError, match="holds more than 2 names"):
+        reader.advance()
+    first.unlink()
+    Path(root, "gen", f".commit-{reader.token}").touch()
+    clock[0] = 5.0
+    with pytest.raises(SoftFileLockProtocolError, match="holds more than 2 names"):
+        reader.advance()
+    assert (
+        ledger.observe(f"temporary:{first.name}", b""),
+        ledger.observe(f"temporary:{second.name}", b""),
+        ledger.observe(_FIRST, b"member"),
+    ) == (0.0, 5.0, 5.0)
 
 
 @pytest.mark.requires_hard_links
@@ -932,13 +1020,18 @@ def test_the_sweep_collects_orphans_a_batch_at_a_time(
     # A sweep reads one batch of records however many names the directories hold. Those it watched are collected a
     # threshold later, and only then does it reach the ones behind them.
     mocker.patch.object(protocol_mod, "_HOUSEKEEPING_BATCH", 2)
+    clock = [0.0]
     real_listdir = OsFiles.listdir
-    mocker.patch.object(OsFiles, "listdir", lambda self, path: sorted(real_listdir(self, path)))
+    mocker.patch.object(
+        OsFiles,
+        "listdir",
+        autospec=True,
+        side_effect=lambda self, path: sorted(real_listdir(self, path), reverse=bool(int(clock[0] / 10) % 2)),
+    )
     files.prepare(root)
     for number in range(5):
         Path(root, "holders", f"{number:032x}").touch()
         Path(root, "gen", f".commit-{number:032x}").touch()
-    clock = [0.0]
     reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
     reader.publish()
     assert reader.advance()

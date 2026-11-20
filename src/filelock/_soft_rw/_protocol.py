@@ -20,7 +20,7 @@ participant that outlives a removal of the log reads the new one instead of cont
 
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._error", "filelock._identity", "itertools", "math", "pathlib", "secrets"]
+__lazy_modules__ = ["contextlib", "filelock._identity", "itertools", "math", "pathlib", "secrets"]
 
 import os
 import secrets
@@ -45,8 +45,6 @@ _GENERATION_DIGITS: Final[int] = 20
 _TOKEN_HEX_LENGTH: Final[int] = 32
 #: A snapshot line is ``reader=`` plus a token, so this bounds a hostile record without capping real reader counts.
 MAX_RECORD_SIZE: Final[int] = 1 << 20
-#: A listing stops one name past this, as a read stops one byte past ``MAX_RECORD_SIZE``. The largest snapshot names
-#: some 26,000 members, each with one holder record and at most one commit in flight, so no real directory is cut short.
 MAX_LISTED_NAMES: Final[int] = 1 << 16
 #: How many names one pass of housekeeping (a sweep, the pruning after a listing, a compaction) reads or removes; the
 #: rest wait for the next pass. The caller looks at its deadline only between polls, and whoever can write a directory
@@ -105,9 +103,7 @@ class _Files(Protocol):
 
     def listdir(self, path: str) -> list[str]:
         # The names in the directory, or an empty list when it does not exist.
-        #
-        # At most one more than ``MAX_LISTED_NAMES``, which tells the caller that the directory holds names it did not
-        # get.
+        # One extra name tells callers that the listing is incomplete.
         ...
 
     def prepare(self, root: str, *, force: bool = False) -> None:
@@ -144,6 +140,9 @@ class Ledger:
     def retain(self, keys: set[str]) -> None:
         # Drop every key not in *keys*: peers that left would otherwise stay in the ledger for the lock's lifetime.
         self._seen = {key: seen for key, seen in self._seen.items() if key in keys}
+
+    def retain_temporary(self, keys: set[str]) -> None:
+        self._seen = {key: seen for key, seen in self._seen.items() if not key.startswith("temporary:") or key in keys}
 
 
 class GenerationLog:
@@ -219,11 +218,10 @@ class GenerationLog:
         return listed[-_RETAINED_GENERATIONS:]
 
     def _listed(self) -> list[int]:
-        # A listing cut short may lack the newest generations, and only HEAD would then keep an old one from passing
-        # for the head, so it is refused instead.
         if len(names := self._files.listdir(str(self._directory))) > MAX_LISTED_NAMES:
-            reason = f"generation log holds more than {MAX_LISTED_NAMES} names"
-            raise SoftFileLockProtocolError(self.lock_file, None, reason)
+            raise _GenerationListingOverflowError(
+                self.lock_file, None, f"generation log holds more than {MAX_LISTED_NAMES} names"
+            )
         # isdigit() alone admits Unicode digits: superscripts int() rejects, fullwidth ones it parses to another number.
         return sorted(
             int(name) for name in names if len(name) == _GENERATION_DIGITS and name.isascii() and name.isdigit()
@@ -376,6 +374,10 @@ def new_token() -> str:
     return secrets.token_hex(_TOKEN_HEX_LENGTH // 2)
 
 
+class _GenerationListingOverflowError(SoftFileLockProtocolError):
+    pass
+
+
 def parse_snapshot(data: bytes) -> Snapshot | None:
     # The snapshot a ``gen/<N>`` record encodes, or ``None`` when the record is malformed.
     if not data or len(data) > MAX_RECORD_SIZE:
@@ -479,7 +481,11 @@ class Participant:
         return False
 
     def _attempt(self) -> bool | None:
-        latest = self._log.latest()
+        try:
+            latest = self._log.latest()
+        except _GenerationListingOverflowError:
+            self._sweep(None)
+            raise
         self._keep_claim_fresh(latest)
         self._sweep(latest)
         stale = frozenset(token for token in latest.members - {self.token} if self._is_stale(token))
@@ -502,6 +508,46 @@ class Participant:
             self.generation = generation
         return granted
 
+    def _sweep(self, latest: Snapshot | None) -> None:
+        # A participant that crashed before its first commit leaves a record no snapshot names, and a commit that
+        # crashed between creating and unlinking its temporary file leaves that too. Neither blocks anyone, so they are
+        # collected on the same unchanged-for-a-threshold rule as a member, and only every half threshold at most.
+        #
+        # Temporary commits can be collected even when an overfull generation directory prevents reading the head.
+        if (now := self._clock()) < self._next_sweep:
+            return
+        self._next_sweep = now + self._stale_threshold / 2
+        watched = set() if latest is None else set(latest.members)
+        if latest is not None:
+            holders = Path(self._root, HOLDERS_DIRECTORY)
+            unnamed = sorted(
+                name
+                for name in self._files.listdir(str(holders))
+                if name != self.token and name not in latest.members and _is_token(name)
+            )
+            for name in islice(unnamed, _HOUSEKEEPING_BATCH):
+                watched.add(key := f"holder:{name}")
+                self._collect(key, str(holders / name))
+        generations = Path(self._root, GENERATIONS_DIRECTORY)
+        temporary = sorted(name for name in self._files.listdir(str(generations)) if name.startswith(_TEMPORARY_PREFIX))
+        for name in islice(temporary, _HOUSEKEEPING_BATCH):
+            watched.add(key := f"temporary:{name}")
+            self._collect(key, str(generations / name))
+        if latest is not None:
+            self._ledger.retain(watched)
+        else:
+            self._ledger.retain_temporary(watched)
+
+    def _collect(self, key: str, path: str) -> None:
+        if self._unchanged_for_its_lease(key, path):
+            self._files.unlink(path)
+            self._ledger.forget(key)
+
+    def _unchanged_for_its_lease(self, key: str, path: str) -> bool:
+        asked = self._clock()
+        record = self._files.read(path)
+        return self._ledger.observe(key, record, asked=asked) >= max(self._stale_threshold, holder_lease(record) or 0.0)
+
     def _keep_claim_fresh(self, latest: Snapshot) -> None:
         # The snapshot is the truth about membership: a commit the filesystem reported lost may have landed, and a peer
         # may have evicted this participant while it waited to drain, so both directions are taken from it. A wait can
@@ -519,43 +565,6 @@ class Participant:
         return self._files.overwrite(
             self._holder_path(self.token), self._record(), identity, _holder_header(self.token)
         )
-
-    def _sweep(self, latest: Snapshot) -> None:
-        # A participant that crashed before its first commit leaves a record no snapshot names, and a commit that
-        # crashed between creating and unlinking its temporary file leaves that too. Neither blocks anyone, so they are
-        # collected on the same unchanged-for-a-threshold rule as a member, and only every half threshold at most.
-        #
-        # Each sweep reads one batch of either kind, in listing order. Collecting those names brings up the ones behind
-        # them within the listing limit; names beyond that limit may need operator cleanup.
-        if (now := self._clock()) < self._next_sweep:
-            return
-        self._next_sweep = now + self._stale_threshold / 2
-        watched = set(latest.members)
-        holders = Path(self._root, HOLDERS_DIRECTORY)
-        unnamed = (
-            name
-            for name in self._files.listdir(str(holders))
-            if name != self.token and name not in latest.members and _is_token(name)
-        )
-        for name in islice(unnamed, _HOUSEKEEPING_BATCH):
-            watched.add(key := f"holder:{name}")
-            self._collect(key, str(holders / name))
-        generations = Path(self._root, GENERATIONS_DIRECTORY)
-        temporary = (name for name in self._files.listdir(str(generations)) if name.startswith(_TEMPORARY_PREFIX))
-        for name in islice(temporary, _HOUSEKEEPING_BATCH):
-            watched.add(key := f"temporary:{name}")
-            self._collect(key, str(generations / name))
-        self._ledger.retain(watched)
-
-    def _collect(self, key: str, path: str) -> None:
-        if self._unchanged_for_its_lease(key, path):
-            self._files.unlink(path)
-            self._ledger.forget(key)
-
-    def _unchanged_for_its_lease(self, key: str, path: str) -> bool:
-        asked = self._clock()
-        record = self._files.read(path)
-        return self._ledger.observe(key, record, asked=asked) >= max(self._stale_threshold, holder_lease(record) or 0.0)
 
     def _is_stale(self, token: str) -> bool:
         return self._unchanged_for_its_lease(token, self._holder_path(token))
@@ -586,7 +595,11 @@ class Participant:
         except OSError as error:
             return "transient", error
         try:
-            latest = self._log.latest()
+            try:
+                latest = self._log.latest()
+            except _GenerationListingOverflowError:
+                self._sweep(None)
+                return "ok", None
             self._sweep(latest)
         except (OSError, TreeReplacedError):
             return "ok", None
@@ -628,10 +641,6 @@ def encode_holder(token: str, nonce: str, lease: float) -> bytes:
     ).encode("ascii")
 
 
-def _holder_header(token: str) -> bytes:
-    return f"{_PROTOCOL}\ntoken={token}\n".encode("ascii")
-
-
 def holder_lease(record: bytes | None) -> float | None:
     # The ``lease`` a holder record carries, or ``None`` when it has none (an older release) or it is malformed.
     try:
@@ -643,6 +652,10 @@ def holder_lease(record: bytes | None) -> float | None:
         return None
     # Only the exact spelling repr() writes: float() alone also takes "1_000", " 1", and non-ASCII digits.
     return lease if isfinite(lease) and lease > 0 and repr(lease) == text else None
+
+
+def _holder_header(token: str) -> bytes:
+    return f"{_PROTOCOL}\ntoken={token}\n".encode("ascii")
 
 
 class TreeReplacedError(RuntimeError):

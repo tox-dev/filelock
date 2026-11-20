@@ -926,13 +926,13 @@ behind the log to trust anything it reads; the acquire then raises :class:`SoftF
 the generation it extends still exists, and counts as lost otherwise, so the participant re-reads the log instead of
 linking into a new one or into a slot compaction freed.
 
-Cleanup is bounded, because whoever can write ``gen`` or ``holders`` decides how many names they hold, and an acquire
-looks at its deadline only between two polls. One sweep reads at most 256 orphaned holder records and 256 leftover
-commit files, and a listing removes at most 256 generations that fell out of the window; the rest wait for the next
-pass. A listing inspects at most 65,537 names, over twice the members the largest snapshot can name. Orphan holder and
-temporary commit records beyond that limit may require operator cleanup. If ``gen`` holds
-more than 65,536 names, the lock raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` until
-the extra names are removed, because a partial list may omit the newest generation.
+Cleanup is bounded because whoever can write ``gen`` or ``holders`` decides how many names they hold, and an acquire
+looks at its deadline only between two polls. A listing inspects at most 65,537 names. Each sweep reads at most 256
+orphaned holder records and 256 leftover commit files in sorted order, so a change in directory listing order does not
+reset their age. A listing removes at most 256 generations that fell out of the window. If ``gen`` holds more than
+65,536 names, the lock raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` rather than trust
+a partial list. While it cannot read the log, each sweep can still collect temporary commit files visible within the
+listing limit. Names beyond that limit may need operator cleanup.
 
 Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
 new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers
