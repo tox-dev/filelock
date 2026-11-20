@@ -1525,7 +1525,7 @@ def test_strict_soft_refuses_coordination_directory_of_another_account(  # pragm
 
 
 @NEEDS_FOREIGN_STICKY_TMP
-@NEEDS_USER_NAMESPACES
+@NEEDS_USER_NAMESPACES  # pragma: darwin no cover
 @pytest.mark.usefixtures("uid_shared_with_unmapped_accounts")
 def test_strict_soft_refuses_coordination_directory_with_an_unmapped_owner(  # pragma: needs foreign-sticky-tmp
     lock_path_in_shared_tmp: Path,
@@ -1538,7 +1538,7 @@ def test_strict_soft_refuses_coordination_directory_with_an_unmapped_owner(  # p
 
 
 @NEEDS_FOREIGN_STICKY_TMP
-@NEEDS_USER_NAMESPACES
+@NEEDS_USER_NAMESPACES  # pragma: darwin no cover
 @pytest.mark.parametrize(
     "error",
     [pytest.param(OSError("proc unavailable"), id="unreadable"), pytest.param(ValueError("invalid"), id="invalid")],

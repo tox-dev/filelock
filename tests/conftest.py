@@ -255,7 +255,7 @@ def directories_of_another_account(mocker: MockerFixture) -> None:  # pragma: ne
     mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
 
 
-@pytest.fixture
+@pytest.fixture  # pragma: darwin no cover
 def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma: needs foreign-sticky-tmp
     assert sys.platform != "win32"  # narrows os.geteuid for the type checker
 

@@ -362,7 +362,7 @@ def foreign_owner(node: os.stat_result, parent: os.stat_result) -> int | None:
     return None
 
 
-def _ambiguous_owner(uid: int) -> bool:  # pragma: win32 no cover
+def _ambiguous_owner(uid: int) -> bool:  # pragma: win32 no cover  # pragma: darwin no cover
     if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
         return False
     try:

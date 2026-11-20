@@ -1595,7 +1595,7 @@ def test_protocol_directory_of_another_account_is_refused(  # pragma: needs fore
 
 
 @NEEDS_FOREIGN_STICKY_TMP
-@NEEDS_USER_NAMESPACES
+@NEEDS_USER_NAMESPACES  # pragma: darwin no cover
 @pytest.mark.usefixtures("uid_shared_with_unmapped_accounts")
 def test_protocol_directory_with_an_unmapped_owner_is_refused(  # pragma: needs foreign-sticky-tmp
     lock_path_in_shared_tmp: Path,
