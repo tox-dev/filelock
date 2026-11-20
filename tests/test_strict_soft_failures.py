@@ -1908,7 +1908,7 @@ def test_strict_soft_link_follow_probe_preserves_runtime_support_on_environment_
 
 
 @NEEDS_SYMLINK  # pragma: needs symlink
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not unlink an open private record")
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 @pytest.mark.skipif(not CAPABILITIES["link-follow-symlinks"], reason="requires no-follow hard links")
 def test_strict_soft_private_record_swap_does_not_link_target(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
