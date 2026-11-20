@@ -136,6 +136,51 @@ if TYPE_CHECKING:
     from filelock._read_write import _Operation  # simplint: ignore[private-import-path]  # typing injected callback
 
 
+def test_refused_database_open_waits_without_spinning(lock_file: str, mocker: MockerFixture) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    mocker.patch(
+        "filelock._read_write._connect", side_effect=BlockingIOError(EWOULDBLOCK, "leased database"), autospec=True
+    )
+    started, cpu = time.monotonic(), time.process_time()
+
+    with pytest.raises(Timeout):
+        lock.acquire_write(timeout=0.2)
+
+    elapsed = time.monotonic() - started
+    assert 0.15 <= elapsed < 1
+    assert time.process_time() - cpu < elapsed / 2
+    lock.close()
+
+
+def test_refused_database_open_preserves_deadline_after_a_slow_refusal(lock_file: str, mocker: MockerFixture) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+
+    now = 0.0
+    waits: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        waits.append(seconds)
+        now += seconds
+
+    def refused(_database: str, **_kwargs: float | type[_ForkSafeConnection]) -> None:
+        nonlocal now
+        now += 0.25
+        raise BlockingIOError(EWOULDBLOCK, "leased database")
+
+    mocker.patch.object(threading, "active_count", autospec=True, return_value=1)
+    clock = mocker.patch("filelock._read_write.time", autospec=True)
+    clock.perf_counter.side_effect = clock.monotonic.side_effect = lambda: now
+    clock.sleep.side_effect = sleep
+    mocker.patch("filelock._read_write._connect", autospec=True, side_effect=refused)
+
+    with pytest.raises(Timeout):
+        lock.acquire_write(timeout=0.3)
+
+    assert waits == pytest.approx([0.05])
+    lock.close()
+
+
 @pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_read_locks_are_shared(lock_file: str) -> None:
     read1_acquired = Event()

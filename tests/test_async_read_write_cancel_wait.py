@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from errno import EWOULDBLOCK
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 import pytest
@@ -101,6 +102,37 @@ async def _acquire_within_deadline(
             await getattr(lock, f"acquire_{mode}")(timeout)
     assert not isinstance(info.value, Timeout)
     return time.perf_counter() - start
+
+
+@pytest.mark.asyncio
+async def test_refused_database_open_does_not_spin(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncReadWriteLock(tmp_path / "lock.db")
+    mocker.patch(
+        "filelock._read_write._connect", side_effect=BlockingIOError(EWOULDBLOCK, "leased database"), autospec=True
+    )
+    started, cpu = time.monotonic(), time.process_time()
+
+    with pytest.raises(Timeout):
+        await lock.acquire_write(timeout=0.2)
+
+    elapsed = time.monotonic() - started
+    assert 0.15 <= elapsed < 1
+    assert time.process_time() - cpu < elapsed / 2
+    await lock.close()
+
+
+@pytest.mark.asyncio
+async def test_refused_database_open_obeys_async_cancellation(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncReadWriteLock(tmp_path / "lock.db")
+    mocker.patch.object(threading, "active_count", return_value=1, autospec=True)
+    mocker.patch(
+        "filelock._read_write._connect", side_effect=BlockingIOError(EWOULDBLOCK, "leased database"), autospec=True
+    )
+
+    elapsed = await _acquire_within_deadline(lock, "write", _HOLD)
+
+    assert elapsed < 1
+    await lock.close()
 
 
 @_FAMILIES

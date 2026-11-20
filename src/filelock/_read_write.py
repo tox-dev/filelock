@@ -798,7 +798,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         blocking: bool,
         operation: _Operation,
     ) -> AcquireReturnProxy:
-        operation_pid, start_time, _ = operation
         # Double-check: another thread may have acquired the lock while we waited on _transaction_lock.
         with self._internal_lock:
             if self._holds_level():
@@ -806,14 +805,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         if self._con is not None:
             self._finish_connection()
         try:
-            self._open_for_acquisition(
-                timeout,
-                blocking=blocking,
-                operation_pid=operation_pid,
-                start_time=start_time,
-            )
+            self._open_for_acquisition(timeout, blocking=blocking, operation=operation)
             self._configure_and_begin(mode, timeout, blocking=blocking, operation=operation)
-            self._raise_if_process_changed(operation_pid)
+            self._raise_if_process_changed(operation.pid)
         except BaseException as error:
             acquisition_error: BaseException
             if isinstance(error, sqlite3.OperationalError) and error.sqlite_errorcode == sqlite3.SQLITE_BUSY:
@@ -834,7 +828,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 raise acquisition_error from None
             raise
         with self._internal_lock:
-            self._raise_if_process_changed(operation_pid)
+            self._raise_if_process_changed(operation.pid)
             self._hold.grant(mode, holder)
         return AcquireReturnProxy(lock=self)
 
@@ -868,24 +862,38 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             if rollback_error is not None:
                 raise rollback_error
 
-    def _open_for_acquisition(self, timeout: float, *, blocking: bool, operation_pid: int, start_time: float) -> None:
+    def _open_for_acquisition(self, timeout: float, *, blocking: bool, operation: _Operation) -> None:
         with _sqlite_transition():
             sqlite_timeout = (
                 timeout_for_sqlite(
                     timeout,
                     blocking=blocking,
-                    already_waited=time.perf_counter() - start_time,
+                    already_waited=time.perf_counter() - operation.start_time,
                 )
                 / 1000
             )
-            connection = self._open_connection(sqlite_timeout=sqlite_timeout)
+            connection = self._open_waiting(sqlite_timeout, cancel_check=operation.cancel_check)
             owned = self._owned_connection
             owned.connection, owned.transaction_released, owned.identity = (
                 connection,
                 False,
                 _FORKED_DATABASES.identity(self._canonical_path),
             )
-            self._raise_if_process_changed(operation_pid)
+            self._raise_if_process_changed(operation.pid)
+
+    def _open_waiting(self, timeout: float, *, cancel_check: Callable[[], bool] | None) -> _ForkSafeConnection:
+        deadline = time.perf_counter() + timeout
+        while True:
+            try:
+                return self._open_connection(sqlite_timeout=timeout)
+            except Timeout:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0 or (cancel_check is not None and cancel_check()):
+                    raise
+                time.sleep(min(remaining, _CANCEL_POLL_INTERVAL))
+                timeout = deadline - time.perf_counter()
+                if timeout <= 0:
+                    raise
 
     def _configure_and_begin(
         self,
