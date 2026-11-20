@@ -1492,14 +1492,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         with self._transition_lock:
             own: Final[FileLockContext] = context.current
             for held, thread in self._thread_holds.copy().values():
-                if exited_only:
-                    if thread.is_alive():
-                        continue
-                    # threading marks main done before atexit, while its Python frame can still use the lock.
-                    if thread is main_thread() and (
-                        thread.ident in sys._current_frames()  # ruff:ignore[private-member-access]  # documented API
-                    ):
-                        continue
+                # threading marks main done before atexit, while its callbacks may still use the hold.
+                if exited_only and (thread.is_alive() or thread is main_thread()):
+                    continue
                 context.current = held
                 try:
                     self._release_current(force=True)

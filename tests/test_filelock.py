@@ -663,15 +663,21 @@ atexit.register(save)
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize("deny_frames", [pytest.param(False, id="default"), pytest.param(True, id="audited")])
 def test_force_release_keeps_main_thread_hold_during_threading_shutdown(
-    lock_type: type[BaseFileLock], tmp_path: Path
+    lock_type: type[BaseFileLock], deny_frames: bool, tmp_path: Path
 ) -> None:
     lock_path = tmp_path / "a.lock"
     script = f"""
-import atexit, threading, time
+import atexit, sys, threading, time
 from filelock import {lock_type.__name__}, Timeout
 lock = {lock_type.__name__}({str(lock_path)!r})
 lock.acquire()
+if {deny_frames!r}:
+    def reject_frames(event, args):
+        if event == "sys._current_frames":
+            raise RuntimeError("frame inspection denied")
+    sys.addaudithook(reject_frames)
 main = threading.main_thread()
 def release_after_main():
     while main.is_alive():
