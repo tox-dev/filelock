@@ -31,7 +31,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from contextlib import closing, contextmanager, suppress
+from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
@@ -465,6 +465,9 @@ class _ReadWriteLockMeta(type):
                 if _GETPID() != construction_pid:
                     msg = "ReadWriteLock construction cannot continue after fork"
                     raise RuntimeError(msg)
+                if instance._canonical_path != normalized:  # ruff:ignore[private-member-access]  # metaclass owns the cache
+                    msg = f"ReadWriteLock path changed during singleton construction: {normalized}"
+                    raise RuntimeError(msg)
                 cls._instances[normalized] = instance
 
             if (
@@ -812,6 +815,12 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             acquisition_error: BaseException
             if isinstance(error, sqlite3.OperationalError) and error.sqlite_errorcode == sqlite3.SQLITE_BUSY:
                 acquisition_error = Timeout(self.lock_file)
+            elif (
+                mode == "write"
+                and isinstance(error, sqlite3.OperationalError)
+                and error.sqlite_errorcode == sqlite3.SQLITE_READONLY
+            ):
+                acquisition_error = ValueError(f"SQLite opened the lock database read-only: {self.lock_file!r}")
             else:
                 acquisition_error = error
             try:
@@ -892,7 +901,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 self._raise_if_process_changed(operation.pid)
                 # Use legacy journal mode (not WAL) because WAL does not block readers while a concurrent EXCLUSIVE
                 # write transaction is active, which makes read-write locking impossible without modifying table data.
-                # MEMORY is safe here since no writes happen, so a crash cannot corrupt the DB.
+                # The write probe changes one header page in memory. Release rolls it back.
                 # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
                 self._execute_waiting(
                     connection, "PRAGMA journal_mode=MEMORY;", timeout, blocking=blocking, operation=operation
@@ -910,6 +919,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     if ("wal",) in cursor.fetchall():
                         msg = f"refusing a lock database switched to WAL mode while acquiring: {self.lock_file!r}"
                         raise ValueError(msg)
+                if mode == "write":
+                    # BEGIN EXCLUSIVE can succeed on a read-only connection.
+                    with closing(connection.execute("PRAGMA user_version;")) as cursor:
+                        (version,) = cursor.fetchone()
+                    connection.execute(f"PRAGMA user_version={int(version)};").close()
             self._raise_if_database_replaced(connection)
 
     def _raise_if_database_replaced(self, connection: _ForkSafeConnection) -> None:
@@ -1142,13 +1156,16 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
         try:
             _raise_if_unsupported_sqlite_format(fd, database)
             target = database
-            if not directory_is_private(os.fspath(pathlib.Path(database).parent)) or _side_file_exists(database):
-                link = _link_beside_on_windows(database, identity_of_fd(fd))
-                target = os.fspath(link.database)
             try:
-                connection = sqlite3.connect(
-                    target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
-                )
+                with ExitStack() as pin:
+                    if not directory_is_private(os.fspath(pathlib.Path(database).parent)) or _side_file_exists(
+                        database
+                    ):
+                        link = _link_beside_on_windows(database, identity_of_fd(fd), pin)
+                        target = os.fspath(link.database)
+                    connection = sqlite3.connect(
+                        target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+                    )
             except BaseException:
                 if link is not None:
                     _remove_link_directory(link)
@@ -1292,7 +1309,7 @@ def _remove_dead_links(
         _remove_dead_links_on_windows(path, identity)
         return
     # Another account can rename an unrelated directory onto a dead holder's name in a shared parent.
-    # Remove a directory only after finding this database's hard link inside it.
+    # Remove children only after finding this database's hard link inside them.
     fd: Final[int] = os.open(path, _DIRECTORY_FLAGS)
     try:
         # A directory owned by another account cannot hold this account's link; do not probe its named PID.
@@ -1320,7 +1337,7 @@ def _remove_dead_links(
                     os.rmdir(entry, dir_fd=fd)
     finally:
         os.close(fd)
-    if removed_link:
+    if not names or removed_link:
         with suppress(OSError):
             path.rmdir()
 
@@ -1388,7 +1405,7 @@ def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix
 
 if sys.platform == "win32":  # pragma: win32 cover
 
-    def _link_beside_on_windows(database: str, identity: _DatabaseIdentity) -> _LinkDirectory:
+    def _link_beside_on_windows(database: str, identity: _DatabaseIdentity, pin: ExitStack) -> _LinkDirectory:
         parent: Final[pathlib.Path] = pathlib.Path(database).parent
         # No uid exists here: a directory is a dead holder's only if its ACL admits nobody but the trusted accounts.
         _sweep_links_of_the_dead(parent, identity, 0)
@@ -1396,11 +1413,11 @@ if sys.platform == "win32":  # pragma: win32 cover
         make_private_directory(os.fspath(path))
         link: _LinkDirectory | None = None
         try:
-            # The handle keeps a rename in the parent from swapping the directory while the link is made inside it.
-            with pinned(os.fspath(path)) as directory_identity:
-                link = _LinkDirectory(path, directory_identity, secrets.token_hex(8))
-                _fill_link_directory(link, database, identity)
+            # Keep the alias name bound until SQLite opens its database handle.
+            link = _LinkDirectory(path, pin.enter_context(pinned(os.fspath(path))), secrets.token_hex(8))
+            _fill_link_directory(link, database, identity)
         except BaseException:
+            pin.close()
             if link is not None:  # pragma: no branch  # a pinned directory always gets its link
                 _remove_link_directory(link)
             raise
@@ -1485,11 +1502,11 @@ def _raise_if_unsupported_sqlite_format(fd: int, database: str) -> None:
 @contextmanager
 def _bounded_schema(connection: sqlite3.Connection, database: str) -> Generator[None]:
     # The first statement loads the file's complete schema, which no timeout bounds, and a lock database has none.
-    # Waiting for a lock runs no virtual machine steps, so a step budget bounds only that load.
+    # Waiting for a lock runs no virtual machine steps; schema parsing is not reliably charged to that budget.
     calls: Final[count[int]] = count()
     max_calls: Final[int] = 10
-    connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 4096)
-    connection.set_progress_handler(lambda: next(calls) >= max_calls, 1000)
+    connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1024)
+    connection.set_progress_handler(lambda: next(calls) >= max_calls, 50)
     try:
         yield
     except sqlite3.DatabaseError as error:

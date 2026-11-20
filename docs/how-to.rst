@@ -440,8 +440,10 @@ When you have many readers and occasional writers, use :class:`ReadWriteLock <fi
 to proceed concurrently. ``ReadWriteLock`` is backed by SQLite; a ``.db`` extension is a convention rather than a
 requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. A database in WAL
 mode or with unsupported SQLite file-format versions raises :class:`ValueError`: neither provides a trusted exclusive
-write hold. A database whose schema takes more than a few kilobytes to load also raises :class:`ValueError`, because
-the acquire timeout does not bound that load.
+write hold.
+
+SQLite loads the schema before it can honor the acquire timeout. filelock limits each row to 1,024 bytes during this
+load and interrupts long-running schema queries. A lock database that exceeds either limit raises :class:`ValueError`.
 
 On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
 ``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
@@ -485,6 +487,9 @@ other accounts cannot create files in. The per-user temporary directory and ``%L
     # Only one process can write at a time
     with rw.write_lock():
         update_shared_data()
+
+A write lock raises :class:`ValueError` if SQLite opens the database read-only after the header check. A writer
+checks that its transaction can write before entering the critical section.
 
 You can pass ``timeout`` and ``blocking`` to the context managers:
 
@@ -840,7 +845,7 @@ This happens automatically. You don't need to do anything special:
 Cross-host records remain because their PID cannot be interpreted locally. On platforms without process-start identity,
 a reused PID can also keep a dead owner's marker in place.
 
-Every platform stores a process start token in the marker to guard against PID recycling: Linux uses the
+Where available, the marker stores a process start token to guard against PID recycling: Linux uses the
 ``/proc/<pid>/stat`` start time folded with the boot id, macOS reads it through ``sysctl``, and Windows uses the
 ``GetProcessTimes`` creation time. Malformed records follow a different rule: a waiter may evict them once it has seen
 them unchanged for two seconds. An empty marker, which is all a ``SoftFileLock`` before 3.22 writes, is never evicted

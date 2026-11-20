@@ -85,6 +85,7 @@ def test_host_name_keeps_over_long_names_apart_past_the_limit(mocker: MockerFixt
     assert (alpha != bravo, len(alpha), len(bravo)) == (True, 253, 253)
 
 
+@_LINUX_ONLY  # pragma: linux cover
 @pytest.mark.parametrize(
     ("namespace", "expected"),
     [
@@ -99,12 +100,20 @@ def test_host_name_names_the_pid_namespace(namespace: int | OSError, expected: s
     assert host_name() == expected
 
 
+@_LINUX_ONLY  # pragma: linux cover
 def test_host_name_keeps_a_namespace_apart_from_a_lookalike_host(mocker: MockerFixture) -> None:
     mocker.patch("filelock._identity.socket.gethostname", side_effect=["a", "a?pidns-f0000001"], autospec=True)
     pin_pid_namespace(mocker, 0xF0000001)
     in_namespace: Final[str] = host_name()
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
     assert in_namespace != host_name()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows has no PID namespaces")
+def test_host_name_ignores_drive_root_proc_path(mocker: MockerFixture) -> None:  # pragma: win32 cover
+    mocker.patch("filelock._identity.socket.gethostname", return_value="build-01", autospec=True)
+    mocker.patch.object(Path, "stat", autospec=True, return_value=os.stat_result((0, 0xF0000001) + (0,) * 8))
+    assert host_name() == "build-01"
 
 
 def test_process_alive_true_for_self() -> None:
@@ -185,6 +194,54 @@ def test_process_start_token_read_only_without_a_boottime_offset(
 ) -> None:
     pin_time_namespace(mocker, namespace, offsets, for_children=for_children)
     assert (process_start_token(os.getpid()) is not None) is readable
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize(
+    ("offsets", "readable"),
+    [
+        pytest.param(_BOOTTIME_UNSHIFTED, True, id="unshifted"),
+        pytest.param(_BOOTTIME_SHIFTED, False, id="shifted"),
+        pytest.param(FileNotFoundError(ENOENT, "offsets unreadable"), False, id="unreadable"),
+    ],
+)
+def test_process_start_token_after_main_thread_exits(
+    offsets: str | OSError, readable: bool, mocker: MockerFixture
+) -> None:
+    pin_time_namespace(
+        mocker,
+        _ANOTHER_TIME_NAMESPACE,
+        offsets,
+        leader_exited=True,
+    )
+    assert (process_start_token(os.getpid()) is not None) is readable
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize(
+    ("create", "cached"),
+    [pytest.param(Path.touch, True, id="pin-opened"), pytest.param(Path.mkdir, False, id="pin-open-failed")],
+)
+def test_zero_offset_cache_requires_the_same_pinned_namespace(
+    create: Callable[[Path], None], *, cached: bool, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    namespace = tmp_path / "time"
+    create(namespace)
+    offsets = tmp_path / "offsets"
+    offsets.write_text(_BOOTTIME_UNSHIFTED, encoding="ascii")
+    mapped = {
+        "/proc/thread-self/ns/time": namespace,
+        "/proc/thread-self/ns/time_for_children": namespace,
+        f"/proc/{Path('/proc/thread-self').readlink().name}/timens_offsets": offsets,
+    }
+    mocker.patch("filelock._identity.Path", autospec=True, side_effect=lambda name: mapped.get(name, Path(name)))
+    pid = os.getpid()
+    assert (token := process_start_token(pid)) is not None
+    offsets.unlink()
+    assert (process_start_token(pid) == token) is cached
+    namespace.rename(tmp_path / "previous")
+    namespace.touch()
+    assert process_start_token(pid) is None
 
 
 @_LINUX_ONLY  # pragma: linux cover
@@ -393,6 +450,7 @@ def test_owner_is_stale_without_a_readable_proc_reclaimed(mocker: MockerFixture)
     assert owner_is_stale(_DEAD_PID, host_name(), process_start_token(os.getpid())) is True
 
 
+@_LINUX_ONLY  # pragma: linux cover
 @_NEEDS_START_TOKEN
 def test_owner_is_stale_sibling_pid_namespace_never_reclaimed(mocker: MockerFixture) -> None:
     # Two containers in one pod share the hostname; the same PID in the holder's namespace is another process.

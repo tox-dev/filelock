@@ -59,13 +59,31 @@ class AsyncTransitionGate:
         self._queue: Final[deque[ConcurrentFuture[None]]] = deque()
 
     @contextlib.asynccontextmanager
-    async def hold(self) -> AsyncGenerator[None]:
+    async def hold(self, *, owed: Callable[[], bool] | None = None) -> AsyncGenerator[asyncio.CancelledError | None]:
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
+        cancellation: asyncio.CancelledError | None = None
+
+        def given_up() -> bool:
+            return owed is None or not owed()
+
         try:
             self._join(ticket)
-            if not ticket.done():
-                await self._wait_for_turn(ticket, blocking=True, cancel_check=None, deadline=None, poll_interval=0.05)
-            yield
+            while not ticket.done():
+                try:
+                    await self._wait_for_turn(
+                        ticket,
+                        blocking=True,
+                        cancel_check=None if cancellation is None else given_up,
+                        deadline=None,
+                        poll_interval=0.05,
+                    )
+                except asyncio.CancelledError as error:
+                    if given_up():
+                        raise
+                    cancellation = error
+                except AsyncTransitionUnavailableError:
+                    raise cast("asyncio.CancelledError", cancellation) from None
+            yield cancellation
         finally:
             self._leave(ticket)
 
@@ -149,6 +167,11 @@ _TASK_OWNERS: Final[WeakKeyDictionary[ReadWriteLock | SoftReadWriteLock, _TaskOw
 
 
 _TASK_OWNERS_LOCK: Final[Lock] = Lock()
+
+
+def retire_task_holds_at_exit(backend: SoftReadWriteLock) -> bool:  # pragma: needs hard-link
+    # A published task level already has a table. Shutdown must not wait on fork admission to look it up.
+    return _TASK_OWNERS[backend].retire_stopped_loops()
 
 
 def task_owners_for(sync_lock: ReadWriteLock | SoftReadWriteLock) -> _TaskOwners:
@@ -402,6 +425,21 @@ class _TaskOwners:
             self._transitioning = mode is not None or via is None
             return mode, dropped
 
+    def retire_stopped_loops(self) -> bool:  # pragma: needs hard-link
+        # Admission checks the backend under this lock. Exit cleanup already holds the backend lock.
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if self._transitioning or any(task.get_loop().is_running() for task in self._holds):
+                return False
+            # A new reader must take its own backend level once exit cleanup has claimed the old one.
+            self._mode = None
+            self._holds.clear()
+            self._notify()
+            return True
+        finally:
+            self._lock.release()
+
 
 def _current_task() -> asyncio.Task[object]:  # simplint: ignore[imprecise-annotation]  # task results vary
     if (task := asyncio.current_task()) is None:
@@ -539,6 +577,7 @@ __all__ = [
     "drain_future",
     "future_result",
     "raise_cancelled_error",
+    "retire_task_holds_at_exit",
     "run_in_executor",
     "submit_call",
     "task_owners_for",

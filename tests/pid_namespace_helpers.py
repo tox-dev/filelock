@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from errno import ENOENT
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -51,15 +52,32 @@ def pin_proc_pid_namespace(  # pragma: linux cover
 
 
 def pin_time_namespace(  # pragma: linux cover
-    mocker: MockerFixture, namespace: int | OSError, offsets: str | OSError, *, for_children: int | None = None
+    mocker: MockerFixture,
+    namespace: int | OSError,
+    offsets: str | OSError,
+    *,
+    for_children: int | None = None,
+    leader_exited: bool = False,
 ) -> None:
     # Answer for this process's time namespace.
     #
-    # :param namespace: the inode a stat of ``/proc/self/ns/time`` reports, or the error it raises
-    # :param offsets: what reading ``/proc/self/timens_offsets`` returns, or the error it raises
-    # :param for_children: the inode of ``/proc/self/ns/time_for_children``, when an unshare made it differ
-    _pin_namespace(mocker, Path("/proc/self/ns/time"), namespace)
-    _pin_namespace(mocker, Path("/proc/self/ns/time_for_children"), namespace if for_children is None else for_children)
+    # :param namespace: the inode a stat of ``/proc/thread-self/ns/time`` reports, or the error it raises
+    # :param offsets: what reading the worker's ``/proc/<tid>/timens_offsets`` returns, or the error it raises
+    # :param for_children: the inode of ``/proc/thread-self/ns/time_for_children``, when an unshare made it differ
+    _pin_namespace(mocker, Path("/proc/thread-self/ns/time"), namespace)
+    _pin_namespace(
+        mocker,
+        Path("/proc/thread-self/ns/time_for_children"),
+        namespace if for_children is None else for_children,
+    )
+    if leader_exited:
+        _pin_namespace(mocker, Path("/proc/self/ns/time"), FileNotFoundError(ENOENT, "leader exited"))
+    readlink = Path.readlink
+    mocker.patch.object(
+        Path,
+        "readlink",
+        new=lambda path: Path("4711/task/4712") if path == Path("/proc/thread-self") else readlink(path),
+    )
     answer = (
         mocker.create_autospec(Path.read_text, side_effect=offsets)
         if isinstance(offsets, OSError)
@@ -71,7 +89,7 @@ def pin_time_namespace(  # pragma: linux cover
         "read_text",
         new=lambda path, *args, **kwargs: (
             answer(path, *args, **kwargs)
-            if path == Path("/proc/self/timens_offsets")
+            if path == Path("/proc/4712/timens_offsets")
             else read_text(path, *args, **kwargs)
         ),
     )

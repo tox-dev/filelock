@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 __spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [
+    "filelock._async",
     "filelock._error",
     "filelock._lease",
     "functools",
@@ -42,6 +43,10 @@ from filelock._api import (  # simplint: ignore[private-import-path]  # shared p
     resolve_read_write_timeout,
     seconds,
     timeout_behavior,
+)
+from filelock._async import (  # simplint: ignore[private-import-path]  # backend task ownership
+    TASKS_THREAD_ID,
+    retire_task_holds_at_exit,
 )
 from filelock._error import Timeout  # simplint: ignore[private-import-path]  # internal dependency
 from filelock._lease import LeaseCompromise  # simplint: ignore[private-import-path]  # internal dependency
@@ -572,7 +577,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             return
         self._release(threading.get_ident(), force=force)
 
-    def _release(self, thread_id: int, *, force: bool) -> None:
+    def _release(self, thread_id: int, *, force: bool, at_exit: bool = False) -> None:
         with self._locks.internal:
             hold = self._hold
             if hold is None:
@@ -580,6 +585,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                     return
                 msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
                 raise RuntimeError(msg)
+            if at_exit:
+                owners = hold.read_depths if hold.write_thread_id is None else {hold.write_thread_id}
+                if any(thread.ident in owners and thread.ident != thread_id for thread in threading.enumerate()):
+                    return
+                if TASKS_THREAD_ID in owners and not retire_task_holds_at_exit(self):
+                    return
             if force:
                 hold.level = 0
             else:
@@ -708,6 +719,13 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self._locks = _Locks(internal=threading.Lock(), transaction=threading.Lock())
         self._hold = None
 
+    @staticmethod
+    @atexit.register
+    def _cleanup_all_instances() -> None:
+        for instance in list(_ALL_INSTANCES.values()):
+            with suppress(Exception):
+                SoftReadWriteLock._release(instance, threading.get_ident(), force=True, at_exit=True)
+
 
 class _HeartbeatThread(threading.Thread):
     def __init__(
@@ -805,13 +823,6 @@ class _Hold:
                 self.read_depths[owner] = depth
 
 
-def _cleanup_all_instances() -> None:
-    for instance in list(_ALL_INSTANCES.values()):
-        with suppress(Exception):
-            instance.release(force=True)
-
-
-atexit.register(_cleanup_all_instances)
 register_fork_class(SoftReadWriteLock)
 
 

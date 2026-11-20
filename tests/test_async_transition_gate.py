@@ -105,6 +105,41 @@ async def test_hold_canceled_while_waiting_takes_its_ticket_out() -> None:
 
 
 @pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_canceled_hold_stops_waiting_when_work_is_no_longer_owed() -> None:
+    gate = AsyncTransitionGate()
+    first_holding = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+    owed = True
+
+    async def first() -> None:
+        async with gate.hold():
+            first_holding.set()
+            await release_first.wait()
+
+    async def second() -> None:
+        second_started.set()
+        async with gate.hold(owed=lambda: owed):
+            pytest.fail("canceled hold entered after work ended")  # pragma: no cover  # canceled before entry
+
+    first_task = asyncio.create_task(first())
+    await first_holding.wait()
+    second_task = asyncio.create_task(second())
+    await second_started.wait()
+    second_task.cancel("work no longer owed")
+    await asyncio.sleep(0)
+    assert not second_task.done()
+    owed = False
+    try:
+        with pytest.raises(asyncio.CancelledError, match="work no longer owed"):
+            await asyncio.wait_for(second_task, timeout=1)
+    finally:
+        release_first.set()
+    await first_task
+
+
+@pytest.mark.asyncio
 async def test_hold_interrupted_while_waiting_takes_its_ticket_out() -> None:
     gate = AsyncTransitionGate()
     first_holding = asyncio.Event()
@@ -157,7 +192,7 @@ async def test_hold_interrupted_while_joining_leaves_the_gate_free(
 
     mocker.patch.object(AsyncTransitionGate, "_join", autospec=True, side_effect=join_then_interrupt)
 
-    def hold() -> contextlib.AbstractAsyncContextManager[None]:
+    def hold() -> contextlib.AbstractAsyncContextManager[asyncio.CancelledError | None]:
         if entry == "hold":
             return gate.hold()
         return gate.hold_for_acquire(blocking=True, cancel_check=None, deadline=None, poll_interval=0.01)

@@ -590,14 +590,17 @@ Native locks are advisory
 ==========================
 
 :class:`FileLock <filelock.FileLock>`, :class:`UnixFileLock <filelock.UnixFileLock>`, and :class:`WindowsFileLock
-<filelock.WindowsFileLock>` place an OS lock on an open file. The lock is *advisory*: it blocks another acquirer that
-calls the same lock, and it does nothing to a process that opens and writes the protected file without locking. On Unix
-the lock lives on the open file description (``flock``), so a ``fork`` or ``dup`` shares one lock and it releases when the
-last descriptor sharing that description closes or the process exits. Java's ``FileLock`` draws the same advisory
-boundary and tells callers to hold one channel per file; because filelock's Unix backend locks the open file description
-rather than the POSIX ``fcntl`` process owner, a second ``open`` of the same path in the same process does not silently
-drop the lock, but a caller passing its own descriptor through :func:`lock_descriptor <filelock.lock_descriptor>` still
-owns keeping one lock per descriptor.
+<filelock.WindowsFileLock>` place an advisory OS lock on an open file. Processes that take the same lock coordinate
+access. A process that skips the lock can still write the protected file.
+
+On Unix, ``flock`` attaches the lock to the open file description. Descriptors inherited through ``fork`` or copied with
+``dup`` share that lock. Unlocking any of them releases it for all. Otherwise, it lasts until the last descriptor for
+that open file description closes. Opening and closing the same path separately leaves a ``flock`` lock intact. With
+traditional POSIX ``fcntl`` locks, closing any descriptor for the same file releases the process's locks on that file.
+
+With :func:`lock_descriptor <filelock.lock_descriptor>`, the caller manages one lock per descriptor. Java's
+`FileLock <https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/nio/channels/FileLock.html>`_
+recommends treating file locks as advisory and using one channel per file.
 
 Ownership scope per lock
 ========================
@@ -611,8 +614,10 @@ Ownership scope per lock
      - Survives / releases
    * - :class:`FileLock <filelock.FileLock>` and the native backends
      - The acquisition object, per open file description
-     - A forked child or a duplicated descriptor shares the same open file description and its one OS lock; unlocking, or
-       the last shared descriptor closing or exiting, releases it for both.
+     - On POSIX, filelock closes its managed descriptor in a forked child and invalidates the inherited instance; the
+       child must construct a new one. The parent keeps the OS lock while its descriptor is open. Unlocking releases it
+       for every duplicate; otherwise it ends when the last descriptor sharing its open file description closes,
+       including on process exit.
    * - :class:`SoftFileLock <filelock.SoftFileLock>`
      - The acquisition object; the marker names the holder's PID, host, and process start token
      - A crash leaves the marker; a contender reclaims it only once the recorded owner is provably gone. A forked child
@@ -636,6 +641,10 @@ Ownership scope per lock
        reports the loss through ``on_compromise``. A forked child loses the lock; the inherited instance is
        fork-invalidated and its ``release()`` is a no-op.
 
+Acquire a native lock after daemonizing, in the process that must keep it. A launcher that acquires before ``os.fork()``
+does not hand its managed hold to the child. When the launcher exits, the OS lock ends unless the child holds a
+descriptor the caller duplicated separately.
+
 On POSIX, ``os.fork()`` (``multiprocessing``'s fork start method included) waits up to 30 seconds for any acquire,
 release or construction bookkeeping another thread of the process is running, for every lock type, and threads that
 start a lock operation meanwhile wait too. If one is still running at the deadline, the parent continues and the child
@@ -644,9 +653,13 @@ half-finished descriptor state, so no ``atexit`` handler or ``finally`` block ru
 finishes delays every later fork by the same 30 seconds.
 
 On normal interpreter exit, an ``atexit`` handler registered when filelock is imported releases every lock the process
-still references, before module teardown can break the release; handlers registered earlier run after it. Daemon
-threads still run while ``atexit`` handlers do, so a hold of one that is alive stays in place, and a lock built with
-``thread_local=False``, which cannot tell whose hold it has, stays held whenever any other thread is alive.
+still references unless another live thread owns a hold. An async soft reader/writer hold stays while its owning event
+loop runs, even if the task has finished. A lock built with ``thread_local=False`` cannot identify its owner, so its
+hold stays while another thread is alive.
+
+An ``atexit`` callback registered before importing filelock runs after this cleanup and must acquire its own lock before
+using the protected resource.
+
 ``os._exit``, a signal that kills the process and a crash skip the handler: native locks still go with the descriptor,
 soft markers stay for contenders to reclaim, and a strict claim stays until
 :meth:`force_break <filelock.StrictSoftFileLock.force_break>`.
@@ -658,6 +671,11 @@ The async wrappers (:class:`AsyncFileLock <filelock.AsyncFileLock>` and the asyn
 variants) run each blocking step on a worker thread. Canceling the awaiting task while an acquisition is in flight rolls
 the attempt back atomically, so a canceled ``acquire`` never leaves a half-held lock. A task holding a lock that is
 canceled still owns releasing it; cancellation does not release the lock for you.
+
+Once ``AsyncFileLock.release()`` has started, it finishes any owed release before
+raising cancellation. If you catch :exc:`asyncio.CancelledError` or the :exc:`TimeoutError` from an enclosing
+:func:`asyncio.timeout`, do not retry that release. Tasks sharing a lock instance share its counter, so a retry can
+release another task's level.
 
 Strict claims, leases, and fencing
 ==================================
@@ -801,6 +819,11 @@ an outer ``/proc`` (``unshare --pid`` without ``--mount-proc``, ``nsenter --pid`
 unrelated task at ``/proc/<pid>``, possibly another user's. Such a process records no start token and reads none
 either, and falls back to the PID alone the same way.
 
+Workers can still read their own ``/proc/<tid>/timens_offsets`` after the main thread exits. A zero boottime offset lets
+a worker recognize its own start token. Filelock keeps a handle to the last namespace with a verified zero offset and
+reuses that value while the worker stays in that namespace. If the worker cannot establish a zero offset, it omits the
+token.
+
 A contender never leaves the lock path empty while it breaks a marker. Right before breaking it reads the marker's inode
 (the kernel's identity for a file, independent of its name) and modification time again. If they moved since the stale
 check, it leaves the marker alone, the way Mercurial re-reads a lock under its break lock before removing it. On Linux
@@ -817,19 +840,24 @@ run in reverse: each contender exchanges when the path names its own marker, and
 free a marker only it can move. It finishes once it holds its own marker again.
 If the filesystem refuses the return exchange, it leaves its marker at the lock path for a later contender to recover.
 
-The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID, then 32 random hex digits. A breaker killed
-between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under that name.
-A contender that finds the breaker's marker dead first looks in the lock's directory for names that start with
-``<lock>.break.<pid>.``, where ``<pid>`` names the breaker. If a process with that PID runs now, the contender waits:
-a stale start token in the marker does not prove that the break name belongs to a dead process. Otherwise it renames
-the record to ``<lock>.restore.<pid>.<token>`` with its own PID, so only one contender acts on it. A record whose
-recoverer died there is claimable again, and a claim a failed put-back left in the same process is retried on the next
-poll. It then exchanges back a marker whose owner is alive or cannot be proven dead, and removes one whose owner is
-dead. Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. A
-record another account owns under a sticky parent stays under its break name: that account could otherwise unlink it
-from the lock path before a displaced holder's marker is put back. The placeholder a break writes while it works
-carries the same PID, so a contender that evicts a placeholder a killed
-process left finds the same names.
+The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID followed by 32 random hex digits. A breaker
+killed between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under
+that name. A contender that finds the breaker's marker dead first looks in the lock's directory for names that start
+with ``<lock>.break.<pid>.``, where ``<pid>`` names the breaker. If a process with that PID runs now, the contender
+waits. A stale start token in the marker does not prove that the break name belongs to a dead process.
+
+If the operating system reused the PID after the breaker died, recovery waits until the process using that PID exits.
+Once you have confirmed that no holder or breaker is active, you can call ``break_lock()`` to clear the lock sooner.
+
+When the breaker PID is no longer running, the contender renames the record to ``<lock>.restore.<pid>.<token>`` with
+its own PID, so only one contender acts on it. A record whose recoverer died there is claimable again, and a claim a
+failed put-back left in the same process is retried on the next poll. It then exchanges back a marker whose owner is
+alive or cannot be proven dead, and removes one whose owner is dead.
+
+Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. A record
+another account owns under a sticky parent stays under its break name: that account could otherwise unlink it from the
+lock path before a displaced holder's marker is put back. The placeholder a break writes while it works carries the
+same PID, so a contender that evicts a placeholder a killed process left finds the same names.
 
 The contender holds the judged marker open from before it reads the record until the break ends. ext4 gives a freed
 inode number to the next file created, so a successor's marker could otherwise carry the number of the marker judged
