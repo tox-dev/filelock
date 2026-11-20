@@ -189,8 +189,16 @@ else:  # pragma: win32 no cover
             # expose, while staying a single integer so a 3.29 reader still parses the third marker line. 0 when this
             # process cannot read the boot id leaves the bare starttime, which _same_start compares alone.
             try:
-                boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii")
-                return int(boot_id.strip().replace("-", ""), 16)
+                path: Final[Path] = Path("/proc/sys/kernel/random/boot_id")
+                # A file mounted over this procfs path can carry a different ID for the same running kernel.
+                if path.stat().st_dev != Path("/proc").stat().st_dev:
+                    return 0
+                # A bind mount of another procfs file keeps the device ID but has its own mountpoint.
+                mountpoint = bytes(path)
+                with Path("/proc/self/mountinfo").open("rb") as mounts:
+                    if any(line.split(b" ", 5)[4] == mountpoint for line in mounts):
+                        return 0
+                return int(path.read_text(encoding="ascii").strip().replace("-", ""), 16)
             except (OSError, ValueError):
                 return 0
 

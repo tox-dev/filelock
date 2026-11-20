@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # an exited child that a Popen still references
 import sys
@@ -51,6 +52,47 @@ def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:  # prag
         mocker.stop(hidden)
 
     yield hide
+    importlib.reload(filelock._identity)
+
+
+@pytest.fixture
+def mount_over_boot_id(mocker: MockerFixture) -> Iterator[Callable[[bool], None]]:  # pragma: linux cover
+    def mount_over(same_device: bool) -> None:
+        path: Final[Path] = Path("/proc/sys/kernel/random/boot_id")
+        real_stat = Path.stat
+        proc_device: Final[int] = real_stat(Path("/proc")).st_dev
+        mounted_stat: Final[os.stat_result] = os.stat_result((
+            0,
+            0,
+            proc_device if same_device else proc_device + 1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ))
+
+        def stat(current: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            return mounted_stat if current == path else real_stat(current, follow_symlinks=follow_symlinks)
+
+        stat_patch = mocker.patch.object(Path, "stat", autospec=True, side_effect=stat)
+        text_patch = mocker.patch.object(
+            Path, "read_text", autospec=True, return_value="00000000-0000-4000-8000-000000000001\n"
+        )
+        open_patch = mocker.patch.object(
+            Path,
+            "open",
+            autospec=True,
+            return_value=io.BytesIO(f"1 0 0:{proc_device} /sys/kernel/random/uuid {path} rw - proc proc rw\n".encode()),
+        )
+        importlib.reload(filelock._identity)
+        mocker.stop(open_patch)
+        mocker.stop(text_patch)
+        mocker.stop(stat_patch)
+
+    yield mount_over
     importlib.reload(filelock._identity)
 
 
@@ -326,6 +368,57 @@ def test_owner_is_stale_live_process_boot_id_hidden_from_contender_held(hide_boo
     assert token is not None
     hide_boot_id()
     assert owner_is_stale(os.getpid(), host_name(), token) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize("same_device", [pytest.param(True, id="same-procfs"), pytest.param(False, id="other-device")])
+def test_owner_is_stale_live_process_with_boot_id_mounted_over_for_contender_held(
+    mount_over_boot_id: Callable[[bool], None], *, same_device: bool
+) -> None:
+    token: Final[int | None] = process_start_token(os.getpid())
+    assert token is not None
+    mount_over_boot_id(same_device)
+    assert owner_is_stale(os.getpid(), host_name(), token) is False
+
+
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize("same_device", [pytest.param(True, id="same-procfs"), pytest.param(False, id="other-device")])
+def test_owner_is_stale_live_process_with_boot_id_mounted_over_for_holder_held(
+    mount_over_boot_id: Callable[[bool], None], *, same_device: bool
+) -> None:
+    mount_over_boot_id(same_device)
+    token: Final[int | None] = process_start_token(os.getpid())
+    assert token is not None
+    importlib.reload(filelock._identity)
+    assert owner_is_stale(os.getpid(), host_name(), token) is False
+
+
+if sys.platform in {"linux", "android"}:  # pragma: linux cover
+
+    def test_boot_id_with_non_ascii_mountpoint(tmp_path: Path, mocker: MockerFixture) -> None:
+        boot_id = tmp_path / "proc/sys/kernel/random/boot_id"
+        boot_id.parent.mkdir(parents=True)
+        boot_id.write_text("00000000-0000-0000-0000-00000000002a", encoding="ascii")
+        mounts = tmp_path / "proc/self/mountinfo"
+        mounts.parent.mkdir()
+        mounts.write_text("1 0 0:10 / /mnt/café rw - tmpfs tmpfs rw\n", encoding="utf-8")
+        mocker.patch.object(
+            filelock._identity, "Path", autospec=True, side_effect=lambda path: tmp_path / path.lstrip("/")
+        )
+        assert filelock._identity._read_boot_id() == 42
+
+
+@_LINUX_ONLY  # pragma: linux cover
+def test_unreadable_mountinfo_keeps_only_starttime(mocker: MockerFixture) -> None:
+    token: Final[int | None] = process_start_token(os.getpid())
+    assert token is not None
+    blocked = mocker.patch.object(Path, "open", autospec=True, side_effect=PermissionError(EACCES, "denied"))
+    importlib.reload(filelock._identity)
+    mocker.stop(blocked)
+    try:
+        assert process_start_token(os.getpid()) == token % 2**64
+    finally:
+        importlib.reload(filelock._identity)
 
 
 @_LINUX_ONLY  # pragma: linux cover
