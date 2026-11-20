@@ -817,19 +817,24 @@ run in reverse: each contender exchanges when the path names its own marker, and
 free a marker only it can move. It finishes once it holds its own marker again.
 If the filesystem refuses the return exchange, it leaves its marker at the lock path for a later contender to recover.
 
-The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID, then 32 random hex digits. A breaker killed
-between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under that name.
-A contender that finds the breaker's marker dead first looks in the lock's directory for names that start with
-``<lock>.break.<pid>.``, where ``<pid>`` names the breaker. If a process with that PID runs now, the contender waits:
-a stale start token in the marker does not prove that the break name belongs to a dead process. Otherwise it renames
-the record to ``<lock>.restore.<pid>.<token>`` with its own PID, so only one contender acts on it. A record whose
-recoverer died there is claimable again, and a claim a failed put-back left in the same process is retried on the next
-poll. It then exchanges back a marker whose owner is alive or cannot be proven dead, and removes one whose owner is
-dead. Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. A
-record another account owns under a sticky parent stays under its break name: that account could otherwise unlink it
-from the lock path before a displaced holder's marker is put back. The placeholder a break writes while it works
-carries the same PID, so a contender that evicts a placeholder a killed
-process left finds the same names.
+The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID followed by 32 random hex digits. A breaker
+killed between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under
+that name. A contender that finds the breaker's marker dead first looks in the lock's directory for names that start
+with ``<lock>.break.<pid>.``, where ``<pid>`` names the breaker. If a process with that PID runs now, the contender
+waits. A stale start token in the marker does not prove that the break name belongs to a dead process.
+
+If the operating system reused the PID after the breaker died, recovery waits until the process using that PID exits.
+Once you have confirmed that no holder or breaker is active, you can call ``break_lock()`` to clear the lock sooner.
+
+When the breaker PID is no longer running, the contender renames the record to ``<lock>.restore.<pid>.<token>`` with
+its own PID, so only one contender acts on it. A record whose recoverer died there is claimable again, and a claim a
+failed put-back left in the same process is retried on the next poll. It then exchanges back a marker whose owner is
+alive or cannot be proven dead, and removes one whose owner is dead.
+
+Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. A record
+another account owns under a sticky parent stays under its break name: that account could otherwise unlink it from the
+lock path before a displaced holder's marker is put back. The placeholder a break writes while it works carries the
+same PID, so a contender that evicts a placeholder a killed process left finds the same names.
 
 The contender holds the judged marker open from before it reads the record until the break ends. ext4 gives a freed
 inode number to the next file created, so a successor's marker could otherwise carry the number of the marker judged
