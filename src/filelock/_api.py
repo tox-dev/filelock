@@ -992,11 +992,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         """
         self._raise_if_inherited()
         state = self._hold_state()
-        if timeout is None:
-            timeout = state.timeout
-
-        if blocking is None:
-            blocking = state.blocking
+        timeout = state.timeout if timeout is None else timeout
+        blocking = state.blocking if blocking is None else blocking
 
         # A truthy non-bool such as the string "false" would otherwise turn a single attempt into a blocking wait.
         check_blocking(blocking)
@@ -1133,7 +1130,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _resolve_lock_path(self) -> str:
         resolved = canonical(self.lock_file)
-        if not self.is_locked and self._singleton_shared and path_key(resolved) != self._singleton_key:
+        if self._singleton_shared and not self.is_locked and path_key(resolved) != self._singleton_key:
             msg = f"singleton lock path changed after sharing: {self.lock_file}"
             raise RuntimeError(msg)
         return resolved

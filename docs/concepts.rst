@@ -670,12 +670,13 @@ claim by age, a strict lock needs no liveness guess; a claim it cannot read with
 :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` rather than reclaiming it.
 
 A :class:`SoftFileLease <filelock.SoftFileLease>` can expire while its holder is still working. If the heartbeat
-detects a lost claim, it calls ``on_compromise``. Further acquires on that instance raise ``RuntimeError`` until the holder
-releases it.
+detects a lost claim, it calls ``on_compromise``. Further acquires on that instance raise ``RuntimeError`` until the
+holder releases it.
 
-The :attr:`token <filelock.SoftFileLease.token>` identifies the claim. A paused holder can resume and write after a peer
-takes the lease. To fence those writes, the protected resource must atomically track the highest generation it has
-accepted and reject operations from earlier generations.
+The :attr:`token <filelock.SoftFileLease.token>` identifies the claim. It does **not** fence the protected resource.
+A paused holder can resume and write after another process takes the lease. Fencing requires a linearizable resource
+that rejects any operation carrying a generation lower than the highest it has accepted. Chubby's lock sequence
+number and ZooKeeper's ``zxid`` can supply generations for the resource to check.
 
 A lease expires on the contender's own clock. The holder's heartbeat rewrites the marker's modification time, and a
 contender times how long that time stays the same on its ``time.monotonic()``, the rule :class:`SoftReadWriteLock
