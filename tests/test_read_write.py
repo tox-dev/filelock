@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from contextlib import closing
-from errno import EWOULDBLOCK
+from errno import EBADF, EWOULDBLOCK
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -637,6 +637,38 @@ def test_read_write_lock_refuses_a_database_of_another_account(  # pragma: needs
         ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
     # The error names the path the lock resolved, and /tmp is a symlink to /private/tmp on macOS.
     assert (raised.value.filename, lock_path_in_shared_tmp.exists()) == (str(lock_path_in_shared_tmp.resolve()), True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX opens the database by descriptor")
+def test_read_write_lock_closes_database_when_parent_disappears(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    (parent := tmp_path / "parent").mkdir()
+    lock_path = parent / "lock.db"
+    original_open = os.open
+    opened_fd: int | None = None
+
+    def move_parent_after_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal opened_fd
+        assert os.fspath(path) == os.fspath(lock_path)
+        fd = original_open(path, flags, mode, dir_fd=dir_fd)
+        opened_fd = fd
+        parent.rename(tmp_path / "moved")
+        return fd
+
+    mocker.patch("filelock._read_write.os.open", autospec=True, side_effect=move_parent_after_open)
+    with pytest.raises(FileNotFoundError):
+        ReadWriteLock(lock_path, is_singleton=False)
+    assert opened_fd is not None
+    with pytest.raises(OSError, match="Bad file descriptor") as raised:
+        os.fstat(opened_fd)
+    assert raised.value.errno == EBADF
 
 
 def test_read_write_lock_refuses_a_wal_database(lock_file: str) -> None:

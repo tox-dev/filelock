@@ -1466,7 +1466,11 @@ def _open_lock_database(database: str, *, oplock_wait: float = 0) -> int:
         raise OSError(msg)
     # The owner of a database under a sticky parent may unlink it during a hold. A contender then opens a new database
     # at the path, and both hold the lock.
-    owner: Final = foreign_owner(found, pathlib.Path(database).parent.stat())  # pragma: win32 no cover
+    try:
+        owner: Final = foreign_owner(found, pathlib.Path(database).parent.stat())  # pragma: win32 no cover
+    except OSError:
+        os.close(fd)
+        raise
     if owner is not None:  # pragma: needs foreign-sticky-tmp
         os.close(fd)
         reason = f"lock database belongs to uid {owner}, not to this process's account or the directory's owner"
