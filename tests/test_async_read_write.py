@@ -516,6 +516,54 @@ async def _write_once(lock: AsyncReadWriteLock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_many_waiting_writers_drain_after_reader_releases(lock_file: str) -> None:
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+    await lock.acquire_read()
+    started = 0
+    all_started = asyncio.Event()
+    completed: list[int] = []
+    writer_count = 1200
+
+    async def write(position: int) -> None:
+        nonlocal started
+        started += 1
+        if started == writer_count:
+            all_started.set()
+        async with lock.write_lock(timeout=_TASK_WAIT):
+            completed.append(position)
+
+    tasks = [asyncio.create_task(write(index)) for index in range(writer_count)]
+    await asyncio.wait_for(all_started.wait(), _TASK_WAIT)
+    await asyncio.sleep(0)
+    assert not any(task.done() for task in tasks)
+    await lock.release()
+    await asyncio.wait_for(asyncio.gather(*tasks), 5)
+    await lock.close()
+
+    assert completed == list(range(writer_count))
+
+
+@pytest.mark.asyncio
+async def test_queued_writer_precedes_a_reacquiring_writer(lock_file: str) -> None:
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+    order: list[str] = []
+
+    async def queued() -> None:
+        async with lock.write_lock(timeout=_TASK_WAIT):
+            order.append("queued")
+
+    async with lock.write_lock():
+        waiting = asyncio.create_task(queued())
+        await asyncio.sleep(0)
+    async with lock.write_lock(timeout=_TASK_WAIT):
+        order.append("returning")
+    await waiting
+    await lock.close()
+
+    assert order == ["queued", "returning"]
+
+
+@pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
 async def test_a_canceled_waiting_writer_lets_readers_in(lock_file: str) -> None:
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
@@ -1265,6 +1313,28 @@ async def test_async_close_wakes_its_table_waiter(
     finally:
         await holder.close()
         await asyncio.gather(acquiring, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_closing_first_writer_preserves_next_writer(lock_file: str) -> None:
+    holder, first, second = (AsyncReadWriteLock(lock_file) for _ in range(3))
+    await holder.acquire_read()
+    first_wait = asyncio.create_task(_write_once(first))
+    second_wait = asyncio.create_task(_write_once(second))
+    try:
+        await asyncio.sleep(0)
+        await first.close()
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            await first_wait
+        assert not second_wait.done()
+        await holder.release()
+        await asyncio.wait_for(second_wait, _TASK_WAIT)
+        assert writer_gets_in(lock_file)
+    finally:
+        await holder.close()
+        await first.close()
+        await second.close()
+        await asyncio.gather(first_wait, second_wait, return_exceptions=True)
 
 
 @pytest.mark.asyncio
