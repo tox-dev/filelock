@@ -985,11 +985,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         """
         self._raise_if_inherited()
+        state = self._hold_state()
         if timeout is None:
-            timeout = self._context.timeout
+            timeout = state.timeout
 
         if blocking is None:
-            blocking = self._context.blocking
+            blocking = state.blocking
 
         # A truthy non-bool such as the string "false" would otherwise turn a single attempt into a blocking wait.
         check_blocking(blocking)
@@ -999,7 +1000,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             warnings.warn(msg, DeprecationWarning, stacklevel=2)
             poll_interval = poll_intervall
 
-        poll_interval = poll_interval if poll_interval is not None else self._context.poll_interval
+        poll_interval = poll_interval if poll_interval is not None else state.poll_interval
         poll_interval = resolve_poll_interval(poll_interval)
         timeout = resolve_timeout(timeout, blocking=blocking)
 
@@ -1015,26 +1016,26 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         ):
             # The interrupted acquire cannot run until the handler returns, so a second one here would wait on it
             # forever or take the lock out from under it. Once the lock is held, as in an on_acquired hook, it nests.
-            if not self.is_locked and any(_on_this_stack(each.frame) for each in self._context.in_flight):
+            if not self.is_locked and any(_on_this_stack(each.frame) for each in state.in_flight):
                 msg = f"Deadlock: lock '{self.lock_file}' is acquired again while this thread's acquire of it waits"
                 raise RuntimeError(msg)
             # An interrupted release commits only the hold it started with and ignores a release above it on the
             # stack. A hold taken here would nest into one the OS dropped, or stay held for good.
-            if _on_this_stack(self._context.releasing):
+            if _on_this_stack(state.releasing):
                 msg = f"lock '{self.lock_file}' is acquired again while this thread's release of it runs"
                 raise RuntimeError(msg)
             canonical_path = canonical(self.lock_file)
             # Indexed rather than bound to a local: the record holds this frame, and a local would close a cycle that
             # keeps the lock alive past its last reference.
-            depth = len(self._context.in_flight)
-            previous_frame = self._context.acquiring
+            depth = len(state.in_flight)
+            previous_frame = state.acquiring
             levels_before: int | None = None
             try:  # ruff:ignore[too-many-statements-in-try-clause]  # each counted acquire step needs the same rollback
-                self._context.in_flight.append(_InFlight(frame=cast("FrameType", inspect.currentframe())))
-                self._context.acquiring = self._context.in_flight[-1].frame
-                levels_before = self._context.lock_counter if self.is_locked else 0
-                self._context.in_flight[-1].levels_before = levels_before
-                self._context.lock_counter = levels_before + 1
+                state.in_flight.append(_InFlight(frame=cast("FrameType", inspect.currentframe())))
+                state.acquiring = state.in_flight[-1].frame
+                levels_before = state.lock_counter if self.is_locked else 0
+                state.in_flight[-1].levels_before = levels_before
+                state.lock_counter = levels_before + 1
                 self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
                 if not self.is_locked:
                     self._pin_lock_path(canonical_path)
@@ -1048,21 +1049,24 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 self._commit_acquire(canonical_path)
                 self._raise_if_voided()
                 proxy = AcquireReturnProxy(lock=self)
-                self._context.acquiring = previous_frame
-                del self._context.in_flight[depth:]
+                state.acquiring = previous_frame
+                del state.in_flight[depth:]
                 return proxy  # ruff:ignore[try-consider-else]  # a signal at return must still roll back the hold
             except BaseException as error:
                 try:
                     self._undo_in_flight_acquire(canonical_path, depth, levels_before, error)
                 finally:
-                    del self._context.in_flight[depth:]
-                    self._context.acquiring = previous_frame
+                    del state.in_flight[depth:]
+                    state.acquiring = previous_frame
                 raise
 
     def _raise_if_inherited(self) -> None:
         if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"{type(self).__name__} on {self.lock_file} was inherited across fork; construct a new instance"
             raise RuntimeError(msg)
+
+    def _hold_state(self) -> FileLockContext:
+        return self._context.current if isinstance(self._context, ThreadLocalFileContext) else self._context
 
     @contextlib.contextmanager
     def _transition_admission(
@@ -1532,9 +1536,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 self._commit_release()
         finally:
             self._transition_lock.release()
-
-    def _hold_state(self) -> FileLockContext:
-        return self._context.current if isinstance(self._context, ThreadLocalFileContext) else self._context
 
     def _retry_interrupted_release(
         self, snapshot: tuple[int, int] | None, release_error: BaseException, *, force: bool, transition_held: bool
