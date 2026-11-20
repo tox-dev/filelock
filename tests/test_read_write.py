@@ -651,7 +651,8 @@ def test_read_write_lock_refuses_wal_switch_during_acquire(
         connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
     ) -> None:
         if statements.startswith("BEGIN"):
-            _convert_to_wal(lock_file)
+            with closing(sqlite3.connect(lock_file)) as switched:
+                switched.executescript("PRAGMA journal_mode=WAL; PRAGMA user_version=1;")
         execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
 
     mocker.patch.object(ReadWriteLock, "_execute_waiting", new=staticmethod(switch_then_execute))
