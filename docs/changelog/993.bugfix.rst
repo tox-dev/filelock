@@ -1,2 +1,2 @@
-On POSIX filesystems with atomic name exchange, :class:`~filelock.SoftFileLock` no longer lets a signal during
-stale-marker takeover strand a live holder's marker and admit another holder.
+On POSIX filesystems with atomic name exchange, :class:`~filelock.SoftFileLock` restores the displaced marker if a
+signal interrupts stale takeover or marker removal before the exchange returns.

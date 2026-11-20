@@ -535,6 +535,24 @@ def _exchange_call(source: bytes, target: bytes, flags: int) -> int:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @NEEDS_STALE_RECLAIM
+def test_interrupted_break_restores_marker(stale_lock: Path, mocker: MockerFixture) -> None:  # pragma: win32 no cover
+    marker = stale_lock.stat()
+    exchange = filelock._util.exchange_names
+
+    def interrupt_after_exchange(source: str, target: str) -> bool:
+        mocker.stopall()
+        assert exchange(source, target)
+        raise KeyboardInterrupt
+
+    mocker.patch("filelock._util.exchange_names", autospec=True, side_effect=interrupt_after_exchange)
+    with pytest.raises(KeyboardInterrupt):
+        break_lock_file(str(stale_lock), marker.st_mtime, marker.st_ino)
+
+    assert (stale_lock.stat().st_ino, list(stale_lock.parent.glob("*.break.*"))) == (marker.st_ino, [])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_stale_take_over_interrupted_before_the_check_puts_the_marker_back(  # pragma: win32 no cover
     stale_lock: Path, mocker: MockerFixture
 ) -> None:
