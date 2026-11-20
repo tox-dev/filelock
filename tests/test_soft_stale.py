@@ -1907,6 +1907,32 @@ def _release_over_a_successor_marker(lock_path: Path) -> SoftFileLock:  # pragma
 
 
 @NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@pytest.mark.parametrize(
+    "operation",
+    [pytest.param("filelock._soft.write_at_start", id="write"), pytest.param("os.ftruncate", id="truncate")],
+)
+def test_displaced_marker_can_retry_release_after_timeout(
+    lock_path: Path, mocker: MockerFixture, operation: str
+) -> None:
+    holder = SoftFileLock(lock_path)
+    holder.acquire()
+    displaced = lock_path.with_suffix(".aside")
+    lock_path.rename(displaced)
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    timeout = mocker.patch(operation, side_effect=TimeoutError("release deadline"), autospec=True)
+
+    with pytest.raises(TimeoutError, match="release deadline"):
+        holder.release()
+    assert holder.is_locked
+
+    mocker.stop(timeout)
+    holder.release()
+    assert not holder.is_locked
+    assert displaced.read_bytes() == b"filelock/released\n"
+    assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
+
+
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 def test_released_record_rewrite_error_spares_successor_marker_without_pwrite(
     lock_path: Path, mocker: MockerFixture
 ) -> None:
