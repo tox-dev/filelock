@@ -813,9 +813,11 @@ For a shared filesystem whose marker and cache behavior has been verified, use
 
 It takes the same tuning as its synchronous peer plus the async pair, so the full signature is
 ``AsyncSoftReadWriteLock(lock_file, timeout=-1, *, blocking=True, is_singleton=True, heartbeat_interval=30.0,
-stale_threshold=None, poll_interval=0.25, on_compromise=None, loop=None, executor=None)``. It has no SQLite thread affinity to respect, so
-``executor=None`` means the loop's default executor: it creates nothing and owns nothing, and its ``close()`` only
-delegates to the synchronous lock.
+stale_threshold=None, poll_interval=0.25, on_compromise=None, loop=None, executor=None)``. With ``executor=None`` each
+wrapper owns a single-worker executor and shuts it down in ``close()``, so a wait on one lock cannot hold up another
+lock's release through the loop's default executor. A caller-supplied executor remains caller-owned. It needs a free
+worker for each release while other lock operations wait in that pool. Each default wrapper starts a worker thread on
+its first backend call and keeps it until ``close()`` or collection, so close wrappers that are no longer needed.
 
 **************************************
  Detect stale locks (soft locks only)
