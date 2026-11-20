@@ -213,6 +213,7 @@ class _TaskOwners:
         enter: Callable[[float], Awaitable[None]],
         joinable: Callable[[], bool],
         raise_if_unusable: Callable[[], None],
+        check_after_enter: Callable[[], Awaitable[None]],
     ) -> None:
         task = _current_task()
         timeout = resolve_read_write_timeout(timeout, blocking=blocking)
@@ -255,6 +256,7 @@ class _TaskOwners:
             self._finish_transition(mode=None)
             raise
         self._finish_transition(mode=mode, holds={task: _TaskHold(depths={via: 1})})
+        await check_after_enter()
 
     def _admit(  # ruff:ignore[too-many-arguments]  # the acquire's state, passed through under the table lock
         self,

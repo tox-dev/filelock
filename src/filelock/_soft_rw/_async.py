@@ -11,6 +11,7 @@ __spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [
     "asyncio",
+    "concurrent.futures",
     "filelock._async",
     "filelock._error",
     "functools",
@@ -22,6 +23,7 @@ import asyncio
 import functools
 import os
 import threading
+from concurrent.futures import Future as ConcurrentFuture
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 
@@ -100,6 +102,7 @@ class AsyncSoftReadWriteLock:
     ) -> None:
         self._creator_pid = os.getpid()
         self._closed = False
+        self._closing: ConcurrentFuture[None] | None = None
         self._owns_backend = not is_singleton
         #: Marks the task holds taken through this wrapper, which its close() ends.
         self._via: Final = object()
@@ -230,6 +233,22 @@ class AsyncSoftReadWriteLock:
                 raise lost_hold_error(self.lock_file, mode, compromise)
             return self._backend_holds()
 
+        async def check_after_enter() -> None:
+            cancellation: asyncio.CancelledError | None = None
+            while self._closed and (closing := self._closing) is not None:
+                try:
+                    await wait_until_done(asyncio.wrap_future(closing))
+                except asyncio.CancelledError as error:
+                    cancellation = error
+            if cancellation is not None:
+                if not self._closed:
+                    try:
+                        await self.release(force=True)
+                    except BaseException as error:  # ruff:ignore[blind-except]  # preserve cleanup errors with cancellation
+                        raise_cancelled_error(cancellation, error)
+                raise cancellation
+            self._raise_if_unusable()
+
         await self._owners.acquire(
             mode,
             timeout=self._lock.timeout if timeout is None else timeout,
@@ -239,6 +258,7 @@ class AsyncSoftReadWriteLock:
             enter=enter,
             joinable=joinable,
             raise_if_unusable=self._raise_if_unusable,
+            check_after_enter=check_after_enter,
         )
 
     async def _run_acquire(self, acquire: functools.partial[AcquireReturnProxy]) -> None:
@@ -360,11 +380,15 @@ class AsyncSoftReadWriteLock:
         notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
         between that check and the admission still admits the task into the ended hold.
 
+        An acquire granted by the backend after this method starts raises the closed error if close succeeds. If close
+        fails with the backend still held, the acquire retains its hold.
+
         """
         ensure_current_process()
         if self._creator_pid != os.getpid() or self._closed:
             return
         # Refuse acquires from here on, so none is admitted into a hold the backend is letting go of.
+        closing = self._closing = ConcurrentFuture()
         self._closed = True
         try:
             await self._owners.retire(
@@ -378,6 +402,8 @@ class AsyncSoftReadWriteLock:
                 self._closed = False
             raise
         finally:
+            self._closing = None
+            closing.set_result(None)
             self._owners.wake_via(self._via)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
