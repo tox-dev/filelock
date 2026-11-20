@@ -32,6 +32,7 @@ from filelock import (
     ContextErrorPolicy,
     FileLock,
     Timeout,
+    UnixFileLock,
 )
 from tests.capability_marks import (
     NEEDS_FCNTL,
@@ -1341,6 +1342,27 @@ async def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: M
         await lock.acquire()
     assert not lock.is_locked
     assert type(lock).__name__ == "AsyncUnixFileLock"  # not swapped to the soft class
+
+
+@NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+async def test_fallback_to_soft_reprobes_after_chdir(
+    working_directories: tuple[Path, Path], mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    unsupported_flock = mocker.patch(
+        "filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True
+    )
+    lock = AsyncFileLock("a", run_in_executor=False)
+    async with lock:
+        assert (first / "a").read_bytes()
+    mocker.stop(unsupported_flock)
+    monkeypatch.chdir(second)
+
+    async with lock:
+        with pytest.raises(Timeout):
+            UnixFileLock(second / "a").acquire(timeout=0)
 
 
 def test_preserve_lock_file_async_soft_rejects(tmp_path: Path) -> None:

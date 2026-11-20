@@ -3,21 +3,28 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from importlib.machinery import ModuleSpec
+
+    from ._soft import SoftFileLock
 
 __spec__ = cast("ModuleSpec", __spec__)
 
-__lazy_modules__ = ["contextlib", "pathlib", "warnings", f"{__spec__.parent}._util"]
+__lazy_modules__ = ["pathlib", "warnings", f"{__spec__.parent}._util"]
 
 import os
 import sys
 import warnings
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
 from typing import Final, cast
 
-from ._api import BaseFileLock
+from ._api import (
+    BaseFileLock,
+    _resolve_lifetime,  # simplint: ignore[private-import-path]  # reuse the base lifetime validator
+    canonical,
+)
 from ._util import foreign_owner, open_into, remove_own_file
 
 has_fcntl = False
@@ -82,8 +89,43 @@ else:  # pragma: win32 no cover
         same path.
         """
 
+        @BaseFileLock.lifetime.setter
+        def lifetime(self, value: float | None) -> None:
+            if self._soft_fallback_for_path():
+                from ._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]  # importing at module load cycles
+
+                backend = SoftFileLock
+            else:
+                backend = type(self)
+            self._context.lifetime = _resolve_lifetime(value, backend, stacklevel=3)
+
+        def _soft_fallback_for_path(self) -> bool:
+            if self._context.claim_root is not None:
+                return self._context.soft_fallback
+            return canonical(self.lock_file) in self._context.flockless_roots
+
+        def _pin_lock_path(self, canonical: str) -> None:
+            super()._pin_lock_path(canonical)
+            self._context.soft_fallback = canonical in self._context.flockless_roots
+
         def _acquire(self) -> None:
-            self._acquire_native()
+            if self._context.soft_fallback:
+                with self._soft_lock() as soft:
+                    soft._acquire()  # ruff:ignore[private-member-access]  # runs the soft protocol on this lock's state
+            else:
+                self._acquire_native()
+
+        @contextmanager
+        def _soft_lock(self) -> Generator[SoftFileLock]:
+            from ._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]  # importing at module load cycles
+
+            soft = object.__new__(SoftFileLock)
+            soft.__dict__ = self.__dict__
+            try:
+                yield soft
+            finally:
+                # Its finalizer must not release the real lock's hold.
+                soft.__dict__ = {}
 
         def _acquire_native(self) -> None:
             created: list[int] = []
@@ -188,19 +230,60 @@ else:  # pragma: win32 no cover
             self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))
             return True
 
-        def _fallback_to_soft_lock(self: BaseFileLock) -> None:
-            # Import lazily: this runs only on the rare flock fallback, and asyncio imports _unix, so a
-            # module-level import of it here would cycle.
-            from ._soft import (  # ruff:ignore[import-outside-top-level]  # import cycle
-                SoftFileLock,
-            )
-
+        def _fallback_to_soft_lock(self) -> None:
             warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
-            from filelock.asyncio import AsyncSoftFileLock, BaseAsyncFileLock  # ruff:ignore[import-outside-top-level]  # asyncio imports this module
+            self._context.soft_fallback = True
+            self._context.flockless_roots |= {self._lock_path}
 
-            self.__class__ = AsyncSoftFileLock if isinstance(self, BaseAsyncFileLock) else SoftFileLock
+        def _unprobeable_holder(self) -> str | None:
+            if not self._context.soft_fallback:
+                return None
+            with self._soft_lock() as soft:
+                return soft._unprobeable_holder()  # ruff:ignore[private-member-access]  # reads the soft marker
+
+        def _try_break_expired_lock(self) -> None:
+            if self._context.soft_fallback:
+                with self._soft_lock() as soft:
+                    soft._try_break_expired_lock()  # ruff:ignore[private-member-access]  # expires the soft marker
+
+        @property
+        def pid(self) -> int | None:
+            """Read the holder's PID from the soft fallback marker."""
+            with self._soft_marker() as soft:
+                return soft.pid
+
+        @property
+        def is_lock_held_by_us(self) -> bool:
+            """Whether the soft fallback marker identifies this process."""
+            with self._soft_marker() as soft:
+                return soft.is_lock_held_by_us
+
+        @contextmanager
+        def _soft_marker(self) -> Generator[SoftFileLock]:
+            if not self._soft_fallback_for_path():
+                msg = "marker access requires a soft fallback on the current lock path"
+                raise RuntimeError(msg)
+            with self._soft_lock() as soft:
+                yield soft
+
+        def break_lock(self) -> None:
+            """
+            Remove this lock's soft marker on its resolved path.
+
+            :raises RuntimeError: if the current path has not entered a soft fallback
+
+            """
+            if not self._soft_fallback_for_path():
+                msg = "break_lock requires a soft fallback on the current lock path"
+                raise RuntimeError(msg)
+            with self._soft_lock() as soft:
+                soft.break_lock()
 
         def _release(self) -> None:
+            if self._context.soft_fallback:
+                with self._soft_lock() as soft:
+                    soft._release()  # ruff:ignore[private-member-access]  # releases the soft marker
+                return
             fd = cast("int", self._context.lock_file_fd)
             # Retain the descriptor until flock succeeds: a failed unlock leaves the kernel lock held, so is_locked
             # must keep reporting held for a retry. Once flock commits, clear held state and close as post-unlock
