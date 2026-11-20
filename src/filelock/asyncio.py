@@ -42,7 +42,6 @@ from ._api import (
     LockSettings,
     ThreadLocalFileContext,
     append_exception_context,
-    canonical,
     check_blocking,
     delegate_to_current,
     fork_transition,
@@ -375,7 +374,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                 self._context.lock_counter += 1
                 return AsyncAcquireReturnProxy(lock=self)
             # A canceled provisional acquire must finish rollback before another caller can claim its descriptor.
-            canonical_path = await self._off_loop(functools.partial(canonical, self.lock_file))
+            canonical_path = await self._off_loop(self._resolve_lock_path)
             self._context.lock_counter += 1
             self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
             self._pin_lock_path(canonical_path)

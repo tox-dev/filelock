@@ -94,6 +94,25 @@ def test_strict_soft_is_reentrant(tmp_path: Path) -> None:
     assert (lock.is_locked, lock.lock_counter, lock.claims) == (False, 0, ())
 
 
+def test_shared_strict_singleton_refuses_moved_relative_path(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    relative = StrictSoftFileLock("resource.lock", is_singleton=True)
+    absolute = StrictSoftFileLock(first / "resource.lock", is_singleton=True)
+    assert absolute is relative
+
+    monkeypatch.chdir(second)
+    with pytest.raises(RuntimeError, match="singleton lock path changed after sharing"):
+        absolute.acquire(timeout=0)
+    with pytest.raises(RuntimeError, match="singleton lock path changed after sharing"):
+        _ = absolute.claims
+    with pytest.raises(RuntimeError, match="singleton lock path changed after sharing"):
+        _ = absolute.lock_path_occupant
+
+    assert not (second / "resource.lock").exists()
+
+
 def test_strict_soft_contender_times_out(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
 
