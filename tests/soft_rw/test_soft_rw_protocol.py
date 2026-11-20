@@ -490,6 +490,7 @@ def test_a_listing_compacted_from_under_the_reader_is_taken_again(
     assert GenerationLog(files, lock_file, root).latest().writer == _FIRST
 
 
+@pytest.mark.requires_hard_links
 def test_an_overfull_generation_list_collects_temporary_files(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:
@@ -510,6 +511,7 @@ def test_an_overfull_generation_list_collects_temporary_files(
     assert reader.advance()
 
 
+@pytest.mark.requires_hard_links
 def test_heartbeat_collects_temporary_files_when_the_generation_list_is_overfull(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:
@@ -528,6 +530,7 @@ def test_heartbeat_collects_temporary_files_when_the_generation_list_is_overfull
     assert not temporary.exists()
 
 
+@pytest.mark.requires_hard_links
 @pytest.mark.parametrize(
     "error",
     [
