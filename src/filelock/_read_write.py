@@ -58,6 +58,7 @@ from ._error import Timeout
 from ._identity import (
     host_name,
     owner_is_stale,
+    proc_numbers_tasks_as_here,
     process_start_token,
 )
 
@@ -1190,9 +1191,15 @@ def _connect_through_descriptor(  # pragma: win32 no cover
             status.st_uid not in {owner, 0} or writable_by_others or _side_file_exists(database)
         ):  # pragma: needs posix-hard-link
             link = _link_beside(database, identity, owner)
-            target = os.fspath(link.database)
+            # A swept private link must not let SQLite create a new database outside the existing holder's lock.
+            target = f"{link.database.as_uri()}?mode=rw"
         connection = sqlite3.connect(
-            target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+            target,
+            uri=link is not None,
+            check_same_thread=False,
+            factory=factory,
+            cached_statements=0,
+            timeout=timeout,
         )
         connection.retain_until_close(link, probe)
         claimed.clear()
@@ -1343,8 +1350,12 @@ def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
         ):
             if not 1 <= (owner_pid := int(pid)) <= 2**31 - 1:
                 return False
-            host: Final[str] = host_name()
-            return digest == _host_digest(host) and owner_is_stale(owner_pid, host, int(start) if start else None)
+            host, known_namespace = _link_host()
+            return (
+                known_namespace
+                and digest == _host_digest(host)
+                and owner_is_stale(owner_pid, host, int(start) if start else None)
+            )
         case _:
             return False
 
@@ -1352,7 +1363,21 @@ def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
 def _link_prefix() -> str:  # pragma: needs posix-hard-link
     # The owner rides in the name, which mkdtemp creates in one step, so no directory ever exists without it.
     start: Final[int | None] = process_start_token(pid := os.getpid())
-    return f"{_LINK_PREFIX}{pid}-{'' if start is None else start}-{_host_digest(host_name())}-"
+    return f"{_LINK_PREFIX}{pid}-{'' if start is None else start}-{_host_digest(_link_host()[0])}-"
+
+
+def _link_host() -> tuple[str, bool]:  # pragma: needs posix-hard-link
+    host = host_name()
+    if sys.platform not in {"linux", "android"}:  # pragma: linux no cover
+        return host, True
+    try:
+        pathlib.Path("/proc/self/ns/pid").stat()
+    except OSError:
+        # An unreadable procfs gives different PID namespaces the same hostname; none can prove a peer dead.
+        return f"{host}?pidns-unknown", False
+    if not proc_numbers_tasks_as_here():
+        return f"{host}?pidns-unknown", False
+    return host, True
 
 
 def _host_digest(host: str) -> str:  # pragma: needs posix-hard-link

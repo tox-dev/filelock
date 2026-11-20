@@ -192,9 +192,9 @@ else:  # pragma: win32 no cover
             # from what a peer outside reads. ``None`` too when ``/proc`` was mounted for another PID namespace than
             # this process's: ``/proc/<pid>`` is then whichever task has that number there, not the one ``os.kill``
             # reaches, and may be another user's.
-            return _read_start_token(pid) if _proc_numbers_tasks_as_here() and _starttime_unshifted() else None
+            return _read_start_token(pid) if proc_numbers_tasks_as_here() and _starttime_unshifted() else None
 
-        def _proc_numbers_tasks_as_here() -> bool:
+        def proc_numbers_tasks_as_here() -> bool:
             # A procfs numbers tasks by the PID namespace of the process that mounted it, while ``os.getpid`` and
             # ``os.kill`` go by this process's own. ``unshare --pid`` without ``--mount-proc``, or a setns into only one
             # of the PID and mount namespaces, leaves the two apart. A later mount or setns can swap the procfs, so ask
@@ -326,6 +326,9 @@ else:  # pragma: win32 no cover
 
 if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
 
+    def proc_numbers_tasks_as_here() -> bool:
+        return True
+
     def _owner_runs_elsewhere(pid: int, start_token: int | None) -> bool:
         # Without Linux PID namespaces, a PID that is gone or recycled leaves its owner nowhere else to run.
         del pid, start_token
@@ -336,6 +339,7 @@ __all__ = [
     "host_name",
     "owner_is_current_process",
     "owner_is_stale",
+    "proc_numbers_tasks_as_here",
     "process_alive",
     "process_start_token",
 ]

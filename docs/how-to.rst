@@ -452,6 +452,10 @@ or by others. Otherwise, filelock opens SQLite through a hard link (a second nam
 still selects this route. The directory must be writable by the locking account, and the filesystem must support hard
 links; when the link cannot be made, the lock raises :class:`OSError`.
 
+On POSIX, SQLite refuses to create a database if its private link disappears before the connection opens. On Linux,
+when procfs cannot establish the process's PID namespace, filelock leaves private links from other processes in place.
+Stop all users of the database before removing any stale ``.filelock-*`` directories by hand.
+
 Both routes assume that no process of another account can replace the database directory or any directory above it.
 That holds when every directory above belongs to the locking account or root and is either not writable by others or
 has the sticky bit (a directory flag that lets only a file's owner rename or remove it).

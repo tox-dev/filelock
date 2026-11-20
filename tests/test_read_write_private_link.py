@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import hashlib
 import os
 import shutil
 import stat
@@ -10,6 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
+from urllib.parse import unquote, urlsplit
 
 import pytest
 from capabilities import CAPABILITIES
@@ -19,7 +21,9 @@ pytest.importorskip("sqlite3")
 import sqlite3
 
 from filelock import AsyncReadWriteLock, ReadWriteLock
+from filelock._identity import host_name
 from tests.capability_marks import NEEDS_FILE_PERMISSIONS
+from tests.pid_namespace_helpers import pin_pid_namespace, pin_proc_pid_namespace
 from tests.read_write_helpers import assert_read_write_lock_state
 
 if TYPE_CHECKING:
@@ -45,17 +49,26 @@ async def test_private_link_connects_through_the_validated_inode(
     lock: Final[AsyncReadWriteLock] = AsyncReadWriteLock(database, is_singleton=False)
     try:
         async with getattr(lock, f"{mode}_lock")():
-            opened: Final[Path] = Path(connect.call_args.args[0])
+            opened: Final[Path] = Path(unquote(urlsplit(connect.call_args.args[0]).path))
             link_directory: Final[Path] = opened.parent.parent
             assert (
+                (connect.call_args.kwargs["uri"], urlsplit(connect.call_args.args[0]).query),
                 opened.name,
                 link_directory.parent,
                 stat.S_IMODE(link_directory.stat().st_mode),
                 await asyncio.to_thread(opened.samefile, database),
-            ) == ("lock.db", database.parent, 0o700, True)
+            ) == ((True, "mode=rw"), "lock.db", database.parent, 0o700, True)
             await asyncio.to_thread(assert_read_write_lock_state, str(database), "write", available=False)
     finally:
         await lock.close()
+
+
+def test_private_link_opens_when_its_directory_needs_uri_quoting(database: Path) -> None:
+    parent = database.parent.with_name("shared? #%")
+    database.parent.rename(parent)
+    database = parent / database.name
+    with ReadWriteLock(database, is_singleton=False).write_lock():
+        assert_read_write_lock_state(str(database), "write", available=False)
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -75,6 +88,38 @@ def test_private_link_failure_preserves_a_peer_lock(database: Path, mocker: Mock
             ReadWriteLock(database, is_singleton=False)
         assert_read_write_lock_state(str(database), "write", available=False)
     assert list(database.parent.glob(".filelock-*")) == []
+
+
+def test_private_link_removed_before_sqlite_open_cannot_grant_a_second_writer(
+    database: Path, mocker: MockerFixture, created_directories: list[Path]
+) -> None:
+    with ReadWriteLock(database, is_singleton=False).write_lock():
+        connect = sqlite3.connect
+
+        def remove_then_connect(
+            target: str,
+            *,
+            check_same_thread: bool,
+            factory: type[sqlite3.Connection],
+            cached_statements: int,
+            timeout: float,
+            uri: bool = False,
+        ) -> sqlite3.Connection:
+            next(created_directories[-1].glob("*/lock.db")).unlink()
+            return connect(
+                target,
+                check_same_thread=check_same_thread,
+                factory=factory,
+                cached_statements=cached_statements,
+                timeout=timeout,
+                uri=uri,
+            )
+
+        patched = mocker.patch("sqlite3.connect", autospec=True, side_effect=remove_then_connect)
+        with pytest.raises(sqlite3.OperationalError, match="unable to open database file"):
+            ReadWriteLock(database, is_singleton=False)
+        mocker.stop(patched)
+        assert_read_write_lock_state(str(database), "write", available=False)
 
 
 @pytest.mark.asyncio
@@ -211,6 +256,7 @@ def test_private_link_opens_nothing_through_a_swapped_link_directory(
         factory: type[sqlite3.Connection],
         cached_statements: int,
         timeout: float,
+        uri: bool = False,
     ) -> sqlite3.Connection:
         created_directories[-1].rename(tmp_path / "aside")
         created_directories[-1].mkdir()
@@ -221,6 +267,7 @@ def test_private_link_opens_nothing_through_a_swapped_link_directory(
             factory=factory,
             cached_statements=cached_statements,
             timeout=timeout,
+            uri=uri,
         )
 
     mocker.patch("sqlite3.connect", autospec=True, side_effect=swap_then_connect)
@@ -267,13 +314,35 @@ def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: 
     assert (_link_directories(database), database.stat().st_nlink) == ([], 1)
 
 
-def _host_digest(database: Path) -> str:
+def _host_digest(database: Path, *, legacy: bool = False) -> str:
+    if legacy:
+        return hashlib.sha256(host_name().encode()).hexdigest()[:16]
     # Taken from a link of another database, so the sweep for this one has not run yet.
     seed: Final[Path] = database.parent.with_name("seed")
     seed.mkdir(mode=0o777)
     seed.chmod(0o777)
     with ReadWriteLock(seed / "lock.db", is_singleton=False).read_lock():
         return next(seed.glob(".filelock-*")).name.rsplit("-", 2)[1]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux PID namespaces need procfs to identify their owners")
+@pytest.mark.parametrize("procfs", [pytest.param("hidden", id="hidden"), pytest.param("foreign", id="foreign")])
+@pytest.mark.parametrize("legacy", [pytest.param(False, id="current"), pytest.param(True, id="legacy")])
+def test_private_link_sweep_keeps_a_holder_when_pid_namespace_is_unknown(
+    database: Path, mocker: MockerFixture, procfs: str, *, legacy: bool
+) -> None:
+    if procfs == "hidden":  # simplint: ignore[conditional-in-test]  # distinct procfs states
+        pin_pid_namespace(mocker, PermissionError(errno.EACCES, "procfs hidden"))
+    else:
+        pin_proc_pid_namespace(mocker, "{pid}", "NSpid:\t{pid}\t{pid}\n")
+    database.touch()
+    left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database, legacy=legacy)}-x"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(database)
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        pass
+
+    assert (left / "lock.db").samefile(database)
 
 
 @pytest.mark.parametrize(
