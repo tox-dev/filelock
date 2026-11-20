@@ -246,8 +246,11 @@ class OsFiles:
                 return False
             # A later file can inherit the removed record's inode number and be renamed here with one link. Its bytes
             # still distinguish it from this participant's record.
-            if os.read(fd, len(header)) != header:
-                return False
+            remaining = header
+            while remaining:
+                if not (chunk := os.read(fd, len(remaining))) or not remaining.startswith(chunk):
+                    return False
+                remaining = remaining[len(chunk) :]
             os.lseek(fd, 0, os.SEEK_SET)
             write_all(fd, data)
         finally:

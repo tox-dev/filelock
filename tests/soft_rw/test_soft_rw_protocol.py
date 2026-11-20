@@ -994,6 +994,21 @@ def test_heartbeat_leaves_a_file_with_the_holder_record_inode_number_alone(
     assert (writer.heartbeat(), record.read_bytes()) == (("lost", None), b"private")
 
 
+@pytest.mark.requires_hard_links
+def test_heartbeat_keeps_an_intact_record_after_short_reads(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    assert writer.advance()
+    before = (record := Path(root, "holders", writer.token)).read_bytes()
+    real_read = os.read
+    mocker.patch.object(os, "read", autospec=True, side_effect=lambda fd, size: real_read(fd, min(size, 3)))
+
+    assert writer.heartbeat() == ("ok", None)
+    assert record.read_bytes() != before
+
+
 #: What one filesystem operation costs. Small against the heartbeat so a live participant's refreshes stay well inside
 #: the stale threshold however the scheduler orders its operations, as they do on a real filesystem.
 _STEP: Final[float] = 0.001
