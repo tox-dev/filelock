@@ -15,6 +15,7 @@ from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
 from filelock._soft_rw._protocol import (
+    _RETAINED_GENERATIONS,
     GenerationLog,
     Ledger,
     Participant,
@@ -304,6 +305,36 @@ def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root:
 
 
 @pytest.mark.requires_hard_links
+def test_leave_stops_retrying_after_stale_threshold(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    reader = _participant(files, lock_file, "read", stale_threshold=2, clock=clock)
+    reader.publish()
+    assert reader.advance()
+    lost = []
+
+    def lose_commit(_log: GenerationLog, successor: Snapshot) -> bool:
+        nonlocal now
+        lost.append(successor)
+        now += 1
+        return False
+
+    mocker.patch.object(GenerationLog, "commit", autospec=True, side_effect=lose_commit)
+    with pytest.raises(SoftFileLockProtocolError, match="could not withdraw holder") as caught:
+        reader.leave()
+
+    assert caught.value.lock_file == lock_file
+    assert len(lost) == 2
+    assert not Path(root, "holders", reader.token).exists()
+    assert reader.generation is None
+
+
+@pytest.mark.requires_hard_links
 def test_waiting_contender_republishes_a_swept_record(lock_file: str, files: OsFiles, root: str) -> None:
     # A record removed out from under a contender (a sweeper that mistook it, an operator) comes back on its next poll,
     # so peers always have a record to watch by the time the contender is admitted.
@@ -412,6 +443,23 @@ def test_latest_probes_across_a_compaction_hole(lock_file: str, files: OsFiles, 
     Path(root, "gen", f"{3:020d}").unlink()
     behind = GenerationLog(files, lock_file, root)
     assert behind.latest().generation == 5
+
+
+def test_probe_stops_following_continuous_growth(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    log = GenerationLog(files, lock_file, root)
+    reads = []
+
+    def read_next(generation: int) -> Snapshot:
+        reads.append(generation)
+        return Snapshot(generation=generation, writer=None, readers=frozenset())
+
+    mocker.patch.object(log, "_read", autospec=True, side_effect=read_next)
+    latest = log._probe(Snapshot(generation=0, writer=None, readers=frozenset()))
+
+    assert latest.generation == 2 * _RETAINED_GENERATIONS
+    assert len(reads) == latest.generation
 
 
 def test_a_listing_naming_only_compacted_generations_fails_closed(

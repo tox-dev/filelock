@@ -138,7 +138,7 @@ class GenerationLog:
     # The ordered snapshots under ``gen/``, found by listing and probing, advanced by linking the next one.
     def __init__(self, files: _Files, lock_file: str, root: str) -> None:
         self._files = files
-        self._lock_file = lock_file
+        self.lock_file = lock_file
         self._directory = Path(root, GENERATIONS_DIRECTORY)
         self._epoch_path = str(self._directory / _EPOCH_NAME)
         self._head_path = str(self._directory / _HEAD_NAME)
@@ -162,7 +162,7 @@ class GenerationLog:
         # When everything the first pass named is gone, peers compacted past it while this client looked, or the log was
         # replaced; one more pass settles whether this client cannot see the head at all.
         if (latest := self._find()) is None and (latest := self._find()) is None:
-            raise SoftFileLockProtocolError(self._lock_file, None, "generation log names no readable snapshot")
+            raise SoftFileLockProtocolError(self.lock_file, None, "generation log names no readable snapshot")
         self._latest = latest
         return latest
 
@@ -243,14 +243,16 @@ class GenerationLog:
             return None
         if (snapshot := parse_snapshot(data)) is None or snapshot.generation != generation:
             name = self._name(generation)
-            raise SoftFileLockProtocolError(self._lock_file, name, "malformed generation record")
+            raise SoftFileLockProtocolError(self.lock_file, name, "malformed generation record")
         return snapshot
 
     def _probe(self, start: Snapshot, patience: int = _RETAINED_GENERATIONS) -> Snapshot:
         latest = start
         generation = start.generation
+        limit = generation + 2 * _RETAINED_GENERATIONS
         gap = 0
-        while gap < patience:
+        # A writer can keep adding records; the caller checks its deadline only after this probe returns.
+        while gap < patience and generation < limit:
             generation += 1
             if (snapshot := self._read(generation)) is None:
                 gap += 1
@@ -566,6 +568,8 @@ class Participant:
         # The record goes even when the log cannot be read: a contender that never entered then leaves nothing behind,
         # and a member still named ages out the same way with or without one.
         # A tree that was swapped out leaves no record this participant can reach, so there is nothing to commit out of.
+        # Peers may evict this record after its stale threshold, so retrying longer cannot preserve the hold.
+        give_up = self._clock() + self._stale_threshold
         with suppress(TreeReplacedError):
             try:
                 while self.token in (latest := self._log.latest()).members:
@@ -576,6 +580,9 @@ class Participant:
                     )
                     if self._log.commit(successor):
                         break
+                    if self._clock() >= give_up:
+                        msg = "could not withdraw holder from generation log before its stale threshold"
+                        raise SoftFileLockProtocolError(self._log.lock_file, None, msg)
             finally:
                 self._entered = False
                 self.generation = None
