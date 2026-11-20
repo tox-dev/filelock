@@ -928,6 +928,9 @@ epoch again after the link. If the log was replaced, the committer retries again
 can build on the first snapshot before its publisher finishes those checks. Keeping that slot occupied prevents a
 delayed writer from claiming the same generation.
 
+During recovery, renaming the whole log takes its epoch, snapshots and staged writes out of use together. Editing
+``gen/epoch`` or deleting individual records while peers use the log can mix records from two logs.
+
 Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
 new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers
 preference among cooperating participants.
