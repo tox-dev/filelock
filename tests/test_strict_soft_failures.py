@@ -415,7 +415,7 @@ def test_strict_soft_private_close_failure_removes_public_claim(tmp_path: Path, 
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         nonlocal private_fd
         fd = real_open_relative(directory_ref, name, flags, mode)
-        if flags & os.O_CREAT:
+        if flags & os.O_CREAT:  # pragma: win32 no cover  # the sentinel uses a separate opener there
             private_fd = fd
         return fd
 
@@ -620,7 +620,7 @@ def test_strict_soft_reaper_without_filesystem_clock_keeps_records(
     def deny_clock_probe(path: _PathValue, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
         if Path(os.fsdecode(path)).name.startswith(".held-"):
             raise PermissionError(EACCES, "read-only observer")
-        return real_open(path, flags, mode, dir_fd=dir_fd)
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # pragma: win32 no cover  # the probe raises there
 
     mocker.patch("filelock._strict.os.open", autospec=True, side_effect=deny_clock_probe)
     # A contender blocked by a foreign claim scans with the clock probe without publishing a claim of its own.
@@ -1821,7 +1821,7 @@ def test_strict_soft_private_inspection_failure_unlinks_vanished_record(tmp_path
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         nonlocal private_fd
         fd = real_open_relative(directory_ref, name, flags, mode)
-        if flags & os.O_CREAT:
+        if flags & os.O_CREAT:  # pragma: win32 no cover  # the sentinel uses a separate opener there
             private_fd = fd
         return fd
 
@@ -1851,7 +1851,7 @@ def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(tmp_path:
 
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         fd = real_open_relative(directory_ref, name, flags, mode)
-        if flags & os.O_CREAT:
+        if flags & os.O_CREAT:  # pragma: win32 no cover  # the sentinel uses a separate opener there
             private_records[fd] = Path(directory_ref[0], name)
         return fd
 
@@ -1880,7 +1880,7 @@ def test_strict_soft_record_finalization_close_and_unlink_failures_group(tmp_pat
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         nonlocal private_fd
         fd = real_open_relative(directory_ref, name, flags, mode)
-        if flags & os.O_CREAT:
+        if flags & os.O_CREAT:  # pragma: win32 no cover  # the sentinel uses a separate opener there
             private_fd = fd
         return fd
 
