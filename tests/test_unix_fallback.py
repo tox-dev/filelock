@@ -16,6 +16,7 @@ from tests.capability_marks import NEEDS_FCNTL
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from types import BuiltinFunctionType, FrameType
 
     from pytest_mock import MockerFixture, MockType
 
@@ -73,6 +74,57 @@ def test_fallback_emits_warning(tmp_path: Path) -> None:  # pragma: needs fcntl
     with pytest.warns(UserWarning, match="flock not supported on this filesystem, falling back to SoftFileLock"):
         lock.acquire()
     lock.release()
+
+
+@NEEDS_FCNTL
+def test_interrupted_unix_create_keeps_native_file(tmp_path: Path) -> None:  # pragma: needs fcntl
+    lock_path = tmp_path / "test.lock"
+    _interrupt_unix_create(UnixFileLock(lock_path))
+    assert lock_path.exists()
+    with UnixFileLock(lock_path, timeout=0) as lock:
+        assert lock.is_locked
+
+
+def _interrupt_unix_create(lock: UnixFileLock) -> None:  # pragma: needs fcntl
+    def interrupt(
+        frame: FrameType, event: str, operation: BuiltinFunctionType | None
+    ) -> None:  # pragma: no cover  # profile hooks run with tracing disabled
+        if (
+            event == "c_return"
+            and frame.f_code.co_name == "open_into"
+            and (operation is os.open or getattr(operation, "__name__", None) == "extend")
+        ):
+            raise KeyboardInterrupt
+
+    previous = sys.getprofile()
+    sys.setprofile(interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            lock.acquire()
+    finally:
+        sys.setprofile(previous)
+
+
+@NEEDS_FCNTL
+def test_interrupted_unix_create_removes_fallback_placeholder(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: needs fcntl
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
+    lock_path = tmp_path / "test.lock"
+    _interrupt_unix_create(UnixFileLock(lock_path))
+    assert not lock_path.exists()
+    with pytest.warns(UserWarning, match="falling back to SoftFileLock"), UnixFileLock(lock_path, timeout=0):
+        assert lock_path.read_bytes()
+
+
+@NEEDS_FCNTL
+def test_interrupted_unix_create_honors_disabled_fallback(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: needs fcntl
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
+    lock_path = tmp_path / "test.lock"
+    _interrupt_unix_create(UnixFileLock(lock_path, fallback_to_soft=False))
+    assert lock_path.exists()
 
 
 @NEEDS_FCNTL

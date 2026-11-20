@@ -1,0 +1,2 @@
+On Unix filesystems without ``flock``, an interrupted :class:`~filelock.FileLock` creation no longer leaves an empty file
+that blocks later soft fallback acquires.
