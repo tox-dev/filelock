@@ -452,6 +452,10 @@ or by others. Otherwise, filelock opens SQLite through a hard link (a second nam
 still selects this route. The directory must be writable by the locking account, and the filesystem must support hard
 links; when the link cannot be made, the lock raises :class:`OSError`.
 
+On its first connection to a database in a shared directory, filelock checks for links left by dead holders. It stops
+enumerating the parent directory after about 50 ms between cleanup operations. A crowded directory can leave a dead
+holder's extra hard link behind for a later process to inspect; the link does not keep the lock held.
+
 Both routes assume that no process of another account can replace the database directory or any directory above it.
 That holds when every directory above belongs to the locking account or root and is either not writable by others or
 has the sticky bit (a directory flag that lets only a file's owner rename or remove it).
