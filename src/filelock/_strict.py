@@ -46,6 +46,7 @@ from ._api import (
 )
 from ._error import SoftFileLockProtocolError
 from ._identity import (
+    describe_host_name,
     host_name,
     owner_is_stale,
     process_start_token,
@@ -950,9 +951,10 @@ def _describe_soft_marker(content: str) -> tuple[_OccupantState, str]:
         pid, hostname, start = holder
     else:
         return "unparsable", "a file that is neither the sentinel nor a soft-lock marker it can parse"
+    shown = describe_host_name(hostname)
     if owner_is_stale(pid, hostname, start):
-        return "exited", f"a soft-lock marker left by pid {pid} on {hostname}, which has exited"
-    return "held", f"a soft-lock marker held by pid {pid} on {hostname}"
+        return "exited", f"a soft-lock marker left by pid {pid} on {shown}, which has exited"
+    return "held", f"a soft-lock marker held by pid {pid} on {shown}"
 
 
 def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, parent_fd: int | None = None) -> None:

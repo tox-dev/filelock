@@ -1024,7 +1024,7 @@ returns an :class:`OwnerRecord <filelock.OwnerRecord>`:
     if (owner := lease.owner) is None:
         print("no marker, or its record is malformed or protocol 1")
     else:
-        print(owner.pid, owner.hostname)
+        print(owner.pid, repr(owner.hostname))
         print(owner.mode)            # "lease", or "unknown" for a contract this version cannot interpret
         print(owner.token)           # claim identity
         print(owner.lease_duration)  # 30.0
@@ -1036,6 +1036,9 @@ conventional hostname reaches the record unchanged, so an escape names a host wh
 Linux, a process outside the host's initial PID namespace appends ``?pidns-<inode>``, so a container's records never
 match a sibling container's that shares its hostname; see :ref:`concepts:How does stale lock detection work across
 platforms?`.
+
+Use ``repr(owner.hostname)`` when printing a marker's raw hostname. :class:`~filelock.Timeout` and
+:attr:`~filelock.StrictSoftFileLock.lock_path_occupant` escape it for display.
 
 :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` does **not** publish this record and has no ``owner``: it
 derives from :class:`BaseFileLock <filelock.BaseFileLock>`, keeps a permanent sentinel at the lock path, and stores one

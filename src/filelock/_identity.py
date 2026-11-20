@@ -63,10 +63,9 @@ def host_name() -> str:
         # Kernels before Linux 3.8 lack this file, and sandboxes can hide it.
         with suppress(OSError):
             namespace = Path("/proc/self/ns/pid").stat().st_ino
-    name = "".join(
-        chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
-        for byte in socket.gethostname().encode("utf-8", "surrogateescape")
-    ) + ("" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}")
+    name = _escape_outside(_HOST_NAME_VERBATIM, socket.gethostname()) + (
+        "" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}"
+    )
     # Every marker format in this package caps the hostname at the RFC 1123 limit and reads a longer one as malformed.
     host_name_limit: int = 253
     if len(name) > host_name_limit:
@@ -74,6 +73,17 @@ def host_name() -> str:
         name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
     # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
     return name or "?"
+
+
+def _escape_outside(verbatim: frozenset[int], name: str) -> str:
+    return "".join(
+        chr(byte) if byte in verbatim else f"?{byte:02x}" for byte in name.encode("utf-8", "surrogateescape")
+    )
+
+
+def describe_host_name(hostname: str) -> str:
+    # Preserve existing ?xx escapes in hostnames written by filelock.
+    return _escape_outside(_HOST_NAME_VERBATIM | {ord("?")}, hostname) or "?"
 
 
 def _same_start(current: int, recorded: int) -> bool:
@@ -361,6 +371,7 @@ if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma
 
 
 __all__ = [
+    "describe_host_name",
     "host_name",
     "owner_is_current_process",
     "owner_is_stale",

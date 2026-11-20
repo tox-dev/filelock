@@ -37,6 +37,7 @@ from ._api import (
     raise_grouped_errors,
 )
 from ._identity import (
+    describe_host_name,
     host_name,
     owner_is_current_process,
     owner_is_stale,
@@ -497,7 +498,7 @@ class SoftFileLock(BaseFileLock):
             if (content := read_lock_file(self._lock_path)[0]) == _RECORDLESS_MARKER:
                 return "an owner that recorded no PID (a filelock release before 3.22, or one still writing its record)"
             if (holder := self._recorded_holder(content)) and holder[1] != host_name():
-                return f"pid {holder[0]} on {holder[1]}"
+                return f"pid {holder[0]} on {describe_host_name(holder[1])}"
         return None
 
     def break_lock(self) -> None:
