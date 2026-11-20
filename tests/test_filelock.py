@@ -1840,7 +1840,13 @@ def test_acquire_after_one_interrupted_once_held_excludes_another_process(tmp_pa
 
 @pytest.mark.parametrize(
     "lock_type",
-    [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease, StrictSoftFileLock],
+    [
+        FileLock,
+        SoftFileLock,
+        MarkerSoftFileLock,
+        SoftFileLease,
+        pytest.param(StrictSoftFileLock, id="StrictSoftFileLock", marks=pytest.mark.requires_hard_links),
+    ],
 )
 @pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread-local"), pytest.param(False, id="shared")])
 @pytest.mark.parametrize("interrupted", ["_raise_if_would_deadlock", "_pin_lock_path"])
@@ -1867,7 +1873,16 @@ def test_early_acquire_exception_leaves_no_counted_hold(
         assert peer.is_locked
 
 
-@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease, StrictSoftFileLock])
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        FileLock,
+        SoftFileLock,
+        MarkerSoftFileLock,
+        SoftFileLease,
+        pytest.param(StrictSoftFileLock, id="StrictSoftFileLock", marks=pytest.mark.requires_hard_links),
+    ],
+)
 def test_early_nested_acquire_exception_keeps_one_level(
     tmp_path: Path, mocker: MockerFixture, lock_type: type[BaseFileLock]
 ) -> None:
