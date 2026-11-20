@@ -60,6 +60,7 @@ from ._util import (
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
+        create_exclusive_non_reparse_fd,
         open_read_without_oplock_wait,
     )
     from ._windows import (
@@ -145,13 +146,15 @@ class SoftFileLock(BaseFileLock):
     def _acquire(self) -> None:
         self._finish_marker_cleanup()
         raise_on_not_writable_file(self._lock_path)
-        # O_CREAT | O_EXCL makes the create fail with EEXIST when the file already exists, so a successful open
-        # means this process now holds the lock.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
         if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:  # pragma: needs o-nofollow
             flags |= o_nofollow
         try:
-            fd = os.open(self._lock_path, flags, self._open_mode() & ~_OTHERS_WRITE)
+            fd = (
+                create_exclusive_non_reparse_fd(self._lock_path)
+                if sys.platform == "win32"  # pragma: win32 cover
+                else os.open(self._lock_path, flags, self._open_mode() & ~_OTHERS_WRITE)
+            )
         except OSError as exception:
             if not (
                 exception.errno == EEXIST or (exception.errno == EACCES and sys.platform == "win32")

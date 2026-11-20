@@ -86,6 +86,21 @@ def test_lock_writes_pid_and_hostname(lock_path: Path, expected_lines: list[str]
         assert lines == expected_lines
 
 
+@NEEDS_SYMLINK  # pragma: needs symlink
+def test_dangling_symlink_does_not_create_its_target(lock_path: Path) -> None:
+    target = lock_path.with_name("target")
+    lock_path.symlink_to(target)
+    lock = SoftFileLock(lock_path)
+
+    try:
+        with pytest.raises(Timeout):
+            lock.acquire(timeout=0)
+    finally:
+        lock.release()
+
+    assert (lock_path.is_symlink(), target.exists()) == (True, False)
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -1519,13 +1534,14 @@ def test_failed_acquire_cleanup_spares_a_replacement(lock_path: Path, mocker: Mo
     assert lock_path.exists()
 
 
-def test_publication_without_identity_leaves_the_marker(lock_path: Path, mocker: MockerFixture) -> None:
+def test_publication_without_identity_leaves_the_marker(
+    lock_path: Path, mocker: MockerFixture, soft_open_spy: MockType
+) -> None:
     # The rollback cannot prove the path still names the file it created, so it leaves the marker to stale handling.
-    open_spy = mocker.spy(os, "open")
     real_fstat = os.fstat
 
     def no_identity(fd: int) -> os.stat_result:
-        if fd == open_spy.spy_return:
+        if fd == soft_open_spy.spy_return:
             raise OSError(ENODEV, "no identity")
         return real_fstat(fd)
 
@@ -1534,6 +1550,13 @@ def test_publication_without_identity_leaves_the_marker(lock_path: Path, mocker:
     with pytest.raises(OSError, match="no identity"):
         lock.acquire()
     assert (lock.is_locked, lock_path.exists()) == (False, True)
+
+
+@pytest.fixture
+def soft_open_spy(mocker: MockerFixture) -> MockType:
+    if sys.platform == "win32":
+        return mocker.spy(filelock._soft, "create_exclusive_non_reparse_fd")
+    return mocker.spy(os, "open")
 
 
 def test_transient_identity_failure_still_cleans_the_marker(lock_path: Path, mocker: MockerFixture) -> None:

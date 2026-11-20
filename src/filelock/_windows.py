@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
-from errno import ENOENT, ENOTDIR, EWOULDBLOCK
+from errno import EEXIST, ENOENT, ENOTDIR, EWOULDBLOCK
 from functools import cache
 from typing import TYPE_CHECKING, Final, cast
 
@@ -39,6 +39,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         0x00000001 | 0x00000002
     )  # read | write; matches os.open (_SH_DENYNO), no delete
     _FILE_OPEN: Final[int] = 1  # open the file only if it exists; the NtCreateFile OPEN_EXISTING
+    _FILE_CREATE: Final[int] = 2  # create only when the final name does not exist
     _FILE_OPEN_IF: Final[int] = 3  # open the file if it exists, create it otherwise; the NtCreateFile OPEN_ALWAYS
     # Attribute-only access skips share-mode checks, so the probe sees a name's deletion state rather than a reader.
     _FILE_READ_ATTRIBUTES: Final[int] = 0x00000080
@@ -90,6 +91,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     _STATUS_OPLOCK_BREAK_IN_PROGRESS: Final[int] = 0x00000108
     _STATUS_ACCESS_DENIED: Final[int] = 0xC0000022
     _STATUS_OBJECT_NAME_NOT_FOUND: Final[int] = 0xC0000034
+    _STATUS_OBJECT_NAME_COLLISION: Final[int] = 0xC0000035
     _STATUS_OBJECT_PATH_NOT_FOUND: Final[int] = 0xC000003A
     _STATUS_SHARING_VIOLATION: Final[int] = 0xC0000043
     _STATUS_DELETE_PENDING: Final[int] = 0xC0000056
@@ -417,6 +419,22 @@ if sys.platform == "win32":  # pragma: win32 cover
         sys.audit("open", path, None, os.O_RDONLY)
         share = _FILE_SHARE_ALL if share_delete else _FILE_SHARE_READ_WRITE
         return _open_existing_without_oplock_wait(path, _GENERIC_READ | _SYNCHRONIZE, os.O_RDONLY, share)
+
+    def create_exclusive_non_reparse_fd(path: str) -> int:
+        # Windows' CRT can create a dangling symlink's target even with O_EXCL; FILE_CREATE checks the final name.
+        sys.audit("open", path, None, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC)
+        handle, status = _nt_create(
+            path,
+            _GENERIC_WRITE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
+            _FILE_ATTRIBUTE_NORMAL,
+            _FILE_SHARE_READ_WRITE,
+            _FILE_CREATE,
+        )
+        if status == _STATUS_OBJECT_NAME_COLLISION:
+            raise FileExistsError(EEXIST, os.strerror(EEXIST), path)
+        if status != _STATUS_SUCCESS:
+            raise _status_error(status, path)
+        return _descriptor_for_non_reparse(handle, path, os.O_WRONLY)
 
     def open_for_delete_without_oplock_wait(path: str) -> int:
         # Open *path* with delete access and return a descriptor, without waiting for an oplock holder to answer.
@@ -798,6 +816,7 @@ else:  # pragma: win32 no cover
 __all__ = [
     "WindowsFileLock",
     "cancelling_oplock_wait",
+    "create_exclusive_non_reparse_fd",
     "directory_is_private",
     "identity_at",
     "identity_of_fd",
