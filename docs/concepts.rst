@@ -819,6 +819,11 @@ an outer ``/proc`` (``unshare --pid`` without ``--mount-proc``, ``nsenter --pid`
 unrelated task at ``/proc/<pid>``, possibly another user's. Such a process records no start token and reads none
 either, and falls back to the PID alone the same way.
 
+Workers can still read their own ``/proc/<tid>/timens_offsets`` after the main thread exits. A zero boottime offset lets
+a worker recognize its own start token. Filelock keeps a handle to the last namespace with a verified zero offset and
+reuses that value while the worker stays in that namespace. If the worker cannot establish a zero offset, it omits the
+token.
+
 A contender never leaves the lock path empty while it breaks a marker. Right before breaking it reads the marker's inode
 (the kernel's identity for a file, independent of its name) and modification time again. If they moved since the stale
 check, it leaves the marker alone, the way Mercurial re-reads a lock under its break lock before removing it. On Linux

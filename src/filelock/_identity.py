@@ -165,6 +165,8 @@ else:  # pragma: win32 no cover
         return True
 
     if sys.platform in {"linux", "android"}:  # pragma: linux cover
+        from io import FileIO
+
         # Termux/Android reports sys.platform == "android" but runs the Linux kernel, so /proc/<pid>/stat and the boot
         # id are the same reliable start-time source; treat it exactly like Linux rather than the tokenless fallback.
         # comm (field 2) is wrapped in parentheses and may itself contain spaces or a ')', so the fixed fields start
@@ -185,6 +187,17 @@ else:  # pragma: win32 no cover
         _BOOT_ID: Final[int] = _read_boot_id()
         #: ``TIME_NS_INIT_INO`` in ``linux/proc_ns.h``, fixed by the kernel ABI like the initial PID namespace's inode.
         _INITIAL_TIME_NAMESPACE: Final[int] = 0xEFFFFFFA
+
+        class _UnshiftedNamespace(FileIO):
+            last: _UnshiftedNamespace | None = None
+
+            def __init__(self, path: Path) -> None:
+                super().__init__(path, "rb")
+                self.identity = os.fstat(self.fileno())
+
+            def __del__(self) -> None:
+                # Replacing the cache entry releases its namespace pin.
+                self.close()
 
         def process_start_token(pid: int) -> int | None:
             # The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id.
@@ -219,24 +232,37 @@ else:  # pragma: win32 no cover
 
         def _starttime_unshifted() -> bool:
             # setns can move this process into another time namespace, so ask on every read.
+            # /proc/self names the group leader, which may have exited while another thread still holds a lock.
             try:
-                namespace: Final[int] = Path("/proc/self/ns/time").stat().st_ino
+                namespace_path = Path("/proc/thread-self/ns/time")
+                namespace = namespace_path.stat()
             except FileNotFoundError:  # no entry means no time namespaces on this kernel
                 return True
             except OSError:  # any other failure leaves the namespace unknown, so starttime is not comparable
                 return False
-            if namespace == _INITIAL_TIME_NAMESPACE:
+            if namespace.st_ino == _INITIAL_TIME_NAMESPACE or (
+                (cached := _UnshiftedNamespace.last) is not None and os.path.samestat(namespace, cached.identity)
+            ):
                 return True
-            # A container runtime may give each container a time namespace without offsets. timens_offsets describes
-            # the namespace this process's children get, its own unless it unshared one since.
+            # timens_offsets describes the namespace for children. Only /proc/<tid> exposes it for a worker that
+            # outlives the group leader. thread-self supplies the TID used by this procfs.
             try:
-                if Path("/proc/self/ns/time_for_children").stat().st_ino != namespace:
+                pin = _UnshiftedNamespace(namespace_path)
+            except OSError:
+                pin = None
+            try:
+                if not os.path.samestat(Path("/proc/thread-self/ns/time_for_children").stat(), namespace):
                     return False
-                offsets: Final[str] = Path("/proc/self/timens_offsets").read_text(encoding="ascii")
+                tid = Path("/proc/thread-self").readlink().name
+                offsets: Final[str] = Path(f"/proc/{tid}/timens_offsets").read_text(encoding="ascii")
             except OSError:
                 return False
             # The clock goes by name since Linux 5.8 and by clock id before.
-            return any(line.split() in (["boottime", "0", "0"], ["7", "0", "0"]) for line in offsets.splitlines())
+            unshifted = any(line.split() in (["boottime", "0", "0"], ["7", "0", "0"]) for line in offsets.splitlines())
+            # An entered namespace has immutable offsets. Keep one namespace alive so inode reuse cannot match it.
+            if unshifted and pin is not None and os.path.samestat(namespace, pin.identity):
+                _UnshiftedNamespace.last = pin
+            return unshifted
 
         def _read_start_token(pid: int) -> int | None:
             try:

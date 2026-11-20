@@ -845,7 +845,7 @@ This happens automatically. You don't need to do anything special:
 Cross-host records remain because their PID cannot be interpreted locally. On platforms without process-start identity,
 a reused PID can also keep a dead owner's marker in place.
 
-Every platform stores a process start token in the marker to guard against PID recycling: Linux uses the
+Where available, the marker stores a process start token to guard against PID recycling: Linux uses the
 ``/proc/<pid>/stat`` start time folded with the boot id, macOS reads it through ``sysctl``, and Windows uses the
 ``GetProcessTimes`` creation time. Malformed records follow a different rule: a waiter may evict them once it has seen
 them unchanged for two seconds. An empty marker, which is all a ``SoftFileLock`` before 3.22 writes, is never evicted
