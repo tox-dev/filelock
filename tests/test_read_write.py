@@ -66,6 +66,8 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
+    from filelock._read_write import _Operation  # simplint: ignore[private-import-path]  # typing injected callback
+
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 5)
 def test_read_locks_are_shared(lock_file: str) -> None:
@@ -630,11 +632,51 @@ def _convert_to_wal(path: str) -> None:
         connection.executescript("PRAGMA journal_mode=WAL; CREATE TABLE application (value);").close()
 
 
+@pytest.mark.parametrize(
+    "versions",
+    [pytest.param(b"\x03\x01", id="read-version-1"), pytest.param(b"\x03\x00", id="read-version-0")],
+)
+def test_read_write_lock_refuses_read_only_sqlite_header(tmp_path: Path, versions: bytes) -> None:
+    database = tmp_path / "lock.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA user_version=1")
+    page = bytearray(database.read_bytes())
+    page[18:20] = versions
+    database.write_bytes(page)
+
+    with pytest.raises(ValueError, match="unsupported SQLite format versions"):
+        ReadWriteLock(database, is_singleton=False)
+    assert database.read_bytes() == page
+
+
 def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     _convert_to_wal(lock_file)
     with pytest.raises(ValueError, match="WAL-mode"):
         lock.acquire_read()
+    lock.close()
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+def test_read_write_lock_refuses_wal_switch_during_acquire(
+    lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
+) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    execute_waiting = ReadWriteLock._execute_waiting
+
+    def switch_then_execute(
+        connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
+    ) -> None:
+        if statements.startswith("BEGIN"):
+            with closing(sqlite3.connect(lock_file)) as switched:
+                switched.executescript("PRAGMA journal_mode=WAL; PRAGMA user_version=1;")
+        execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
+
+    mocker.patch.object(ReadWriteLock, "_execute_waiting", new=staticmethod(switch_then_execute))
+    with pytest.raises(ValueError, match="switched to WAL mode while acquiring"):
+        getattr(lock, f"acquire_{mode}")()
+    with pytest.raises(RuntimeError, match="not held"):
+        lock.release()
     lock.close()
 
 

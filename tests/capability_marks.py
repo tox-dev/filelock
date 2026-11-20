@@ -61,6 +61,10 @@ NEEDS_FOREIGN_STICKY_TMP: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     reason="a node of another account is refused only under a sticky parent this account does not own",
 )
 
+NEEDS_USER_NAMESPACES: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform not in {"linux", "android"}, reason="user namespaces exist only on Linux"
+)
+
 NEEDS_FILE_PERMISSIONS: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["file-permissions"],
     reason="requires enforced file permissions",

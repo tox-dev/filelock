@@ -30,6 +30,7 @@ from tests.capability_marks import (
     NEEDS_FOREIGN_STICKY_TMP,
     NEEDS_SYMLINK,
     NEEDS_UNLINK_OPEN_FILE,
+    NEEDS_USER_NAMESPACES,
 )
 from tests.descriptor_helpers import descriptors_on
 
@@ -1788,6 +1789,36 @@ def test_strict_soft_narrows_claim_directory_with_live_claim(tmp_path: Path) -> 
         with pytest.raises(Timeout):
             StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
         assert stat.S_IMODE(claims.stat().st_mode) == 0o1700
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+@NEEDS_USER_NAMESPACES  # pragma: darwin no cover
+@pytest.mark.usefixtures("uid_shared_with_unmapped_accounts")
+def test_strict_soft_refuses_coordination_directory_with_an_unmapped_owner(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path,
+) -> None:
+    (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()
+
+    with pytest.raises(SoftFileLockProtocolError, match="not to this process's account"):
+        StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0).acquire()
+    assert list(coordination.iterdir()) == []
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+@NEEDS_USER_NAMESPACES  # pragma: darwin no cover
+@pytest.mark.parametrize(
+    "error",
+    [pytest.param(OSError("proc unavailable"), id="unreadable"), pytest.param(ValueError("invalid"), id="invalid")],
+)
+def test_strict_soft_refuses_ownership_when_overflow_uid_is_unknown(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path, mocker: MockerFixture, error: OSError | ValueError
+) -> None:
+    (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()
+    mocker.patch.object(Path, "read_text", autospec=True, side_effect=error)
+
+    with pytest.raises(SoftFileLockProtocolError, match="not to this process's account"):
+        StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0).acquire()
+    assert list(coordination.iterdir()) == []
 
 
 def test_strict_soft_coordination_directory_replaced_in_a_writable_parent_splits_holders(tmp_path: Path) -> None:
