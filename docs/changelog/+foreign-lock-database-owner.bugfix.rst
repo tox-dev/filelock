@@ -1,3 +1,3 @@
-:class:`~filelock.ReadWriteLock` refuses, with ``PermissionError``, a lock database that another account owns under a
-sticky parent such as ``/tmp``, as :class:`~filelock.UnixFileLock` does for its lock file. Its owner could remove it
-during a hold, after which a second process opened a new database at the same path and both held the lock.
+On Unix, :class:`~filelock.ReadWriteLock` raises :class:`PermissionError` in a sticky directory such as ``/tmp``
+unless the caller or the directory owner owns the lock database. Another owner could replace the database during a hold
+and split readers and writers across two databases.

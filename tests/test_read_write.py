@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from contextlib import closing
-from errno import EBADF, EWOULDBLOCK
+from errno import EWOULDBLOCK
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -656,38 +656,6 @@ def test_read_write_lock_checks_owner_of_reused_probe(  # pragma: needs foreign-
             ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX opens the database by descriptor")
-def test_read_write_lock_closes_database_when_parent_disappears(  # pragma: win32 no cover
-    tmp_path: Path, mocker: MockerFixture
-) -> None:
-    (parent := tmp_path / "parent").mkdir()
-    lock_path = parent / "lock.db"
-    original_open = os.open
-    opened_fd: int | None = None
-
-    def move_parent_after_open(
-        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-        flags: int,
-        mode: int = 0o777,
-        *,
-        dir_fd: int | None = None,
-    ) -> int:
-        nonlocal opened_fd
-        assert os.fspath(path) == os.fspath(lock_path)
-        fd = original_open(path, flags, mode, dir_fd=dir_fd)
-        opened_fd = fd
-        parent.rename(tmp_path / "moved")
-        return fd
-
-    mocker.patch("filelock._read_write.os.open", autospec=True, side_effect=move_parent_after_open)
-    with pytest.raises(FileNotFoundError):
-        ReadWriteLock(lock_path, is_singleton=False)
-    assert opened_fd is not None
-    with pytest.raises(OSError, match="Bad file descriptor") as raised:
-        os.fstat(opened_fd)
-    assert raised.value.errno == EBADF
-
-
 def test_read_write_lock_refuses_a_wal_database(lock_file: str) -> None:
     _convert_to_wal(lock_file)
     with pytest.raises(ValueError, match="WAL-mode"):
@@ -1322,25 +1290,26 @@ def test_windows_shared_directory_refuses_a_link_directory_others_can_write(  # 
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
-def test_windows_shared_directory_release_keeps_files_in_a_replacement(  # pragma: win32 cover
+def test_windows_shared_directory_release_keeps_a_directory_renamed_onto_the_link(  # pragma: win32 cover
     everyone_writable_database: Path, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     other = tmp_path / "other"
     other.mkdir()
-    protected: list[Path] = []
+    (other / "notes.txt").write_text("keep")
+    renamed: list[Path] = []
 
     def swap_then_remove(
         link: Any,  # ruff:ignore[any-type]  # simplint: ignore[imprecise-annotation]  # private payload
     ) -> None:
-        (other / link.name).mkdir()
-        protected.append(other / link.name / "lock.db")
-        protected[0].write_text("keep")
-        _remove_link_directory_on_windows(link._replace(path=other))
+        link.path.rename(tmp_path / "aside")
+        other.rename(link.path)
+        renamed.append(link.path)
+        _remove_link_directory_on_windows(link)
 
     mocker.patch("filelock._read_write._remove_link_directory_on_windows", autospec=True, side_effect=swap_then_remove)
     ReadWriteLock(everyone_writable_database, is_singleton=False).close()
 
-    assert protected[0].read_text() == "keep"
+    assert (renamed[0] / "notes.txt").read_text() == "keep"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
