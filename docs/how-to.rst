@@ -443,14 +443,13 @@ mode or with unsupported SQLite file-format versions raises :class:`ValueError`:
 write hold. A database whose schema takes more than a few kilobytes to load also raises :class:`ValueError`, because
 the acquire timeout does not bound that load.
 
-On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
-``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
-names the database directly only when no process of another account can create names in its directory and none of those
-three side files exists. The directory must belong to the locking account or root and must not be writable by its group
-or by others. Otherwise, filelock opens SQLite through a hard link (a second name for the same file) inside a
-``.filelock-*`` directory that only the locking account can read. A side file left before the directory was made private
-still selects this route. The directory must be writable by the locking account, and the filesystem must support hard
-links; when the link cannot be made, the lock raises :class:`OSError`.
+On POSIX, filelock opens the database directly when its directory belongs to the locking account or root, its group
+and others cannot write there, and none of SQLite's side files (``-journal``, ``-wal`` or ``-shm``) exist.
+
+Otherwise, filelock creates a private directory under ``.filelock-*`` and opens a hard link to the database there.
+This keeps SQLite's side files out of the shared directory. The locking account needs write access to the parent and a
+filesystem that supports hard links. If inherited permissions expose the private directory to other accounts, filelock
+raises :class:`PermissionError`.
 
 On its first connection to a database in a shared directory, filelock looks for hard links left by dead holders. It
 checks a 50 ms deadline between directory entries. If time runs out, a later connection can try again. A leftover
@@ -465,13 +464,8 @@ Both routes assume that no process of another account can replace the database d
 That holds when every directory above belongs to the locking account or root and is either not writable by others or
 has the sticky bit (a directory flag that lets only a file's owner rename or remove it).
 
-A process that can rename an entry in a directory above owns every name below it, and can put a replacement at the
-database path between the lock's checks. filelock compares the name with the file it checked before it runs any SQL statement, and raises
-:class:`OSError` instead of reporting the lock held, and leaves the replacement's files as they were, except that
-SQLite's open creates an empty ``lock.db`` there when the name is missing, following a symlink at that name. A swap that lands after that
-comparison and before SQLite's first statement still makes SQLite look up ``-journal`` and ``-wal`` under the
-replacement: it deletes both, and beside a non-empty lock database it first replays the journal into that database and
-unlinks the file the journal names.
+Keep the database under directories trusted by the locking account. If another account can replace a directory above
+the database, it can change which files SQLite sees between the identity check and the first SQL statement.
 
 On Windows the lock makes the same choice from the directory's access control list (ACL). It connects by the database
 name only when the directory's owner and every entry that allows adding files, adding subdirectories or deleting entries
