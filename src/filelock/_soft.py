@@ -467,7 +467,7 @@ class SoftFileLock(BaseFileLock):
                 self._windows_unlink_if_ours(identity)
         else:  # pragma: win32 no cover
             for name in self._marker_names():
-                with suppress(FileNotFoundError):
+                with suppress(FileNotFoundError, NotADirectoryError):
                     if _file_identity(os.lstat(name)) == identity:
                         Path(name).unlink()
                         return
@@ -565,7 +565,7 @@ class SoftFileLock(BaseFileLock):
                 continue
             try:
                 Path(name).unlink()
-            except FileNotFoundError:
+            except (FileNotFoundError, NotADirectoryError):
                 continue
             except OSError as error:
                 # A handler can raise after unlink succeeds. Keep the descriptor pinned until the name is checked.
@@ -693,7 +693,7 @@ def _end_claim(name: str | Path) -> None:  # pragma: win32 no cover
 def _marker_identity_at(name: str) -> tuple[int, int] | None:  # pragma: win32 no cover
     try:
         return _file_identity(os.lstat(name))
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return None
 
 
