@@ -1485,11 +1485,11 @@ def _raise_if_unsupported_sqlite_format(fd: int, database: str) -> None:
 @contextmanager
 def _bounded_schema(connection: sqlite3.Connection, database: str) -> Generator[None]:
     # The first statement loads the file's complete schema, which no timeout bounds, and a lock database has none.
-    # Waiting for a lock runs no virtual machine steps, so a step budget bounds only that load.
+    # Waiting for a lock runs no virtual machine steps; schema parsing is not reliably charged to that budget.
     calls: Final[count[int]] = count()
     max_calls: Final[int] = 10
-    connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 4096)
-    connection.set_progress_handler(lambda: next(calls) >= max_calls, 1000)
+    connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1024)
+    connection.set_progress_handler(lambda: next(calls) >= max_calls, 50)
     try:
         yield
     except sqlite3.DatabaseError as error:

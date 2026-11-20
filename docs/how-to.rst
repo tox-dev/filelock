@@ -440,8 +440,8 @@ When you have many readers and occasional writers, use :class:`ReadWriteLock <fi
 to proceed concurrently. ``ReadWriteLock`` is backed by SQLite; a ``.db`` extension is a convention rather than a
 requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. A database in WAL
 mode or with unsupported SQLite file-format versions raises :class:`ValueError`: neither provides a trusted exclusive
-write hold. A database whose schema takes more than a few kilobytes to load also raises :class:`ValueError`, because
-the acquire timeout does not bound that load.
+write hold. A database with many tables, indexes or long schema rows can also raise :class:`ValueError`, because the
+acquire timeout does not bound SQLite's schema load. Give the lock a database of its own.
 
 On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
 ``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
