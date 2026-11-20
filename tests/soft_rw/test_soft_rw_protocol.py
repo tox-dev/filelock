@@ -620,8 +620,9 @@ def test_a_head_from_a_wiped_log_names_nothing_in_the_new_one(
 
 
 @pytest.mark.requires_hard_links
-def test_a_commit_overtaken_by_a_wipe_leaves_the_new_heads_alone(
-    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture
+@pytest.mark.parametrize("generation", [pytest.param(2, id="slot-absent"), pytest.param(3, id="slot-reused")])
+def test_a_commit_overtaken_by_a_wipe_leaves_the_replacement_generation_alone(
+    lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture, generation: int
 ) -> None:
     old = _committed(files, lock_file, root, [None, _FIRST])
     real_link = files.link
@@ -629,14 +630,13 @@ def test_a_commit_overtaken_by_a_wipe_leaves_the_new_heads_alone(
     def link_then_wipe(source: str, target: str) -> bool:
         landed = real_link(source, target)
         shutil.rmtree(root)
-        _committed(OsFiles(lock_file), lock_file, root, [_SECOND, None])
+        _committed(OsFiles(lock_file), lock_file, root, [None] * (generation - 1) + [_SECOND])
         return landed
 
     mocker.patch.object(files, "link", autospec=True, side_effect=link_then_wipe)
-    assert (old.commit(Snapshot(generation=3, writer=None, readers=frozenset())), _published(head)) == (
-        True,
-        Snapshot(generation=2, writer=None, readers=frozenset()),
-    )
+    assert not old.commit(Snapshot(generation=3, writer=None, readers=frozenset()))
+    replacement = Snapshot(generation=generation, writer=_SECOND, readers=frozenset())
+    assert (old.latest(), _published(head)) == (replacement, replacement)
 
 
 def _published(head: Path) -> Snapshot | None:
@@ -738,6 +738,27 @@ def test_a_cold_start_record_keeps_its_slot_when_a_peer_extends_it(
     assert GenerationLog(OsFiles(lock_file), lock_file, root).latest() == Snapshot(
         generation=2, writer=None, readers=frozenset({_FIRST, _SECOND})
     )
+
+
+@pytest.mark.requires_hard_links
+def test_a_cold_start_commit_rechecks_the_initialized_epoch(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    files.prepare(root)
+    epoch = Path(root, "gen", "epoch")
+    epoch.write_bytes(b"")
+    log = GenerationLog(files, lock_file, root)
+    assert log.latest().generation == 0
+    link = files.link
+
+    def finish_epoch_after_link(source: str, target: str) -> bool:
+        landed = link(source, target)
+        epoch.write_bytes(f"{_SECOND}\n".encode())
+        return landed
+
+    mocker.patch.object(files, "link", autospec=True, side_effect=finish_epoch_after_link)
+    reader = Snapshot(generation=1, writer=None, readers=frozenset({_FIRST}))
+    assert (log.commit(reader), log.latest()) == (False, reader)
 
 
 @pytest.mark.requires_hard_links

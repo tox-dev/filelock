@@ -269,17 +269,8 @@ class GenerationLog:
         # only one link to ``gen/<N+1>`` can ever succeed. The link's return code is not trusted, because an NFS retry
         # can report a link that did land as failed; the file's identity after the call is what decides.
         #
-        # A log whose epoch changed since the snapshot was read is a different log, so the commit is refused as lost and
-        # the caller re-reads; that narrows a wipe racing this commit to the moment between the epoch check and the
-        # link. A slot compaction freed is refused the same way, before the link and again after it, since a committer
-        # can stall in between.
-        #
-        # After the link a surviving predecessor proves little: it may be a record another stalled committer linked into
-        # its own freed slot and has yet to remove.
-        #
-        # A slot comes free once the log is a whole window past it, and the head stays, so a record the listing or
-        # ``HEAD`` leads by a window is refused as well. Within one epoch, a record refused after it landed stays until
-        # the log moves a window past it: a peer can build on it between the lead sample and the refusal.
+        # Compaction can free this slot, or a peer can replace the log, while the committer is paused at the link.
+        # A surviving predecessor can itself be a delayed write. Check the lead against both the listing and HEAD.
         if self._files.read(self._epoch_path) != self._epoch or not self._extends_the_log(successor.generation):
             return False
         if not self._publish(
@@ -287,9 +278,15 @@ class GenerationLog:
         ):
             return False
         lead = max([*self._listed(), self._head_generation() or 0]) - successor.generation
-        if lead >= _RETAINED_GENERATIONS or not self._extends_the_log(successor.generation):
-            if lead >= _RETAINED_GENERATIONS or self._files.read(self._epoch_path) != self._epoch:
-                self._files.unlink(self._path(successor.generation))
+        extends = self._extends_the_log(successor.generation)
+        epoch_changed = self._files.read(self._epoch_path) != self._epoch
+        # After a wipe, an isolated record from the old log could become the head of its replacement.
+        orphan = epoch_changed and successor.generation > 1 and not extends and lead <= 0
+        if orphan or (not epoch_changed and lead >= _RETAINED_GENERATIONS):
+            self._files.unlink(self._path(successor.generation))
+            return False
+        if epoch_changed or not extends:
+            # A peer can already have extended this record. Keep its slot occupied until compaction.
             return False
         self._latest = successor
         # Readers verify the generation HEAD names, so a failed rename costs a probe, not the commit. A late one would
