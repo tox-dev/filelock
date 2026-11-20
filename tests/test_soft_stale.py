@@ -1594,25 +1594,6 @@ def test_release_under_a_peers_exchange_leaves_the_peers_marker(  # pragma: win3
     )
 
 
-def test_release_without_identity_skips_unlink(lock_path: Path, mocker: MockerFixture) -> None:
-    lock = SoftFileLock(lock_path)
-    lock.acquire()
-    held: Final[os.stat_result] = lock_path.stat()
-    real_fstat = os.fstat
-
-    def no_identity(fd: int) -> os.stat_result:
-        # The held descriptor can no longer be identified, so release cannot prove the path is still ours: it closes
-        # and clears held state without unlinking rather than risk deleting a successor's marker.
-        if os.path.samestat(found := real_fstat(fd), held):
-            raise OSError
-        return found
-
-    mocker.patch("filelock._soft.os.fstat", side_effect=no_identity, autospec=True)
-    lock.release()
-    assert not lock.is_locked
-    assert lock_path.exists()
-
-
 def test_normal_release_removes_own_marker(lock_path: Path) -> None:
     with SoftFileLock(lock_path):
         assert lock_path.exists()
@@ -1646,8 +1627,11 @@ def test_stale_release_spares_a_successor(lock_path: Path) -> None:  # pragma: n
 def test_windows_release_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 cover
     lock = SoftFileLock(lock_path)
     lock.acquire()
-    _hold_reports_foreign_identity(mocker)
+    mocker.patch(
+        "filelock._soft.os.lstat", return_value=os.stat_result((0, 999, 1, 0, 0, 0, 0, 0, 0, 0)), autospec=True
+    )
     lock.release()
+    mocker.stopall()
     assert lock_path.exists()
     lock_path.unlink()
 
@@ -1823,6 +1807,20 @@ def test_marker_cleanup_failure_keeps_the_lock_held_for_a_retry(  # pragma: win3
     lock.release()
 
     assert (info.value, held, lock.is_locked, lock_path.exists()) == (cleanup_error, (True, True), False, False)
+
+
+@pytest.mark.parametrize("lock_type", [pytest.param(SoftFileLock, id="soft"), pytest.param(SoftFileLease, id="lease")])
+def test_release_keeps_marker_cleanup_after_fstat_signal(
+    lock_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock]
+) -> None:
+    lock = lock_type(lock_path, is_singleton=False)
+    lock.acquire()
+    fstat = mocker.patch("filelock._soft.os.fstat", autospec=True, side_effect=TimeoutError("deadline"))
+    lock.release()
+    mocker.stop(fstat)
+
+    with SoftFileLock(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows always unlinks the marker after the close")

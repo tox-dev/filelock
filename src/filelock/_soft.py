@@ -509,12 +509,10 @@ class SoftFileLock(BaseFileLock):
     def _release(self) -> None:
         fd = self._context.lock_file_fd
         assert fd is not None  # ruff:ignore[assert]  # _release runs only while held, so the descriptor is set
-        # Capture the held file's identity before closing so cleanup can refuse to unlink a successor's marker. A
-        # supported lifetime lease lets a peer break our expired marker and create its own at this path before we
-        # release; unlinking by path alone would then delete the successor's lock.
-        identity: tuple[int, int] | None = None
-        with suppress(OSError):
-            identity = _file_identity(os.fstat(fd))
+        # Acquisition saved this inode before publishing the hold. A signal can interrupt another fstat during release,
+        # and a successor may own the pathname after expiry.
+        identity = self._context.lock_file_fd_identity
+        assert identity is not None  # ruff:ignore[assert]  # both acquisition paths publish the inode before the hold
         if sys.platform == "win32":  # pragma: win32 cover
             self._release_then_unlink(fd, identity)
         else:  # pragma: win32 no cover
@@ -532,7 +530,7 @@ class SoftFileLock(BaseFileLock):
                 if not unlinked:
                     self._unlink_held_marker(identity)
 
-    def _release_then_unlink(self, fd: int, identity: tuple[int, int] | None) -> None:  # pragma: win32 cover
+    def _release_then_unlink(self, fd: int, identity: tuple[int, int]) -> None:  # pragma: win32 cover
         # Windows cannot unlink an open file, so the unlink outlives the hold until it lands, here or on a later acquire
         # or release. Only the gate's holder touches the pending record, so two threads never overwrite each other's.
         with self._transition_lock:
@@ -554,9 +552,7 @@ class SoftFileLock(BaseFileLock):
                 raise
             self._finish_marker_cleanup()
 
-    def _unlink_open_marker(self, fd: int, identity: tuple[int, int] | None) -> bool:  # pragma: win32 no cover
-        if identity is None:
-            return True
+    def _unlink_open_marker(self, fd: int, identity: tuple[int, int]) -> bool:  # pragma: win32 no cover
         replaced = False
         for name in self._marker_names():
             try:
