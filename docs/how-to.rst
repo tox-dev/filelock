@@ -1023,6 +1023,12 @@ Linux, a process outside the host's initial PID namespace appends ``?pidns-<inod
 match a sibling container's that shares its hostname; see :ref:`concepts:How does stale lock detection work across
 platforms?`.
 
+A :class:`~filelock.Timeout` message and :attr:`lock_path_occupant <filelock.StrictSoftFileLock.lock_path_occupant>`
+escape a recorded hostname the same way whoever wrote the marker, except that a ``?`` already in it stays as it is.
+``owner.hostname`` is the marker's text as recorded: an older release wrote the kernel's hostname raw, and another
+local user who created the lock file first chose what it says, so it can hold control bytes. Escape it, for example
+with ``repr()``, before printing it.
+
 :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` does **not** publish this record and has no ``owner``: it
 derives from :class:`BaseFileLock <filelock.BaseFileLock>`, keeps a permanent sentinel at the lock path, and stores one
 record per owner under ``work.lock.filelock/claims``. Read those through

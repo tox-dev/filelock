@@ -62,8 +62,9 @@ def test_describe_host_name_shows_this_hosts_name_unchanged() -> None:
         pytest.param("host\x1b[2K\x1b[1A\x7f\tname", "host?1b[2K?1b[1A?7f?09name", id="control-bytes"),
         pytest.param("w\u00f6rks", "w?c3?b6rks", id="non-ascii"),
         pytest.param("b\udcffd", "b?ffd", id="undecodable-byte"),
+        pytest.param("", "?", id="empty"),
     ],
 )
 def test_describe_host_name_stays_within_the_marker_grammar(recorded: str, shown: str) -> None:
-    # A marker's hostname is what its writer put there, so a message shows it the way host_name() would have written it.
+    # A marker's hostname is what its writer put there, so a message escapes it as host_name() does, except a ``?``.
     assert describe_host_name(recorded) == shown

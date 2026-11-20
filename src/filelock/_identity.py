@@ -12,8 +12,6 @@ from typing import Final
 
 #: The bytes those formats carry verbatim: printable non-space ASCII, less the ``?`` reserved for the escape.
 _HOST_NAME_VERBATIM: Final[frozenset[int]] = frozenset(range(0x21, 0x7F)) - {ord("?")}
-#: The bytes a recorded hostname shows as themselves: the verbatim set and the ``?`` an escape starts with.
-_HOST_NAME_SHOWN: Final[frozenset[int]] = _HOST_NAME_VERBATIM | {ord("?")}
 #: The characters at the end of an over-long name that carry a digest of the part cut off.
 _HOST_NAME_DIGEST_LEN: Final[int] = 8
 #: The kernel ABI fixes the initial PID namespace's inode (``PID_NS_INIT_INO`` in ``linux/nsfs.h``); every namespace
@@ -63,10 +61,9 @@ def host_name() -> str:
         namespace = Path("/proc/self/ns/pid").stat().st_ino
     except OSError:  # only Linux 3.8+ has the file, and a sandbox may hide it; nothing else tells namespaces apart
         namespace = _INITIAL_PID_NAMESPACE
-    name = "".join(
-        chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
-        for byte in socket.gethostname().encode("utf-8", "surrogateescape")
-    ) + ("" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}")
+    name = _escape_outside(_HOST_NAME_VERBATIM, socket.gethostname()) + (
+        "" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}"
+    )
     # Every marker format in this package caps the hostname at the RFC 1123 limit and reads a longer one as malformed.
     host_name_limit: int = 253
     if len(name) > host_name_limit:
@@ -74,6 +71,12 @@ def host_name() -> str:
         name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
     # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
     return name or "?"
+
+
+def _escape_outside(verbatim: frozenset[int], name: str) -> str:
+    return "".join(
+        chr(byte) if byte in verbatim else f"?{byte:02x}" for byte in name.encode("utf-8", "surrogateescape")
+    )
 
 
 def describe_host_name(hostname: str) -> str:
@@ -84,10 +87,9 @@ def describe_host_name(hostname: str) -> str:
     # sequence in it reaches the terminal or log that prints the exception, where it can erase or rewrite the lines
     # around it. Every byte outside printable non-space ASCII is escaped as ``?<hex>``, the form :func:`host_name`
     # uses, and a ``?`` stays, so a name this release wrote reads back unchanged.
-    return "".join(
-        chr(byte) if byte in _HOST_NAME_SHOWN else f"?{byte:02x}"
-        for byte in hostname.encode("utf-8", "surrogateescape")
-    )
+    #
+    # A legacy marker can record no hostname at all, which shows as the bare ``?`` :func:`host_name` writes for one.
+    return _escape_outside(_HOST_NAME_VERBATIM | {ord("?")}, hostname) or "?"
 
 
 def _same_start(current: int, recorded: int) -> bool:
