@@ -86,20 +86,31 @@ async def test_queued_release_completes_despite_cancellation(tmp_path: Path) -> 
     assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
-@NEEDS_FCNTL
-@pytest.mark.asyncio  # pragma: needs fcntl
+@pytest.mark.asyncio
 @XFAIL_WITHOUT_COROUTINE_CANCELLATION
-async def test_queued_release_cancellation_preserves_backend_error(tmp_path: Path, mocker: MockerFixture) -> None:
+async def test_queued_release_cancellation_preserves_backend_error(tmp_path: Path) -> None:
     backend_error = OSError(EIO, "backend release failed")
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
     loop = asyncio.get_running_loop()
+    fail_release = True
+
+    class Lock(BaseAsyncFileLock):
+        def _acquire(self) -> None:
+            self._context.lock_file_fd = 1
+
+        def _release(self) -> None:
+            nonlocal fail_release
+            if fail_release:
+                fail_release = False
+                raise backend_error
+            self._context.lock_file_fd = None
 
     def block_hook(_fd: int) -> None:
         loop.call_soon_threadsafe(hook_started.set)
         assert finish_hook.wait(timeout=5)
 
-    lock = AsyncFileLock(tmp_path / "a", on_acquired=block_hook)
+    lock = Lock(tmp_path / "a", on_acquired=block_hook)
     acquire = asyncio.create_task(lock.acquire())
     await hook_started.wait()
     release_started = asyncio.Event()
@@ -116,19 +127,6 @@ async def test_queued_release_cancellation_preserves_backend_error(tmp_path: Pat
         finish_hook.set()
 
     await acquire
-    fcntl = get_fcntl()
-    real_flock = fcntl.flock
-    failed = False
-
-    def fail_first_unlock(fd: int, operation: int) -> None:
-        nonlocal failed
-        if operation & fcntl.LOCK_UN and not failed:
-            failed = True
-            raise backend_error
-        real_flock(fd, operation)
-
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
-
     with pytest.raises(OSError, match="backend release failed") as info:
         await release
     assert info.value is backend_error
