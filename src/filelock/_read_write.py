@@ -556,7 +556,21 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         self._fork_invalidated = False
         register_fork_object(self)
         with fork_transition(), _sqlite_transition():
-            self._open_connection(sqlite_timeout=5.0).close()
+            self._open_waiting(5.0, cancel_check=None).close()
+
+    def _open_waiting(self, timeout: float, *, cancel_check: Callable[[], bool] | None) -> _ForkSafeConnection:
+        deadline = time.perf_counter() + timeout
+        while True:
+            try:
+                return self._open_connection(sqlite_timeout=timeout)
+            except Timeout:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0 or (cancel_check is not None and cancel_check()):
+                    raise
+                time.sleep(min(remaining, _CANCEL_POLL_INTERVAL))
+                timeout = deadline - time.perf_counter()
+                if timeout <= 0:
+                    raise
 
     def _open_connection(self, *, sqlite_timeout: float) -> _ForkSafeConnection:
         with _sqlite_transition():
@@ -881,20 +895,6 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             )
             self._raise_if_process_changed(operation.pid)
 
-    def _open_waiting(self, timeout: float, *, cancel_check: Callable[[], bool] | None) -> _ForkSafeConnection:
-        deadline = time.perf_counter() + timeout
-        while True:
-            try:
-                return self._open_connection(sqlite_timeout=timeout)
-            except Timeout:
-                remaining = deadline - time.perf_counter()
-                if remaining <= 0 or (cancel_check is not None and cancel_check()):
-                    raise
-                time.sleep(min(remaining, _CANCEL_POLL_INTERVAL))
-                timeout = deadline - time.perf_counter()
-                if timeout <= 0:
-                    raise
-
     def _configure_and_begin(
         self,
         mode: Literal["read", "write"],
@@ -1161,7 +1161,7 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
     # A symlink at the path would make SQLite open, lock, or create its target, so connect through a descriptor that
     # refuses one.
     if sys.platform == "win32":  # pragma: win32 cover
-        fd = _open_lock_database(database, oplock_wait=timeout)
+        fd = _open_lock_database(database)
         link: _LinkDirectory | None = None
         # A Windows lock belongs to the handle that took it, so closing this one leaves SQLite's locks in place.
         try:
@@ -1482,10 +1482,10 @@ if sys.platform == "win32":  # pragma: win32 cover
             link.path.rmdir()
 
 
-def _open_lock_database(database: str, *, oplock_wait: float = 0) -> int:
+def _open_lock_database(database: str) -> int:
     if sys.platform == "win32":  # pragma: win32 cover
         # The handle refuses a reparse point and omits delete sharing, so the name cannot be swapped while it is open.
-        if (fd := open_non_reparse_fd(database, 0o600, oplock_wait=oplock_wait)) is None:
+        if (fd := open_non_reparse_fd(database, 0o600)) is None:
             msg = f"lock database {database!r} is held without sharing or pending deletion"
             raise PermissionError(msg)
         return fd
