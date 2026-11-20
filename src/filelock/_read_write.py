@@ -1181,7 +1181,8 @@ def _connect_through_descriptor(  # pragma: win32 no cover
             probe = _PROBE_DESCRIPTORS.retain(_open_lock_database(database), claimed)
         identity, fd, _ = probe
         # An idle probe may be reused through a different name whose sticky parent lets another account unlink it.
-        if (foreign := foreign_owner(os.fstat(fd), pathlib.Path(database).parent.stat())) is not None:
+        foreign: Final = foreign_owner(os.fstat(fd), pathlib.Path(database).parent.stat())
+        if foreign is not None:  # pragma: needs foreign-sticky-tmp
             reason = f"lock database belongs to uid {foreign}, not to this process's account or the directory's owner"
             raise PermissionError(EACCES, reason, database)
         # Releases a finalizer queued while the table was locked.
