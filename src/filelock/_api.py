@@ -1117,8 +1117,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         # Fail fast when a *different* live instance already holds this path in the current deadlock scope.
         #
-        # Only the first, indefinitely-blocking acquire can self-deadlock this way: waiting in the OS primitive would
-        # block on a lock this flow already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
+        # A handler can acquire a peer between attempts. Waiting on that hold would block the same thread.
         would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
         if would_block and _REGISTRY.held.get(self._registry_key(canonical)) not in {None, self._holder_id}:
             msg = (
@@ -1174,6 +1173,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             if self.is_locked:
                 _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
                 return
+            self._raise_if_would_deadlock(self._lock_path, timeout=timeout, blocking=blocking)
             if self._check_give_up(
                 blocking=blocking,
                 cancel_check=cancel_check,

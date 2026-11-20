@@ -2049,6 +2049,48 @@ def test_early_acquire_refuses_same_stack_reentry(tmp_path: Path, mocker: Mocker
 
 
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+@pytest.mark.parametrize(
+    ("timeout", "blocking", "expected"),
+    [
+        pytest.param(-1, True, RuntimeError, id="indefinite"),
+        pytest.param(1, True, Timeout, id="finite"),
+        pytest.param(-1, False, Timeout, id="nonblocking"),
+    ],
+)
+def test_handler_acquiring_peer_during_poll_detects_deadlock(
+    tmp_path: Path, mocker: MockerFixture, thread_local: bool, timeout: float, blocking: bool, expected: type[Exception]
+) -> None:
+    path = str(tmp_path / "a")
+    outer = SoftFileLock(path, thread_local=thread_local, is_singleton=False)
+    peer = SoftFileLock(path, thread_local=thread_local, is_singleton=False)
+    original = outer._acquire_with_fork_tracking
+    pending = [signal.SIGINT]
+
+    def signal_then_acquire() -> None:
+        signals = pending.copy()
+        pending.clear()
+        list(map(signal.raise_signal, signals))
+        original()
+
+    def handoff(_signum: int, _frame: FrameType | None) -> None:
+        peer.acquire(blocking=False)
+
+    mocker.patch.object(outer, "_acquire_with_fork_tracking", side_effect=signal_then_acquire, autospec=True)
+    previous = signal.signal(signal.SIGINT, handoff)
+    try:
+        with pytest.raises(expected):
+            outer.acquire(timeout=timeout, blocking=blocking, cancel_check=lambda: True)
+        assert (outer.is_locked, peer.is_locked) == (False, True)
+        with pytest.raises(RuntimeError, match="already held by a different"):
+            SoftFileLock(path, is_singleton=False).acquire(cancel_check=lambda: True)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        peer.release()
+        outer.release()
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
 def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Path, mocker: MockerFixture) -> None:
     lock: Final[SoftFileLock] = SoftFileLock(str(tmp_path / "a"))
 
