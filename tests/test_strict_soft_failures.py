@@ -13,7 +13,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a finished chi
 import sys
 import threading
 import time
-from errno import EACCES, EEXIST, EIO, ENOENT, ENOSPC, EPERM, ESTALE, EWOULDBLOCK, EXDEV
+from errno import EACCES, EEXIST, EINVAL, EIO, ENOENT, ENOSPC, EPERM, ESTALE, EWOULDBLOCK, EXDEV
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
@@ -1680,7 +1680,7 @@ def _private_claim_path(lock_path: Path, token: str) -> Path:
 @pytest.mark.parametrize(
     "error",
     [
-        pytest.param(OSError(EACCES, "denied"), id="oserror"),
+        pytest.param(OSError(EINVAL, "unsupported option"), id="einval"),
         pytest.param(NotImplementedError("no follow_symlinks"), id="notimplemented"),
         pytest.param(ValueError("bad option"), id="valueerror"),
     ],
@@ -1689,6 +1689,49 @@ def test_strict_soft_link_follow_probe_reports_unhonored(mocker: MockerFixture, 
     mocker.patch("filelock._strict.os.link", side_effect=error, autospec=True)
 
     assert _probe_link_follow_symlinks() is False
+
+
+@pytest.mark.parametrize(
+    ("target", "error"),
+    [
+        pytest.param("tempfile.TemporaryDirectory", FileNotFoundError(ENOENT, "no temporary directory"), id="missing"),
+        pytest.param("Path.touch", OSError(ENOSPC, "no space left"), id="full"),
+        pytest.param("os.link", PermissionError(EACCES, "denied"), id="denied"),
+    ],
+)
+def test_strict_soft_link_follow_probe_preserves_runtime_support_on_environment_error(
+    mocker: MockerFixture, target: str, error: OSError
+) -> None:
+    advertised = os.link in os.supports_follow_symlinks
+    mocker.patch(f"filelock._strict.{target}", side_effect=error, autospec=True)
+
+    assert _probe_link_follow_symlinks() is advertised
+
+
+@NEEDS_SYMLINK  # pragma: needs symlink
+@pytest.mark.skipif(not CAPABILITIES["link-follow-symlinks"], reason="requires no-follow hard links")
+def test_strict_soft_private_record_swap_does_not_link_target(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "resource.lock"
+    (target := tmp_path / "private" / "target").parent.mkdir(mode=0o700)
+    target.write_bytes(b"private")
+    probe = mocker.patch(
+        "filelock._strict.tempfile.TemporaryDirectory", side_effect=OSError(ENOSPC, "no space left"), autospec=True
+    )
+    supports_no_follow = _probe_link_follow_symlinks()
+    mocker.stop(probe)
+    mocker.patch("filelock._strict._LINK_HONORS_FOLLOW_SYMLINKS", supports_no_follow)
+    real_link = filelock._strict._link_relative
+
+    def swap_then_link(directory_ref: tuple[str, int | None], source_name: str, destination_name: str) -> None:
+        (source := Path(directory_ref[0], source_name)).unlink()
+        source.symlink_to(target)
+        real_link(directory_ref, source_name, destination_name)
+
+    mocker.patch("filelock._strict._link_relative", autospec=True, side_effect=swap_then_link)
+
+    with pytest.raises(Timeout):
+        StrictSoftFileLock(lock_path, timeout=0).acquire()
+    assert (target.stat().st_nlink, lock_path.is_symlink()) == (1, True)
 
 
 def test_strict_soft_sentinel_inspection_and_close_failure_group(tmp_path: Path, mocker: MockerFixture) -> None:

@@ -32,7 +32,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from errno import EACCES, EEXIST, ENOENT, ENOSYS, EPERM, ESTALE, EXDEV
+from errno import EACCES, EEXIST, EINVAL, ENOENT, ENOSYS, EPERM, ESTALE, EXDEV
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, NamedTuple, cast
 
@@ -111,6 +111,7 @@ _OPEN_SUPPORTS_DIR_FD: Final[bool] = os.open in os.supports_dir_fd
 _UNLINK_SUPPORTS_DIR_FD: Final[bool] = os.unlink in os.supports_dir_fd
 _STAT_SUPPORTS_DIR_FD: Final[bool] = os.stat in os.supports_dir_fd
 _LINK_SUPPORTS_DIR_FD: Final[bool] = _HAS_LINK and os.link in os.supports_dir_fd
+_LINK_SUPPORTS_FOLLOW_SYMLINKS: Final[bool] = _HAS_LINK and os.link in os.supports_follow_symlinks
 _MKDIR_SUPPORTS_DIR_FD: Final[bool] = os.mkdir in os.supports_dir_fd
 _SCANDIR_SUPPORTS_FD: Final[bool] = os.scandir in os.supports_fd
 
@@ -118,9 +119,8 @@ _SCANDIR_SUPPORTS_FD: Final[bool] = os.scandir in os.supports_fd
 def _probe_link_follow_symlinks() -> bool:
     # os.supports_follow_symlinks lists os.link on PyPy, but its linkat then rejects follow_symlinks=False with EINVAL,
     # and Windows raises NotImplementedError for the option outright. Link a throwaway file for real so the answer
-    # reflects the runtime rather than its advertisement, and treat any failure as "not honored": the option only
-    # hardens a source this process created with O_EXCL, so skipping it is safe, and a real environment fault surfaces
-    # when the actual link runs.
+    # reflects the runtime rather than its advertisement. An environment failure says nothing about no-follow support;
+    # disabling it would follow a symlink swapped in for the private record.
     if not _HAS_LINK:
         return False
     try:
@@ -128,8 +128,10 @@ def _probe_link_follow_symlinks() -> bool:
             source = Path(directory, "probe-source")
             source.touch()
             os.link(source, Path(directory, "probe-link"), follow_symlinks=False)
-    except (OSError, NotImplementedError, ValueError):
+    except (NotImplementedError, ValueError):
         return False
+    except OSError as error:
+        return error.errno != EINVAL and _LINK_SUPPORTS_FOLLOW_SYMLINKS
     return True
 
 
@@ -825,9 +827,8 @@ def link_no_follow(
         # the acquire path raises SoftFileLockProtocolError instead of a bare AttributeError.
         msg = "os.link is unavailable on this platform"
         raise NotImplementedError(msg)
-    # The source is a private record this process created with O_CREAT | O_EXCL, so follow_symlinks guards nothing an
-    # attacker can reach. Pass the option only when the runtime honors it: PyPy advertises it through
-    # os.supports_follow_symlinks yet its linkat rejects it with EINVAL, so probe once rather than trust the set.
+    # Another account with rename access can swap a symlink over the private record before publication. PyPy advertises
+    # follow_symlinks=False but rejects it with EINVAL, so probe before relying on that option.
     if _LINK_HONORS_FOLLOW_SYMLINKS:
         os.link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False)
     else:  # pragma: lacks link-follow-symlinks
