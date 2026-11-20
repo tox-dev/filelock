@@ -712,6 +712,35 @@ def test_a_record_refused_inside_the_window_keeps_its_slot(
 
 
 @pytest.mark.requires_hard_links
+def test_a_cold_start_record_keeps_its_slot_when_a_peer_extends_it(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    files.prepare(root)
+    first = GenerationLog(files, lock_file, root)
+    assert first.latest().generation == 0
+    first_path = Path(root, "gen", f"{1:020d}")
+    real_read = files.read
+    head_reads_after_link = 0
+
+    def extend_between_checks(path: str) -> bytes | None:
+        nonlocal head_reads_after_link
+        if path == str(Path(root, "gen", "HEAD")) and first_path.exists():
+            head_reads_after_link += 1
+            if head_reads_after_link == 2:
+                peer = GenerationLog(OsFiles(lock_file), lock_file, root)
+                assert peer.latest().generation == 1
+                assert peer.commit(Snapshot(generation=2, writer=None, readers=frozenset({_FIRST, _SECOND})))
+        return real_read(path)
+
+    mocker.patch.object(files, "read", autospec=True, side_effect=extend_between_checks)
+    assert not first.commit(Snapshot(generation=1, writer=None, readers=frozenset({_FIRST})))
+    assert first_path.exists()
+    assert GenerationLog(OsFiles(lock_file), lock_file, root).latest() == Snapshot(
+        generation=2, writer=None, readers=frozenset({_FIRST, _SECOND})
+    )
+
+
+@pytest.mark.requires_hard_links
 def test_a_record_refused_with_nothing_built_on_it_is_removed(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:

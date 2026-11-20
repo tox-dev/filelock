@@ -278,8 +278,8 @@ class GenerationLog:
         # its own freed slot and has yet to remove.
         #
         # A slot comes free once the log is a whole window past it, and the head stays, so a record the listing or
-        # ``HEAD`` leads by a window is refused as well. A record refused after it landed is removed when nothing was
-        # built on it. One that peers lead by less than a window stays, or its slot would come free early.
+        # ``HEAD`` leads by a window is refused as well. Within one epoch, a record refused after it landed stays until
+        # the log moves a window past it: a peer can build on it between the lead sample and the refusal.
         if self._files.read(self._epoch_path) != self._epoch or not self._extends_the_log(successor.generation):
             return False
         if not self._publish(
@@ -288,7 +288,7 @@ class GenerationLog:
             return False
         lead = max([*self._listed(), self._head_generation() or 0]) - successor.generation
         if lead >= _RETAINED_GENERATIONS or not self._extends_the_log(successor.generation):
-            if not 0 < lead < _RETAINED_GENERATIONS:
+            if lead >= _RETAINED_GENERATIONS or self._files.read(self._epoch_path) != self._epoch:
                 self._files.unlink(self._path(successor.generation))
             return False
         self._latest = successor
