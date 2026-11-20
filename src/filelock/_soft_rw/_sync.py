@@ -750,8 +750,10 @@ class _Intervals(NamedTuple):
 
 def _lease_clock() -> float:
     # A peer can judge a record stale while this host sleeps, so renewal must count that elapsed time.
-    if (boottime := getattr(time, "CLOCK_BOOTTIME", None)) is not None:  # pragma: needs suspend-clock
-        return time.clock_gettime(boottime)
+    if (boottime := getattr(time, "CLOCK_BOOTTIME", None)) is not None and (  # pragma: needs suspend-clock
+        clock_gettime := getattr(time, "clock_gettime", None)
+    ) is not None:
+        return clock_gettime(boottime)
     return time.monotonic()  # pragma: lacks suspend-clock
 
 

@@ -398,16 +398,18 @@ def test_host_suspend_renews_a_waiters_token(
     host_elapsed = [0.0]
     host_monotonic = [0.0]
     peer_elapsed = [0.0]
+    boottime = getattr(time, "CLOCK_BOOTTIME", None)
+    assert boottime is not None
 
     def boot_clock(clock_id: int) -> float:
-        assert clock_id == time.CLOCK_BOOTTIME
+        assert clock_id == boottime
         return host_elapsed[0]
 
     mocker.patch.object(
         sync_mod,
         "time",
         new=SimpleNamespace(
-            CLOCK_BOOTTIME=time.CLOCK_BOOTTIME,
+            CLOCK_BOOTTIME=boottime,
             clock_gettime=boot_clock,
             monotonic=lambda: host_monotonic[0],
         ),

@@ -1163,9 +1163,7 @@ def test_heartbeat_reports_refresh_failure_after_host_suspend(
         mocker.patch.object(
             Participant, "heartbeat", autospec=True, return_value=("transient", OSError(EIO, "stale filesystem"))
         )
-        mocker.patch.object(
-            sync_mod.time, "clock_gettime", autospec=True, return_value=time.clock_gettime(time.CLOCK_BOOTTIME) + 31
-        )
+        mocker.patch.object(sync_mod.time, "clock_gettime", autospec=True, return_value=sync_mod._lease_clock() + 31)
         assert not lock._refresh(hold.participant, hold)
         assert [compromise.reason for compromise in seen] == ["refresh-failed"]
     finally:
