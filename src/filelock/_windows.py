@@ -47,6 +47,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     _FILE_ATTRIBUTE_READONLY: Final[int] = 0x00000001
     _FILE_ATTRIBUTE_NORMAL: Final[int] = 0x00000080
     _FILE_ATTRIBUTE_REPARSE_POINT: Final[int] = 0x00000400
+    _FILE_DISPOSITION_INFO: Final[int] = 4
     # CreateOptions: keep the handle synchronous (the CRT and msvcrt.locking rely on a maintained file position),
     # refuse a directory, return at once instead of waiting for an oplock holder to answer the break, and open a
     # reparse point rather than following it so the check below acts on the link itself.
@@ -200,6 +201,8 @@ if sys.platform == "win32":  # pragma: win32 cover
     _KERNEL32.CancelSynchronousIo.restype = wintypes.BOOL
     _KERNEL32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION)]
     _KERNEL32.GetFileInformationByHandle.restype = wintypes.BOOL
+    _KERNEL32.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    _KERNEL32.SetFileInformationByHandle.restype = wintypes.BOOL
     _KERNEL32.LockFileEx.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
@@ -434,7 +437,45 @@ if sys.platform == "win32":  # pragma: win32 cover
             raise FileExistsError(EEXIST, os.strerror(EEXIST), path)
         if status != _STATUS_SUCCESS:
             raise _status_error(status, path)
-        return _descriptor_for_non_reparse(handle, path, os.O_WRONLY)
+        identity: tuple[int, int] | None = None
+        try:
+            identity = _identity_of(handle)
+            return _descriptor_for_non_reparse(handle, path, os.O_WRONLY)
+        except BaseException:
+            if identity is None:
+                try:
+                    identity = _identity_of(handle)
+                except OSError:
+                    identity = None
+                finally:
+                    _KERNEL32.CloseHandle(handle)
+            if identity is not None:
+                with suppress(OSError):
+                    _discard_created_file(path, identity)
+            raise
+
+    def _discard_created_file(path: str, identity: tuple[int, int]) -> None:
+        # Reopen after descriptor conversion closed the create handle; compare identities before deleting a replacement.
+        handle, status = _nt_create(
+            path,
+            _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
+            _FILE_ATTRIBUTE_NORMAL,
+            _FILE_SHARE_READ_WRITE,
+            _FILE_OPEN,
+        )
+        if status != _STATUS_SUCCESS:
+            return
+        try:
+            if _identity_of(handle) != identity:
+                return
+            sys.audit("os.remove", path, None)
+            delete = ctypes.c_byte(1)
+            if not _KERNEL32.SetFileInformationByHandle(
+                handle, _FILE_DISPOSITION_INFO, ctypes.byref(delete), ctypes.sizeof(delete)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            _KERNEL32.CloseHandle(handle)
 
     def open_for_delete_without_oplock_wait(path: str) -> int:
         # Open *path* with delete access and return a descriptor, without waiting for an oplock holder to answer.

@@ -140,8 +140,9 @@ that follows the same locking convention; they do not prevent unrelated access t
 **Soft locks / PID locks** (SoftFileLock, the fallback on systems without fcntl)
 
 A shared marker indicates that a resource is in use. The marker contains the PID, hostname, and a process start token of
-the holder. A process attempts acquisition with ``O_CREAT | O_EXCL`` and releases by deleting the pathname. The
-filesystem must provide coherent exclusive creation and directory updates to every participant.
+the holder. A process attempts acquisition through exclusive creation (``O_CREAT | O_EXCL`` on Unix, ``FILE_CREATE`` on
+Windows) and releases by deleting the pathname. The filesystem must provide coherent exclusive creation and directory
+updates to every participant.
 
 This is the same concept as a traditional **PID lock file** (as used by Unix daemons and the deprecated
 `lockfile <https://pypi.org/project/lockfile/>`_ library's ``PIDLockFile``). The PID stored in the file identifies the
@@ -466,9 +467,10 @@ The defense differs by platform:
   reparse points and rejects a symlink or junction by inspecting the handle it locks, so a swap between check and use
   cannot redirect it. Only the last path component is guarded; the lock directory must not be writable by untrusted
   users.
-- :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL``, which fails on any
-  existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
-  file as malformed, then checks the opened handle again with ``fstat``. On Windows it reads and breaks markers through
+- :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL`` on Unix or ``FILE_CREATE``
+  with no final-component reparse traversal on Windows; either refuses an existing name. Before reading a marker it
+  classifies the path with ``lstat`` and treats anything other than a regular file as malformed, then checks the opened
+  handle again with ``fstat``. On Windows it reads and breaks markers through
   handles that do not wait for an oplock holder to answer. A read-handle oplock can delay the rename of a stale marker;
   filelock cancels that wait after half a second per attempt, then checks the ``timeout``.
 - :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches

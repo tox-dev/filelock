@@ -84,9 +84,10 @@ class SoftFileLock(BaseFileLock):
     Cooperative file lock based on a shared existence marker.
 
     Unlike :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`WindowsFileLock <filelock.WindowsFileLock>`, this
-    lock does not use OS-level locking primitives. Instead, it creates the lock file with ``O_CREAT | O_EXCL`` and
-    treats its existence as the lock indicator. The filesystem must provide coherent exclusive creation and directory
-    updates to each participating process. A crash can leave the marker behind.
+    lock does not use OS-level locking primitives. Instead, it creates the lock file exclusively and treats its
+    existence as the lock indicator. Unix uses ``O_CREAT | O_EXCL``; Windows uses ``FILE_CREATE`` without following a
+    symlink at the final path component. The filesystem must provide coherent exclusive creation and directory updates
+    to each participating process. A crash can leave the marker behind.
 
     The marker contains the holder's PID and hostname. A contender may remove it when it can no longer find a same-host
     process with that PID. A configured :attr:`~filelock.BaseFileLock.lifetime` also permits removal based on marker

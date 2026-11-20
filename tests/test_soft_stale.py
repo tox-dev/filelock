@@ -4,7 +4,9 @@ import gc
 import itertools
 import os
 import socket
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # fixed-argument, no-shell audit child
 import sys
+import textwrap
 import threading
 import time
 from contextlib import contextmanager, suppress
@@ -99,6 +101,64 @@ def test_dangling_symlink_does_not_create_its_target(lock_path: Path) -> None:
         lock.release()
 
     assert (lock_path.is_symlink(), target.exists()) == (True, False)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_audit_veto_does_not_leave_a_marker(lock_path: Path) -> None:
+    code = textwrap.dedent(f"""
+        import sys
+        from filelock import SoftFileLock
+
+        def veto(event, _args):
+            if event == "msvcrt.open_osfhandle":
+                raise RuntimeError("audit veto")
+
+        sys.addaudithook(veto)
+        try:
+            SoftFileLock({str(lock_path)!r}).acquire(timeout=0)
+        except RuntimeError as exc:
+            print(exc)
+    """)
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+
+    assert (result.returncode, result.stdout.strip(), lock_path.exists()) == (0, "audit veto", False)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize(
+    ("failures", "marker_remains"),
+    [pytest.param(1, False, id="transient"), pytest.param(2, True, id="persistent")],
+)
+def test_marker_identity_failure_closes_raw_handle(
+    lock_path: Path, fail_identity_reads: Callable[[int], None], failures: int, *, marker_remains: bool
+) -> None:
+    fail_identity_reads(failures)
+    lock = SoftFileLock(lock_path)
+
+    with pytest.raises(OSError, match="identity failed"):
+        lock.acquire(timeout=0)
+    assert lock_path.exists() is marker_remains
+    lock_path.unlink(missing_ok=True)
+
+    assert not lock_path.exists()
+
+
+@pytest.fixture
+def fail_identity_reads(mocker: MockerFixture) -> Callable[[int], None]:  # pragma: win32 cover
+    assert sys.platform == "win32"
+    from filelock._windows import _identity_of
+
+    def inject(failures: int) -> None:
+        attempts = itertools.count()
+
+        def read_identity(handle: int) -> tuple[int, int]:
+            if next(attempts) < failures:
+                raise OSError(EIO, "identity failed")
+            return _identity_of(handle)
+
+        mocker.patch("filelock._windows._identity_of", side_effect=read_identity, autospec=True)
+
+    return inject
 
 
 @pytest.mark.parametrize(
@@ -1554,7 +1614,7 @@ def test_publication_without_identity_leaves_the_marker(
 
 @pytest.fixture
 def soft_open_spy(mocker: MockerFixture) -> MockType:
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: win32 cover
         return mocker.spy(filelock._soft, "create_exclusive_non_reparse_fd")
     return mocker.spy(os, "open")
 
