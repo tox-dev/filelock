@@ -113,7 +113,8 @@ def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
     # :raises OSError: if the descriptor cannot be read or the unlink fails.
     own: Final[os.stat_result] = os.fstat(fd)
     with suppress(FileNotFoundError):
-        break_lock_file(lock_file, own.st_mtime, own.st_ino)
+        with suppress(OSError):
+            break_lock_file(lock_file, own.st_mtime, own.st_ino)
         if os.path.samestat(os.lstat(lock_file), own):
             Path(lock_file).unlink()
 

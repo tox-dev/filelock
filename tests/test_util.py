@@ -6,7 +6,7 @@ import stat
 import sys
 import time
 from contextlib import suppress
-from errno import EACCES, EINVAL, EIO, ELOOP, ENOENT, EPERM, ESRCH
+from errno import EACCES, EINVAL, EIO, ELOOP, ENOENT, ENOSPC, EPERM, ESRCH
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -447,6 +447,25 @@ def test_remove_own_file_placeholder_names_this_process(
         SoftFileLock(tmp_path / "test.lock", mode=0o600).acquire()
 
     assert placeholders == [f"filelock/break\n{os.getpid()}\n".encode()]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
+def test_remove_own_file_unlinks_when_break_fails_with_enospc(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: win32 no cover
+    lock_file = tmp_path / "test.lock"
+    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        mocker.patch(
+            "filelock._util.break_lock_file",
+            side_effect=OSError(ENOSPC, "No space left on device"),
+            autospec=True,
+        )
+        filelock._util.remove_own_file(str(lock_file), fd)
+        assert not lock_file.exists()
+    finally:
+        os.close(fd)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
