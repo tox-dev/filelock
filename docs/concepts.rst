@@ -788,20 +788,23 @@ A malformed or unparsable record follows a separate rule: a waiter may remove it
 seconds, so a half-written marker never wedges acquisition. An empty marker is the exception and always reads as held.
 This is the rule PostgreSQL, Qt ``QLockFile``, and Mercurial converge on: break a stale lock only on proof of death.
 
-Since Linux 5.6, the kernel adds the reader's time namespace boottime offset to ``starttime``. Workers read their own
-offset through ``/proc/<tid>/timens_offsets``, which remains available after the main thread exits. At zero offset, the
-worker can still recognize its own start token. Filelock keeps one namespace handle open to reuse that result.
-
-With a nonzero or unknown offset, filelock omits the token and relies on the PID. If a live process reuses a dead
-owner's PID, the marker can remain until ``lifetime`` expires or an operator calls ``break_lock()``.
-
-A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's ``ProcSubset=pid`` hides it) records
-``starttime`` without the boot id. A contender then compares ``starttime`` alone whenever either side lacks the boot id.
+Two Linux processes do not always read the same token for one task. Since Linux 5.6 the kernel adds the reader's
+boottime offset (the shift a time namespace applies to the boot clock) to ``starttime``. A process in a time namespace
+with such an offset therefore records no start token and reads none. It falls back to the PID alone, so a recycled PID
+keeps a dead owner's marker until ``timeout``, ``lifetime`` or ``break_lock()``. A time namespace without an offset, as
+container runtimes create, keeps the token. A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's
+``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
+whenever either side lacks the boot id.
 
 A procfs numbers tasks by the PID namespace of the process that mounted it. A process in a PID namespace that still sees
 an outer ``/proc`` (``unshare --pid`` without ``--mount-proc``, ``nsenter --pid`` without ``--mount``) finds an
 unrelated task at ``/proc/<pid>``, possibly another user's. Such a process records no start token and reads none
 either, and falls back to the PID alone the same way.
+
+Workers can still read their own ``/proc/<tid>/timens_offsets`` after the main thread exits. A zero boottime offset lets
+a worker recognize its own start token. Filelock keeps a handle to the last namespace with a verified zero offset and
+reuses that value while the worker stays in that namespace. If the worker cannot establish a zero offset, it omits the
+token.
 
 A contender never leaves the lock path empty while it breaks a marker. Right before breaking it reads the marker's inode
 (the kernel's identity for a file, independent of its name) and modification time again. If they moved since the stale

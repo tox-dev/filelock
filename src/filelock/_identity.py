@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["hashlib", "pathlib", "socket", "typing", "weakref"]
+__lazy_modules__ = ["hashlib", "pathlib", "socket", "typing"]
 
 import hashlib
 import os
@@ -163,7 +163,7 @@ else:  # pragma: win32 no cover
         return True
 
     if sys.platform in {"linux", "android"}:  # pragma: linux cover
-        from weakref import finalize
+        from io import FileIO
 
         # Termux/Android reports sys.platform == "android" but runs the Linux kernel, so /proc/<pid>/stat and the boot
         # id are the same reliable start-time source; treat it exactly like Linux rather than the tokenless fallback.
@@ -186,13 +186,16 @@ else:  # pragma: win32 no cover
         #: ``TIME_NS_INIT_INO`` in ``linux/proc_ns.h``, fixed by the kernel ABI like the initial PID namespace's inode.
         _INITIAL_TIME_NAMESPACE: Final[int] = 0xEFFFFFFA
 
-        class _UnshiftedNamespace:
+        class _UnshiftedNamespace(FileIO):
             last: _UnshiftedNamespace | None = None
 
             def __init__(self, path: Path) -> None:
-                pin = path.open("rb", buffering=0)
-                finalize(self, pin.close)
-                self.identity = os.fstat(pin.fileno())
+                super().__init__(path, "rb")
+                self.identity = os.fstat(self.fileno())
+
+            def __del__(self) -> None:
+                # Replacing the cache entry releases its namespace pin.
+                self.close()
 
         def process_start_token(pid: int) -> int | None:
             # The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id.
