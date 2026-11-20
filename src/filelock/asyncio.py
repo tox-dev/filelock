@@ -700,8 +700,18 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         """
         if self._creator_pid != os.getpid() or not self.is_locked:
             return
-        async with self._async_context.transition_gate.hold():
-            await self._release_serialized(force=force)
+        async with self._async_context.transition_gate.hold(owed=self._owes_release) as cancellation:
+            try:
+                await self._release_serialized(force=force)
+            except BaseException as release_error:
+                if cancellation is not None:
+                    self._raise_cancelled_errors(_ASYNC_RELEASE_CANCELLATION_ERRORS, cancellation, release_error)
+                raise
+        if cancellation is not None:
+            raise cancellation
+
+    def _owes_release(self) -> bool:
+        return self.is_locked and not self._async_context.releasing_through_backend
 
     async def _release_serialized(self, *, force: bool) -> None:
         counter_before: Final[int] = self._context.lock_counter
@@ -711,6 +721,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             self._context.lock_counter -= 1
             return
 
+        self._async_context.releasing_through_backend = True
         try:
             await self._release_through_backend()
         except BaseException as release_error:
@@ -719,6 +730,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                     self._release_with_fork_tracking()
                 self._commit_release_if_released()
             raise
+        finally:
+            self._async_context.releasing_through_backend = False
 
     async def _release_through_backend(self) -> None:
         lock_id, lock_filename = id(self), self.lock_file
@@ -880,6 +893,8 @@ class AsyncFileLockContext(FileLockContext):
 
     #: The loop
     loop: asyncio.AbstractEventLoop | None = None
+
+    releasing_through_backend: bool = False
 
     #: Serializes the tasks that transition this context. An acquire keeps it while it polls, so a thread-local lock
     #: needs one per thread. A thread waiting for the lock must not keep the thread that holds it from releasing.

@@ -59,13 +59,31 @@ class AsyncTransitionGate:
         self._queue: Final[deque[ConcurrentFuture[None]]] = deque()
 
     @contextlib.asynccontextmanager
-    async def hold(self) -> AsyncGenerator[None]:
+    async def hold(self, *, owed: Callable[[], bool] | None = None) -> AsyncGenerator[asyncio.CancelledError | None]:
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
+        cancellation: asyncio.CancelledError | None = None
+
+        def given_up() -> bool:
+            return owed is None or not owed()
+
         try:
             self._join(ticket)
-            if not ticket.done():
-                await self._wait_for_turn(ticket, blocking=True, cancel_check=None, deadline=None, poll_interval=0.05)
-            yield
+            while not ticket.done():
+                try:
+                    await self._wait_for_turn(
+                        ticket,
+                        blocking=True,
+                        cancel_check=None if cancellation is None else given_up,
+                        deadline=None,
+                        poll_interval=0.05,
+                    )
+                except asyncio.CancelledError as error:
+                    if given_up():
+                        raise
+                    cancellation = error
+                except AsyncTransitionUnavailableError:
+                    raise cast("asyncio.CancelledError", cancellation) from None
+            yield cancellation
         finally:
             self._leave(ticket)
 
