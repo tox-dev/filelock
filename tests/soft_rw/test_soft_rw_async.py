@@ -216,12 +216,20 @@ async def test_async_custom_loop_and_executor(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_async_owned_executor_stops_after_close(tmp_path: Path) -> None:
-    lock = _make(tmp_path)
-    async with lock.write_lock(timeout=2):
-        pass
+    lock = _make(tmp_path, is_singleton=True)
     executor = lock.executor
-    await lock.close()
+    worker = await asyncio.wrap_future(executor.submit(threading.current_thread))
+    resume = threading.Event()
+    executor.submit(resume.wait, _TASK_WAIT)
+    closing = asyncio.create_task(lock.close())
+    try:
+        await asyncio.sleep(0)
+        assert not closing.done()
+    finally:
+        resume.set()
+        await closing
 
+    assert not worker.is_alive()
     with pytest.raises(RuntimeError, match="shutdown"):
         executor.submit(lambda: None)
 

@@ -386,7 +386,7 @@ class AsyncSoftReadWriteLock:
     async def close(self) -> None:
         """
         End the holds of the tasks that acquired through this instance and release the lock once no task holds it.
-        A successful close wakes tasks waiting for this wrapper's turn in the shared ownership table.
+        Closing wakes tasks waiting to acquire through this wrapper and joins the worker if the wrapper owns it.
 
         Idempotent. After calling this method the instance can no longer acquire locks. With ``is_singleton=False`` it
         also closes the underlying :class:`SoftReadWriteLock`. A singleton wrapper leaves the shared one open, so tasks
@@ -423,7 +423,14 @@ class AsyncSoftReadWriteLock:
             closing.set_result(None)
             self._owners.wake_via(self._via)
         if self._owns_executor:
+            # Jobs on the lock's executor may need the loop to finish, even after the loop's default pool shuts down.
             self._executor.shutdown(wait=False)
+            joiner = ThreadPoolExecutor(max_workers=1)
+            joined = joiner.submit(self._executor.shutdown)
+            try:
+                await asyncio.shield(asyncio.wrap_future(joined))
+            finally:
+                joiner.shutdown(wait=joined.done())
 
     # The fork registry calls this method by name.
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child  # simplint: ignore[unused-definition]
