@@ -4,6 +4,8 @@ import errno
 import os
 import random
 import shutil
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # tracing state stays in a child interpreter
+import sys
 import threading
 from errno import EIO
 from itertools import cycle, islice
@@ -133,6 +135,21 @@ def test_ledger_measures_how_long_a_value_stays_unchanged() -> None:
     assert ledger.observe("a", None) == pytest.approx(1.0)
     ledger.forget("a")
     assert ledger.observe("a", None) == pytest.approx(0.0)
+
+
+def test_ledger_keeps_large_observations_with_bounded_memory() -> None:
+    pytest.importorskip("tracemalloc")
+    script = (
+        "import tracemalloc\n"
+        "from filelock._soft_rw._protocol import Ledger\n"
+        "ledger = Ledger(lambda: 0.0)\n"
+        "tracemalloc.start()\n"
+        "baseline = tracemalloc.get_traced_memory()[0]\n"
+        "for number in range(32):\n"
+        "    ledger.observe(str(number), bytes((number,)) * (1 << 20))\n"
+        "print(tracemalloc.get_traced_memory()[0] - baseline)\n"
+    )
+    assert int(subprocess.check_output([sys.executable, "-c", script], text=True)) < 4 << 20
 
 
 def test_ledger_counts_no_time_past_the_moment_the_observer_asked() -> None:
