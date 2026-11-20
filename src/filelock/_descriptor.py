@@ -16,7 +16,7 @@ import time
 from threading import TIMEOUT_MAX
 from typing import Final
 
-from ._api import seconds
+from ._api import check_blocking, seconds
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
@@ -56,11 +56,14 @@ def lock_descriptor(fd: int, *, blocking: bool = True, poll_interval: float = 0.
 
     :raises OSError: for a permanent native failure, such as an invalid descriptor, or with ``errno.ENOSYS`` when the
         Python build lacks the native locking primitive. The descriptor is left open.
+    :raises TypeError: if *blocking* is not a :class:`bool`, or a blocking call receives a *poll_interval* that is a
+        :class:`bool` or not a real number.
     :raises ValueError: if a blocking call receives a *poll_interval* outside that range, including ``nan``.
 
     .. versionadded:: 3.30.0
 
     """
+    check_blocking(blocking)
     if not blocking:
         return lock_fd_nonblocking(fd)
     # time.sleep raises OverflowError past TIMEOUT_MAX; nan fails both comparisons.
