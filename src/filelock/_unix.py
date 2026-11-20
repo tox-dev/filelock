@@ -80,6 +80,8 @@ else:  # pragma: win32 no cover
         try:
             lock_fd_nonblocking(fd)
         except OSError as exception:
+            if exception.errno is None:
+                raise
             return exception.errno == ENOSYS
         return False  # a flock the probe won is released when the caller closes fd
 
@@ -233,7 +235,9 @@ else:  # pragma: win32 no cover
                 probe = tempfile.TemporaryFile(  # ruff:ignore[open-file-with-context-handler]  # catch only open errors
                     dir=str(Path(self._lock_path).parent)
                 )
-            except OSError:
+            except OSError as exception:
+                if exception.errno is None:
+                    raise
                 # A directory policy may allow the lock name alone. Probe that file after opening it.
                 return False
             with probe:

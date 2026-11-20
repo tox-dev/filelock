@@ -587,10 +587,25 @@ def test_fallback_closes_the_displaced_native_descriptor(  # pragma: needs fcntl
 
 
 @NEEDS_FCNTL
+@pytest.mark.parametrize(
+    "operation", [pytest.param("tempfile.TemporaryFile", id="open"), pytest.param("lock_fd_nonblocking", id="flock")]
+)
+def test_private_probe_propagates_handler_timeout(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture, operation: str
+) -> None:
+    mocker.patch(f"filelock._unix.{operation}", autospec=True, side_effect=TimeoutError("deadline"))
+    with pytest.raises(TimeoutError, match="deadline"):
+        UnixFileLock(tmp_path / "test.lock").acquire(timeout=0)
+    assert list(tmp_path.iterdir()) == []
+
+
+@NEEDS_FCNTL
 def test_native_file_works_when_directory_denies_a_probe(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    mocker.patch("filelock._unix.tempfile.TemporaryFile", autospec=True, side_effect=PermissionError("probe denied"))
+    mocker.patch(
+        "filelock._unix.tempfile.TemporaryFile", autospec=True, side_effect=PermissionError(EACCES, "probe denied")
+    )
     lock_path = tmp_path / "test.lock"
     with UnixFileLock(lock_path, mode=0o666) as lock:
         assert (lock.is_locked, stat.S_IMODE(lock_path.stat().st_mode)) == (True, 0o666)
@@ -603,7 +618,9 @@ def test_native_file_works_when_directory_denies_a_probe(  # pragma: needs fcntl
 def test_target_rejects_flock_after_a_denied_probe(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture, platform_exchange: bool
 ) -> None:
-    mocker.patch("filelock._unix.tempfile.TemporaryFile", autospec=True, side_effect=PermissionError("probe denied"))
+    mocker.patch(
+        "filelock._unix.tempfile.TemporaryFile", autospec=True, side_effect=PermissionError(EACCES, "probe denied")
+    )
     mocker.patch("filelock._unix.exchange_supported", autospec=True, return_value=platform_exchange)
     mocker.patch("filelock._unix.exchange_names", autospec=True, return_value=False)
     mocker.patch("filelock._soft.exchange_names", autospec=True, return_value=False)
