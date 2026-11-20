@@ -633,7 +633,8 @@ Ownership scope per lock
    * - :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>`
      - The acquisition object; the latest snapshot names its token and its holder record carries the heartbeat nonce
      - A peer evicts a holder whose record has not changed within ``stale_threshold`` and the holder's next heartbeat
-       reports the loss through ``on_compromise``. A forked child loses the lock; the inherited instance is
+       reports the loss through ``on_compromise``. A hold still published at process exit ends by stale eviction. A
+       forked child loses the lock; the inherited instance is
        fork-invalidated and its ``release()`` is a no-op.
 
 On POSIX, ``os.fork()`` (``multiprocessing``'s fork start method included) waits up to 30 seconds for any acquire,
@@ -643,10 +644,11 @@ writes ``filelock: fork child exits: ...`` to stderr and leaves through ``os._ex
 half-finished descriptor state, so no ``atexit`` handler or ``finally`` block runs in it. An operation that never
 finishes delays every later fork by the same 30 seconds.
 
-On normal interpreter exit, an ``atexit`` handler registered when filelock is imported releases every lock the process
-still references, before module teardown can break the release; handlers registered earlier run after it. Daemon
-threads still run while ``atexit`` handlers do, so a hold of one that is alive stays in place, and a lock built with
-``thread_local=False``, which cannot tell whose hold it has, stays held whenever any other thread is alive.
+On normal interpreter exit, an ``atexit`` handler registered when filelock is imported releases the locks the process
+still references, except ``SoftReadWriteLock``. Its hold remains published until stale eviction because an earlier
+registered exit callback or daemon thread may still use it. Other handlers registered earlier run after filelock's.
+Daemon threads still run while ``atexit`` handlers do, so a hold of one that is alive stays in place, and a lock built
+with ``thread_local=False``, which cannot tell whose hold it has, stays held whenever any other thread is alive.
 ``os._exit``, a signal that kills the process and a crash skip the handler: native locks still go with the descriptor,
 soft markers stay for contenders to reclaim, and a strict claim stays until
 :meth:`force_break <filelock.StrictSoftFileLock.force_break>`.

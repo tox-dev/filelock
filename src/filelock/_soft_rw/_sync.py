@@ -18,7 +18,6 @@ __lazy_modules__ = [
     f"{__spec__.parent}._storage",
 ]
 
-import atexit
 import os
 import threading
 import time
@@ -58,9 +57,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
     from filelock._lease import CompromiseReason  # simplint: ignore[private-import-path]  # internal dependency
-
-_ALL_INSTANCES: Final[WeakValueDictionary[int, SoftReadWriteLock]] = WeakValueDictionary()
-_ALL_INSTANCES_LOCK: threading.Lock = threading.Lock()
 
 
 class _SoftRWMeta(type):
@@ -162,6 +158,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     ``stale_threshold`` seconds of the contender's own monotonic clock; no clock is ever compared across hosts, so skew
     between hosts or against the file server cannot make a live holder look dead.
 
+    If the process exits without releasing a hold, a contender must wait for the holder record to become stale before
+    evicting it. Call ``release()`` or ``close()`` before exit to let a contender proceed at once.
+
     Writer acquire is writer-preferring: a writer enters the snapshot as soon as no live writer is named, which blocks
     any new reader, then waits for the named readers to leave. Writer starvation is impossible.
 
@@ -253,8 +252,6 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         self._hold: _Hold | None = None
         self._closed: bool = False
 
-        with _ALL_INSTANCES_LOCK:
-            _ALL_INSTANCES[id(self)] = self
         register_fork_object(self)
 
     @classmethod
@@ -312,8 +309,6 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
 
     @classmethod
     def _reset_class_after_fork(cls) -> None:  # pragma: forked child
-        global _ALL_INSTANCES_LOCK  # ruff:ignore[global-statement]  # rebinds the module lock to a fresh one in the fork child
-        _ALL_INSTANCES_LOCK = threading.Lock()
         cls._instances = WeakValueDictionary()
         cls._instances_lock = threading.RLock()
         cls._instances_under_construction = set()
@@ -805,13 +800,6 @@ class _Hold:
                 self.read_depths[owner] = depth
 
 
-def _cleanup_all_instances() -> None:
-    for instance in list(_ALL_INSTANCES.values()):
-        with suppress(Exception):
-            instance.release(force=True)
-
-
-atexit.register(_cleanup_all_instances)
 register_fork_class(SoftReadWriteLock)
 
 

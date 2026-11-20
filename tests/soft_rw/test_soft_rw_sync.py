@@ -96,36 +96,52 @@ def _make_lock(
     )
 
 
-def test_atexit_releases_held_lock(lock_file: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize("owner", ["main-thread", "daemon-thread"])
+def test_hold_stays_published_while_the_interpreter_exits(lock_file: str, lock: SoftReadWriteLock, owner: str) -> None:
     script = """
 import atexit
 import sys
-from pathlib import Path
+import threading
 
-def check_released():
-    from filelock import SoftReadWriteLock
+def linger():
+    print("exiting", flush=True)
+    sys.stdin.readline()
 
-    peer = SoftReadWriteLock(sys.argv[1], is_singleton=False)
-    peer.acquire_write(timeout=0)
-    peer.release()
-    Path(sys.argv[2]).write_text("released")
-
-atexit.register(check_released)
+atexit.register(linger)
 
 from filelock import SoftReadWriteLock
 
-lock = SoftReadWriteLock(sys.argv[1], is_singleton=False)
-lock.acquire_write(timeout=0)
+lock = SoftReadWriteLock(sys.argv[1])
+held = threading.Event()
+
+def work_under_the_lock():
+    with lock.write_lock():
+        held.set()
+        threading.Event().wait()
+
+if sys.argv[2] == "daemon-thread":
+    threading.Thread(target=work_under_the_lock, daemon=True).start()
+    held.wait()
+else:
+    lock.acquire_write()
 """
-    result = subprocess.run(
-        [sys.executable, "-c", script, lock_file, str(tmp_path / "released")],
-        check=False,
-        capture_output=True,
+    holder = subprocess.Popen(
+        [sys.executable, "-c", script, lock_file, owner],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
         text=True,
-        timeout=20,
     )
-    assert (result.returncode, result.stderr) == (0, "")
-    assert (tmp_path / "released").read_text() == "released"
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline() == "exiting\n"
+        with pytest.raises(Timeout):
+            lock.acquire_write(blocking=False)
+    finally:
+        holder.communicate("\n", timeout=_PROCESS_DEADLINE)
+
+    assert holder.returncode == 0
+    with pytest.raises(Timeout):
+        lock.acquire_write(blocking=False)
 
 
 def test_release_interrupted_while_joining_the_heartbeat_still_leaves(lock_file: str, mocker: MockerFixture) -> None:

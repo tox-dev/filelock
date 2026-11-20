@@ -1156,8 +1156,8 @@ success, which is deliberately *before* a peer may legally take the claim. The d
 refreshes; an interval close to ``lease_duration`` collapses that margin to nearly nothing, while a small one adds
 metadata traffic on the network filesystem these leases usually live on. ``release()`` also joins the heartbeat thread
 with a timeout of one interval, so a large value lengthens a worst-case release. The heartbeat holds the lease only
-weakly, so a lease dropped while held is released when it is garbage collected or the interpreter exits, as every other
-lock is.
+weakly, so a lease dropped while held is released when it is garbage collected or the interpreter exits. A
+``SoftReadWriteLock`` hold left published at process exit instead ends by stale eviction.
 
 Windows refuses to rename or delete a file another process holds open, so a peer takes an expired claim there only once
 the previous holder's process exits and its handle closes. A holder that keeps running but stops refreshing keeps its
