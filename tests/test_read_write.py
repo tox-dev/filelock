@@ -649,6 +649,18 @@ def test_read_write_lock_refuses_read_only_sqlite_header(tmp_path: Path, version
     assert database.read_bytes() == page
 
 
+def test_writer_refuses_a_read_only_connection(lock_file: str, mocker: MockerFixture) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    with closing(sqlite3.connect(f"{Path(lock_file).as_uri()}?mode=ro", uri=True, factory=_ForkSafeConnection)) as conn:
+        patched = mocker.patch.object(sqlite3, "connect", return_value=conn, autospec=True)
+        with pytest.raises(ValueError, match="SQLite opened the lock database read-only"):
+            lock.acquire_write(timeout=0)
+        mocker.stop(patched)
+    lock.acquire_write(timeout=0)
+    lock.release()
+    assert Path(lock_file).read_bytes() == b""
+
+
 def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     _convert_to_wal(lock_file)

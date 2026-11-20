@@ -812,6 +812,12 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             acquisition_error: BaseException
             if isinstance(error, sqlite3.OperationalError) and error.sqlite_errorcode == sqlite3.SQLITE_BUSY:
                 acquisition_error = Timeout(self.lock_file)
+            elif (
+                mode == "write"
+                and isinstance(error, sqlite3.OperationalError)
+                and error.sqlite_errorcode == sqlite3.SQLITE_READONLY
+            ):
+                acquisition_error = ValueError(f"SQLite opened the lock database read-only: {self.lock_file!r}")
             else:
                 acquisition_error = error
             try:
@@ -892,7 +898,7 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 self._raise_if_process_changed(operation.pid)
                 # Use legacy journal mode (not WAL) because WAL does not block readers while a concurrent EXCLUSIVE
                 # write transaction is active, which makes read-write locking impossible without modifying table data.
-                # MEMORY is safe here since no writes happen, so a crash cannot corrupt the DB.
+                # The write probe changes one header page in memory. Release rolls it back.
                 # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
                 self._execute_waiting(
                     connection, "PRAGMA journal_mode=MEMORY;", timeout, blocking=blocking, operation=operation
@@ -910,6 +916,11 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                     if ("wal",) in cursor.fetchall():
                         msg = f"refusing a lock database switched to WAL mode while acquiring: {self.lock_file!r}"
                         raise ValueError(msg)
+                if mode == "write":
+                    # BEGIN EXCLUSIVE can succeed on a read-only connection.
+                    with closing(connection.execute("PRAGMA user_version;")) as cursor:
+                        (version,) = cursor.fetchone()
+                    connection.execute(f"PRAGMA user_version={int(version)};").close()
             self._raise_if_database_replaced(connection)
 
     def _raise_if_database_replaced(self, connection: _ForkSafeConnection) -> None:
