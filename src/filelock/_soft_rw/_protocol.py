@@ -84,10 +84,11 @@ class _Files(Protocol):
         # Rename *source* over *target* atomically; ``False`` when the platform refused because *target* is in use.
         ...
 
-    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:
-        # Rewrite from offset zero the file ``create`` returned *identity* for.
+    def overwrite(self, path: str, data: bytes, identity: tuple[int, int], header: bytes) -> bool:
+        # Rewrite from offset zero the file ``create`` returned *identity* for, which starts with *header*.
         #
-        # ``False`` when *path* no longer leads to that file.
+        # ``False`` when *path* no longer leads to that file. A later file can inherit a removed file's inode number,
+        # so the file must also still start with *header*, the bytes every rewrite keeps.
         ...
 
     def unlink(self, path: str) -> None:
@@ -496,7 +497,9 @@ class Participant:
     def _refresh_nonce(self) -> bool:
         if (identity := self._holder_identity) is None:
             return False
-        return self._files.overwrite(self._holder_path(self.token), self._record(), identity)
+        return self._files.overwrite(
+            self._holder_path(self.token), self._record(), identity, _holder_header(self.token)
+        )
 
     def _sweep(self, latest: Snapshot) -> None:
         # A participant that crashed before its first commit leaves a record no snapshot names, and a commit that
@@ -594,9 +597,13 @@ def encode_holder(token: str, nonce: str, lease: float) -> bytes:
     #
     # *lease* is the writer's own ``stale_threshold``: a peer configured tighter must not read this holder's longer
     # heartbeat interval as death, so evictors wait the longer of their threshold and this one.
-    return (
-        f"{_PROTOCOL}\ntoken={token}\npid={os.getpid()}\nhost={host_name()}\nlease={float(lease)!r}\nnonce={nonce}\n"
+    return _holder_header(token) + (
+        f"pid={os.getpid()}\nhost={host_name()}\nlease={float(lease)!r}\nnonce={nonce}\n"
     ).encode("ascii")
+
+
+def _holder_header(token: str) -> bytes:
+    return f"{_PROTOCOL}\ntoken={token}\n".encode("ascii")
 
 
 def holder_lease(record: bytes | None) -> float | None:
