@@ -185,7 +185,8 @@ On POSIX, acquisition also refuses a strict sentinel that another account owns u
 could remove the sentinel during a strict hold and let a legacy soft lock enter despite the strict claims.
 
 If an older release created a sentinel that other accounts can write, stop all clients using that path before replacing
-the sentinel. On the next acquire, ``StrictSoftFileLock`` creates one without group or other write permission.
+the sentinel. Changing its mode leaves existing writable descriptors usable. On the next acquire,
+``StrictSoftFileLock`` creates a sentinel without group or other write permission.
 
 An unrelated directory of the locking account can also be renamed to either protocol name where another account can
 write the lock's parent. Outside Windows, acquisition checks that ``<path>.filelock`` holds only a real ``claims``
