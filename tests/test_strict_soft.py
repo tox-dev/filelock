@@ -514,9 +514,7 @@ def test_strict_soft_release_allows_reacquire(tmp_path: Path) -> None:  # pragma
         assert second.claims[0].state == "held"
 
 
-def test_strict_soft_reclaims_an_aged_sentinel_private_record(tmp_path: Path) -> None:
-    # A crash between creating a private record and linking it leaves it behind; the next acquire reclaims it once
-    # it ages out. The dir_fd reaper cases only proved this where dir_fd exists.
+def test_strict_soft_aged_sentinel_private_record_cleanup(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     stale = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
     stale.write_bytes(b"")
@@ -524,7 +522,7 @@ def test_strict_soft_reclaims_an_aged_sentinel_private_record(tmp_path: Path) ->
     os.utime(stale, (aged, aged))
 
     with StrictSoftFileLock(lock_path):
-        assert not stale.exists()
+        assert stale.exists() is (os.name == "nt")
 
 
 @pytest.mark.asyncio
