@@ -13,6 +13,7 @@ import textwrap
 import threading
 import time
 import traceback
+from collections import UserDict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from decimal import Decimal
@@ -1646,6 +1647,140 @@ def test_release_reentered_after_unlock_closes_descriptor_once(tmp_path: Path, m
     assert ([call.args for call in close.call_args_list], lock.is_locked) == ([(unlocked[0],)], False)
 
 
+def test_reentered_release_keeps_the_outer_hold_until_unlock(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = FileLock(lock_path, is_singleton=False)
+    peer = FileLock(lock_path, is_singleton=False)
+    lock.acquire()
+    pending = [None]
+    observed: list[bool] = []
+
+    def release_after_reentry(*_args: object) -> None:
+        if pending:
+            pending.pop()
+            lock.release(force=True)
+            observed.append(lock.is_locked)
+            with pytest.raises(Timeout):
+                peer.acquire(blocking=False)
+
+    mocker.patch("filelock._api._LOGGER.debug", autospec=True, side_effect=release_after_reentry)
+    lock.release()
+    assert (observed, lock.is_locked) == ([True], False)
+    with peer:
+        assert peer.is_locked
+
+
+def test_interrupted_release_keeps_a_new_threads_hold(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = FileLock(lock_path, thread_local=False, is_singleton=False)
+    lock.acquire()
+    start, attempting, entered, finish = (threading.Event() for _ in range(4))
+
+    def hold_after_release() -> None:
+        start.wait()
+        attempting.set()
+        with lock:
+            entered.set()
+            finish.wait()
+
+    worker = threading.Thread(target=hold_after_release, daemon=True)
+    worker.start()
+    release_current = lock._release_current
+    pending = [None]
+
+    def release_then_interrupt(*, force: bool) -> None:
+        release_current(force=force)
+        if pending:
+            pending.pop()
+            start.set()
+            assert attempting.wait(1)
+            assert not entered.wait(0.1)
+            raise KeyboardInterrupt
+
+    mocker.patch.object(lock, "_release_current", side_effect=release_then_interrupt, autospec=True)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            lock.release()
+        assert entered.wait(1)
+        with pytest.raises(Timeout):
+            FileLock(lock_path, is_singleton=False).acquire(blocking=False)
+        assert lock.is_locked
+    finally:
+        finish.set()
+        worker.join(2)
+        lock.release(force=True)
+
+
+def test_interrupted_release_while_entering_the_gate_retries(
+    tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = FileLock(lock_path, thread_local=False, is_singleton=False)
+    lock.acquire()
+    transition = lock._transition_lock
+    gate = mocker.create_autospec(transition, instance=True)
+    pending = [None]
+
+    def enter_gate() -> bool:
+        if pending:
+            pending.pop()
+            raise KeyboardInterrupt
+        return transition.acquire()
+
+    gate.__enter__.side_effect = enter_gate
+    gate.__exit__.side_effect = lambda *_args: transition.release()
+    monkeypatch.setattr(lock, "_transition_lock", gate)
+    with pytest.raises(KeyboardInterrupt):
+        lock.release()
+    assert not lock.is_locked
+    with FileLock(lock_path, blocking=False, is_singleton=False):
+        pass
+
+
+def test_interrupted_release_retries_after_another_thread_nests(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = FileLock(lock_path, thread_local=False, is_singleton=False)
+    lock.acquire()
+    lock.acquire()
+    start, attempting, entered, finish = (threading.Event() for _ in range(4))
+    release_current = lock._release_current
+    pending = [None]
+
+    def nest() -> None:
+        start.wait()
+        attempting.set()
+        with lock:
+            entered.set()
+            finish.wait()
+
+    worker = threading.Thread(target=nest, daemon=True)
+    worker.start()
+
+    def interrupt_after_nested_hold(*, force: bool) -> None:
+        release_current(force=force)
+        if pending:
+            pending.pop()
+            start.set()
+            assert attempting.wait(1)
+            assert not entered.wait(0.1)
+            raise KeyboardInterrupt
+
+    mocker.patch.object(lock, "_release_current", side_effect=interrupt_after_nested_hold, autospec=True)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            lock.release()
+        assert entered.wait(1)
+        finish.set()
+        worker.join(2)
+        assert lock.is_locked
+        with pytest.raises(Timeout):
+            FileLock(lock_path, is_singleton=False).acquire(blocking=False)
+    finally:
+        finish.set()
+        worker.join(2)
+        lock.release(force=True)
+
+
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease])
 @pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
 def test_release_interrupted_at_any_call_leaves_the_lock_usable(
@@ -1836,6 +1971,123 @@ def test_acquire_after_one_interrupted_once_held_excludes_another_process(tmp_pa
         """)
         result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
     assert (result.returncode, result.stdout.strip()) == (0, "refused"), result.stderr
+
+
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        FileLock,
+        SoftFileLock,
+        MarkerSoftFileLock,
+        SoftFileLease,
+        pytest.param(StrictSoftFileLock, id="StrictSoftFileLock", marks=pytest.mark.requires_hard_links),
+    ],
+)
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread-local"), pytest.param(False, id="shared")])
+@pytest.mark.parametrize("interrupted", ["_raise_if_would_deadlock", "_pin_lock_path"])
+def test_early_acquire_exception_leaves_no_counted_hold(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    lock_type: type[BaseFileLock],
+    thread_local: bool,
+    interrupted: str,
+) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = lock_type(lock_path, thread_local=thread_local)
+    mocker.patch.object(lock, interrupted, side_effect=KeyboardInterrupt, autospec=True)
+
+    with pytest.raises(KeyboardInterrupt):
+        lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    with lock:
+        assert lock.lock_counter == 1
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    with lock_type(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        FileLock,
+        SoftFileLock,
+        MarkerSoftFileLock,
+        SoftFileLease,
+        pytest.param(StrictSoftFileLock, id="StrictSoftFileLock", marks=pytest.mark.requires_hard_links),
+    ],
+)
+def test_early_nested_acquire_exception_keeps_one_level(
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[BaseFileLock]
+) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = lock_type(lock_path)
+    lock.acquire()
+    mocker.patch.object(lock, "_raise_if_would_deadlock", side_effect=KeyboardInterrupt, autospec=True)
+
+    with pytest.raises(KeyboardInterrupt):
+        lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    lock.release()
+    with lock_type(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+def test_early_acquire_refuses_same_stack_reentry(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a.lock"))
+
+    def reenter(_canonical: str, *, timeout: float, blocking: bool) -> None:
+        lock.acquire(timeout=timeout, blocking=blocking)
+
+    mocker.patch.object(lock, "_raise_if_would_deadlock", side_effect=reenter, autospec=True)
+    with pytest.raises(RuntimeError, match="acquired again while this thread's acquire of it waits"):
+        lock.acquire()
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+@pytest.mark.parametrize(
+    ("timeout", "blocking", "expected"),
+    [
+        pytest.param(-1, True, RuntimeError, id="indefinite"),
+        pytest.param(1, True, Timeout, id="finite"),
+        pytest.param(-1, False, Timeout, id="nonblocking"),
+    ],
+)
+def test_handler_acquiring_peer_during_poll_detects_deadlock(
+    tmp_path: Path, mocker: MockerFixture, thread_local: bool, timeout: float, blocking: bool, expected: type[Exception]
+) -> None:
+    path = str(tmp_path / "a")
+    outer = SoftFileLock(path, thread_local=thread_local, is_singleton=False)
+    peer = SoftFileLock(path, thread_local=thread_local, is_singleton=False)
+    original = outer._acquire_with_fork_tracking
+    pending = [signal.SIGINT]
+
+    def signal_then_acquire() -> None:
+        signals = pending.copy()
+        pending.clear()
+        list(map(signal.raise_signal, signals))
+        original()
+
+    def handoff(_signum: int, _frame: FrameType | None) -> None:
+        peer.acquire(blocking=False)
+
+    mocker.patch.object(outer, "_acquire_with_fork_tracking", side_effect=signal_then_acquire, autospec=True)
+    previous = signal.signal(signal.SIGINT, handoff)
+    try:
+        with pytest.raises(expected):
+            outer.acquire(timeout=timeout, blocking=blocking, cancel_check=lambda: True)
+        assert (outer.is_locked, peer.is_locked) == (False, True)
+        with pytest.raises(RuntimeError, match="already held by a different"):
+            SoftFileLock(path, is_singleton=False).acquire(cancel_check=lambda: True)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        peer.release()
+        outer.release()
 
 
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
@@ -4311,24 +4563,19 @@ def test_append_exception_context_terminates_on_a_cycle() -> None:
     assert second.__context__ is first
 
 
-def test_undo_acquire_keeps_registry_entry_while_still_held(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_failed_nested_acquire_keeps_outer_registry_entry(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"), is_singleton=False)
     lock.acquire()
     key = lock._context.lock_file_key
     assert _REGISTRY.held.get(key) == id(lock)
 
-    # A reentrant acquire that fails while the lock reports unheld routes through _undo_acquire with the counter
-    # still above zero, so the registry entry the outer hold owns must survive.
-    held_fd = lock._context.lock_file_fd
-    lock._context.lock_file_fd = None  # is_locked now reports False
-    mocker.patch.object(lock, "_poll_until_acquired", side_effect=Timeout(lock.lock_file), autospec=True)
+    mocker.patch.object(lock, "_raise_if_would_deadlock", side_effect=Timeout(lock.lock_file), autospec=True)
     with pytest.raises(Timeout):
         lock.acquire(timeout=0)
 
-    assert lock._context.lock_counter == 1  # decremented from 2, the deeper hold remains
-    assert _REGISTRY.held.get(key) == id(lock)  # entry preserved because the counter did not reach zero
+    assert lock._context.lock_counter == 1
+    assert _REGISTRY.held.get(key) == id(lock)
 
-    lock._context.lock_file_fd = held_fd
     lock.release()
 
 
@@ -4403,6 +4650,105 @@ def test_public_literal_aliases_list_their_values() -> None:
         ("lease", "exclusive", "unknown"),
         ("marker-missing", "owner-changed", "refresh-failed", "evicted"),
     )
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_hook_cannot_leave_acquire_unheld(tmp_path: Path, *, force: bool) -> None:
+    path = tmp_path / "hook.lock"
+    lock = FileLock(path, on_acquired=lambda _fd: lock.release(force=force))
+
+    with pytest.raises(RuntimeError, match=r"force-released|acquire of it is still running"):
+        lock.acquire(timeout=0)
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    with FileLock(path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+def test_force_release_in_exiting_hook_preserves_exit(tmp_path: Path) -> None:
+    def stop(_fd: int) -> None:
+        lock.release(force=True)
+        raise SystemExit(17)
+
+    lock = FileLock(tmp_path / "exit.lock", on_acquired=stop)
+    with pytest.raises(SystemExit) as exc:
+        lock.acquire()
+
+    assert (exc.value.code, lock.is_locked, lock.lock_counter) == (17, False, 0)
+
+
+@pytest.mark.parametrize(
+    "interrupt",
+    [
+        pytest.param([None, KeyboardInterrupt, None], id="record"),
+        pytest.param([None, None, KeyboardInterrupt, None], id="return"),
+    ],
+)
+def test_interrupted_nested_acquire_preserves_initial_depth(
+    tmp_path: Path, mocker: MockerFixture, interrupt: list[type[KeyboardInterrupt] | None]
+) -> None:
+    lock = SoftFileLock(tmp_path / "nested.lock", thread_local=False)
+    with lock:
+        mocker.patch.object(
+            type(lock._context),
+            "acquiring",
+            new_callable=mocker.PropertyMock,
+            side_effect=interrupt,
+        )
+        with pytest.raises(KeyboardInterrupt):
+            lock.acquire()
+        mocker.stopall()
+        assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    with SoftFileLock(lock.lock_file, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+def test_failed_acquire_retains_registration_after_failed_unlock(tmp_path: Path, mocker: MockerFixture) -> None:
+    class InterruptedRegistry(UserDict[object, int]):
+        interrupted = False
+
+        def __setitem__(self, key: object, item: int) -> None:
+            if not self.interrupted:
+                self.interrupted = True
+                raise MemoryError
+            super().__setitem__(key, item)
+
+    path = tmp_path / "registered.lock"
+    lock = FileLock(path)
+    mocker.patch.object(_REGISTRY, "held", InterruptedRegistry())
+    mocker.patch.object(lock, "_release", autospec=True, side_effect=OSError(EIO, "unlock failed"))
+    with pytest.raises(BaseExceptionGroup, match="cleanup failed"):
+        lock.acquire()
+
+    with pytest.raises(RuntimeError, match="already held"):
+        FileLock(path, is_singleton=False).acquire(cancel_check=lambda: True)
+    mocker.stopall()
+    lock.release()
+    with FileLock(path, is_singleton=False, blocking=False) as peer:
+        assert peer.is_locked
+
+
+def test_balanced_acquire_in_hook(tmp_path: Path) -> None:
+    def nest(_fd: int) -> None:
+        with lock:
+            assert lock.lock_counter == 2
+
+    lock = FileLock(tmp_path / "hook.lock", on_acquired=nest)
+    with lock:
+        assert lock.lock_counter == 1
+
+
+def test_failed_proxy_releases_provisional_hold(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(tmp_path / "proxy.lock")
+    mocker.patch("filelock._api.AcquireReturnProxy", side_effect=MemoryError, autospec=True)
+
+    with pytest.raises(MemoryError):
+        lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    with SoftFileLock(lock.lock_file, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
 
 
 def test_on_acquired_reentrant_acquire_still_registers_holder(tmp_path: Path) -> None:

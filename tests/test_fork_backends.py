@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # isolated interpreter controls child callback registration order
 import sys
+import threading
 from errno import EBADF
 from typing import TYPE_CHECKING, NoReturn, cast
 
@@ -59,6 +60,45 @@ def _fork_descriptor_probe(  # pragma: needs fork
         exit_child(0)
 
     return fork_process(probe_child)
+
+
+def test_direct_descriptor_backend_keeps_new_hold_on_interrupted_release(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "third-party.lock"
+    lock = _DescriptorLock(str(lock_path), thread_local=False, is_singleton=False)
+    lock.acquire()
+    start, entered, finish = (threading.Event() for _ in range(3))
+
+    def hold_replacement() -> None:
+        start.wait()
+        with lock:
+            entered.set()
+            finish.wait()
+
+    worker = threading.Thread(target=hold_replacement, daemon=True)
+    worker.start()
+    release_current = lock._release_current
+    pending = [None]
+
+    def release_then_interrupt(*, force: bool) -> None:
+        release_current(force=force)
+        if pending:
+            pending.pop()
+            start.set()
+            assert not entered.wait(0.1)
+            raise KeyboardInterrupt
+
+    mocker.patch.object(lock, "_release_current", side_effect=release_then_interrupt, autospec=True)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            lock.release()
+        assert entered.wait(1)
+        fd = lock._context.lock_file_fd
+        assert fd is not None
+        assert os.fstat(fd).st_ino == lock_path.stat().st_ino
+    finally:
+        finish.set()
+        worker.join(2)
+        lock.release(force=True)
 
 
 @NEEDS_FORK  # pragma: needs fork
