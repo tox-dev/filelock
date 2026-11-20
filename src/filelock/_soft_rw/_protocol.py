@@ -413,7 +413,7 @@ class Participant:
         ledger: Ledger,
         log: GenerationLog,
     ) -> None:
-        self.token: Final[str] = new_token()
+        self.token = new_token()
         self.mode: Final[Mode] = mode
         self.generation: int | None = None
         self._files = files
@@ -422,7 +422,7 @@ class Participant:
         self._clock = clock
         self._ledger = ledger
         self._log = log
-        self._holder_identity: tuple[int, int] | None = None
+        self._holder: _HolderRecord | None = None
         self._entered = False
         self._next_sweep = clock()
 
@@ -432,12 +432,14 @@ class Participant:
         self._create_holder()
 
     def _create_holder(self) -> None:
+        asked = self._clock()
         try:
-            self._holder_identity = self._files.create(self._holder_path(self.token), self._record())
+            identity = self._files.create(self._holder_path(self.token), self._record())
         except FileNotFoundError:
             # Removing the whole log takes the directories with it.
             self._files.prepare(self._root, force=True)
-            self._holder_identity = self._files.create(self._holder_path(self.token), self._record())
+            identity = self._files.create(self._holder_path(self.token), self._record())
+        self._holder = _HolderRecord(identity=identity, refreshed=asked)
 
     def _holder_path(self, token: str) -> str:
         return str(Path(self._root, HOLDERS_DIRECTORY, token))
@@ -478,6 +480,9 @@ class Participant:
             return False
         if (generation := self._commit(latest, writer, readers, stale)) is None:
             return None
+        if self._outlived_its_lease(self._holder):
+            self._start_over()
+            return None
         self._entered = True
         if granted:
             self.generation = generation
@@ -489,17 +494,24 @@ class Participant:
         # outlast the stale threshold, so the nonce changes on every poll; a peer then never reads a patient contender
         # as a corpse. A record that has gone missing was taken by an evictor or a sweeper that did, or by a removal of
         # the whole log.
-        self._entered = self.token in latest.members
-        if not self._refresh_nonce():
+        holder = self._holder
+        kept = self._refresh_nonce()
+        if self._outlived_its_lease(holder):
+            self._start_over()
+        elif not kept:
             with suppress(FileExistsError):
                 self._create_holder()
+        self._entered = self.token in latest.members
 
     def _refresh_nonce(self) -> bool:
-        if (identity := self._holder_identity) is None:
+        if (holder := self._holder) is None:
             return False
-        return self._files.overwrite(
-            self._holder_path(self.token), self._record(), identity, _holder_header(self.token)
-        )
+        asked = self._clock()
+        if kept := self._files.overwrite(
+            self._holder_path(self.token), self._record(), holder.identity, _holder_header(self.token)
+        ):
+            self._holder = _HolderRecord(identity=holder.identity, refreshed=asked)
+        return kept
 
     def _sweep(self, latest: Snapshot) -> None:
         # A participant that crashed before its first commit leaves a record no snapshot names, and a commit that
@@ -545,26 +557,14 @@ class Participant:
             self._ledger.forget(token)
         return successor.generation
 
-    def heartbeat(self) -> tuple[HeartbeatOutcome, OSError | None]:
-        # Refresh the nonce and confirm the latest snapshot still names this participant.
-        #
-        # ``lost`` means a peer evicted this participant or removed its holder record: the lock is no longer held, and
-        # the holder must stop using what it protects. ``transient`` is a filesystem error refreshing the nonce, worth
-        # retrying on the next tick. A failure to read the log or to sweep decides nothing about this holder's liveness,
-        # so it is not counted against it.
-        try:
-            if not self._refresh_nonce():
-                return "lost", None
-        except TreeReplacedError:
-            return "lost", None
-        except OSError as error:
-            return "transient", error
-        try:
-            latest = self._log.latest()
-            self._sweep(latest)
-        except (OSError, TreeReplacedError):
-            return "ok", None
-        return ("ok" if self.token in latest.members else "lost"), None
+    def _outlived_its_lease(self, holder: _HolderRecord | None) -> bool:
+        return holder is not None and self._clock() - holder.refreshed >= self._stale_threshold
+
+    def _start_over(self) -> None:
+        # A peer may have judged the old record before its refresh and can still unlink that name.
+        self.leave()
+        self.token = new_token()
+        self._create_holder()
 
     def leave(self) -> None:
         # Commit this participant out of the latest snapshot, then remove its holder record.
@@ -590,6 +590,33 @@ class Participant:
                 self._entered = False
                 self.generation = None
                 self._files.unlink(self._holder_path(self.token))
+
+    def heartbeat(self) -> tuple[HeartbeatOutcome, OSError | None]:
+        # Refresh the nonce and confirm the latest snapshot still names this participant.
+        #
+        # ``lost`` means a peer evicted this participant or removed its holder record: the lock is no longer held, and
+        # the holder must stop using what it protects. ``transient`` is a filesystem error refreshing the nonce, worth
+        # retrying on the next tick. A failure to read the log or to sweep decides nothing about this holder's liveness,
+        # so it is not counted against it.
+        try:
+            if not self._refresh_nonce():
+                return "lost", None
+        except TreeReplacedError:
+            return "lost", None
+        except OSError as error:
+            return "transient", error
+        try:
+            latest = self._log.latest()
+            self._sweep(latest)
+        except (OSError, TreeReplacedError):
+            return "ok", None
+        return ("ok" if self.token in latest.members else "lost"), None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _HolderRecord:
+    identity: tuple[int, int]
+    refreshed: float
 
 
 def encode_holder(token: str, nonce: str, lease: float) -> bytes:

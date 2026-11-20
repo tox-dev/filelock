@@ -1410,6 +1410,8 @@ def test_a_contender_waiting_when_the_log_is_removed_starts_over(
     lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture
 ) -> None:
     lock.acquire_write(timeout=2)
+    root = f"{lock_file}.rw"
+    old_epoch = Path(root, "gen", "epoch").read_bytes()
     real_advance = Participant.advance
     removed: list[str] = []
 
@@ -1424,7 +1426,10 @@ def test_a_contender_waiting_when_the_log_is_removed_starts_over(
     try:
         waiter.acquire_write(timeout=_PROCESS_DEADLINE)
         assert removed
-        assert waiter.generation == 1
+        latest = GenerationLog(OsFiles(lock_file), lock_file, root).latest()
+        assert Path(root, "gen", "epoch").read_bytes() != old_epoch
+        assert latest.generation == waiter.generation
+        assert {latest.writer} == {entry.name for entry in Path(root, "holders").iterdir()}
     finally:
         waiter.close()
 
