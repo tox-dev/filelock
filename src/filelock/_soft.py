@@ -311,9 +311,11 @@ class SoftFileLock(BaseFileLock):
             # exchange now would move that peer's live marker aside.
             if (current := os.lstat(self._lock_path)).st_mtime != marker.st_mtime or current.st_ino != marker.st_ino:
                 return
-            if not exchange_names(aside, self._lock_path):
-                return  # NFS, SMB and the like refuse it; renaming the marker aside would empty the path
+            # A signal can raise after the exchange syscall and before its result reaches this frame.
             exchanged = True
+            if not exchange_names(aside, self._lock_path):
+                exchanged = False
+                return  # NFS, SMB and the like refuse it; renaming the marker aside would empty the path
             if (taken := os.lstat(aside)).st_mtime != marker.st_mtime or taken.st_ino != marker.st_ino:
                 return  # a peer recreated the marker, which the cleanup below swaps back
             Path(aside).unlink()

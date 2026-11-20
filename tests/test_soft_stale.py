@@ -881,6 +881,29 @@ def test_stale_break_undoes_an_exchange_that_took_a_peers_marker(  # pragma: win
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
+def test_stale_break_restores_a_live_holder_after_interrupted_exchange(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    (holder := tmp_path / "holder").write_text(_live(record), encoding="utf-8")
+
+    def exchange_then_interrupt(aside: str, path: str) -> bool:
+        holder.replace(lock)
+        assert exchange_names(aside, path)
+        raise KeyboardInterrupt
+
+    mocker.patch("filelock._soft.exchange_names", new=exchange_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (_live(record), [lock])
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_exchanges_back_after_the_breaker_that_took_its_marker(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
