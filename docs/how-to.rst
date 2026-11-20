@@ -488,6 +488,9 @@ other accounts cannot create files in. The per-user temporary directory and ``%L
     with rw.write_lock():
         update_shared_data()
 
+A write lock raises :class:`ValueError` if SQLite opens the database read-only after the header check. A writer
+checks that its transaction can write before entering the critical section.
+
 You can pass ``timeout`` and ``blocking`` to the context managers:
 
 .. code-block:: python
