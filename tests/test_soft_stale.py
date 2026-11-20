@@ -143,6 +143,69 @@ def test_marker_identity_failure_closes_raw_handle(
     assert not lock_path.exists()
 
 
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_created_marker_cleanup_deletes_its_file(lock_path: Path, created_marker_identity: tuple[int, int]) -> None:
+    assert sys.platform == "win32"
+    from filelock._windows import _discard_created_file
+
+    _discard_created_file(str(lock_path), created_marker_identity)
+
+    assert not lock_path.exists()
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_created_marker_cleanup_accepts_missing_name(lock_path: Path, created_marker_identity: tuple[int, int]) -> None:
+    assert sys.platform == "win32"
+    from filelock._windows import _discard_created_file
+
+    lock_path.unlink()
+    _discard_created_file(str(lock_path), created_marker_identity)
+
+    assert not lock_path.exists()
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_created_marker_cleanup_spares_replacement(lock_path: Path, created_marker_identity: tuple[int, int]) -> None:
+    assert sys.platform == "win32"
+    from filelock._windows import _discard_created_file
+
+    replacement = lock_path.with_name("replacement")
+    replacement.write_text("other owner", encoding="utf-8")
+    replacement.replace(lock_path)
+    _discard_created_file(str(lock_path), created_marker_identity)
+
+    assert lock_path.read_text(encoding="utf-8") == "other owner"
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_created_marker_cleanup_closes_handle_on_delete_failure(
+    lock_path: Path, created_marker_identity: tuple[int, int], mocker: MockerFixture
+) -> None:
+    assert sys.platform == "win32"
+    from filelock._windows import _discard_created_file
+
+    mocker.patch("filelock._windows._KERNEL32.SetFileInformationByHandle", autospec=True, return_value=False)
+    mocker.patch("filelock._windows.ctypes.get_last_error", autospec=True, return_value=5)
+    with pytest.raises(OSError, match="WinError 5"):
+        _discard_created_file(str(lock_path), created_marker_identity)
+    lock_path.unlink()
+    assert not lock_path.exists()
+
+
+@pytest.fixture
+def created_marker_identity(lock_path: Path) -> tuple[int, int]:  # pragma: win32 cover
+    assert sys.platform == "win32"
+    import msvcrt
+
+    from filelock._windows import _identity_of, create_exclusive_non_reparse_fd
+
+    fd = create_exclusive_non_reparse_fd(str(lock_path))
+    try:
+        return _identity_of(msvcrt.get_osfhandle(fd))
+    finally:
+        os.close(fd)
+
+
 @pytest.fixture
 def fail_identity_reads(mocker: MockerFixture) -> Callable[[int], None]:  # pragma: win32 cover
     assert sys.platform == "win32"
@@ -1616,7 +1679,7 @@ def test_publication_without_identity_leaves_the_marker(
 def soft_open_spy(mocker: MockerFixture) -> MockType:
     if sys.platform == "win32":  # pragma: win32 cover
         return mocker.spy(filelock._soft, "create_exclusive_non_reparse_fd")
-    return mocker.spy(os, "open")
+    return mocker.spy(os, "open")  # pragma: win32 no cover
 
 
 def test_transient_identity_failure_still_cleans_the_marker(lock_path: Path, mocker: MockerFixture) -> None:
