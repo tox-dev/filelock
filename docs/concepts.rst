@@ -205,9 +205,15 @@ directory or symlink, or a file it cannot parse that stays unchanged for two sec
 :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming it. See :ref:`how-to:Use fail-closed soft
 locks` for inspection and recovery.
 
+An acquisition attempt visits at most 1024 entries in the claims directory. Contenders publish claims only after an
+empty scan, so a larger directory means many contenders reached the doorway together or another process filled it. The
+attempt counts as lost, then follows the caller's ``blocking`` and ``timeout`` settings.
+:attr:`claims <filelock.StrictSoftFileLock.claims>` still lists every claim for inspection.
+
 Private publication records are not ownership claims. Each attempt uses a fresh random name. Linked private names are
-discarded immediately, while unlinked records left by a crash receive a two-second grace period before reclamation.
-Losing a private name makes the publisher retry; it never converts an unpublished record into ownership.
+discarded immediately, while unlinked records left by a crash receive a two-second grace period before reclamation. A
+scan reclaims at most 1024 abandoned records and leaves the rest untouched. Losing a private name makes the
+publisher retry; it never converts an unpublished record into ownership.
 
 .. list-table::
     :header-rows: 1

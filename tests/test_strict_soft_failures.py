@@ -191,6 +191,97 @@ def _write_foreign_claim(claims: Path, token: str, state: str = "held") -> Path:
     return claim
 
 
+def test_strict_soft_claim_flood_counts_as_contention(lock_path: Path) -> None:
+    _initialize_protocol(lock_path)
+    claims = Path(f"{lock_path}.filelock") / "claims"
+    for index in range(1024):
+        _write_foreign_claim(claims, f"{index:032x}")
+    (claims / f"held-v1-{'f' * 32}.claim").write_bytes(b"broken")
+
+    lock = StrictSoftFileLock(lock_path, blocking=False)
+    with pytest.raises(Timeout):
+        lock.acquire()
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+
+
+def test_strict_soft_claim_inspection_lists_past_scan_limit(lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._strict._CLAIM_SCAN_LIMIT", 2)
+    _initialize_protocol(lock_path)
+    claims = Path(f"{lock_path}.filelock") / "claims"
+    for index in range(3):
+        _write_foreign_claim(claims, f"{index:032x}")
+
+    assert len(StrictSoftFileLock(lock_path).claims) == 3
+
+
+def test_strict_soft_claim_scan_bounds_private_probes(lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._strict._CLAIM_SCAN_LIMIT", 2)
+    _initialize_protocol(lock_path)
+    claims = Path(f"{lock_path}.filelock") / "claims"
+    for index in range(3):
+        (claims / f".probe-v1-{index:032x}.tmp").touch()
+
+    with pytest.raises(Timeout):
+        StrictSoftFileLock(lock_path, blocking=False).acquire()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
+def test_strict_soft_claim_scan_does_not_chmod_past_limit(  # pragma: win32 no cover
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    mocker.patch("filelock._strict._CLAIM_SCAN_LIMIT", 2)
+    _initialize_protocol(lock_path)
+    claims = Path(f"{lock_path}.filelock") / "claims"
+    for index in range(2):
+        _write_foreign_claim(claims, f"{index:032x}")
+    (claims / "unknown-name").touch()
+    claims.chmod(0o777)
+
+    with pytest.raises(Timeout):
+        StrictSoftFileLock(lock_path, mode=0o600, blocking=False).acquire()
+    assert stat.S_IMODE(claims.stat().st_mode) == 0o777
+
+
+def test_strict_soft_claim_scan_leaves_private_records_on_overflow(lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._strict._CLAIM_SCAN_LIMIT", 2)
+    _initialize_protocol(lock_path)
+    claims = Path(f"{lock_path}.filelock") / "claims"
+    for index in range(3):
+        private_path = _private_claim_path(lock_path, f"{index:032x}")
+        private_path.write_bytes(b"abandoned")
+        os.utime(private_path, (0, 0))
+    _write_foreign_claim(claims, "f" * 32)
+
+    with pytest.raises(Timeout):
+        StrictSoftFileLock(lock_path, blocking=False).acquire()
+    assert sum(path.name.startswith(".") for path in claims.iterdir()) == (1 if sys.platform == "win32" else 3)
+
+
+def test_strict_soft_sentinel_scan_reclaims_at_most_one_batch(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._strict._CLAIM_SCAN_LIMIT", 2)
+    lock_path = tmp_path / "resource.lock"
+    for index in range(3):
+        private_path = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{index:032x}.tmp"
+        private_path.write_bytes(b"abandoned")
+        os.utime(private_path, (0, 0))
+
+    with StrictSoftFileLock(lock_path, blocking=False):
+        assert sum(path.name.startswith(".") for path in tmp_path.iterdir()) == 1
+
+
+def test_strict_soft_sentinel_scan_bounds_siblings(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._strict._CLAIM_SCAN_LIMIT", 2)
+    checked = mocker.spy(filelock._strict, "_private_public_name")
+    lock_path = tmp_path / "resource.lock"
+    for index in range(3):
+        (tmp_path / f"other-{index}").touch()
+
+    lock = StrictSoftFileLock(lock_path, blocking=False)
+    with lock:
+        assert lock.is_locked
+    assert sum(call.args[0].startswith("other-") for call in checked.call_args_list) == 2
+
+
 @pytest.mark.parametrize("state", ["intent", "held"])
 def test_strict_soft_lost_link_reply_counts_as_committed(lock_path: Path, mocker: MockerFixture, state: str) -> None:
     real_link = os.link

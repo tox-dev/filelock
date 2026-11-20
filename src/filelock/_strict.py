@@ -11,6 +11,7 @@ __spec__ = cast("ModuleSpec", __spec__)
 __lazy_modules__ = [
     "contextlib",
     "functools",
+    "itertools",
     "pathlib",
     "secrets",
     "tempfile",
@@ -25,6 +26,7 @@ __lazy_modules__ = [
 import contextlib
 import errno
 import functools
+import itertools
 import os
 import secrets
 import stat
@@ -81,6 +83,8 @@ _COORDINATION_SUFFIX: Final[str] = ".filelock"
 _CLAIM_DIRECTORY_NAME: Final[str] = "claims"
 _CLAIM_MAGIC: Final[str] = "filelock-strict-v1"
 _CLAIM_RECORD_LIMIT: Final[int] = 1024
+# A scan runs within one acquire attempt, so an unbounded claim count can outlast the caller's timeout.
+_CLAIM_SCAN_LIMIT: Final[int] = 1024
 _TOKEN_HEX_LENGTH: Final[int] = 32
 _PRIVATE_RECORD_MARKER: Final[str] = ".private-v1-"
 _PRIVATE_RECORD_SUFFIX: Final[str] = ".tmp"
@@ -205,13 +209,15 @@ class StrictSoftFileLock(BaseFileLock):
         # A process that can write these directories can remove claims from them, so they take the lock's mode plus
         # search permission where the mode grants read.
         directory_mode: Final[int] = (mode := self._open_mode()) | (mode & 0o444) >> 2
-        _ensure_protocol_directory(self.lock_file, coordination_directory, directory_mode)
-        _ensure_claim_directory(self.lock_file, claim_directory, directory_mode)
-        if (
-            sentinel_fd := _open_or_create_sentinel(
+        try:
+            _ensure_protocol_directory(self.lock_file, coordination_directory, directory_mode)
+            _ensure_claim_directory(self.lock_file, claim_directory, directory_mode)
+            sentinel_fd = _open_or_create_sentinel(
                 self.lock_file, lock_path, self._open_mode(), self._occupant_unchanged_for
             )
-        ) is None:
+        except _ClaimScanLimitError:
+            return
+        if sentinel_fd is None:
             return
         try:
             sentinel_identity = _file_identity(os.fstat(sentinel_fd))
@@ -225,6 +231,8 @@ class StrictSoftFileLock(BaseFileLock):
         try:
             if won := self._attempt_doorway(claim_directory):
                 self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
+        except _ClaimScanLimitError:
+            won = False
         except BaseException:
             # Once recorded as held, the acquire's rollback releases the claim instead.
             if not self.is_locked:
@@ -472,12 +480,20 @@ def _public_claim_names(
         if probe_clock
         else lambda: None
     )
-    for entry in entries:
+    reclaims = 0
+    for scanned, entry in enumerate(entries):
+        if probe_clock and scanned >= _CLAIM_SCAN_LIMIT:
+            raise _ClaimScanLimitError
         if not entry.name.startswith("."):
             names.append(entry.name)
-        elif _is_claim_probe_name(entry.name) or (
-            (public_name := _private_public_name(entry.name)) is not None and _parse_claim_name(public_name) is not None
+        elif reclaims < _CLAIM_SCAN_LIMIT and (
+            _is_claim_probe_name(entry.name)
+            or (
+                (public_name := _private_public_name(entry.name)) is not None
+                and _parse_claim_name(public_name) is not None
+            )
         ):
+            reclaims += 1
             _reclaim_private_record(directory_ref, entry.name, now)
     return sorted(names)
 
@@ -977,25 +993,28 @@ def _open_directory(directory: str, dir_fd: int | None = None) -> int:  # pragma
 def _refuse_unrelated_claim_entries(lock_file: str, directory: Path, fd: int) -> None:  # pragma: win32 no cover
     try:
         with _scandir_relative((os.fspath(directory), fd)) as entries:
-            foreign = next(
-                (
-                    name
-                    for entry in entries
-                    if _parse_claim_name(name := entry.name) is None
-                    and not _is_claim_probe_name(name)
-                    and _parse_claim_name(_private_public_name(name) or "") is None
-                    and not (
-                        name.startswith(".nfs")
-                        and len(name) > len(".nfs")
-                        and all(c in "0123456789abcdef" for c in name[4:])
-                    )
-                ),
-                None,
-            )
+            names = [entry.name for entry in itertools.islice(entries, _CLAIM_SCAN_LIMIT + 1)]
+        foreign = next(
+            (
+                name
+                for name in names[:_CLAIM_SCAN_LIMIT]
+                if _parse_claim_name(name) is None
+                and not _is_claim_probe_name(name)
+                and _parse_claim_name(_private_public_name(name) or "") is None
+                and not (
+                    name.startswith(".nfs")
+                    and len(name) > len(".nfs")
+                    and all(c in "0123456789abcdef" for c in name[4:])
+                )
+            ),
+            None,
+        )
     except OSError as error:
         raise SoftFileLockProtocolError(lock_file, None, f"cannot list {directory}") from error
     if foreign is not None:
         raise SoftFileLockProtocolError(lock_file, foreign, "unknown claim name or protocol version")
+    if len(names) > _CLAIM_SCAN_LIMIT:
+        raise _ClaimScanLimitError
 
 
 def _settle_opened_directory_mode(
@@ -1107,12 +1126,18 @@ def _reclaim_sentinel_private_records(lock_file: str, path: Path) -> None:
     now = functools.cache(functools.partial(_filesystem_now, directory_ref, path.name))
     try:
         with os.scandir(path.parent) as entries:
-            for entry in entries:
+            for scanned, entry in enumerate(entries):
+                if scanned >= _CLAIM_SCAN_LIMIT:
+                    break
                 if _private_public_name(entry.name) == path.name:
                     _reclaim_private_record(directory_ref, entry.name, now)
     except OSError as error:
         reason = f"cannot reclaim sentinel private records: {error.strerror or error}"
         raise SoftFileLockProtocolError(lock_file, None, reason) from error
+
+
+class _ClaimScanLimitError(Exception):
+    pass
 
 
 def _file_identity(st: os.stat_result) -> tuple[int, int]:
