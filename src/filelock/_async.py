@@ -175,7 +175,6 @@ class _TaskOwners:
         ] = {}
         self._transitioning = False
         self._waiting_writers = 0
-        #: One ticket per waiting call. Writers take one handoff; readers can join a read hold together.
         self._read_waiters: dict[ConcurrentFuture[None], None] = {}
         self._write_waiters: dict[ConcurrentFuture[None], None] = {}
         self._transition_waiters: dict[ConcurrentFuture[None], None] = {}
