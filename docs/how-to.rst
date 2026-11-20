@@ -1195,9 +1195,10 @@ blocks rather than breaking in. Only these combinations hold:
  Configure legacy age-based expiry
 ***********************************
 
-Only :class:`SoftFileLock <filelock.SoftFileLock>` honors ``lifetime``. The value sets the marker age that permits
-removal. A waiter may enter after that age even while the previous holder continues its protected operation. The age is
-the waiter's wall clock minus the marker's modification time, which the writer's or the file server's clock stamped, so
+The ``lifetime`` value sets the age at which a :class:`SoftFileLock <filelock.SoftFileLock>` waiter may remove a marker.
+A ``UnixFileLock`` that has already fallen back after ``ENOSYS`` also accepts a ``lifetime`` assignment for that path.
+A waiter may enter after that age even while the previous holder continues its protected operation. The age is the
+waiter's wall clock minus the marker's modification time, which the writer's or the file server's clock stamped, so
 every host must keep its clock in sync: a waiter whose clock runs ``lifetime`` ahead removes a marker written a moment
 ago. ``SoftFileLease`` compares no clocks across hosts.
 
@@ -1220,8 +1221,9 @@ is required or ``StrictSoftFileLock`` when unknown and stale claims must fail cl
 ``AsyncSoftFileLease`` or ``AsyncStrictSoftFileLock``. ``lifetime=None`` disables age-based removal; same-host dead-PID
 and malformed-record recovery still apply.
 
-Only ``SoftFileLock`` honors the value. Every other lock either drops it with a ``UserWarning`` naming why that backend
-cannot age out a holder, or refuses the keyword outright:
+``SoftFileLock`` honors the value at construction and on assignment. A ``UnixFileLock`` accepts an assignment only
+after it has fallen back on the current resolved path. Other locks either drop the value with a ``UserWarning`` naming
+why that backend cannot age out a holder, or refuse the keyword outright:
 
 .. list-table:: ``lifetime`` behavior
     :header-rows: 1
@@ -1234,6 +1236,9 @@ cannot age out a holder, or refuses the keyword outright:
       - Shared-marker recovery and forced breaking can still remove the marker.
     - - ``SoftFileLock``, non-``None``
       - Removes a marker after the configured age.
+      - A live holder may overlap its successor.
+    - - ``UnixFileLock`` after fallback, assigned non-``None``
+      - Removes a soft marker after the configured age on that resolved path.
       - A live holder may overlap its successor.
     - - Native lock, non-``None``
       - Warns and ignores: a kernel lock cannot be broken safely by file age.
@@ -1249,8 +1254,9 @@ cannot age out a holder, or refuses the keyword outright:
       - Not applicable.
 
 Native locks (:class:`UnixFileLock <filelock.UnixFileLock>` and
-:class:`WindowsFileLock <filelock.WindowsFileLock>`) ignore a non-``None`` value and emit a warning. The same is true
-when :class:`FileLock <filelock.FileLock>` selects one of those backends; on a build without ``fcntl``, ``FileLock`` may
+:class:`WindowsFileLock <filelock.WindowsFileLock>`) ignore a non-``None`` constructor value and emit a warning. A
+``UnixFileLock`` also ignores an assignment before fallback or on another resolved path. The same rules apply when
+:class:`FileLock <filelock.FileLock>` selects one of those backends; on a build without ``fcntl``, ``FileLock`` may
 instead alias ``SoftFileLock``. A kernel lock lives on the inode, so pathname age cannot revoke it. The async peers
 behave as their synchronous counterparts do.
 
@@ -1446,9 +1452,9 @@ cleanup after a close error.
  Fail closed instead of downgrading to soft
 ***********************************************
 
-On Unix, when ``flock`` returns ``ENOSYS``, :class:`UnixFileLock <filelock.UnixFileLock>` switches to
-:class:`SoftFileLock <filelock.SoftFileLock>` semantics by default. If the application requires the native backend,
-construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propagates:
+On Unix, when ``flock`` returns ``ENOSYS``, :class:`UnixFileLock <filelock.UnixFileLock>` follows
+:class:`SoftFileLock <filelock.SoftFileLock>` semantics for that resolved path by default. If the application requires
+the native backend, construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propagates:
 
 .. code-block:: python
 
@@ -1458,6 +1464,20 @@ construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propaga
 
 ``ENOSYS`` then propagates as the original :class:`OSError` from :func:`fcntl.flock`, with
 :data:`errno.ENOSYS`; filelock does not wrap it.
+
+After fallback, ``UnixFileLock`` keeps its class. Use ``pid`` and ``is_lock_held_by_us`` to inspect the soft marker,
+``lifetime`` to set its expiry, and ``break_lock()`` to clear it. On a native path, the marker properties raise
+:class:`AttributeError`, ``break_lock()`` raises :class:`RuntimeError`, and assigning ``lifetime`` emits a warning.
+
+If the requested mode permits writes by other accounts, filelock probes a private file in the same directory before
+creating the lock file. On a filesystem without ``flock``, the new marker excludes group and other writes from creation.
+Existing lock files need no private probe. If the directory denies the probe or only the target rejects ``flock``,
+filelock needs atomic exchange to replace a writable target. Without exchange it raises :class:`PermissionError`
+and can leave an empty marker.
+
+Where atomic exchange is unavailable, an interrupt during publication may leave an empty marker or the acquiring
+process's PID after the acquire failed. Check that no process holds the lock before clearing that marker with
+``break_lock()``.
 
 Two other options imply the same refusal, because a soft lock cannot honor either: ``preserve_lock_file=True`` (a soft
 lock releases by unlinking its marker) and ``on_acquired`` (a soft lock keeps protocol state in the marker and has no

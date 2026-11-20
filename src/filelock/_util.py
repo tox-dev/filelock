@@ -103,6 +103,12 @@ def pin_inode(lock_file: str) -> Generator[int | None]:
             os.close(fd)
 
 
+def open_into(opened: list[int], path: str, flags: int, mode: int) -> int:  # pragma: win32 no cover
+    # The C calls record the descriptor before Python can deliver a pending signal.
+    opened.extend(map(os.open, (path,), (flags,), (mode,)))
+    return opened[0]
+
+
 def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
     # Remove *lock_file* while it still names the file open as *fd*; the caller closes the descriptor afterwards.
     #
@@ -430,6 +436,7 @@ __all__ = [
     "exchange_names",
     "exchange_supported",
     "foreign_owner",
+    "open_into",
     "pin_inode",
     "raise_on_not_writable_file",
     "remove_own_file",

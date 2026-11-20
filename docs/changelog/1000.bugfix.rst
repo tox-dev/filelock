@@ -1,0 +1,3 @@
+A Unix lock remembers the soft fallback for each resolved path. Reusing a relative path after changing directories tries
+the appropriate protocol for that directory. The lock keeps its Unix class, so ``isinstance(lock, SoftFileLock)`` is
+false during fallback. Its ``pid``, ``is_lock_held_by_us``, ``break_lock()``, and ``lifetime`` work on the fallback path.

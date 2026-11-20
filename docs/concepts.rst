@@ -255,13 +255,14 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     Keeping one pathname prevents contenders from coordinating through different inodes, which would break mutual
     exclusion; remove the file only after the complete lock protocol has stopped using it.
 
-    Filesystems without ``flock``: when ``flock`` fails with ``ENOSYS``, the lock switches to :class:`SoftFileLock
-    <filelock.SoftFileLock>` and emits a warning, unless constructed with ``fallback_to_soft=False``. Before switching
-    it removes the empty file only if this acquire created it. It does so while still holding the file open, with the
-    exchange a stale break uses, so a peer's marker that replaced it is put back rather than deleted. A file that
-    already existed may be another process's soft marker, so it stays and the soft lock waits on it. An empty file there
-    reads as a holder that recorded nothing, as a release before 3.22 writes. A leftover one therefore waits for
-    ``timeout``, ``lifetime`` or ``break_lock()``.
+    On filesystems where ``flock`` returns ``ENOSYS``, the lock emits a warning and uses the
+    :class:`SoftFileLock <filelock.SoftFileLock>` protocol. Threads sharing the lock also share its list of fallback paths.
+    Changing directories can take a relative path to a different filesystem, where the lock tries ``flock`` again.
+
+    When the native creation mode permits group or other writes, the lock checks for ``flock`` on a private file in
+    the same directory first. The fallback creates a write-protected marker for other accounts and publishes the
+    holder's PID through its descriptor. An existing file may already belong to a peer. An empty one can belong to a
+    holder using a release before 3.22.
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,
