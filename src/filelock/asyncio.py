@@ -42,7 +42,6 @@ from ._api import (
     LockSettings,
     ThreadLocalFileContext,
     append_exception_context,
-    canonical,
     check_blocking,
     delegate_to_current,
     fork_transition,
@@ -311,6 +310,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         :returns: a context object that will unlock the file when the context is exited
 
         :raises Timeout: if fails to acquire lock within the timeout period
+        :raises RuntimeError: if a failed native unlock needs an explicit ``release()`` retry
         :raises TypeError: if *blocking* is not a :class:`bool`
         :raises ValueError: if a blocking call gets a ``nan`` timeout, or *poll_interval* exceeds
             :data:`threading.TIMEOUT_MAX`
@@ -372,12 +372,13 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         ):
             # Re-entry only counts, so it skips the executor round trip that resolving the path costs.
             if self.is_locked:
+                self._raise_if_hold_unusable()
                 # A proxy-construction error must leave the existing level unchanged.
                 proxy = AsyncAcquireReturnProxy(lock=self)
                 self._context.lock_counter += 1
                 return proxy
             # A canceled provisional acquire must finish rollback before another caller can claim its descriptor.
-            canonical_path = await self._off_loop(functools.partial(canonical, self.lock_file))
+            canonical_path = await self._off_loop(self._resolve_lock_path)
             self._async_context.rollback_tried = False
             try:
                 self._context.lock_counter = 1
@@ -733,7 +734,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         counter_before: Final[int] = self._context.lock_counter
         if not self.is_locked:
             return
-        if not force and self._context.lock_counter > 1:
+        if not force and self._context.lock_counter > 1 and not self._context.unlock_uncertain:
             self._context.lock_counter -= 1
             return
 
@@ -785,8 +786,8 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         )
 
     def _commit_release_if_released(self) -> None:
-        # Commit only when the backend actually unlocked (close or unlink failed after the OS unlock). If the lock is
-        # still held, keep the counter so a later release can retry.
+        # Commit only when the backend cleared its descriptor. An ambiguous unlock error keeps that descriptor for an
+        # explicit retry, even when the kernel released its lock.
         if not self.is_locked:
             self._commit_release()
 

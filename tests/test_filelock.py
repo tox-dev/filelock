@@ -630,6 +630,71 @@ entered.wait()
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_force_release_keeps_main_thread_atexit_hold(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a.lock"
+    script = f"""
+import atexit, sys, threading
+from filelock import {lock_type.__name__}
+lock = {lock_type.__name__}({str(lock_path)!r})
+release_now = threading.Event()
+released = threading.Event()
+def force_release():
+    release_now.wait()
+    lock.release(force=True)
+    released.set()
+threading.Thread(target=force_release, daemon=True).start()
+def save():
+    with lock:
+        release_now.set()
+        print(released.wait(2), lock.is_locked, flush=True)
+        sys.stdin.readline()
+atexit.register(save)
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline() == "True True\n"
+        with pytest.raises(Timeout):
+            lock_type(lock_path, blocking=False).acquire()
+    finally:
+        stdout, stderr = process.communicate("done\n", timeout=3)
+    assert (process.returncode, stdout, stderr) == (0, "", "")
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_force_release_keeps_main_thread_hold_during_threading_shutdown(
+    lock_type: type[BaseFileLock], tmp_path: Path
+) -> None:
+    lock_path = tmp_path / "a.lock"
+    script = f"""
+import atexit, sys, threading, time
+from filelock import {lock_type.__name__}, Timeout
+lock = {lock_type.__name__}({str(lock_path)!r})
+lock.acquire()
+main = threading.main_thread()
+def release_after_main():
+    while main.is_alive():
+        time.sleep(0.001)
+    lock.release(force=True)
+    try:
+        with {lock_type.__name__}({str(lock_path)!r}, blocking=False):
+            print("contender entered", flush=True)
+    except Timeout:
+        print("held", flush=True)
+threading.Thread(target=release_after_main).start()
+def save():
+    print(lock.is_locked, flush=True)
+    lock.release()
+atexit.register(save)
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=5, check=True)
+
+    assert (result.stdout, result.stderr) == ("held\nTrue\n", "")
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize(
     "drop",
     [
@@ -1779,6 +1844,65 @@ def test_interrupted_release_retries_after_another_thread_nests(tmp_path: Path, 
         finish.set()
         worker.join(2)
         lock.release(force=True)
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_errno_after_unix_unlock_refuses_reentrant_acquire(tmp_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform != "win32"
+    import fcntl
+
+    lock_path = tmp_path / "a.lock"
+    lock = FileLock(lock_path, timeout=0)
+    lock.acquire()
+    real_flock = fcntl.flock
+    interrupted = False
+
+    def unlock_then_raise(fd: int, operation: int) -> None:
+        nonlocal interrupted
+        real_flock(fd, operation)
+        if operation == fcntl.LOCK_UN and not interrupted:
+            interrupted = True
+            raise OSError(EIO, "signal handler")
+
+    mocker.patch("fcntl.flock", autospec=True, side_effect=unlock_then_raise)
+    with pytest.raises(OSError, match="signal handler"):
+        lock.release()
+    with FileLock(lock_path, timeout=0), pytest.raises(RuntimeError, match=r"call release\(\) again"):
+        lock.acquire()
+    lock.release()
+    with lock:
+        assert lock.is_locked
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_errno_before_unix_unlock_keeps_explicit_retry(tmp_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform != "win32"
+    import fcntl
+
+    lock_path = tmp_path / "a.lock"
+    lock = FileLock(lock_path, timeout=0)
+    lock.acquire()
+    lock.acquire()
+    real_flock = fcntl.flock
+    interrupted = False
+
+    def raise_then_unlock(fd: int, operation: int) -> None:
+        nonlocal interrupted
+        if operation == fcntl.LOCK_UN and not interrupted:
+            interrupted = True
+            raise OSError(EIO, "unlock failed")
+        real_flock(fd, operation)
+
+    mocker.patch("fcntl.flock", autospec=True, side_effect=raise_then_unlock)
+    with pytest.raises(OSError, match="unlock failed"):
+        lock.release(force=True)
+    with pytest.raises(Timeout):
+        FileLock(lock_path, timeout=0).acquire()
+    with pytest.raises(RuntimeError, match=r"call release\(\) again"):
+        lock.acquire()
+    lock.release()
+    with FileLock(lock_path, timeout=0):
+        assert not lock.is_locked
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease])
@@ -3903,6 +4027,62 @@ def test_singleton_after_chdir_locks_the_requested_file(
     with lock_type(first / "resource.lock", is_singleton=True):
         assert ((first / "resource.lock").exists(), (second / "resource.lock").exists()) == (True, False)
     del relative
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_shared_singleton_refuses_moved_relative_path(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    relative = lock_type("resource.lock", is_singleton=True)
+    absolute = lock_type(first / "resource.lock", is_singleton=True)
+    assert absolute is relative
+
+    monkeypatch.chdir(second)
+    with pytest.raises(RuntimeError, match="singleton lock path changed after sharing"):
+        absolute.acquire(timeout=0)
+
+    assert not (second / "resource.lock").exists()
+    with lock_type(first / "resource.lock", is_singleton=True):
+        assert (first / "resource.lock").exists()
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_unshared_singleton_follows_chdir(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    lock = lock_type("resource.lock", is_singleton=True)
+    monkeypatch.chdir(second)
+
+    with lock:
+        assert (second / "resource.lock").exists()
+    assert not (first / "resource.lock").exists()
+
+
+def test_moved_shared_singleton_still_reports_owner(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    lock = MarkerSoftFileLock("resource.lock", is_singleton=True)
+    assert MarkerSoftFileLock(first / "resource.lock", is_singleton=True) is lock
+    monkeypatch.chdir(second)
+
+    assert (lock.pid, lock.is_lock_held_by_us, lock.owner) == (None, False, None)
+
+
+def test_equivalent_relative_singleton_spellings_follow_chdir(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    plain = FileLock("resource.lock", is_singleton=True)
+    dotted = FileLock("./resource.lock", is_singleton=True)
+    assert dotted is plain
+
+    monkeypatch.chdir(second)
+    with dotted:
+        assert (second / "resource.lock").exists()
+    assert not (first / "resource.lock").exists()
 
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)

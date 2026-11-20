@@ -170,7 +170,8 @@ class SoftFileLease(MarkerSoftFileLock):
 
         The value outlives ``release()``, so a holder can check after leaving the ``with`` block whether its work may
         have overlapped a successor; the next acquisition resets it, as :attr:`SoftReadWriteLock.compromise
-        <filelock.SoftReadWriteLock.compromise>` does.
+        <filelock.SoftReadWriteLock.compromise>` does. Until the lost claim is released, acquiring on this instance
+        raises :class:`RuntimeError` instead of joining it.
 
         The :class:`LeaseCompromise` of the latest claim, or ``None`` while that claim holds or held to its release.
 
@@ -270,6 +271,16 @@ class SoftFileLease(MarkerSoftFileLock):
         claim.compromise = LeaseCompromise(lock_file=self.lock_file, token=token, reason=reason, error=error)
         if self._on_compromise is not None:
             self._on_compromise(claim.compromise)
+
+    def _raise_if_hold_unusable(self) -> None:
+        super()._raise_if_hold_unusable()
+        claim: Final[LeaseClaim] = self._claim
+        if (compromise := claim.compromise) is not None and compromise.token == claim.token:
+            msg = (
+                f"Cannot acquire {self.lock_file}: the current claim was lost ({compromise.reason}), "
+                "release it before acquiring again"
+            )
+            raise RuntimeError(msg)
 
     def _release(self) -> None:
         self._stop_heartbeat()

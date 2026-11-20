@@ -41,7 +41,6 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple, cast
 from ._api import (
     BaseFileLock,
     ThreadLocalFileContext,
-    canonical,
     raise_cleanup_errors,
 )
 from ._error import SoftFileLockProtocolError
@@ -191,7 +190,7 @@ class StrictSoftFileLock(BaseFileLock):
     def _claim_directory(self) -> Path:
         if self._context.owner_claim_paths:
             return Path(self._context.owner_claim_paths[0]).parent
-        return Path(f"{canonical(self.lock_file)}{_COORDINATION_SUFFIX}") / _CLAIM_DIRECTORY_NAME
+        return Path(f"{self._resolve_lock_path()}{_COORDINATION_SUFFIX}") / _CLAIM_DIRECTORY_NAME
 
     @property
     def lock_path_occupant(self) -> str | None:
@@ -204,7 +203,7 @@ class StrictSoftFileLock(BaseFileLock):
         raise :class:`~filelock.SoftFileLockProtocolError` instead and needs an operator to remove it.
         """
         try:
-            fd, _, occupant = _inspect_lock_path(Path(canonical(self.lock_file)))
+            fd, _, occupant = _inspect_lock_path(Path(self._resolve_lock_path()))
         except FileNotFoundError:
             return None
         if fd is None:

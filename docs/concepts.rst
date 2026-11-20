@@ -716,13 +716,14 @@ successor. :attr:`claims <filelock.StrictSoftFileLock.claims>` names the publish
 claim by age, a strict lock needs no liveness guess; a claim it cannot read without risking overlap raises
 :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` rather than reclaiming it.
 
-A :class:`SoftFileLease <filelock.SoftFileLease>` trades exclusion for progress. Its :attr:`token
-<filelock.SoftFileLease.token>` names the claim this process published; it does **not** fence the protected resource.
-Reporting a compromise tells the previous holder to stop, but it cannot stop a holder that paused past its expiry and
-resumes afterwards. For true mutual exclusion where an expired holder can still write, the protected resource must be
-linearizable and must reject any operation carrying a fencing generation lower than the highest it has accepted, the way
-Chubby's lock sequence number and ZooKeeper's ``zxid`` are checked by the resource, not the client. A token names a
-claim; only a generation the resource validates can fence one.
+A :class:`SoftFileLease <filelock.SoftFileLease>` can expire while its holder is still working. If the heartbeat
+detects a lost claim, it calls ``on_compromise``. Further acquires on that instance raise ``RuntimeError`` until the
+holder releases it.
+
+The :attr:`token <filelock.SoftFileLease.token>` identifies the claim. It does **not** fence the protected resource.
+A paused holder can resume and write after another process takes the lease. Fencing requires a linearizable resource
+that rejects any operation carrying a generation lower than the highest it has accepted. Chubby's lock sequence
+number and ZooKeeper's ``zxid`` can supply generations for the resource to check.
 
 A lease expires on the contender's own clock. The holder's heartbeat rewrites the marker's modification time, and a
 contender times how long that time stays the same on its ``time.monotonic()``, the rule :class:`SoftReadWriteLock
@@ -942,6 +943,7 @@ The sync lock tracks its owner per thread, and the executor thread that runs a c
 task. The async wrappers therefore track ownership per task, as ``aiorwlock`` does. Only a task's first acquire and last
 release reach the sync lock; the wrapper queues or nests the calls in between. Holds on :class:`BaseAsyncFileLock
 <filelock.BaseAsyncFileLock>` belong to the instance instead, so tasks sharing one nest into the same hold.
+After a lease reports a lost claim, that instance refuses new acquires until the lost hold is released.
 
 How does SoftReadWriteLock work on shared filesystems?
 ======================================================
@@ -1227,8 +1229,8 @@ each thread gets its own context via ``threading.local``. This means:
 - ``mode`` is the one exception: it has no setter, so construction is the only
   place it is ever set and ``lock.mode = ...`` raises ``AttributeError``.
 - The instance still keeps track of every thread's hold. ``release(force=True)``
-  also releases holds left by threads that exited, and garbage collecting the
-  lock releases every thread's hold. Interpreter exit releases a lock still
+  also releases holds left by worker threads that exited. The main thread keeps its hold through shutdown for its exit
+  callbacks. Garbage collecting the lock releases every thread's hold. Interpreter exit releases a lock still
   referenced, except holds of daemon threads that are still running.
 
 When ``thread_local=False``, all threads share the same context, including
@@ -1237,7 +1239,7 @@ for cases where you want a property setter to affect all threads. The shared
 instance runs one ``acquire()`` or ``release()`` at a time, so threads calling
 them concurrently, with or without the GIL, keep the counter and the held lock
 consistent. It is still a single owner: a second thread's ``acquire()`` nests
-into the hold rather than waiting for it, and any thread's ``release()``
+into a valid hold rather than waiting for it, and any thread's ``release()``
 counts against the shared counter, so balancing them is up to the caller.
 
 Async locks default to ``thread_local=False`` because the thread that calls ``acquire()`` (via

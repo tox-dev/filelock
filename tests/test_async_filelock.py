@@ -819,6 +819,25 @@ async def test_async_singleton_held_before_chdir_re_enters_by_absolute_path(
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.asyncio
+async def test_async_shared_singleton_refuses_moved_relative_path(
+    lock_type: type[BaseAsyncFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    relative = lock_type("resource.lock", is_singleton=True)
+    absolute = lock_type(first / "resource.lock", is_singleton=True)
+    assert absolute is relative
+
+    monkeypatch.chdir(second)
+    with pytest.raises(RuntimeError, match="singleton lock path changed after sharing"):
+        await absolute.acquire(timeout=0)
+
+    assert not (second / "resource.lock").exists()
+    async with lock_type(first / "resource.lock", is_singleton=True):
+        assert (first / "resource.lock").exists()
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
 async def test_different_tasks_no_false_positive(tmp_path: Path, lock_type: type[BaseAsyncFileLock]) -> None:
     # The registry is per-thread, so a second acquire from a different task must not look like a reentrant deadlock.
     lock_path = tmp_path / "test.lock"

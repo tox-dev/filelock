@@ -432,6 +432,11 @@ Parameters are frozen when the singleton is first created. Requesting the same p
     lock1 = FileLock("other.lock", is_singleton=True, timeout=10)  # freezes timeout=10
     lock2 = FileLock("other.lock", is_singleton=True, timeout=5)  # ValueError!
 
+Equivalent relative and absolute paths can return the same singleton. If its original spelling resolves to a different
+file after a directory change, an unheld shared singleton raises ``RuntimeError`` rather than locking that other file.
+Construct a new lock from the absolute path after changing directories. A singleton used with only one spelling still
+resolves its relative path when acquisition starts.
+
 *****************************************
  Use shared read / exclusive write locks
 *****************************************
@@ -1351,9 +1356,9 @@ regardless of the counter, pass ``force=True``:
     lock.release(force=True)
     print(lock.is_locked)  # False, fully released
 
-On a thread-local synchronous lock (the default), ``force=True`` also releases holds left by threads that exited
-without releasing. Holds of threads still running stay theirs. Dropping the last reference to the lock releases every
-thread's hold. A thread-local async lock releases only the calling thread's hold.
+On a thread-local synchronous lock (the default), ``force=True`` also releases holds left by worker threads that exited.
+The main thread keeps its hold through shutdown so its exit callbacks can use it. Running workers keep their holds.
+Dropping the last reference to the lock releases every thread's hold. A thread-local async lock releases only the calling thread's hold.
 
 During a synchronous ``acquire()``, a hook or signal handler can enter and leave its own nested ``with lock:`` block.
 Calling ``release()`` to drop the level that ``acquire()`` is still taking raises :exc:`RuntimeError`. If the exception
@@ -1388,9 +1393,12 @@ thread returns without doing anything, and the interrupted release finishes the 
 while the interrupted code is still acquiring that lock raises :class:`RuntimeError`: the interrupted acquire cannot go
 on until the handler returns.
 
-A ``release()`` that a handler interrupts after it has started finishes releasing before the handler's exception
-propagates, so the ``with`` block above never leaves the lock held. Only a handler that fires at the very entry of
-``release()`` leaves the hold for the next call.
+If a handler raises ``KeyboardInterrupt`` during release, the lock finishes releasing before the exception propagates.
+A handler that fires as ``release()`` begins can leave the hold for the next call.
+
+If a native Unix unlock raises an exception with an ``errno``, the instance cannot tell whether the kernel released the
+lock. It keeps the descriptor for an explicit ``release()`` retry and refuses another ``acquire()`` on the
+same instance until that retry succeeds. The first exception still propagates.
 
 *******************************
  Check your own lock state
@@ -1409,8 +1417,9 @@ lock, and :attr:`~filelock.BaseFileLock.lock_counter` to see the reentrant depth
         with lock:
             print(f"Lock depth: {lock.lock_counter}")
 
-These properties reflect the state of your lock instance only. To check if *another* process holds the lock, try to
-acquire with ``blocking=False``:
+These properties reflect the state of your lock instance only. After a failed native Unix unlock, ``is_locked`` can
+remain ``True`` even if the kernel released the lock. Call ``release()`` again before reusing the instance. To check if
+*another* process holds the lock, try to acquire with ``blocking=False``:
 
 .. code-block:: python
 
