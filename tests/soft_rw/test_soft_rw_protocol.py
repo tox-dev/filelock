@@ -367,6 +367,64 @@ def test_waiting_contender_republishes_a_swept_record(lock_file: str, files: OsF
 
 
 @pytest.mark.requires_hard_links
+def test_sweep_cannot_remove_a_resumed_waiters_hold(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    clock = [0.0]
+    holder = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
+    holder.publish()
+    assert holder.advance()
+    waiter = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
+    waiter.publish()
+    assert not waiter.advance()
+    sweeper = _participant(files, lock_file, "write", stale_threshold=1, clock=lambda: clock[0])
+    sweeper.publish()
+    assert not sweeper.advance()
+    judged = str(Path(root, "holders", waiter.token))
+    real_unlink = files.unlink
+    granted: list[bool] = []
+
+    def unlink_after_waiter_resumes(path: str) -> None:
+        if path == judged and not granted:
+            granted.append(False)
+            holder.leave()
+            granted[0] = waiter.advance()
+        real_unlink(path)
+
+    mocker.patch.object(files, "unlink", autospec=True, side_effect=unlink_after_waiter_resumes)
+    clock[0] = 10.0
+    assert not sweeper.advance()
+    assert granted == [True]
+    assert Path(root, "holders", waiter.token).exists()
+    assert waiter.heartbeat() == ("ok", None)
+    clock[0] = 12.0
+    assert not sweeper.advance()
+    assert GenerationLog(files, lock_file, root).latest().writer == waiter.token
+
+
+@pytest.mark.requires_hard_links
+def test_commit_after_a_stale_pause_restarts_the_claim(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    clock = [0.0]
+    reader = _participant(files, lock_file, "read", stale_threshold=10, clock=lambda: clock[0])
+    reader.publish()
+    judged = reader.token
+    real_commit = GenerationLog.commit
+
+    def commit_after_pause(log: GenerationLog, successor: Snapshot) -> bool:
+        clock[0] = 10.0
+        return real_commit(log, successor)
+
+    mocker.patch.object(GenerationLog, "commit", autospec=True, side_effect=commit_after_pause)
+    assert reader.advance()
+    assert reader.token != judged
+    assert not Path(root, "holders", judged).exists()
+    assert reader.generation == 3
+    assert GenerationLog(files, lock_file, root).latest().readers == frozenset({reader.token})
+
+
+@pytest.mark.requires_hard_links
 def test_waiting_contender_keeps_an_undeletable_record(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:

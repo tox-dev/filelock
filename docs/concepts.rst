@@ -1033,6 +1033,9 @@ nonce:
   look dead.
 - The heartbeat also re-reads the latest snapshot, so an evicted holder learns it on its next tick: the thread stops,
   the lock sets :attr:`compromise <filelock.SoftReadWriteLock.compromise>`, and ``on_compromise`` runs.
+- A waiting participant that goes at least its own ``stale_threshold`` between record writes, or between a write and
+  its commit, withdraws and starts under a new token. A peer may have judged its old record stale and can still remove
+  that name after the participant resumes.
 
 A writer on ``node-17`` that crashes mid-hold leaves a snapshot naming it and a heartbeat that stops. A contender on
 ``node-42`` cannot ask ``node-17`` whether the process is still alive, so it watches the nonce instead, and evicts once
