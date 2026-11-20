@@ -1826,7 +1826,7 @@ def test_release_keeps_marker_cleanup_after_fstat_signal(
         assert peer.is_locked
 
 
-@NEEDS_POSIX_SIGNALS
+@NEEDS_POSIX_SIGNALS  # pragma: needs posix-signals
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
 def test_signal_handler_can_release_during_identity_publication(
     lock_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1855,6 +1855,31 @@ def test_signal_handler_can_release_during_identity_publication(
     finally:
         monkeypatch.undo()
         signal.signal(signal_number, previous)
+    assert released == [True]
+    assert lock.is_locked
+    lock.release()
+    with SoftFileLock(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+def test_release_during_identity_publication(lock_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lock = SoftFileLock(lock_path, is_singleton=False)
+    released: list[bool] = []
+
+    def release_after_descriptor(
+        context: FileLockContext,
+        name: str,
+        value: object,  # simplint: ignore[imprecise-annotation]  # context fields have different value types
+    ) -> None:
+        context.__dict__[name] = value
+        if context is lock._hold_state() and name == "lock_file_fd" and value is not None and not released:
+            released.append(lock.is_locked)
+            lock.release()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(FileLockContext, "__setattr__", release_after_descriptor)
+        lock.acquire(timeout=1)
+
     assert released == [True]
     assert lock.is_locked
     lock.release()
