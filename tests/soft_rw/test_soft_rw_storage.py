@@ -4,7 +4,7 @@ import os
 import shutil
 import sys
 import time
-from errno import EIO
+from errno import EIO, ENXIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -28,7 +28,7 @@ pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
     ("call", "expected"),
     [
         pytest.param(lambda files, path: files.read(path), None, id="read"),
-        pytest.param(lambda files, path: files.overwrite(path, b"data", (0, 0)), False, id="overwrite"),
+        pytest.param(lambda files, path: files.overwrite(path, b"data", (0, 0), b""), False, id="overwrite"),
         pytest.param(lambda files, path: files.listdir(path), [], id="listdir"),
     ],
 )
@@ -44,7 +44,7 @@ def test_missing_path_returns_default(
     "call",
     [
         pytest.param(lambda files, path: files.read(path), id="read"),
-        pytest.param(lambda files, path: files.overwrite(path, b"data", (0, 0)), id="overwrite"),
+        pytest.param(lambda files, path: files.overwrite(path, b"data", (0, 0), b""), id="overwrite"),
     ],
 )
 def test_open_other_errors_propagate(
@@ -145,9 +145,9 @@ def test_replace_keeps_the_target_when_refused(tmp_path: Path, mocker: MockerFix
 
 def test_overwrite_rewrites_the_record_it_created(tmp_path: Path) -> None:
     files = OsFiles(str(tmp_path / "x.lock"))
-    identity = files.create(str(record := tmp_path / "record"), b"old")
+    identity = files.create(str(record := tmp_path / "record"), b"a=1")
 
-    assert (files.overwrite(str(record), b"new", identity), record.read_bytes()) == (True, b"new")
+    assert (files.overwrite(str(record), b"a=2", identity, b"a="), record.read_bytes()) == (True, b"a=2")
 
 
 @pytest.mark.parametrize("swap", [pytest.param("link", id="hard-link"), pytest.param("rename", id="rename")])
@@ -160,7 +160,21 @@ def test_overwrite_spares_a_file_swapped_in_for_the_record(tmp_path: Path, swap:
     record.unlink()
     getattr(os, swap)(private, record)
 
-    assert (files.overwrite(str(record), b"new", identity), record.read_bytes()) == (False, b"private")
+    assert (files.overwrite(str(record), b"new", identity, b""), record.read_bytes()) == (False, b"private")
+
+
+def test_overwrite_spares_a_file_that_inherited_the_inode_number(tmp_path: Path) -> None:
+    # ext4 hands a removed record's inode number to the next file created. Not every filesystem does, so the identity
+    # passed here is the swapped-in file's own: the name then leads to one file with that number and no second name.
+    files = OsFiles(str(tmp_path / "x.lock"))
+    files.create(str(record := tmp_path / "record"), b"a=1")
+    record.unlink()
+    (private := tmp_path / "private").write_bytes(b"private")
+    private.rename(record)
+    found = record.stat()
+    rewritten = files.overwrite(str(record), b"a=2", (found.st_dev, found.st_ino), b"a=")
+
+    assert (rewritten, record.read_bytes()) == (False, b"private")
 
 
 def test_overwrite_spares_a_record_with_a_second_name(tmp_path: Path) -> None:
@@ -168,7 +182,13 @@ def test_overwrite_spares_a_record_with_a_second_name(tmp_path: Path) -> None:
     identity = files.create(str(record := tmp_path / "record"), b"old")
     os.link(record, tmp_path / "private")
 
-    assert (files.overwrite(str(record), b"new", identity), record.read_bytes()) == (False, b"old")
+    assert (files.overwrite(str(record), b"new", identity, b""), record.read_bytes()) == (False, b"old")
+
+
+def test_overwrite_spares_a_path_that_refuses_the_open(tmp_path: Path, mocker: MockerFixture) -> None:
+    # POSIX leaves opening a FIFO for reading and writing undefined; ENXIO is how a platform would refuse it.
+    mocker.patch.object(storage_mod.os, "open", side_effect=OSError(ENXIO, "No such device or address"), autospec=True)
+    assert OsFiles(str(tmp_path / "x.lock")).overwrite(str(tmp_path / "record"), b"new", (0, 0), b"") is False
 
 
 @pytest.mark.skipif(not CAPABILITIES["fifo"], reason="needs os.mkfifo")
@@ -178,7 +198,7 @@ def test_overwrite_does_not_block_on_a_fifo(tmp_path: Path) -> None:  # pragma: 
     record.unlink()
     assert sys.platform != "win32"  # skipped there; narrows os.mkfifo and os.O_NONBLOCK for the type checker
     os.mkfifo(record)
-    assert files.overwrite(str(record), b"new", identity) is False
+    assert files.overwrite(str(record), b"new", identity, b"") is False
 
 
 @pytest.mark.skipif(not CAPABILITIES["fifo"], reason="needs os.mkfifo")
@@ -190,7 +210,7 @@ def test_overwrite_does_not_block_on_a_fifo_with_a_reader(tmp_path: Path) -> Non
     os.mkfifo(record)
     reader = os.open(record, os.O_RDONLY | os.O_NONBLOCK)
     try:
-        assert files.overwrite(str(record), b"new", identity) is False
+        assert files.overwrite(str(record), b"new", identity, b"") is False
     finally:
         os.close(reader)
 

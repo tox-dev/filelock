@@ -472,8 +472,9 @@ The defense differs by platform:
   acquire cannot redirect its writes. Without ``dir_fd``, Windows holds those directories open for each operation so
   they cannot be renamed; other such runtimes (GraalPy) open them by name and repeat the owner check on every operation,
   which leaves a swap between that check and the open possible. It rewrites a holder record only when the name still
-  leads to the file it created and that file has no second name, and it opens the record without blocking. It leaves
-  alone a hard link (a second name for the same file) or a FIFO (a named pipe) renamed over the record.
+  leads to the file it created, that file has no second name, and it starts with the record's token. It opens the record
+  without blocking. It leaves alone a hard link (a second name for the same file), a FIFO (a named pipe), or a file that
+  was given the inode number of a removed record and renamed over it.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path. In a directory that processes of
 other accounts can write, it opens SQLite through a hard link (a second name for the same file) in a directory only the

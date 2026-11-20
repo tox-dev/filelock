@@ -225,15 +225,16 @@ class OsFiles:
             return False
         return True
 
-    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:
-        # O_NONBLOCK keeps an open of a FIFO (a named pipe) at the path from blocking, as in read. With no reader the
-        # open fails with ENXIO.
+    def overwrite(self, path: str, data: bytes, identity: tuple[int, int], header: bytes) -> bool:
+        # O_NONBLOCK keeps an open of a FIFO (a named pipe) at the path from blocking, as in read. The open is for
+        # reading too, for the header check below, and POSIX leaves that undefined for a FIFO: Linux, macOS and the BSDs
+        # open it, and the regular-file check rejects it. A platform that refuses it instead fails with ENXIO.
         try:
-            fd = self._open(path, os.O_WRONLY | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)
+            fd = self._open(path, os.O_RDWR | _O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)
         except OSError as error:
             if error.errno != ENXIO:
                 raise
-            return False  # pragma: needs fifo
+            return False
         if fd is None:
             return False
         try:
@@ -243,6 +244,11 @@ class OsFiles:
             opened = os.fstat(fd)
             if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != identity or opened.st_nlink != 1:
                 return False
+            # A later file can inherit the removed record's inode number and be renamed here with one link. Its bytes
+            # still distinguish it from this participant's record.
+            if os.read(fd, len(header)) != header:
+                return False
+            os.lseek(fd, 0, os.SEEK_SET)
             write_all(fd, data)
         finally:
             os.close(fd)
