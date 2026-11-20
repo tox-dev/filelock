@@ -1133,7 +1133,6 @@ def test_strict_soft_live_soft_lock_owner_blocks(tmp_path: Path, legacy: type[So
 
 
 def test_strict_soft_lock_path_occupant_escapes_a_hostname_outside_the_grammar(tmp_path: Path) -> None:
-    # Another host's marker is never probed, so the description names it as the marker spells it, within the grammar.
     lock_path = tmp_path / "resource.lock"
     lock_path.write_text(f"{os.getpid()}\nother\x1b[2K\x1b[1A\x7fhost\n", encoding="utf-8")
     occupant = StrictSoftFileLock(lock_path).lock_path_occupant

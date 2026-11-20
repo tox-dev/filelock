@@ -82,15 +82,7 @@ def _escape_outside(verbatim: frozenset[int], name: str) -> str:
 
 
 def describe_host_name(hostname: str) -> str:
-    # The hostname a marker records, rendered for a message within the grammar :func:`host_name` writes.
-    #
-    # A marker's hostname is whatever its writer put there: a release before the escape wrote the kernel's name raw, and
-    # another local user who created the lock file first chose it. Shown as is, a control byte or terminal escape
-    # sequence in it reaches the terminal or log that prints the exception, where it can erase or rewrite the lines
-    # around it. Every byte outside printable non-space ASCII is escaped as ``?<hex>``, the form :func:`host_name`
-    # uses, and a ``?`` stays, so a name this release wrote reads back unchanged.
-    #
-    # A legacy marker can record no hostname at all, which shows as the bare ``?`` :func:`host_name` writes for one.
+    # Preserve existing ?xx escapes in hostnames written by filelock.
     return _escape_outside(_HOST_NAME_VERBATIM | {ord("?")}, hostname) or "?"
 
 

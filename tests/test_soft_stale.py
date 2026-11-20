@@ -156,8 +156,6 @@ def test_timeout_names_a_holder_on_another_host(lock_path: Path, lock_type: type
 def test_timeout_escapes_a_holder_hostname_outside_the_grammar(
     lock_path: Path, lock_type: type[SoftFileLock], record: str
 ) -> None:
-    # A release before the hostname escape wrote the kernel's name raw, and whoever created the lock file first chose
-    # what it says, so a terminal escape sequence in it must not reach the terminal or log that prints the exception.
     lock_path.write_text(record, encoding="utf-8")
     with pytest.raises(Timeout) as caught:
         lock_type(lock_path, timeout=0).acquire()

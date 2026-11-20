@@ -66,5 +66,4 @@ def test_describe_host_name_shows_this_hosts_name_unchanged() -> None:
     ],
 )
 def test_describe_host_name_stays_within_the_marker_grammar(recorded: str, shown: str) -> None:
-    # A marker's hostname is what its writer put there, so a message escapes it as host_name() does, except a ``?``.
     assert describe_host_name(recorded) == shown
