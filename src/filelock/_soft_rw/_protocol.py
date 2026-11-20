@@ -249,8 +249,10 @@ class GenerationLog:
     def _probe(self, start: Snapshot, patience: int = _RETAINED_GENERATIONS) -> Snapshot:
         latest = start
         generation = start.generation
+        limit = generation + 2 * _RETAINED_GENERATIONS
         gap = 0
-        while gap < patience:
+        # A writer can keep adding records; the caller checks its deadline only after this probe returns.
+        while gap < patience and generation < limit:
             generation += 1
             if (snapshot := self._read(generation)) is None:
                 gap += 1
@@ -566,6 +568,8 @@ class Participant:
         # The record goes even when the log cannot be read: a contender that never entered then leaves nothing behind,
         # and a member still named ages out the same way with or without one.
         # A tree that was swapped out leaves no record this participant can reach, so there is nothing to commit out of.
+        # Peers may evict this record after its stale threshold, so retrying longer cannot preserve the hold.
+        give_up = self._clock() + self._stale_threshold
         with suppress(TreeReplacedError):
             try:
                 while self.token in (latest := self._log.latest()).members:
@@ -574,7 +578,7 @@ class Participant:
                         writer=None if latest.writer == self.token else latest.writer,
                         readers=latest.readers - {self.token},
                     )
-                    if self._log.commit(successor):
+                    if self._log.commit(successor) or self._clock() >= give_up:
                         break
             finally:
                 self._entered = False
