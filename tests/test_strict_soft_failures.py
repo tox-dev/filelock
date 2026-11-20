@@ -1836,7 +1836,9 @@ def test_strict_soft_refuses_ownership_when_overflow_uid_is_unknown(  # pragma: 
     lock_path_in_shared_tmp: Path, mocker: MockerFixture, error: OSError | ValueError
 ) -> None:
     (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()
+    mocker.patch("filelock._util._linux_owner_probe", autospec=True, return_value=None)
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=error)
+    mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=OSError("no UID map"))
 
     with pytest.raises(SoftFileLockProtocolError, match="not to this process's account"):
         StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0).acquire()
@@ -2620,6 +2622,7 @@ def test_strict_soft_coordination_directory_swapped_for_a_junction_leaves_target
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot open"):
         StrictSoftFileLock(lock_path, timeout=0).acquire()
+    assert coordination.samefile(target)
     assert list(target.iterdir()) == []
 
 

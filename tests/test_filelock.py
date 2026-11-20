@@ -2010,6 +2010,22 @@ def test_lock_file_of_another_account_under_sticky_parent_is_refused(  # pragma:
     assert (raised.value.filename, lock.is_locked, lock_path_in_shared_tmp.exists()) == expected
 
 
+@pytest.mark.skipif(sys.platform not in {"linux", "android"}, reason="ownership proof uses Linux procfs")
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        pytest.param(UnixFileLock, marks=NEEDS_FCNTL, id="flock"),
+        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links, id="strict"),
+    ],
+)
+def test_lock_with_mapped_overflow_uid(  # pragma: win32 no cover  # pragma: darwin no cover
+    lock_type: type[BaseFileLock], sticky_dir_with_mapped_owner: Path
+) -> None:
+    lock = lock_type(sticky_dir_with_mapped_owner / "marker", timeout=0)
+    with lock:
+        assert lock.is_locked
+
+
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"

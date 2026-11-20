@@ -263,7 +263,34 @@ def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma:
         assert path == Path("/proc/sys/kernel/overflowuid")
         return str(os.geteuid())
 
+    mocker.patch("filelock._util._linux_owner_probe", autospec=True, return_value=lambda _fd: False)
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=read_proc)
+    mocker.patch.object(Path, "read_bytes", autospec=True, return_value=b"0 100000 65536")
+
+
+@pytest.fixture  # pragma: win32 no cover  # pragma: darwin no cover
+def sticky_dir_with_mapped_owner(tmp_path: Path, mocker: MockerFixture) -> Path:
+    assert sys.platform != "win32"
+    tmp_path.chmod(0o1700)
+    mocker.patch("filelock._util._linux_owner_probe", autospec=True, return_value=None)
+    sysctl = tmp_path / "overflowuid"
+    sysctl.write_text(str(os.geteuid()), encoding="ascii")
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "uid_map").write_bytes(b"0 0 4294967295")
+    (proc / "mountinfo").write_bytes(b"18 4 0:3 / /tmp rw - tmpfs tmpfs rw")
+    read_bytes = Path.read_bytes
+
+    def read_fd_info(path: Path) -> bytes:
+        if path.parent == proc / "fdinfo":
+            os.fstat(int(path.name))
+            return b"mnt_id:\t18"
+        return read_bytes(path)
+
+    mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=read_fd_info)
+    paths = {"/proc/thread-self": proc, "/proc/sys/kernel/overflowuid": sysctl}
+    mocker.patch("filelock._util.Path", autospec=True, side_effect=lambda name: paths.get(name, Path(name)))
+    return tmp_path
 
 
 @pytest.fixture

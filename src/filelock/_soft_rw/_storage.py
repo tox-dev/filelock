@@ -161,7 +161,7 @@ class OsFiles:
         # A removed tree's inode may be reused, so every open needs an ownership check.
         found = os.fstat(fd)
         parent = os.fstat(parent_fd) if parent_fd is not None else Path(path).parent.stat()
-        _raise_if_untrusted_directory(path, found, parent, Path(self._lock_file).parent.stat())
+        _raise_if_untrusted_directory(path, found, parent, Path(self._lock_file).parent.stat(), fd=fd)
 
     def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
         with self._relative(path) as (name, dir_fd):
@@ -267,33 +267,27 @@ class OsFiles:
         if self._prepared and not force:
             return
         ensure_directory_exists(root)
-        lock_directory = Path(root).parent.stat()
         for directory, depth in (
             (Path(root), 0),
             (Path(root, GENERATIONS_DIRECTORY), 1),
             (Path(root, HOLDERS_DIRECTORY), 1),
         ):
-            with self._relative(str(directory), depth) as (name, dir_fd):
-                with suppress(FileExistsError):
-                    os.mkdir(name, 0o700, dir_fd=dir_fd)
-                # mkdir has no O_NOFOLLOW, so check what the name resolves to before the lock creates anything in it.
-                found = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                parent = directory.parent.stat() if dir_fd is None else os.fstat(dir_fd)
-            if (
-                not stat.S_ISDIR(found.st_mode)
-                or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
-            ):
-                msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
-                raise TreeReplacedError(msg)
-            _raise_if_untrusted_directory(str(directory), found, parent, lock_directory)
+            with self._relative(str(directory), depth) as (name, dir_fd), suppress(FileExistsError):
+                os.mkdir(name, 0o700, dir_fd=dir_fd)
+            # mkdir has no O_NOFOLLOW. Validate the directory with the same checks that protect later opens.
+            with self._directory(str(directory), depth + 1):
+                pass
         self._prepared = True
 
 
 def _raise_if_untrusted_directory(
-    path: str, found: os.stat_result, parent: os.stat_result, lock_directory: os.stat_result
+    path: str, found: os.stat_result, parent: os.stat_result, lock_directory: os.stat_result, *, fd: int | None = None
 ) -> None:
-    for above in (parent, lock_directory):
-        if (owner := foreign_owner(found, above)) is not None:  # pragma: needs foreign-sticky-tmp
+    if not stat.S_ISDIR(found.st_mode) or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        msg = f"{path} is not a directory or is a symlink; refusing to use it"
+        raise TreeReplacedError(msg)
+    for above in dict.fromkeys((parent, lock_directory)):
+        if (owner := foreign_owner(found, above, fd=fd)) is not None:  # pragma: needs foreign-sticky-tmp
             msg = f"{path} belongs to uid {owner}, not to this process's account or the parent's owner"
             raise TreeReplacedError(msg)
         if above.st_mode & stat.S_ISVTX and found.st_mode & (stat.S_IWGRP | stat.S_IWOTH):  # pragma: win32 no cover

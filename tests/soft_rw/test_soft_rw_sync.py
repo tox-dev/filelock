@@ -1661,6 +1661,18 @@ def test_protocol_tree_stays_in_place_while_a_record_is_written(  # pragma: win3
     assert (bool(refused), (tmp_path / "aside").exists()) == (True, False)
 
 
+@NEEDS_USER_NAMESPACES  # pragma: win32 no cover  # pragma: darwin no cover
+def test_write_lock_with_mapped_overflow_uid(sticky_dir_with_mapped_owner: Path) -> None:
+    path = sticky_dir_with_mapped_owner / "marker"
+    with (
+        closing(SoftReadWriteLock(path, is_singleton=False)) as lock,
+        lock.write_lock(timeout=1),
+        closing(SoftReadWriteLock(path, is_singleton=False)) as peer,
+        pytest.raises(Timeout),
+    ):
+        peer.acquire_write(timeout=0)
+
+
 @NEEDS_FOREIGN_STICKY_TMP
 @pytest.mark.usefixtures("directories_of_another_account")
 def test_protocol_directory_of_another_account_is_refused(  # pragma: needs foreign-sticky-tmp
@@ -1715,6 +1727,14 @@ def test_live_lock_refuses_a_tree_another_account_planted_after_a_recovery(  # p
         lock.close()
 
 
+@pytest.fixture(params=["platform", "names"])
+def directory_access(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
+    if request.param == "names":
+        mocker.patch.object(storage_mod, "_SUPPORTS_DIR_FD", new=False)
+        mocker.patch.object(storage_mod, "pin_directories", autospec=True, return_value=nullcontext())
+
+
+@pytest.mark.usefixtures("directory_access")
 def test_protocol_path_as_regular_file_is_refused(lock_file: str, lock: SoftReadWriteLock) -> None:
     Path(f"{lock_file}.rw").write_bytes(b"x")
     with pytest.raises(RuntimeError, match="not a directory or is a symlink"):

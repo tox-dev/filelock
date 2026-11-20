@@ -289,7 +289,7 @@ else:  # pragma: win32 no cover
             # The owner of a file under a sticky parent may unlink it during the hold. A contender then locks a new
             # inode at the path, and both hold the lock.
             parent = Path(self._lock_path).parent.stat()
-            if (owner := foreign_owner(stat_result, parent)) is not None:  # pragma: needs foreign-sticky-tmp
+            if (owner := foreign_owner(stat_result, parent, fd=fd)) is not None:  # pragma: needs foreign-sticky-tmp
                 reason = f"lock file belongs to uid {owner}, not to this process's account or the directory's owner"
                 raise PermissionError(EACCES, reason, self._lock_path)
             self._mark_descriptor_owned(fd, (stat_result.st_dev, stat_result.st_ino))

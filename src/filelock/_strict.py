@@ -916,7 +916,6 @@ def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, paren
     except FileExistsError:
         try:
             found = _lstat_relative((os.fspath(directory.parent), parent_fd), directory.name)
-            owner = foreign_owner(found, directory.parent.stat() if parent_fd is None else os.fstat(parent_fd))
         except OSError as error:
             raise SoftFileLockProtocolError(lock_file, None, f"cannot inspect {directory}") from error
         if (
@@ -924,9 +923,6 @@ def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, paren
             or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
         ):
             raise SoftFileLockProtocolError(lock_file, None, f"{directory} is not a real directory") from None
-        if owner is not None:  # pragma: needs foreign-sticky-tmp
-            reason = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
-            raise SoftFileLockProtocolError(lock_file, None, reason) from None
     # The umask or a default ACL can leave the directory wider than the mode, now or in an earlier release, so narrow a
     # directory this account owns to the mode. The sticky bit (a directory flag that lets only a file's owner remove it)
     # then protects each claim from other accounts even where the mode admits them. Windows has neither mode bits nor a
@@ -941,11 +937,26 @@ def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, paren
         except OSError as error:
             raise SoftFileLockProtocolError(lock_file, None, f"cannot open {directory}") from error
         try:
+            found = _owned_protocol_directory(lock_file, directory, fd, parent_fd)
             if directory.name != _CLAIM_DIRECTORY_NAME:
                 _refuse_unrelated_coordination_entries(lock_file, directory, fd)
-            _settle_opened_directory_mode(lock_file, directory, mode, fd)
+            _settle_opened_directory_mode(lock_file, directory, mode, fd, found)
         finally:
             os.close(fd)
+
+
+def _owned_protocol_directory(
+    lock_file: str, directory: Path, fd: int, parent_fd: int | None
+) -> os.stat_result:  # pragma: win32 no cover
+    try:
+        found = os.fstat(fd)
+        parent = directory.parent.stat() if parent_fd is None else os.fstat(parent_fd)
+    except OSError as error:
+        raise SoftFileLockProtocolError(lock_file, None, f"cannot set the mode of {directory}") from error
+    if (owner := foreign_owner(found, parent, fd=fd)) is not None:  # pragma: needs foreign-sticky-tmp
+        reason = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
+        raise SoftFileLockProtocolError(lock_file, None, reason)
+    return found
 
 
 def _refuse_unrelated_coordination_entries(lock_file: str, directory: Path, fd: int) -> None:  # pragma: win32 no cover
@@ -1007,12 +1018,8 @@ def _refuse_unrelated_claim_entries(lock_file: str, directory: Path, fd: int) ->
 
 
 def _settle_opened_directory_mode(
-    lock_file: str, directory: Path, mode: int, fd: int
+    lock_file: str, directory: Path, mode: int, fd: int, found: os.stat_result
 ) -> None:  # pragma: win32 no cover
-    try:
-        found = os.fstat(fd)
-    except OSError as error:
-        raise SoftFileLockProtocolError(lock_file, None, f"cannot set the mode of {directory}") from error
     settled = found.st_mode & 0o7000 | found.st_mode & mode & 0o777 | stat.S_ISVTX
     if directory.name == _CLAIM_DIRECTORY_NAME:
         _refuse_unrelated_claim_entries(lock_file, directory, fd)
