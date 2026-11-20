@@ -7,13 +7,14 @@ if TYPE_CHECKING:
 
 __spec__ = cast("ModuleSpec", __spec__)
 
-__lazy_modules__ = ["msvcrt", "struct", f"{__spec__.parent}._util"]
+__lazy_modules__ = ["msvcrt", "struct", "threading", f"{__spec__.parent}._util"]
 
 import os
 import struct
 import sys
+import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from errno import ENOENT, ENOTDIR, EWOULDBLOCK
 from functools import cache
 from typing import TYPE_CHECKING, Final, cast
@@ -79,6 +80,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     _ERROR_ACCESS_DENIED: Final[int] = 5
     _ERROR_LOCK_VIOLATION: Final[int] = 33  # another handle holds the byte range
     _ERROR_NOT_LOCKED: Final[int] = 158  # the byte range is not locked
+    _DUPLICATE_SAME_ACCESS: Final[int] = 0x00000002
 
     # NtCreateFile returns the raw NTSTATUS as its value, where CreateFileW collapses several of these into one
     # ERROR_ACCESS_DENIED. Telling them apart is the point (#604): a name pending deletion or a share conflict is
@@ -182,6 +184,18 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
     _KERNEL32.CloseHandle.restype = wintypes.BOOL
+    _KERNEL32.DuplicateHandle.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    ]
+    _KERNEL32.DuplicateHandle.restype = wintypes.BOOL
+    _KERNEL32.CancelSynchronousIo.argtypes = [wintypes.HANDLE]
+    _KERNEL32.CancelSynchronousIo.restype = wintypes.BOOL
     _KERNEL32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION)]
     _KERNEL32.GetFileInformationByHandle.restype = wintypes.BOOL
     _KERNEL32.LockFileEx.argtypes = [
@@ -406,8 +420,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         # Open *path* with delete access and return a descriptor, without waiting for an oplock holder to answer.
         #
         # The open handle shares read, write and delete, so a rename of *path* can proceed while the caller keeps it.
-        # A holder that took an oplock through another handle is asked to answer by this open, which then raises, so the
-        # caller skips the rename instead of waiting for it.
+        # A read-handle oplock survives this open; the caller bounds its wait during the rename.
         #
         # :param path: the file to rename.
         #
@@ -417,6 +430,38 @@ if sys.platform == "win32":  # pragma: win32 cover
         # :raises FileNotFoundError: if *path* does not exist.
         # :raises OSError: if the open fails for any other reason, or *path* is a reparse point.
         return _open_existing_without_oplock_wait(path, _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE, os.O_RDONLY)
+
+    @contextmanager
+    def cancelling_oplock_wait() -> Generator[None]:
+        # A rename has no FILE_COMPLETE_IF_OPLOCKED. Cancel its wait if a read-handle oplock holder stays silent.
+        # Repeat because the first cancellation can precede the rename.
+        thread = wintypes.HANDLE()
+        process = _KERNEL32.GetCurrentProcess()
+        if not _KERNEL32.DuplicateHandle(
+            process,
+            _KERNEL32.GetCurrentThread(),
+            process,
+            ctypes.byref(thread),
+            0,
+            wintypes.BOOL(),
+            _DUPLICATE_SAME_ACCESS,
+        ):  # pragma: no cover  # a thread may duplicate its own handle
+            raise ctypes.WinError(ctypes.get_last_error())
+        done = threading.Event()
+
+        def cancel_until_done() -> None:
+            while not done.wait(_ACCESS_DENIED_GRACE):
+                _KERNEL32.CancelSynchronousIo(thread)
+
+        watchdog = threading.Thread(target=cancel_until_done, name="filelock-oplock-wait", daemon=True)
+        with ExitStack() as cleanup:
+            cleanup.callback(_KERNEL32.CloseHandle, thread)
+            cleanup.callback(lambda: watchdog.is_alive() and watchdog.join())
+            cleanup.callback(done.set)
+            # A finalizing interpreter cannot start a thread; keep the ordinary rename path available then.
+            with suppress(RuntimeError):  # pragma: no cover
+                watchdog.start()
+            yield
 
     def unlink_without_oplock_wait(path: str) -> None:
         # Delete *path* through a handle that does not wait for an oplock holder to answer its break.
@@ -750,6 +795,7 @@ else:  # pragma: win32 no cover
 
 __all__ = [
     "WindowsFileLock",
+    "cancelling_oplock_wait",
     "directory_is_private",
     "identity_at",
     "identity_of_fd",
