@@ -1845,15 +1845,16 @@ def test_signal_handler_can_release_during_identity_publication(
     ) -> None:
         context.__dict__[name] = value
         if context is lock._hold_state() and name == "lock_file_fd" and value is not None and not released:
-            signal.raise_signal(signal.SIGUSR1)
+            signal.raise_signal(signal_number)
 
-    previous = signal.signal(signal.SIGUSR1, release_in_handler)
+    signal_number = signal.Signals["SIGUSR1"]
+    previous = signal.signal(signal_number, release_in_handler)
     monkeypatch.setattr(FileLockContext, "__setattr__", signal_after_descriptor)
     try:
         lock.acquire(timeout=1)
     finally:
         monkeypatch.undo()
-        signal.signal(signal.SIGUSR1, previous)
+        signal.signal(signal_number, previous)
     assert released == [True]
     assert lock.is_locked
     lock.release()
