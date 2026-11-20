@@ -282,21 +282,15 @@ def test_strict_soft_claim_directory_growing_after_publication_withdraws(
     _initialize_protocol(lock_path)
     claims = Path(f"{lock_path}.filelock") / "claims"
     mocker.patch("filelock._strict._CLAIM_ENTRY_LIMIT", 4)
-    real_link = os.link
+    real_scandir = filelock._strict._scandir_relative
 
-    def grow_on_link(
-        source: _PathValue,
-        destination: _PathValue,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
-        real_link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=follow_symlinks)
-        for index in range(4):
-            (claims / f".nfs{index:04x}").touch()
+    def grow_after_intent(directory_ref: tuple[str, int | None]) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
+        if any(claims.glob("intent-*.claim")):
+            for index in range(4):
+                (claims / f".nfs{index:04x}").touch()
+        return real_scandir(directory_ref)
 
-    mocker.patch("filelock._strict.os.link", autospec=True, side_effect=grow_on_link)
+    mocker.patch("filelock._strict._scandir_relative", autospec=True, side_effect=grow_after_intent)
     lock = StrictSoftFileLock(lock_path, blocking=False)
     with pytest.raises(Timeout):
         lock.acquire()
