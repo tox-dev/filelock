@@ -1087,7 +1087,9 @@ When you pass an explicit ``mode`` value (e.g., ``mode=0o644``), filelock create
 :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`SoftFileLock <filelock.SoftFileLock>` then apply it with
 ``fchmod``, so the umask cannot narrow it. This overrides any default ACLs on the directory. A Unix lock file that
 already exists keeps the mode it has. A soft lock's marker never gets the group or other write bits, whatever the
-``mode`` or umask. Contenders only read and rename it, and they act on the record its owner wrote.
+``mode`` or umask. Contenders only read and rename it, and they act on the record its owner wrote. The sentinel and
+claims of a :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` have the same write-bit restriction because their
+records also guide contenders.
 
 Windows has no mode bits. A new file inherits the ACL (access control list, the Windows permission list) of its
 directory. :class:`WindowsFileLock <filelock.WindowsFileLock>` honors the one ``mode`` that has a Windows counterpart: a

@@ -12,7 +12,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a finished chi
 import sys
 import threading
 import time
-from errno import EACCES, EEXIST, EIO, ENOENT, ENOSPC, ESTALE, EXDEV
+from errno import EACCES, EEXIST, EIO, ENOENT, ENOSPC, EPERM, ESTALE, EXDEV
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
@@ -1315,6 +1315,18 @@ def test_strict_soft_stale_cached_claim_is_skipped(tmp_path: Path, mocker: Mocke
 def test_strict_soft_live_claim_survives_server_probe(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+
+    found = filelock._strict._read_existing_claims(str(lock_path), claim.parent, verify_server=True)
+
+    assert [item.name for item in found] == [claim.name]
+    assert [item.name for item in claim.parent.iterdir()] == [claim.name]
+
+
+def test_strict_soft_claim_it_may_not_link_counts_as_published(tmp_path: Path, mocker: MockerFixture) -> None:
+    # Linux's fs.protected_hardlinks refuses a link to another account's claim, which only that account may write.
+    lock_path = tmp_path / "resource.lock"
+    claim = _write_held_claim(Path(f"{lock_path}.filelock") / "claims")
+    mocker.patch("filelock._strict.os.link", autospec=True, side_effect=PermissionError(EPERM, "not permitted"))
 
     found = filelock._strict._read_existing_claims(str(lock_path), claim.parent, verify_server=True)
 

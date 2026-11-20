@@ -767,6 +767,9 @@ def _claim_exists_on_server(lock_file: str, directory_ref: tuple[str, int | None
     except OSError as error:
         if error.errno in {ENOENT, ESTALE}:
             return False
+        if error.errno == EPERM:
+            # Linux may refuse a hard link to another account's claim; it still counts as held.
+            return True
         reason = f"cannot verify claim: {error.strerror or type(error).__name__}"
         raise SoftFileLockProtocolError(lock_file, name, reason) from error
     except NotImplementedError as error:
@@ -1088,7 +1091,7 @@ def _publish_record_in_directory(
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | _O_BINARY
     if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:  # pragma: needs o-nofollow
         flags |= o_nofollow
-    private_fd = _open_relative(directory_ref, names[0], flags, mode)
+    private_fd = _open_relative(directory_ref, names[0], flags, mode & ~(stat.S_IWGRP | stat.S_IWOTH))
     private_identity: tuple[int, int] | None = None
     try:
         private_identity = _file_identity(os.fstat(private_fd))
