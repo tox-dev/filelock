@@ -85,7 +85,7 @@ def test_host_name_keeps_over_long_names_apart_past_the_limit(mocker: MockerFixt
     assert (alpha != bravo, len(alpha), len(bravo)) == (True, 253, 253)
 
 
-@_LINUX_ONLY
+@_LINUX_ONLY  # pragma: linux cover
 @pytest.mark.parametrize(
     ("namespace", "expected"),
     [
@@ -100,7 +100,7 @@ def test_host_name_names_the_pid_namespace(namespace: int | OSError, expected: s
     assert host_name() == expected
 
 
-@_LINUX_ONLY
+@_LINUX_ONLY  # pragma: linux cover
 def test_host_name_keeps_a_namespace_apart_from_a_lookalike_host(mocker: MockerFixture) -> None:
     mocker.patch("filelock._identity.socket.gethostname", side_effect=["a", "a?pidns-f0000001"], autospec=True)
     pin_pid_namespace(mocker, 0xF0000001)
@@ -402,7 +402,7 @@ def test_owner_is_stale_without_a_readable_proc_reclaimed(mocker: MockerFixture)
     assert owner_is_stale(_DEAD_PID, host_name(), process_start_token(os.getpid())) is True
 
 
-@_LINUX_ONLY
+@_LINUX_ONLY  # pragma: linux cover
 @_NEEDS_START_TOKEN
 def test_owner_is_stale_sibling_pid_namespace_never_reclaimed(mocker: MockerFixture) -> None:
     # Two containers in one pod share the hostname; the same PID in the holder's namespace is another process.
