@@ -168,14 +168,16 @@ class SoftFileLease(MarkerSoftFileLock):
     @property
     def compromise(self) -> LeaseCompromise | None:
         """
-        The loss of claim the heartbeat observed.
+        The loss of claim the heartbeat observed or release could prove.
 
         The value outlives ``release()``, so a holder can check after leaving the ``with`` block whether its work may
         have overlapped a successor; the next acquisition resets it, as :attr:`SoftReadWriteLock.compromise
         <filelock.SoftReadWriteLock.compromise>` does. Until the lost claim is released, acquiring on this instance
         raises :class:`RuntimeError` instead of joining it.
 
-        The :class:`LeaseCompromise` of the latest claim, or ``None`` while that claim holds or held to its release.
+        The :class:`LeaseCompromise` of the latest claim, or ``None`` when no loss was observed. Release can record a
+        claim taken before the heartbeat's second check. It does not call ``on_compromise``: that callback runs on the
+        heartbeat thread to stop work in progress.
 
         """
         return self._claim.compromise
@@ -286,8 +288,51 @@ class SoftFileLease(MarkerSoftFileLock):
 
     def _release(self) -> None:
         self._stop_heartbeat()
+        if sys.platform != "win32":  # pragma: win32 no cover
+            self._record_unreported_loss()
         self._claim.token = None
         super()._release()
+
+    def _record_unreported_loss(self) -> None:  # pragma: win32 no cover
+        if (
+            (token := self._claim.token) is None
+            or self._claim.compromise is not None
+            or (identity := self._context.lock_file_fd_identity) is None
+        ):
+            return
+        fd = self._context.lock_file_fd
+        assert fd is not None  # ruff:ignore[assert]  # _release runs only while the descriptor is held
+        with suppress(OSError):
+            try:
+                marker = os.lstat(self._lock_path)
+            except FileNotFoundError:
+                reason: CompromiseReason = "marker-missing"
+            else:
+                if (marker.st_dev, marker.st_ino) == identity:
+                    return
+                reason = "owner-changed"
+            held = os.fstat(fd)
+            if held.st_nlink:
+                if reason == "marker-missing" and _parent_is_missing(self._lock_path):
+                    return
+                if reason == "owner-changed" and self._marker_has_break_name(held):
+                    return
+                # An exchange or directory rename can roll back while fstat runs.
+                with suppress(FileNotFoundError):
+                    if os.path.samestat(os.lstat(self._lock_path), held):
+                        return
+            self._claim.compromise = LeaseCompromise(lock_file=self.lock_file, token=token, reason=reason)
+
+    def _marker_has_break_name(self, held: os.stat_result) -> bool:  # pragma: win32 no cover
+        # An exchange keeps the old inode under the contender's break name until that contender commits or rolls back.
+        prefix = f"{pathlib.Path(self._lock_path).name}.break."
+        with os.scandir(pathlib.Path(self._lock_path).parent) as names:
+            for name in names:
+                if name.name.startswith(prefix):
+                    with suppress(FileNotFoundError):
+                        if os.path.samestat(name.stat(follow_symlinks=False), held):
+                            return True
+        return False
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         super()._reset_after_fork_in_child()

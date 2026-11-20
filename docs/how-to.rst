@@ -1139,13 +1139,14 @@ still be alive. A crashed holder leaves a marker no contender removes; clear it 
 :meth:`force_break <filelock.StrictSoftFileLock.force_break>`, which voids mutual exclusion for whoever is still
 running.
 
-:class:`SoftFileLease <filelock.SoftFileLease>` trades exclusion for progress. The holder refreshes its claim, and a
-peer takes the marker once it has watched it go ``lease_duration`` seconds without a refresh, timed on the peer's own
-monotonic clock so clock skew between hosts cannot expire a live claim. A peer reclaims a same-host lease or
-``MarkerSoftFileLock`` owner that is provably dead at once. The expired holder keeps running and keeps using
-whatever the lock protects, so a lease says who *should* be working, not who alone is. ``on_compromise`` fires when the
-claim is lost. :attr:`token <filelock.SoftFileLease.token>` names a claim but does not fence one: to reject a superseded
-holder, the protected resource must be linearizable and fence on a monotonic generation it controls.
+The heartbeat refreshes the lease marker while work runs. A peer can take the marker after it sees no refresh for
+``lease_duration`` seconds on its own monotonic clock. A peer on the same host can reclaim a lease or
+``MarkerSoftFileLock`` immediately if the owner has died.
+
+The heartbeat calls ``on_compromise`` when it detects a lost claim. Release can also record the loss in
+:attr:`compromise <filelock.SoftFileLease.compromise>` after work ends. An expired holder can continue writing.
+The :attr:`token <filelock.SoftFileLease.token>` identifies the claim. To reject stale writes, the resource must
+atomically check a generation it controls.
 
 .. code-block:: python
 

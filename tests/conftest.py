@@ -70,11 +70,10 @@ def acquire_after_reclaim(lock: BaseFileLock) -> None:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    # StrictSoftFileLock publishes claims with hard links, so tests marked requires_hard_links cannot run where
-    # os.link is missing (Termux/Android CPython ships without it). The no-hard-link degradation itself is covered by
-    # the os.link tests in test_filelock.py, which carry no marker and run everywhere.
+    # Tests marked requires_hard_links cannot run where os.link is missing (Termux/Android CPython ships without it).
+    # The no-hard-link degradation itself is covered by the os.link tests in test_filelock.py, which run everywhere.
     if not hasattr(os, "link"):  # pragma: no cover  # the body runs only on Termux/Android, absent from the CI matrix
-        skip = pytest.mark.skip(reason="StrictSoftFileLock requires os.link (hard links), absent on Termux/Android")
+        skip = pytest.mark.skip(reason="test requires os.link (hard links), absent on Termux/Android")
         for item in items:
             if item.get_closest_marker("requires_hard_links") is not None:
                 item.add_marker(skip)

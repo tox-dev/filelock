@@ -95,7 +95,7 @@ Choose the right lock for your use case:
         Expiring claim with a heartbeat, for when overlap is acceptable and progress matters more than exclusion.
 
         - ✓ A peer can take over a wedged holder
-        - ✓ ``on_compromise`` callback on claim loss
+        - ✓ Heartbeat callback on observed loss; ``compromise`` can also report loss at release
         - ✓ Fence the resource: a token names a claim, it does not fence one
 
     .. grid-item-card::
