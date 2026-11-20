@@ -972,6 +972,42 @@ def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: needs f
     assert result == (0, "", "")
 
 
+@NEEDS_FORK
+@_NEEDS_FD_DIRECTORY
+@pytest.mark.skipif(not CAPABILITIES["posix-hard-link"], reason="cleanup needs private links")
+def test_private_link_sweep_releases_the_inherited_cursor(tmp_path: Path) -> None:  # pragma: needs fork
+    result = _run_fork_script(
+        textwrap.dedent("""
+        import os
+        import sys
+        from pathlib import Path
+
+        from filelock import ReadWriteLock
+        from filelock import _read_write
+        from filelock._api import ensure_current_process
+        from tests.descriptor_helpers import descriptors_on
+
+        parent = Path(sys.argv[1])
+        parent.chmod(0o777)
+        node = parent.stat()
+        _read_write._MAX_TRANSITION_WAIT = 0
+        ReadWriteLock(parent / "lock.db", is_singleton=False).close()
+        assert descriptors_on(node) == 1
+        child = os.fork()
+        if child == 0:
+            ensure_current_process()
+            assert descriptors_on(node) == 0
+            sys.exit(0)
+        _, status = os.waitpid(child, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert descriptors_on(node) == 1
+        """),
+        [str(tmp_path)],
+        timeout=10,
+    )
+    assert result == (0, "", "")
+
+
 @NEEDS_FORK  # pragma: needs fork
 def test_read_write_lock_idle_fork_handles_fresh_child_lock(tmp_path: Path) -> None:
     result = _run_fork_script(

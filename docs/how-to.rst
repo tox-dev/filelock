@@ -451,9 +451,11 @@ This keeps SQLite's side files out of the shared directory. The locking account 
 filesystem that supports hard links. If inherited permissions expose the private directory, filelock sets mode 0700 and
 checks it. If other accounts still have access or the filesystem refuses the mode change, filelock raises :class:`PermissionError`.
 
-On its first connection to a database in a shared directory, filelock looks for hard links left by dead holders. It
-checks a 50 ms deadline between directory entries. If time runs out, a later connection can try again. A leftover
-hard link does not keep the lock held.
+Each process checks shared directories for links left by dead holders. It checks a 50 ms deadline between entries.
+If time runs out, connections to that database skip cleanup for one minute. The next connection then continues from
+the last entry. Each process keeps up to 16 unfinished scans. An evicted scan starts over when its database is next
+eligible. After visiting 1,024 databases, filelock can forget an older scan and check that database again. A leftover
+link does not keep the lock held.
 
 On POSIX, SQLite refuses to create a database if its private link disappears before the connection opens. On Linux,
 when procfs cannot establish the process's PID namespace, filelock leaves private links from other processes in place.
@@ -465,7 +467,9 @@ That holds when every directory above belongs to the locking account or root and
 has the sticky bit (a directory flag that lets only a file's owner rename or remove it).
 
 Keep the database under directories trusted by the locking account. If another account can replace a directory above
-the database, it can change which files SQLite sees between the identity check and the first SQL statement.
+the database, it can change which files SQLite sees between the identity check and the first SQL statement. SQLite
+can then delete a journal or WAL in the replacement directory. With a nonempty database, SQLite can replay the journal
+into that database and unlink the file named by the journal.
 
 On Windows the lock makes the same choice from the directory's access control list (ACL). It connects by the database
 name only when the directory's owner and every entry that allows adding files, adding subdirectories or deleting entries

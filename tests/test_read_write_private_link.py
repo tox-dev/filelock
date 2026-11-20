@@ -9,7 +9,9 @@ import stat
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # runs this test's own interpreter
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -22,6 +24,7 @@ pytest.importorskip("sqlite3")
 
 import sqlite3
 
+import filelock._read_write  # simplint: ignore[private-import-path]  # isolate sweep state
 from filelock import AsyncReadWriteLock, ReadWriteLock
 from filelock._identity import host_name
 from tests.capability_marks import NEEDS_FILE_PERMISSIONS
@@ -394,21 +397,31 @@ def test_private_link_sweep_bounds_a_crowded_directory(database: Path, mocker: M
 
 
 @pytest.mark.parametrize("link", ["lock.db", "0123456789abcdef/lock.db"])
-def test_private_link_sweep_retries_an_earlier_release_link_after_timeout(
-    database: Path, monkeypatch: pytest.MonkeyPatch, link: str
-) -> None:
+def test_private_link_sweep_resumes_after_its_cooldown(database: Path, mocker: MockerFixture, link: str) -> None:
     database.touch()
-    left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    left = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     (left / link).parent.mkdir(mode=0o700, parents=True)
     (left / link).hardlink_to(database)
-    with monkeypatch.context() as patch:
-        patch.setattr("filelock._read_write._MAX_TRANSITION_WAIT", 0)
-        with ReadWriteLock(database, is_singleton=False).read_lock():
-            assert left.is_dir()
-    with ReadWriteLock(database, is_singleton=False).read_lock():
-        pass
+    scandir = os.scandir
 
-    assert (_link_directories(database), database.stat().st_nlink) == ([], 1)
+    @contextmanager
+    def dead_link_last(path: str | os.PathLike[str] | int) -> Generator[Iterator[os.DirEntry[str]]]:
+        with scandir(path) as entries:
+            yield iter(sorted(entries, key=lambda entry: entry.name == left.name))
+
+    scans = mocker.patch("os.scandir", autospec=True, side_effect=dead_link_last)
+    clock = mocker.patch("filelock._read_write.time", autospec=True).monotonic
+    clock.return_value = 100
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 0)
+    lock = ReadWriteLock(database, is_singleton=False)
+    for _ in range(4):
+        with lock.read_lock(blocking=False):
+            assert (left / link).samefile(database)
+    assert scans.call_count == 1
+
+    clock.return_value += 61
+    with lock.read_lock(blocking=False):
+        assert not left.exists()
 
 
 def _host_digest(database: Path, *, legacy: bool = False) -> str:
@@ -420,6 +433,131 @@ def _host_digest(database: Path, *, legacy: bool = False) -> str:
     seed.chmod(0o777)
     with ReadWriteLock(seed / "lock.db", is_singleton=False).read_lock():
         return next(seed.glob(".filelock-*")).name.rsplit("-", 2)[1]
+
+
+def test_private_link_sweep_closes_abandoned_scans(database: Path, mocker: MockerFixture) -> None:
+    open_scans: set[int] = set()
+    scandir = os.scandir
+
+    @contextmanager
+    def track_handles(path: Path) -> Generator[Iterator[os.DirEntry[str]]]:
+        with scandir(path) as entries:
+            open_scans.add(id(entries))
+            try:
+                yield entries
+            finally:
+                open_scans.remove(id(entries))
+
+    mocker.patch("os.scandir", autospec=True, side_effect=track_handles)
+    clock = mocker.patch("filelock._read_write.time", autospec=True).monotonic
+    clock.return_value = 100
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 0)
+    for index in range(17):
+        ReadWriteLock(database.with_suffix(f".{index}"), is_singleton=False).close()
+    assert len(open_scans) == 16
+    clock.return_value += 61
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 1)
+    for index in range(17):
+        ReadWriteLock(database.with_suffix(f".{index}"), is_singleton=False).close()
+    assert not open_scans
+
+
+def test_private_link_sweep_forgets_old_databases(database: Path, mocker: MockerFixture) -> None:
+    digest = _host_digest(database)
+    mocker.patch("filelock._read_write._MAX_REMEMBERED_SWEEPS", 2)
+    mocker.patch("filelock._read_write._LINK_SWEEPS", new=filelock._read_write._LinkSweeps())
+    ReadWriteLock(database, is_singleton=False).close()
+    left = database.parent / f".filelock-{2**31 - 1}--{digest}-left"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(database)
+    for suffix in (".b", ".c"):
+        ReadWriteLock(database.with_suffix(suffix), is_singleton=False).close()
+    assert (left / "lock.db").samefile(database)
+    ReadWriteLock(database, is_singleton=False).close()
+    assert not left.exists()
+
+
+def test_private_link_sweep_restarts_in_a_replaced_parent(database: Path, mocker: MockerFixture) -> None:
+    digest = _host_digest(database)
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 0)
+    ReadWriteLock(database, is_singleton=False).close()
+    previous = database.parent.with_name("previous")
+    database.parent.rename(previous)
+    database.parent.mkdir()
+    database.parent.chmod(0o777)
+    database.hardlink_to(previous / database.name)
+    left = database.parent / f".filelock-{2**31 - 1}--{digest}-left"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(database)
+
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 1)
+    ReadWriteLock(database, is_singleton=False).close()
+    assert not left.exists()
+
+
+def test_private_link_sweep_retries_an_invalid_iterator(database: Path, mocker: MockerFixture) -> None:
+    digest = _host_digest(database)
+    scandir = os.scandir
+
+    def invalidated(entries: Iterator[os.DirEntry[str]]) -> Generator[os.DirEntry[str]]:
+        yield next(entries)
+        raise OSError(errno.EIO, "directory iterator invalidated")
+
+    @contextmanager
+    def interrupted(path: Path) -> Generator[Iterator[os.DirEntry[str]]]:
+        with scandir(path) as entries:
+            yield invalidated(entries)
+
+    scans = mocker.patch("os.scandir", autospec=True, side_effect=interrupted)
+    clock = mocker.patch("filelock._read_write.time", autospec=True).monotonic
+    clock.return_value = 100
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 0)
+    ReadWriteLock(database, is_singleton=False).close()
+    left = database.parent / f".filelock-{2**31 - 1}--{digest}-left"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(database)
+    clock.return_value += 61
+    ReadWriteLock(database, is_singleton=False).close()
+    assert (left / "lock.db").samefile(database)
+
+    scans.side_effect = scandir
+    clock.return_value += 61
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 1)
+    ReadWriteLock(database, is_singleton=False).close()
+    assert not left.exists()
+
+
+def test_private_link_sweep_skips_a_busy_iterator(database: Path, mocker: MockerFixture) -> None:
+    digest = _host_digest(database)
+    scandir = os.scandir
+    scanning, release = threading.Event(), threading.Event()
+
+    @contextmanager
+    def paused(path: Path) -> Generator[Iterator[os.DirEntry[str]]]:
+        scanning.set()
+        assert release.wait(5)
+        with scandir(path) as entries:
+            yield entries
+
+    scans = mocker.patch("os.scandir", autospec=True, side_effect=paused)
+    other = database.with_suffix(".other")
+    other.touch()
+    left = other.parent / f".filelock-{2**31 - 1}--{digest}-left"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(other)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        first = worker.submit(ReadWriteLock, database, is_singleton=False)
+        try:
+            assert scanning.wait(5)
+            ReadWriteLock(other, is_singleton=False).close()
+            assert (left / "lock.db").samefile(other)
+            assert scans.call_count == 1
+        finally:
+            release.set()
+        first.result(timeout=5).close()
+
+    ReadWriteLock(other, is_singleton=False).close()
+    assert not left.exists()
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux PID namespaces need procfs to identify their owners")

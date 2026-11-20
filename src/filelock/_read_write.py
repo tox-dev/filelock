@@ -11,7 +11,6 @@ __lazy_modules__ = [
     "collections",
     "hashlib",
     "itertools",
-    "pathlib",
     "secrets",
     "tempfile",
     f"{__spec__.parent}._error",
@@ -30,7 +29,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from itertools import count
@@ -56,6 +55,7 @@ from ._api import (
 )
 from ._error import Timeout
 from ._identity import (
+    host_name,
     link_host,
     owner_is_stale,
     process_start_token,
@@ -191,7 +191,76 @@ _FORKED_DATABASES: Final[_ForkedDatabaseRegistry] = _ForkedDatabaseRegistry()
 
 _LINK_PREFIX: Final[str] = ".filelock-"
 _LINK_NAME: Final[str] = "lock.db"
-_SWEPT_DATABASES: Final[set[_DatabaseIdentity]] = set()
+_MAX_REMEMBERED_SWEEPS: Final[int] = 1024
+_MAX_PENDING_SWEEPS: Final[int] = 16
+_SweepKey: TypeAlias = tuple[pathlib.Path, int, int, _DatabaseIdentity, int]
+
+
+class _LinkSweeps:
+    def __init__(self) -> None:
+        self._gate = threading.Lock()
+        self._retry_at: OrderedDict[_SweepKey, float] = OrderedDict()
+        self._pending: OrderedDict[_SweepKey, Generator[None]] = OrderedDict()
+
+    def sweep(
+        self, parent: pathlib.Path, identity: _DatabaseIdentity, owner: int
+    ) -> None:  # pragma: needs posix-hard-link
+        # A connection can skip cleanup while another thread sweeps.
+        if not self._gate.acquire(blocking=False):
+            return
+        try:
+            with suppress(OSError):
+                directory = parent.stat()
+                self._advance((parent, directory.st_dev, directory.st_ino, identity, owner))
+        finally:
+            self._gate.release()
+
+    def _advance(self, key: _SweepKey) -> None:  # pragma: needs posix-hard-link
+        now = time.monotonic()
+        if key in self._retry_at:
+            self._retry_at.move_to_end(key)
+            if now < self._retry_at[key]:
+                return
+        elif len(self._retry_at) == _MAX_REMEMBERED_SWEEPS:
+            oldest, _ = self._retry_at.popitem(last=False)
+            with suppress(KeyError):
+                self._pending.pop(oldest).close()
+        parent, _, _, identity, owner = key
+        scan = self._pending.pop(key, None) or self._scan(parent, identity, owner)
+        self._retry_at[key] = now + 60
+        try:
+            for _ in scan:
+                if time.monotonic() >= now + _MAX_TRANSITION_WAIT:
+                    self._pending[key] = scan
+                    # Each paused directory iterator owns a handle.
+                    if len(self._pending) > _MAX_PENDING_SWEEPS:
+                        self._pending.popitem(last=False)[1].close()
+                    return
+            self._retry_at[key] = float("inf")
+        finally:
+            if key not in self._pending:
+                scan.close()
+
+    @staticmethod
+    def _scan(
+        parent: pathlib.Path, identity: _DatabaseIdentity, owner: int
+    ) -> Generator[None]:  # pragma: needs posix-hard-link
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                if entry.name.startswith(_LINK_PREFIX) and entry.is_dir(follow_symlinks=False):
+                    with suppress(OSError):
+                        _remove_dead_links(parent / entry.name, identity, owner)
+                yield
+
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+        self._gate = threading.Lock()
+        for scan in self._pending.values():
+            scan.close()
+        self._pending.clear()
+        self._retry_at.clear()
+
+
+_LINK_SWEEPS: Final[_LinkSweeps] = _LinkSweeps()
 
 
 # POSIX locks belong to the process and the inode, so closing any descriptor on the inode drops the locks every other
@@ -1228,7 +1297,7 @@ def _link_beside(  # pragma: needs posix-hard-link
 ) -> _LinkDirectory:
     # Beside the database because a link cannot cross filesystems, and TMPDIR is often on another one.
     parent: Final[pathlib.Path] = pathlib.Path(database).parent
-    _sweep_links_of_the_dead(parent, identity, owner)
+    _LINK_SWEEPS.sweep(parent, identity, owner)
     path: Final[pathlib.Path] = pathlib.Path(tempfile.mkdtemp(prefix=_link_prefix(), dir=parent))
     fd: Final[int] = os.open(path, _DIRECTORY_FLAGS)
     try:
@@ -1285,26 +1354,6 @@ def _tighten_link_directory(fd: int, parent: pathlib.Path) -> None:  # pragma: n
         raise PermissionError(msg) from exc
     if os.fstat(fd).st_mode & 0o077:
         raise PermissionError(msg)
-
-
-def _sweep_links_of_the_dead(
-    parent: pathlib.Path, identity: _DatabaseIdentity, owner: int
-) -> None:  # pragma: needs posix-hard-link
-    # A process killed while it held a link leaves the directory, and an extra link to the database, behind for good.
-    # Two threads sweeping at once only both try the same removals, which a lock would cost a fork-safety reset for.
-    if identity in _SWEPT_DATABASES:
-        return
-    _SWEPT_DATABASES.add(identity)
-    deadline: Final[float] = time.monotonic() + _MAX_TRANSITION_WAIT
-    with suppress(OSError), os.scandir(parent) as entries:
-        for entry in entries:
-            if time.monotonic() >= deadline:
-                _SWEPT_DATABASES.discard(identity)
-                return
-            if entry.name.startswith(_LINK_PREFIX) and entry.is_dir(follow_symlinks=False):
-                # A peer sweeping alongside, or a directory this user cannot remove, must not fail the connect.
-                with suppress(OSError):
-                    _remove_dead_links(parent / entry.name, identity, owner)
 
 
 def _remove_dead_links(
@@ -1376,9 +1425,8 @@ def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
         ):
             if not 1 <= (owner_pid := int(pid)) <= 2**31 - 1:
                 return False
-            host, known_namespace = link_host()
             return (
-                known_namespace
+                (host := link_host()) is not None
                 and digest == _host_digest(host)
                 and owner_is_stale(owner_pid, host, int(start) if start else None)
             )
@@ -1389,7 +1437,8 @@ def _owner_is_gone(name: str) -> bool:  # pragma: needs posix-hard-link
 def _link_prefix() -> str:  # pragma: needs posix-hard-link
     # The owner rides in the name, which mkdtemp creates in one step, so no directory ever exists without it.
     start: Final[int | None] = process_start_token(pid := os.getpid())
-    return f"{_LINK_PREFIX}{pid}-{'' if start is None else start}-{_host_digest(link_host()[0])}-"
+    host = link_host() or f"{host_name()}?pidns-unknown"
+    return f"{_LINK_PREFIX}{pid}-{'' if start is None else start}-{_host_digest(host)}-"
 
 
 def _host_digest(host: str) -> str:  # pragma: needs posix-hard-link
@@ -1429,7 +1478,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     def _link_beside_on_windows(database: str, identity: _DatabaseIdentity) -> _LinkDirectory:
         parent: Final[pathlib.Path] = pathlib.Path(database).parent
         # No uid exists here: a directory is a dead holder's only if its ACL admits nobody but the trusted accounts.
-        _sweep_links_of_the_dead(parent, identity, 0)
+        _LINK_SWEEPS.sweep(parent, identity, 0)
         path: Final[pathlib.Path] = parent / f"{_link_prefix()}{secrets.token_hex(8)}"
         make_private_directory(os.fspath(path))
         link: _LinkDirectory | None = None
@@ -1581,6 +1630,7 @@ def timeout_for_sqlite(timeout: float, *, blocking: bool, already_waited: float)
     return timeout_ms
 
 
+register_fork_object(_LINK_SWEEPS)
 register_fork_object(_CONNECTION_ESCROW)
 register_fork_object(_FORKED_DATABASES)
 register_fork_object(_PROBE_DESCRIPTORS)
