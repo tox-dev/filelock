@@ -25,8 +25,11 @@ from filelock import (
 from filelock._identity import host_name, process_start_token
 from filelock._strict import _PRIVATE_RECORD_MARKER, _probe_hard_link_unsupported_errnos
 from tests.capability_marks import NEEDS_FILE_PERMISSIONS
+from tests.process_helpers import call_within
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pytest_mock import MockerFixture
 
 _SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
@@ -71,6 +74,21 @@ def test_strict_soft_contender_times_out(tmp_path: Path) -> None:
         StrictSoftFileLock(lock_path, timeout=0).acquire()
     with StrictSoftFileLock(lock_path, timeout=0) as acquired:
         assert acquired.is_locked
+
+
+@pytest.mark.skipif(os.name != "nt", reason="oplocks exist only on Windows")
+def test_strict_soft_sentinel_oplock_keeps_deadline(
+    tmp_path: Path, hold_oplock: Callable[[Path], Callable[[], None]]
+) -> None:  # pragma: win32 cover
+    lock_path = tmp_path / "resource.lock"
+    with StrictSoftFileLock(lock_path):
+        pass
+    close_holder = hold_oplock(lock_path)
+    try:
+        finished, error = call_within(lambda: StrictSoftFileLock(lock_path).acquire(timeout=0.1), 2)
+    finally:
+        close_holder()
+    assert (finished, type(error)) == (True, Timeout)
 
 
 def test_strict_soft_waits_for_legacy_holder(tmp_path: Path) -> None:

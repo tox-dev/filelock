@@ -64,7 +64,6 @@ class OsFiles:
     def __init__(self, lock_file: str) -> None:
         self._lock_file = lock_file
         self._prepared = False
-        self._identities: dict[str, tuple[int, int]] = {}
 
     def read(self, path: str) -> bytes | None:
         # O_NONBLOCK keeps an open of a FIFO planted at the path from blocking; the regular-file check below rejects it.
@@ -151,23 +150,18 @@ class OsFiles:
                 msg = f"{error.filename} is not a directory or is a symlink; refusing to use it"
                 raise TreeReplacedError(msg) from error
             with pins:
+                lock_directory = Path(self._lock_file).parent.stat()
                 for directory in directories:  # pragma: needs foreign-sticky-tmp
-                    if (owner := foreign_owner(directory.lstat(), directory.parent.stat())) is not None:
-                        msg = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
-                        raise TreeReplacedError(msg)
+                    _raise_if_untrusted_directory(
+                        str(directory), directory.lstat(), directory.parent.stat(), lock_directory
+                    )
                 yield None
 
     def _admit(self, fd: int, path: str, parent_fd: int | None) -> None:  # pragma: needs link-dir-fd
-        # A directory other than the one prepare() checked may belong to another account: the tree can be renamed aside
-        # and recreated while this object lives, and the ownership check has to hold for what is opened now.
+        # A removed tree's inode may be reused, so every open needs an ownership check.
         found = os.fstat(fd)
-        if (found.st_dev, found.st_ino) == self._identities.get(path):
-            return
         parent = os.fstat(parent_fd) if parent_fd is not None else Path(path).parent.stat()
-        if (owner := foreign_owner(found, parent)) is not None:  # pragma: needs foreign-sticky-tmp
-            msg = f"{path} belongs to uid {owner}, not to this process's account or the parent's owner"
-            raise TreeReplacedError(msg)
-        self._identities[path] = found.st_dev, found.st_ino
+        _raise_if_untrusted_directory(path, found, parent, Path(self._lock_file).parent.stat())
 
     def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
         with self._relative(path) as (name, dir_fd):
@@ -258,9 +252,8 @@ class OsFiles:
     def prepare(self, root: str, *, force: bool = False) -> None:
         if self._prepared and not force:
             return
-        if force:
-            self._identities.clear()
         ensure_directory_exists(root)
+        lock_directory = Path(root).parent.stat()
         for directory, depth in (
             (Path(root), 0),
             (Path(root, GENERATIONS_DIRECTORY), 1),
@@ -278,11 +271,20 @@ class OsFiles:
             ):
                 msg = f"{directory} exists but is not a directory or is a symlink; refusing to use it"
                 raise TreeReplacedError(msg)
-            if (owner := foreign_owner(found, parent)) is not None:  # pragma: needs foreign-sticky-tmp
-                msg = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
-                raise TreeReplacedError(msg)
-            self._identities[str(directory)] = found.st_dev, found.st_ino
+            _raise_if_untrusted_directory(str(directory), found, parent, lock_directory)
         self._prepared = True
+
+
+def _raise_if_untrusted_directory(
+    path: str, found: os.stat_result, parent: os.stat_result, lock_directory: os.stat_result
+) -> None:
+    for above in (parent, lock_directory):
+        if (owner := foreign_owner(found, above)) is not None:  # pragma: needs foreign-sticky-tmp
+            msg = f"{path} belongs to uid {owner}, not to this process's account or the parent's owner"
+            raise TreeReplacedError(msg)
+        if above.st_mode & stat.S_ISVTX and found.st_mode & (stat.S_IWGRP | stat.S_IWOTH):  # pragma: win32 no cover
+            msg = f"{path} is writable by other accounts; refusing to use it"
+            raise TreeReplacedError(msg)
 
 
 def _identity(path: str, dir_fd: int | None) -> tuple[int, int] | None:
