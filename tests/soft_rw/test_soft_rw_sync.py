@@ -1645,11 +1645,15 @@ def test_live_lock_refuses_a_tree_another_account_planted_after_a_recovery(  # p
         lock.close()
 
 
-@pytest.mark.parametrize("name_only", [pytest.param(False, id="platform"), pytest.param(True, id="names")])
-def test_protocol_path_as_regular_file_is_refused(
-    lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture, *, name_only: bool
-) -> None:
-    mocker.patch.object(storage_mod, "_SUPPORTS_DIR_FD", new=not name_only and storage_mod._SUPPORTS_DIR_FD)
+@pytest.fixture(params=["platform", "names"])
+def directory_access(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
+    if request.param == "names":
+        mocker.patch.object(storage_mod, "_SUPPORTS_DIR_FD", new=False)
+        mocker.patch.object(storage_mod, "pin_directories", autospec=True, return_value=nullcontext())
+
+
+@pytest.mark.usefixtures("directory_access")
+def test_protocol_path_as_regular_file_is_refused(lock_file: str, lock: SoftReadWriteLock) -> None:
     Path(f"{lock_file}.rw").write_bytes(b"x")
     with pytest.raises(RuntimeError, match="not a directory or is a symlink"):
         lock.acquire_read(timeout=0.5)
