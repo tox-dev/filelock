@@ -243,21 +243,18 @@ def test_strict_soft_force_break_during_doorway_backs_off(
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     claims = Path(f"{lock_path}.filelock", "claims")
-    real_scandir = filelock._strict._scandir_relative
+    real_list = filelock._strict._list_claim_names
     scans = 0
 
-    def break_before_scan(
-        directory_ref: tuple[str, int | None],
-    ) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
+    def break_before_scan(lock_file: str, directory_ref: tuple[str, int | None], *, probe_clock: bool) -> list[str]:
         nonlocal scans
-        if directory_ref[0] == os.fspath(claims):
-            scans += 1
-            if scans == scan_to_empty:
-                for claim in claims.glob("*.claim"):
-                    claim.unlink()
-        return real_scandir(directory_ref)
+        scans += 1
+        if scans == scan_to_empty:
+            for claim in claims.glob("*.claim"):
+                claim.unlink()
+        return real_list(lock_file, directory_ref, probe_clock=probe_clock)
 
-    mocker.patch("filelock._strict._scandir_relative", side_effect=break_before_scan, autospec=True)
+    mocker.patch("filelock._strict._list_claim_names", side_effect=break_before_scan, autospec=True)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(Timeout):
@@ -269,21 +266,20 @@ def test_strict_soft_force_break_held_during_doorway_backs_off(tmp_path: Path, m
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
     claims = Path(f"{lock_path}.filelock", "claims")
-    real_scandir = filelock._strict._scandir_relative
+    real_list = filelock._strict._list_claim_names
     scans = 0
 
     def break_held_before_final_scan(
-        directory_ref: tuple[str, int | None],
-    ) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
+        lock_file: str, directory_ref: tuple[str, int | None], *, probe_clock: bool
+    ) -> list[str]:
         nonlocal scans
-        if directory_ref[0] == os.fspath(claims):
-            scans += 1
-            if scans == 3:
-                for claim in claims.glob("held-*.claim"):
-                    claim.unlink()
-        return real_scandir(directory_ref)
+        scans += 1
+        if scans == 3:
+            for claim in claims.glob("held-*.claim"):
+                claim.unlink()
+        return real_list(lock_file, directory_ref, probe_clock=probe_clock)
 
-    mocker.patch("filelock._strict._scandir_relative", side_effect=break_held_before_final_scan, autospec=True)
+    mocker.patch("filelock._strict._list_claim_names", side_effect=break_held_before_final_scan, autospec=True)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(Timeout):
@@ -1167,7 +1163,7 @@ def test_strict_soft_claim_directory_read_error_fails_closed(tmp_path: Path, moc
 
     mocker.patch("filelock._strict._scandir_relative", side_effect=fail_claim_scan, autospec=True)
 
-    with pytest.raises(SoftFileLockProtocolError, match="cannot list claim directory"):
+    with pytest.raises(SoftFileLockProtocolError, match="cannot list"):
         StrictSoftFileLock(lock_path).acquire()
 
 
@@ -1557,6 +1553,41 @@ def test_strict_soft_refuses_unrelated_directory_at_coordination_name(tmp_path: 
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
+def test_strict_soft_refuses_file_at_claim_name_before_coordination_chmod(  # pragma: win32 no cover
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    (coordination := Path(f"{lock_path}.filelock")).mkdir()
+    (coordination / "claims").write_text("unrelated", encoding="utf-8")
+    coordination.chmod(0o755)
+
+    with pytest.raises(SoftFileLockProtocolError, match="holds entries that are not this lock's"):
+        StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
+    assert (stat.S_IMODE(coordination.stat().st_mode), (coordination / "claims").read_text(encoding="utf-8")) == (
+        0o755,
+        "unrelated",
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
+def test_strict_soft_refuses_unrelated_claim_before_coordination_chmod(  # pragma: win32 no cover
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    (claims := (coordination := Path(f"{lock_path}.filelock")) / "claims").mkdir(parents=True)
+    (claims / ".gitkeep").touch()
+    coordination.chmod(0o755)
+    claims.chmod(0o1700)
+
+    with pytest.raises(SoftFileLockProtocolError, match="unknown claim name"):
+        StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
+    assert (stat.S_IMODE(coordination.stat().st_mode), sorted(path.name for path in claims.iterdir())) == (
+        0o755,
+        [".gitkeep"],
+    )
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not inspect directory mode")
 def test_strict_soft_refuses_unlistable_coordination_directory(  # pragma: win32 no cover
     tmp_path: Path, mocker: MockerFixture
@@ -1588,19 +1619,35 @@ def test_strict_soft_refuses_uninspectable_directory_mode(  # pragma: win32 no c
     assert not (Path(f"{lock_path}.filelock") / "claims").exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not inspect directory mode")
+def test_strict_soft_refuses_unopenable_nested_claim_directory(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    (coordination := Path(f"{lock_path}.filelock")).mkdir()
+    (coordination / "claims").mkdir()
+    coordination.chmod(0o755)
+    mocker.patch("filelock._strict._open_directory", autospec=True, side_effect=PermissionError(EACCES, "denied"))
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot open"):
+        StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
+    assert stat.S_IMODE(coordination.stat().st_mode) == 0o755
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
 @pytest.mark.parametrize("entry", ["run-1.csv", ".gitkeep"])
+@pytest.mark.parametrize("mode", [0o775, 0o1700])
 def test_strict_soft_refuses_unrelated_entry_in_claim_directory(  # pragma: win32 no cover
-    tmp_path: Path, entry: str
+    tmp_path: Path, entry: str, mode: int
 ) -> None:
     lock_path: Final[Path] = tmp_path / "resource.lock"
     (claims := Path(f"{lock_path}.filelock") / "claims").mkdir(parents=True)
     (claims / entry).touch()
-    claims.chmod(0o775)
+    claims.chmod(mode)
 
     with pytest.raises(SoftFileLockProtocolError, match="unknown claim name"):
         StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
-    assert (stat.S_IMODE(claims.stat().st_mode), sorted(path.name for path in claims.iterdir())) == (0o775, [entry])
+    assert (stat.S_IMODE(claims.stat().st_mode), sorted(path.name for path in claims.iterdir())) == (mode, [entry])
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not inspect directory mode")
