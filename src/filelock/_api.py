@@ -34,7 +34,7 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from collections.abc import Callable, Hashable
 from contextlib import contextmanager
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from decimal import Decimal
 from functools import cache, partial
 from itertools import count, starmap
@@ -1803,6 +1803,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         if isinstance(self._context, ThreadLocalFileContext):
             self._thread_holds.clear()
             self._thread_pending.clear()
+        self._context.soft_fallback = False
+        self._context.flockless_roots = frozenset()
         self._context.owner_claim_paths = ()
         self._context.claim_root = None
         self._context.lock_file_fd = None
@@ -1816,8 +1818,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.lock_file_key = None
         self._context.lock_file_registry = None
         self._context.lease_claim = None
-        self._context.soft_fallback = False
-        self._context.flockless_roots = frozenset()
 
     def _descriptors_for_fork(self) -> tuple[tuple[int, tuple[int, int] | None], ...]:  # pragma: needs fork
         descriptors: list[tuple[int, tuple[int, int] | None]] = []
@@ -2036,6 +2036,12 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
     #: The lock lifetime in seconds; ``None`` means the lock never expires.
     lifetime: float | None = None
 
+    #: Whether this acquisition uses the soft protocol after flock returned ENOSYS for its path.
+    soft_fallback: bool = field(default=False, init=False)
+
+    #: Resolved paths whose flock returned ENOSYS in this context.
+    flockless_roots: frozenset[str] = field(default=frozenset(), init=False)
+
     #: File descriptor from os.open for the lock file; not None while the lock is held.
     lock_file_fd: int | None = None
 
@@ -2076,12 +2082,6 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
 
     #: The lease claim of this hold, kept with it so a cross-thread release stops the right heartbeat.
     lease_claim: LeaseClaim | None = None
-
-    #: Whether this acquisition uses the soft protocol after flock returned ENOSYS for its path.
-    soft_fallback: bool = False
-
-    #: Resolved paths whose flock returned ENOSYS in this context.
-    flockless_roots: frozenset[str] = frozenset()
 
 
 class ThreadLocalFileContext(FileLockContext, local):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interpreter isolates the blocked fcntl import
 import sys
 import threading
@@ -13,9 +14,10 @@ import pytest
 
 from filelock import SoftFileLock, SoftFileLockLifetimeWarning, Timeout, UnixFileLock
 from filelock._identity import host_name, process_start_token
-from tests.capability_marks import NEEDS_FCNTL
+from tests.capability_marks import NEEDS_FCNTL, NEEDS_STALE_RECLAIM
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
     from types import BuiltinFunctionType, FrameType
     from typing import Protocol
@@ -23,6 +25,12 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture, MockType
 
     class BreakableLock(Protocol):
+        @property
+        def pid(self) -> int | None: ...
+
+        @property
+        def is_lock_held_by_us(self) -> bool: ...
+
         def break_lock(self) -> None: ...
 
 
@@ -90,7 +98,9 @@ def test_interrupted_unix_create_keeps_native_file(tmp_path: Path) -> None:  # p
         assert lock.is_locked
 
 
-def _interrupt_unix_create(lock: UnixFileLock) -> None:  # pragma: needs fcntl
+def _interrupt_unix_create(
+    lock: UnixFileLock, error: type[BaseException] = KeyboardInterrupt
+) -> None:  # pragma: needs fcntl
     def interrupt(
         frame: FrameType, event: str, operation: BuiltinFunctionType | None
     ) -> None:  # pragma: no cover  # profile hooks run with tracing disabled
@@ -99,27 +109,26 @@ def _interrupt_unix_create(lock: UnixFileLock) -> None:  # pragma: needs fcntl
             and frame.f_code.co_name == "open_into"
             and (operation is os.open or getattr(operation, "__name__", None) == "extend")
         ):
-            raise KeyboardInterrupt
+            raise error
 
     previous = sys.getprofile()
     sys.setprofile(interrupt)
     try:
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(error):
             lock.acquire()
     finally:
         sys.setprofile(previous)
 
 
 @NEEDS_FCNTL
-def test_interrupted_unix_create_removes_fallback_placeholder(
+@NEEDS_STALE_RECLAIM
+def test_interrupted_unix_create_marks_fallback_placeholder(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: needs fcntl
     mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
     lock_path = tmp_path / "test.lock"
     _interrupt_unix_create(UnixFileLock(lock_path))
-    assert not lock_path.exists()
-    with pytest.warns(UserWarning, match="falling back to SoftFileLock"), UnixFileLock(lock_path, timeout=0):
-        assert lock_path.read_bytes()
+    assert lock_path.read_bytes().startswith(b"filelock/break\n")
 
 
 @NEEDS_FCNTL
@@ -130,6 +139,29 @@ def test_interrupted_unix_create_honors_disabled_fallback(
     lock_path = tmp_path / "test.lock"
     _interrupt_unix_create(UnixFileLock(lock_path, fallback_to_soft=False))
     assert lock_path.exists()
+
+
+@NEEDS_FCNTL
+@pytest.mark.parametrize(
+    "prepare", [pytest.param(lambda _: None, id="new"), pytest.param(lambda p: p.touch(), id="old")]
+)
+def test_oserror_after_open_does_not_retry(  # pragma: needs fcntl
+    tmp_path: Path, prepare: Callable[[Path], None]
+) -> None:
+    lock_path = tmp_path / "test.lock"
+    prepare(lock_path)
+    lock = UnixFileLock(lock_path)
+    _interrupt_unix_create(lock, PermissionError)
+    with lock.acquire(timeout=0):
+        assert lock.is_locked
+
+
+@NEEDS_FCNTL
+@pytest.mark.usefixtures("write_denied_lock_file")
+def test_oserror_after_read_only_open_propagates(tmp_path: Path) -> None:  # pragma: needs fcntl
+    (lock_path := tmp_path / "test.lock").touch()
+    _interrupt_unix_create(UnixFileLock(lock_path), BlockingIOError)
+    assert lock_path.read_bytes() == b""
 
 
 @NEEDS_FCNTL
@@ -388,12 +420,119 @@ def test_fallback_reentrant_locking(tmp_path: Path) -> None:  # pragma: needs fc
 @NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_removes_placeholder_it_created(tmp_path: Path) -> None:  # pragma: needs fcntl
+def test_fallback_publishes_in_the_file_it_created(tmp_path: Path) -> None:  # pragma: needs fcntl
     lock = UnixFileLock(tmp_path / "test.lock")
 
     lock.acquire(timeout=0)
     assert lock.is_locked
+    marker = cast("BreakableLock", lock)
+    assert (marker.pid, marker.is_lock_held_by_us) == (os.getpid(), True)
+    assert (tmp_path / "test.lock").read_bytes().startswith(f"{os.getpid()}\n".encode())
     lock.release()
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_write_error_leaves_marker(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: needs fcntl
+    lock_path = tmp_path / "test.lock"
+    mocker.patch("os.write", side_effect=OSError(EIO, "write failed"), autospec=True)
+
+    with pytest.raises(OSError, match="write failed"):
+        UnixFileLock(lock_path).acquire()
+
+    assert lock_path.read_bytes() == b""
+    with pytest.raises(Timeout):
+        SoftFileLock(lock_path).acquire(timeout=0)
+
+
+@NEEDS_FCNTL
+@NEEDS_STALE_RECLAIM
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_interrupted_publication_keeps_replacement(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: needs fcntl
+    lock_path = tmp_path / "test.lock"
+    replacement = tmp_path / "replacement"
+    replacement.write_text("other record", encoding="utf-8")
+
+    def refuse_write(_fd: int, _data: bytes) -> int:
+        replacement.replace(lock_path)
+        raise OSError(EIO, "write failed")
+
+    mocker.patch("os.write", autospec=True, side_effect=refuse_write)
+    with pytest.raises(OSError, match="write failed"):
+        UnixFileLock(lock_path).acquire(timeout=0)
+    assert lock_path.read_text(encoding="utf-8") == "other record"
+
+
+@NEEDS_FCNTL
+@NEEDS_STALE_RECLAIM
+@pytest.mark.usefixtures("unsupported_flock")
+def test_interrupted_open_preserves_marker_when_exchange_fails(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    mocker.patch("filelock._unix.exchange_names", autospec=True, return_value=False)
+    lock_path = tmp_path / "test.lock"
+    _interrupt_unix_create(UnixFileLock(lock_path))
+    assert (list(tmp_path.iterdir()), lock_path.read_bytes()) == ([lock_path], b"")
+
+
+@NEEDS_FCNTL
+@NEEDS_STALE_RECLAIM
+@pytest.mark.usefixtures("unsupported_flock")
+def test_interrupted_open_keeps_existing_private_name(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    mocker.patch("secrets.token_hex", autospec=True, return_value="fixed")
+    lock_path = tmp_path / "test.lock"
+    other = tmp_path / f"test.lock.break.{os.getpid()}.fixed"
+    other.write_bytes(b"other record")
+    _interrupt_unix_create(UnixFileLock(lock_path))
+    assert (other.read_bytes(), lock_path.read_bytes()) == (b"other record", b"")
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+@NEEDS_STALE_RECLAIM
+@pytest.mark.parametrize(
+    ("make_lock", "umask"),
+    [
+        pytest.param(lambda path: UnixFileLock(path, mode=0o666), 0o022, id="explicit"),
+        pytest.param(UnixFileLock, 0, id="umask"),
+    ],
+)
+def test_fallback_replaces_writable_native_marker(  # pragma: needs fcntl
+    tmp_path: Path, make_lock: Callable[[Path], UnixFileLock], umask: int
+) -> None:
+    lock_path = tmp_path / "test.lock"
+    previous_umask = os.umask(umask)
+    try:
+        lock = make_lock(lock_path)
+        with lock:
+            assert (cast("BreakableLock", lock).pid, stat.S_IMODE(lock_path.stat().st_mode)) == (os.getpid(), 0o644)
+    finally:
+        os.umask(previous_umask)
+
+
+@NEEDS_FCNTL
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_denies_writable_marker_without_exchange(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    mocker.patch("filelock._unix.exchange_supported", autospec=True, return_value=False)
+    with pytest.warns(UserWarning, match="falling back"), pytest.raises(PermissionError, match="private marker"):
+        UnixFileLock(tmp_path / "test.lock", mode=0o666).acquire(timeout=0)
+
+
+@NEEDS_FCNTL
+@pytest.mark.parametrize("name", ["pid", "is_lock_held_by_us"])
+def test_native_path_has_no_soft_holder(tmp_path: Path, name: str) -> None:  # pragma: needs fcntl
+    lock = UnixFileLock(tmp_path / "test.lock")
+    with lock, pytest.raises(RuntimeError, match="requires a soft fallback"):
+        getattr(lock, name)
 
 
 @NEEDS_FCNTL
@@ -413,36 +552,99 @@ def test_fallback_keeps_peer_soft_marker(tmp_path: Path) -> None:  # pragma: nee
 
 @NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
-def test_fallback_spares_a_peer_marker_that_replaced_its_placeholder(  # pragma: needs fcntl
+def test_fallback_keeps_the_created_marker_without_unlinking(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    lock_path: Final[Path] = tmp_path / "test.lock"
-    peer_marker: Final[str] = f"{os.getpid()}\n{host_name()}\n"
-    lstat = os.lstat
-    stalled: list[bool] = []
+    lock_path = tmp_path / "test.lock"
+    peer = SoftFileLock(lock_path)
+    unlink = mocker.spy(os, "unlink")
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
+    lock = UnixFileLock(lock_path)
+    try:
+        lock.acquire(timeout=1)
+        assert unlink.call_count == 0
+        with pytest.raises(Timeout):
+            peer.acquire(timeout=0)
+    finally:
+        mocker.stopall()
+        lock.release()
+        peer.release()
 
-    def flock_missing(fd: int, operation: int) -> None:
-        stalled.append(False)
-        raise OSError(ENOSYS, f"Function not implemented for {fd} with {operation}")
 
-    def lstat_then_peer_replaces_placeholder(path: str, *, dir_fd: int | None = None) -> os.stat_result:
-        found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
-        if stalled == [False] and os.fspath(path) == os.fspath(lock_path):
-            # The cleanup stalls past the grace a waiting soft lock gives an empty file, which evicts the placeholder
-            # and publishes its own marker.
-            stalled[0] = True
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_retries_if_peer_replaces_unwritten_marker(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "test.lock"
+    peer = SoftFileLock(lock_path)
+    write = os.write
+    replaced: list[bool] = []
+
+    def write_after_peer_replaces_marker(fd: int, data: bytes) -> int:
+        if not replaced:
+            replaced.append(True)
             lock_path.unlink()
-            lock_path.write_text(peer_marker, encoding="utf-8")
-        return found
+            peer.acquire(blocking=False)
+        return write(fd, data)
 
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=flock_missing, autospec=True)
-    mocker.patch("os.lstat", side_effect=lstat_then_peer_replaces_placeholder, autospec=True)
-    with pytest.raises(Timeout):
-        UnixFileLock(lock_path).acquire(timeout=0)
-    mocker.stopall()
+    mocker.patch("os.write", side_effect=write_after_peer_replaces_marker, autospec=True)
+    lock = UnixFileLock(lock_path)
+    try:
+        with pytest.raises(Timeout):
+            lock.acquire(timeout=0)
+        assert peer.is_locked
+        assert not lock.is_locked
+    finally:
+        mocker.stopall()
+        lock.release()
+        peer.release()
 
-    # Where os.link cannot restore it, the peer's marker waits under a break name, but it is never deleted.
-    assert peer_marker in [path.read_text(encoding="utf-8") for path in tmp_path.glob("test.lock*")]
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_retries_if_created_marker_disappears(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "test.lock"
+    lstat = os.lstat
+    vanished: list[bool] = []
+
+    def disappear_before_publish(path: str, *, dir_fd: int | None = None) -> os.stat_result:
+        if os.fspath(path) == os.fspath(lock_path) and not vanished:
+            vanished.append(True)
+            lock_path.unlink()
+            raise FileNotFoundError(path)
+        return lstat(path, dir_fd=dir_fd)
+
+    mocker.patch("os.lstat", side_effect=disappear_before_publish, autospec=True)
+    lock = UnixFileLock(lock_path)
+    try:
+        lock.acquire(timeout=0)
+        assert lock.is_locked
+        assert lock_path.read_bytes().startswith(f"{os.getpid()}\n".encode())
+    finally:
+        mocker.stopall()
+        lock.release()
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_lstat_error_closes_pending_descriptor(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: needs fcntl
+    lock_path = tmp_path / "test.lock"
+    mocker.patch("os.lstat", side_effect=OSError(EIO, "lstat failed"), autospec=True)
+    lock = UnixFileLock(lock_path)
+
+    with pytest.raises(OSError, match="lstat failed"):
+        lock.acquire(timeout=0)
+
+    assert not lock.is_locked
+    assert lock_path.read_bytes() == b""
 
 
 @NEEDS_FCNTL
@@ -579,14 +781,13 @@ def test_release_suppresses_eio_on_close(tmp_path: Path, mocker: MockerFixture) 
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_acquire_flock_error_clears_pending_descriptor(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = UnixFileLock(tmp_path / "test.lock")
-    mocker.patch(
-        "filelock._unix.fcntl.flock",
-        side_effect=[OSError(EIO, "Input/output error"), None, None],
-        autospec=True,
+    failed_flock = mocker.patch(
+        "filelock._unix.fcntl.flock", side_effect=OSError(EIO, "Input/output error"), autospec=True
     )
 
     with pytest.raises(OSError, match="Input/output error"):
         lock.acquire(timeout=0)
+    mocker.stop(failed_flock)
     assert not lock.is_locked
 
     lock.acquire(timeout=0)

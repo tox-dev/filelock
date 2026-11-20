@@ -255,15 +255,14 @@ Losing a private name makes the publisher retry; it never converts an unpublishe
     Keeping one pathname prevents contenders from coordinating through different inodes, which would break mutual
     exclusion; remove the file only after the complete lock protocol has stopped using it.
 
-    Filesystems without ``flock``: when ``flock`` fails with ``ENOSYS``, the lock follows the :class:`SoftFileLock
-    <filelock.SoftFileLock>` protocol and emits a warning, unless constructed with ``fallback_to_soft=False``. It
-    remembers paths that returned ``ENOSYS`` in the current lock context and skips ``flock`` on those paths. An
-    acquisition on a path not seen in that context tries ``flock`` again, since a relative path may now be on a
-    filesystem where peers use native locks. Before falling back, the lock removes an empty file only if this acquire
-    created it. An exchange while its descriptor stays open puts back any peer's marker that replaced it. A file that
-    already existed may be another process's soft marker, so the soft lock waits on it. An empty file there reads as a
-    holder that recorded nothing, as a release before 3.22 writes. A leftover one waits for ``timeout``, ``lifetime``
-    or ``break_lock()``.
+    On filesystems where ``flock`` returns ``ENOSYS``, the lock emits a warning and uses the
+    :class:`SoftFileLock <filelock.SoftFileLock>` protocol. It remembers each resolved path in the current lock context.
+    Changing directories can take a relative path to a different filesystem, where the lock tries ``flock`` again.
+
+    The fallback writes its PID into the file it just created. If another account could write that file, the fallback
+    exchanges it for a fresh marker with group and other write permissions removed. Filesystems that refuse the
+    exchange raise :class:`PermissionError`. A file already at the lock path may belong to a peer. An empty one can
+    belong to a holder using a release before 3.22.
 
 **Other platforms without fcntl**
     Falls back to :class:`SoftFileLock <filelock.SoftFileLock>` and emits a warning. The lock is not enforced by the OS,

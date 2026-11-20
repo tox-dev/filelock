@@ -103,7 +103,7 @@ def pin_inode(lock_file: str) -> Generator[int | None]:
             os.close(fd)
 
 
-def open_into(opened: list[int], path: str, flags: int, mode: int) -> int:
+def open_into(opened: list[int], path: str, flags: int, mode: int) -> int:  # pragma: win32 no cover
     # The C calls record the descriptor before Python can deliver a pending signal.
     opened.extend(map(os.open, (path,), (flags,), (mode,)))
     return opened[0]

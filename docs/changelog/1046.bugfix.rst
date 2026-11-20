@@ -1,2 +1,2 @@
-On Unix filesystems without ``flock``, an interrupted :class:`~filelock.FileLock` creation no longer leaves an empty file
-that blocks later soft fallback acquires.
+A Unix acquire interrupted on a filesystem without ``flock`` can leave a recovery marker that a waiter reclaims
+after two seconds. This requires atomic exchange and enough space to write the marker.

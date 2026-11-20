@@ -1460,9 +1460,9 @@ the native backend, construct ``UnixFileLock`` with ``fallback_to_soft=False`` s
 ``ENOSYS`` then propagates as the original :class:`OSError` from :func:`fcntl.flock`, with
 :data:`errno.ENOSYS`; filelock does not wrap it.
 
-After a fallback, ``UnixFileLock`` accepts ``lifetime`` and ``break_lock()`` for that resolved path. If the path later
-resolves elsewhere, ``break_lock()`` raises :class:`RuntimeError` and a ``lifetime`` assignment follows the native-lock
-rule: it is ignored with a warning.
+After fallback, ``UnixFileLock`` keeps its class. Use ``pid`` and ``is_lock_held_by_us`` to inspect the soft marker,
+``lifetime`` to set its expiry, and ``break_lock()`` to clear it. On a native path, reading the marker properties or
+calling ``break_lock()`` raises :class:`RuntimeError`. A ``lifetime`` assignment on that path emits a warning.
 
 Two other options imply the same refusal, because a soft lock cannot honor either: ``preserve_lock_file=True`` (a soft
 lock releases by unlinking its marker) and ``on_acquired`` (a soft lock keeps protocol state in the marker and has no
