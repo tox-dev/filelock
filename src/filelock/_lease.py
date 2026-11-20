@@ -10,6 +10,7 @@ __spec__ = cast("ModuleSpec", __spec__)
 __lazy_modules__ = [
     "contextlib",
     "math",
+    "pathlib",
     "secrets",
     "threading",
     "weakref",
@@ -21,6 +22,7 @@ __lazy_modules__ = [
 ]
 
 import os
+import pathlib
 import secrets
 import sys
 import time
@@ -393,15 +395,19 @@ class _RefreshLoop:
         return self._touch()
 
     def _refresh_unnamed(self, name_error: FileNotFoundError) -> tuple[_RefreshOutcome, OSError | None]:
-        # A renamed directory takes the marker with it; the name is gone but the inode behind the descriptor keeps its
-        # link.
+        # A link elsewhere cannot stand in for a vanished marker; only a moved parent can keep that name live.
         try:
             linked = os.fstat(self.fd).st_nlink > 0
         except OSError as error:
             return "transient", error
         if not linked:
             return "marker-missing", name_error
-        return self._touch()
+        try:
+            if _parent_is_missing(self.lock_file):
+                return self._touch()
+        except OSError as error:
+            return "transient", error
+        return "marker-missing", name_error
 
     def _touch(self) -> tuple[_RefreshOutcome, OSError | None]:
         try:
@@ -433,6 +439,14 @@ class LeaseCompromise:
     token: str
     reason: CompromiseReason
     error: Exception | None = None
+
+
+def _parent_is_missing(path: str) -> bool:
+    try:
+        os.lstat(pathlib.Path(path).parent)
+    except FileNotFoundError:
+        return True
+    return False
 
 
 __all__ = [
