@@ -172,7 +172,7 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
                 if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
                     Path(lock_file).unlink()
             else:
-                exchange_back(lock_file, break_path, fd)
+                exchange_back(lock_file, break_path, fd, unlink_settled_aside=True)
         finally:
             os.close(fd)
     elif _MOVES_WITHOUT_EXCHANGE:  # pragma: win32 cover
@@ -289,14 +289,14 @@ def exchange_names(source: str, target: str) -> bool:  # pragma: win32 no cover
     raise OSError(error, os.strerror(error), source, None, target)
 
 
-def exchange_back(lock_file: str, aside: str, fd: int) -> bool:  # pragma: win32 no cover
+def exchange_back(lock_file: str, aside: str, fd: int, *, unlink_settled_aside: bool) -> bool:  # pragma: win32 no cover
     # Raced breakers nest: each aside holds the prior marker. Returning out of order can strand a live holder's marker.
     # A peer may move the path between our check and exchange, so stalled breakers exchange to open any resulting ring.
     try:
         settled = _exchange_until_aside(lock_file, aside, os.fstat(fd))
     except FileNotFoundError:
         settled = True
-    if settled:
+    if settled and unlink_settled_aside:
         Path(aside).unlink(missing_ok=True)
     return settled
 
