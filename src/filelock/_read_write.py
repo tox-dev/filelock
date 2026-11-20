@@ -31,7 +31,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from contextlib import closing, contextmanager, suppress
+from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
@@ -1142,13 +1142,16 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
         try:
             _raise_if_unsupported_sqlite_format(fd, database)
             target = database
-            if not directory_is_private(os.fspath(pathlib.Path(database).parent)) or _side_file_exists(database):
-                link = _link_beside_on_windows(database, identity_of_fd(fd))
-                target = os.fspath(link.database)
             try:
-                connection = sqlite3.connect(
-                    target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
-                )
+                with ExitStack() as pin:
+                    if not directory_is_private(os.fspath(pathlib.Path(database).parent)) or _side_file_exists(
+                        database
+                    ):
+                        link = _link_beside_on_windows(database, identity_of_fd(fd), pin)
+                        target = os.fspath(link.database)
+                    connection = sqlite3.connect(
+                        target, check_same_thread=False, factory=factory, cached_statements=0, timeout=timeout
+                    )
             except BaseException:
                 if link is not None:
                     _remove_link_directory(link)
@@ -1388,7 +1391,7 @@ def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix
 
 if sys.platform == "win32":  # pragma: win32 cover
 
-    def _link_beside_on_windows(database: str, identity: _DatabaseIdentity) -> _LinkDirectory:
+    def _link_beside_on_windows(database: str, identity: _DatabaseIdentity, pin: ExitStack) -> _LinkDirectory:
         parent: Final[pathlib.Path] = pathlib.Path(database).parent
         # No uid exists here: a directory is a dead holder's only if its ACL admits nobody but the trusted accounts.
         _sweep_links_of_the_dead(parent, identity, 0)
@@ -1396,11 +1399,11 @@ if sys.platform == "win32":  # pragma: win32 cover
         make_private_directory(os.fspath(path))
         link: _LinkDirectory | None = None
         try:
-            # The handle keeps a rename in the parent from swapping the directory while the link is made inside it.
-            with pinned(os.fspath(path)) as directory_identity:
-                link = _LinkDirectory(path, directory_identity, secrets.token_hex(8))
-                _fill_link_directory(link, database, identity)
+            # Keep the alias name bound until SQLite opens its database handle.
+            link = _LinkDirectory(path, pin.enter_context(pinned(os.fspath(path))), secrets.token_hex(8))
+            _fill_link_directory(link, database, identity)
         except BaseException:
+            pin.close()
             if link is not None:  # pragma: no branch  # a pinned directory always gets its link
                 _remove_link_directory(link)
             raise

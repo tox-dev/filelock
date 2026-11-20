@@ -58,6 +58,42 @@ def test_windows_private_link_pin_blocks_rename(tmp_path: Path) -> None:  # prag
     assert getattr(error.value, "winerror", None) == 32
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles enforce rename sharing")
+def test_windows_read_write_keeps_private_link_pinned_until_sqlite_opens(  # pragma: win32 cover
+    everyone_writable_database: Path, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    connect = sqlite3.connect
+    opened: list[Path] = []
+
+    def connect_while_pinned(
+        database: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        directory = Path(database).parent.parent
+        with pytest.raises(PermissionError) as error:
+            directory.rename(tmp_path / "moved")
+        assert getattr(error.value, "winerror", None) == 32
+        opened.append(directory)
+        return connect(
+            database,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+
+    mocker.patch.object(sqlite3, "connect", side_effect=connect_while_pinned, autospec=True)
+    with ReadWriteLock(everyone_writable_database, is_singleton=False).write_lock(), pytest.raises(PermissionError):
+        opened[-1].rename(tmp_path / "moved")
+
+    assert opened
+    assert not opened[-1].exists()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles can reject junctions")
 def test_windows_private_link_pin_rejects_junction(  # pragma: win32 cover
     tmp_path: Path, create_junction: Callable[[Path, Path], None]
