@@ -304,11 +304,13 @@ def test_strict_soft_claim_scan_does_not_chmod_past_limit(  # pragma: win32 no c
     claims = Path(f"{lock_path}.filelock") / "claims"
     for index in range(3):
         _write_foreign_claim(claims, f"{index:032x}")
+    nfs = claims / ".nfs0123"
+    nfs.touch()
     claims.chmod(0o777)
 
     with pytest.raises(Timeout):
         StrictSoftFileLock(lock_path, mode=0o600, blocking=False).acquire()
-    assert stat.S_IMODE(claims.stat().st_mode) == 0o777
+    assert (stat.S_IMODE(claims.stat().st_mode), nfs.exists()) == (0o777, True)
 
 
 def test_strict_soft_claim_scan_leaves_private_records_on_overflow(lock_path: Path, mocker: MockerFixture) -> None:
