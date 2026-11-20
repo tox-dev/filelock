@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import os
 import signal
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter exit exercises the atexit registry
 import sys
 import threading
 import weakref
@@ -14,6 +15,8 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import pytest
 
 from filelock import BaseFileLock, SoftReadWriteLock
+from filelock._soft_rw._protocol import GenerationLog
+from filelock._soft_rw._storage import OsFiles
 from tests.capability_marks import NEEDS_CLASS_COLLECTION, NEEDS_FORK
 from tests.fork_helpers import exit_child, fork_process
 
@@ -124,6 +127,39 @@ def test_soft_read_write_subclass_construction_state_is_reset_after_fork(tmp_pat
     finally:
         for parent in parents:
             parent.close()
+
+
+@pytest.mark.requires_hard_links
+def test_equal_unhashable_soft_read_write_locks_survive_atexit_registry(
+    tmp_path: Path,
+) -> None:  # pragma: needs hard-link
+    paths = [tmp_path / "first.lock", tmp_path / "second.lock"]
+    script = """
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+
+from filelock import SoftReadWriteLock
+
+@dataclass(eq=True, init=False)
+class EqualLock(SoftReadWriteLock):
+    pass
+
+locks = [EqualLock(path, is_singleton=False, heartbeat_interval=1, stale_threshold=30) for path in sys.argv[1:]]
+for lock in locks:
+    lock.acquire_write()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, *(str(path) for path in paths)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    writers = [GenerationLog(OsFiles(str(path)), str(path), f"{path}.rw").latest().writer for path in paths]
+    assert (result.returncode, writers) == (0, [None, None])
 
 
 @NEEDS_CLASS_COLLECTION
