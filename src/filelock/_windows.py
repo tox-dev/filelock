@@ -747,9 +747,11 @@ if sys.platform == "win32":  # pragma: win32 cover
 
     @contextmanager
     def pinned(path: str) -> Generator[tuple[int, int]]:
-        # Hold *path* open without delete sharing, which keeps its name from being renamed or removed.
-        with _opened(path, _FILE_SHARE_READ_WRITE) as handle:
+        handle = pin_directory(path)
+        try:
             yield _identity_of(handle)
+        finally:
+            unpin_directory(handle)
 
     def identity_at(path: str) -> tuple[int, int]:
         with _opened(path, _FILE_SHARE_ALL) as handle:

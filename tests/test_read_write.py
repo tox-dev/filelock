@@ -30,7 +30,7 @@ from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, in
 if sys.platform == "win32":  # pragma: win32 cover
     from filelock._identity import host_name
     from filelock._read_write import _host_digest, _remove_link_directory_on_windows
-    from filelock._windows import _ADVAPI32, directory_is_private, make_private_directory
+    from filelock._windows import _ADVAPI32, directory_is_private, make_private_directory, pinned
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")  # pragma: win32 cover
@@ -45,6 +45,30 @@ def test_windows_read_write_rejects_changed_database_link(tmp_path: Path, mocker
     with pytest.raises(OSError, match="lock database changed"):
         ReadWriteLock(database, is_singleton=False)
     assert [entry.name for entry in tmp_path.iterdir()] == [database.name]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles enforce rename sharing")
+def test_windows_private_link_pin_blocks_rename(tmp_path: Path) -> None:  # pragma: win32 cover
+    directory = tmp_path / "link"
+    directory.mkdir()
+
+    with pinned(os.fspath(directory)), pytest.raises(PermissionError) as error:
+        directory.rename(tmp_path / "moved")
+
+    assert getattr(error.value, "winerror", None) == 32
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles can reject junctions")
+def test_windows_private_link_pin_rejects_junction(  # pragma: win32 cover
+    tmp_path: Path, create_junction: Callable[[Path, Path], None]
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    create_junction(link, target)
+
+    with pytest.raises(NotADirectoryError), pinned(os.fspath(link)):
+        pass
 
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
