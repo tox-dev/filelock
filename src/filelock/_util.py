@@ -154,18 +154,18 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
         # An atomic exchange with a placeholder takes the marker without the lock path ever being empty. No contender
         # can then create a marker while this one is judged, and a live marker goes back the same way.
         fd: Final[int] = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        exchanged = remove = False
+        grabbed: os.stat_result | None = None
         try:
-            # A signal can raise after the exchange succeeds but before the caller receives its result.
             try:
                 with suppress(OSError):
                     write_all(fd, f"filelock/break\n{os.getpid()}\n".encode())
-                    exchanged = exchange_names(break_path, lock_file)
-                if exchanged:
-                    grabbed = os.lstat(break_path)
-                    remove = grabbed.st_mtime == mtime_before and grabbed.st_ino == ino_before
+                    exchange_names(break_path, lock_file)
+                grabbed = os.lstat(break_path)
             finally:
-                if remove:
+                # A signal can interrupt the exchange or the first identity check after the names have moved.
+                if grabbed is None:
+                    grabbed = os.lstat(break_path)
+                if grabbed.st_mtime == mtime_before and grabbed.st_ino == ino_before:
                     Path(break_path).unlink()
                     if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
                         Path(lock_file).unlink()
