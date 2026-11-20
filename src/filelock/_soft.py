@@ -61,6 +61,7 @@ from ._util import (
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
+        create_exclusive_non_reparse_fd,
         open_read_without_oplock_wait,
     )
     from ._windows import (
@@ -84,7 +85,7 @@ class SoftFileLock(BaseFileLock):
     Cooperative file lock based on a shared existence marker.
 
     Unlike :class:`UnixFileLock <filelock.UnixFileLock>` and :class:`WindowsFileLock <filelock.WindowsFileLock>`, this
-    lock does not use OS-level locking primitives. Instead, it creates the lock file with ``O_CREAT | O_EXCL`` and
+    lock does not use OS-level locking primitives. Instead, it creates the lock file exclusively and
     treats its existence as the lock indicator. The filesystem must provide coherent exclusive creation and directory
     updates to each participating process. A crash can leave the marker behind.
 
@@ -146,8 +147,6 @@ class SoftFileLock(BaseFileLock):
     def _acquire(self) -> None:
         self._finish_marker_cleanup()
         raise_on_not_writable_file(self._lock_path)
-        # O_CREAT | O_EXCL makes the create fail with EEXIST when the file already exists, so a successful open
-        # means this process now holds the lock.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
         if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:  # pragma: needs o-nofollow
             flags |= o_nofollow
@@ -253,13 +252,16 @@ class SoftFileLock(BaseFileLock):
         return tuple(dict.fromkeys((self._lock_path, self.lock_file)))
 
     def _create_marker(self, path: str, flags: int, opened: list[int]) -> int:
-        fd = open_into(opened, path, flags, self._open_mode() & ~_OTHERS_WRITE)
+        if sys.platform == "win32":  # pragma: win32 cover
+            fd = create_exclusive_non_reparse_fd(path, opened)
+        else:  # pragma: win32 no cover
+            fd = open_into(opened, path, flags, self._open_mode() & ~_OTHERS_WRITE)
         self._mark_descriptor_pending(fd)
         return fd
 
     def _apply_explicit_mode(self, fd: int) -> None:
         # os.open filters the mode through the umask, so an explicit mode lands as given only through fchmod, the way
-        # UnixFileLock applies it. Windows maps the mode to a read-only bit that os.open already set.
+        # UnixFileLock applies it. Windows accepts only modes with owner read and write.
         if self.has_explicit_mode and sys.platform != "win32":  # pragma: win32 no cover
             with suppress(PermissionError):
                 os.fchmod(fd, self._context.mode & ~_OTHERS_WRITE)
