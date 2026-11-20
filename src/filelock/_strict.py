@@ -65,6 +65,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
         is_unlinked,
         open_deletable_for_reading,
+        open_read_without_oplock_wait,
         pin_directory,
         unpin_directory,
     )
@@ -74,7 +75,7 @@ if TYPE_CHECKING:
 
 #: The phase a claim file name records: ``intent`` while the claim waits at the doorway, ``held`` once it owns the lock.
 StrictSoftFileClaimState = Literal["intent", "held"]
-_OccupantState = Literal["sentinel", "held", "exited", "damaged", "unparsable"]
+_OccupantState = Literal["sentinel", "held", "breaking", "exited", "damaged", "unparsable"]
 
 _COORDINATION_SUFFIX: Final[str] = ".filelock"
 _CLAIM_DIRECTORY_NAME: Final[str] = "claims"
@@ -668,10 +669,12 @@ def _open_record(
         msg = f"{path} is not a regular file"
         raise OSError(msg)
     if deletable and sys.platform == "win32":  # pragma: win32 cover
-        # A claim's owner must be able to unlink it while another process reads it. The sentinel stays for the lock's
-        # lifetime, so it keeps os.open.
+        # A claim's owner must be able to unlink it while another process reads it.
         fd = open_deletable_for_reading(str(path))
-    else:
+    elif sys.platform == "win32":  # pragma: win32 cover
+        # The sentinel stays for the lock's lifetime, so its handle shares no delete.
+        fd = open_read_without_oplock_wait(str(path), share_delete=False)
+    else:  # pragma: win32 no cover
         flags = os.O_RDONLY | _O_BINARY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         fd = _open_relative(directory_ref, name, flags, 0)
     try:
@@ -862,6 +865,8 @@ def _inspect_lock_path(path: Path) -> _LockPathInspection:
         fd, record = _open_record((os.fspath(path.parent), None), path.name, _CLAIM_RECORD_LIMIT)
     except FileNotFoundError:
         raise
+    except BlockingIOError as error:
+        return _LockPathInspection(None, "breaking", f"a file it cannot read ({error.strerror or error})")
     except PermissionError as error:
         # Windows denies the read while a legacy holder keeps its marker open, and a holder running as another user
         # may leave it unreadable here, so a marker that cannot be read may still be held.
@@ -1024,6 +1029,8 @@ def _open_sentinel(lock_file: str, path: Path, unchanged_for: Callable[[os.stat_
             )
         if deadline is None:
             deadline = time.monotonic() + _SENTINEL_READ_GRACE
+        if state == "breaking" and time.monotonic() >= deadline:
+            return None
         if state == "exited" or time.monotonic() >= deadline:
             raise SoftFileLockProtocolError(lock_file, None, reason)
         time.sleep(_CLAIM_READ_RETRY)

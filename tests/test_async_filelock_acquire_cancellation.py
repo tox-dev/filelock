@@ -15,7 +15,11 @@ from filelock import (
     BaseAsyncFileLock,
     ContextErrorPolicy,
 )
-from tests.async_filelock_cancellation_helpers import assert_cancellation_message, assert_file_lock_state
+from tests.async_filelock_cancellation_helpers import (
+    FailingSubmitExecutor,
+    assert_cancellation_message,
+    assert_file_lock_state,
+)
 from tests.capability_marks import NEEDS_FCNTL, XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
@@ -240,6 +244,43 @@ async def test_executor_shutdown_drops_queued_release_with_runtime_error(tmp_pat
     lock.executor = None
     await lock.release()
     assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
+@pytest.mark.asyncio
+async def test_release_whose_submission_failed_never_runs(tmp_path: Path) -> None:
+    with FailingSubmitExecutor(after_call_ran=False) as executor:
+        lock = AsyncFileLock(tmp_path / "a", executor=executor)
+        await lock.acquire()
+        executor_started = threading.Event()
+        release_executor = threading.Event()
+        blocker = executor.submit(_block_executor, executor_started, release_executor)
+        assert executor_started.wait(timeout=5)
+        executor.fail_next_submit = True
+
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            await lock.release()
+        release_executor.set()
+        blocker.result(timeout=5)
+        # The pool has one worker, so it took the call queued behind the blocker before it ran this one.
+        executor.submit(threading.get_ident).result(timeout=5)
+
+        assert (lock.is_locked, lock.lock_counter) == (True, 1)
+        assert_file_lock_state(str(tmp_path / "a"), available=False)
+        await lock.release()
+        assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
+@pytest.mark.asyncio
+async def test_release_that_ran_before_its_submission_failed_counts(tmp_path: Path) -> None:
+    with FailingSubmitExecutor(after_call_ran=True) as executor:
+        lock = AsyncFileLock(tmp_path / "a", executor=executor)
+        await lock.acquire()
+        executor.fail_next_submit = True
+
+        await lock.release()
+
+        assert (lock.is_locked, lock.lock_counter) == (False, 0)
+        assert_file_lock_state(str(tmp_path / "a"), available=True)
 
 
 @NEEDS_FCNTL

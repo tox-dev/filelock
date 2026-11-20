@@ -2968,6 +2968,20 @@ def test_windows_open_read_without_oplock_wait_reads_the_file(tmp_path: Path) ->
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_open_read_without_oplock_wait_can_refuse_delete_sharing(tmp_path: Path) -> None:
+    assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
+    from filelock._windows import open_read_without_oplock_wait
+
+    (path := tmp_path / "a").touch()
+    fd = open_read_without_oplock_wait(str(path), share_delete=False)
+    try:
+        with pytest.raises(PermissionError):
+            path.unlink()
+    finally:
+        os.close(fd)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_open_read_without_oplock_wait_reports_a_missing_file(tmp_path: Path) -> None:
     assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
     from filelock._windows import open_read_without_oplock_wait
