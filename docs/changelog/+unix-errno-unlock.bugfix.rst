@@ -1,1 +1,1 @@
-Retry an interrupted Unix unlock once so an errno-bearing signal exception cannot leave a phantom lock hold.
+Retry Unix unlock once after an errno-bearing release error. If a signal arrives after the kernel unlock, a successful retry clears the stale local hold.
