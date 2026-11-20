@@ -46,7 +46,7 @@ async def test_private_link_connects_through_the_validated_inode(
     try:
         async with getattr(lock, f"{mode}_lock")():
             opened: Final[Path] = Path(connect.call_args.args[0])
-            link_directory: Final[Path] = opened.parent.parent
+            link_directory: Final[Path] = opened.parents[2]
             assert (
                 opened.name,
                 link_directory.parent,
@@ -229,6 +229,50 @@ def test_private_link_opens_nothing_through_a_swapped_link_directory(
     assert (target.exists(), (created_directories[-1] / "lock.db").is_symlink()) == (False, True)
 
 
+def test_private_link_refuses_a_watched_swapped_directory(
+    database: Path, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    target = tmp_path / "target.db"
+    watched = database.parent / "results"
+    watched.mkdir(mode=0o755)
+    adopted: list[Path] = []
+    mkdtemp = tempfile.mkdtemp
+    connect = sqlite3.connect
+
+    def create_then_swap(*, prefix: str, dir: Path) -> str:  # ruff:ignore[builtin-argument-shadowing]  # mirrors mkdtemp
+        directory = Path(mkdtemp(prefix=prefix, dir=dir))
+        watched.rename(directory)
+        adopted.append(directory)
+        return str(directory)
+
+    def swap_then_connect(
+        database: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+    ) -> sqlite3.Connection:
+        reported = [entry.name for entry in adopted[-1].iterdir()]
+        adopted[-1].rename(watched)
+        for name in reported:
+            (adopted[-1] / name).mkdir(parents=True)
+            (adopted[-1] / name / "lock.db").symlink_to(target)
+        return connect(
+            database,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+        )
+
+    mocker.patch("tempfile.mkdtemp", autospec=True, side_effect=create_then_swap)
+    mocker.patch("sqlite3.connect", autospec=True, side_effect=swap_then_connect)
+    with pytest.raises(sqlite3.OperationalError, match="unable to open database file"):
+        ReadWriteLock(database, is_singleton=False)
+    assert target.exists() is False
+
+
 def test_private_link_release_keeps_a_directory_renamed_onto_the_link(database: Path, tmp_path: Path) -> None:
     other: Final[Path] = database.parent / "project"
     other.mkdir()
@@ -255,12 +299,12 @@ def test_private_link_sweeps_the_link_of_a_killed_holder(database: Path, holder:
     assert (len(left), _link_directories(database), database.stat().st_nlink) == (1, [], 1)
 
 
-def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: Path) -> None:
-    # Releases up to 4.2.0 linked the database right inside the directory.
+@pytest.mark.parametrize("link", ["lock.db", "0123456789abcdef/lock.db"])
+def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: Path, link: str) -> None:
     database.touch()
     left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
-    left.mkdir(mode=0o700)
-    (left / "lock.db").hardlink_to(database)
+    (left / link).parent.mkdir(mode=0o700, parents=True)
+    (left / link).hardlink_to(database)
     with ReadWriteLock(database, is_singleton=False).read_lock():
         pass
 
@@ -354,21 +398,36 @@ def test_private_link_sweep_skips_a_symlink_under_a_dead_holder_name(database: P
     database.touch()
     named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     named.mkdir()
-    (named / "inner").symlink_to(database.parent)
+    (named / "0123456789abcdef").symlink_to(database.parent)
     ReadWriteLock(database, is_singleton=False).close()
 
-    assert (database.exists(), (named / "inner").is_symlink()) == (True, True)
+    assert (database.exists(), (named / "0123456789abcdef").is_symlink()) == (True, True)
 
 
-def test_private_link_sweep_skips_a_symlink_to_a_live_holder(database: Path, holder: subprocess.Popen[str]) -> None:
-    (held,) = _link_directories(database)
-    (inner,) = list(held.iterdir())
+def test_private_link_sweep_keeps_a_link_under_an_unrelated_directory(database: Path) -> None:
+    database.touch()
     named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
-    named.mkdir()
-    (named / "inner").symlink_to(inner)
+    (named / "project").mkdir(parents=True)
+    (named / "project" / "lock.db").hardlink_to(database)
     ReadWriteLock(database, is_singleton=False).close()
 
-    assert ((inner / "lock.db").exists(), holder.poll()) == (True, None)
+    assert ((named / "project" / "lock.db").exists(), database.stat().st_nlink) == (True, 2)
+
+
+@pytest.mark.parametrize("depth", [1, 2])
+def test_private_link_sweep_skips_a_symlink_to_a_live_holder(
+    database: Path, holder: subprocess.Popen[str], depth: int
+) -> None:
+    (held,) = _link_directories(database)
+    (outer,) = list(held.iterdir())
+    (inner,) = list(outer.iterdir())
+    named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    planted: Final[Path] = named / "/".join(["0123456789abcdef"] * depth)
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.symlink_to((outer, inner)[depth - 1])
+    ReadWriteLock(database, is_singleton=False).close()
+
+    assert ((inner / "lock.db").exists(), planted.is_symlink(), holder.poll()) == (True, True, None)
 
 
 @pytest.mark.usefixtures("holder")

@@ -487,8 +487,8 @@ The defense differs by platform:
   was given the inode number of a removed record and renamed over it.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path. In a directory that processes of
-other accounts can write, it opens SQLite through a hard link (a second name for the same file) in a directory only the
-locking account can read, so a link or journal file another process puts beside the database cannot point the lock at
+other accounts can write, it opens SQLite through a hard link (a second name for the same file) in a freshly created
+private directory, so a link or journal file another process puts beside the database cannot point the lock at
 another file. It also uses that link when a ``-journal``, ``-wal`` or ``-shm`` file remains beside the database after
 the directory is made private. On Windows the directory counts as writable by other accounts unless its owner and every
 entry of its access control list (ACL) that allows adding or removing names belong to the locking account, ``SYSTEM`` or

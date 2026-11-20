@@ -448,7 +448,7 @@ On POSIX, SQLite opens the database by name. It also uses the names ``<database>
 names the database directly only when no process of another account can create names in its directory and none of those
 three side files exists. The directory must belong to the locking account or root and must not be writable by its group
 or by others. Otherwise, filelock opens SQLite through a hard link (a second name for the same file) inside a
-``.filelock-*`` directory that only the locking account can read. A side file left before the directory was made private
+newly created private directory nested under ``.filelock-*``. A side file left before the directory was made private
 still selects this route. The directory must be writable by the locking account, and the filesystem must support hard
 links; when the link cannot be made, the lock raises :class:`OSError`.
 

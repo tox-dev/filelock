@@ -1208,8 +1208,8 @@ def _connect_through_descriptor(  # pragma: win32 no cover
 class _LinkDirectory(NamedTuple):  # pragma: needs posix-hard-link
     path: pathlib.Path
     identity: _DatabaseIdentity
-    # Made through a descriptor of path, which nobody else can list, so a directory another process swaps in under
-    # path cannot hold this name and SQLite fails to open instead of following the swap.
+    # The last component is made inside a new private directory. A directory swapped in under path may be watched,
+    # but cannot reveal that component, so SQLite cannot open a path supplied by another process.
     name: str
 
     @property
@@ -1245,8 +1245,12 @@ def _link_beside(  # pragma: needs posix-hard-link
                 raise OSError(msg) from exc
             if os.fstat(fd).st_mode & 0o077:
                 raise OSError(msg)
-        link: Final[_LinkDirectory] = _LinkDirectory(path, (made.st_dev, made.st_ino), secrets.token_hex(8))
+        outer: Final[str] = secrets.token_hex(8)
+        link: Final[_LinkDirectory] = _LinkDirectory(
+            path, (made.st_dev, made.st_ino), f"{outer}/{secrets.token_hex(8)}"
+        )
         try:
+            os.mkdir(outer, 0o700, dir_fd=fd)
             os.mkdir(link.name, 0o700, dir_fd=fd)
             os.link(database, link.database, follow_symlinks=False)
             linked: Final[os.stat_result] = link.database.stat(follow_symlinks=False)
@@ -1298,31 +1302,39 @@ def _remove_dead_links(
         # A directory owned by another account cannot hold this account's link; do not probe its named PID.
         if os.fstat(fd).st_uid != owner or not _owner_is_gone(path.name):
             return
-        with os.scandir(fd) as entries:
-            names: Final[list[str]] = [entry.name for entry in entries]
-        removed_link = False
-        for entry in names:
-            # Releases up to 4.2.0 linked the database right inside the directory.
-            if entry == _LINK_NAME:
-                removed_link = _unlink_link_to(identity, fd) or removed_link
-                continue
-            try:
-                nested = os.open(entry, _DIRECTORY_FLAGS, dir_fd=fd)
-            except OSError:
-                continue
-            try:
-                removed_nested_link = _unlink_link_to(identity, nested)
-            finally:
-                os.close(nested)
-            if removed_nested_link:
-                removed_link = True
-                with suppress(OSError):
-                    os.rmdir(entry, dir_fd=fd)
+        removed_link = _remove_dead_links_below(fd, identity, depth=2)
     finally:
         os.close(fd)
     if removed_link:
         with suppress(OSError):
             path.rmdir()
+
+
+def _remove_dead_links_below(  # pragma: needs posix-hard-link
+    fd: int, identity: _DatabaseIdentity, *, depth: int
+) -> bool:
+    removed_link = _unlink_link_to(identity, fd)
+    if not depth:
+        return removed_link
+    with os.scandir(fd) as entries:
+        names: Final[list[str]] = [entry.name for entry in entries]
+    hex_digits = "0123456789abcdef"
+    for name in names:
+        if len(name) != len(hex_digits) or any(character not in hex_digits for character in name):
+            continue
+        try:
+            nested = os.open(name, _DIRECTORY_FLAGS, dir_fd=fd)
+        except OSError:
+            continue
+        try:
+            removed_nested_link = _remove_dead_links_below(nested, identity, depth=depth - 1)
+        finally:
+            os.close(nested)
+        if removed_nested_link:
+            removed_link = True
+            with suppress(OSError):
+                os.rmdir(name, dir_fd=fd)
+    return removed_link
 
 
 def _unlink_link_to(identity: _DatabaseIdentity, dir_fd: int) -> bool:  # pragma: needs posix-hard-link
@@ -1377,8 +1389,9 @@ def _remove_link_directory(link: _LinkDirectory) -> None:  # pragma: needs posix
         for suffix in ("", "-journal", "-wal", "-shm"):
             with suppress(FileNotFoundError):
                 os.unlink(f"{link.name}/{_LINK_NAME}{suffix}", dir_fd=fd)
-        with suppress(FileNotFoundError):
-            os.rmdir(link.name, dir_fd=fd)
+        for name in (link.name, link.name.partition("/")[0]):
+            with suppress(FileNotFoundError):
+                os.rmdir(name, dir_fd=fd)
     finally:
         os.close(fd)
     # The link is gone, so a failure here leaves one stray empty directory and is not worth failing a release for.
