@@ -1010,6 +1010,51 @@ def test_stale_break_drops_what_it_took_when_the_holder_released_the_path(  # pr
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
+def test_stale_break_cleans_its_marker_when_the_break_name_becomes_a_directory(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(DEAD_OWNER, encoding="utf-8")
+    (holder := tmp_path / "holder").write_text(_live(DEAD_OWNER), encoding="utf-8")
+    aside: str | None = None
+    missing = 0
+    lstat = os.lstat
+
+    def holder_moves_the_break_name(break_name: str, path: str) -> bool:
+        nonlocal aside
+        aside = break_name
+        mocker.patch("filelock._soft.exchange_names", new=exchange_names)
+        holder.replace(lock)
+        exchange_names(break_name, path)
+        Path(break_name).rename(tmp_path / "taken")
+        return True
+
+    def replace_the_missing_break_name(path: str, *, dir_fd: int | None = None) -> os.stat_result:
+        nonlocal missing
+        try:
+            return lstat(path, dir_fd=dir_fd)
+        except FileNotFoundError:
+            if path == aside:
+                missing += 1
+                if missing == 2:
+                    Path(path).mkdir()
+            raise
+
+    mocker.patch("filelock._soft.exchange_names", new=holder_moves_the_break_name)
+    mocker.patch.object(os, "lstat", new=replace_the_missing_break_name)
+    with pytest.raises(Timeout):
+        MarkerSoftFileLock(lock).acquire(blocking=False)
+
+    assert (missing, lock.exists(), (tmp_path / "taken").read_text(encoding="utf-8")) == (
+        2,
+        False,
+        _live(DEAD_OWNER),
+    )
+    with MarkerSoftFileLock(lock, blocking=False) as acquired:
+        assert acquired.is_locked
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
 def test_stale_break_leaves_a_marker_taken_since_its_first_look_on_the_path(  # pragma: win32 no cover

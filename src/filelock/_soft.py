@@ -428,7 +428,10 @@ class SoftFileLock(BaseFileLock):
         put_back_done = not put_back
         try:
             if put_back:
-                put_back_done = exchange_back(self._lock_path, aside, fd)
+                put_back_done = exchange_back(self._lock_path, aside, fd, unlink_settled_aside=False)
+                if put_back_done:
+                    with suppress(OSError):
+                        Path(aside).unlink(missing_ok=True)
         finally:
             try:
                 # Whichever name still holds our marker loses it: the descriptor keeps its inode number ours.
