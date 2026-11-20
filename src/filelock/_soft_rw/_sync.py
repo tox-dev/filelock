@@ -378,6 +378,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         holder: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> AcquireReturnProxy:
+        ensure_current_process()
         if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"SoftReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
             raise RuntimeError(msg)
@@ -568,6 +569,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :raises SoftFileLockProtocolError: if peers keep winning generation updates until the holder's stale threshold
 
         """
+        ensure_current_process()
         if self._creator_pid != os.getpid():  # pragma: forked child
             return
         self._release(threading.get_ident(), force=force)
@@ -681,6 +683,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :class:`RuntimeError`, and so does an acquire another thread is still waiting in, which gives up its claim
         instead of taking the lock. A fork-invalidated instance is closed without raising.
         """
+        ensure_current_process()
         if self._creator_pid != os.getpid():  # pragma: forked child
             return
         # Closed first, under the lock an acquire publishes its hold under: an acquire still waiting then sees the flag
@@ -705,6 +708,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         return (hold := self._hold) is not None and (holder == hold.write_thread_id or holder in hold.read_depths)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+        self._creator_pid = -1
         self._locks = _Locks(internal=threading.Lock(), transaction=threading.Lock())
         self._hold = None
 

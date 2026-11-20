@@ -12,6 +12,7 @@ __lazy_modules__ = [
     "inspect",
     "math",
     "numbers",
+    "pathlib",
     "secrets",
     "types",
     "warnings",
@@ -25,6 +26,7 @@ import inspect
 import logging
 import math
 import os
+import pathlib
 import secrets
 import stat
 import sys
@@ -1061,6 +1063,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 raise
 
     def _raise_if_inherited(self) -> None:
+        ensure_current_process()
         if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"{type(self).__name__} on {self.lock_file} was inherited across fork; construct a new instance"
             raise RuntimeError(msg)
@@ -1458,6 +1461,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             running, and a ``thread_local=False`` lock while any other thread runs.
 
         """
+        ensure_current_process()
         release_snapshot: tuple[int, int] | None = None
         transition_entered = False
         try:  # ruff:ignore[too-many-statements-in-try-clause]  # gate-entry signals and release failures need separate recovery
@@ -1865,6 +1869,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         # fork copies the lock in whatever state the parent's threads left it, so give the child an unheld one.
         self._transition_lock = RLock()
+        # A different PID namespace may give the child the same numeric PID.
+        self._creator_pid = -1
         if isinstance(self._context, ThreadLocalFileContext):
             self._thread_holds.clear()
             self._thread_pending.clear()
@@ -2202,6 +2208,16 @@ class _OwnedDescriptor:
     inode: int | None
 
 
+def _pid_namespace() -> tuple[int, int] | None:
+    if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
+        return None
+    try:
+        namespace = pathlib.Path("/proc/self/ns/pid").stat()
+    except OSError:
+        return None
+    return namespace.st_dev, namespace.st_ino
+
+
 class _ForkState:
     def __init__(self) -> None:
         self.gate = Condition(RLock())
@@ -2215,7 +2231,7 @@ class _ForkState:
         self.pinned_classes: dict[int, list[tuple[_ForkResettableClass, ...]]] = {}
         self.provisional_descriptor_tokens: dict[int, list[tuple[int, ...]]] = {}
         self.undrained_forks: set[int] = set()
-        self.pid = os.getpid()
+        self.process_identity = os.getpid(), _pid_namespace()
 
     def reset_synchronization(self) -> None:  # pragma: forked child
         self.gate = Condition(RLock())
@@ -2252,7 +2268,7 @@ def _register_fork_hooks() -> None:
     _REGISTER_AT_FORK(  # pragma: needs fork
         before=_pin_fork_objects,
         after_in_parent=_resume_parent_after_fork,
-        after_in_child=_reset_child_after_fork,
+        after_in_child=partial(_reset_child_after_fork, from_hook=True),
     )
 
 
@@ -2343,21 +2359,25 @@ def ensure_current_process() -> None:
     _reset_child_after_fork()
 
 
-def _reset_child_after_fork() -> None:  # pragma: forked child
-    if (pid := os.getpid()) == _FORK_STATE.pid:
-        return
+def _reset_child_after_fork(*, from_hook: bool = False) -> None:  # pragma: forked child
+    pid = os.getpid()
     thread_id = get_ident()
+    if pid == _FORK_STATE.process_identity[0]:
+        if thread_id not in _FORK_STATE.fork_owner_depths:
+            return
+        if not from_hook:
+            previous = _FORK_STATE.process_identity[1]
+            if previous is None or (current := _pid_namespace()) is None or current == previous:
+                return
     if thread_id in _FORK_STATE.undrained_forks:
         os.write(2, b"filelock: fork child exits: another thread was still changing a lock's descriptor ownership\n")
         os._exit(70)  # the inherited descriptor state is unsafe; the parent continues
     pinned_objects = _FORK_STATE.pinned_objects.get(thread_id, [()])[-1]
     pinned_classes = _FORK_STATE.pinned_classes.get(thread_id, [()])[-1]
-    descriptors: list[_OwnedDescriptor] = []
-    for token, descriptor in tuple(_OWNED_DESCRIPTORS.items()):
-        if descriptor.creator_pid != pid:
-            descriptors.append(_OWNED_DESCRIPTORS.pop(token))
+    descriptors = list(_OWNED_DESCRIPTORS.values())
+    _OWNED_DESCRIPTORS.clear()
     _FORK_STATE.reset_synchronization()
-    _FORK_STATE.pid = pid
+    _FORK_STATE.process_identity = pid, _pid_namespace()
     _INIT_PARAMETER_MODELS.clear()
     _detach_child_state(descriptors, pinned_objects, pinned_classes)
 
