@@ -10,7 +10,7 @@ import stat
 import sys
 import time
 from contextlib import contextmanager, suppress
-from errno import EACCES, EINVAL, EIO, EISDIR, ENOSYS, EXDEV
+from errno import EACCES, EINVAL, EIO, EISDIR, ENOSPC, ENOSYS, EXDEV
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
@@ -119,9 +119,15 @@ def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
     # :raises OSError: if the descriptor cannot be read or the unlink fails.
     own: Final[os.stat_result] = os.fstat(fd)
     with suppress(FileNotFoundError):
-        break_lock_file(lock_file, own.st_mtime, own.st_ino)
-        if os.path.samestat(os.lstat(lock_file), own):
-            Path(lock_file).unlink()
+        try:
+            break_lock_file(lock_file, own.st_mtime, own.st_ino)
+            if os.path.samestat(os.lstat(lock_file), own):
+                Path(lock_file).unlink()
+        except OSError as exc:
+            if exc.errno == ENOSPC:
+                # A sparse byte makes our failed marker reclaimable without allocating a data block.
+                os.ftruncate(fd, 1)
+            raise
 
 
 def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> None:

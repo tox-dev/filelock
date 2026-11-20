@@ -854,6 +854,9 @@ them unchanged for two seconds. An empty marker, which is all a ``SoftFileLock``
 this way; remove a leftover one with ``break_lock()``.
 That recovery path is not fail closed.
 
+If a POSIX filesystem fills during acquisition, cleanup tries to leave a one-byte marker when it cannot remove the
+failed record. Free space so the next caller can reclaim the marker on filesystems that support atomic exchange.
+
 A contender breaks a stale marker without the lock path ever standing empty. Where it cannot (NFS, SMB and platforms
 without an atomic exchange, other than Windows) it leaves the marker in place; see :ref:`concepts:How does stale lock
 detection work across platforms?` for the details.

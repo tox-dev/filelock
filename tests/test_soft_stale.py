@@ -1530,6 +1530,49 @@ def test_write_failure_rolls_back_acquire(lock_path: Path, mocker: MockerFixture
     assert not lock_path.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX rolls back before closing the descriptor")
+@NEEDS_STALE_RECLAIM
+@pytest.mark.usefixtures("unchanged_past_grace")
+@pytest.mark.parametrize(
+    ("cleanup_errno", "fail_unlink", "record"),
+    [
+        pytest.param(ENOSPC, False, b"\0", id="create-full"),
+        pytest.param(ENOSPC, True, b"\0", id="unlink-full"),
+        pytest.param(EIO, False, b"", id="io-error"),
+    ],
+)
+def test_rollback_on_full_filesystem(
+    lock_path: Path, mocker: MockerFixture, cleanup_errno: int, record: bytes, *, fail_unlink: bool
+) -> None:  # pragma: win32 no cover
+    open_file = os.open
+
+    def open_with_full_directory(path: str, flags: int, mode: int = 0o777) -> int:
+        if not fail_unlink and ".break." in path:
+            raise OSError(cleanup_errno, os.strerror(cleanup_errno))
+        return open_file(path, flags, mode)
+
+    unlink = Path.unlink
+
+    def unlink_on_full_filesystem(path: Path, *, missing_ok: bool = False) -> None:
+        if fail_unlink and path == lock_path:
+            raise OSError(ENOSPC, os.strerror(ENOSPC))
+        unlink(path, missing_ok=missing_ok)
+
+    unlinks = mocker.patch.object(Path, "unlink", side_effect=unlink_on_full_filesystem, autospec=True)
+    opens = mocker.patch("filelock._util.os.open", side_effect=open_with_full_directory, autospec=True)
+    writes = mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "record write failed"), autospec=True)
+    with pytest.raises(OSError, match="record write failed"):
+        SoftFileLock(lock_path).acquire(timeout=0)
+    mocker.stop(opens)
+    mocker.stop(writes)
+    mocker.stop(unlinks)
+    assert lock_path.read_bytes() == record
+    lock = SoftFileLock(lock_path)
+    acquire_after_reclaim(lock)
+    assert lock.is_locked == (cleanup_errno == ENOSPC)
+    lock.release()
+
+
 def _hold_reports_foreign_identity(mocker: MockerFixture) -> None:
     # Make the held descriptor report a different inode than the file on disk, as if a peer replaced the marker at the
     # path. fstat runs only on our own lock fd, so nothing else in acquire or release is disturbed.
