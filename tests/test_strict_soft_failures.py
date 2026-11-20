@@ -56,6 +56,7 @@ _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from contextlib import AbstractContextManager
 
     from pytest_mock import MockerFixture, MockType
 
@@ -241,18 +242,22 @@ def test_strict_soft_force_break_during_doorway_backs_off(
 ) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
-    real_scandir = os.scandir
+    claims = Path(f"{lock_path}.filelock", "claims")
+    real_scandir = filelock._strict._scandir_relative
     scans = 0
 
-    def break_before_scan(path: int | str) -> Iterator[os.DirEntry[str]]:
+    def break_before_scan(
+        directory_ref: tuple[str, int | None],
+    ) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
         nonlocal scans
-        scans += 1
-        if scans == scan_to_empty:
-            for claim in Path(f"{lock_path}.filelock", "claims").glob("*.claim"):
-                claim.unlink()
-        return real_scandir(path)
+        if directory_ref[0] == os.fspath(claims):
+            scans += 1
+            if scans == scan_to_empty:
+                for claim in claims.glob("*.claim"):
+                    claim.unlink()
+        return real_scandir(directory_ref)
 
-    mocker.patch("filelock._strict.os.scandir", side_effect=break_before_scan, autospec=True)
+    mocker.patch("filelock._strict._scandir_relative", side_effect=break_before_scan, autospec=True)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(Timeout):
@@ -263,18 +268,22 @@ def test_strict_soft_force_break_during_doorway_backs_off(
 def test_strict_soft_force_break_held_during_doorway_backs_off(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
-    real_scandir = os.scandir
+    claims = Path(f"{lock_path}.filelock", "claims")
+    real_scandir = filelock._strict._scandir_relative
     scans = 0
 
-    def break_held_before_final_scan(path: int | str) -> Iterator[os.DirEntry[str]]:
+    def break_held_before_final_scan(
+        directory_ref: tuple[str, int | None],
+    ) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
         nonlocal scans
-        scans += 1
-        if scans == 3:
-            for claim in Path(f"{lock_path}.filelock", "claims").glob("held-*.claim"):
-                claim.unlink()
-        return real_scandir(path)
+        if directory_ref[0] == os.fspath(claims):
+            scans += 1
+            if scans == 3:
+                for claim in claims.glob("held-*.claim"):
+                    claim.unlink()
+        return real_scandir(directory_ref)
 
-    mocker.patch("filelock._strict.os.scandir", side_effect=break_held_before_final_scan, autospec=True)
+    mocker.patch("filelock._strict._scandir_relative", side_effect=break_held_before_final_scan, autospec=True)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(Timeout):
@@ -1147,7 +1156,16 @@ def test_strict_soft_sentinel_remains_after_private_cleanup_failure(tmp_path: Pa
 def test_strict_soft_claim_directory_read_error_fails_closed(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
-    mocker.patch("filelock._strict.os.scandir", side_effect=PermissionError(EACCES, "cannot list"), autospec=True)
+    real_scandir = filelock._strict._scandir_relative
+
+    def fail_claim_scan(
+        directory_ref: tuple[str, int | None],
+    ) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
+        if directory_ref[0] == os.fspath(Path(f"{lock_path}.filelock") / "claims"):
+            raise PermissionError(EACCES, "cannot list")
+        return real_scandir(directory_ref)
+
+    mocker.patch("filelock._strict._scandir_relative", side_effect=fail_claim_scan, autospec=True)
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot list claim directory"):
         StrictSoftFileLock(lock_path).acquire()
@@ -1521,6 +1539,130 @@ def test_strict_soft_refuses_coordination_directory_of_another_account(  # pragm
     with pytest.raises(SoftFileLockProtocolError, match="not to this process's account"):
         StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0).acquire()
     assert list(coordination.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
+def test_strict_soft_refuses_unrelated_directory_at_coordination_name(tmp_path: Path) -> None:  # pragma: win32 no cover
+    lock_path: Final[Path] = tmp_path / "resource.lock"
+    (site := tmp_path / "site").mkdir()
+    (site / "index.html").write_text("page", encoding="utf-8")
+    site.chmod(0o755)
+    site.rename(coordination := Path(f"{lock_path}.filelock"))
+
+    with pytest.raises(SoftFileLockProtocolError, match="holds entries that are not this lock's"):
+        StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
+    assert (stat.S_IMODE(coordination.stat().st_mode), sorted(path.name for path in coordination.iterdir())) == (
+        0o755,
+        ["index.html"],
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not inspect directory mode")
+def test_strict_soft_refuses_unlistable_coordination_directory(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    mocker.patch("filelock._strict._scandir_relative", autospec=True, side_effect=PermissionError(EACCES, "denied"))
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot list"):
+        StrictSoftFileLock(lock_path, timeout=0).acquire()
+    assert not (Path(f"{lock_path}.filelock") / "claims").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not inspect directory mode")
+def test_strict_soft_refuses_uninspectable_directory_mode(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    real_fstat = os.fstat
+
+    def fail_directory_fstat(fd: int) -> os.stat_result:
+        if stat.S_ISDIR(real_fstat(fd).st_mode):
+            raise OSError(EIO, "uninspectable")
+        return real_fstat(fd)
+
+    mocker.patch("filelock._strict.os.fstat", autospec=True, side_effect=fail_directory_fstat)
+    lock_path = tmp_path / "resource.lock"
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot set the mode"):
+        StrictSoftFileLock(lock_path, timeout=0).acquire()
+    assert not (Path(f"{lock_path}.filelock") / "claims").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
+@pytest.mark.parametrize("entry", ["run-1.csv", ".gitkeep"])
+def test_strict_soft_refuses_unrelated_entry_in_claim_directory(  # pragma: win32 no cover
+    tmp_path: Path, entry: str
+) -> None:
+    lock_path: Final[Path] = tmp_path / "resource.lock"
+    (claims := Path(f"{lock_path}.filelock") / "claims").mkdir(parents=True)
+    (claims / entry).touch()
+    claims.chmod(0o775)
+
+    with pytest.raises(SoftFileLockProtocolError, match="unknown claim name"):
+        StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
+    assert (stat.S_IMODE(claims.stat().st_mode), sorted(path.name for path in claims.iterdir())) == (0o775, [entry])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not inspect directory mode")
+def test_strict_soft_refuses_unlistable_claim_directory_before_chmod(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = tmp_path / "resource.lock"
+    (claims := Path(f"{lock_path}.filelock") / "claims").mkdir(parents=True)
+    claims.chmod(0o775)
+    real_scandir = filelock._strict._scandir_relative
+
+    def fail_claim_scan(
+        directory_ref: tuple[str, int | None],
+    ) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
+        if directory_ref[0] == os.fspath(claims):
+            raise PermissionError(EACCES, "denied")
+        return real_scandir(directory_ref)
+
+    mocker.patch("filelock._strict._scandir_relative", autospec=True, side_effect=fail_claim_scan)
+
+    with pytest.raises(SoftFileLockProtocolError, match="cannot list"):
+        StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
+    assert stat.S_IMODE(claims.stat().st_mode) == 0o775
+
+
+def test_strict_soft_claims_refuses_unknown_public_name(tmp_path: Path) -> None:
+    lock_path = tmp_path / "resource.lock"
+    (claims := Path(f"{lock_path}.filelock") / "claims").mkdir(parents=True)
+    (claims / "held-v2-claim").touch()
+
+    with pytest.raises(SoftFileLockProtocolError, match="unknown claim name"):
+        _ = StrictSoftFileLock(lock_path).claims
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param(f".held-v1-{'0' * 32}.claim{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp", id="private-record"),
+        pytest.param(f".probe-v1-{'0' * 32}.tmp", id="claim-probe"),
+    ],
+)
+def test_strict_soft_narrows_claim_directory_with_private_records(  # pragma: win32 no cover
+    tmp_path: Path, entry: str
+) -> None:
+    lock_path: Final[Path] = tmp_path / "resource.lock"
+    (claims := Path(f"{lock_path}.filelock") / "claims").mkdir(parents=True)
+    (claims / entry).touch()
+    claims.chmod(0o777)
+
+    with StrictSoftFileLock(lock_path, mode=0o600, timeout=0):
+        assert stat.S_IMODE(claims.stat().st_mode) == 0o1700
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
+def test_strict_soft_narrows_claim_directory_with_live_claim(tmp_path: Path) -> None:  # pragma: win32 no cover
+    lock_path: Final[Path] = tmp_path / "resource.lock"
+    with StrictSoftFileLock(lock_path):
+        (claims := Path(f"{lock_path}.filelock") / "claims").chmod(0o777)
+        with pytest.raises(Timeout):
+            StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
+        assert stat.S_IMODE(claims.stat().st_mode) == 0o1700
 
 
 def test_strict_soft_coordination_directory_replaced_in_a_writable_parent_splits_holders(tmp_path: Path) -> None:
