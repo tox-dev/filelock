@@ -465,6 +465,9 @@ class _ReadWriteLockMeta(type):
                 if _GETPID() != construction_pid:
                     msg = "ReadWriteLock construction cannot continue after fork"
                     raise RuntimeError(msg)
+                if instance._canonical_path != normalized:  # ruff:ignore[private-member-access]  # metaclass owns the cache
+                    msg = f"ReadWriteLock path changed during singleton construction: {normalized}"
+                    raise RuntimeError(msg)
                 cls._instances[normalized] = instance
 
             if (
