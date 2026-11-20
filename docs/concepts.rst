@@ -195,6 +195,15 @@ mount and server combination passes the protocol tests. Linux documents the hard
 <https://man7.org/linux/man-pages/man2/open.2.html>`_; Microsoft documents NTFS hard links in `Hard Links and Junctions
 <https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions>`_.
 
+An acquisition attempt that sees more than 1024 public claims backs off according to its timeout. Hidden records do
+not count toward that limit. If the scan finds more than 16,384 directory entries before publishing a claim, it raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` with the directory path and the number of hidden
+entries among the first 16,384. If the directory crosses this limit after publication, the attempt withdraws its claims.
+The :attr:`claims <filelock.StrictSoftFileLock.claims>` property still lists every public claim for inspection.
+
+Where the filesystem supports private-record reclamation, each scan removes at most 1024 abandoned records. A later
+attempt can reclaim the rest.
+
 A ``link()`` that fails with ``EEXIST`` still counts as published when the claim name now resolves to the contender's
 own record. NFS retransmits a request whose reply was lost, and the retry reports ``EEXIST`` for the link the first
 request made; ``open(2)`` and liblockfile check the same way.
