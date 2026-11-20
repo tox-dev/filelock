@@ -1869,6 +1869,33 @@ def test_strict_soft_refuses_coordination_directory_of_another_account(  # pragm
     assert list(coordination.iterdir()) == []
 
 
+@NEEDS_FOREIGN_STICKY_TMP
+def test_strict_soft_refuses_sentinel_of_another_account(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path,
+    mocker: MockerFixture,
+) -> None:
+    sentinel = b"1\nfilelock-strict-v1\x00\n0\n"
+    lock_path_in_shared_tmp.write_bytes(sentinel)
+    sentinel_stat = lock_path_in_shared_tmp.stat()
+    fstat = os.fstat
+
+    def owner_of_fd(fd: int) -> os.stat_result:
+        info = fstat(fd)
+        if os.path.samestat(info, sentinel_stat):
+            return os.stat_result((*info[:4], info.st_uid + 1, *info[5:]))
+        return info
+
+    mocker.patch.object(os, "fstat", autospec=True, side_effect=owner_of_fd)
+    lock = StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0)
+
+    try:
+        with pytest.raises(SoftFileLockProtocolError, match="sentinel belongs to uid"):
+            lock.acquire()
+    finally:
+        lock.release(force=True)
+    assert lock_path_in_shared_tmp.read_bytes() == sentinel
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
 def test_strict_soft_refuses_unrelated_directory_at_coordination_name(tmp_path: Path) -> None:  # pragma: win32 no cover
     lock_path: Final[Path] = tmp_path / "resource.lock"

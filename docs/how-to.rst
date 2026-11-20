@@ -1200,7 +1200,8 @@ blocks rather than breaking in. Only these combinations hold:
       - Until a claim expires; then the old holder overlaps its successor.
     - - ``SoftFileLock`` with ``StrictSoftFileLock``
       - Yes, from filelock 3.30.0 on: the strict sentinel is recognized, so the legacy contender waits. A pre-3.30
-        ``SoftFileLock`` misreads the sentinel and can break in.
+        ``SoftFileLock`` misreads the sentinel and can break in. On POSIX, strict acquisition refuses a sentinel owned
+        by another account under a sticky parent, since its owner could remove it during the hold.
     - - ``SoftFileLock`` with ``SoftFileLease``
       - No. The legacy contender reads the protocol 2 marker as malformed and evicts it.
     - - ``StrictSoftFileLock`` with ``SoftFileLease``
