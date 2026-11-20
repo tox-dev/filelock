@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
     from pytest_mock import MockerFixture
 
+    from tests.conftest import OplockHolder
+
 _SENTINEL: Final[bytes] = b"1\nfilelock-strict-v1\x00\n0\n"
 
 
@@ -116,6 +118,31 @@ def test_strict_soft_sentinel_oplock_keeps_deadline(
     finally:
         close_holder()
     assert (finished, type(error)) == (True, Timeout)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="oplocks exist only on Windows")
+def test_strict_soft_private_record_oplock_keeps_deadline(
+    tmp_path: Path, hold_oplock: OplockHolder
+) -> None:  # pragma: win32 cover
+    lock_path = tmp_path / "resource.lock"
+    with StrictSoftFileLock(lock_path):
+        pass
+    private = Path(f"{lock_path}.filelock") / "claims" / f".held-v1-{'0' * 32}.claim.private-v1-{'0' * 32}.tmp"
+    private.write_bytes(b"")
+    aged = time.time() - 3600
+    os.utime(private, (aged, aged))
+    entered: list[bool] = []
+
+    def acquire() -> None:
+        with StrictSoftFileLock(lock_path, timeout=0):
+            entered.append(True)
+
+    close_holder = hold_oplock(private, read_handle=True)
+    try:
+        finished, error = call_within(acquire, 2)
+    finally:
+        close_holder()
+    assert (finished, error, entered) == (True, None, [True])
 
 
 def test_strict_soft_waits_for_legacy_holder(tmp_path: Path) -> None:
@@ -487,9 +514,7 @@ def test_strict_soft_release_allows_reacquire(tmp_path: Path) -> None:  # pragma
         assert second.claims[0].state == "held"
 
 
-def test_strict_soft_reclaims_an_aged_sentinel_private_record(tmp_path: Path) -> None:
-    # A crash between creating a private record and linking it leaves it behind; the next acquire reclaims it once
-    # it ages out. The dir_fd reaper cases only proved this where dir_fd exists.
+def test_strict_soft_aged_sentinel_private_record_cleanup(tmp_path: Path) -> None:
     lock_path = tmp_path / "resource.lock"
     stale = tmp_path / f".{lock_path.name}{_PRIVATE_RECORD_MARKER}{'0' * 32}.tmp"
     stale.write_bytes(b"")
@@ -497,7 +522,7 @@ def test_strict_soft_reclaims_an_aged_sentinel_private_record(tmp_path: Path) ->
     os.utime(stale, (aged, aged))
 
     with StrictSoftFileLock(lock_path):
-        assert not stale.exists()
+        assert stale.exists() is (os.name == "nt")
 
 
 @pytest.mark.asyncio
