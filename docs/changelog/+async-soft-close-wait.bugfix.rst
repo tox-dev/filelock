@@ -1,2 +1,2 @@
-``AsyncSoftReadWriteLock.close()`` now stops a pending acquire through that wrapper instead of waiting for another
-holder to release its lock.
+``AsyncSoftReadWriteLock.close()`` now stops a backend acquire while another holder still blocks it, instead of
+waiting for that holder to release its lock.

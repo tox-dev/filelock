@@ -356,7 +356,7 @@ class AsyncSoftReadWriteLock:
         that acquired through another wrapper and synchronous users of the same path keep their holds. The next acquire
         notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
         between that check and the admission still admits the task into the ended hold.
-        A pending acquire through this wrapper stops waiting when close starts.
+        An acquire polling in the soft backend stops at its next contended poll when close starts.
 
         """
         if self._creator_pid != os.getpid() or self._closed:
