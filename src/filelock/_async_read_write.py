@@ -23,7 +23,7 @@ __lazy_modules__ = [
 import asyncio
 import functools
 import os
-import sqlite3
+import sqlite3  # simplint: ignore[missing-lazy-module]  # detect builds without SQLite at import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import thread as executor_threads
@@ -31,40 +31,20 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar, cast
 
 from ._api import (
-    append_exception_context as _append_exception_context,
-)
-from ._api import (
-    ensure_current_process as _ensure_current_process,
-)
-from ._api import (
-    fork_transition as _fork_transition,
-)
-from ._api import (
-    register_fork_object as _register_fork_object,
+    append_exception_context,
+    ensure_current_process,
+    fork_transition,
+    register_fork_object,
 )
 from ._async import (
-    TASKS_THREAD_ID as _TASKS_THREAD_ID,
-)
-from ._async import (
-    BackendOutcome as _BackendOutcome,
-)
-from ._async import (
-    capture_call as _capture_call,
-)
-from ._async import (
-    drain_future as _drain_future,
-)
-from ._async import (
-    future_result as _future_result,
-)
-from ._async import (
-    raise_cancelled_error as _raise_cancelled_error,
-)
-from ._async import (
-    task_owners_for as _task_owners_for,
-)
-from ._async import (
-    wait_until_done as _wait_until_done,
+    TASKS_THREAD_ID,
+    BackendOutcome,
+    drain_future,
+    future_result,
+    raise_cancelled_error,
+    submit_call,
+    task_owners_for,
+    wait_until_done,
 )
 from ._error import Timeout
 from ._read_write import ReadWriteLock
@@ -123,10 +103,10 @@ class AsyncReadWriteLock:
         self._owns_backend = not is_singleton
         #: Marks the task holds taken through this wrapper, which its close() ends.
         self._via: Final = object()
-        _register_fork_object(self)
-        with _fork_transition():
+        register_fork_object(self)
+        with fork_transition():
             self._lock = ReadWriteLock(lock_file, timeout, blocking=blocking, is_singleton=is_singleton)
-            self._owners = _task_owners_for(self._lock)
+            self._owners = task_owners_for(self._lock)
             self._loop = loop
             self._owns_executor = executor is None
             self._executor = executor or ThreadPoolExecutor(max_workers=1)
@@ -199,7 +179,7 @@ class AsyncReadWriteLock:
         return AsyncAcquireReadWriteReturnProxy(lock=self)
 
     def _raise_if_unusable(self) -> None:
-        _ensure_current_process()
+        ensure_current_process()
         if self._inherited:  # pragma: needs fork
             msg = f"AsyncReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
             raise RuntimeError(msg)
@@ -226,7 +206,7 @@ class AsyncReadWriteLock:
             await self._run_acquire(
                 functools.partial(
                     self._lock._acquire_level_of,  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
-                    _TASKS_THREAD_ID,
+                    TASKS_THREAD_ID,
                     mode,
                     remaining,
                     blocking=blocking,
@@ -261,47 +241,45 @@ class AsyncReadWriteLock:
         abandoned = threading.Event()
         acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
         try:
-            await _wait_until_done(acquire_future)
+            await wait_until_done(acquire_future)
         except asyncio.CancelledError as cancellation:
             # Stops a backend wait on another process's hold, which would otherwise outlast the caller by as long.
             abandoned.set()
             try:
-                await _drain_future(acquire_future)
+                await drain_future(acquire_future)
             except Timeout:
                 # Nothing was taken, so the caller's cancellation is the whole outcome.
                 raise cancellation from None
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                _raise_cancelled_error(cancellation, error)
+                raise_cancelled_error(cancellation, error)
             try:
-                await _drain_future(self._submit(self._leave_backend))
+                await drain_future(self._submit(self._leave_backend))
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
-                _raise_cancelled_error(cancellation, error)
+                raise_cancelled_error(cancellation, error)
             raise
-        _future_result(acquire_future)
+        future_result(acquire_future)
 
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
-    ) -> asyncio.Future[_BackendOutcome[_R]]:
-        return (self._loop or asyncio.get_running_loop()).run_in_executor(
-            self._executor,
-            _capture_call,
-            functools.partial(func, *args, **kwargs),
+    ) -> asyncio.Future[BackendOutcome[_R]]:
+        return submit_call(
+            self._loop or asyncio.get_running_loop(), self._executor, functools.partial(func, *args, **kwargs)
         )
 
     def _leave_backend(self) -> None:
         # Only the tasks' level: a sync user of the same singleton keeps its own.
-        self._lock._release_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+        self._lock._release_level_of(TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     def _backend_holds(self) -> bool:
         # A sync close() or forced release on a shared singleton ends the tasks' level without the table taking part.
-        return self._lock._holds_level_of(_TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
+        return self._lock._holds_level_of(TASKS_THREAD_ID)  # ruff:ignore[private-member-access]  # the wrapper owns this backend hold
 
     async def _release_in_context(self, body_error: BaseException | None) -> None:
         try:
             await self.release()
         except BaseException as release_error:
             if body_error is not None:
-                _append_exception_context(release_error, body_error)
+                append_exception_context(release_error, body_error)
             raise
 
     async def release(self, *, force: bool = False) -> None:
@@ -316,7 +294,7 @@ class AsyncReadWriteLock:
         :raises RuntimeError: if the calling task holds no level through this wrapper and *force* is ``False``
 
         """
-        _ensure_current_process()
+        ensure_current_process()
         if self._inherited:  # pragma: needs fork
             return
         await self._owners.release(
@@ -385,7 +363,7 @@ class AsyncReadWriteLock:
         between that check and the admission still admits the task into the ended hold.
 
         """
-        _ensure_current_process()
+        ensure_current_process()
         if self._inherited:  # pragma: needs fork
             return
         if self._closed:

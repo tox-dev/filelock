@@ -284,11 +284,11 @@ def _patch_async_rollback_failure(
 async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
-    holder: Final = ReadWriteLock(lock_file, is_singleton=False)
+    holder: Final[ReadWriteLock] = ReadWriteLock(lock_file, is_singleton=False)
     try:
         getattr(holder, f"acquire_{OPPOSITE_MODE[mode]}")(blocking=False)
-        execute_started: Final = asyncio.Event()
-        loop: Final = asyncio.get_running_loop()
+        execute_started: Final[asyncio.Event] = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
         def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
             if "PRAGMA journal_mode" in statement:
@@ -296,8 +296,8 @@ async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
             return real_connection.executescript(statement)
 
         _patch_async_connection(mocker, executescript=executescript)
-        lock: Final = AsyncReadWriteLock(lock_file, is_singleton=False)
-        task: Final = asyncio.create_task(getattr(lock, f"acquire_{mode}")())
+        lock: Final[AsyncReadWriteLock] = AsyncReadWriteLock(lock_file, is_singleton=False)
+        task = asyncio.create_task(getattr(lock, f"acquire_{mode}")())
         await execute_started.wait()
         task.cancel("cancel blocked acquire")
         holder.release()

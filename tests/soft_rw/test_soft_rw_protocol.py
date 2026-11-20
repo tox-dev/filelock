@@ -15,6 +15,7 @@ from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
 from filelock._soft_rw._protocol import (
+    _RETAINED_GENERATIONS,
     GenerationLog,
     Ledger,
     Participant,
@@ -304,6 +305,36 @@ def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root:
 
 
 @pytest.mark.requires_hard_links
+def test_leave_stops_retrying_after_stale_threshold(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    reader = _participant(files, lock_file, "read", stale_threshold=2, clock=clock)
+    reader.publish()
+    assert reader.advance()
+    lost = []
+
+    def lose_commit(_log: GenerationLog, successor: Snapshot) -> bool:
+        nonlocal now
+        lost.append(successor)
+        now += 1
+        return False
+
+    mocker.patch.object(GenerationLog, "commit", autospec=True, side_effect=lose_commit)
+    with pytest.raises(SoftFileLockProtocolError, match="could not withdraw holder") as caught:
+        reader.leave()
+
+    assert caught.value.lock_file == lock_file
+    assert len(lost) == 2
+    assert not Path(root, "holders", reader.token).exists()
+    assert reader.generation is None
+
+
+@pytest.mark.requires_hard_links
 def test_waiting_contender_republishes_a_swept_record(lock_file: str, files: OsFiles, root: str) -> None:
     # A record removed out from under a contender (a sweeper that mistook it, an operator) comes back on its next poll,
     # so peers always have a record to watch by the time the contender is admitted.
@@ -412,6 +443,23 @@ def test_latest_probes_across_a_compaction_hole(lock_file: str, files: OsFiles, 
     Path(root, "gen", f"{3:020d}").unlink()
     behind = GenerationLog(files, lock_file, root)
     assert behind.latest().generation == 5
+
+
+def test_probe_stops_following_continuous_growth(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    log = GenerationLog(files, lock_file, root)
+    reads = []
+
+    def read_next(generation: int) -> Snapshot:
+        reads.append(generation)
+        return Snapshot(generation=generation, writer=None, readers=frozenset())
+
+    mocker.patch.object(log, "_read", autospec=True, side_effect=read_next)
+    latest = log._probe(Snapshot(generation=0, writer=None, readers=frozenset()))
+
+    assert latest.generation == 2 * _RETAINED_GENERATIONS
+    assert len(reads) == latest.generation
 
 
 def test_a_listing_naming_only_compacted_generations_fails_closed(
@@ -980,6 +1028,35 @@ def test_heartbeat_leaves_a_file_linked_over_the_holder_record_alone(lock_file: 
     assert (writer.heartbeat(), private.read_bytes()) == (("lost", None), b"private")
 
 
+@pytest.mark.requires_hard_links
+def test_heartbeat_leaves_a_file_with_the_holder_record_inode_number_alone(
+    lock_file: str, files: OsFiles, root: str
+) -> None:
+    # A process that can write holders/ can remove the record and, once a later file of the holder's has been given its
+    # inode number, rename that file over the record's name. The record's own file with other content stands in for it.
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    assert writer.advance()
+    (record := Path(root, "holders", writer.token)).write_bytes(b"private")
+
+    assert (writer.heartbeat(), record.read_bytes()) == (("lost", None), b"private")
+
+
+@pytest.mark.requires_hard_links
+def test_heartbeat_keeps_an_intact_record_after_short_reads(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    writer = _participant(files, lock_file, "write")
+    writer.publish()
+    assert writer.advance()
+    before = (record := Path(root, "holders", writer.token)).read_bytes()
+    real_read = os.read
+    mocker.patch.object(os, "read", autospec=True, side_effect=lambda fd, size: real_read(fd, min(size, 3)))
+
+    assert writer.heartbeat() == ("ok", None)
+    assert record.read_bytes() != before
+
+
 #: What one filesystem operation costs. Small against the heartbeat so a live participant's refreshes stay well inside
 #: the stale threshold however the scheduler orders its operations, as they do on a real filesystem.
 _STEP: Final[float] = 0.001
@@ -1248,7 +1325,7 @@ class _MemoryFiles:
         self._record()
         return True
 
-    def overwrite(self, path: str, data: bytes, identity: tuple[int, int]) -> bool:  # ruff:ignore[unused-method-argument]  # nothing here swaps one file for another
+    def overwrite(self, path: str, data: bytes, identity: tuple[int, int], header: bytes) -> bool:  # ruff:ignore[unused-method-argument]  # nothing here swaps one file for another
         self._scheduler.yield_turn()
         if (
             _key(path) not in self.files

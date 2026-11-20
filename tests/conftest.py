@@ -9,7 +9,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed
 import sys
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TypeVar
+from typing import TYPE_CHECKING, Final, Protocol, TypeVar
 
 import pytest
 from capabilities import CAPABILITIES
@@ -161,8 +161,8 @@ def break_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
 def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None]], None]:
     # Schedule an action for right after the stale break re-reads the lock file and before it takes the marker.
     def schedule(lock: Path, action: Callable[[], None]) -> None:
-        alive: Final = filelock._identity.process_alive
-        lstat: Final = os.lstat
+        alive = filelock._identity.process_alive
+        lstat = os.lstat
         state: list[str] = []
 
         def judged(pid: int) -> bool:
@@ -171,7 +171,7 @@ def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None
             return alive(pid)
 
         def lstat_then_act(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
-            found: Final = lstat(path, dir_fd=dir_fd)
+            found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
             if state == ["judged"] and os.fspath(path) == os.fspath(lock):
                 state.append("acted")
                 action()
@@ -190,15 +190,15 @@ def reuse_inode(mocker: MockerFixture) -> Callable[[Path, os.stat_result], None]
     # A tmpfs test directory never reuses a number. The stand-in makes ``os.lstat`` report a successor under the number
     # of the unlinked file it is given, once no descriptor in this process keeps that inode allocated.
     def stand_in(successor: Path, freed: os.stat_result) -> None:
-        created: Final = successor.lstat()
-        lstat: Final = os.lstat
+        created: Final[os.stat_result] = successor.lstat()
+        lstat = os.lstat
 
         def lstat_with_reuse(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
-            found: Final = lstat(path, dir_fd=dir_fd)
+            found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
             if (found.st_dev, found.st_ino) != (created.st_dev, created.st_ino) or descriptors_on(freed):
                 return found
             # The tuple carries the integer fields up to st_size; the float and nanosecond times ride in the mapping.
-            extra: Final = {
+            extra = {
                 name: getattr(found, name)
                 for name in dir(found)
                 if name.startswith("st_")
@@ -255,6 +255,17 @@ def directories_of_another_account(mocker: MockerFixture) -> None:  # pragma: ne
     mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
 
 
+@pytest.fixture  # pragma: darwin no cover
+def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma: needs foreign-sticky-tmp
+    assert sys.platform != "win32"  # narrows os.geteuid for the type checker
+
+    def read_proc(path: Path, **_: str | None) -> str:
+        assert path == Path("/proc/sys/kernel/overflowuid")
+        return str(os.geteuid())
+
+    mocker.patch.object(Path, "read_text", autospec=True, side_effect=read_proc)
+
+
 @pytest.fixture
 def create_junction() -> Callable[[Path, Path], None]:  # pragma: win32 cover
     # A junction needs no privilege, unlike a symlink, and lstat reports it as a directory.
@@ -282,10 +293,11 @@ def inheriting_directory(tmp_path: Path) -> Path:  # pragma: win32 cover
 
 
 @pytest.fixture
-def hold_oplock() -> Iterator[Callable[[Path], Callable[[], None]]]:  # pragma: win32 cover
+def hold_oplock() -> Iterator[OplockHolder]:  # pragma: win32 cover
     # The marker skips the run off Windows; this only narrows ctypes.WinDLL for ty.
     assert sys.platform == "win32"
     import ctypes
+    import struct
     from ctypes import wintypes
 
     class Overlapped(ctypes.Structure):
@@ -319,13 +331,22 @@ def hold_oplock() -> Iterator[Callable[[Path], Callable[[], None]]]:  # pragma: 
         ctypes.POINTER(Overlapped),
     ]
     closers: list[Callable[[], None]] = []
+    answers: list[ctypes.Array[ctypes.c_char]] = []  # Windows writes one when its request completes
 
-    def hold(path: Path) -> Callable[[], None]:
+    def hold(path: Path, *, read_handle: bool = False) -> Callable[[], None]:
         generic_read, share_all, open_existing, flag_overlapped = 0x80000000, 0x1 | 0x2 | 0x4, 3, 0x40000000
         handle = kernel32.CreateFileW(str(path), generic_read, share_all, None, open_existing, flag_overlapped, None)
         overlapped = Overlapped(hEvent=kernel32.CreateEventW(None, True, False, None))
         # FSCTL_REQUEST_OPLOCK_LEVEL_1 stays pending while granted; a read handle suffices to make other opens wait.
-        assert not kernel32.DeviceIoControl(handle, 0x00090000, None, 0, None, 0, None, ctypes.byref(overlapped))
+        request: tuple[int, bytes | None, int, ctypes.Array[ctypes.c_char] | None, int] = (0x00090000, None, 0, None, 0)
+        if read_handle:
+            # FSCTL_REQUEST_OPLOCK with a version 1 REQUEST_OPLOCK_INPUT_BUFFER of 12 bytes that requests
+            # OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE. Opens that share everything leave this oplock alone,
+            # and a rename waits for its holder. The answer is a REQUEST_OPLOCK_OUTPUT_BUFFER.
+            asked = struct.pack("<HHII", 1, 12, 0x1 | 0x2, 0x1)
+            answers.append(answer := ctypes.create_string_buffer(24))
+            request = (0x00090240, asked, len(asked), answer, len(answer))
+        assert not kernel32.DeviceIoControl(handle, *request, None, ctypes.byref(overlapped))
         assert ctypes.get_last_error() == 997  # ERROR_IO_PENDING
         closed = False
 
@@ -345,6 +366,10 @@ def hold_oplock() -> Iterator[Callable[[Path], Callable[[], None]]]:  # pragma: 
     yield hold
     for close in closers:
         close()
+
+
+class OplockHolder(Protocol):
+    def __call__(self, path: Path, *, read_handle: bool = False) -> Callable[[], None]: ...
 
 
 @pytest.fixture

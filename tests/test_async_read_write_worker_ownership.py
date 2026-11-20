@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -8,7 +9,8 @@ import pytest
 
 pytest.importorskip("sqlite3")
 
-from filelock import AsyncReadWriteLock, AsyncSoftReadWriteLock, ReadWriteLock, SoftReadWriteLock
+from filelock import AsyncReadWriteLock, AsyncSoftReadWriteLock, ReadWriteLock, SoftReadWriteLock, Timeout
+from tests.async_filelock_cancellation_helpers import FailingSubmitExecutor
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -17,7 +19,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _clear_singleton_caches() -> Generator[None]:
-    caches: Final = (ReadWriteLock._instances, SoftReadWriteLock._instances)
+    caches = (ReadWriteLock._instances, SoftReadWriteLock._instances)
     for cache in caches:
         cache.clear()
     yield
@@ -108,3 +110,34 @@ async def test_async_write_acquire_on_a_worker_holding_the_sync_write_lock_raise
         await lock.acquire_write(blocking=False)
     await loop.run_in_executor(worker, sync.release)
     await lock.close()
+
+
+@_FAMILIES
+@pytest.mark.asyncio
+async def test_async_release_whose_submission_failed_never_runs(
+    tmp_path: Path,
+    make: Callable[
+        [Path, ThreadPoolExecutor],
+        tuple[AsyncReadWriteLock | AsyncSoftReadWriteLock, ReadWriteLock | SoftReadWriteLock],
+    ],
+) -> None:
+    with FailingSubmitExecutor(after_call_ran=False) as executor:
+        lock, sync = make(tmp_path, executor)
+        await lock.acquire_write()
+        finish_blocker = threading.Event()
+        blocker = executor.submit(finish_blocker.wait, 5)
+        executor.fail_next_submit = True
+
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            await lock.release()
+        finish_blocker.set()
+        assert blocker.result(timeout=5)
+        # The pool has one worker, so it took the call queued behind the blocker before it ran this one.
+        executor.submit(threading.get_ident).result(timeout=5)
+
+        contender = type(sync)(sync.lock_file, is_singleton=False)
+        with pytest.raises(Timeout):
+            contender.acquire_read(blocking=False)
+        contender.close()
+        await lock.release()
+        await lock.close()

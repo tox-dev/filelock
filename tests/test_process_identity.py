@@ -16,6 +16,7 @@ from tests.pid_namespace_helpers import (
     INITIAL_PID_NAMESPACE,
     INITIAL_TIME_NAMESPACE,
     pin_pid_namespace,
+    pin_proc_pid_namespace,
     pin_time_namespace,
 )
 
@@ -43,7 +44,7 @@ def hide_boot_id(mocker: MockerFixture) -> Iterator[Callable[[], None]]:  # prag
     # Re-import the identity module as a process that cannot read the boot id, as under systemd's ProcSubset=pid.
     def hide() -> None:
         # The boot id is the only text file the module reads at import.
-        hidden: Final = mocker.patch.object(
+        hidden = mocker.patch.object(
             Path, "read_text", autospec=True, side_effect=FileNotFoundError(ENOENT, "No such file or directory")
         )
         importlib.reload(filelock._identity)
@@ -186,6 +187,26 @@ def test_process_start_token_read_only_without_a_boottime_offset(
     assert (process_start_token(os.getpid()) is not None) is readable
 
 
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize(
+    ("self_link", "status", "readable"),
+    [
+        pytest.param("{pid}", "Name:\tpython\nNSpid:\t{pid}\n", True, id="own"),
+        pytest.param("{pid}", "Name:\tpython\n", True, id="own-kernel-before-4.1"),
+        pytest.param("4711", "Name:\tpython\nNSpid:\t4711\t{pid}\n", False, id="outer"),
+        pytest.param("{pid}", "Name:\tpython\nNSpid:\t{pid}\t{pid}\n", False, id="outer-with-the-same-number"),
+        pytest.param("4711", "Name:\tpython\n", False, id="outer-kernel-before-4.1"),
+        pytest.param(FileNotFoundError(ENOENT, "missing"), "Name:\tpython\n", False, id="without-this-process"),
+        pytest.param("{pid}", PermissionError(EACCES, "denied"), False, id="status-unreadable"),
+    ],
+)
+def test_process_start_token_read_only_from_a_proc_of_this_pid_namespace(
+    self_link: str | OSError, status: str | OSError, readable: bool, mocker: MockerFixture
+) -> None:
+    pin_proc_pid_namespace(mocker, self_link, status)
+    assert (process_start_token(os.getpid()) is not None) is readable
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS sysctl probe")
 def test_darwin_sysctl_probe_failure_reads_no_token(mocker: MockerFixture) -> None:  # pragma: darwin cover
     mocker.patch("filelock._identity._LIBC.sysctl", return_value=-1, autospec=True)
@@ -210,7 +231,7 @@ def test_owner_is_stale_live_process_matching_token_held() -> None:
 
 @_NEEDS_START_TOKEN
 def test_owner_is_stale_live_process_mismatched_token_reclaimed() -> None:
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     # Far enough ahead that no task on this kernel started then.
     assert owner_is_stale(os.getpid(), host_name(), token + 10**9) is True
@@ -219,22 +240,32 @@ def test_owner_is_stale_live_process_mismatched_token_reclaimed() -> None:
 @_LINUX_ONLY
 def test_owner_is_stale_live_process_across_time_namespaces_held(mocker: MockerFixture) -> None:  # pragma: linux cover
     # The kernel shifts starttime by the reader's boottime offset, so a token recorded outside never matches inside.
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     pin_time_namespace(mocker, _ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED)
     assert owner_is_stale(os.getpid(), host_name(), token + 100_000) is False
 
 
+@_LINUX_ONLY
+def test_owner_is_stale_live_process_behind_an_outer_proc_held(mocker: MockerFixture) -> None:  # pragma: linux cover
+    # unshare --pid without --mount-proc keeps the outer procfs, where this PID is whichever task has the number there.
+    token: Final[int | None] = process_start_token(os.getpid())
+    assert token is not None
+    pin_pid_namespace(mocker, 0xF0000001)
+    pin_proc_pid_namespace(mocker, "4711", f"Name:\tpython\nNSpid:\t4711\t{os.getpid()}\n")
+    assert owner_is_stale(os.getpid(), host_name(), token + 10**9) is False
+
+
 @_LINUX_ONLY  # pragma: linux cover
 def test_owner_is_stale_live_process_boot_id_hidden_from_holder_held() -> None:
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     assert owner_is_stale(os.getpid(), host_name(), token % 2**64) is False
 
 
 @_LINUX_ONLY  # pragma: linux cover
 def test_owner_is_stale_live_process_boot_id_hidden_from_contender_held(hide_boot_id: Callable[[], None]) -> None:
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     hide_boot_id()
     assert owner_is_stale(os.getpid(), host_name(), token) is False
@@ -242,7 +273,7 @@ def test_owner_is_stale_live_process_boot_id_hidden_from_contender_held(hide_boo
 
 @_LINUX_ONLY  # pragma: linux cover
 def test_owner_is_stale_recycled_pid_boot_id_hidden_from_holder_reclaimed() -> None:
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     assert owner_is_stale(os.getpid(), host_name(), token % 2**64 + 10**9) is True
 
@@ -251,7 +282,7 @@ def test_owner_is_stale_recycled_pid_boot_id_hidden_from_holder_reclaimed() -> N
 def test_owner_is_stale_recycled_pid_boot_id_hidden_from_contender_reclaimed(
     hide_boot_id: Callable[[], None],
 ) -> None:
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     hide_boot_id()
     assert owner_is_stale(os.getpid(), host_name(), token % 2**64 + 10**9) is True
@@ -262,8 +293,8 @@ def owner_in_another_namespace(mocker: MockerFixture) -> None:  # pragma: linux 
     # An older release in a container recorded its in-container PID; this process stands in for it, its innermost PID
     # being the recorded one.
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
-    own_status: Final = Path(f"/proc/{os.getpid()}/status")
-    read_bytes: Final = Path.read_bytes
+    own_status: Final[Path] = Path(f"/proc/{os.getpid()}/status")
+    read_bytes = Path.read_bytes
     mocker.patch.object(
         Path,
         "read_bytes",
@@ -284,7 +315,7 @@ def owner_in_another_namespace(mocker: MockerFixture) -> None:  # pragma: linux 
     ],
 )
 def test_owner_is_stale_owner_running_in_another_namespace_held(recorded: Callable[[int], int]) -> None:
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     assert owner_is_stale(_DEAD_PID, host_name(), recorded(token)) is False
 
@@ -294,7 +325,7 @@ def test_owner_is_stale_owner_running_in_another_namespace_held(recorded: Callab
 def test_owner_is_stale_owner_running_in_another_namespace_contender_without_boot_id_held(
     hide_boot_id: Callable[[], None],
 ) -> None:
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     hide_boot_id()
     assert owner_is_stale(_DEAD_PID, host_name(), token) is False
@@ -305,7 +336,7 @@ def test_owner_is_stale_owner_running_in_another_namespace_contender_without_boo
 def test_owner_is_stale_owner_running_in_another_namespace_contender_with_boottime_offset_held(
     mocker: MockerFixture,
 ) -> None:
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     pin_time_namespace(mocker, _ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED)
     assert owner_is_stale(_DEAD_PID, host_name(), token) is False
@@ -329,8 +360,8 @@ def test_owner_is_stale_task_name_shaped_like_a_namespace_line_reclaimed(
 ) -> None:
     # A task picks its own name and /proc/<pid>/status prints it raw but for "\n" and "\\".
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
-    comm: Final = Path("/proc/self/comm")
-    name: Final = comm.read_bytes().rstrip(b"\n")
+    comm: Final[Path] = Path("/proc/self/comm")
+    name: Final[bytes] = comm.read_bytes().rstrip(b"\n")
     comm.write_bytes(f"{separator}NSpid:\t{forged}".encode())
     try:
         assert owner_is_stale(_DEAD_PID, host_name(), process_start_token(os.getpid())) is True
@@ -349,8 +380,8 @@ def test_owner_is_stale_task_name_shaped_like_a_namespace_line_reclaimed(
 )
 def test_owner_is_stale_dead_owner_by_start_token_reclaimed(boot_flip: int, scans: int, mocker: MockerFixture) -> None:
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
-    scandir: Final = mocker.patch("filelock._identity.os.scandir", autospec=True, side_effect=os.scandir)
-    token: Final = process_start_token(os.getpid())
+    scandir = mocker.patch("filelock._identity.os.scandir", autospec=True, side_effect=os.scandir)
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     assert (owner_is_stale(_DEAD_PID, host_name(), token ^ boot_flip), scandir.call_count) == (True, scans)
 
@@ -365,7 +396,7 @@ def test_owner_is_stale_without_a_readable_proc_reclaimed(mocker: MockerFixture)
 @_NEEDS_START_TOKEN
 def test_owner_is_stale_sibling_pid_namespace_never_reclaimed(mocker: MockerFixture) -> None:
     # Two containers in one pod share the hostname; the same PID in the holder's namespace is another process.
-    token: Final = process_start_token(os.getpid())
+    token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     pin_pid_namespace(mocker, 0xF0000001)
     holder_host: Final[str] = host_name()

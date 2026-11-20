@@ -28,16 +28,10 @@ from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypeVar, ca
 from weakref import WeakKeyDictionary
 
 from ._api import (
-    append_exception_context as _append_exception_context,
-)
-from ._api import (
-    fork_transition as _fork_transition,
-)
-from ._api import (
-    raise_chained_errors as _raise_chained_errors,
-)
-from ._api import (
-    resolve_read_write_timeout as _resolve_read_write_timeout,
+    append_exception_context,
+    fork_transition,
+    raise_chained_errors,
+    resolve_read_write_timeout,
 )
 from ._error import Timeout
 
@@ -159,7 +153,7 @@ _TASK_OWNERS_LOCK: Final[Lock] = Lock()
 
 def task_owners_for(sync_lock: ReadWriteLock | SoftReadWriteLock) -> _TaskOwners:
     # Singleton wrappers share one sync lock, so they must share its task holds too.
-    with _fork_transition(), _TASK_OWNERS_LOCK:
+    with fork_transition(), _TASK_OWNERS_LOCK:
         if (owners := _TASK_OWNERS.get(sync_lock)) is None:
             owners = _TASK_OWNERS[sync_lock] = _TaskOwners()
         return owners
@@ -197,7 +191,7 @@ class _TaskOwners:
         joinable: Callable[[], bool],
     ) -> None:
         task = _current_task()
-        timeout = _resolve_read_write_timeout(timeout, blocking=blocking)
+        timeout = resolve_read_write_timeout(timeout, blocking=blocking)
         deadline = None if not blocking or timeout < 0 else time.perf_counter() + timeout
         waiting_writer = False
         try:
@@ -452,10 +446,10 @@ def raise_cancelled_error(cancellation: asyncio.CancelledError, error: BaseExcep
     # the cancellation that triggered it survive. Shared by the async wrappers so cancellations report the same way.
     if (context := error.__context__) is not None and context is not cancellation:
         if (cancellation_context := cancellation.__context__) is not None:
-            _append_exception_context(context, cancellation_context)
+            append_exception_context(context, cancellation_context)
         cancellation.__context__ = context
     error.__context__ = cancellation
-    _raise_chained_errors(error)
+    raise_chained_errors(error)
 
 
 def future_result(future: asyncio.Future[BackendOutcome[_T]]) -> _T:
@@ -489,7 +483,7 @@ def run_in_executor(
             result = BackendOutcome(error=RuntimeError("the executor shut down before running the lock backend call"))
         outcome.set_result(result)
 
-    loop.run_in_executor(executor, capture_call, func).add_done_callback(settle)
+    submit_call(loop, executor, func).add_done_callback(settle)
     return outcome
 
 
@@ -497,6 +491,28 @@ def run_in_executor(
 class BackendOutcome(Generic[_T]):
     value: _T | None = None
     error: BaseException | None = None
+
+
+def submit_call(
+    loop: asyncio.AbstractEventLoop, executor: Executor | None, func: Callable[[], _T]
+) -> asyncio.Future[BackendOutcome[_T]]:
+    # ThreadPoolExecutor can leave a call queued when starting a worker raises; do not run it after submission fails.
+    call: ConcurrentFuture[BackendOutcome[_T]] = ConcurrentFuture()
+
+    def run() -> BackendOutcome[_T]:
+        if not call.set_running_or_notify_cancel():
+            return BackendOutcome()
+        result = capture_call(func)
+        call.set_result(result)
+        return result
+
+    try:
+        return loop.run_in_executor(executor, run)
+    except BaseException:
+        if call.cancel():
+            raise
+        # The worker started before submission raised, so its result must settle the backend state.
+        return asyncio.wrap_future(call, loop=loop)
 
 
 def capture_call(func: Callable[[], _T]) -> BackendOutcome[_T]:
@@ -524,6 +540,7 @@ __all__ = [
     "future_result",
     "raise_cancelled_error",
     "run_in_executor",
+    "submit_call",
     "task_owners_for",
     "wait_until_done",
 ]

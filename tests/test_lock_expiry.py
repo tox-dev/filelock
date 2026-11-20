@@ -92,14 +92,14 @@ def test_expired_break_spares_a_successor_on_the_freed_inode_number(  # pragma: 
 ) -> None:
     (lock := tmp_path / "test.lock").write_text("expired\n", encoding="utf-8")
     os.utime(lock, (0, 0))
-    expired: Final = lock.lstat()
-    lstat: Final = os.lstat
+    expired: Final[os.stat_result] = lock.lstat()
+    lstat = os.lstat
     seen: list[bool] = []
 
     def peer_breaks_then_successor_acquires(
         path: str | os.PathLike[str], *, dir_fd: int | None = None
     ) -> os.stat_result:
-        found: Final = lstat(path, dir_fd=dir_fd)
+        found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
         if os.fspath(path) == os.fspath(lock) and not seen:
             # After the age check: a peer broke the expired marker and the next holder's marker took its freed inode
             # number, created with the same modification time, so only the pinned inode tells the two apart.

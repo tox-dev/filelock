@@ -18,8 +18,6 @@ from typing import TYPE_CHECKING, Final, cast
 if TYPE_CHECKING:
     import ctypes
     from collections.abc import Callable, Generator
-    from contextlib import AbstractContextManager
-    from io import BufferedReader
 
 
 def raise_on_not_writable_file(filename: str) -> None:
@@ -91,7 +89,7 @@ def pin_inode(lock_file: str) -> Generator[int | None]:
     else:  # pragma: win32 no cover
         # O_PATH pins any node, a symlink or socket included, without read permission and without the filesystem seeing
         # an open; elsewhere a nonblocking read-only open pins what it can.
-        flags: Final = getattr(os, "O_PATH", os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)) | getattr(os, "O_NOFOLLOW", 0)
+        flags = getattr(os, "O_PATH", os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)) | getattr(os, "O_NOFOLLOW", 0)
         try:
             fd = os.open(lock_file, flags)
         except FileNotFoundError:
@@ -113,7 +111,7 @@ def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
     # the inode allocated, so a matching number cannot belong to a successor's marker.
     #
     # :raises OSError: if the descriptor cannot be read or the unlink fails.
-    own: Final = os.fstat(fd)
+    own: Final[os.stat_result] = os.fstat(fd)
     with suppress(FileNotFoundError):
         break_lock_file(lock_file, own.st_mtime, own.st_ino)
         if os.path.samestat(os.lstat(lock_file), own):
@@ -155,7 +153,7 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
     if exchange_supported():  # pragma: win32 no cover
         # An atomic exchange with a placeholder takes the marker without the lock path ever being empty. No contender
         # can then create a marker while this one is judged, and a live marker goes back the same way.
-        fd: Final = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd: Final[int] = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
             try:
                 # Not a record any lock writes, so a contender that reads it waits, and one left by a crash ages out.
@@ -209,7 +207,7 @@ def _rename_call() -> tuple[Callable[[bytes, bytes, int], int], int] | None:
             return None  # pragma: no cover  # an architecture the CI matrix does not run
         return renameat2, 2  # RENAME_EXCHANGE in linux/fs.h
     if sys.platform == "darwin":  # pragma: darwin cover
-        renamex_np: Final = ctypes.CDLL(None, use_errno=True).renamex_np
+        renamex_np = ctypes.CDLL(None, use_errno=True).renamex_np
         renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
         renamex_np.restype = ctypes.c_int
 
@@ -226,7 +224,7 @@ def _renameat2(libc: ctypes.CDLL) -> Callable[[bytes, bytes, int], int] | None: 
     # architecture's own, so an architecture outside the table gets no exchange rather than another call.
     import ctypes  # ruff:ignore[import-outside-top-level]  # only a stale break needs it
 
-    numbers: Final = {
+    numbers: Final[dict[str, int]] = {
         "x86_64": 316,
         "i386": 353,
         "i686": 353,
@@ -240,12 +238,12 @@ def _renameat2(libc: ctypes.CDLL) -> Callable[[bytes, bytes, int], int] | None: 
     }
     if (number := numbers.get(platform.machine())) is None:
         return None  # pragma: no cover  # an architecture the CI matrix does not run
-    syscall: Final = libc.syscall
+    syscall = libc.syscall
     syscall.restype = ctypes.c_long
-    at_fdcwd: Final = -100
+    at_fdcwd = -100
 
     def call_renameat2(source: bytes, target: bytes, flags: int) -> int:
-        arguments: Final = (
+        arguments = (
             ctypes.c_long(number),
             ctypes.c_int(at_fdcwd),
             ctypes.c_char_p(source),
@@ -305,8 +303,8 @@ def exchange_back(lock_file: str, aside: str, fd: int) -> bool:  # pragma: win32
 
 def _exchange_until_aside(lock_file: str, aside: str, own: os.stat_result) -> bool:  # pragma: win32 no cover
     # Peers need a few system calls to unwind; a paused or dead peer must not block the caller indefinitely.
-    deadline: Final = time.monotonic() + 2.0
-    stall: Final = 0.01
+    deadline: Final[float] = time.monotonic() + 2.0
+    stall: Final[float] = 0.01
     feed_at = time.monotonic() + stall
     while not os.path.samestat(os.lstat(aside), own):
         now = time.monotonic()
@@ -353,23 +351,40 @@ def foreign_owner(node: os.stat_result, parent: os.stat_result) -> int | None:
     # :param node: ``lstat`` or ``fstat`` of the file or directory found in place.
     # :param parent: ``stat`` of the directory that holds it.
     #
+    # Unmapped accounts in a Linux user namespace or idmapped mount share one reported uid.
+    #
     # :returns: the owning uid when another account controls the node, otherwise ``None``.
     if sys.platform != "win32" and parent.st_mode & stat.S_ISVTX:  # pragma: needs foreign-sticky-tmp
-        return None if node.st_uid in {os.geteuid(), parent.st_uid} else node.st_uid
+        owner = node.st_uid
+        return None if owner in {os.geteuid(), parent.st_uid} and not _ambiguous_owner(owner) else owner
     return None
+
+
+def _ambiguous_owner(uid: int) -> bool:  # pragma: win32 no cover  # pragma: darwin no cover
+    if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
+        return False
+    try:
+        return uid == int(Path("/proc/sys/kernel/overflowuid").read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        # Without the configured overflow UID, equality from stat cannot prove ownership.
+        return True
 
 
 if sys.platform == "win32":  # pragma: win32 cover
 
-    def _pinned_for_rename(path: str) -> AbstractContextManager[BufferedReader]:
+    @contextmanager
+    def _pinned_for_rename(path: str) -> Generator[None]:
         # A rename by path waits on a Level 1 or batch oplock holder until it answers or closes. Opening first with
         # FILE_COMPLETE_IF_OPLOCKED turns that wait into BlockingIOError, and the open handle shares delete, so the
-        # rename then proceeds. Imported here because _windows imports this module.
+        # rename then proceeds. A read-handle oplock outlives that open and is broken by the rename itself, whose wait
+        # for the holder is canceled after a grace. Imported here because _windows imports this module.
         from ._windows import (  # ruff:ignore[import-outside-top-level]  # import cycle
+            cancelling_oplock_wait,
             open_for_delete_without_oplock_wait,
         )
 
-        return os.fdopen(open_for_delete_without_oplock_wait(path), "rb")
+        with os.fdopen(open_for_delete_without_oplock_wait(path), "rb"), cancelling_oplock_wait():
+            yield
 
     def unlink_path(path: str) -> None:
         from ._windows import (  # ruff:ignore[import-outside-top-level]  # import cycle

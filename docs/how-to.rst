@@ -438,17 +438,18 @@ Parameters are frozen when the singleton is first created. Requesting the same p
 
 When you have many readers and occasional writers, use :class:`ReadWriteLock <filelock.ReadWriteLock>` to allow readers
 to proceed concurrently. ``ReadWriteLock`` is backed by SQLite; a ``.db`` extension is a convention rather than a
-requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. Two kinds of file
-raise :class:`ValueError`: a database in WAL mode (SQLite's write-ahead log, which never blocks readers behind a
-writer), and a database whose schema takes more than a few kilobytes to load, because the acquire timeout does not
-bound that load.
+requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. A database in WAL
+mode or with unsupported SQLite file-format versions raises :class:`ValueError`: neither provides a trusted exclusive
+write hold. A database whose schema takes more than a few kilobytes to load also raises :class:`ValueError`, because
+the acquire timeout does not bound that load.
 
 On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
 ``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
-names the database directly only when no process of another account can create names in its directory: the directory
-belongs to the locking account or root and is not writable by its group or by others. In any other directory, filelock
-opens SQLite through a hard link (a second name for the same file) inside a ``.filelock-*`` directory that only the
-locking account can read. That directory must be writable by the locking account, and the filesystem must support hard
+names the database directly only when no process of another account can create names in its directory and none of those
+three side files exists. The directory must belong to the locking account or root and must not be writable by its group
+or by others. Otherwise, filelock opens SQLite through a hard link (a second name for the same file) inside a
+``.filelock-*`` directory that only the locking account can read. A side file left before the directory was made private
+still selects this route. The directory must be writable by the locking account, and the filesystem must support hard
 links; when the link cannot be made, the lock raises :class:`OSError`.
 
 Both routes assume that no process of another account can replace the database directory or any directory above it.
@@ -663,6 +664,9 @@ expired holder can resume:
 As with ``ReadWriteLock``, ``release()`` of a write lock from another thread raises ``RuntimeError``, and so does
 ``release()`` from a thread that holds no level of a shared read lock. ``on_compromise`` runs on the hold's own heartbeat
 thread, so it may release, and ``release(force=True)`` and ``close()`` work from any thread.
+If peers keep winning generation updates until this holder reaches ``stale_threshold``, release raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>`. Its holder record is removed, but the generation
+log may still name it; a later contender waits for stale-holder eviction.
 
 ``timeout`` and ``blocking`` set instance-wide defaults that each acquisition inherits. Passing ``None`` per call means
 "use the instance default", which is not the same as ``-1``:
@@ -1554,6 +1558,7 @@ Neither function accepts an offset or length, and seeking the descriptor does no
         os.close(fd)
 
 Pass ``blocking=False`` for a single attempt that returns ``False`` on contention and ignores ``poll_interval``.
+``blocking`` must be a :class:`bool`; passing ``0`` or ``"false"`` raises :class:`TypeError`.
 Blocking calls require a positive ``poll_interval`` of at most :data:`threading.TIMEOUT_MAX`. There is no async
 wrapper. Run it in an executor, or drive ``blocking=False`` from your own polling loop. On Windows *fd* must be a
 synchronous descriptor.

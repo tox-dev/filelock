@@ -98,7 +98,7 @@ async def test_queued_acquire_honors_own_admission_policy(
 async def test_acquire_interrupted_while_joining_the_gate_leaves_the_lock_usable(
     tmp_path: Path, mocker: MockerFixture, lock_type: type[AsyncFileLock | AsyncSoftFileLock]
 ) -> None:
-    real_join: Final = AsyncTransitionGate._join
+    real_join = AsyncTransitionGate._join
     interrupted = False
 
     def join_then_interrupt(instance: AsyncTransitionGate, ticket: ConcurrentFuture[None]) -> None:

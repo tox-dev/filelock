@@ -37,11 +37,11 @@ if sys.platform == "win32":  # pragma: win32 cover
 def test_windows_read_write_rejects_changed_database_link(tmp_path: Path, mocker: MockerFixture) -> None:
     database = tmp_path / "database.db"
     mocker.patch(
-        "filelock._read_write._directory_is_private",
+        "filelock._read_write.directory_is_private",
         side_effect=lambda path: path != os.fspath(tmp_path),
         autospec=True,
     )
-    mocker.patch("filelock._read_write._identity_at", return_value=(-1, -1), autospec=True)
+    mocker.patch("filelock._read_write.identity_at", return_value=(-1, -1), autospec=True)
     with pytest.raises(OSError, match="lock database changed"):
         ReadWriteLock(database, is_singleton=False)
     assert [entry.name for entry in tmp_path.iterdir()] == [database.name]
@@ -51,9 +51,6 @@ def test_windows_read_write_rejects_changed_database_link(tmp_path: Path, mocker
 # slowly under a loaded suite is not a locking failure. Only a genuine hang waits this out. Each test's own timeout
 # has to outlast the waits it makes, so those are multiples of this rather than bare seconds.
 _PROCESS_DEADLINE: Final[int] = 30
-# Reaping a process that has already been signaled is not a startup wait, and it has to stay under the suite's own
-# per-test timeout so the guard still reports the hang it was put there for.
-_REAP_DEADLINE: Final[int] = 5
 
 pytestmark: Final[pytest.MarkDecorator] = SKIP_ON_UNRELIABLE_PROCESS_SYNC
 
@@ -68,6 +65,8 @@ if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
 
     from pytest_mock import MockerFixture
+
+    from filelock._read_write import _Operation  # simplint: ignore[private-import-path]  # typing injected callback
 
 
 @pytest.mark.timeout(_PROCESS_DEADLINE * 5)
@@ -429,9 +428,12 @@ def test_lock_release_on_process_termination(lock_file: str, mode: Literal["read
     write_acquired = Event()
     successor = Process(target=acquire_lock, args=(lock_file, "write", write_acquired))
 
+    # Reaping a process that has already been signaled is not a startup wait, and it has to stay under the suite's own
+    # per-test timeout so the guard still reports the hang it was put there for.
+    reap_deadline: int = 5
     with cleanup_processes([crashing, successor]):
         crashing.terminate()
-        crashing.join(timeout=_REAP_DEADLINE)
+        crashing.join(timeout=reap_deadline)
 
         successor.start()
 
@@ -630,11 +632,51 @@ def _convert_to_wal(path: str) -> None:
         connection.executescript("PRAGMA journal_mode=WAL; CREATE TABLE application (value);").close()
 
 
+@pytest.mark.parametrize(
+    "versions",
+    [pytest.param(b"\x03\x01", id="read-version-1"), pytest.param(b"\x03\x00", id="read-version-0")],
+)
+def test_read_write_lock_refuses_read_only_sqlite_header(tmp_path: Path, versions: bytes) -> None:
+    database = tmp_path / "lock.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA user_version=1")
+    page = bytearray(database.read_bytes())
+    page[18:20] = versions
+    database.write_bytes(page)
+
+    with pytest.raises(ValueError, match="unsupported SQLite format versions"):
+        ReadWriteLock(database, is_singleton=False)
+    assert database.read_bytes() == page
+
+
 def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     _convert_to_wal(lock_file)
     with pytest.raises(ValueError, match="WAL-mode"):
         lock.acquire_read()
+    lock.close()
+
+
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+def test_read_write_lock_refuses_wal_switch_during_acquire(
+    lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
+) -> None:
+    lock = ReadWriteLock(lock_file, is_singleton=False)
+    execute_waiting = ReadWriteLock._execute_waiting
+
+    def switch_then_execute(
+        connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
+    ) -> None:
+        if statements.startswith("BEGIN"):
+            with closing(sqlite3.connect(lock_file)) as switched:
+                switched.executescript("PRAGMA journal_mode=WAL; PRAGMA user_version=1;")
+        execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
+
+    mocker.patch.object(ReadWriteLock, "_execute_waiting", new=staticmethod(switch_then_execute))
+    with pytest.raises(ValueError, match="switched to WAL mode while acquiring"):
+        getattr(lock, f"acquire_{mode}")()
+    with pytest.raises(RuntimeError, match="not held"):
+        lock.release()
     lock.close()
 
 
@@ -899,8 +941,8 @@ def test_read_write_lock_after_an_interrupted_release_locks_again(
     real: Callable[[sqlite3.Connection | ReadWriteLock], None],
     before: bool,
 ) -> None:
-    lock: Final = ReadWriteLock(lock_file, is_singleton=False)
-    acquire: Final = getattr(lock, f"acquire_{mode}")
+    lock: Final[ReadWriteLock] = ReadWriteLock(lock_file, is_singleton=False)
+    acquire = getattr(lock, f"acquire_{mode}")
     acquire()
     mocker.patch.object(owner, name, new=interrupt_once(real, before=before))
     with pytest.raises(Interrupt):
@@ -908,7 +950,7 @@ def test_read_write_lock_after_an_interrupted_release_locks_again(
 
     acquire()
 
-    contender: Final = ReadWriteLock(lock_file, is_singleton=False)
+    contender: Final[ReadWriteLock] = ReadWriteLock(lock_file, is_singleton=False)
     with pytest.raises(Timeout):
         contender.acquire_write(blocking=False)
     lock.release()
@@ -1044,6 +1086,24 @@ def _hot_journal(super_journal: Path) -> bytes:  # pragma: needs posix-hard-link
 
 @pytest.mark.requires_hard_links
 @_NEEDS_POSIX_HARD_LINK
+def test_closed_directory_ignores_a_journal_left_beside_the_database(  # pragma: needs posix-hard-link
+    shared_database: Path, tmp_path: Path
+) -> None:
+    named = tmp_path / "notes.txt"
+    named.write_text("keep")
+    with closing(sqlite3.connect(shared_database)) as connection:
+        connection.execute("CREATE TABLE application (value)")
+    Path(f"{shared_database}-journal").write_bytes(_hot_journal(named))
+    shared_database.parent.chmod(0o755)
+
+    with ReadWriteLock(shared_database, is_singleton=False).read_lock():
+        pass
+
+    assert named.read_text() == "keep"
+
+
+@pytest.mark.requires_hard_links
+@_NEEDS_POSIX_HARD_LINK
 def test_shared_directory_ignores_a_directory_at_the_wal_name(  # pragma: needs posix-hard-link
     shared_database: Path,
 ) -> None:
@@ -1139,6 +1199,23 @@ def test_windows_directory_only_the_account_can_write_connects_by_name(  # pragm
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
+def test_windows_private_directory_ignores_a_journal_left_beside_the_database(  # pragma: win32 cover
+    tmp_path: Path,
+) -> None:
+    named = tmp_path / "notes.txt"
+    named.write_text("keep")
+    database = tmp_path / "lock.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE application (value)")
+    Path(f"{database}-journal").write_bytes(_hot_journal(named))
+
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        pass
+
+    assert named.read_text() == "keep"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows directory is shared through its ACL")
 def test_windows_shared_directory_leaves_only_the_database_after_release(  # pragma: win32 cover
     everyone_writable_database: Path,
 ) -> None:
@@ -1169,7 +1246,7 @@ def test_windows_shared_directory_removes_the_link_after_a_failure(  # pragma: w
 def test_windows_shared_directory_refuses_a_link_directory_others_can_write(  # pragma: win32 cover
     everyone_writable_database: Path, mocker: MockerFixture
 ) -> None:
-    mocker.patch("filelock._read_write._directory_is_private", autospec=True, return_value=False)
+    mocker.patch("filelock._read_write.directory_is_private", autospec=True, return_value=False)
 
     with pytest.raises(OSError, match="replaced while opening"):
         ReadWriteLock(everyone_writable_database, is_singleton=False)

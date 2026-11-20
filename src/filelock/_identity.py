@@ -10,8 +10,6 @@ from errno import EPERM, ESRCH
 from pathlib import Path
 from typing import Final
 
-#: Every marker format in this package caps the hostname at the RFC 1123 limit and reads a longer one as malformed.
-_HOST_NAME_LIMIT: Final[int] = 253
 #: The bytes those formats carry verbatim: printable non-space ASCII, less the ``?`` reserved for the escape.
 _HOST_NAME_VERBATIM: Final[frozenset[int]] = frozenset(range(0x21, 0x7F)) - {ord("?")}
 #: The characters at the end of an over-long name that carry a digest of the part cut off.
@@ -67,8 +65,10 @@ def host_name() -> str:
         chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
         for byte in socket.gethostname().encode("utf-8", "surrogateescape")
     ) + ("" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}")
-    if len(name) > _HOST_NAME_LIMIT:
-        keep = _HOST_NAME_LIMIT - _HOST_NAME_DIGEST_LEN - 1
+    # Every marker format in this package caps the hostname at the RFC 1123 limit and reads a longer one as malformed.
+    host_name_limit: int = 253
+    if len(name) > host_name_limit:
+        keep = host_name_limit - _HOST_NAME_DIGEST_LEN - 1
         name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
     # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
     return name or "?"
@@ -189,13 +189,36 @@ else:  # pragma: win32 no cover
             #
             # ``None`` when the process is gone, or when this process runs in a time namespace with a boottime offset.
             # Since Linux 5.6 the kernel shifts ``starttime`` by the reader's offset, so a value read there differs
-            # from what a peer outside reads.
-            return _read_start_token(pid) if _starttime_unshifted() else None
+            # from what a peer outside reads. ``None`` too when ``/proc`` was mounted for another PID namespace than
+            # this process's: ``/proc/<pid>`` is then whichever task has that number there, not the one ``os.kill``
+            # reaches, and may be another user's.
+            return _read_start_token(pid) if _proc_numbers_tasks_as_here() and _starttime_unshifted() else None
+
+        def _proc_numbers_tasks_as_here() -> bool:
+            # A procfs numbers tasks by the PID namespace of the process that mounted it, while ``os.getpid`` and
+            # ``os.kill`` go by this process's own. ``unshare --pid`` without ``--mount-proc``, or a setns into only one
+            # of the PID and mount namespaces, leaves the two apart. A later mount or setns can swap the procfs, so ask
+            # on every read.
+            own: Final[str] = str(os.getpid())
+            try:
+                # The link names this process by the procfs's namespace, and dangles where that one cannot see it.
+                if str(Path("/proc/self").readlink()) != own:
+                    return False
+                status: Final[bytes] = Path("/proc/self/status").read_bytes()
+            except OSError:
+                return False
+            # NSpid lists this process's PIDs from the procfs's namespace inward, so a lone number means the two are
+            # one namespace, and a second number gives an outer procfs away even where both numbers happen to agree.
+            # Kernels before 4.1 record no such line, which leaves the link as the only evidence. Split the lines as
+            # _innermost_pid does.
+            return all(
+                line.split() == [b"NSpid:", own.encode()] for line in status.split(b"\n") if line.startswith(b"NSpid:")
+            )
 
         def _starttime_unshifted() -> bool:
             # setns can move this process into another time namespace, so ask on every read.
             try:
-                namespace: Final = Path("/proc/self/ns/time").stat().st_ino
+                namespace: Final[int] = Path("/proc/self/ns/time").stat().st_ino
             except FileNotFoundError:  # no entry means no time namespaces on this kernel
                 return True
             except OSError:  # any other failure leaves the namespace unknown, so starttime is not comparable
@@ -207,7 +230,7 @@ else:  # pragma: win32 no cover
             try:
                 if Path("/proc/self/ns/time_for_children").stat().st_ino != namespace:
                     return False
-                offsets: Final = Path("/proc/self/timens_offsets").read_text(encoding="ascii")
+                offsets: Final[str] = Path("/proc/self/timens_offsets").read_text(encoding="ascii")
             except OSError:
                 return False
             # The clock goes by name since Linux 5.8 and by clock id before.
@@ -237,7 +260,7 @@ else:  # pragma: win32 no cover
             # A reader with an offset cannot compare start tokens, so the innermost PID alone keeps the marker.
             if start_token is None or (_BOOT_ID and start_token >> 64 not in {0, _BOOT_ID}):
                 return False
-            unshifted: Final = _starttime_unshifted()
+            unshifted: Final[bool] = _starttime_unshifted()
             try:
                 with os.scandir("/proc") as entries:
                     return any(
@@ -256,7 +279,7 @@ else:  # pragma: win32 no cover
 
         def _innermost_pid(task: int) -> int | None:
             try:
-                status: Final = Path(f"/proc/{task}/status").read_bytes()
+                status: Final[bytes] = Path(f"/proc/{task}/status").read_bytes()
             except OSError:  # pragma: no cover  # the task exited between the stat read and this one
                 return None
             # The kernel ends a line only with "\n". A task names itself, and its Name line keeps "\r", "\v" and the

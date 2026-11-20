@@ -144,11 +144,11 @@ def test_read_write_lock_keeps_its_probe_descriptor_while_held(tmp_path: Path) -
 @_NEEDS_FD_DIRECTORY  # pragma: needs fd-directory
 def test_read_write_lock_cycling_beside_a_holder_keeps_descriptors_flat(tmp_path: Path) -> None:
     lock_path: Final[Path] = tmp_path / "held.db"
-    cycler: Final = ReadWriteLock(lock_path, is_singleton=False)
+    cycler: Final[ReadWriteLock] = ReadWriteLock(lock_path, is_singleton=False)
     with ReadWriteLock(lock_path, is_singleton=False).read_lock():
         with cycler.read_lock():
             pass
-        before: Final = descriptors_on(lock_path.stat())
+        before: Final[int] = descriptors_on(lock_path.stat())
         for _ in range(20):
             with cycler.read_lock():
                 pass
@@ -180,13 +180,13 @@ def test_read_write_lock_close_interrupted_among_its_probes_closes_the_rest_late
     next_database: str,
 ) -> None:
     lock_path: Final[Path] = tmp_path / "shared.db"
-    older: Final = ReadWriteLock(lock_path, is_singleton=False)
-    newer: Final = ReadWriteLock(lock_path, is_singleton=False)
+    older: Final[ReadWriteLock] = ReadWriteLock(lock_path, is_singleton=False)
+    newer: Final[ReadWriteLock] = ReadWriteLock(lock_path, is_singleton=False)
     older.acquire_read()
     newer.acquire_read()
-    locks: Final = {"older": older, "newer": newer}
+    locks: Final[dict[str, ReadWriteLock]] = {"older": older, "newer": newer}
     locks[first_name].release()
-    real_close: Final = os.close
+    real_close = os.close
 
     def close_then_interrupt(fd: int) -> None:
         real_close(fd)
@@ -213,12 +213,12 @@ def test_read_write_lock_release_interrupted_once_its_probe_release_applies(
     tmp_path: Path, mocker: MockerFixture, contender_output: str, *, peer_count: int
 ) -> None:
     lock_path: Final[Path] = tmp_path / "held.db"
-    lock: Final = ReadWriteLock(lock_path, is_singleton=False)
-    peers: Final = [ReadWriteLock(lock_path, is_singleton=False) for _ in range(peer_count)]
+    lock: Final[ReadWriteLock] = ReadWriteLock(lock_path, is_singleton=False)
+    peers: Final[list[ReadWriteLock]] = [ReadWriteLock(lock_path, is_singleton=False) for _ in range(peer_count)]
     lock.acquire_read()
     for peer in peers:
         peer.acquire_read()
-    release_locked: Final = filelock._read_write._ProbeDescriptors._release_locked
+    release_locked = filelock._read_write._ProbeDescriptors._release_locked
 
     # A signal handler runs once the release returns, before the drain dequeues it.
     def apply_then_interrupt(
@@ -250,13 +250,13 @@ def test_read_write_lock_connect_interrupted_once_it_leases_a_probe_releases_it(
     tmp_path: Path, mocker: MockerFixture, taking: Literal["retain", "adopt"], idle_connections: int
 ) -> None:
     lock_path: Final[Path] = tmp_path / "held.db"
-    holder: Final = ReadWriteLock(lock_path, is_singleton=False)
+    holder: Final[ReadWriteLock] = ReadWriteLock(lock_path, is_singleton=False)
     holder.acquire_read()
     # A connection that closes beside a live one leaves its probe idle for the next connect to adopt.
     for _ in range(idle_connections):
         with ReadWriteLock(lock_path, is_singleton=False).read_lock():
             pass
-    real: Final = getattr(filelock._read_write._ProbeDescriptors, taking)
+    real = getattr(filelock._read_write._ProbeDescriptors, taking)
 
     def lease_then_interrupt(
         descriptors: filelock._read_write._ProbeDescriptors,
@@ -281,7 +281,7 @@ def test_read_write_lock_finalized_while_probes_are_recorded_does_not_deadlock( 
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
     # The collector runs on whichever allocation trips it, here the one made while the probe table is locked.
-    real_probes: Final = filelock._read_write._InodeProbes
+    real_probes = filelock._read_write._InodeProbes
 
     def collect_then_build() -> filelock._read_write._InodeProbes:
         gc.collect()

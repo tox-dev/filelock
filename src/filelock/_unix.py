@@ -194,7 +194,7 @@ else:  # pragma: win32 no cover
             # The filesystem does not implement flock. Fail closed when the caller opted out of existence-lock
             # semantics (#603), asked to preserve the pathname (#605), or set an on_acquired hook (#607), none of which
             # a soft lock can honor.
-            falls_back: Final = (
+            falls_back: Final[bool] = (
                 self._settings.fallback_to_soft
                 and not self._settings.preserve_lock_file
                 and self._settings.on_acquired is None

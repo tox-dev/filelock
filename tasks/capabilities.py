@@ -113,7 +113,7 @@ def _collects_classes() -> bool:
         Probe()
         return Probe
 
-    reference: Final = weakref.ref(build())
+    reference: Final[weakref.ReferenceType[type]] = weakref.ref(build())
     gc.collect()
     return reference() is None
 
@@ -173,14 +173,14 @@ def _finishes_a_generator_a_profile_hook_interrupts_on_resume() -> bool:
         finally:
             finished.append(True)
 
-    entries: Final = count()
+    entries: Final[count[int]] = count()
 
     def interrupt(frame: FrameType, event: str, _arg: Unused) -> None:
         # The first entry starts the generator; every later one resumes it.
         if event == "call" and frame.f_code is probe.__code__ and next(entries):
             raise KeyboardInterrupt
 
-    previous: Final = sys.getprofile()
+    previous = sys.getprofile()
     sys.setprofile(interrupt)
     try:
         with suppress(KeyboardInterrupt), contextmanager(probe)():
@@ -195,14 +195,14 @@ def _runs_a_raised_signal_handler_at_once() -> bool:
     # moved on, and the late signal lands in whatever runs next.
     delivered: Final[list[bool]] = []
     try:
-        previous: Final = signal.signal(signal.SIGINT, lambda _signum, _frame: delivered.append(True))
+        previous = signal.signal(signal.SIGINT, lambda _signum, _frame: delivered.append(True))
     except ValueError:  # only the main thread may install a handler
         return False
     try:
         signal.raise_signal(signal.SIGINT)
-        at_once: Final = bool(delivered)
+        at_once: Final[bool] = bool(delivered)
         # Restoring the previous handler while the signal is still pending would hand it a KeyboardInterrupt.
-        deadline: Final = time.monotonic() + 5
+        deadline: Final[float] = time.monotonic() + 5
         while not delivered and time.monotonic() < deadline:
             time.sleep(0.01)
     finally:
@@ -321,7 +321,7 @@ def _has_a_sticky_tmp_of_another_user() -> bool:
     if sys.platform == "win32":
         return False
     try:
-        tmp: Final = Path("/tmp").stat()  # ruff:ignore[hardcoded-temp-file]  # the shared directory is the subject
+        tmp: Final[os.stat_result] = Path("/tmp").stat()  # ruff:ignore[hardcoded-temp-file]  # the shared directory is the subject
     except OSError:
         return False
     return bool(tmp.st_mode & stat.S_ISVTX) and tmp.st_uid != os.geteuid()
@@ -334,8 +334,8 @@ def _lists_every_open_descriptor(view: str | None) -> bool:
     if view is None:
         return False
     with Path(os.devnull).open("rb") as probe:
-        number: Final = probe.fileno()
-        listed: Final = Path(view, str(number)).exists()
+        number: Final[int] = probe.fileno()
+        listed: Final[bool] = Path(view, str(number)).exists()
     return listed and not Path(view, str(number)).exists()
 
 

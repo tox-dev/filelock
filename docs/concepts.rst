@@ -462,24 +462,27 @@ The defense differs by platform:
 - :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL``, which fails on any
   existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
   file as malformed, then checks the opened handle again with ``fstat``. On Windows it reads and breaks markers through
-  handles that do not wait for an oplock holder to answer, so an oplock on a marker ends as contention and the
-  ``timeout`` holds.
+  handles that do not wait for an oplock holder to answer. A read-handle oplock can delay the rename of a stale marker;
+  filelock cancels that wait after half a second per attempt, then checks the ``timeout``.
 - :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches
   ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
-  directory after the check cannot redirect where claims are created, listed or removed.
+  directory after the check cannot redirect where claims are created, listed or removed. A lease (Linux) or oplock
+  (Windows) on the sentinel can delay its read for half a second, then counts as contention under the acquire timeout.
 - :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` opens ``<path>.rw`` and then ``gen`` or ``holders`` without
   following symlinks for every record operation on platforms that support ``dir_fd``. A tree swapped in after an earlier
   acquire cannot redirect its writes. Without ``dir_fd``, Windows holds those directories open for each operation so
   they cannot be renamed; other such runtimes (GraalPy) open them by name and repeat the owner check on every operation,
   which leaves a swap between that check and the open possible. It rewrites a holder record only when the name still
-  leads to the file it created and that file has no second name, and it opens the record without blocking. It leaves
-  alone a hard link (a second name for the same file) or a FIFO (a named pipe) renamed over the record.
+  leads to the file it created, that file has no second name, and it starts with the record's token. It opens the record
+  without blocking. It leaves alone a hard link (a second name for the same file), a FIFO (a named pipe), or a file that
+  was given the inode number of a removed record and renamed over it.
 
 :class:`ReadWriteLock <filelock.ReadWriteLock>` refuses a symlink at its database path. In a directory that processes of
 other accounts can write, it opens SQLite through a hard link (a second name for the same file) in a directory only the
 locking account can read, so a link or journal file another process puts beside the database cannot point the lock at
-another file. On Windows the directory counts as writable by other accounts unless its owner and every entry of its
-access control list (ACL) that allows adding or removing names belong to the locking account, ``SYSTEM`` or
+another file. It also uses that link when a ``-journal``, ``-wal`` or ``-shm`` file remains beside the database after
+the directory is made private. On Windows the directory counts as writable by other accounts unless its owner and every
+entry of its access control list (ACL) that allows adding or removing names belong to the locking account, ``SYSTEM`` or
 ``Administrators``.
 
 ***************************************
@@ -561,6 +564,12 @@ can move the lock file or protocol directory aside, even one it cannot read, and
 reached the old one keep using it while new contenders use the replacement, so two of them hold the lock at once and
 neither learns of it. No check inside the lock can rule that out, because the owner of such a directory controls every name
 in it. Keep locks in a directory that only the lock's users can write, or in a sticky one such as ``/tmp``.
+
+A Linux user namespace or idmapped mount reports unmapped file owners as one overflow UID, usually 65534. Under a sticky
+parent, ``UnixFileLock``, ``StrictSoftFileLock`` and ``SoftReadWriteLock`` refuse a lock file or protocol directory
+reported with that UID: its real owner cannot be determined from ``stat``. If the configured overflow UID cannot be
+read, they refuse every node whose reported owner matches the locking account or the parent's owner. A private lock
+directory avoids these refusals, including for accounts that use the overflow UID themselves.
 
 A sticky directory protects only the names an account owns. The owner of a lock file there can remove it while another
 account holds its lock, and the next contender then locks a new file at the same path. On Unix,
@@ -778,6 +787,11 @@ container runtimes create, keeps the token. A process that cannot read ``/proc/s
 ``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
 whenever either side lacks the boot id.
 
+A procfs numbers tasks by the PID namespace of the process that mounted it. A process in a PID namespace that still sees
+an outer ``/proc`` (``unshare --pid`` without ``--mount-proc``, ``nsenter --pid`` without ``--mount``) finds an
+unrelated task at ``/proc/<pid>``, possibly another user's. Such a process records no start token and reads none
+either, and falls back to the PID alone the same way.
+
 A contender never leaves the lock path empty while it breaks a marker. Right before breaking it reads the marker's inode
 (the kernel's identity for a file, independent of its name) and modification time again. If they moved since the stale
 check, it leaves the marker alone, the way Mercurial re-reads a lock under its break lock before removing it. On Linux
@@ -797,12 +811,15 @@ If the filesystem refuses the return exchange, it leaves its marker at the lock 
 The private name is ``<lock>.break.<pid>.<token>``: the breaker's PID, then 32 random hex digits. A breaker killed
 between its exchange and the put-back leaves its own marker at the lock path and a live holder's marker under that name.
 A contender that finds the breaker's marker dead first looks in the lock's directory for names that start with
-``<lock>.break.<pid>.``, where ``<pid>`` is the dead breaker's. It first renames the record to
-``<lock>.restore.<pid>.<token>`` with its own PID, so only one of several contenders acts on it; a record whose
+``<lock>.break.<pid>.``, where ``<pid>`` names the breaker. If a process with that PID runs now, the contender waits:
+a stale start token in the marker does not prove that the break name belongs to a dead process. Otherwise it renames
+the record to ``<lock>.restore.<pid>.<token>`` with its own PID, so only one contender acts on it. A record whose
 recoverer died there is claimable again, and a claim a failed put-back left in the same process is retried on the next
 poll. It then exchanges back a marker whose owner is alive or cannot be proven dead, and removes one whose owner is
-dead. Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. The
-placeholder a break writes while it works carries the same PID, so a contender that evicts a placeholder a killed
+dead. Where the filesystem refuses that exchange, the lock counts as held until ``timeout`` or ``break_lock()``. A
+record another account owns under a sticky parent stays under its break name: that account could otherwise unlink it
+from the lock path before a displaced holder's marker is put back. The placeholder a break writes while it works
+carries the same PID, so a contender that evicts a placeholder a killed
 process left finds the same names.
 
 The contender holds the judged marker open from before it reads the record until the break ends. ext4 gives a freed
@@ -1065,11 +1082,13 @@ fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMo
 
 **Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
 permissions can exclude another UID. Under a sticky parent such as ``/tmp``, acquisition raises :class:`RuntimeError`
-when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent. The refusal
-also applies to a lock object that used an earlier tree: it repeats the check whenever a directory it opens is not the
-one it prepared, and on every operation where ``dir_fd`` is unavailable. A process with the same effective UID can alter
-the records. A filesystem that delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a
-holder remains active.
+when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent, or when any
+of these directories is writable by another account. This also covers a group-writable tree of the lock's account moved
+into place by another account. Remove such a tree so the lock can create private directories. The refusal applies to a
+lock object that used an earlier tree: it repeats the check for every directory it opens, including one with a reused
+inode number or a changed mode. A process with the same effective UID can alter the records. A
+filesystem that delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a holder remains
+active.
 
 ****************************
  File permissions and mode

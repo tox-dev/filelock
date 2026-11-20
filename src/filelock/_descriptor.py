@@ -16,26 +16,17 @@ import time
 from threading import TIMEOUT_MAX
 from typing import Final
 
-from ._api import (
-    check_blocking as _check_blocking,
-)
-from ._api import (
-    seconds as _seconds,
-)
+from ._api import check_blocking, seconds
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
-        lock_fd_nonblocking as _lock_fd_nonblocking,
-    )
-    from ._windows import (
-        unlock_fd as _unlock_fd,
+        lock_fd_nonblocking,
+        unlock_fd,
     )
 else:  # pragma: win32 no cover
     from ._unix import (
-        lock_fd_nonblocking as _lock_fd_nonblocking,
-    )
-    from ._unix import (
-        unlock_fd as _unlock_fd,
+        lock_fd_nonblocking,
+        unlock_fd,
     )
 
 
@@ -65,21 +56,21 @@ def lock_descriptor(fd: int, *, blocking: bool = True, poll_interval: float = 0.
 
     :raises OSError: for a permanent native failure, such as an invalid descriptor, or with ``errno.ENOSYS`` when the
         Python build lacks the native locking primitive. The descriptor is left open.
-    :raises TypeError: if *blocking* is not a :class:`bool`, or *poll_interval* is a :class:`bool` or not a real
-        number.
+    :raises TypeError: if *blocking* is not a :class:`bool`, or a blocking call receives a *poll_interval* that is a
+        :class:`bool` or not a real number.
     :raises ValueError: if a blocking call receives a *poll_interval* outside that range, including ``nan``.
 
     .. versionadded:: 3.30.0
 
     """
-    _check_blocking(blocking)
+    check_blocking(blocking)
     if not blocking:
-        return _lock_fd_nonblocking(fd)
+        return lock_fd_nonblocking(fd)
     # time.sleep raises OverflowError past TIMEOUT_MAX; nan fails both comparisons.
-    if not 0 < (poll_interval := _seconds("poll_interval", poll_interval)) <= TIMEOUT_MAX:
+    if not 0 < (poll_interval := seconds("poll_interval", poll_interval)) <= TIMEOUT_MAX:
         msg: Final[str] = f"poll_interval must be greater than 0 and at most {TIMEOUT_MAX}, got {poll_interval}"
         raise ValueError(msg)
-    while not _lock_fd_nonblocking(fd):
+    while not lock_fd_nonblocking(fd):
         time.sleep(poll_interval)
     return True
 
@@ -96,7 +87,7 @@ def unlock_descriptor(fd: int) -> None:
     .. versionadded:: 3.30.0
 
     """
-    _unlock_fd(fd)
+    unlock_fd(fd)
 
 
 __all__ = [

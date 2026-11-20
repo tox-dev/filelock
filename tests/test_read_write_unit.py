@@ -907,7 +907,7 @@ def test_acquire_respects_settings(
     contender: Final[ReadWriteLock] = sync_locks[1]
     contender.timeout = instance_timeout
     contender.blocking = instance_blocking
-    acquire: Final = getattr(contender, f"acquire_{mode}")
+    acquire = getattr(contender, f"acquire_{mode}")
     with sync_locks[0].write_lock():
         started: Final[float] = time.perf_counter()
         with pytest.raises(Timeout):
@@ -933,7 +933,7 @@ def test_acquire_without_arguments_uses_instance_settings(
     contender: Final[ReadWriteLock] = sync_locks[1]
     contender.timeout = instance_timeout
     contender.blocking = instance_blocking
-    acquire: Final = getattr(contender, f"acquire_{mode}")
+    acquire = getattr(contender, f"acquire_{mode}")
     with sync_locks[0].write_lock():
         started: Final[float] = time.perf_counter()
         with pytest.raises(Timeout):
@@ -945,9 +945,9 @@ def test_contended_acquire_beside_another_thread_times_out_on_time(
     sync_locks: tuple[ReadWriteLock, ReadWriteLock],
 ) -> None:
     holder, contender = sync_locks
-    done: Final = threading.Event()
+    done: Final[threading.Event] = threading.Event()
     # With another thread alive the wait runs in short attempts, which together still honor the timeout.
-    other: Final = threading.Thread(target=done.wait)
+    other: Final[threading.Thread] = threading.Thread(target=done.wait)
     other.start()
     try:
         started = time.perf_counter()
@@ -966,7 +966,7 @@ def test_unlimited_acquire_beside_another_thread_waits_for_the_holder(
     holder, contender = sync_locks
     holder.acquire_write()
     with ThreadPoolExecutor(max_workers=1) as executor:
-        acquired: Final = executor.submit(contender.acquire_read, -1)
+        acquired = executor.submit(contender.acquire_read, -1)
         with pytest.raises(TimeoutError):
             acquired.result(timeout=0.2)
         holder.release()
@@ -1004,9 +1004,9 @@ def test_acquire_rejects_a_blocking_that_is_not_a_bool(
 ) -> None:
     # Contended, so a 0 read as blocking would wait out the contender's timeout instead of failing fast.
     holder, contender = timeout_locks
-    acquire: Final = getattr(contender, f"acquire_{mode}")
+    acquire = getattr(contender, f"acquire_{mode}")
     with holder.acquire_write(blocking=False):
-        started: Final = time.monotonic()
+        started: Final[float] = time.monotonic()
         with pytest.raises(TypeError, match="blocking must be a bool"):
             acquire(blocking=blocking)
         assert time.monotonic() - started < 5
@@ -1022,8 +1022,8 @@ def test_acquire_rejects_invalid_timeout(
     timeout: float,
     message: str,
 ) -> None:
-    holder: Final = timeout_locks[0]
-    acquire: Final = getattr(holder, f"acquire_{mode}")
+    holder: Final[ReadWriteLock | SoftReadWriteLock] = timeout_locks[0]
+    acquire = getattr(holder, f"acquire_{mode}")
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         acquire(timeout=timeout)
     with timeout_locks[1].acquire_write(blocking=False), pytest.raises(Timeout):
@@ -1038,8 +1038,8 @@ def test_reentrant_acquire_rejects_invalid_timeout(
     timeout: float,
     message: str,
 ) -> None:
-    holder: Final = timeout_locks[0]
-    acquire: Final = getattr(holder, f"acquire_{mode}")
+    holder: Final[ReadWriteLock | SoftReadWriteLock] = timeout_locks[0]
+    acquire = getattr(holder, f"acquire_{mode}")
     with acquire(), pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         acquire(timeout=timeout)
     with timeout_locks[1].acquire_write(blocking=False), pytest.raises(Timeout):
@@ -1068,9 +1068,9 @@ def test_acquire_valid_timeout_preserves_nested_hold(
     *,
     blocking: bool,
 ) -> None:
-    holder: Final = timeout_locks[0]
-    contender: Final = timeout_locks[1]
-    acquire: Final = getattr(holder, f"acquire_{mode}")
+    holder: Final[ReadWriteLock | SoftReadWriteLock] = timeout_locks[0]
+    contender: Final[ReadWriteLock | SoftReadWriteLock] = timeout_locks[1]
+    acquire = getattr(holder, f"acquire_{mode}")
     with acquire(timeout=timeout, blocking=blocking):
         with acquire(timeout=timeout, blocking=blocking), pytest.raises(Timeout):
             contender.acquire_write(blocking=False)
