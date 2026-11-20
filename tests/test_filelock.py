@@ -1646,6 +1646,29 @@ def test_release_reentered_after_unlock_closes_descriptor_once(tmp_path: Path, m
     assert ([call.args for call in close.call_args_list], lock.is_locked) == ([(unlocked[0],)], False)
 
 
+def test_reentered_release_keeps_the_outer_hold_until_unlock(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = FileLock(lock_path, is_singleton=False)
+    peer = FileLock(lock_path, is_singleton=False)
+    lock.acquire()
+    pending = [None]
+    observed: list[bool] = []
+
+    def release_after_reentry(*_args: object) -> None:
+        if pending:
+            pending.pop()
+            lock.release(force=True)
+            observed.append(lock.is_locked)
+            with pytest.raises(Timeout):
+                peer.acquire(blocking=False)
+
+    mocker.patch("filelock._api._LOGGER.debug", autospec=True, side_effect=release_after_reentry)
+    lock.release()
+    assert (observed, lock.is_locked) == ([True], False)
+    with peer:
+        assert peer.is_locked
+
+
 def test_interrupted_release_keeps_a_new_threads_hold(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = str(tmp_path / "a.lock")
     lock = FileLock(lock_path, thread_local=False, is_singleton=False)
