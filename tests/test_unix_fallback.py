@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock import SoftFileLock, Timeout, UnixFileLock
+from filelock import SoftFileLock, SoftFileLockLifetimeWarning, Timeout, UnixFileLock
 from filelock._identity import host_name, process_start_token
 from tests.capability_marks import NEEDS_FCNTL
 
@@ -221,6 +221,71 @@ def test_fallback_timeout_describes_recordless_marker(tmp_path: Path) -> None:  
 
     with pytest.raises(Timeout, match="held by an owner that recorded no PID"):
         UnixFileLock(lock_path).acquire(timeout=0)
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_break_lock_removes_recordless_marker(tmp_path: Path) -> None:  # pragma: needs fcntl
+    (lock_path := tmp_path / "test.lock").touch()
+    lock = UnixFileLock(lock_path)
+
+    with pytest.raises(Timeout):
+        lock.acquire(timeout=0)
+    lock.break_lock()
+
+    assert not lock_path.exists()
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_native_break_lock_does_not_remove_file(tmp_path: Path) -> None:
+    (lock_path := tmp_path / "test.lock").touch()
+
+    with pytest.raises(RuntimeError, match="requires a soft fallback"):
+        UnixFileLock(lock_path).break_lock()
+
+    assert lock_path.exists()
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_lifetime_expires_recordless_marker(tmp_path: Path) -> None:  # pragma: needs fcntl
+    (lock_path := tmp_path / "test.lock").touch()
+    lock = UnixFileLock(lock_path)
+
+    with pytest.raises(Timeout):
+        lock.acquire(timeout=0)
+    with pytest.warns(SoftFileLockLifetimeWarning):
+        lock.lifetime = 0
+    with lock.acquire(timeout=0):
+        assert SoftFileLock(lock_path).is_lock_held_by_us
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")  # pragma: needs fcntl
+def test_fallback_recovery_does_not_apply_after_chdir(
+    working_directories: tuple[Path, Path],
+    unsupported_flock: MockType,
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = working_directories
+    lock = UnixFileLock("test.lock")
+
+    with lock:
+        assert SoftFileLock(first / "test.lock").is_lock_held_by_us
+    mocker.stop(unsupported_flock)
+    monkeypatch.chdir(second)
+    (second / "test.lock").touch()
+
+    with pytest.raises(RuntimeError, match="requires a soft fallback"):
+        lock.break_lock()
+    with pytest.warns(UserWarning, match="lifetime is ignored for UnixFileLock"):
+        lock.lifetime = 0
+
+    assert (second / "test.lock").exists()
+    assert lock.lifetime is None
 
 
 @NEEDS_FCNTL

@@ -6,6 +6,8 @@ if TYPE_CHECKING:
     from collections.abc import Generator
     from importlib.machinery import ModuleSpec
 
+    from ._soft import SoftFileLock
+
 __spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = ["pathlib", "warnings", f"{__spec__.parent}._util"]
@@ -18,7 +20,11 @@ from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
 from typing import Final, NamedTuple, cast
 
-from ._api import BaseFileLock
+from ._api import (
+    BaseFileLock,
+    _resolve_lifetime,  # simplint: ignore[private-import-path]  # reuse the base lifetime validator
+    canonical,
+)
 from ._util import foreign_owner, remove_own_file
 
 has_fcntl = False
@@ -90,6 +96,21 @@ else:  # pragma: win32 no cover
 
         _flockless_root: str | None = None
 
+        @BaseFileLock.lifetime.setter
+        def lifetime(self, value: float | None) -> None:
+            if self._soft_fallback_for_path():
+                from ._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]  # importing at module load cycles
+
+                backend = SoftFileLock
+            else:
+                backend = type(self)
+            self._context.lifetime = _resolve_lifetime(value, backend, stacklevel=3)
+
+        def _soft_fallback_for_path(self) -> bool:
+            return self._context.soft_fallback and (
+                self._context.claim_root is not None or canonical(self.lock_file) == self._flockless_root
+            )
+
         def _pin_lock_path(self, canonical: str) -> None:
             super()._pin_lock_path(canonical)
             self._context.soft_fallback = canonical == self._flockless_root
@@ -103,7 +124,7 @@ else:  # pragma: win32 no cover
                 self._switch_to_soft_lock(fd, exception, created=created)
 
         @contextmanager
-        def _soft_lock(self) -> Generator[BaseFileLock]:
+        def _soft_lock(self) -> Generator[SoftFileLock]:
             from ._soft import SoftFileLock  # ruff:ignore[import-outside-top-level]  # importing at module load cycles
 
             soft = object.__new__(SoftFileLock)
@@ -246,6 +267,24 @@ else:  # pragma: win32 no cover
                 return None
             with self._soft_lock() as soft:
                 return soft._unprobeable_holder()  # ruff:ignore[private-member-access]  # reads the soft marker
+
+        def _try_break_expired_lock(self) -> None:
+            if self._context.soft_fallback:
+                with self._soft_lock() as soft:
+                    soft._try_break_expired_lock()  # ruff:ignore[private-member-access]  # expires the soft marker
+
+        def break_lock(self) -> None:
+            """
+            Remove this lock's soft marker on its resolved path.
+
+            :raises RuntimeError: if the current path has not entered a soft fallback
+
+            """
+            if not self._soft_fallback_for_path():
+                msg = "break_lock requires a soft fallback on the current lock path"
+                raise RuntimeError(msg)
+            with self._soft_lock() as soft:
+                soft.break_lock()
 
         def _release(self) -> None:
             if self._context.soft_fallback:
