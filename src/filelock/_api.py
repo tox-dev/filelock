@@ -12,6 +12,7 @@ __lazy_modules__ = [
     "inspect",
     "math",
     "numbers",
+    "pathlib",
     "secrets",
     "types",
     "warnings",
@@ -39,6 +40,7 @@ from decimal import Decimal
 from functools import cache, partial
 from itertools import count, starmap
 from numbers import Real
+from pathlib import PurePath
 from threading import TIMEOUT_MAX, Condition, RLock, Thread, active_count, current_thread, get_ident, local
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary, ref
@@ -473,7 +475,7 @@ class FileLockMeta(ABCMeta):
         # singleton must reject a different hook object even if it compares equal. Keep it out of the scalar dict above.
         hook_mismatch = on_acquired is not instance.on_acquired
         if not non_matching_params and not hook_mismatch:
-            if os.fspath(lock_file) != instance.lock_file:
+            if str(PurePath(lock_file)) != str(PurePath(instance.lock_file)):
                 instance._singleton_shared = True  # ruff:ignore[private-member-access]  # the metaclass owns the instance it returns
             return instance  # ty: ignore[invalid-explicit-return]  # https://github.com/astral-sh/ty/issues/3231
 

@@ -3659,6 +3659,20 @@ def test_unshared_singleton_follows_chdir(
     assert not (first / "resource.lock").exists()
 
 
+def test_equivalent_relative_singleton_spellings_follow_chdir(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    plain = FileLock("resource.lock", is_singleton=True)
+    dotted = FileLock("./resource.lock", is_singleton=True)
+    assert dotted is plain
+
+    monkeypatch.chdir(second)
+    with dotted:
+        assert (second / "resource.lock").exists()
+    assert not (first / "resource.lock").exists()
+
+
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_singleton_held_before_chdir_re_enters_by_absolute_path(
     lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
