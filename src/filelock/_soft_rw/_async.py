@@ -238,6 +238,7 @@ class AsyncSoftReadWriteLock:
             via=self._via,
             enter=enter,
             joinable=joinable,
+            raise_if_unusable=self._raise_if_unusable,
         )
 
     async def _run_acquire(self, acquire: functools.partial[AcquireReturnProxy]) -> None:
@@ -351,6 +352,7 @@ class AsyncSoftReadWriteLock:
     async def close(self) -> None:
         """
         End the holds of the tasks that acquired through this instance and release the lock once no task holds it.
+        A successful close wakes tasks waiting for this wrapper's turn in the shared ownership table.
 
         Idempotent. After calling this method the instance can no longer acquire locks. With ``is_singleton=False`` it
         also closes the underlying :class:`SoftReadWriteLock`. A singleton wrapper leaves the shared one open, so tasks
@@ -375,6 +377,8 @@ class AsyncSoftReadWriteLock:
             if not isinstance(error, asyncio.CancelledError) and self._backend_holds():
                 self._closed = False
             raise
+        finally:
+            self._owners.wake_via(self._via)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         self._creator_pid = -1

@@ -226,6 +226,7 @@ class AsyncReadWriteLock:
             via=self._via,
             enter=enter,
             joinable=joinable,
+            raise_if_unusable=self._raise_if_unusable,
         )
 
     @property
@@ -356,6 +357,7 @@ class AsyncReadWriteLock:
     async def close(self) -> None:
         """
         End the holds of the tasks that acquired through this instance and release the lock once no task holds it.
+        A successful close wakes tasks waiting for this wrapper's turn in the shared ownership table.
 
         After calling this method, the lock instance is no longer usable. With ``is_singleton=False`` it also closes the
         underlying SQLite connection. A singleton wrapper leaves the shared :class:`ReadWriteLock` open, so tasks that
@@ -384,6 +386,8 @@ class AsyncReadWriteLock:
             else:
                 self._shutdown_owned_executor()
             raise
+        finally:
+            self._owners.wake_via(self._via)
         # Wait for the worker to exit rather than letting it drain in the background: a caller that forks right
         # after closing deserves a single-threaded process, and os.fork warns about any surviving thread.
         if self._owns_executor:

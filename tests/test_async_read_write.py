@@ -1050,6 +1050,77 @@ async def test_async_close_waits_out_an_acquire_in_flight_even_when_canceled(loc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("held_mode", "waiting_mode"),
+    [pytest.param("write", "read", id="reader"), pytest.param("read", "write", id="writer")],
+)
+async def test_async_close_wakes_its_table_waiter(
+    lock_file: str, held_mode: Literal["read", "write"], waiting_mode: Literal["read", "write"]
+) -> None:
+    holder, closing = AsyncReadWriteLock(lock_file), AsyncReadWriteLock(lock_file)
+    await getattr(holder, f"acquire_{held_mode}")()
+    acquiring = asyncio.create_task(getattr(closing, f"acquire_{waiting_mode}")())
+    try:
+        assert not (await asyncio.wait((acquiring,), timeout=0.05))[0]
+
+        await closing.close()
+
+        assert acquiring in (await asyncio.wait((acquiring,), timeout=1))[0]
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            await acquiring
+    finally:
+        await holder.close()
+        await asyncio.gather(acquiring, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_async_close_of_waiting_writer_unblocks_other_readers(lock_file: str) -> None:
+    holder, closing, reader = (AsyncReadWriteLock(lock_file) for _ in range(3))
+    await holder.acquire_read()
+    acquiring_write = asyncio.create_task(closing.acquire_write())
+    await asyncio.wait((acquiring_write,), timeout=0.05)
+    acquiring_read = asyncio.create_task(reader.acquire_read())
+    try:
+        assert not acquiring_write.done()
+        assert not (await asyncio.wait((acquiring_read,), timeout=0.05))[0]
+
+        await closing.close()
+
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            await asyncio.wait_for(acquiring_write, 1)
+        await asyncio.wait_for(acquiring_read, 1)
+        assert not writer_gets_in(lock_file)
+    finally:
+        await holder.close()
+        await reader.close()
+        await asyncio.gather(acquiring_write, acquiring_read, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_async_failed_close_keeps_pending_acquire_waiting(lock_file: str, mocker: MockerFixture) -> None:
+    lock = AsyncReadWriteLock(lock_file)
+    await lock.acquire_read()
+    acquiring = asyncio.create_task(lock.acquire_write())
+    await asyncio.wait((acquiring,), timeout=0.05)
+    release = mocker.patch.object(
+        ReadWriteLock, "_release_level_of", autospec=True, side_effect=sqlite3.OperationalError("release failed")
+    )
+    try:
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="release failed"):
+                await lock.close()
+        finally:
+            mocker.stop(release)
+
+        assert not (await asyncio.wait((acquiring,), timeout=0.05))[0]
+        await lock.release()
+        await asyncio.wait_for(acquiring, 1)
+    finally:
+        await lock.close()
+        await asyncio.gather(acquiring, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_async_close_that_fails_before_any_acquire_leaves_the_wrapper_closed(
     lock_file: str, mocker: MockerFixture
 ) -> None:

@@ -836,6 +836,53 @@ async def test_async_soft_close_cancellation_refuses_later_acquires(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("held_mode", "waiting_mode"),
+    [pytest.param("write", "read", id="reader"), pytest.param("read", "write", id="writer")],
+)
+async def test_async_soft_close_wakes_its_table_waiter(
+    tmp_path: Path, held_mode: Literal["read", "write"], waiting_mode: Literal["read", "write"]
+) -> None:
+    holder, closing = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)
+    await getattr(holder, f"acquire_{held_mode}")()
+    acquiring = asyncio.create_task(getattr(closing, f"acquire_{waiting_mode}")())
+    try:
+        assert not (await asyncio.wait((acquiring,), timeout=0.05))[0]
+
+        await closing.close()
+
+        assert acquiring in (await asyncio.wait((acquiring,), timeout=1))[0]
+        with pytest.raises(RuntimeError, match="has been closed"):
+            await acquiring
+    finally:
+        await holder.close()
+        await asyncio.gather(acquiring, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_async_soft_close_of_waiting_writer_unblocks_other_readers(tmp_path: Path) -> None:
+    holder, closing, reader = (_make(tmp_path, is_singleton=True) for _ in range(3))
+    await holder.acquire_read()
+    acquiring_write = asyncio.create_task(closing.acquire_write())
+    await asyncio.wait((acquiring_write,), timeout=0.05)
+    acquiring_read = asyncio.create_task(reader.acquire_read())
+    try:
+        assert not acquiring_write.done()
+        assert not (await asyncio.wait((acquiring_read,), timeout=0.05))[0]
+
+        await closing.close()
+
+        with pytest.raises(RuntimeError, match="has been closed"):
+            await asyncio.wait_for(acquiring_write, 1)
+        await asyncio.wait_for(acquiring_read, 1)
+        assert not await asyncio.to_thread(_writer_gets_in, tmp_path)
+    finally:
+        await holder.close()
+        await reader.close()
+        await asyncio.gather(acquiring_write, acquiring_read, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_async_soft_release_leaves_a_sync_reader_of_the_same_singleton_holding(tmp_path: Path) -> None:
     async_lock: Final[AsyncSoftReadWriteLock] = AsyncSoftReadWriteLock(str(tmp_path / "foo.lock"))
     with SoftReadWriteLock(str(tmp_path / "foo.lock")).read_lock():

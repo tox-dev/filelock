@@ -795,7 +795,8 @@ time of the call rather than at construction:
 
 With the default ``is_singleton=True`` every wrapper on a path shares one lock, so ``close()`` ends only the holds of
 tasks that acquired through that wrapper. Tasks holding through another wrapper, and synchronous ``ReadWriteLock`` users
-of the same path, keep their locks.
+of the same path, keep their locks. An acquire waiting for another async wrapper's hold wakes and raises the closed
+error.
 
 Low-level ``acquire_read``/``acquire_write``/``release`` methods are also available:
 
@@ -825,9 +826,9 @@ For a shared filesystem whose marker and cache behavior has been verified, use
 
 It takes the same tuning as its synchronous peer plus the async pair, so the full signature is
 ``AsyncSoftReadWriteLock(lock_file, timeout=-1, *, blocking=True, is_singleton=True, heartbeat_interval=30.0,
-stale_threshold=None, poll_interval=0.25, on_compromise=None, loop=None, executor=None)``. It has no SQLite thread affinity to respect, so
-``executor=None`` means the loop's default executor: it creates nothing and owns nothing, and its ``close()`` only
-delegates to the synchronous lock.
+stale_threshold=None, poll_interval=0.25, on_compromise=None, loop=None, executor=None)``. It has no SQLite thread
+affinity to respect, so ``executor=None`` means the loop's default executor: it creates nothing and owns nothing. Its
+``close()`` ends this wrapper's holds and wakes acquires waiting for another async wrapper's hold.
 
 **************************************
  Detect stale locks (soft locks only)

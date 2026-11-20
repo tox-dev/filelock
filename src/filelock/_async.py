@@ -200,7 +200,7 @@ class _TaskOwners:
         self._waiting_writers = 0
         #: One ticket per waiting call, settled on the next state change. A call that stops waiting takes its own out,
         #: so one that times out or is canceled leaves nothing behind.
-        self._waiters: dict[ConcurrentFuture[None], None] = {}
+        self._waiters: dict[ConcurrentFuture[None], Hashable | None] = {}
 
     async def acquire(  # ruff:ignore[too-many-arguments]  # one keyword per piece of wrapper state the table consults
         self,
@@ -212,6 +212,7 @@ class _TaskOwners:
         via: Hashable,
         enter: Callable[[float], Awaitable[None]],
         joinable: Callable[[], bool],
+        raise_if_unusable: Callable[[], None],
     ) -> None:
         task = _current_task()
         timeout = resolve_read_write_timeout(timeout, blocking=blocking)
@@ -220,7 +221,13 @@ class _TaskOwners:
         try:
             while isinstance(
                 admission := self._admit(
-                    task, mode, lock_file, via=via, joinable=joinable, waiting_writer=waiting_writer
+                    task,
+                    mode,
+                    lock_file,
+                    via=via,
+                    joinable=joinable,
+                    waiting_writer=waiting_writer,
+                    raise_if_unusable=raise_if_unusable,
                 ),
                 ConcurrentFuture,
             ):
@@ -258,8 +265,10 @@ class _TaskOwners:
         via: Hashable,
         joinable: Callable[[], bool],
         waiting_writer: bool,
+        raise_if_unusable: Callable[[], None],
     ) -> Literal["held", "enter"] | ConcurrentFuture[None]:
         with self._lock:
+            raise_if_unusable()
             # A "held" answer trusts the backend level. Once the backend lost it, the holds are gone and the next task
             # has to take the lock again.
             if self._mode is not None and not self._transitioning and not joinable():
@@ -283,12 +292,12 @@ class _TaskOwners:
                 if not self._holds and (mode == "write" or not writers_ahead):
                     self._transitioning, self._mode = True, mode
                     return "enter"
-            return self._ticket()
+            return self._ticket(via)
 
-    def _ticket(self) -> ConcurrentFuture[None]:
+    def _ticket(self, via: Hashable | None) -> ConcurrentFuture[None]:
         # Called under the table lock, in the section that decided to wait, so no state change slips in between.
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
-        self._waiters[ticket] = None
+        self._waiters[ticket] = via
         return ticket
 
     def _forget(self, ticket: ConcurrentFuture[None]) -> None:
@@ -313,6 +322,13 @@ class _TaskOwners:
                 for task, hold in holds.items():
                     self._holds.setdefault(task, _TaskHold(depths={})).depths.update(hold.depths)
             self._notify()
+
+    def wake_via(self, via: Hashable) -> None:
+        with self._lock:
+            for ticket, waiting_via in tuple(self._waiters.items()):
+                if waiting_via is via:
+                    del self._waiters[ticket]
+                    ticket.set_result(None)
 
     async def release(
         self,
@@ -408,7 +424,7 @@ class _TaskOwners:
         # backend level) and the dropped holds. The table stays transitioning while that mode is left.
         with self._lock:
             if self._transitioning:
-                return self._ticket()
+                return self._ticket(None)
             if via is None:
                 dropped = dict(self._holds)
                 self._holds.clear()
