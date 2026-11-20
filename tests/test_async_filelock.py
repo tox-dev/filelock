@@ -229,6 +229,60 @@ async def test_acquire_rejects_non_bool_blocking(
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("interrupted", ["_raise_if_would_deadlock", "_pin_lock_path"])
+@pytest.mark.asyncio
+async def test_early_async_acquire_exception_leaves_no_counted_hold(
+    lock_type: type[BaseAsyncFileLock], interrupted: str, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = lock_type(lock_path)
+    mocker.patch.object(lock, interrupted, side_effect=KeyboardInterrupt, autospec=True)
+
+    with pytest.raises(KeyboardInterrupt):
+        await lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    async with lock:
+        assert lock.lock_counter == 1
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    async with lock_type(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_in_executor", [False, True])
+async def test_failed_async_proxy_releases_provisional_hold(
+    tmp_path: Path, mocker: MockerFixture, *, run_in_executor: bool
+) -> None:
+    lock = AsyncSoftFileLock(tmp_path / "proxy.lock", run_in_executor=run_in_executor)
+    mocker.patch("filelock.asyncio.AsyncAcquireReturnProxy", side_effect=MemoryError, autospec=True)
+
+    with pytest.raises(MemoryError):
+        await lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    async with AsyncSoftFileLock(lock.lock_file, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@pytest.mark.asyncio
+async def test_reentrant_async_proxy_failure_keeps_one_level(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncFileLock(str(tmp_path / "a.lock"))
+    await lock.acquire()
+    mocker.patch("filelock.asyncio.AsyncAcquireReturnProxy", side_effect=KeyboardInterrupt, autospec=True)
+
+    with pytest.raises(KeyboardInterrupt):
+        await lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    await lock.release()
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
 @pytest.mark.parametrize("thread_local", [True, False])
 @pytest.mark.asyncio
 async def test_non_executor(lock_type: type[BaseAsyncFileLock], thread_local: bool, tmp_path: Path) -> None:

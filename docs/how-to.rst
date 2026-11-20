@@ -1328,6 +1328,14 @@ On a thread-local synchronous lock (the default), ``force=True`` also releases h
 without releasing. Holds of threads still running stay theirs. Dropping the last reference to the lock releases every
 thread's hold. A thread-local async lock releases only the calling thread's hold.
 
+During a synchronous ``acquire()``, a hook or signal handler can enter and leave its own nested ``with lock:`` block.
+Calling ``release()`` to drop the level that ``acquire()`` is still taking raises :exc:`RuntimeError`. If the exception
+escapes the hook or handler, the acquire rolls back and any earlier hold keeps its depth.
+
+A handler that calls ``release(force=True)`` drops every level. If it returns, an acquire that observes the release
+raises :exc:`RuntimeError`. A force release just as the acquire returns can leave the caller entering its block with
+the lock already released.
+
 Do not release from a signal handler. Python runs the handler on the main thread between two bytecodes of whatever it
 was doing, which can be the middle of a ``release()`` of the same lock. Raise from the handler instead, and let the
 ``with`` block or a ``finally`` release the lock as the stack unwinds:

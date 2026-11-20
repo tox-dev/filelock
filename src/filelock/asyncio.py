@@ -372,14 +372,17 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         ):
             # Re-entry only counts, so it skips the executor round trip that resolving the path costs.
             if self.is_locked:
+                # A proxy-construction error must leave the existing level unchanged.
+                proxy = AsyncAcquireReturnProxy(lock=self)
                 self._context.lock_counter += 1
-                return AsyncAcquireReturnProxy(lock=self)
+                return proxy
             # A canceled provisional acquire must finish rollback before another caller can claim its descriptor.
             canonical_path = await self._off_loop(functools.partial(canonical, self.lock_file))
-            self._context.lock_counter += 1
-            self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
-            self._pin_lock_path(canonical_path)
+            self._async_context.rollback_tried = False
             try:
+                self._context.lock_counter = 1
+                self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
+                self._pin_lock_path(canonical_path)
                 await self._async_poll_until_acquired(
                     blocking=blocking,
                     cancel_check=cancel_check,
@@ -387,11 +390,15 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                     poll_interval=poll_interval,
                     start_time=start_time,
                 )
-            except BaseException:
-                self._reconcile_failed_acquire(canonical_path)
+                self._commit_acquire(canonical_path)
+                return AsyncAcquireReturnProxy(lock=self)
+            except BaseException as error:
+                try:
+                    if not self._async_context.rollback_tried:
+                        await self._rollback_failed_acquire_async(error)
+                finally:
+                    self._reconcile_failed_acquire(canonical_path, levels_before=0)
                 raise
-            self._commit_acquire(canonical_path)
-            return AsyncAcquireReturnProxy(lock=self)
 
     async def _off_loop(self, call: Callable[[], _T]) -> _T:
         # A slow mount stalls a filesystem call, and the loop with it; a coroutine backend runs on the loop anyway.
@@ -474,7 +481,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
             rollback_error: BaseException | None = None
             if self.is_locked:
                 try:
-                    await drain_future(self._start_tracked_release())
+                    await self._undo_async_acquire()
                 except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                     rollback_error = error
 
@@ -528,42 +535,6 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         if self.is_locked:
             await self._invoke_on_acquired_async()
 
-    async def _rollback_failed_acquire_async(self, acquisition_error: BaseException) -> None:
-        if not self.is_locked:
-            return
-        registration_error: BaseException | None = None
-        tracking_error: BaseException | None = None
-        try:
-            self._register_context_descriptor()
-        except BaseException as error:  # ruff:ignore[blind-except]  # preserve registration and acquisition failures
-            registration_error = error
-            try:
-                # Rollback may fail too; retain the fd so a child can close it without another identity probe.
-                self._register_unverified_context_descriptor()
-            except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
-                tracking_error = error
-        try:
-            await drain_future(self._start_tracked_release())
-        except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and acquisition failures
-            if registration_error is None and tracking_error is None:
-                self._raise_acquire_rollback_errors(acquisition_error, rollback_error)
-            raise_cleanup_errors(
-                "lock acquisition cleanup failed",
-                acquisition_error,
-                registration_error,
-                tracking_error,
-                rollback_error,
-            )
-        if registration_error is not None:
-            raise_cleanup_errors(
-                "lock acquisition cleanup failed", acquisition_error, registration_error, tracking_error
-            )
-
-    def _raise_acquire_rollback_errors(self, acquire_error: BaseException, rollback_error: BaseException) -> NoReturn:
-        if self._settings.context_error_policy == "group":
-            raise_grouped_errors("lock acquisition backend and rollback both failed", acquire_error, rollback_error)
-        raise_chained_errors(acquire_error, rollback_error)
-
     async def _rollback_failed_registration_async(self, registration_error: BaseException) -> None:
         tracking_error: BaseException | None = None
         try:
@@ -572,7 +543,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
             tracking_error = error
         try:
-            await drain_future(self._start_tracked_release())
+            await self._undo_async_acquire()
         except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and registration failures
             raise_cleanup_errors(
                 "descriptor registration cleanup failed", registration_error, tracking_error, rollback_error
@@ -588,7 +559,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         except BaseException as callback_error:  # caller control-flow errors must release the lock
             callback_context = callback_error.__context__
             try:
-                await drain_future(self._start_tracked_release())
+                await self._undo_async_acquire()
             except BaseException as release_error:  # ruff:ignore[blind-except]  # both errors surface via the group below
                 raise_body_and_release(callback_error, release_error)
             callback_error.__context__ = callback_context
@@ -598,6 +569,13 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         # Runs as one backend call so the lifetime check's lstat and unlink stay off the event loop with the acquire.
         self._try_break_expired_lock()
         self._acquire_with_fork_tracking()
+
+    async def _undo_async_acquire(self) -> None:
+        self._mark_rollback_tried()
+        await drain_future(self._start_tracked_release())
+
+    def _mark_rollback_tried(self) -> None:
+        self._async_context.rollback_tried = True
 
     def _start_tracked_release(self) -> asyncio.Future[BackendOutcome[None]]:
         return self._start_internal_method(
@@ -639,10 +617,46 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
     async def _rollback_backend_cancelled_acquire(self, acquire_error: asyncio.CancelledError) -> NoReturn:
         if self.is_locked:
             try:
-                await drain_future(self._start_tracked_release())
+                await self._undo_async_acquire()
             except BaseException as rollback_error:  # ruff:ignore[blind-except]  # both backend errors must surface
                 self._raise_acquire_rollback_errors(acquire_error, rollback_error)
         raise acquire_error
+
+    def _raise_acquire_rollback_errors(self, acquire_error: BaseException, rollback_error: BaseException) -> NoReturn:
+        if self._settings.context_error_policy == "group":
+            raise_grouped_errors("lock acquisition backend and rollback both failed", acquire_error, rollback_error)
+        raise_chained_errors(acquire_error, rollback_error)
+
+    async def _rollback_failed_acquire_async(self, acquisition_error: BaseException) -> None:
+        if not self.is_locked:
+            return
+        registration_error: BaseException | None = None
+        tracking_error: BaseException | None = None
+        try:
+            self._register_context_descriptor()
+        except BaseException as error:  # ruff:ignore[blind-except]  # preserve registration and acquisition failures
+            registration_error = error
+            try:
+                # Rollback may fail too; retain the fd so a child can close it without another identity probe.
+                self._register_unverified_context_descriptor()
+            except BaseException as error:  # ruff:ignore[blind-except]  # pragma: no cover - allocation/control-flow during fallback
+                tracking_error = error
+        try:
+            await self._undo_async_acquire()
+        except BaseException as rollback_error:  # ruff:ignore[blind-except]  # preserve rollback and acquisition failures
+            if registration_error is None and tracking_error is None:
+                self._raise_acquire_rollback_errors(acquisition_error, rollback_error)
+            raise_cleanup_errors(
+                "lock acquisition cleanup failed",
+                acquisition_error,
+                registration_error,
+                tracking_error,
+                rollback_error,
+            )
+        if registration_error is not None:
+            raise_cleanup_errors(
+                "lock acquisition cleanup failed", acquisition_error, registration_error, tracking_error
+            )
 
     async def __aexit__(
         self,
@@ -884,6 +898,7 @@ class AsyncFileLockContext(FileLockContext):
     #: Serializes the tasks that transition this context. An acquire keeps it while it polls, so a thread-local lock
     #: needs one per thread. A thread waiting for the lock must not keep the thread that holds it from releasing.
     transition_gate: AsyncTransitionGate = field(default_factory=_new_transition_gate)
+    rollback_tried: bool = field(default=False, kw_only=True)
 
 
 class AsyncThreadLocalFileContext(  # simplint: ignore[unexported-public-name]  # existing module attribute
