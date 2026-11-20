@@ -2024,11 +2024,12 @@ def test_release_keeps_marker_cleanup_after_fstat_signal(
 @NEEDS_STALE_RECLAIM
 @NEEDS_POSIX_SIGNALS  # pragma: needs posix-signals
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
 def test_signal_handler_can_exit_during_reclaimed_marker_publication(
-    lock_path: Path, monkeypatch: pytest.MonkeyPatch
+    lock_path: Path, monkeypatch: pytest.MonkeyPatch, *, thread_local: bool
 ) -> None:
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    lock = SoftFileLock(lock_path, is_singleton=False)
+    lock = SoftFileLock(lock_path, is_singleton=False, thread_local=thread_local)
     released: list[bool] = []
 
     def release_in_handler(_signum: int, _frame: FrameType | None) -> None:
@@ -2041,7 +2042,7 @@ def test_signal_handler_can_exit_during_reclaimed_marker_publication(
         name: str,
         value: object,  # simplint: ignore[imprecise-annotation]  # context fields have different value types
     ) -> None:
-        context.__dict__[name] = value
+        super(FileLockContext, context).__setattr__(name, value)
         if context is lock._hold_state() and name == "lock_file_fd" and value is not None and not released:
             signal.raise_signal(signal_number)
 
@@ -2059,8 +2060,11 @@ def test_signal_handler_can_exit_during_reclaimed_marker_publication(
         assert peer.is_locked
 
 
-def test_force_release_on_exit_during_identity_publication(lock_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    lock = SoftFileLock(lock_path, is_singleton=False)
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_force_release_on_exit_during_identity_publication(
+    lock_path: Path, monkeypatch: pytest.MonkeyPatch, *, thread_local: bool
+) -> None:
+    lock = SoftFileLock(lock_path, is_singleton=False, thread_local=thread_local)
     released: list[bool] = []
 
     def release_after_descriptor(
@@ -2068,7 +2072,7 @@ def test_force_release_on_exit_during_identity_publication(lock_path: Path, monk
         name: str,
         value: object,  # simplint: ignore[imprecise-annotation]  # context fields have different value types
     ) -> None:
-        context.__dict__[name] = value
+        super(FileLockContext, context).__setattr__(name, value)
         if context is lock._hold_state() and name == "lock_file_fd" and value is not None and not released:
             released.append(lock.is_locked)
             lock.release(force=True)
