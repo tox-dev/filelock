@@ -7,7 +7,9 @@ import sys
 import time
 from contextlib import suppress
 from errno import EACCES, EINVAL, EIO, ELOOP, ENOENT, EPERM, ESRCH
+from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -104,9 +106,25 @@ def test_open_file_with_unknown_overflow_uid(  # pragma: win32 no cover  # pragm
 
 
 @pytest.fixture
-def local_owner_probe(  # pragma: linux cover
-    mocker: MockerFixture, fs_type: int | bytes, capability: int
-) -> Callable[[int], bool]:
+def sticky_fd(tmp_path: Path) -> Generator[int]:  # pragma: linux cover
+    tmp_path.chmod(0o1700)
+    with (tmp_path / "marker").open("xb") as marker:
+        yield marker.fileno()
+
+
+@pytest.fixture
+def reported_owner(  # pragma: linux cover
+    sticky_fd: int, tmp_path: Path, mocker: MockerFixture
+) -> Callable[[], int | None]:
+    # Each test changes the native bindings, which production looks up once.
+    mocker.patch.object(filelock._util, "_linux_owner_probe", new=filelock._util._linux_owner_probe.__wrapped__)
+    mocker.patch.object(Path, "read_text", autospec=True, side_effect=FileNotFoundError)
+    mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=FileNotFoundError)
+    return partial(filelock._util.foreign_owner, os.fstat(sticky_fd), tmp_path.stat(), fd=sticky_fd)
+
+
+@pytest.fixture
+def local_filesystem(mocker: MockerFixture, fs_type: int | bytes, capability: int) -> None:  # pragma: linux cover
     ctypes_mod = pytest.importorskip("ctypes")
     libc = ctypes_mod.CDLL(None)
     if isinstance(fs_type, bytes):
@@ -128,9 +146,6 @@ def local_owner_probe(  # pragma: linux cover
     mocker.patch.object(libc, "fstatfs", new=mocker.create_autospec(statfs, side_effect=statfs))
     mocker.patch.object(libc, "capget", new=mocker.create_autospec(capget, side_effect=capget))
     mocker.patch.object(ctypes_mod, "CDLL", autospec=True, return_value=libc)
-    probe = filelock._util._linux_owner_probe.__wrapped__()
-    assert probe is not None
-    return probe
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
@@ -146,29 +161,13 @@ def local_owner_probe(  # pragma: linux cover
         pytest.param(0x01021994, 1 << 3, False, id="privileged"),
     ],
 )
+@pytest.mark.usefixtures("local_filesystem")
 def test_descriptor_ownership_preserves_flags(  # pragma: linux cover
-    tmp_path: Path, local_owner_probe: Callable[[int], bool], allowed: bool
+    sticky_fd: int, reported_owner: Callable[[], int | None], allowed: bool
 ) -> None:
     fcntl = pytest.importorskip("ctypes").CDLL(None).fcntl
-
-    with (tmp_path / "lock").open("xb") as marker:
-        fd = marker.fileno()
-        before = fcntl(fd, 3)
-        assert (local_owner_probe(fd), fcntl(fd, 3)) == (allowed, before)
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
-@pytest.mark.parametrize(("fs_type", "capability"), [(0x794C7630, 0)])
-def test_verified_owner_in_a_sticky_directory_needs_no_procfs(  # pragma: linux cover
-    tmp_path: Path, mocker: MockerFixture, local_owner_probe: Callable[[int], bool]
-) -> None:
-    tmp_path.chmod(0o1700)
-    mocker.patch("filelock._util._linux_owner_probe", autospec=True, return_value=local_owner_probe)
-    mocker.patch.object(Path, "read_text", autospec=True, side_effect=FileNotFoundError)
-    mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=AssertionError("unexpected UID map read"))
-    with (tmp_path / "marker").open("xb") as marker:
-        fd = marker.fileno()
-        assert filelock._util.foreign_owner(os.fstat(fd), tmp_path.stat(), fd=fd) is None
+    before = fcntl(sticky_fd, 3)
+    assert (reported_owner() is None, fcntl(sticky_fd, 3)) == (allowed, before)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
@@ -180,41 +179,46 @@ def test_verified_owner_in_a_sticky_directory_needs_no_procfs(  # pragma: linux 
         pytest.param([0, -1], id="permission-denied"),
     ],
 )
+@pytest.mark.usefixtures("local_filesystem")
 def test_descriptor_ownership_needs_a_new_permission_check(  # pragma: linux cover
-    mocker: MockerFixture, local_owner_probe: Callable[[int], bool], responses: list[int]
+    mocker: MockerFixture, sticky_fd: int, reported_owner: Callable[[], int | None], responses: list[int]
 ) -> None:
     mocker.patch.object(pytest.importorskip("ctypes").CDLL(None), "fcntl", autospec=True, side_effect=responses)
-    assert not local_owner_probe(3)
+    assert reported_owner() == os.fstat(sticky_fd).st_uid
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
 @pytest.mark.parametrize(("fs_type", "capability"), [(0x01021994, 0)])
+@pytest.mark.usefixtures("local_filesystem")
 def test_descriptor_ownership_propagates_a_flag_restore_error(  # pragma: linux cover
-    mocker: MockerFixture, local_owner_probe: Callable[[int], bool]
+    mocker: MockerFixture, reported_owner: Callable[[], int | None]
 ) -> None:
     ctypes_mod = pytest.importorskip("ctypes")
     mocker.patch.object(ctypes_mod.CDLL(None), "fcntl", autospec=True, side_effect=[0, 0, -1])
     mocker.patch.object(ctypes_mod, "get_errno", autospec=True, return_value=EIO)
     with pytest.raises(OSError, match=os.strerror(EIO)):
-        local_owner_probe(3)
+        reported_owner()
+
+
+@pytest.fixture(params=["ctypes", "dynamic-loader", "O_NOATIME", "capget"])
+def unavailable_owner_check(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:  # pragma: linux cover
+    match request.param:
+        case "ctypes":
+            mocker.patch.dict(sys.modules, {"ctypes": None})
+        case "dynamic-loader":
+            mocker.patch("ctypes.CDLL", autospec=True, side_effect=OSError("dynamic loading unavailable"))
+        case "O_NOATIME":
+            mocker.patch.object(os, "O_NOATIME", new=0)
+        case _:
+            mocker.patch("ctypes.CDLL", autospec=True, return_value=SimpleNamespace(fstatfs=None, fcntl=None))
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
-def test_ownership_without_native_bindings(mocker: MockerFixture) -> None:  # pragma: linux cover
-    mocker.patch.dict(sys.modules, {"ctypes": None})
-    assert filelock._util._linux_owner_probe.__wrapped__() is None
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
-def test_ownership_without_dynamic_loading(mocker: MockerFixture) -> None:  # pragma: linux cover
-    mocker.patch("ctypes.CDLL", autospec=True, side_effect=OSError("dynamic loading unavailable"))
-    assert filelock._util._linux_owner_probe.__wrapped__() is None
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="O_NOATIME is a Linux ownership check")
-def test_ownership_without_noatime(mocker: MockerFixture) -> None:  # pragma: linux cover
-    mocker.patch.object(os, "O_NOATIME", new=0)
-    assert filelock._util._linux_owner_probe.__wrapped__() is None
+@pytest.mark.usefixtures("unavailable_owner_check")
+def test_ownership_without_native_bindings(  # pragma: linux cover
+    sticky_fd: int, reported_owner: Callable[[], int | None]
+) -> None:
+    assert reported_owner() == os.fstat(sticky_fd).st_uid
 
 
 @pytest.fixture
