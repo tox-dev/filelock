@@ -1,0 +1,7 @@
+:class:`~filelock.SoftFileLock` and :class:`~filelock.SoftFileLease` use the inode saved at acquisition to remove their
+marker. This closes a signal window during release that left the marker behind after the lock reported itself unlocked.
+On POSIX, an error unlinking the marker propagates to the caller. A filesystem that refuses to unlink an open marker
+still gets a retry after close. If a timeout interrupts the rewrite of a displaced marker, the caller can retry
+:meth:`~filelock.BaseFileLock.release`.
+A signal handler can force-release a newly published marker and raise :exc:`SystemExit`. The interrupted acquire
+leaves that descriptor closed.
