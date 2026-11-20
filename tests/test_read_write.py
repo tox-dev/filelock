@@ -8,7 +8,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only fixed-arg
 import sys
 import threading
 import time
-from contextlib import closing
+from contextlib import ExitStack, closing
 from errno import EWOULDBLOCK
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
@@ -67,8 +67,8 @@ def test_windows_private_link_pin_rejects_junction(  # pragma: win32 cover
     link = tmp_path / "link"
     create_junction(link, target)
 
-    with pytest.raises(NotADirectoryError), pinned(os.fspath(link)):
-        pass
+    with pytest.raises(NotADirectoryError), ExitStack() as stack:
+        stack.enter_context(pinned(os.fspath(link)))
 
 
 # Bounds how long a spawned process may take to reach the lock, not how fast it must be: an interpreter that starts
