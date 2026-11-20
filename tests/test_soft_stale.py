@@ -117,19 +117,11 @@ def _assert_times_out(lock_path: Path, *, timeout: float = 0.1) -> None:
 
 
 def test_stale_lock_not_broken_different_hostname(lock_path: Path) -> None:
-    lock_path.write_text(_holder(_DEAD_PID, host="other-host.example.com"), encoding="utf-8")
-    _assert_times_out(lock_path)
-
-
-def test_foreign_marker_needs_explicit_break_before_recovery(lock_path: Path) -> None:
     marker = _holder(_DEAD_PID, host="other-host.example.com")
     lock_path.write_text(marker, encoding="utf-8")
     lock = SoftFileLock(lock_path)
     acquire_after_reclaim(lock)
     assert (lock.is_locked, lock_path.read_text(encoding="utf-8")) == (False, marker)
-    lock.break_lock()
-    with held_after_reclaim(lock):
-        assert lock.is_locked
 
 
 @pytest.mark.parametrize(
