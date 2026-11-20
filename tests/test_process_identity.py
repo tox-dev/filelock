@@ -336,16 +336,19 @@ def test_owner_is_stale_live_process_with_boot_id_mounted_over_for_holder_held(
     assert owner_is_stale(os.getpid(), host_name(), token) is False
 
 
-@_LINUX_ONLY  # pragma: linux cover
-def test_boot_id_with_non_ascii_mountpoint(tmp_path: Path, mocker: MockerFixture) -> None:
-    boot_id = tmp_path / "proc/sys/kernel/random/boot_id"
-    boot_id.parent.mkdir(parents=True)
-    boot_id.write_text("00000000-0000-0000-0000-00000000002a", encoding="ascii")
-    mounts = tmp_path / "proc/self/mountinfo"
-    mounts.parent.mkdir()
-    mounts.write_text("1 0 0:10 / /mnt/café rw - tmpfs tmpfs rw\n", encoding="utf-8")
-    mocker.patch.object(filelock._identity, "Path", autospec=True, side_effect=lambda path: tmp_path / path.lstrip("/"))
-    assert filelock._identity._read_boot_id() == 42
+if sys.platform in {"linux", "android"}:  # pragma: linux cover
+
+    def test_boot_id_with_non_ascii_mountpoint(tmp_path: Path, mocker: MockerFixture) -> None:
+        boot_id = tmp_path / "proc/sys/kernel/random/boot_id"
+        boot_id.parent.mkdir(parents=True)
+        boot_id.write_text("00000000-0000-0000-0000-00000000002a", encoding="ascii")
+        mounts = tmp_path / "proc/self/mountinfo"
+        mounts.parent.mkdir()
+        mounts.write_text("1 0 0:10 / /mnt/café rw - tmpfs tmpfs rw\n", encoding="utf-8")
+        mocker.patch.object(
+            filelock._identity, "Path", autospec=True, side_effect=lambda path: tmp_path / path.lstrip("/")
+        )
+        assert filelock._identity._read_boot_id() == 42
 
 
 @_LINUX_ONLY  # pragma: linux cover
