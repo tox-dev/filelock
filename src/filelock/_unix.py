@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from collections.abc import Generator
     from importlib.machinery import ModuleSpec
+    from typing import BinaryIO
 
     from ._soft import SoftFileLock
 
@@ -233,7 +234,7 @@ else:  # pragma: win32 no cover
         def _directory_lacks_flock(self) -> bool:
             try:
                 probe = tempfile.TemporaryFile(  # ruff:ignore[open-file-with-context-handler]  # catch only open errors
-                    dir=str(Path(self._lock_path).parent)
+                    dir=str(Path(self._lock_path).parent), buffering=0
                 )
             except OSError as exception:
                 if exception.errno is None:
@@ -241,7 +242,12 @@ else:  # pragma: win32 no cover
                 # A directory policy may allow the lock name alone. Probe that file after opening it.
                 return False
             with probe:
-                return _flock_is_missing(probe.fileno())
+                probes: set[BinaryIO] = self.__dict__.setdefault("_flock_probes", set())
+                try:
+                    probes.add(probe)
+                    return _flock_is_missing(probe.fileno())
+                finally:
+                    probes.discard(probe)
 
         def _fallback_to_soft_lock(self) -> None:
             with self._transition_lock:
@@ -339,6 +345,13 @@ else:  # pragma: win32 no cover
                             exchange_back(self._lock_path, aside, pin)
                     finally:
                         os.close(pin)
+
+        def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+            # Closing the file object keeps its eventual context exit from closing a reused descriptor.
+            for probe in self.__dict__.pop("_flock_probes", ()):
+                with suppress(OSError):
+                    probe.close()
+            super()._reset_after_fork_in_child()
 
         def _unprobeable_holder(self) -> str | None:
             if not self._context.soft_fallback:
