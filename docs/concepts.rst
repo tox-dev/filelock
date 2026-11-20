@@ -206,9 +206,10 @@ directory or symlink, or a file it cannot parse that stays unchanged for two sec
 :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming it. See :ref:`how-to:Use fail-closed soft
 locks` for inspection and recovery.
 
-Private publication records are not ownership claims. Each attempt uses a fresh random name. Linked private names are
-discarded immediately, while unlinked records left by a crash receive a two-second grace period before reclamation.
-Losing a private name makes the publisher retry; it never converts an unpublished record into ownership.
+Each publication attempt uses a fresh private name. On POSIX, contenders remove linked private names immediately and
+allow two seconds before reclaiming an unlinked record. If a contender loses its private name, it retries publication.
+On Windows, abandoned private records remain until an operator removes them. See :ref:`how-to:Use fail-closed soft
+locks` for the cleanup paths.
 
 .. list-table::
     :header-rows: 1

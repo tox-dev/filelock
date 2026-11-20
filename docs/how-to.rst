@@ -928,11 +928,18 @@ block other contenders. If removing it fails too, :attr:`is_locked <filelock.Bas
 and the next ``acquire()`` on the same instance retries the removal before publishing again, raising until it succeeds.
 Garbage collecting the instance retries it as well.
 
-Each publication attempt uses a fresh random private-record name. A private record with another hard link is removed
-immediately; an unpublished record abandoned by a crash is removed after a two-second grace period. If a live publisher
-is paused past that grace period, it backs off and retries instead of entering without a public claim. A directory,
-symlink, or other non-regular node at a private-record name is protocol damage and fails closed without following or
-removing it.
+Each publication attempt uses a fresh random private-record name. On POSIX, a private record with another hard link is
+removed immediately; an unpublished record abandoned by a crash is removed after a two-second grace period. If a live
+publisher is paused past that grace period, it backs off and retries instead of entering without a public claim.
+
+On Windows, acquisition leaves abandoned private records in place because deleting one can wait for a reader's oplock.
+Repeated interruptions can leave enough records to slow claim scans. Stop all processes using the lock before cleaning
+up. Look next to the lock file for its hidden sentinel records (``.<lock-name>.private-v1-*.tmp``). In
+``<lock-name>.filelock/claims/``, remove stale ``.*.private-v1-*.tmp`` and ``.probe-v1-*.tmp`` files. Use ``force_break()``
+for public ``*.claim`` records.
+
+A directory, symlink, or other non-regular node at a private-record name is protocol damage and fails closed without
+following or removing it.
 
 Async code uses the same on-disk protocol:
 
