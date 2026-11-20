@@ -812,7 +812,7 @@ If the file it took is the one judged stale, it removes that file and holds the 
 exchanges after that moves the holder's marker aside only while it checks what it took, and puts it back. A holder that
 releases while its marker is aside leaves a record no lock parses, so the put-back lands a marker that ages out.
 Otherwise a peer recreated the marker, and a second exchange puts the live marker back before its own is removed.
-A signal that interrupts the exchange during takeover or marker removal triggers the same rollback.
+An interrupted exchange during takeover or removal triggers the same rollback.
 
 Contenders that race for one marker nest, each holding what the one before it left at the path, so the exchanges back
 run in reverse: each contender exchanges when the path names its own marker, and one that stalls exchanges anyway to
