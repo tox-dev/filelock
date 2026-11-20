@@ -127,7 +127,14 @@ def _probe_link_follow_symlinks() -> bool:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory, "probe-source")
             source.touch()
-            os.link(source, Path(directory, "probe-link"), follow_symlinks=False)
+            return _probe_link_option(source, Path(directory, "probe-link"))
+    except OSError:
+        return _LINK_SUPPORTS_FOLLOW_SYMLINKS
+
+
+def _probe_link_option(source: Path, destination: Path) -> bool:
+    try:
+        os.link(source, destination, follow_symlinks=False)
     except (NotImplementedError, ValueError):
         return False
     except OSError as error:

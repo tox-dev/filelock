@@ -1894,7 +1894,9 @@ def test_strict_soft_link_follow_probe_reports_unhonored(mocker: MockerFixture, 
     ("target", "error"),
     [
         pytest.param("tempfile.TemporaryDirectory", FileNotFoundError(ENOENT, "no temporary directory"), id="missing"),
+        pytest.param("tempfile.TemporaryDirectory", OSError(EINVAL, "invalid temporary directory"), id="invalid-dir"),
         pytest.param("Path.touch", OSError(ENOSPC, "no space left"), id="full"),
+        pytest.param("Path.touch", OSError(EINVAL, "invalid temporary file"), id="invalid-file"),
         pytest.param("os.link", PermissionError(EACCES, "denied"), id="denied"),
     ],
 )
@@ -1909,7 +1911,9 @@ def test_strict_soft_link_follow_probe_preserves_runtime_support_on_environment_
 
 @NEEDS_SYMLINK  # pragma: needs symlink
 @NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
-@pytest.mark.skipif(not CAPABILITIES["link-follow-symlinks"], reason="requires no-follow hard links")
+@pytest.mark.skipif(  # pragma: needs link-follow-symlinks
+    not CAPABILITIES["link-follow-symlinks"], reason="requires no-follow hard links"
+)
 def test_strict_soft_private_record_swap_does_not_link_target(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     (target := tmp_path / "private" / "target").parent.mkdir(mode=0o700)
