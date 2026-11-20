@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from errno import ENOENT
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -51,15 +52,26 @@ def pin_proc_pid_namespace(  # pragma: linux cover
 
 
 def pin_time_namespace(  # pragma: linux cover
-    mocker: MockerFixture, namespace: int | OSError, offsets: str | OSError, *, for_children: int | None = None
+    mocker: MockerFixture,
+    namespace: int | OSError,
+    offsets: str | OSError,
+    *,
+    for_children: int | None = None,
+    leader_exited: bool = False,
 ) -> None:
     # Answer for this process's time namespace.
     #
-    # :param namespace: the inode a stat of ``/proc/self/ns/time`` reports, or the error it raises
+    # :param namespace: the inode a stat of ``/proc/thread-self/ns/time`` reports, or the error it raises
     # :param offsets: what reading ``/proc/self/timens_offsets`` returns, or the error it raises
-    # :param for_children: the inode of ``/proc/self/ns/time_for_children``, when an unshare made it differ
-    _pin_namespace(mocker, Path("/proc/self/ns/time"), namespace)
-    _pin_namespace(mocker, Path("/proc/self/ns/time_for_children"), namespace if for_children is None else for_children)
+    # :param for_children: the inode of ``/proc/thread-self/ns/time_for_children``, when an unshare made it differ
+    _pin_namespace(mocker, Path("/proc/thread-self/ns/time"), namespace)
+    _pin_namespace(
+        mocker,
+        Path("/proc/thread-self/ns/time_for_children"),
+        namespace if for_children is None else for_children,
+    )
+    if leader_exited:
+        _pin_namespace(mocker, Path("/proc/self/ns/time"), FileNotFoundError(ENOENT, "leader exited"))
     answer = (
         mocker.create_autospec(Path.read_text, side_effect=offsets)
         if isinstance(offsets, OSError)

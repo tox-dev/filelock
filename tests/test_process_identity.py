@@ -188,6 +188,17 @@ def test_process_start_token_read_only_without_a_boottime_offset(
 
 
 @_LINUX_ONLY  # pragma: linux cover
+def test_process_start_token_unknown_after_main_thread_exits(mocker: MockerFixture) -> None:
+    pin_time_namespace(
+        mocker,
+        _ANOTHER_TIME_NAMESPACE,
+        FileNotFoundError(ENOENT, "leader exited"),
+        leader_exited=True,
+    )
+    assert process_start_token(os.getpid()) is None
+
+
+@_LINUX_ONLY  # pragma: linux cover
 @pytest.mark.parametrize(
     ("self_link", "status", "readable"),
     [

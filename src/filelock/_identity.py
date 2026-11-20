@@ -217,8 +217,9 @@ else:  # pragma: win32 no cover
 
         def _starttime_unshifted() -> bool:
             # setns can move this process into another time namespace, so ask on every read.
+            # /proc/self names the group leader, which may have exited while another thread still holds a lock.
             try:
-                namespace: Final[int] = Path("/proc/self/ns/time").stat().st_ino
+                namespace: Final[int] = Path("/proc/thread-self/ns/time").stat().st_ino
             except FileNotFoundError:  # no entry means no time namespaces on this kernel
                 return True
             except OSError:  # any other failure leaves the namespace unknown, so starttime is not comparable
@@ -226,9 +227,10 @@ else:  # pragma: win32 no cover
             if namespace == _INITIAL_TIME_NAMESPACE:
                 return True
             # A container runtime may give each container a time namespace without offsets. timens_offsets describes
-            # the namespace this process's children get, its own unless it unshared one since.
+            # the namespace this process's children get, its own unless it unshared one since. It has no task entry;
+            # when the group leader has exited, an unreadable offset leaves the token unknown.
             try:
-                if Path("/proc/self/ns/time_for_children").stat().st_ino != namespace:
+                if Path("/proc/thread-self/ns/time_for_children").stat().st_ino != namespace:
                     return False
                 offsets: Final[str] = Path("/proc/self/timens_offsets").read_text(encoding="ascii")
             except OSError:

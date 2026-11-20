@@ -796,6 +796,11 @@ container runtimes create, keeps the token. A process that cannot read ``/proc/s
 ``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
 whenever either side lacks the boot id.
 
+If the main thread exits while a worker keeps a lock, ``/proc/self/timens_offsets`` is unavailable. The worker checks
+its own time namespace through ``/proc/thread-self`` and records no start token when it cannot rule out a boottime
+offset. The live PID keeps the marker held; a reused PID may keep a dead marker until ``timeout``, ``lifetime`` or
+``break_lock()``.
+
 A procfs numbers tasks by the PID namespace of the process that mounted it. A process in a PID namespace that still sees
 an outer ``/proc`` (``unshare --pid`` without ``--mount-proc``, ``nsenter --pid`` without ``--mount``) finds an
 unrelated task at ``/proc/<pid>``, possibly another user's. Such a process records no start token and reads none
