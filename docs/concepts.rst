@@ -574,11 +574,11 @@ reached the old one keep using it while new contenders use the replacement, so t
 neither learns of it. No check inside the lock can rule that out, because the owner of such a directory controls every name
 in it. Keep locks in a directory that only the lock's users can write, or in a sticky one such as ``/tmp``.
 
-A Linux user namespace or idmapped mount reports unmapped file owners as one overflow UID, usually 65534. Under a sticky
-parent, ``UnixFileLock``, ``StrictSoftFileLock`` and ``SoftReadWriteLock`` refuse a lock file or protocol directory
-reported with that UID: its real owner cannot be determined from ``stat``. If the configured overflow UID cannot be
-read, they refuse every node whose reported owner matches the locking account or the parent's owner. A private lock
-directory avoids these refusals, including for accounts that use the overflow UID themselves.
+A Linux user namespace or idmapped mount can report several file owners under one overflow UID, usually 65534. Under a
+sticky parent, ``UnixFileLock``, ``StrictSoftFileLock`` and ``SoftReadWriteLock`` can verify the caller's ownership of an
+open file or protocol directory on Btrfs, ext4, tmpfs or XFS when the caller's UID map covers all IDs and the mount
+has no ID mapping. If the configured overflow UID is unreadable, they require the same proof. On a filesystem such as
+OverlayFS, a backing layer can translate ownership. Use a private lock directory when ownership is ambiguous.
 
 A sticky directory protects only the names an account owns. The owner of a lock file there can remove it while another
 account holds its lock, and the next contender then locks a new file at the same path. On Unix,

@@ -1837,6 +1837,7 @@ def test_strict_soft_refuses_ownership_when_overflow_uid_is_unknown(  # pragma: 
 ) -> None:
     (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=error)
+    mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=OSError("no UID map"))
 
     with pytest.raises(SoftFileLockProtocolError, match="not to this process's account"):
         StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0).acquire()

@@ -68,6 +68,39 @@ def test_foreign_owner_refuses_uid_when_overflowuid_is_unreadable(  # pragma: wi
     assert filelock._util.foreign_owner(owner, parent) == 65534
 
 
+@pytest.mark.skipif(sys.platform not in {"linux", "android"}, reason="mount IDs and UID maps are Linux procfs files")
+@pytest.mark.parametrize(
+    ("uid_map", "fdinfo", "mountinfo", "allow"),
+    [
+        pytest.param(b"0 0 4294967295", b"mnt_id:\t18", b"18 4 0:3 / /tmp rw - tmpfs tmpfs rw", True, id="mapped"),
+        pytest.param(
+            b"0 0 4294967295", b"mnt_id:\t18", b"18 4 0:3 / /tmp rw - overlay overlay rw", False, id="overlay"
+        ),
+        pytest.param(b"0 0 65535", b"mnt_id:\t18", b"18 4 0:3 / /tmp rw - tmpfs tmpfs rw", False, id="partial"),
+        pytest.param(
+            b"0 0 4294967295", b"mnt_id:\t18", b"18 4 0:3 / /tmp rw,idmapped - tmpfs tmpfs rw", False, id="idmapped"
+        ),
+        pytest.param(b"0 0 4294967295", b"mnt_id:\t18", b"19 4 0:3 / /tmp rw - tmpfs tmpfs rw", False, id="detached"),
+        pytest.param(b"0 0 4294967295", b"pos:\t0", b"", False, id="no-mount-id"),
+    ],
+)
+def test_open_file_with_unknown_overflow_uid(  # pragma: win32 no cover  # pragma: darwin no cover
+    tmp_path: Path, mocker: MockerFixture, uid_map: bytes, fdinfo: bytes, mountinfo: bytes, allow: bool
+) -> None:
+    proc = tmp_path / "thread-self"
+    (proc / "fdinfo").mkdir(parents=True)
+    (proc / "uid_map").write_bytes(uid_map)
+    (proc / "mountinfo").write_bytes(mountinfo)
+    paths = {"/proc/thread-self": proc, "/proc/sys/kernel/overflowuid": tmp_path / "missing"}
+    mocker.patch("filelock._util.Path", autospec=True, side_effect=paths.__getitem__)
+    tmp_path.chmod(0o1700)
+    with (tmp_path / "lock").open("xb") as marker:
+        fd = marker.fileno()
+        (proc / "fdinfo" / str(fd)).write_bytes(fdinfo)
+        owner = os.fstat(fd)
+        assert (filelock._util.foreign_owner(owner, tmp_path.stat(), fd=fd) is None) is allow
+
+
 @pytest.fixture
 def stale_lock(tmp_path: Path) -> Path:
     path: Final[Path] = tmp_path / "test.lock"

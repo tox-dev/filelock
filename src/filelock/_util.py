@@ -335,7 +335,7 @@ def write_at_start(fd: int, data: bytes) -> None:  # pragma: win32 no cover
         write_all(fd, data)
 
 
-def foreign_owner(node: os.stat_result, parent: os.stat_result) -> int | None:
+def foreign_owner(node: os.stat_result, parent: os.stat_result, *, fd: int | None = None) -> int | None:
     # Return the uid that owns *node* when another account controls it under a sticky parent.
     #
     # A lock relies on its file, or the directory holding its ownership records, staying in place. The sticky bit (a
@@ -350,24 +350,48 @@ def foreign_owner(node: os.stat_result, parent: os.stat_result) -> int | None:
     #
     # :param node: ``lstat`` or ``fstat`` of the file or directory found in place.
     # :param parent: ``stat`` of the directory that holds it.
+    # :param fd: the descriptor used to stat the node, when the caller still holds it.
     #
     # Unmapped accounts in a Linux user namespace or idmapped mount share one reported uid.
     #
     # :returns: the owning uid when another account controls the node, otherwise ``None``.
     if sys.platform != "win32" and parent.st_mode & stat.S_ISVTX:  # pragma: needs foreign-sticky-tmp
         owner = node.st_uid
-        return None if owner in {os.geteuid(), parent.st_uid} and not _ambiguous_owner(owner) else owner
+        euid = os.geteuid()
+        if owner not in {euid, parent.st_uid}:
+            return owner
+        if sys.platform in {"linux", "android"}:  # pragma: win32 no cover  # pragma: darwin no cover
+            try:
+                if owner != int(Path("/proc/sys/kernel/overflowuid").read_text(encoding="ascii")):
+                    return None
+            except (OSError, ValueError):
+                pass  # The configured overflow UID could match any owner in the sysctl's range.
+            if fd is None or owner != euid or not _owner_is_mapped(fd):
+                return owner
     return None
 
 
-def _ambiguous_owner(uid: int) -> bool:  # pragma: win32 no cover  # pragma: darwin no cover
-    if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
-        return False
+def _owner_is_mapped(fd: int) -> bool:  # pragma: win32 no cover  # pragma: darwin no cover
+    # A descriptor can outlive its mount's entry in mountinfo. Require its own mount ID before trusting the UID.
+    proc = Path("/proc/thread-self")
     try:
-        return uid == int(Path("/proc/sys/kernel/overflowuid").read_text(encoding="ascii"))
-    except (OSError, ValueError):
-        # Without the configured overflow UID, equality from stat cannot prove ownership.
-        return True
+        if (proc / "uid_map").read_bytes().split() != [b"0", b"0", b"4294967295"]:
+            return False
+        mount = next(
+            line.split()[1]
+            for line in (proc / "fdinfo" / str(fd)).read_bytes().splitlines()
+            if line.startswith(b"mnt_id:")
+        )
+        with (proc / "mountinfo").open("rb") as mounts:
+            # A stacked filesystem can report an owner translated by an idmapped backing mount.
+            return any(
+                line.startswith(mount + b" ")
+                and b"idmapped" not in line.split(None, 6)[5].split(b",")
+                and line.partition(b" - ")[2].partition(b" ")[0] in {b"btrfs", b"ext4", b"tmpfs", b"xfs"}
+                for line in mounts
+            )
+    except (OSError, IndexError, StopIteration):
+        return False
 
 
 if sys.platform == "win32":  # pragma: win32 cover
