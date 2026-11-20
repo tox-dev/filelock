@@ -1,0 +1,2 @@
+An acquisition interrupted by a signal handler after its backend succeeds now checks the hold again before returning.
+If the handler released it, the lock retries or reports a timeout without leaving a stale holder registry entry.

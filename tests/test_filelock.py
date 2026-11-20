@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import gc
 import inspect
 import logging
 import math
@@ -28,7 +29,7 @@ from stat import S_IMODE, S_IWGRP, S_IWOTH, S_IWUSR, filemode
 from types import CodeType, FrameType, SimpleNamespace, TracebackType
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, TypedDict, cast, get_args
 from uuid import uuid4
-from weakref import WeakValueDictionary
+from weakref import WeakValueDictionary, ref
 
 import pytest
 from capabilities import CAPABILITIES
@@ -52,7 +53,13 @@ from filelock import (
     lock_descriptor,
     unlock_descriptor,
 )
-from filelock._api import _REGISTRY, acquire_thread_lock, append_exception_context, raise_grouped_errors
+from filelock._api import (
+    _REGISTRY,
+    FileLockContext,
+    acquire_thread_lock,
+    append_exception_context,
+    raise_grouped_errors,
+)
 from tests.capability_marks import (
     NEEDS_FCNTL,
     NEEDS_FILE_MODE,
@@ -1933,6 +1940,198 @@ def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Pa
     lock.acquire(blocking=False)
     lock.release()
     assert not (tmp_path / "a").exists()
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, SoftFileLease])
+def test_handler_release_before_acquire_commit_retries(
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[BaseFileLock]
+) -> None:
+    path = tmp_path / "a.lock"
+    lock = lock_type(path, is_singleton=False)
+    with _release_before_acquire_commit(lock, mocker) as released:
+        lock.acquire(timeout=1)
+    assert released == [(True, 1)]
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    with pytest.raises(Timeout):
+        lock_type(path, blocking=False, is_singleton=False).acquire()
+    lock.release()
+    with lock_type(path, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@contextmanager
+def _release_before_acquire_commit(lock: BaseFileLock, mocker: MockerFixture) -> Generator[list[tuple[bool, int]]]:
+    released: list[tuple[bool, int]] = []
+
+    def release_in_handler(_signum: int, _frame: FrameType | None) -> None:
+        released.append((lock.is_locked, lock.lock_counter))
+        lock.release()
+
+    original_commit = lock._commit_acquire
+
+    def interrupt_commit(canonical: str) -> None:
+        if not released:
+            signal.raise_signal(signal.SIGINT)
+        original_commit(canonical)
+
+    mocker.patch.object(lock, "_commit_acquire", side_effect=interrupt_commit, autospec=True)
+    previous = signal.signal(signal.SIGINT, release_in_handler)
+    try:
+        yield released
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, SoftFileLease])
+def test_handler_release_before_acquire_commit_nonblocking_cleans_registry(
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[BaseFileLock]
+) -> None:
+    path = tmp_path / "a.lock"
+    lock = lock_type(path, is_singleton=False)
+    with _release_before_acquire_commit(lock, mocker) as released, pytest.raises(Timeout):
+        lock.acquire(blocking=False)
+    assert released == [(True, 1)]
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    with lock_type(path, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+def test_handler_release_inside_acquire_commit_preserves_peer_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "a.lock"
+    lock = SoftFileLock(path, is_singleton=False)
+    peer = SoftFileLock(path, is_singleton=False)
+    released: list[bool] = []
+
+    def release_in_handler(_signum: int, _frame: FrameType | None) -> None:
+        released.append(lock.is_locked)
+        lock.release()
+        peer.acquire(blocking=False)
+
+    def signal_after_registry(
+        context: FileLockContext,
+        name: str,
+        value: object,  # simplint: ignore[imprecise-annotation]  # context fields have different value types
+    ) -> None:
+        object.__setattr__(context, name, value)  # ruff:ignore[unnecessary-dunder-call]  # preserve delegated fields
+        if context is lock._hold_state() and name == "lock_file_registry" and value is not None and not released:
+            signal.raise_signal(signal.SIGINT)
+
+    previous = signal.signal(signal.SIGINT, release_in_handler)
+    monkeypatch.setattr(FileLockContext, "__setattr__", signal_after_registry)
+    try:
+        with pytest.raises(Timeout):
+            lock.acquire(blocking=False)
+    finally:
+        monkeypatch.undo()
+        signal.signal(signal.SIGINT, previous)
+
+    assert released == [True]
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    assert peer.is_locked
+    assert (peer._context.lock_file_key, peer._holder_id) in _REGISTRY.held
+    peer.release()
+    with SoftFileLock(path, is_singleton=False) as successor:
+        assert successor.is_locked
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+def test_raised_handler_during_acquire_commit_registers_hold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "a.lock"
+    lock = SoftFileLock(path, is_singleton=False)
+    pending = [True]
+
+    def interrupt_handler(_signum: int, _frame: FrameType | None) -> None:
+        raise KeyboardInterrupt
+
+    def signal_after_registry(
+        context: FileLockContext,
+        name: str,
+        value: object,  # simplint: ignore[imprecise-annotation]  # context fields have different value types
+    ) -> None:
+        object.__setattr__(context, name, value)  # ruff:ignore[unnecessary-dunder-call]  # preserve delegated fields
+        if context is lock._hold_state() and name == "lock_file_registry" and value is not None and pending:
+            pending.pop()
+            signal.raise_signal(signal.SIGINT)
+
+    previous = signal.signal(signal.SIGINT, interrupt_handler)
+    monkeypatch.setattr(FileLockContext, "__setattr__", signal_after_registry)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            lock.acquire()
+    finally:
+        monkeypatch.undo()
+        signal.signal(signal.SIGINT, previous)
+
+    assert lock.is_locked
+    assert (lock._context.lock_file_key, lock._holder_id) in _REGISTRY.held
+    with pytest.raises(RuntimeError, match="already held"):
+        SoftFileLock(path, is_singleton=False).acquire()
+    lock.release()
+
+
+@NEEDS_PROMPT_FINALIZATION  # pragma: needs prompt-finalization
+@pytest.mark.timeout(2)
+def test_failed_finalizer_retains_dead_registry_claim(tmp_path: Path) -> None:
+    class FailingSoftFileLock(SoftFileLock):
+        def _release(self) -> None:  # ruff:ignore[no-self-use]  # deliberately leave the marker held
+            msg = "release failed"
+            raise OSError(msg)
+
+    path = tmp_path / "a.lock"
+    lock = FailingSoftFileLock(path, is_singleton=False)
+    lock.acquire()
+    fd = lock._hold_state().lock_file_fd
+    assert fd is not None
+    state_ref = _REGISTRY.held[lock._context.lock_file_key, lock._holder_id]
+    lock_ref = ref(lock)
+    del lock
+    try:
+        gc.collect()
+        assert lock_ref() is None
+        assert state_ref() is None
+        with pytest.raises(RuntimeError, match="already held"):
+            SoftFileLock(path, is_singleton=False).acquire()
+    finally:
+        os.close(fd)
+        path.unlink()
+
+
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+def test_handler_acquire_during_marker_release_fails_fast(tmp_path: Path) -> None:
+    class StagedReleaseLock(SoftFileLock):
+        def _release(self) -> None:
+            fd = self._hold_state().lock_file_fd
+            assert fd is not None
+            self._mark_descriptor_released()
+            signal.raise_signal(signal.SIGINT)
+            os.close(fd)
+            Path(self.lock_file).unlink()
+
+    path = tmp_path / "a.lock"
+    lock = StagedReleaseLock(path, is_singleton=False)
+    peer = SoftFileLock(path, is_singleton=False)
+    lock.acquire()
+    observed: list[tuple[bool, bool]] = []
+
+    def acquire_in_handler(_signum: int, _frame: FrameType | None) -> None:
+        observed.append((lock.is_locked, path.exists()))
+        with pytest.raises(RuntimeError, match="already held"):
+            peer.acquire()
+
+    previous = signal.signal(signal.SIGINT, acquire_in_handler)
+    try:
+        lock.release()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+    assert observed == [(False, True)]
+    with peer:
+        assert peer.is_locked
 
 
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
@@ -4375,14 +4574,14 @@ def test_failed_nested_acquire_keeps_outer_registry_entry(tmp_path: Path, mocker
     lock = FileLock(str(tmp_path / "a"), is_singleton=False)
     lock.acquire()
     key = lock._context.lock_file_key
-    assert _REGISTRY.held.get(key) == id(lock)
+    assert (key, id(lock)) in _REGISTRY.held
 
     mocker.patch.object(lock, "_raise_if_would_deadlock", side_effect=Timeout(lock.lock_file), autospec=True)
     with pytest.raises(Timeout):
         lock.acquire(timeout=0)
 
     assert lock._context.lock_counter == 1
-    assert _REGISTRY.held.get(key) == id(lock)
+    assert (key, id(lock)) in _REGISTRY.held
 
     lock.release()
 

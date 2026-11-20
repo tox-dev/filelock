@@ -344,7 +344,7 @@ _RESOLVE_DIR: Final[Callable[[str], str]] = os.path.abspath if sys.platform == "
 class _ThreadLocalRegistry(local):
     def __init__(self) -> None:
         super().__init__()
-        self.held: dict[Hashable, int] = {}
+        self.held: dict[tuple[Hashable, int], ref[FileLockContext]] = {}
 
 
 _REGISTRY: Final[_ThreadLocalRegistry] = _ThreadLocalRegistry()
@@ -1026,19 +1026,19 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             canonical_path = canonical(self.lock_file)
             self._context.acquiring = inspect.currentframe()
             levels_before = self._context.lock_counter if self.is_locked else 0
-            try:  # ruff:ignore[too-many-statements-in-try-clause]  # each counted acquire step needs the same rollback
+            try:  # each counted acquire step needs the same rollback
                 self._context.lock_counter = levels_before + 1
                 self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
                 if not self.is_locked:
                     self._pin_lock_path(canonical_path)
-                self._poll_until_acquired(
+                self._poll_until_committed(
+                    canonical=canonical_path,
                     blocking=blocking,
                     cancel_check=cancel_check,
                     timeout=timeout,
                     poll_interval=poll_interval,
                     start_time=start_time,
                 )
-                self._commit_acquire(canonical_path)
                 return AcquireReturnProxy(lock=self)
             except BaseException:
                 self._reconcile_failed_acquire(canonical_path, levels_before=levels_before)
@@ -1106,8 +1106,18 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         #
         # Only the first, indefinitely-blocking acquire can self-deadlock this way: waiting in the OS primitive would
         # block on a lock this flow already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
-        would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
-        if would_block and _REGISTRY.held.get(self._registry_key(canonical)) not in {None, self._holder_id}:
+        if not (self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking):
+            return
+        target = self._registry_key(canonical)
+        own_state = self._hold_state()
+        if any(
+            key == target
+            and (
+                (state := state_ref()) is None
+                or (state is not own_state and (state.lock_file_fd is not None or _on_this_stack(state.releasing)))
+            )
+            for (key, _holder), state_ref in _REGISTRY.held.copy().items()
+        ):
             msg = (
                 f"Deadlock: lock '{self.lock_file}' is already held by a different {self._deadlock_holder_desc}. "
                 f"Use is_singleton=True to enable reentrant locking across instances."
@@ -1127,10 +1137,46 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         # the *same* task can self-deadlock.
         return None
 
+    def _hold_state(self) -> FileLockContext:
+        return self._context.current if isinstance(self._context, ThreadLocalFileContext) else self._context
+
     def _pin_lock_path(self, canonical: str) -> None:
         # A path without a final component names no file. Its canonical form is a directory, and pinning that would
         # change the error the backend raises.
         self._context.claim_root = None if canonical.endswith(os.sep) else canonical
+
+    def _poll_until_committed(  # ruff:ignore[too-many-arguments]  # the canonical path must stay pinned across retries
+        self,
+        *,
+        canonical: str,
+        blocking: bool,
+        cancel_check: Callable[[], bool] | None,
+        timeout: float,
+        poll_interval: float,
+        start_time: float,
+    ) -> None:
+        while True:
+            self._poll_until_acquired(
+                blocking=blocking,
+                cancel_check=cancel_check,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                start_time=start_time,
+            )
+            key, registry = self._registry_key(canonical), _REGISTRY.held
+            self._commit_acquire(canonical)
+            if self.is_locked:
+                return
+            # A handler released the hold before commit; discard any claim this commit wrote.
+            registry.pop((key, self._holder_id), None)
+            self._commit_release()
+            if self._check_give_up(
+                blocking=blocking, cancel_check=cancel_check, timeout=timeout, start_time=start_time
+            ):
+                raise Timeout(self.lock_file, self._unprobeable_holder())
+            self._context.lock_counter = 1
+            self._raise_if_would_deadlock(canonical, timeout=timeout, blocking=blocking)
+            self._pin_lock_path(canonical)
 
     def _poll_until_acquired(
         self,
@@ -1149,6 +1195,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         if not self.is_locked:
             ensure_directory_exists(self._lock_path)
         while True:
+            # A handler can release a published hold before this acquire retries, resetting its count.
+            if self._context.lock_counter == 0:
+                self._context.lock_counter = 1
             self._raise_if_inherited()
             if not self.is_locked:
                 self._try_break_expired_lock()
@@ -1303,6 +1352,47 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             callback_error.__context__ = callback_context
             raise
 
+    def _poll_delay(self, poll_interval: float, attempt: int) -> float:
+        # A single-file lock retries on a fixed cadence. A backend that publishes several files per acquisition sets a
+        # cap, and then contending processes back off across a jittered, exponentially widening window instead of
+        # colliding on every poll; poll_interval stays the floor so a lone waiter is still responsive.
+        if not self._poll_backoff_cap:
+            return poll_interval
+        # Cap the exponent before doubling: under heavy contention attempt reaches the thousands, and 2**attempt would
+        # overflow the float multiply long before the window itself stops growing past the cap.
+        max_backoff_exponent = 20  # pragma: needs hard-link
+        window = min(
+            self._poll_backoff_cap, poll_interval * 2 ** min(attempt, max_backoff_exponent)
+        )  # pragma: needs hard-link
+        return max(poll_interval, secrets.randbelow(int(window * 1_000_000) + 1) / 1_000_000)  # pragma: needs hard-link
+
+    def _commit_acquire(self, canonical: str) -> None:
+        # Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock.
+        # Check the claim itself: a signal can interrupt after storing the registry pointer but before insertion.
+        # An on_acquired hook that nests can bump the count before this first commit.
+        key = self._registry_key(canonical)
+        if self._context.lock_file_registry is None or (key, self._holder_id) not in self._context.lock_file_registry:
+            # The holder scope is resolved once at commit so a later release from another flow drops the right entry.
+            self._context.lock_file_key = key
+            # A shared instance may be released from another thread, which must clear the entry in the acquirer's
+            # registry: the releaser's own thread-local registry never held it.
+            self._context.lock_file_registry = _REGISTRY.held
+            _REGISTRY.held[key, self._holder_id] = ref(self._hold_state())
+
+    def _commit_release(self) -> None:
+        # Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry.
+        self._context.lock_counter = 0
+        self._drop_registry_entry()
+        self._context.claim_root = None
+
+    def _drop_registry_entry(self) -> None:
+        # Discard this holder's claim; a signal handler may add a peer claim at the same path during cleanup.
+        key, registry = self._context.lock_file_key, self._context.lock_file_registry
+        if registry is not None:
+            registry.pop((key, self._holder_id), None)
+        self._context.lock_file_registry = None
+        self._context.lock_file_key = None
+
     def _check_give_up(
         self,
         *,
@@ -1326,33 +1416,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def _unprobeable_holder(self) -> str | None:  # ruff:ignore[no-self-use]  # existence locks override it
         return None
 
-    def _poll_delay(self, poll_interval: float, attempt: int) -> float:
-        # A single-file lock retries on a fixed cadence. A backend that publishes several files per acquisition sets a
-        # cap, and then contending processes back off across a jittered, exponentially widening window instead of
-        # colliding on every poll; poll_interval stays the floor so a lone waiter is still responsive.
-        if not self._poll_backoff_cap:
-            return poll_interval
-        # Cap the exponent before doubling: under heavy contention attempt reaches the thousands, and 2**attempt would
-        # overflow the float multiply long before the window itself stops growing past the cap.
-        max_backoff_exponent = 20  # pragma: needs hard-link
-        window = min(
-            self._poll_backoff_cap, poll_interval * 2 ** min(attempt, max_backoff_exponent)
-        )  # pragma: needs hard-link
-        return max(poll_interval, secrets.randbelow(int(window * 1_000_000) + 1) / 1_000_000)  # pragma: needs hard-link
-
-    def _commit_acquire(self, canonical: str) -> None:
-        # Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock.
-        # Keyed on the registry rather than the counter: an on_acquired hook that acquires again bumps the counter
-        # past 1 before this first commit runs, and must not leave the hold unregistered.
-        if self._context.lock_file_registry is None:
-            key = self._registry_key(canonical)
-            # The holder scope is resolved once at commit so a later release from another flow drops the right entry.
-            self._context.lock_file_key = key
-            # A shared instance may be released from another thread, which must clear the entry in the acquirer's
-            # registry: the releaser's own thread-local registry never held it.
-            self._context.lock_file_registry = _REGISTRY.held
-            _REGISTRY.held[key] = self._holder_id
-
     def _reconcile_failed_acquire(self, canonical: str, *, levels_before: int) -> None:
         # An acquire that raised while still holding the native lock (a hook that failed and whose rollback could not
         # release) must keep the registry entry so a later release can retry the OS unlock.
@@ -1362,22 +1425,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             self._context.lock_counter = levels_before
         else:
             self._commit_acquire(canonical)
-
-    def _commit_release(self) -> None:
-        # Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry.
-        self._context.lock_counter = 0
-        self._drop_registry_entry()
-        self._context.claim_root = None
-
-    def _drop_registry_entry(self) -> None:
-        # Forget the key owned by this hold without resolving a mutable path again.
-        # Ordered so a run an interrupt cuts short repeats safely: the entry goes only while it is still ours, and the
-        # key outlives the registry it indexes, so a later commit sees no registry and records the hold afresh.
-        key, registry = self._context.lock_file_key, self._context.lock_file_registry
-        if registry is not None and registry.get(key) == self._holder_id:
-            del registry[key]
-        self._context.lock_file_registry = None
-        self._context.lock_file_key = None
 
     def __exit__(
         self,
@@ -1472,9 +1519,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 self._commit_release()
         finally:
             self._transition_lock.release()
-
-    def _hold_state(self) -> FileLockContext:
-        return self._context.current if isinstance(self._context, ThreadLocalFileContext) else self._context
 
     def _release_thread_holds(self, *, exited_only: bool) -> None:
         if not isinstance(context := self._context, ThreadLocalFileContext):
@@ -2047,7 +2091,7 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
     lock_file_key: Hashable | None = None
 
     #: The acquiring thread's deadlock registry holding :attr:`lock_file_key`.
-    lock_file_registry: dict[Hashable, int] | None = None
+    lock_file_registry: dict[tuple[Hashable, int], ref[FileLockContext]] | None = None
 
     #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
     owner_claim_paths: tuple[str, ...] = ()
