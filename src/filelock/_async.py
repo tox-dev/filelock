@@ -197,6 +197,7 @@ class _TaskOwners:
             asyncio.Task[object], _TaskHold  # simplint: ignore[imprecise-annotation]  # task results vary
         ] = {}
         self._transitioning = False
+        self._entering_via: Hashable | None = None
         self._read_waiters: dict[ConcurrentFuture[None], Hashable] = {}
         self._write_queue: dict[
             asyncio.Task[object],  # simplint: ignore[imprecise-annotation]  # task results vary
@@ -287,7 +288,7 @@ class _TaskOwners:
                     self._holds[task] = _TaskHold(depths={via: 1})
                     return "held"
                 if not self._holds and next(iter(self._write_queue), task) is task:
-                    self._transitioning, self._mode = True, mode
+                    self._transitioning, self._mode, self._entering_via = True, mode, via
                     return "enter"
             ticket: ConcurrentFuture[None] = ConcurrentFuture()
             if mode == "write":
@@ -324,7 +325,7 @@ class _TaskOwners:
         | None = None,
     ) -> None:
         with self._lock:
-            self._transitioning, self._mode = False, mode
+            self._transitioning, self._mode, self._entering_via = False, mode, None
             if mode is not None and holds:
                 for task, hold in holds.items():
                     self._holds.setdefault(task, _TaskHold(depths={})).depths.update(hold.depths)
@@ -394,10 +395,8 @@ class _TaskOwners:
         # End the holds taken through *via*, or every hold when it is ``None``, as one transition.
         #
         # Leaves the backend through *leave* when that ends the last hold, and always when *via* is ``None``. Arrivals
-        # wait while it runs, so none joins a hold the backend is letting go of. A transition already under way is
-        # waited
-        # out first: a task entering through *via* must not get a hold after the wrapper is gone. A cancellation is
-        # raised once the holds are settled.
+        # wait while it runs, so none joins a hold the backend is letting go of. A singleton wrapper can close while
+        # another wrapper enters the backend: the entering wrapper owns the only prospective hold.
         cancellation: asyncio.CancelledError | None = None
         while isinstance(settled := self._drop_holds_via(via), ConcurrentFuture):
             try:
@@ -434,6 +433,8 @@ class _TaskOwners:
         # backend level) and the dropped holds. The table stays transitioning while that mode is left.
         with self._lock:
             if self._transitioning:
+                if via is not None and self._entering_via is not None and self._entering_via is not via:
+                    return None, {}
                 ticket: ConcurrentFuture[None] = ConcurrentFuture()
                 self._transition_waiters.add(ticket)
                 return ticket

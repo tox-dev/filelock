@@ -33,7 +33,7 @@ pytest.importorskip("sqlite3")
 
 import sqlite3
 
-from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock, Timeout
+from filelock import AsyncReadWriteLock, AsyncSoftReadWriteLock, FileLock, ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
     import functools
@@ -1099,6 +1099,29 @@ async def test_async_close_waits_out_an_acquire_in_flight_even_when_canceled(loc
 
     assert writer_gets_in(lock_file)
     holder.close()
+
+
+@pytest.mark.parametrize(
+    "lock_type", [pytest.param(AsyncReadWriteLock, id="sqlite"), pytest.param(AsyncSoftReadWriteLock, id="soft")]
+)
+@pytest.mark.asyncio
+async def test_singleton_close_returns_while_another_wrapper_enters(
+    lock_file: str, lock_type: type[AsyncReadWriteLock | AsyncSoftReadWriteLock]
+) -> None:
+    holder = lock_type(lock_file, is_singleton=False)
+    waiting, idle = lock_type(lock_file), lock_type(lock_file)
+    async with holder.write_lock():
+        acquiring = asyncio.create_task(waiting.acquire_write())
+        await asyncio.sleep(0)
+        closing = asyncio.create_task(idle.close())
+        done, _ = await asyncio.wait({closing}, timeout=2)
+    try:
+        await acquiring
+        await closing
+        assert closing in done
+    finally:
+        await waiting.close()
+        await holder.close()
 
 
 @pytest.mark.asyncio

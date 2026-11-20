@@ -829,10 +829,12 @@ with the wrapper to shut down its executor. If you pass an executor, reserve cap
 waiting, and shut it down yourself.
 
 When async wrappers share a lock instance in one process, they serve queued writers in arrival order before admitting
-new readers. Closing a wrapper wakes tasks waiting through it and interrupts a contended backend acquire on its next
-poll. If an acquire obtains the
-lock while close is in progress, it waits for the outcome. A successful close releases the hold. If close fails with
-the lock still held, the acquiring task keeps it and can release it.
+new readers. If the first writer's event loop pauses, later writers and new readers wait until that loop runs again.
+
+Closing a wrapper wakes tasks waiting through it and interrupts its own contended backend acquire on the next poll.
+A singleton wrapper can close while another wrapper waits to acquire the backend. If an acquire obtains the lock while
+its wrapper is closing, it waits for the outcome. A successful close releases the hold. If close fails with the lock
+still held, the acquiring task keeps it and can release it.
 
 **************************************
  Detect stale locks (soft locks only)
