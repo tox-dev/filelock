@@ -632,6 +632,23 @@ def _convert_to_wal(path: str) -> None:
         connection.executescript("PRAGMA journal_mode=WAL; CREATE TABLE application (value);").close()
 
 
+@pytest.mark.parametrize(
+    "versions",
+    [pytest.param(b"\x03\x01", id="read-version-1"), pytest.param(b"\x03\x00", id="read-version-0")],
+)
+def test_read_write_lock_refuses_read_only_sqlite_header(tmp_path: Path, versions: bytes) -> None:
+    database = tmp_path / "lock.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA user_version=1")
+    page = bytearray(database.read_bytes())
+    page[18:20] = versions
+    database.write_bytes(page)
+
+    with pytest.raises(ValueError, match="unsupported SQLite format versions"):
+        ReadWriteLock(database, is_singleton=False)
+    assert database.read_bytes() == page
+
+
 def test_read_write_lock_refuses_a_database_converted_to_wal_after_construction(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     _convert_to_wal(lock_file)
