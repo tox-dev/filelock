@@ -26,6 +26,7 @@ pytest.importorskip("sqlite3")
 import sqlite3
 
 from filelock import AsyncReadWriteLock, ReadWriteLock, Timeout
+from filelock._async import _TaskOwners
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator
@@ -481,6 +482,36 @@ async def test_a_waiting_writer_goes_ahead_of_new_readers(lock_file: str) -> Non
 async def _write_once(lock: AsyncReadWriteLock) -> None:
     async with lock.write_lock(timeout=_TASK_WAIT):
         pass
+
+
+@pytest.mark.asyncio
+async def test_many_waiting_writers_do_not_retry_after_each_release(lock_file: str, mocker: MockerFixture) -> None:
+    lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+    await lock.acquire_read()
+    admissions = mocker.spy(_TaskOwners, "_admit")
+    started = 0
+    all_started = asyncio.Event()
+    completed = 0
+
+    async def write() -> None:
+        nonlocal started, completed
+        started += 1
+        if started == 60:
+            all_started.set()
+        async with lock.write_lock(timeout=_TASK_WAIT):
+            completed += 1
+
+    tasks = [asyncio.create_task(write()) for _ in range(60)]
+    await asyncio.wait_for(all_started.wait(), _TASK_WAIT)
+    await asyncio.sleep(0)
+    assert not any(task.done() for task in tasks)
+    await lock.release()
+    await asyncio.wait_for(asyncio.gather(*tasks), _TASK_WAIT)
+    await lock.close()
+
+    assert completed == 60
+    # A broadcast makes every waiting writer retry after each handoff, adding quadratic event-loop work.
+    assert admissions.call_count < 240
 
 
 @pytest.mark.asyncio

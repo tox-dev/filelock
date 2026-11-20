@@ -175,9 +175,10 @@ class _TaskOwners:
         ] = {}
         self._transitioning = False
         self._waiting_writers = 0
-        #: One ticket per waiting call, settled on the next state change. A call that stops waiting takes its own out,
-        #: so one that times out or is canceled leaves nothing behind.
-        self._waiters: dict[ConcurrentFuture[None], None] = {}
+        #: One ticket per waiting call. Writers take one handoff; readers can join a read hold together.
+        self._read_waiters: dict[ConcurrentFuture[None], None] = {}
+        self._write_waiters: dict[ConcurrentFuture[None], None] = {}
+        self._transition_waiters: dict[ConcurrentFuture[None], None] = {}
 
     async def acquire(  # ruff:ignore[too-many-arguments]  # one keyword per piece of wrapper state the table consults
         self,
@@ -260,20 +261,34 @@ class _TaskOwners:
                 if not self._holds and (mode == "write" or not writers_ahead):
                     self._transitioning, self._mode = True, mode
                     return "enter"
-            return self._ticket()
+            return self._ticket(mode)
 
-    def _ticket(self) -> ConcurrentFuture[None]:
+    def _ticket(self, mode: Literal["read", "write"] | None) -> ConcurrentFuture[None]:
         # Called under the table lock, in the section that decided to wait, so no state change slips in between.
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
-        self._waiters[ticket] = None
+        if mode is None:
+            self._transition_waiters[ticket] = None
+        else:
+            (self._read_waiters if mode == "read" else self._write_waiters)[ticket] = None
         return ticket
 
     def _forget(self, ticket: ConcurrentFuture[None]) -> None:
         with self._lock:
-            self._waiters.pop(ticket, None)
+            self._read_waiters.pop(ticket, None)
+            self._write_waiters.pop(ticket, None)
+            self._transition_waiters.pop(ticket, None)
 
     def _notify(self) -> None:
-        waiters, self._waiters = self._waiters, {}
+        if not self._transitioning:
+            waiters, self._transition_waiters = self._transition_waiters, {}
+            for ticket in waiters:
+                ticket.set_result(None)
+        if self._write_waiters:
+            ticket = next(iter(self._write_waiters))
+            del self._write_waiters[ticket]
+            ticket.set_result(None)
+            return
+        waiters, self._read_waiters = self._read_waiters, {}
         for ticket in waiters:
             ticket.set_result(None)
 
@@ -385,7 +400,7 @@ class _TaskOwners:
         # backend level) and the dropped holds. The table stays transitioning while that mode is left.
         with self._lock:
             if self._transitioning:
-                return self._ticket()
+                return self._ticket(None)
             if via is None:
                 dropped = dict(self._holds)
                 self._holds.clear()
