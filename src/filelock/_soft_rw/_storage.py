@@ -181,9 +181,11 @@ class OsFiles:
         os.close(fd)
         return created.st_dev, created.st_ino
 
-    def unlink(self, path: str) -> None:
+    def unlink(self, path: str, *, witness: str | None = None) -> None:
         try:
             with self._relative(path) as (name, dir_fd):
+                if witness is not None:
+                    os.stat(witness if dir_fd is None else Path(witness).name, dir_fd=dir_fd, follow_symlinks=False)
                 os.unlink(name, dir_fd=dir_fd)
         except OSError as error:
             # Windows refuses to remove a file another process holds open; the record then outlives its owner until
@@ -193,9 +195,12 @@ class OsFiles:
 
     def link(self, source: str, target: str) -> bool:
         failure: NotImplementedError | OSError | None = None
-        with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
+        # The temporary and public names are siblings. Resolving them through separate directories could carry an
+        # old snapshot into the new log when a reset renames their parent between the two opens.
+        with self._relative(source) as (source_name, directory):
+            target_name = target if directory is None else Path(target).name
             try:
-                link_no_follow(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
+                link_no_follow(source_name, target_name, src_dir_fd=directory, dst_dir_fd=directory)
             except FileExistsError:
                 pass
             except (NotImplementedError, OSError) as error:
@@ -204,8 +209,8 @@ class OsFiles:
             # The file's identity decides, not the call's result: an NFS retransmit can report a link that landed as
             # failed, and an EEXIST can be this very link answered twice. Any other error on a link that did not land is
             # a fault, not a peer winning the race, and a retry would spin.
-            if (identity := _identity(source_name, source_fd)) is not None and identity == _identity(
-                target_name, target_fd
+            if (identity := _identity(source_name, directory)) is not None and identity == _identity(
+                target_name, directory
             ):
                 return True
         if failure is not None:
