@@ -260,7 +260,7 @@ class AsyncReadWriteLock:
 
     async def _run_acquire(self, acquire: functools.partial[AcquireReturnProxy]) -> None:
         abandoned = threading.Event()
-        acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
+        acquire_future = self._submit(acquire, cancel_check=lambda: abandoned.is_set() or self._closed)
         try:
             await wait_until_done(acquire_future)
         except asyncio.CancelledError as cancellation:
@@ -278,7 +278,11 @@ class AsyncReadWriteLock:
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 raise_cancelled_error(cancellation, error)
             raise
-        future_result(acquire_future)
+        try:
+            future_result(acquire_future)
+        except Timeout:
+            self._raise_if_unusable()
+            raise
 
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
@@ -376,6 +380,7 @@ class AsyncReadWriteLock:
     async def close(self) -> None:
         """
         End the holds of the tasks that acquired through this instance and release the lock once no task holds it.
+        A contended backend acquire stops on its next poll after close starts.
         A successful close wakes tasks waiting for this wrapper's turn in the shared ownership table.
 
         After calling this method, the lock instance is no longer usable. With ``is_singleton=False`` it also closes the

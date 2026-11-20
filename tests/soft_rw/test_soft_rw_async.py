@@ -1053,6 +1053,45 @@ async def test_async_soft_close_of_waiting_writer_unblocks_other_readers(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_singleton", [False, True])
+async def test_async_soft_close_stops_a_pending_acquire(
+    tmp_path: Path, is_singleton: bool, mocker: MockerFixture
+) -> None:
+    holder = _make_sync(tmp_path)
+    holder.acquire_write(timeout=5)
+    lock = _make(tmp_path, is_singleton=is_singleton)
+    started = threading.Event()
+    create = OsFiles.create
+
+    def observe_create(
+        files: OsFiles,
+        path: str,
+        data: bytes,
+        *,
+        durable: bool = False,
+    ) -> tuple[int, int]:
+        started.set()
+        return create(files, path, data, durable=durable)
+
+    mocker.patch.object(OsFiles, "create", autospec=True, side_effect=observe_create)
+    acquiring = asyncio.create_task(lock.acquire_write())
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        assert not acquiring.done()
+
+        closing = asyncio.create_task(lock.close())
+        done, _ = await asyncio.wait((closing,), timeout=1)
+        assert closing in done
+        await closing
+        with pytest.raises(RuntimeError, match="has been closed"):
+            await acquiring
+    finally:
+        holder.close()
+        await asyncio.gather(acquiring, return_exceptions=True)
+        await lock.close()
+
+
+@pytest.mark.asyncio
 async def test_async_soft_release_leaves_a_sync_reader_of_the_same_singleton_holding(tmp_path: Path) -> None:
     async_lock: Final[AsyncSoftReadWriteLock] = AsyncSoftReadWriteLock(str(tmp_path / "foo.lock"))
     with SoftReadWriteLock(str(tmp_path / "foo.lock")).read_lock():

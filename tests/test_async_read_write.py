@@ -1053,6 +1053,26 @@ async def test_async_close_waits_out_an_acquire_in_flight_even_when_canceled(loc
     holder.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_singleton", [pytest.param(False, id="owned"), pytest.param(True, id="singleton")])
+async def test_close_interrupts_backend_wait_while_peer_holds(lock_file: str, *, is_singleton: bool) -> None:
+    holder = ReadWriteLock(lock_file, is_singleton=False)
+    holder.acquire_write()
+    lock = AsyncReadWriteLock(lock_file, is_singleton=is_singleton)
+    acquiring = asyncio.create_task(lock.acquire_write())
+    try:
+        await asyncio.sleep(0)
+        async with asyncio.timeout(2):
+            await lock.close()
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                await acquiring
+        assert not writer_gets_in(lock_file)
+    finally:
+        holder.close()
+        await asyncio.gather(acquiring, return_exceptions=True)
+        await lock.close()
+
+
 @pytest.mark.parametrize("is_singleton", [pytest.param(True, id="singleton"), pytest.param(False, id="owned")])
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
 @pytest.mark.asyncio
