@@ -189,8 +189,31 @@ else:  # pragma: win32 no cover
             #
             # ``None`` when the process is gone, or when this process runs in a time namespace with a boottime offset.
             # Since Linux 5.6 the kernel shifts ``starttime`` by the reader's offset, so a value read there differs
-            # from what a peer outside reads.
-            return _read_start_token(pid) if _starttime_unshifted() else None
+            # from what a peer outside reads. ``None`` too when ``/proc`` was mounted for another PID namespace than
+            # this process's: ``/proc/<pid>`` is then whichever task has that number there, not the one ``os.kill``
+            # reaches, and may be another user's.
+            return _read_start_token(pid) if _proc_numbers_tasks_as_here() and _starttime_unshifted() else None
+
+        def _proc_numbers_tasks_as_here() -> bool:
+            # A procfs numbers tasks by the PID namespace of the process that mounted it, while ``os.getpid`` and
+            # ``os.kill`` go by this process's own. ``unshare --pid`` without ``--mount-proc``, or a setns into only one
+            # of the PID and mount namespaces, leaves the two apart. A later mount or setns can swap the procfs, so ask
+            # on every read.
+            own: Final[str] = str(os.getpid())
+            try:
+                # The link names this process by the procfs's namespace, and dangles where that one cannot see it.
+                if str(Path("/proc/self").readlink()) != own:
+                    return False
+                status: Final[bytes] = Path("/proc/self/status").read_bytes()
+            except OSError:
+                return False
+            # NSpid lists this process's PIDs from the procfs's namespace inward, so a lone number means the two are
+            # one namespace, and a second number gives an outer procfs away even where both numbers happen to agree.
+            # Kernels before 4.1 record no such line, which leaves the link as the only evidence. Split the lines as
+            # _innermost_pid does.
+            return all(
+                line.split() == [b"NSpid:", own.encode()] for line in status.split(b"\n") if line.startswith(b"NSpid:")
+            )
 
         def _starttime_unshifted() -> bool:
             # setns can move this process into another time namespace, so ask on every read.

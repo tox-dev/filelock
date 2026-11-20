@@ -780,6 +780,11 @@ container runtimes create, keeps the token. A process that cannot read ``/proc/s
 ``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
 whenever either side lacks the boot id.
 
+A procfs numbers tasks by the PID namespace of the process that mounted it. A process in a PID namespace that still sees
+an outer ``/proc`` (``unshare --pid`` without ``--mount-proc``, ``nsenter --pid`` without ``--mount``) finds an
+unrelated task at ``/proc/<pid>``, possibly another user's. Such a process records no start token and reads none
+either, and falls back to the PID alone the same way.
+
 A contender never leaves the lock path empty while it breaks a marker. Right before breaking it reads the marker's inode
 (the kernel's identity for a file, independent of its name) and modification time again. If they moved since the stale
 check, it leaves the marker alone, the way Mercurial re-reads a lock under its break lock before removing it. On Linux

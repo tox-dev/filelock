@@ -16,6 +16,7 @@ from tests.pid_namespace_helpers import (
     INITIAL_PID_NAMESPACE,
     INITIAL_TIME_NAMESPACE,
     pin_pid_namespace,
+    pin_proc_pid_namespace,
     pin_time_namespace,
 )
 
@@ -186,6 +187,26 @@ def test_process_start_token_read_only_without_a_boottime_offset(
     assert (process_start_token(os.getpid()) is not None) is readable
 
 
+@_LINUX_ONLY  # pragma: linux cover
+@pytest.mark.parametrize(
+    ("self_link", "status", "readable"),
+    [
+        pytest.param("{pid}", "Name:\tpython\nNSpid:\t{pid}\n", True, id="own"),
+        pytest.param("{pid}", "Name:\tpython\n", True, id="own-kernel-before-4.1"),
+        pytest.param("4711", "Name:\tpython\nNSpid:\t4711\t{pid}\n", False, id="outer"),
+        pytest.param("{pid}", "Name:\tpython\nNSpid:\t{pid}\t{pid}\n", False, id="outer-with-the-same-number"),
+        pytest.param("4711", "Name:\tpython\n", False, id="outer-kernel-before-4.1"),
+        pytest.param(FileNotFoundError(ENOENT, "missing"), "Name:\tpython\n", False, id="without-this-process"),
+        pytest.param("{pid}", PermissionError(EACCES, "denied"), False, id="status-unreadable"),
+    ],
+)
+def test_process_start_token_read_only_from_a_proc_of_this_pid_namespace(
+    self_link: str | OSError, status: str | OSError, readable: bool, mocker: MockerFixture
+) -> None:
+    pin_proc_pid_namespace(mocker, self_link, status)
+    assert (process_start_token(os.getpid()) is not None) is readable
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS sysctl probe")
 def test_darwin_sysctl_probe_failure_reads_no_token(mocker: MockerFixture) -> None:  # pragma: darwin cover
     mocker.patch("filelock._identity._LIBC.sysctl", return_value=-1, autospec=True)
@@ -223,6 +244,16 @@ def test_owner_is_stale_live_process_across_time_namespaces_held(mocker: MockerF
     assert token is not None
     pin_time_namespace(mocker, _ANOTHER_TIME_NAMESPACE, _BOOTTIME_SHIFTED)
     assert owner_is_stale(os.getpid(), host_name(), token + 100_000) is False
+
+
+@_LINUX_ONLY
+def test_owner_is_stale_live_process_behind_an_outer_proc_held(mocker: MockerFixture) -> None:  # pragma: linux cover
+    # unshare --pid without --mount-proc keeps the outer procfs, where this PID is whichever task has the number there.
+    token: Final[int | None] = process_start_token(os.getpid())
+    assert token is not None
+    pin_pid_namespace(mocker, 0xF0000001)
+    pin_proc_pid_namespace(mocker, "4711", f"Name:\tpython\nNSpid:\t4711\t{os.getpid()}\n")
+    assert owner_is_stale(os.getpid(), host_name(), token + 10**9) is False
 
 
 @_LINUX_ONLY  # pragma: linux cover
