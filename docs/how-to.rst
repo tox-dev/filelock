@@ -445,10 +445,11 @@ bound that load.
 
 On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
 ``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
-names the database directly only when no process of another account can create names in its directory: the directory
-belongs to the locking account or root and is not writable by its group or by others. In any other directory, filelock
-opens SQLite through a hard link (a second name for the same file) inside a ``.filelock-*`` directory that only the
-locking account can read. That directory must be writable by the locking account, and the filesystem must support hard
+names the database directly only when no process of another account can create names in its directory and none of those
+three side files exists. The directory must belong to the locking account or root and must not be writable by its group
+or by others. Otherwise, filelock opens SQLite through a hard link (a second name for the same file) inside a
+``.filelock-*`` directory that only the locking account can read. A side file left before the directory was made private
+still selects this route. The directory must be writable by the locking account, and the filesystem must support hard
 links; when the link cannot be made, the lock raises :class:`OSError`.
 
 Both routes assume that no process of another account can replace the database directory or any directory above it.

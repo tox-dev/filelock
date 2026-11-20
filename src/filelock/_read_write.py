@@ -1137,7 +1137,7 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
         try:
             _raise_if_wal(fd, database)
             target = database
-            if not directory_is_private(os.fspath(pathlib.Path(database).parent)):
+            if not directory_is_private(os.fspath(pathlib.Path(database).parent)) or _side_file_exists(database):
                 link = _link_beside_on_windows(database, identity_of_fd(fd))
                 target = os.fspath(link.database)
             try:
@@ -1157,6 +1157,10 @@ def _connect(database: str, *, factory: type[_ForkSafeConnection], timeout: floa
     )
 
 
+def _side_file_exists(database: str) -> bool:
+    return any(os.path.lexists(f"{database}{suffix}") for suffix in ("-journal", "-wal", "-shm"))
+
+
 def _connect_through_descriptor(  # pragma: win32 no cover
     database: str, *, factory: type[_ForkSafeConnection], timeout: float, owner: int
 ) -> _ForkSafeConnection:
@@ -1172,13 +1176,14 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         _PROBE_DESCRIPTORS.drain()
         _raise_if_wal(fd, database)
         target = database
-        # SQLite opens the name it is given, following symlinks, and uses the -journal, -wal and -shm names beside it,
-        # so the database name is safe only where no process of another account can create names. A descriptor path
-        # such as /proc/self/fd/<n> is no better: SQLite reads it back into the name the kernel reports.
+        # SQLite also acts on side files left before a directory was made private. A descriptor path such as
+        # /proc/self/fd/<n> is no better: SQLite reads it back into the name the kernel reports.
         status: Final[os.stat_result] = os.lstat(pathlib.Path(database).parent)  # pragma: needs posix-hard-link
         # The sticky bit still lets others create names, so a directory anyone else may write to never qualifies.
         writable_by_others: Final[int] = status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)  # pragma: needs posix-hard-link
-        if status.st_uid not in {owner, 0} or writable_by_others:  # pragma: needs posix-hard-link
+        if (
+            status.st_uid not in {owner, 0} or writable_by_others or _side_file_exists(database)
+        ):  # pragma: needs posix-hard-link
             link = _link_beside(database, identity, owner)
             target = os.fspath(link.database)
         connection = sqlite3.connect(
