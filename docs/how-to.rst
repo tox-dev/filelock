@@ -1118,9 +1118,11 @@ running.
 peer takes the marker once it has watched it go ``lease_duration`` seconds without a refresh, timed on the peer's own
 monotonic clock so clock skew between hosts cannot expire a live claim. A peer reclaims a same-host lease or
 ``MarkerSoftFileLock`` owner that is provably dead at once. The expired holder keeps running and keeps using
-whatever the lock protects, so a lease says who *should* be working, not who alone is. ``on_compromise`` fires when the
-claim is lost. :attr:`token <filelock.SoftFileLease.token>` names a claim but does not fence one: to reject a superseded
-holder, the protected resource must be linearizable and fence on a monotonic generation it controls.
+whatever the lock protects, so a lease says who *should* be working, not who alone is. The heartbeat calls
+``on_compromise`` when it detects a lost claim. Release can also record a loss in :attr:`compromise
+<filelock.SoftFileLease.compromise>` after work ends, without calling the callback. :attr:`token
+<filelock.SoftFileLease.token>` names a claim but does not fence one: to reject a superseded holder, the protected
+resource must be linearizable and fence on a monotonic generation it controls.
 
 .. code-block:: python
 

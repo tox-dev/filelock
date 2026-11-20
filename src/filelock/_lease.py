@@ -10,6 +10,7 @@ __spec__ = cast("ModuleSpec", __spec__)
 __lazy_modules__ = [
     "contextlib",
     "math",
+    "pathlib",
     "secrets",
     "threading",
     "weakref",
@@ -21,6 +22,7 @@ __lazy_modules__ = [
 ]
 
 import os
+import pathlib
 import secrets
 import sys
 import time
@@ -298,10 +300,32 @@ class SoftFileLease(MarkerSoftFileLock):
                 if (marker.st_dev, marker.st_ino) == identity:
                     return
                 reason = "owner-changed"
-            # A peer's provisional exchange keeps our inode linked until it commits; a release must not report that
-            # temporary name change as a lost claim.
-            if os.fstat(fd).st_nlink == 0:
-                self._claim.compromise = LeaseCompromise(lock_file=self.lock_file, token=token, reason=reason)
+            held = os.fstat(fd)
+            if held.st_nlink:
+                if reason == "marker-missing":
+                    # A moved directory takes the original marker with it; its parent also disappears at this name.
+                    try:
+                        os.lstat(pathlib.Path(self._lock_path).parent)
+                    except FileNotFoundError:
+                        return
+                elif self._marker_has_break_name(held):
+                    return
+                # An exchange or directory rename can roll back while fstat runs.
+                with suppress(FileNotFoundError):
+                    if os.path.samestat(os.lstat(self._lock_path), held):
+                        return
+            self._claim.compromise = LeaseCompromise(lock_file=self.lock_file, token=token, reason=reason)
+
+    def _marker_has_break_name(self, held: os.stat_result) -> bool:  # pragma: win32 no cover
+        # An exchange keeps the old inode under the contender's break name until that contender commits or rolls back.
+        prefix = f"{pathlib.Path(self._lock_path).name}.break."
+        with os.scandir(pathlib.Path(self._lock_path).parent) as names:
+            for name in names:
+                if name.name.startswith(prefix):
+                    with suppress(FileNotFoundError):
+                        if os.path.samestat(name.stat(follow_symlinks=False), held):
+                            return True
+        return False
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
         super()._reset_after_fork_in_child()

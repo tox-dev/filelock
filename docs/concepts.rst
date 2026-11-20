@@ -623,9 +623,9 @@ Ownership scope per lock
        :meth:`force_break <filelock.StrictSoftFileLock.force_break>`. This is the fail-closed contract.
    * - :class:`SoftFileLease <filelock.SoftFileLease>`
      - A claim that *expires*; a peer may take it while the previous holder still runs
-     - A heartbeat refreshes the claim; ``on_compromise`` fires when it is lost. Overlap is permitted by design, so a
-       lease is a hint about who *should* work, not a guarantee that only one worker does. A forked child holds no
-       claim.
+     - A heartbeat refreshes the claim and calls ``on_compromise`` when it detects loss. Release can record a loss in
+       ``compromise`` without calling back. Overlap is permitted by design, so a lease is a hint about who *should* work,
+       not a guarantee that only one worker does. A forked child holds no claim.
    * - :class:`ReadWriteLock <filelock.ReadWriteLock>`
      - The acquisition object; state lives in a local SQLite database
      - Requires a local filesystem the SQLite VFS supports. A forked child must build a fresh instance. Crash recovery
@@ -671,9 +671,10 @@ claim by age, a strict lock needs no liveness guess; a claim it cannot read with
 
 A :class:`SoftFileLease <filelock.SoftFileLease>` trades exclusion for progress. Its :attr:`token
 <filelock.SoftFileLease.token>` names the claim this process published; it does **not** fence the protected resource.
-Reporting a compromise tells the previous holder to stop, but it cannot stop a holder that paused past its expiry and
-resumes afterwards. For true mutual exclusion where an expired holder can still write, the protected resource must be
-linearizable and must reject any operation carrying a fencing generation lower than the highest it has accepted, the way
+The heartbeat's compromise callback tells the previous holder to stop; a release-time ``compromise`` reports the loss
+after work ends. Neither can stop a holder that paused past its expiry and resumes afterwards. For true mutual exclusion
+where an expired holder can still write, the protected resource must be linearizable and must reject any operation
+carrying a fencing generation lower than the highest it has accepted, the way
 Chubby's lock sequence number and ZooKeeper's ``zxid`` are checked by the resource, not the client. A token names a
 claim; only a generation the resource validates can fence one.
 
