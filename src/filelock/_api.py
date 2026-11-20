@@ -1167,6 +1167,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             if not self.is_locked:
                 self._try_break_expired_lock()
                 _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
+                self._context.lock_generation += 1
                 self._acquire_with_fork_tracking()
                 self._raise_if_inherited()
                 self._raise_if_voided()
@@ -1453,22 +1454,25 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             running, and a ``thread_local=False`` lock while any other thread runs.
 
         """
-        counter_before: int | None = None
-        try:
-            counter_before = self._context.lock_counter
-            self._release_current(force=force)
-        except BaseException as release_error:
-            # A handler that raised after release() began and before the backend changed anything leaves the counter as
-            # it was; only then does a second attempt release the hold the caller gave up. A failed system call keeps it
-            # for an explicit retry, and a changed counter means a nested level or the backend's own retry already ran.
-            if (
-                counter_before is not None
-                and counter_before == self._context.lock_counter
-                and self._context.lock_file_fd is not None
-                and not is_system_call_failure(release_error)
+        release_snapshot: tuple[int, int] | None = None
+        transition_entered = False
+        try:  # ruff:ignore[too-many-statements-in-try-clause]  # gate-entry signals and release failures need separate recovery
+            release_snapshot = (self._context.lock_generation, self._context.lock_counter)
+            with (
+                contextlib.nullcontext()
+                if self._settings.thread_local or self._context.lock_file_fd is None
+                else self._transition_lock
             ):
-                with contextlib.suppress(Exception):
+                try:
+                    transition_entered = True
+                    release_snapshot = (self._context.lock_generation, self._context.lock_counter)
                     self._release_current(force=force)
+                except BaseException as release_error:
+                    self._retry_interrupted_release(release_snapshot, release_error, force=force, transition_held=True)
+                    raise
+        except BaseException as release_error:
+            if not transition_entered:
+                self._retry_interrupted_release(release_snapshot, release_error, force=force, transition_held=False)
             raise
         if force:
             self._release_thread_holds(exited_only=True)
@@ -1531,6 +1535,19 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _hold_state(self) -> FileLockContext:
         return self._context.current if isinstance(self._context, ThreadLocalFileContext) else self._context
+
+    def _retry_interrupted_release(
+        self, snapshot: tuple[int, int] | None, release_error: BaseException, *, force: bool, transition_held: bool
+    ) -> None:
+        # A retry can only touch the original hold; a later acquirer may restore the same recursion depth.
+        if snapshot is None or self._context.lock_file_fd is None or is_system_call_failure(release_error):
+            return
+        with (
+            contextlib.suppress(Exception),
+            contextlib.nullcontext() if transition_held or self._settings.thread_local else self._transition_lock,
+        ):
+            if snapshot == (self._context.lock_generation, self._context.lock_counter):
+                self._release_current(force=force)
 
     def _release_thread_holds(self, *, exited_only: bool) -> None:
         if not isinstance(context := self._context, ThreadLocalFileContext):
@@ -2132,6 +2149,7 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
     #: The lease claim of this hold, kept with it so a cross-thread release stops the right heartbeat.
     lease_claim: LeaseClaim | None = None
 
+    lock_generation: int = field(default=0, kw_only=True)
     in_flight: list[_InFlight] = field(default_factory=list, kw_only=True, repr=False)
 
 
