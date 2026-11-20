@@ -1137,7 +1137,7 @@ def _connect(
     *,
     factory: type[_ForkSafeConnection],
     timeout: float,
-    cancel_check: Callable[[], bool] | None = None,
+    cancel_check: Callable[[], bool] | None,
 ) -> _ForkSafeConnection:
     _FORKED_DATABASES.note_sqlite_use()
     # A symlink at the path would make SQLite open, lock, or create its target, so connect through a descriptor that
