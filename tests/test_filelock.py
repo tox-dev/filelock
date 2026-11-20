@@ -1091,7 +1091,7 @@ def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> No
     lock = FileLock(tmp_path / "a.lock")
     with lock:
         assert lock.is_locked
-        assert isinstance(lock, SoftFileLock)
+        assert SoftFileLock(tmp_path / "a.lock").is_lock_held_by_us
 
 
 def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -2009,12 +2009,12 @@ def test_interrupted_at_any_call_reports_whether_it_holds(
     hold_first: Callable[[BaseFileLock], object],
 ) -> None:
     # A with block makes no second call that could correct is_locked, so it must not report a hold the OS dropped.
-    lock_path: Final[str] = str(tmp_path / "a")
-    lock = lock_type(lock_path, thread_local=thread_local)
+    lock = lock_type(tmp_path / "baseline", thread_local=thread_local)
     hold_first(lock)
     points: Final[int] = _interrupt_points(lock, getattr(lock, operation))
     lock.release()
     for target in range(1, points + 1):
+        lock_path = tmp_path / str(target)
         lock = lock_type(lock_path, thread_local=thread_local)
         hold_first(lock)
         with pytest.raises(KeyboardInterrupt):
@@ -2332,7 +2332,7 @@ def test_stale_inode_retry_on_unlinked_lock(tmp_path: Path, mocker: MockerFixtur
 def test_permission_error_fallback_without_o_creat(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
-    lock = FileLock(str(lock_path), is_singleton=False)
+    lock = FileLock(str(lock_path), is_singleton=False, mode=0o600)
 
     real_open = os.open
     call_count = 0
@@ -2386,11 +2386,27 @@ def test_lock_file_of_another_account_under_sticky_parent_is_refused(  # pragma:
     assert (raised.value.filename, lock.is_locked, lock_path_in_shared_tmp.exists()) == expected
 
 
+@pytest.mark.skipif(sys.platform not in {"linux", "android"}, reason="ownership proof uses Linux procfs")
+@pytest.mark.parametrize(
+    "lock_type",
+    [
+        pytest.param(UnixFileLock, marks=NEEDS_FCNTL, id="flock"),
+        pytest.param(StrictSoftFileLock, marks=pytest.mark.requires_hard_links, id="strict"),
+    ],
+)
+def test_lock_with_mapped_overflow_uid(  # pragma: win32 no cover  # pragma: darwin no cover
+    lock_type: type[BaseFileLock], sticky_dir_with_mapped_owner: Path
+) -> None:
+    lock = lock_type(sticky_dir_with_mapped_owner / "marker", timeout=0)
+    with lock:
+        assert lock.is_locked
+
+
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_sticky_bit_fallback_handles_concurrent_unlink(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.touch()
-    lock = FileLock(str(lock_path), is_singleton=False)
+    lock = FileLock(str(lock_path), is_singleton=False, mode=0o600)
 
     real_open = os.open
     denied_create = False
@@ -2430,7 +2446,7 @@ def test_existing_lock_file_open_that_would_block_is_contention(tmp_path: Path, 
 
     mocker.patch("os.open", side_effect=open_would_block, autospec=True)
     with pytest.raises(Timeout):
-        FileLock(str(lock_path), is_singleton=False).acquire(timeout=0)
+        FileLock(str(lock_path), is_singleton=False, mode=0o600).acquire(timeout=0)
 
 
 _SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
@@ -2587,7 +2603,7 @@ def test_cancel_check_log_message(
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_filenotfound_on_fuse_nfs_retries(tmp_path: Path, mocker: MockerFixture) -> None:
     """Retry recovers from the FUSE/NFS os.open(O_CREAT) race that raises FileNotFoundError."""
-    lock = FileLock(str(tmp_path / "test.lock"), is_singleton=False)
+    lock = FileLock(str(tmp_path / "test.lock"), is_singleton=False, mode=0o600)
 
     real_open = os.open
     call_count = 0
@@ -3121,8 +3137,7 @@ def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_unix_context_exit_propagates_unlock_failure(tmp_path: Path, mocker: MockerFixture) -> None:
-    # One LOCK_EX for acquire, then one LOCK_UN per release; fail only the first unlock so __exit__ propagates it.
-    mocker.patch("filelock._unix.fcntl.flock", side_effect=[None, OSError(EIO, "unlock failed"), None], autospec=True)
+    mocker.patch("filelock._unix.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
     lock = FileLock(str(tmp_path / "a"))
     with pytest.raises(OSError, match="unlock failed"), lock:
         assert lock.is_locked
@@ -3259,6 +3274,16 @@ def test_windows_oplock_on_lock_file_does_not_outlast_deadline(
     with pytest.raises(Timeout):
         FileLock(str(oplocked_lock_path), is_singleton=False).acquire(timeout=timeout, blocking=blocking)
     assert time.monotonic() - started < 5
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_nonblocking_acquire_does_not_wait_for_oplock(tmp_path: Path, mocker: MockerFixture) -> None:
+    nt_open = mocker.patch("filelock._windows._nt_open", return_value=(0, 0x00000108), autospec=True)
+
+    with pytest.raises(Timeout):
+        FileLock(str(tmp_path / "a")).acquire(blocking=False)
+
+    assert nt_open.call_count == 1
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
@@ -4133,7 +4158,7 @@ def test_fallback_to_soft_default_switches_to_soft(tmp_path: Path, mocker: Mocke
         lock.acquire()
     try:
         assert lock.is_locked
-        assert isinstance(lock, SoftFileLock)  # switched to existence-lock semantics
+        assert SoftFileLock(str(tmp_path / "a")).is_lock_held_by_us
     finally:
         lock.release()
 
@@ -4798,7 +4823,6 @@ def test_unix_soft_fallback_keeps_a_replaced_file(tmp_path: Path, mocker: Mocker
     with pytest.raises(Timeout), pytest.warns(UserWarning, match="falling back to SoftFileLock"):
         lock.acquire(timeout=0.2)
 
-    assert isinstance(lock, SoftFileLock)  # fell back after refusing to unlink the mismatched file
     assert lock_path.exists()  # the replacement file was left in place
 
 

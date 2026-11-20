@@ -98,6 +98,30 @@ def test_link_trusts_identity_over_an_error(tmp_path: Path, mocker: MockerFixtur
     assert OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
+@pytest.mark.skipif(not CAPABILITIES["link-dir-fd"], reason="requires descriptor-relative hard links")
+def test_link_stays_in_the_open_generation_directory(  # pragma: needs link-dir-fd
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    files = OsFiles(str(tmp_path / "data.lock"))
+    root = tmp_path / "data.lock.rw"
+    files.prepare(str(root))
+    directory = root / "gen"
+    archived = root / "previous"
+    (source := directory / "stage").write_bytes(b"snapshot")
+    open_fd = os.open
+
+    def rotate_after_open(path: str, flags: int, *, dir_fd: int | None = None) -> int:
+        fd = open_fd(path, flags, dir_fd=dir_fd)
+        if path == "gen" and not archived.exists():
+            directory.rename(archived)
+            directory.mkdir()
+        return fd
+
+    mocker.patch.object(os, "open", autospec=True, side_effect=rotate_after_open)
+    assert files.link(str(source), str(target := directory / "generation"))
+    assert ((archived / "generation").read_bytes(), target.exists()) == (b"snapshot", False)
+
+
 def test_link_reports_an_unsupported_filesystem(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch.object(
         storage_mod,
@@ -245,6 +269,15 @@ def test_read_refused_on_windows_is_missing_after_the_grace(
     started = time.monotonic()
     assert OsFiles(str(tmp_path / "x.lock")).read(str(tmp_path / "record")) is None
     assert time.monotonic() - started >= storage_mod._WINDOWS_OPEN_GRACE - 0.05
+
+
+def test_listdir_stops_one_name_past_the_limit(tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch.object(storage_mod, "MAX_LISTED_NAMES", 2)
+    files = OsFiles(str(tmp_path / "x.lock"))
+    files.prepare(root := str(tmp_path / "x.lock.rw"))
+    for number in range(5):
+        Path(root, "holders", str(number)).touch()
+    assert len(files.listdir(str(Path(root, "holders")))) == 3
 
 
 def test_prepare_checks_the_directories_once_unless_forced(tmp_path: Path, mocker: MockerFixture) -> None:

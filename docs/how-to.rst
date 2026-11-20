@@ -445,8 +445,10 @@ When you have many readers and occasional writers, use :class:`ReadWriteLock <fi
 to proceed concurrently. ``ReadWriteLock`` is backed by SQLite; a ``.db`` extension is a convention rather than a
 requirement. Use a local filesystem the active SQLite VFS supports and a database file of its own. A database in WAL
 mode or with unsupported SQLite file-format versions raises :class:`ValueError`: neither provides a trusted exclusive
-write hold. A database whose schema takes more than a few kilobytes to load also raises :class:`ValueError`, because
-the acquire timeout does not bound that load.
+write hold.
+
+SQLite loads the schema before it can honor the acquire timeout. filelock limits each row to 1,024 bytes during this
+load and interrupts long-running schema queries. A lock database that exceeds either limit raises :class:`ValueError`.
 
 On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
 ``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
@@ -490,6 +492,9 @@ other accounts cannot create files in. The per-user temporary directory and ``%L
     # Only one process can write at a time
     with rw.write_lock():
         update_shared_data()
+
+A write lock raises :class:`ValueError` if SQLite opens the database read-only after the header check. A writer
+checks that its transaction can write before entering the critical section.
 
 You can pass ``timeout`` and ``blocking`` to the context managers:
 
@@ -694,14 +699,16 @@ out of the snapshot, so its own timeout does not leave readers blocked. The next
 a holder that died on another host once ``stale_threshold`` has passed. Filesystem calls on an unresponsive
 network mount can still outlast the acquisition timeout.
 
-Every generation snapshot is flushed to stable storage before it is linked into place, so a crash cannot leave one
-empty. A snapshot that still fails to parse (a write from outside filelock, a corrupted disk) makes every acquire raise
-:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming it, because guessing past it could admit
-two writers. To recover, rename the whole ``<path>.rw`` directory aside, then delete it; the rename takes it away in one
-step, where a recursive delete would let a participant read it half removed and fail. Every participant, including
-instances that stay alive, sees a new log and starts over from generation 1. A holder at that moment loses the lock: its
-next heartbeat reports it through ``on_compromise``, so remove the directory while nobody holds if you can. Generations
-restart too, so reset the high-water mark of any resource you fence with ``generation``.
+Each generation snapshot is flushed to stable storage before publication. If a snapshot is corrupt, acquisition raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` with its name. Skipping a corrupt snapshot
+could admit two writers.
+
+To recover, rename the whole ``<path>.rw`` directory aside, then delete it. Renaming removes the tree in one step.
+A recursive delete on the live path can leave other participants reading a partial log. Wait until all holders finish
+if possible. A holder that loses the tree learns of the loss through ``on_compromise`` at its next heartbeat.
+
+The first snapshot in the new log has generation 1. A waiter may enter at a later generation. Reset the high-water
+mark of any resource you fence with ``generation``.
 
 .. warning::
 
@@ -845,7 +852,7 @@ This happens automatically. You don't need to do anything special:
 Cross-host records remain because their PID cannot be interpreted locally. On platforms without process-start identity,
 a reused PID can also keep a dead owner's marker in place.
 
-Every platform stores a process start token in the marker to guard against PID recycling: Linux uses the
+Where available, the marker stores a process start token to guard against PID recycling: Linux uses the
 ``/proc/<pid>/stat`` start time folded with the boot id, macOS reads it through ``sysctl``, and Windows uses the
 ``GetProcessTimes`` creation time. Malformed records follow a different rule: a waiter may evict them once it has seen
 them unchanged for two seconds. An empty marker, which is all a ``SoftFileLock`` before 3.22 writes, is never evicted
@@ -933,11 +940,18 @@ block other contenders. If removing it fails too, :attr:`is_locked <filelock.Bas
 and the next ``acquire()`` on the same instance retries the removal before publishing again, raising until it succeeds.
 Garbage collecting the instance retries it as well.
 
-Each publication attempt uses a fresh random private-record name. A private record with another hard link is removed
-immediately; an unpublished record abandoned by a crash is removed after a two-second grace period. If a live publisher
-is paused past that grace period, it backs off and retries instead of entering without a public claim. A directory,
-symlink, or other non-regular node at a private-record name is protocol damage and fails closed without following or
-removing it.
+Each publication attempt uses a fresh random private-record name. On POSIX, a private record with another hard link is
+removed immediately; an unpublished record abandoned by a crash is removed after a two-second grace period. If a live
+publisher is paused past that grace period, it backs off and retries instead of entering without a public claim.
+
+On Windows, acquisition leaves abandoned private records in place because deleting one can wait for a reader's oplock.
+Repeated interruptions can leave enough records to slow claim scans. Stop all processes using the lock before cleaning
+up. Look next to the lock file for its hidden sentinel records (``.<lock-name>.private-v1-*.tmp``). In
+``<lock-name>.filelock/claims/``, remove stale ``.*.private-v1-*.tmp`` and ``.probe-v1-*.tmp`` files. Use ``force_break()``
+for public ``*.claim`` records.
+
+A directory, symlink, or other non-regular node at a private-record name is protocol damage and fails closed without
+following or removing it.
 
 Async code uses the same on-disk protocol:
 
@@ -1195,9 +1209,10 @@ blocks rather than breaking in. Only these combinations hold:
  Configure legacy age-based expiry
 ***********************************
 
-Only :class:`SoftFileLock <filelock.SoftFileLock>` honors ``lifetime``. The value sets the marker age that permits
-removal. A waiter may enter after that age even while the previous holder continues its protected operation. The age is
-the waiter's wall clock minus the marker's modification time, which the writer's or the file server's clock stamped, so
+The ``lifetime`` value sets the age at which a :class:`SoftFileLock <filelock.SoftFileLock>` waiter may remove a marker.
+A ``UnixFileLock`` that has already fallen back after ``ENOSYS`` also accepts a ``lifetime`` assignment for that path.
+A waiter may enter after that age even while the previous holder continues its protected operation. The age is the
+waiter's wall clock minus the marker's modification time, which the writer's or the file server's clock stamped, so
 every host must keep its clock in sync: a waiter whose clock runs ``lifetime`` ahead removes a marker written a moment
 ago. ``SoftFileLease`` compares no clocks across hosts.
 
@@ -1220,8 +1235,9 @@ is required or ``StrictSoftFileLock`` when unknown and stale claims must fail cl
 ``AsyncSoftFileLease`` or ``AsyncStrictSoftFileLock``. ``lifetime=None`` disables age-based removal; same-host dead-PID
 and malformed-record recovery still apply.
 
-Only ``SoftFileLock`` honors the value. Every other lock either drops it with a ``UserWarning`` naming why that backend
-cannot age out a holder, or refuses the keyword outright:
+``SoftFileLock`` honors the value at construction and on assignment. A ``UnixFileLock`` accepts an assignment only
+after it has fallen back on the current resolved path. Other locks either drop the value with a ``UserWarning`` naming
+why that backend cannot age out a holder, or refuse the keyword outright:
 
 .. list-table:: ``lifetime`` behavior
     :header-rows: 1
@@ -1234,6 +1250,9 @@ cannot age out a holder, or refuses the keyword outright:
       - Shared-marker recovery and forced breaking can still remove the marker.
     - - ``SoftFileLock``, non-``None``
       - Removes a marker after the configured age.
+      - A live holder may overlap its successor.
+    - - ``UnixFileLock`` after fallback, assigned non-``None``
+      - Removes a soft marker after the configured age on that resolved path.
       - A live holder may overlap its successor.
     - - Native lock, non-``None``
       - Warns and ignores: a kernel lock cannot be broken safely by file age.
@@ -1249,8 +1268,9 @@ cannot age out a holder, or refuses the keyword outright:
       - Not applicable.
 
 Native locks (:class:`UnixFileLock <filelock.UnixFileLock>` and
-:class:`WindowsFileLock <filelock.WindowsFileLock>`) ignore a non-``None`` value and emit a warning. The same is true
-when :class:`FileLock <filelock.FileLock>` selects one of those backends; on a build without ``fcntl``, ``FileLock`` may
+:class:`WindowsFileLock <filelock.WindowsFileLock>`) ignore a non-``None`` constructor value and emit a warning. A
+``UnixFileLock`` also ignores an assignment before fallback or on another resolved path. The same rules apply when
+:class:`FileLock <filelock.FileLock>` selects one of those backends; on a build without ``fcntl``, ``FileLock`` may
 instead alias ``SoftFileLock``. A kernel lock lives on the inode, so pathname age cannot revoke it. The async peers
 behave as their synchronous counterparts do.
 
@@ -1458,9 +1478,9 @@ cleanup after a close error.
  Fail closed instead of downgrading to soft
 ***********************************************
 
-On Unix, when ``flock`` returns ``ENOSYS``, :class:`UnixFileLock <filelock.UnixFileLock>` switches to
-:class:`SoftFileLock <filelock.SoftFileLock>` semantics by default. If the application requires the native backend,
-construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propagates:
+On Unix, when ``flock`` returns ``ENOSYS``, :class:`UnixFileLock <filelock.UnixFileLock>` follows
+:class:`SoftFileLock <filelock.SoftFileLock>` semantics for that resolved path by default. If the application requires
+the native backend, construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propagates:
 
 .. code-block:: python
 
@@ -1470,6 +1490,20 @@ construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propaga
 
 ``ENOSYS`` then propagates as the original :class:`OSError` from :func:`fcntl.flock`, with
 :data:`errno.ENOSYS`; filelock does not wrap it.
+
+After fallback, ``UnixFileLock`` keeps its class. Use ``pid`` and ``is_lock_held_by_us`` to inspect the soft marker,
+``lifetime`` to set its expiry, and ``break_lock()`` to clear it. On a native path, the marker properties raise
+:class:`AttributeError`, ``break_lock()`` raises :class:`RuntimeError`, and assigning ``lifetime`` emits a warning.
+
+If the requested mode permits writes by other accounts, filelock probes a private file in the same directory before
+creating the lock file. On a filesystem without ``flock``, the new marker excludes group and other writes from creation.
+Existing lock files need no private probe. If the directory denies the probe or only the target rejects ``flock``,
+filelock needs atomic exchange to replace a writable target. Without exchange it raises :class:`PermissionError`
+and can leave an empty marker.
+
+Where atomic exchange is unavailable, an interrupt during publication may leave an empty marker or the acquiring
+process's PID after the acquire failed. Check that no process holds the lock before clearing that marker with
+``break_lock()``.
 
 Two other options imply the same refusal, because a soft lock cannot honor either: ``preserve_lock_file=True`` (a soft
 lock releases by unlinking its marker) and ``on_acquired`` (a soft lock keeps protocol state in the marker and has no

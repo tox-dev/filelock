@@ -1,0 +1,2 @@
+On filesystems without ``flock``, a Unix lock creates its soft marker with group and other writes disabled, even when
+the filesystem also refuses atomic exchange.

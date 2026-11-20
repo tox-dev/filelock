@@ -97,6 +97,31 @@ def test_singleton_different_files(tmp_path: Path) -> None:
     assert lock1 is not lock2
 
 
+def test_singleton_rejects_directory_change_during_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    spool = tmp_path / "spool"
+    state.mkdir()
+    spool.mkdir()
+
+    class MovingPath:
+        calls = 0
+
+        def __fspath__(self) -> str:
+            self.calls += 1
+            if self.calls == 2:
+                monkeypatch.chdir(spool)
+            return "gate.db"
+
+    monkeypatch.chdir(state)
+    with pytest.raises(RuntimeError, match="path changed during singleton construction"):
+        ReadWriteLock(MovingPath())
+
+    with ReadWriteLock(state / "gate.db").write_lock():
+        assert not writer_gets_in(str(state / "gate.db"))
+
+
 def test_singleton_rejects_different_timeout(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, timeout=1.0)
     with pytest.raises(ValueError, match="Singleton lock created with"):

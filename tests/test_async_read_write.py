@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import gc
+import os
 import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, NoReturn
 
 import pytest
 import pytest_asyncio
 
-from tests.capability_marks import NEEDS_COLLECTED_FINALIZATION, NEEDS_GC_OBJECTS, XFAIL_WITHOUT_COROUTINE_CANCELLATION
+from tests.capability_marks import (
+    NEEDS_COLLECTED_FINALIZATION,
+    NEEDS_FORK,
+    NEEDS_GC_OBJECTS,
+    XFAIL_WITHOUT_COROUTINE_CANCELLATION,
+)
+from tests.fork_helpers import exit_child, fork_process
 from tests.read_write_helpers import (
     ACQUIRE_SETTINGS,
     INVALID_TIMEOUTS,
@@ -25,7 +33,7 @@ pytest.importorskip("sqlite3")
 
 import sqlite3
 
-from filelock import AsyncReadWriteLock, ReadWriteLock, Timeout
+from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock, Timeout
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator
@@ -50,6 +58,27 @@ def _clear_singleton_cache() -> Generator[None]:
 @pytest.fixture
 def lock_file(tmp_path: Path) -> str:
     return str(tmp_path / "test_lock.db")
+
+
+@NEEDS_FORK
+def test_failed_async_construction_keeps_other_fork_resets(tmp_path: Path) -> None:  # pragma: win32 no cover
+    index = tmp_path / "index.db"
+    index.symlink_to(tmp_path / "missing.db")
+    with pytest.raises(OSError, match="symbolic links") as failed:
+        AsyncReadWriteLock(index)
+    parent = FileLock(tmp_path / "private.lock", is_singleton=False)
+    parent.acquire()
+
+    def check_child() -> NoReturn:
+        assert (parent.is_locked, parent.lock_counter) == (False, 0)
+        exit_child(0)
+
+    try:
+        _, status = os.waitpid(fork_process(check_child), 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        parent.release()
+    assert failed.value.errno == errno.ELOOP
 
 
 @pytest.mark.asyncio
