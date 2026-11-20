@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import runpy
+import stat
 import sys
 import time
 from contextlib import suppress
@@ -33,6 +34,38 @@ _SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 _NEEDS_ACCESS_NOFOLLOW: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["access-nofollow"], reason="os.access cannot refuse to follow a symlink here"
 )
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "android"}, reason="overflowuid is a Linux kernel setting")
+@pytest.mark.parametrize(
+    ("overflowuid", "expected"),
+    [
+        pytest.param("65534", 65534, id="ambiguous"),
+        pytest.param("65535", None, id="distinct"),
+        pytest.param("invalid", 65534, id="invalid"),
+    ],
+)
+def test_foreign_owner_refuses_ambiguous_uid(  # pragma: win32 no cover  # pragma: darwin no cover
+    mocker: MockerFixture, overflowuid: str, expected: int | None
+) -> None:
+    mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=65534)
+    mocker.patch.object(Path, "read_text", autospec=True, return_value=overflowuid)
+    owner = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 0, 65534, 0, 0, 0, 0, 0))
+    parent = os.stat_result((stat.S_IFDIR | 0o1777, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    assert filelock._util.foreign_owner(owner, parent) == expected
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "android"}, reason="overflowuid is a Linux kernel setting")
+def test_foreign_owner_refuses_uid_when_overflowuid_is_unreadable(  # pragma: win32 no cover  # pragma: darwin no cover
+    mocker: MockerFixture,
+) -> None:
+    mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=65534)
+    mocker.patch.object(Path, "read_text", autospec=True, side_effect=OSError("unreadable"))
+    owner = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 0, 65534, 0, 0, 0, 0, 0))
+    parent = os.stat_result((stat.S_IFDIR | 0o1777, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    assert filelock._util.foreign_owner(owner, parent) == 65534
 
 
 @pytest.fixture

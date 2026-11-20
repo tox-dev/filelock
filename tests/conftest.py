@@ -255,6 +255,17 @@ def directories_of_another_account(mocker: MockerFixture) -> None:  # pragma: ne
     mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
 
 
+@pytest.fixture  # pragma: darwin no cover
+def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma: needs foreign-sticky-tmp
+    assert sys.platform != "win32"  # narrows os.geteuid for the type checker
+
+    def read_proc(path: Path, **_: str | None) -> str:
+        assert path == Path("/proc/sys/kernel/overflowuid")
+        return str(os.geteuid())
+
+    mocker.patch.object(Path, "read_text", autospec=True, side_effect=read_proc)
+
+
 @pytest.fixture
 def create_junction() -> Callable[[Path, Path], None]:  # pragma: win32 cover
     # A junction needs no privilege, unlike a symlink, and lstat reports it as a directory.
