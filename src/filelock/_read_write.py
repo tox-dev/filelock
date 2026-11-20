@@ -1467,7 +1467,7 @@ def _open_lock_database(database: str, *, oplock_wait: float = 0) -> int:
     # The owner of a database under a sticky parent may unlink it during a hold. A contender then opens a new database
     # at the path, and both hold the lock.
     try:
-        owner: Final = foreign_owner(found, pathlib.Path(database).parent.stat())  # pragma: win32 no cover
+        owner: Final[int | None] = foreign_owner(found, pathlib.Path(database).parent.stat())  # pragma: win32 no cover
     except OSError:
         os.close(fd)
         raise
