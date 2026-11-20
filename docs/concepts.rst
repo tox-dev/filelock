@@ -663,6 +663,11 @@ variants) run each blocking step on a worker thread. Canceling the awaiting task
 the attempt back atomically, so a canceled ``acquire`` never leaves a half-held lock. A task holding a lock that is
 canceled still owns releasing it; cancellation does not release the lock for you.
 
+Once ``AsyncFileLock.release()`` has started, it finishes any owed release before
+raising cancellation. If you catch :exc:`asyncio.CancelledError` or the :exc:`TimeoutError` from an enclosing
+:func:`asyncio.timeout`, do not retry that release. Tasks sharing a lock instance share its counter, so a retry can
+release another task's level.
+
 Strict claims, leases, and fencing
 ==================================
 
