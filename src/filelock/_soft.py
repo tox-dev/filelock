@@ -577,17 +577,7 @@ class SoftFileLock(BaseFileLock):
                     self._close_released_fd(fd, default_suppresses=False)
                 raise
             return True
-        if replaced:
-            try:
-                # A peer's exchange holds our marker under its break name and will put it back. Overwriting the record
-                # lets contenders age it out instead of waiting on this live PID. The write comes before the truncate
-                # so the file is never empty.
-                released: Final[bytes] = b"filelock/released\n"
-                write_at_start(fd, released)
-                os.ftruncate(fd, len(released))
-            except OSError:
-                return False
-        return True
+        return not replaced or _retire_displaced_marker(fd)
 
 
 def parse_lock_holder(content: str | None) -> _LockHolder | None:
@@ -695,6 +685,19 @@ def _marker_identity_at(name: str) -> tuple[int, int] | None:  # pragma: win32 n
         return _file_identity(os.lstat(name))
     except (FileNotFoundError, NotADirectoryError):
         return None
+
+
+def _retire_displaced_marker(fd: int) -> bool:  # pragma: win32 no cover
+    # A peer may restore this marker after an exchange. Retire its live PID before truncating so it never reads empty.
+    released: Final[bytes] = b"filelock/released\n"
+    try:
+        write_at_start(fd, released)
+        os.ftruncate(fd, len(released))
+    except TimeoutError:
+        raise
+    except OSError:
+        return False
+    return True
 
 
 __all__ = [
