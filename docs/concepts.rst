@@ -140,8 +140,9 @@ that follows the same locking convention; they do not prevent unrelated access t
 **Soft locks / PID locks** (SoftFileLock, the fallback on systems without fcntl)
 
 A shared marker indicates that a resource is in use. The marker contains the PID, hostname, and a process start token of
-the holder. A process attempts acquisition with ``O_CREAT | O_EXCL`` and releases by deleting the pathname. The
-filesystem must provide coherent exclusive creation and directory updates to every participant.
+the holder. Each process creates the marker exclusively and releases it by removing the pathname. If marker creation
+is interrupted, cleanup closes the descriptor and attempts to remove the marker it created. The filesystem must provide
+coherent exclusive creation and directory updates to every participant.
 
 This is the same concept as a traditional **PID lock file** (as used by Unix daemons and the deprecated
 `lockfile <https://pypi.org/project/lockfile/>`_ library's ``PIDLockFile``). The PID stored in the file identifies the
@@ -485,10 +486,10 @@ The defense differs by platform:
   reparse points and rejects a symlink or junction by inspecting the handle it locks, so a swap between check and use
   cannot redirect it. Only the last path component is guarded; the lock directory must not be writable by untrusted
   users.
-- :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL``, which fails on any
-  existing name. Before reading a marker it classifies the path with ``lstat`` and treats anything other than a regular
-  file as malformed, then checks the opened handle again with ``fstat``. On Windows it reads and breaks markers through
-  handles that do not wait for an oplock holder to answer. A read-handle oplock can delay the rename of a stale marker;
+- :class:`SoftFileLock <filelock.SoftFileLock>` creates its marker with ``O_CREAT | O_EXCL`` on Unix or ``FILE_CREATE``
+  on Windows. Both refuse a symlink at the marker name, including a dangling link. Before reading a marker the lock
+  checks that it is a regular file with ``lstat`` and verifies the opened handle with ``fstat``. On Windows it reads and
+  breaks markers through handles that do not wait for an oplock holder to answer. A read-handle oplock can delay the rename of a stale marker;
   filelock cancels that wait after half a second per attempt, then checks the ``timeout``.
 - :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches
   ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
@@ -741,6 +742,10 @@ also what a current acquirer shows before it writes its record. A contender ther
 holder. A plain :class:`SoftFileLock <filelock.SoftFileLock>` self-heals any other malformed marker once it has watched
 it stay unchanged for a short grace window on its own monotonic clock, which absorbs the brief gap between creating a
 marker and writing its record.
+
+On Windows, if the new marker cannot be converted to a file descriptor, cleanup writes a newline before attempting
+deletion. A reader that temporarily denies deletion can then leave a malformed marker for a contender to reclaim.
+If the filesystem refuses both the write and the deletion, an empty marker may remain.
 
 It tells markers apart by modification time, inode number and change time (the time the kernel last changed the file's
 metadata). An owner can set a file's modification time, and ext4 hands a freed inode number to the next file, but no
