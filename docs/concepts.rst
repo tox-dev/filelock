@@ -792,12 +792,12 @@ Two Linux processes do not always read the same token for one task. Since Linux 
 boottime offset (the shift a time namespace applies to the boot clock) to ``starttime``. A process in a time namespace
 with such an offset therefore records no start token and reads none. It falls back to the PID alone, so a recycled PID
 keeps a dead owner's marker until ``timeout``, ``lifetime`` or ``break_lock()``. A time namespace without an offset, as
-container runtimes create, keeps the token. A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's
-``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
-whenever either side lacks the boot id.
-The same fallback applies when a file is mounted over the boot-id path, including a file from procfs itself, or when
-``/proc/self/mountinfo`` cannot be read. A process with a separate procfs mount can then compare the holder's
-``starttime`` even if it sees the kernel's boot id instead.
+container runtimes create, keeps the token.
+
+A process records only ``starttime`` if it cannot read ``/proc/sys/kernel/random/boot_id`` or ``/proc/self/mountinfo``.
+A file mounted over the boot ID has the same effect. For example, systemd's ``ProcSubset=pid`` hides the boot ID, and
+``systemd-nspawn`` can mount a container-specific ID over it. When either process lacks the kernel's boot ID, the
+contender compares ``starttime`` alone.
 
 A procfs numbers tasks by the PID namespace of the process that mounted it. A process in a PID namespace that still sees
 an outer ``/proc`` (``unshare --pid`` without ``--mount-proc``, ``nsenter --pid`` without ``--mount``) finds an
