@@ -664,6 +664,9 @@ expired holder can resume:
 As with ``ReadWriteLock``, ``release()`` of a write lock from another thread raises ``RuntimeError``, and so does
 ``release()`` from a thread that holds no level of a shared read lock. ``on_compromise`` runs on the hold's own heartbeat
 thread, so it may release, and ``release(force=True)`` and ``close()`` work from any thread.
+If peers keep winning generation updates until this holder reaches ``stale_threshold``, release raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>`. Its holder record is removed, but the generation
+log may still name it; a later contender waits for stale-holder eviction.
 
 ``timeout`` and ``blocking`` set instance-wide defaults that each acquisition inherits. Passing ``None`` per call means
 "use the instance default", which is not the same as ``-1``:

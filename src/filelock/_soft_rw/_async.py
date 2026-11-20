@@ -285,6 +285,7 @@ class AsyncSoftReadWriteLock:
             other wrappers on the same path stay. A wrapper that holds no level for the task releases nothing.
 
         :raises RuntimeError: if the calling task holds no level through this wrapper and *force* is ``False``
+        :raises SoftFileLockProtocolError: if peers keep winning generation updates until the holder's stale threshold
 
         """
         if self._creator_pid == os.getpid():

@@ -325,8 +325,10 @@ def test_leave_stops_retrying_after_stale_threshold(
         return False
 
     mocker.patch.object(GenerationLog, "commit", autospec=True, side_effect=lose_commit)
-    reader.leave()
+    with pytest.raises(SoftFileLockProtocolError, match="could not withdraw holder") as caught:
+        reader.leave()
 
+    assert caught.value.lock_file == lock_file
     assert len(lost) == 2
     assert not Path(root, "holders", reader.token).exists()
     assert reader.generation is None

@@ -138,7 +138,7 @@ class GenerationLog:
     # The ordered snapshots under ``gen/``, found by listing and probing, advanced by linking the next one.
     def __init__(self, files: _Files, lock_file: str, root: str) -> None:
         self._files = files
-        self._lock_file = lock_file
+        self.lock_file = lock_file
         self._directory = Path(root, GENERATIONS_DIRECTORY)
         self._epoch_path = str(self._directory / _EPOCH_NAME)
         self._head_path = str(self._directory / _HEAD_NAME)
@@ -162,7 +162,7 @@ class GenerationLog:
         # When everything the first pass named is gone, peers compacted past it while this client looked, or the log was
         # replaced; one more pass settles whether this client cannot see the head at all.
         if (latest := self._find()) is None and (latest := self._find()) is None:
-            raise SoftFileLockProtocolError(self._lock_file, None, "generation log names no readable snapshot")
+            raise SoftFileLockProtocolError(self.lock_file, None, "generation log names no readable snapshot")
         self._latest = latest
         return latest
 
@@ -243,7 +243,7 @@ class GenerationLog:
             return None
         if (snapshot := parse_snapshot(data)) is None or snapshot.generation != generation:
             name = self._name(generation)
-            raise SoftFileLockProtocolError(self._lock_file, name, "malformed generation record")
+            raise SoftFileLockProtocolError(self.lock_file, name, "malformed generation record")
         return snapshot
 
     def _probe(self, start: Snapshot, patience: int = _RETAINED_GENERATIONS) -> Snapshot:
@@ -578,8 +578,11 @@ class Participant:
                         writer=None if latest.writer == self.token else latest.writer,
                         readers=latest.readers - {self.token},
                     )
-                    if self._log.commit(successor) or self._clock() >= give_up:
+                    if self._log.commit(successor):
                         break
+                    if self._clock() >= give_up:
+                        msg = "could not withdraw holder from generation log before its stale threshold"
+                        raise SoftFileLockProtocolError(self._log.lock_file, None, msg)
             finally:
                 self._entered = False
                 self.generation = None
