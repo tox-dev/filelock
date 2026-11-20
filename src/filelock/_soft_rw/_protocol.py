@@ -292,11 +292,7 @@ class GenerationLog:
         # Readers verify the generation HEAD names, so a failed rename costs a probe, not the commit. A late one would
         # move HEAD back past later commits, so HEAD only ever moves forward.
         with suppress(OSError):
-            if (
-                (epoch := self._valid_epoch()) is not None
-                and self._files.read(self._epoch_path) == epoch
-                and (self._head_generation() or 0) < successor.generation
-            ):
+            if (epoch := self._valid_epoch()) is not None and (self._head_generation() or 0) < successor.generation:
                 self._publish(self._head_path, epoch + data, self._files.replace, durable=False)
         if (expired := successor.generation - _RETAINED_GENERATIONS - 1) > 0:
             self._compact_through(expired)
