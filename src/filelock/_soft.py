@@ -509,10 +509,11 @@ class SoftFileLock(BaseFileLock):
     def _release(self) -> None:
         fd = self._context.lock_file_fd
         assert fd is not None  # ruff:ignore[assert]  # _release runs only while held, so the descriptor is set
-        # Acquisition saved this inode before publishing the hold. A signal can interrupt another fstat during release,
-        # and a successor may own the pathname after expiry.
+        # Normally use the inode saved at acquisition: a handler-raised OSError during fstat must not strand the marker.
+        # A signal handler can release between publishing the descriptor and its identity, so read it there only.
         identity = self._context.lock_file_fd_identity
-        assert identity is not None  # ruff:ignore[assert]  # both acquisition paths publish the inode before the hold
+        if identity is None:
+            identity = _file_identity(os.fstat(fd))
         if sys.platform == "win32":  # pragma: win32 cover
             self._release_then_unlink(fd, identity)
         else:  # pragma: win32 no cover

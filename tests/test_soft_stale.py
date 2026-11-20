@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import itertools
 import os
+import signal
 import socket
 import sys
 import threading
@@ -11,13 +12,14 @@ from contextlib import contextmanager, suppress
 from errno import EACCES, EINTR, EINVAL, EIO, ENODEV, ENOSPC, EPERM
 from multiprocessing import get_context
 from pathlib import Path
-from types import SimpleNamespace
+from types import FrameType, SimpleNamespace
 from typing import TYPE_CHECKING, Final
 
 import pytest
 
 import filelock._soft  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
+from filelock._api import FileLockContext
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, read_lock_file
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
@@ -26,6 +28,7 @@ from tests.capability_marks import (
     NEEDS_FIFO,
     NEEDS_FOREIGN_STICKY_TMP,
     NEEDS_POSIX_SIGNALS,
+    NEEDS_PROMPT_SIGNAL_DELIVERY,
     NEEDS_STALE_RECLAIM,
     NEEDS_SYMLINK,
     NEEDS_UNLINK_OPEN_FILE,
@@ -1819,6 +1822,41 @@ def test_release_keeps_marker_cleanup_after_fstat_signal(
     lock.release()
     mocker.stop(fstat)
 
+    with SoftFileLock(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@NEEDS_POSIX_SIGNALS
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+def test_signal_handler_can_release_during_identity_publication(
+    lock_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock = SoftFileLock(lock_path, is_singleton=False)
+    released: list[bool] = []
+
+    def release_in_handler(_signum: int, _frame: FrameType | None) -> None:
+        released.append(lock.is_locked)
+        lock.release()
+
+    def signal_after_descriptor(
+        context: FileLockContext,
+        name: str,
+        value: object,  # simplint: ignore[imprecise-annotation]  # context fields have different value types
+    ) -> None:
+        context.__dict__[name] = value
+        if context is lock._hold_state() and name == "lock_file_fd" and value is not None and not released:
+            signal.raise_signal(signal.SIGUSR1)
+
+    previous = signal.signal(signal.SIGUSR1, release_in_handler)
+    monkeypatch.setattr(FileLockContext, "__setattr__", signal_after_descriptor)
+    try:
+        lock.acquire(timeout=1)
+    finally:
+        monkeypatch.undo()
+        signal.signal(signal.SIGUSR1, previous)
+    assert released == [True]
+    assert lock.is_locked
+    lock.release()
     with SoftFileLock(lock_path, blocking=False, is_singleton=False) as peer:
         assert peer.is_locked
 
