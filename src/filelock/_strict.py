@@ -381,10 +381,10 @@ class StrictSoftFileLock(BaseFileLock):
             # GraalPy defers finalizers to the host collector, so its tests cannot drive this cleanup.
             self._discard_pending_doorways(exited_only=exited_only)  # pragma: needs collected-finalization
 
-    def _reconcile_failed_acquire(self, canonical: str) -> None:
+    def _reconcile_failed_acquire(self, canonical: str, *, levels_before: int) -> None:
         # The acquisition is over, so the next one resolves the working directory again rather than reuse this one's.
         self._context.claim_root = None
-        super()._reconcile_failed_acquire(canonical)
+        super()._reconcile_failed_acquire(canonical, levels_before=levels_before)
 
     def _release(self) -> None:
         fd = cast("int", self._context.lock_file_fd)

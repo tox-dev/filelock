@@ -372,14 +372,16 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         ):
             # Re-entry only counts, so it skips the executor round trip that resolving the path costs.
             if self.is_locked:
+                # A proxy-construction error must leave the existing level unchanged.
+                proxy = AsyncAcquireReturnProxy(lock=self)
                 self._context.lock_counter += 1
-                return AsyncAcquireReturnProxy(lock=self)
+                return proxy
             # A canceled provisional acquire must finish rollback before another caller can claim its descriptor.
             canonical_path = await self._off_loop(functools.partial(canonical, self.lock_file))
-            self._context.lock_counter += 1
-            self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
-            self._pin_lock_path(canonical_path)
             try:
+                self._context.lock_counter = 1
+                self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
+                self._pin_lock_path(canonical_path)
                 await self._async_poll_until_acquired(
                     blocking=blocking,
                     cancel_check=cancel_check,
@@ -388,7 +390,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
                     start_time=start_time,
                 )
             except BaseException:
-                self._reconcile_failed_acquire(canonical_path)
+                self._reconcile_failed_acquire(canonical_path, levels_before=0)
                 raise
             self._commit_acquire(canonical_path)
             return AsyncAcquireReturnProxy(lock=self)

@@ -1838,6 +1838,66 @@ def test_acquire_after_one_interrupted_once_held_excludes_another_process(tmp_pa
     assert (result.returncode, result.stdout.strip()) == (0, "refused"), result.stderr
 
 
+@pytest.mark.parametrize(
+    "lock_type",
+    [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease, StrictSoftFileLock],
+)
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread-local"), pytest.param(False, id="shared")])
+@pytest.mark.parametrize("interrupted", ["_raise_if_would_deadlock", "_pin_lock_path"])
+def test_early_acquire_exception_leaves_no_counted_hold(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    lock_type: type[BaseFileLock],
+    thread_local: bool,
+    interrupted: str,
+) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = lock_type(lock_path, thread_local=thread_local)
+    mocker.patch.object(lock, interrupted, side_effect=KeyboardInterrupt, autospec=True)
+
+    with pytest.raises(KeyboardInterrupt):
+        lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    with lock:
+        assert lock.lock_counter == 1
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    with lock_type(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, MarkerSoftFileLock, SoftFileLease, StrictSoftFileLock])
+def test_early_nested_acquire_exception_keeps_one_level(
+    tmp_path: Path, mocker: MockerFixture, lock_type: type[BaseFileLock]
+) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = lock_type(lock_path)
+    lock.acquire()
+    mocker.patch.object(lock, "_raise_if_would_deadlock", side_effect=KeyboardInterrupt, autospec=True)
+
+    with pytest.raises(KeyboardInterrupt):
+        lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    lock.release()
+    with lock_type(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+def test_early_acquire_refuses_same_stack_reentry(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = FileLock(str(tmp_path / "a.lock"))
+
+    def reenter(_canonical: str, *, timeout: float, blocking: bool) -> None:
+        lock.acquire(timeout=timeout, blocking=blocking)
+
+    mocker.patch.object(lock, "_raise_if_would_deadlock", side_effect=reenter, autospec=True)
+    with pytest.raises(RuntimeError, match="acquired again while this thread's acquire of it waits"):
+        lock.acquire()
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+
+
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
 def test_acquire_from_a_signal_handler_during_an_acquire_fails_fast(tmp_path: Path, mocker: MockerFixture) -> None:
     lock: Final[SoftFileLock] = SoftFileLock(str(tmp_path / "a"))
@@ -4296,24 +4356,19 @@ def test_append_exception_context_terminates_on_a_cycle() -> None:
     assert second.__context__ is first
 
 
-def test_undo_acquire_keeps_registry_entry_while_still_held(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_failed_nested_acquire_keeps_outer_registry_entry(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"), is_singleton=False)
     lock.acquire()
     key = lock._context.lock_file_key
     assert _REGISTRY.held.get(key) == id(lock)
 
-    # A reentrant acquire that fails while the lock reports unheld routes through _undo_acquire with the counter
-    # still above zero, so the registry entry the outer hold owns must survive.
-    held_fd = lock._context.lock_file_fd
-    lock._context.lock_file_fd = None  # is_locked now reports False
-    mocker.patch.object(lock, "_poll_until_acquired", side_effect=Timeout(lock.lock_file), autospec=True)
+    mocker.patch.object(lock, "_raise_if_would_deadlock", side_effect=Timeout(lock.lock_file), autospec=True)
     with pytest.raises(Timeout):
         lock.acquire(timeout=0)
 
-    assert lock._context.lock_counter == 1  # decremented from 2, the deeper hold remains
-    assert _REGISTRY.held.get(key) == id(lock)  # entry preserved because the counter did not reach zero
+    assert lock._context.lock_counter == 1
+    assert _REGISTRY.held.get(key) == id(lock)
 
-    lock._context.lock_file_fd = held_fd
     lock.release()
 
 

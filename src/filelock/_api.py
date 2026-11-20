@@ -1024,13 +1024,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 msg = f"lock '{self.lock_file}' is acquired again while this thread's release of it runs"
                 raise RuntimeError(msg)
             canonical_path = canonical(self.lock_file)
-            self._context.lock_counter += 1
-
-            self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
-            if not self.is_locked:
-                self._pin_lock_path(canonical_path)
-
-            try:
+            self._context.acquiring = inspect.currentframe()
+            levels_before = self._context.lock_counter if self.is_locked else 0
+            try:  # ruff:ignore[too-many-statements-in-try-clause]  # each counted acquire step needs the same rollback
+                self._context.lock_counter = levels_before + 1
+                self._raise_if_would_deadlock(canonical_path, timeout=timeout, blocking=blocking)
+                if not self.is_locked:
+                    self._pin_lock_path(canonical_path)
                 self._poll_until_acquired(
                     blocking=blocking,
                     cancel_check=cancel_check,
@@ -1038,11 +1038,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                     poll_interval=poll_interval,
                     start_time=start_time,
                 )
+                self._commit_acquire(canonical_path)
+                return AcquireReturnProxy(lock=self)
             except BaseException:
-                self._reconcile_failed_acquire(canonical_path)
+                self._reconcile_failed_acquire(canonical_path, levels_before=levels_before)
                 raise
-            self._commit_acquire(canonical_path)
-            return AcquireReturnProxy(lock=self)
+            finally:
+                self._context.acquiring = None
 
     def _raise_if_inherited(self) -> None:
         if self._creator_pid != os.getpid():  # pragma: forked child
@@ -1106,7 +1108,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         # block on a lock this flow already owns. A finite timeout or ``blocking=False`` keeps the normal Timeout path.
         would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
         if would_block and _REGISTRY.held.get(self._registry_key(canonical)) not in {None, self._holder_id}:
-            self._context.lock_counter -= 1
             msg = (
                 f"Deadlock: lock '{self.lock_file}' is already held by a different {self._deadlock_holder_desc}. "
                 f"Use is_singleton=True to enable reentrant locking across instances."
@@ -1143,37 +1144,33 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         lock_id = id(self)
         lock_filename = self.lock_file
         attempt = 0
-        self._context.acquiring = inspect.currentframe()
-        try:
-            # Created once, so a directory that disappears while the acquisition waits fails it rather than building a
-            # second lock file beside the holder's, and not on re-entry, which joins a hold whose parent may be renamed.
+        # Created once, so a directory that disappears while the acquisition waits fails it rather than building a
+        # second lock file beside the holder's, and not on re-entry, which joins a hold whose parent may be renamed.
+        if not self.is_locked:
+            ensure_directory_exists(self._lock_path)
+        while True:
+            self._raise_if_inherited()
             if not self.is_locked:
-                ensure_directory_exists(self._lock_path)
-            while True:
+                self._try_break_expired_lock()
+                _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
+                self._acquire_with_fork_tracking()
                 self._raise_if_inherited()
-                if not self.is_locked:
-                    self._try_break_expired_lock()
-                    _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)
-                    self._acquire_with_fork_tracking()
-                    self._raise_if_inherited()
-                if self.is_locked:
-                    _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
-                    return
-                if self._check_give_up(
-                    blocking=blocking,
-                    cancel_check=cancel_check,
-                    timeout=timeout,
-                    start_time=start_time,
-                ):
-                    raise Timeout(lock_filename, self._unprobeable_holder())
-                attempt += 1
-                delay = self._poll_delay(poll_interval, attempt)
-                if timeout >= 0:
-                    delay = min(delay, max(start_time + timeout - time.perf_counter(), 0.0))
-                _LOGGER.debug("Lock %s not acquired on %s, waiting %s seconds ...", lock_id, lock_filename, delay)
-                time.sleep(delay)
-        finally:
-            self._context.acquiring = None
+            if self.is_locked:
+                _LOGGER.debug("Lock %s acquired on %s", lock_id, lock_filename)
+                return
+            if self._check_give_up(
+                blocking=blocking,
+                cancel_check=cancel_check,
+                timeout=timeout,
+                start_time=start_time,
+            ):
+                raise Timeout(lock_filename, self._unprobeable_holder())
+            attempt += 1
+            delay = self._poll_delay(poll_interval, attempt)
+            if timeout >= 0:
+                delay = min(delay, max(start_time + timeout - time.perf_counter(), 0.0))
+            _LOGGER.debug("Lock %s not acquired on %s, waiting %s seconds ...", lock_id, lock_filename, delay)
+            time.sleep(delay)
 
     @property
     def _lock_path(self) -> str:
@@ -1343,32 +1340,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         )  # pragma: needs hard-link
         return max(poll_interval, secrets.randbelow(int(window * 1_000_000) + 1) / 1_000_000)  # pragma: needs hard-link
 
-    def _reconcile_failed_acquire(self, canonical: str) -> None:
-        # An acquire that raised while still holding the native lock (a hook that failed and whose rollback could not
-        # release) must keep the registry entry so a later release can retry the OS unlock; otherwise roll the counter
-        # back. is_locked was already reconciled by whichever release ran.
-        if self.is_locked:
-            self._commit_acquire(canonical)
-        else:
-            self._undo_acquire()
-
-    def _undo_acquire(self) -> None:
-        # Roll back the counter after a failed acquire, dropping the registry entry once nothing holds the path.
-        self._context.lock_counter = max(0, self._context.lock_counter - 1)
-        if self._context.lock_counter == 0:
-            self._drop_registry_entry()
-            self._context.claim_root = None
-
-    def _drop_registry_entry(self) -> None:
-        # Forget the key owned by this hold without resolving a mutable path again.
-        # Ordered so a run an interrupt cuts short repeats safely: the entry goes only while it is still ours, and the
-        # key outlives the registry it indexes, so a later commit sees no registry and records the hold afresh.
-        key, registry = self._context.lock_file_key, self._context.lock_file_registry
-        if registry is not None and registry.get(key) == self._holder_id:
-            del registry[key]
-        self._context.lock_file_registry = None
-        self._context.lock_file_key = None
-
     def _commit_acquire(self, canonical: str) -> None:
         # Record this instance as the holder once the first acquire succeeds, so peers can detect the deadlock.
         # Keyed on the registry rather than the counter: an on_acquired hook that acquires again bumps the counter
@@ -1381,6 +1352,32 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             # registry: the releaser's own thread-local registry never held it.
             self._context.lock_file_registry = _REGISTRY.held
             _REGISTRY.held[key] = self._holder_id
+
+    def _reconcile_failed_acquire(self, canonical: str, *, levels_before: int) -> None:
+        # An acquire that raised while still holding the native lock (a hook that failed and whose rollback could not
+        # release) must keep the registry entry so a later release can retry the OS unlock.
+        if not self.is_locked:
+            self._commit_release()
+        elif levels_before:
+            self._context.lock_counter = levels_before
+        else:
+            self._commit_acquire(canonical)
+
+    def _commit_release(self) -> None:
+        # Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry.
+        self._context.lock_counter = 0
+        self._drop_registry_entry()
+        self._context.claim_root = None
+
+    def _drop_registry_entry(self) -> None:
+        # Forget the key owned by this hold without resolving a mutable path again.
+        # Ordered so a run an interrupt cuts short repeats safely: the entry goes only while it is still ours, and the
+        # key outlives the registry it indexes, so a later commit sees no registry and records the hold afresh.
+        key, registry = self._context.lock_file_key, self._context.lock_file_registry
+        if registry is not None and registry.get(key) == self._holder_id:
+            del registry[key]
+        self._context.lock_file_registry = None
+        self._context.lock_file_key = None
 
     def __exit__(
         self,
@@ -1478,12 +1475,6 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     def _hold_state(self) -> FileLockContext:
         return self._context.current if isinstance(self._context, ThreadLocalFileContext) else self._context
-
-    def _commit_release(self) -> None:
-        # Record the lock as fully released: reset the recursion counter and drop the deadlock-registry entry.
-        self._context.lock_counter = 0
-        self._drop_registry_entry()
-        self._context.claim_root = None
 
     def _release_thread_holds(self, *, exited_only: bool) -> None:
         if not isinstance(context := self._context, ThreadLocalFileContext):
