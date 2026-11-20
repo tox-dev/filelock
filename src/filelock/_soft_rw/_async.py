@@ -39,7 +39,9 @@ from filelock._error import Timeout  # simplint: ignore[private-import-path]  # 
 
 from ._sync import (
     SoftReadWriteLock,
+    ensure_current_process,
     lost_hold_error,
+    register_fork_object,
 )
 
 if TYPE_CHECKING:
@@ -114,6 +116,7 @@ class AsyncSoftReadWriteLock:
         self._owners = task_owners_for(self._lock)
         self._loop = loop
         self._executor = executor
+        register_fork_object(self)
 
     @property
     def timeout(self) -> float:
@@ -192,6 +195,7 @@ class AsyncSoftReadWriteLock:
         return AsyncAcquireSoftReadWriteReturnProxy(lock=self)
 
     def _raise_if_unusable(self) -> None:
+        ensure_current_process()
         if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"AsyncSoftReadWriteLock on {self.lock_file} was inherited across fork; construct a new instance"
             raise RuntimeError(msg)
@@ -288,6 +292,7 @@ class AsyncSoftReadWriteLock:
         :raises SoftFileLockProtocolError: if peers keep winning generation updates until the holder's stale threshold
 
         """
+        ensure_current_process()
         if self._creator_pid == os.getpid():
             await self._owners.release(
                 force=force,
@@ -354,6 +359,7 @@ class AsyncSoftReadWriteLock:
         between that check and the admission still admits the task into the ended hold.
 
         """
+        ensure_current_process()
         if self._creator_pid != os.getpid() or self._closed:
             return
         # Refuse acquires from here on, so none is admitted into a hold the backend is letting go of.
@@ -369,6 +375,9 @@ class AsyncSoftReadWriteLock:
             if not isinstance(error, asyncio.CancelledError) and self._backend_holds():
                 self._closed = False
             raise
+
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+        self._creator_pid = -1
 
 
 class AsyncAcquireSoftReadWriteReturnProxy:
