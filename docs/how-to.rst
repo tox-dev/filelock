@@ -702,8 +702,9 @@ To recover, rename the whole ``<path>.rw`` directory aside, then delete it. Rena
 A recursive delete on the live path can leave other participants reading a partial log. Wait until all holders finish
 if possible. A holder that loses the tree learns of the loss through ``on_compromise`` at its next heartbeat.
 
-The first snapshot in the new log has generation 1. A waiter may enter at a later generation. Reset the high-water
-mark of any resource you fence with ``generation``.
+A waiter also recreates a missing ``gen/`` directory when it retries publication. The first snapshot in the new log has
+generation 1. A waiter may enter at a later generation. Reset the high-water mark of any resource you fence with
+``generation``.
 
 .. warning::
 

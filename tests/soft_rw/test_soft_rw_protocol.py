@@ -1138,6 +1138,23 @@ def test_a_failed_head_rename_keeps_the_commit(
 
 
 @pytest.mark.requires_hard_links
+def test_missing_directory_while_staging_head_stays_removed(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    log = _committed(files, lock_file, root, [None])
+    create = files.create
+
+    def remove_before_head(path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
+        if not durable:
+            Path(path).parent.rename(Path(root, "removed"))
+        return create(path, data, durable=durable)
+
+    mocker.patch.object(files, "create", autospec=True, side_effect=remove_before_head)
+    assert log.commit(Snapshot(generation=2, writer=_FIRST, readers=frozenset()))
+    assert not Path(root, "gen").exists()
+
+
+@pytest.mark.requires_hard_links
 def test_a_log_whose_epoch_was_never_written_runs_without_head(
     lock_file: str, files: OsFiles, root: str, head: Path
 ) -> None:
