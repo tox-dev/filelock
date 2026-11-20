@@ -232,7 +232,7 @@ ini_options.pythonpath = [
   "tasks",
 ]
 ini_options.markers = [
-  "requires_hard_links: exercises StrictSoftFileLock, which needs os.link; skipped where it is missing (Termux/Android)",
+  "requires_hard_links: needs os.link; skipped where it is missing (Termux/Android)",
 ]
 ini_options.filterwarnings = [
   "error",

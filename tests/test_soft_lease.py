@@ -448,6 +448,7 @@ def test_lease_release_records_a_replacement_before_the_next_heartbeat(  # pragm
         peer.release()
 
 
+@pytest.mark.requires_hard_links  # pragma: needs hard-link
 @NEEDS_UNLINK_OPEN_FILE
 def test_lease_release_records_a_missing_marker_with_an_extra_link(  # pragma: needs unlink-open-file
     marker: Path,
@@ -465,6 +466,7 @@ def test_lease_release_records_a_missing_marker_with_an_extra_link(  # pragma: n
     alias.unlink()
 
 
+@pytest.mark.requires_hard_links  # pragma: needs hard-link
 @NEEDS_UNLINK_OPEN_FILE
 def test_lease_release_records_a_replacement_with_an_unrelated_break_name(  # pragma: needs unlink-open-file
     marker: Path,
