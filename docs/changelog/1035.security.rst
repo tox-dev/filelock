@@ -1,0 +1,2 @@
+``ReadWriteLock`` and ``AsyncReadWriteLock`` now apply tighter bounds to SQLite schema loading; some databases with
+large schemas raise ``ValueError`` during acquisition.
