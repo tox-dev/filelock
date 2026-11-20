@@ -234,7 +234,8 @@ class StrictSoftFileLock(BaseFileLock):
         try:
             sentinel_stat = os.fstat(sentinel_fd)
             if (
-                sys.platform != "win32" and (owner := foreign_owner(sentinel_stat, lock_path.parent.stat())) is not None
+                sys.platform != "win32"
+                and (owner := foreign_owner(sentinel_stat, lock_path.parent.stat(), fd=sentinel_fd)) is not None
             ):  # pragma: needs foreign-sticky-tmp
                 reason = f"sentinel belongs to uid {owner}, not to this process's account or the directory's owner"
                 raise SoftFileLockProtocolError(self.lock_file, None, reason)  # ruff:ignore[raise-within-try]  # close
