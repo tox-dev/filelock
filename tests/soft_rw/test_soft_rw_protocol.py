@@ -5,6 +5,7 @@ import os
 import random
 import shutil
 import threading
+import tracemalloc
 from errno import EIO
 from itertools import cycle, islice
 from pathlib import Path, PurePosixPath
@@ -133,6 +134,19 @@ def test_ledger_measures_how_long_a_value_stays_unchanged() -> None:
     assert ledger.observe("a", None) == pytest.approx(1.0)
     ledger.forget("a")
     assert ledger.observe("a", None) == pytest.approx(0.0)
+
+
+def test_ledger_keeps_large_observations_with_bounded_memory() -> None:
+    ledger = Ledger(lambda: 0.0)
+    tracemalloc.start()
+    try:
+        baseline = tracemalloc.get_traced_memory()[0]
+        for number in range(32):
+            ledger.observe(str(number), bytes((number,)) * (1 << 20))
+        retained = tracemalloc.get_traced_memory()[0] - baseline
+    finally:
+        tracemalloc.stop()
+    assert retained < 4 << 20
 
 
 def test_ledger_counts_no_time_past_the_moment_the_observer_asked() -> None:

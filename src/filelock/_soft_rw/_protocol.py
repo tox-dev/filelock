@@ -20,8 +20,9 @@ participant that outlives a removal of the log reads the new one instead of cont
 
 from __future__ import annotations
 
-__lazy_modules__ = ["contextlib", "filelock._error", "filelock._identity", "math", "pathlib", "secrets"]
+__lazy_modules__ = ["contextlib", "filelock._error", "filelock._identity", "hashlib", "math", "pathlib", "secrets"]
 
+import hashlib
 import os
 import secrets
 from contextlib import suppress
@@ -122,8 +123,9 @@ class Ledger:
         # *asked* is the clock reading taken before the caller fetched *value*. An unchanged value counts as unchanged
         # up to *asked*, so a pause between the fetch and this call adds no time.
         now = self._clock()
-        if (seen := self._seen.get(key)) is None or seen[0] != value:
-            self._seen[key] = (value, now)
+        digest = None if value is None else hashlib.sha256(value).digest()
+        if (seen := self._seen.get(key)) is None or seen[0] != digest:
+            self._seen[key] = (digest, now)
             return 0.0
         return (now if asked is None else asked) - seen[1]
 
