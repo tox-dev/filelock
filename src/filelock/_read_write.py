@@ -1292,7 +1292,7 @@ def _remove_dead_links(
         _remove_dead_links_on_windows(path, identity)
         return
     # Another account can rename an unrelated directory onto a dead holder's name in a shared parent.
-    # Remove a directory only after finding this database's hard link inside it.
+    # Remove children only after finding this database's hard link inside them.
     fd: Final[int] = os.open(path, _DIRECTORY_FLAGS)
     try:
         # A directory owned by another account cannot hold this account's link; do not probe its named PID.
@@ -1320,7 +1320,7 @@ def _remove_dead_links(
                     os.rmdir(entry, dir_fd=fd)
     finally:
         os.close(fd)
-    if removed_link:
+    if not names or removed_link:
         with suppress(OSError):
             path.rmdir()
 
