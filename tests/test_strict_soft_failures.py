@@ -1159,7 +1159,7 @@ def test_strict_soft_claim_directory_read_error_fails_closed(tmp_path: Path, moc
     ) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
         if directory_ref[0] == os.fspath(Path(f"{lock_path}.filelock") / "claims"):
             raise PermissionError(EACCES, "cannot list")
-        return real_scandir(directory_ref)
+        return real_scandir(directory_ref)  # pragma: win32 no cover
 
     mocker.patch("filelock._strict._scandir_relative", side_effect=fail_claim_scan, autospec=True)
 
