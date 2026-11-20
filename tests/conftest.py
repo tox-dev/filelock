@@ -9,7 +9,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only the fixed
 import sys
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TypeVar
+from typing import TYPE_CHECKING, Final, Protocol, TypeVar
 
 import pytest
 from capabilities import CAPABILITIES
@@ -293,10 +293,11 @@ def inheriting_directory(tmp_path: Path) -> Path:  # pragma: win32 cover
 
 
 @pytest.fixture
-def hold_oplock() -> Iterator[Callable[[Path], Callable[[], None]]]:  # pragma: win32 cover
+def hold_oplock() -> Iterator[OplockHolder]:  # pragma: win32 cover
     # The marker skips the run off Windows; this only narrows ctypes.WinDLL for ty.
     assert sys.platform == "win32"
     import ctypes
+    import struct
     from ctypes import wintypes
 
     class Overlapped(ctypes.Structure):
@@ -330,13 +331,22 @@ def hold_oplock() -> Iterator[Callable[[Path], Callable[[], None]]]:  # pragma: 
         ctypes.POINTER(Overlapped),
     ]
     closers: list[Callable[[], None]] = []
+    answers: list[ctypes.Array[ctypes.c_char]] = []  # Windows writes one when its request completes
 
-    def hold(path: Path) -> Callable[[], None]:
+    def hold(path: Path, *, read_handle: bool = False) -> Callable[[], None]:
         generic_read, share_all, open_existing, flag_overlapped = 0x80000000, 0x1 | 0x2 | 0x4, 3, 0x40000000
         handle = kernel32.CreateFileW(str(path), generic_read, share_all, None, open_existing, flag_overlapped, None)
         overlapped = Overlapped(hEvent=kernel32.CreateEventW(None, True, False, None))
         # FSCTL_REQUEST_OPLOCK_LEVEL_1 stays pending while granted; a read handle suffices to make other opens wait.
-        assert not kernel32.DeviceIoControl(handle, 0x00090000, None, 0, None, 0, None, ctypes.byref(overlapped))
+        request: tuple[int, bytes | None, int, ctypes.Array[ctypes.c_char] | None, int] = (0x00090000, None, 0, None, 0)
+        if read_handle:
+            # FSCTL_REQUEST_OPLOCK with a version 1 REQUEST_OPLOCK_INPUT_BUFFER of 12 bytes that requests
+            # OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE. Opens that share everything leave this oplock alone,
+            # and a rename waits for its holder. The answer is a REQUEST_OPLOCK_OUTPUT_BUFFER.
+            asked = struct.pack("<HHII", 1, 12, 0x1 | 0x2, 0x1)
+            answers.append(answer := ctypes.create_string_buffer(24))
+            request = (0x00090240, asked, len(asked), answer, len(answer))
+        assert not kernel32.DeviceIoControl(handle, *request, None, ctypes.byref(overlapped))
         assert ctypes.get_last_error() == 997  # ERROR_IO_PENDING
         closed = False
 
@@ -356,6 +366,10 @@ def hold_oplock() -> Iterator[Callable[[Path], Callable[[], None]]]:  # pragma: 
     yield hold
     for close in closers:
         close()
+
+
+class OplockHolder(Protocol):
+    def __call__(self, path: Path, *, read_handle: bool = False) -> Callable[[], None]: ...
 
 
 @pytest.fixture

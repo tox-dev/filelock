@@ -30,7 +30,7 @@ from tests.capability_marks import (
     NEEDS_SYMLINK,
     NEEDS_UNLINK_OPEN_FILE,
 )
-from tests.conftest import DEAD_OWNER, STALE_BREAKERS, acquire_after_reclaim, held_after_reclaim
+from tests.conftest import DEAD_OWNER, STALE_BREAKERS, OplockHolder, acquire_after_reclaim, held_after_reclaim
 from tests.pid_namespace_helpers import pin_pid_namespace
 from tests.process_helpers import break_then_hang_after_exchange, call_within, cleanup_processes
 
@@ -2019,11 +2019,14 @@ def test_soft_contender_keeps_its_deadline_under_an_oplocked_live_marker(oplocke
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize("read_handle", [pytest.param(False, id="level-1"), pytest.param(True, id="read-handle")])
 def test_stale_break_keeps_its_deadline_under_an_oplocked_marker(
-    lock_path: Path, hold_oplock: Callable[[Path], Callable[[], None]]
+    lock_path: Path, hold_oplock: OplockHolder, *, read_handle: bool
 ) -> None:
+    # The open before the rename meets a Level 1 oplock. A read-handle oplock is broken by the rename alone, which
+    # waits for the holder until the wait is canceled.
     lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
-    close_holder = hold_oplock(lock_path)
+    close_holder = hold_oplock(lock_path, read_handle=read_handle)
     lock = SoftFileLock(lock_path, is_singleton=False)
 
     finished, error = call_within(lambda: lock.acquire(timeout=0.1), 5)

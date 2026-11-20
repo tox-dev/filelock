@@ -3015,6 +3015,25 @@ def test_windows_open_without_oplock_wait_reports_the_break_as_contention(
     assert (finished, type(error)) == (True, BlockingIOError)
 
 
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_cancelling_oplock_wait_ends_a_call_that_still_waits() -> None:
+    assert sys.platform == "win32"  # the marker skips the run elsewhere; this narrows the import for ty
+    from filelock._windows import cancelling_oplock_wait
+
+    reader, writer = os.pipe()
+
+    def read_an_empty_pipe() -> None:
+        # Waits inside the system call, as a rename does for the holder of a read-handle oplock.
+        with cancelling_oplock_wait():
+            os.read(reader, 1)
+
+    finished, error = call_within(read_an_empty_pipe, 5)
+    os.close(writer)  # ends the read when nothing canceled it
+    os.close(reader)
+
+    assert (finished, isinstance(error, OSError)) == (True, True)
+
+
 @pytest.mark.parametrize(
     "enter",
     [
