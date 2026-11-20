@@ -139,6 +139,28 @@ def test_timeout_names_a_holder_on_another_host(lock_path: Path, lock_type: type
         lock_type(lock_path, timeout=0).acquire()
 
 
+@pytest.mark.parametrize(
+    ("lock_type", "record"),
+    [
+        pytest.param(SoftFileLock, _holder(_DEAD_PID, host="other\x1b[2K\x1b[1A\x7fhost"), id="soft"),
+        pytest.param(
+            MarkerSoftFileLock,
+            f"filelock/2\npid={_DEAD_PID}\nhost=other\x1b[2K\x1b[1A\x7fhost\nmode=exclusive\n",
+            id="marker-v2",
+        ),
+    ],
+)
+def test_timeout_escapes_a_holder_hostname_outside_the_grammar(
+    lock_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    # A release before the hostname escape wrote the kernel's name raw, and whoever created the lock file first chose
+    # what it says, so a terminal escape sequence in it must not reach the terminal or log that prints the exception.
+    lock_path.write_text(record, encoding="utf-8")
+    with pytest.raises(Timeout) as caught:
+        lock_type(lock_path, timeout=0).acquire()
+    assert f"held by pid {_DEAD_PID} on other?1b[2K?1b[1A?7fhost, which this host cannot" in str(caught.value)
+
+
 def test_timeout_leaves_out_a_holder_on_this_host(lock_path: Path) -> None:
     with SoftFileLock(lock_path), pytest.raises(Timeout) as caught:
         SoftFileLock(lock_path, timeout=0).acquire()

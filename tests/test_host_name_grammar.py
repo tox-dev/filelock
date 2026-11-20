@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from filelock import SoftFileLease, SoftFileLock, StrictSoftFileLock
-from filelock._identity import host_name
+from filelock._identity import describe_host_name, host_name
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,3 +47,23 @@ def test_soft_file_lease_reads_back_its_own_owner(tmp_path: Path) -> None:
         owner = lease.owner
         assert owner is not None
         assert owner.hostname == host_name()
+
+
+@pytest.mark.usefixtures("out_of_grammar_host")
+def test_describe_host_name_shows_this_hosts_name_unchanged() -> None:
+    assert describe_host_name(host_name()) == host_name()
+
+
+@pytest.mark.parametrize(
+    ("recorded", "shown"),
+    [
+        pytest.param("build-host", "build-host", id="plain"),
+        pytest.param("host?20name?pidns-f0000001", "host?20name?pidns-f0000001", id="already-escaped"),
+        pytest.param("host\x1b[2K\x1b[1A\x7f\tname", "host?1b[2K?1b[1A?7f?09name", id="control-bytes"),
+        pytest.param("w\u00f6rks", "w?c3?b6rks", id="non-ascii"),
+        pytest.param("b\udcffd", "b?ffd", id="undecodable-byte"),
+    ],
+)
+def test_describe_host_name_stays_within_the_marker_grammar(recorded: str, shown: str) -> None:
+    # A marker's hostname is what its writer put there, so a message shows it the way host_name() would have written it.
+    assert describe_host_name(recorded) == shown

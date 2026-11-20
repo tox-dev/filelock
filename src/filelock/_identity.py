@@ -12,6 +12,8 @@ from typing import Final
 
 #: The bytes those formats carry verbatim: printable non-space ASCII, less the ``?`` reserved for the escape.
 _HOST_NAME_VERBATIM: Final[frozenset[int]] = frozenset(range(0x21, 0x7F)) - {ord("?")}
+#: The bytes a recorded hostname shows as themselves: the verbatim set and the ``?`` an escape starts with.
+_HOST_NAME_SHOWN: Final[frozenset[int]] = _HOST_NAME_VERBATIM | {ord("?")}
 #: The characters at the end of an over-long name that carry a digest of the part cut off.
 _HOST_NAME_DIGEST_LEN: Final[int] = 8
 #: The kernel ABI fixes the initial PID namespace's inode (``PID_NS_INIT_INO`` in ``linux/nsfs.h``); every namespace
@@ -72,6 +74,20 @@ def host_name() -> str:
         name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
     # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
     return name or "?"
+
+
+def describe_host_name(hostname: str) -> str:
+    # The hostname a marker records, rendered for a message within the grammar :func:`host_name` writes.
+    #
+    # A marker's hostname is whatever its writer put there: a release before the escape wrote the kernel's name raw, and
+    # another local user who created the lock file first chose it. Shown as is, a control byte or terminal escape
+    # sequence in it reaches the terminal or log that prints the exception, where it can erase or rewrite the lines
+    # around it. Every byte outside printable non-space ASCII is escaped as ``?<hex>``, the form :func:`host_name`
+    # uses, and a ``?`` stays, so a name this release wrote reads back unchanged.
+    return "".join(
+        chr(byte) if byte in _HOST_NAME_SHOWN else f"?{byte:02x}"
+        for byte in hostname.encode("utf-8", "surrogateescape")
+    )
 
 
 def _same_start(current: int, recorded: int) -> bool:
@@ -333,6 +349,7 @@ if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma
 
 
 __all__ = [
+    "describe_host_name",
     "host_name",
     "owner_is_current_process",
     "owner_is_stale",
