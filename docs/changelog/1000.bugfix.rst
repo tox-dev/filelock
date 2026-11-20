@@ -1,0 +1,4 @@
+A Unix lock that fell back to the soft protocol after ``flock`` returned ``ENOSYS`` now tries ``flock`` again when its
+path resolves to another file. Previously the fallback persisted across paths, so a native contender on the
+second file could enter while the reused lock held it. The lock also keeps its Unix class during fallback, avoiding an
+``AttributeError`` in another thread acquiring the same instance.

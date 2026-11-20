@@ -1025,7 +1025,7 @@ def test_flock_not_implemented_unix(tmp_path: Path, mocker: MockerFixture) -> No
     lock = FileLock(tmp_path / "a.lock")
     with lock:
         assert lock.is_locked
-        assert isinstance(lock, SoftFileLock)
+        assert SoftFileLock(tmp_path / "a.lock").is_lock_held_by_us
 
 
 def test_soft_errors(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -3701,7 +3701,7 @@ def test_fallback_to_soft_default_switches_to_soft(tmp_path: Path, mocker: Mocke
         lock.acquire()
     try:
         assert lock.is_locked
-        assert isinstance(lock, SoftFileLock)  # switched to existence-lock semantics
+        assert SoftFileLock(str(tmp_path / "a")).is_lock_held_by_us
     finally:
         lock.release()
 
@@ -4371,7 +4371,6 @@ def test_unix_soft_fallback_keeps_a_replaced_file(tmp_path: Path, mocker: Mocker
     with pytest.raises(Timeout), pytest.warns(UserWarning, match="falling back to SoftFileLock"):
         lock.acquire(timeout=0.2)
 
-    assert isinstance(lock, SoftFileLock)  # fell back after refusing to unlink the mismatched file
     assert lock_path.exists()  # the replacement file was left in place
 
 

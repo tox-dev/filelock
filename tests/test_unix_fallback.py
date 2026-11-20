@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interpreter isolates the blocked fcntl import
 import sys
+import threading
 import warnings
 from errno import EACCES, EIO, ENOSYS, EWOULDBLOCK
 from textwrap import dedent
@@ -92,12 +93,13 @@ def test_fchmod_enosys_is_not_a_missing_flock(tmp_path: Path, mocker: MockerFixt
 @NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
-def test_fallback_swaps_to_soft(tmp_path: Path) -> None:  # pragma: needs fcntl
+def test_fallback_keeps_unix_class_and_holds_soft_marker(tmp_path: Path) -> None:  # pragma: needs fcntl
     lock = UnixFileLock(tmp_path / "test.lock")
 
     with lock:
         assert lock.is_locked
-        assert isinstance(lock, SoftFileLock)
+        assert type(lock) is UnixFileLock
+        assert SoftFileLock(tmp_path / "test.lock").is_lock_held_by_us
 
 
 @NEEDS_FCNTL
@@ -157,6 +159,73 @@ def test_fallback_subsequent_acquire_skips_flock(tmp_path: Path, unsupported_flo
     lock.acquire()
     lock.release()
     unsupported_flock.assert_not_called()
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")  # pragma: needs fcntl
+def test_fallback_reprobes_after_chdir(
+    working_directories: tuple[Path, Path],
+    unsupported_flock: MockType,
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = working_directories
+    lock = UnixFileLock("test.lock")
+
+    with lock:
+        assert SoftFileLock(first / "test.lock").is_lock_held_by_us
+    mocker.stop(unsupported_flock)
+    monkeypatch.chdir(second)
+
+    with lock, pytest.raises(Timeout):
+        UnixFileLock(second / "test.lock").acquire(timeout=0)
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")  # pragma: needs fcntl
+def test_concurrent_fallback_keeps_both_acquires_valid(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock_path = tmp_path / "test.lock"
+    lock = UnixFileLock(lock_path)
+    in_flock, fell_back = threading.Event(), threading.Event()
+    acquired: list[bool] = []
+    errors: list[Exception] = []
+
+    def flock_missing(fd: int, operation: int) -> None:
+        if threading.current_thread() is waiter:
+            in_flock.set()
+            fell_back.wait(timeout=5)
+        raise OSError(ENOSYS, f"Function not implemented for {fd} with {operation}")
+
+    def acquire_after_peer_fallback() -> None:
+        try:
+            with lock.acquire(timeout=1):
+                acquired.append(SoftFileLock(lock_path).is_lock_held_by_us)
+        except Exception as exception:
+            errors.append(exception)
+
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=flock_missing, autospec=True)
+    waiter = threading.Thread(target=acquire_after_peer_fallback)
+    waiter.start()
+    assert in_flock.wait(timeout=5)
+    with pytest.raises(Timeout):
+        lock.acquire(timeout=0)
+    fell_back.set()
+    waiter.join(timeout=5)
+
+    assert not waiter.is_alive()
+    assert not errors
+    assert acquired == [True]
+    assert not lock_path.exists()
+
+
+@NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_timeout_describes_recordless_marker(tmp_path: Path) -> None:  # pragma: needs fcntl
+    (lock_path := tmp_path / "test.lock").touch()
+
+    with pytest.raises(Timeout, match="held by an owner that recorded no PID"):
+        UnixFileLock(lock_path).acquire(timeout=0)
 
 
 @NEEDS_FCNTL

@@ -1441,9 +1441,9 @@ cleanup after a close error.
  Fail closed instead of downgrading to soft
 ***********************************************
 
-On Unix, when ``flock`` returns ``ENOSYS``, :class:`UnixFileLock <filelock.UnixFileLock>` switches to
-:class:`SoftFileLock <filelock.SoftFileLock>` semantics by default. If the application requires the native backend,
-construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propagates:
+On Unix, when ``flock`` returns ``ENOSYS``, :class:`UnixFileLock <filelock.UnixFileLock>` follows
+:class:`SoftFileLock <filelock.SoftFileLock>` semantics for that resolved path by default. If the application requires
+the native backend, construct ``UnixFileLock`` with ``fallback_to_soft=False`` so ``ENOSYS`` propagates:
 
 .. code-block:: python
 
