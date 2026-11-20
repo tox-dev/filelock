@@ -1558,6 +1558,7 @@ Neither function accepts an offset or length, and seeking the descriptor does no
         os.close(fd)
 
 Pass ``blocking=False`` for a single attempt that returns ``False`` on contention and ignores ``poll_interval``.
+``blocking`` must be a :class:`bool`; passing ``0`` or ``"false"`` raises :class:`TypeError`.
 Blocking calls require a positive ``poll_interval`` of at most :data:`threading.TIMEOUT_MAX`. There is no async
 wrapper. Run it in an executor, or drive ``blocking=False`` from your own polling loop. On Windows *fd* must be a
 synchronous descriptor.

@@ -181,6 +181,13 @@ as ``/tmp``, acquisition raises :class:`SoftFileLockProtocolError <filelock.Soft
 ``dir_fd``, the lock reaches ``claims`` through a descriptor of ``<path>.filelock`` opened without following symlinks.
 A symlink swapped in for either directory then fails the operation instead of redirecting it.
 
+An unrelated directory of the locking account can also be renamed to either protocol name where another account can
+write the lock's parent. Outside Windows, acquisition checks that ``<path>.filelock`` holds only a real ``claims``
+directory, and that ``claims`` holds only claim records, their private records, claim probes or temporary ``.nfs``
+files left by NFS while an unlinked claim is open, before changing either mode or creating claims. It checks the names
+even when the mode already matches. An empty directory at either name, or a coordination directory holding a
+valid-looking claims tree, cannot be distinguished from lock state by its contents.
+
 Strict claims require coherent directory reads and atomic no-replace hard links. The class reports a protocol error
 when the filesystem reports that it cannot publish hard links. NFS and SMB remain outside this guarantee until their
 mount and server combination passes the protocol tests. Linux documents the hard-link lock pattern in `open(2)
@@ -466,8 +473,10 @@ The defense differs by platform:
   filelock cancels that wait after half a second per attempt, then checks the ``timeout``.
 - :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches
   ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
-  directory after the check cannot redirect where claims are created, listed or removed. A lease (Linux) or oplock
-  (Windows) on the sentinel can delay its read for half a second, then counts as contention under the acquire timeout.
+  directory after the check cannot redirect where claims are created, listed or removed. Outside Windows, it checks
+  directory entries before changing a mode and refuses unexpected names at either protocol path. A lease (Linux) or
+  oplock (Windows) on the sentinel can delay its read for half a second, then counts as contention under the acquire
+  timeout.
 - :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` opens ``<path>.rw`` and then ``gen`` or ``holders`` without
   following symlinks for every record operation on platforms that support ``dir_fd``. A tree swapped in after an earlier
   acquire cannot redirect its writes. Without ``dir_fd``, Windows holds those directories open for each operation so

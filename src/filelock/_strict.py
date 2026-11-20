@@ -920,10 +920,6 @@ def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, paren
         if owner is not None:  # pragma: needs foreign-sticky-tmp
             reason = f"{directory} belongs to uid {owner}, not to this process's account or the parent's owner"
             raise SoftFileLockProtocolError(lock_file, None, reason) from None
-    _settle_directory_mode(lock_file, directory, mode, parent_fd)
-
-
-def _settle_directory_mode(lock_file: str, directory: Path, mode: int, parent_fd: int | None) -> None:
     # The umask or a default ACL can leave the directory wider than the mode, now or in an earlier release, so narrow a
     # directory this account owns to the mode. The sticky bit (a directory flag that lets only a file's owner remove it)
     # then protects each claim from other accounts even where the mode admits them. Windows has neither mode bits nor a
@@ -938,14 +934,86 @@ def _settle_directory_mode(lock_file: str, directory: Path, mode: int, parent_fd
         except OSError as error:
             raise SoftFileLockProtocolError(lock_file, None, f"cannot open {directory}") from error
         try:
-            found = os.fstat(fd)
-            settled = found.st_mode & 0o7000 | found.st_mode & mode & 0o777 | stat.S_ISVTX
-            if found.st_uid == os.geteuid() and settled != stat.S_IMODE(found.st_mode):
-                os.fchmod(fd, settled)
-        except OSError as error:
-            raise SoftFileLockProtocolError(lock_file, None, f"cannot set the mode of {directory}") from error
+            if directory.name != _CLAIM_DIRECTORY_NAME:
+                _refuse_unrelated_coordination_entries(lock_file, directory, fd)
+            _settle_opened_directory_mode(lock_file, directory, mode, fd)
         finally:
             os.close(fd)
+
+
+def _refuse_unrelated_coordination_entries(lock_file: str, directory: Path, fd: int) -> None:  # pragma: win32 no cover
+    try:
+        with _scandir_relative((os.fspath(directory), fd)) as entries:
+            claim_entry = next(entries, None)
+            unrelated = claim_entry is not None and (
+                claim_entry.name != _CLAIM_DIRECTORY_NAME
+                or not claim_entry.is_dir(follow_symlinks=False)
+                or next(entries, None) is not None
+            )
+    except OSError as error:
+        raise SoftFileLockProtocolError(lock_file, None, f"cannot list {directory}") from error
+    if unrelated:
+        raise SoftFileLockProtocolError(lock_file, None, f"{directory} holds entries that are not this lock's")
+    if claim_entry is None:
+        return
+    try:
+        claims_fd = _open_directory(
+            claim_entry.name if _OPEN_SUPPORTS_DIR_FD else claim_entry.path,
+            dir_fd=fd if _OPEN_SUPPORTS_DIR_FD else None,
+        )
+    except OSError as error:
+        raise SoftFileLockProtocolError(
+            lock_file, claim_entry.name, f"cannot open {directory / claim_entry.name}"
+        ) from error
+    try:
+        _refuse_unrelated_claim_entries(lock_file, directory / claim_entry.name, claims_fd)
+    finally:
+        os.close(claims_fd)
+
+
+def _open_directory(directory: str, dir_fd: int | None = None) -> int:  # pragma: needs dir-fd
+    return os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+
+
+def _refuse_unrelated_claim_entries(lock_file: str, directory: Path, fd: int) -> None:  # pragma: win32 no cover
+    try:
+        with _scandir_relative((os.fspath(directory), fd)) as entries:
+            foreign = next(
+                (
+                    name
+                    for entry in entries
+                    if _parse_claim_name(name := entry.name) is None
+                    and not _is_claim_probe_name(name)
+                    and _parse_claim_name(_private_public_name(name) or "") is None
+                    and not (
+                        name.startswith(".nfs")
+                        and len(name) > len(".nfs")
+                        and all(c in "0123456789abcdef" for c in name[4:])
+                    )
+                ),
+                None,
+            )
+    except OSError as error:
+        raise SoftFileLockProtocolError(lock_file, None, f"cannot list {directory}") from error
+    if foreign is not None:
+        raise SoftFileLockProtocolError(lock_file, foreign, "unknown claim name or protocol version")
+
+
+def _settle_opened_directory_mode(
+    lock_file: str, directory: Path, mode: int, fd: int
+) -> None:  # pragma: win32 no cover
+    try:
+        found = os.fstat(fd)
+    except OSError as error:
+        raise SoftFileLockProtocolError(lock_file, None, f"cannot set the mode of {directory}") from error
+    settled = found.st_mode & 0o7000 | found.st_mode & mode & 0o777 | stat.S_ISVTX
+    if directory.name == _CLAIM_DIRECTORY_NAME:
+        _refuse_unrelated_claim_entries(lock_file, directory, fd)
+    if sys.platform != "win32" and found.st_uid == os.geteuid() and settled != stat.S_IMODE(found.st_mode):
+        try:
+            os.fchmod(fd, settled)
+        except OSError as error:
+            raise SoftFileLockProtocolError(lock_file, None, f"cannot set the mode of {directory}") from error
 
 
 def _ensure_claim_directory(lock_file: str, directory: Path, mode: int) -> None:
@@ -963,6 +1031,8 @@ def _ensure_claim_directory(lock_file: str, directory: Path, mode: int) -> None:
         except OSError as error:
             raise SoftFileLockProtocolError(lock_file, None, f"cannot open {directory.parent}") from error
         try:
+            if sys.platform != "win32":  # pragma: win32 no cover
+                _refuse_unrelated_coordination_entries(lock_file, directory.parent, coordination_fd)
             _ensure_protocol_directory(lock_file, directory, mode, coordination_fd)
         finally:
             with contextlib.suppress(OSError):
@@ -980,10 +1050,6 @@ def pin_directories(*directories: Path) -> contextlib.ExitStack[bool | None]:
                 stack.callback(unpin_directory, pin_directory(str(directory)))
             return stack.pop_all()
     return stack  # pragma: win32 no cover
-
-
-def _open_directory(directory: str, dir_fd: int | None = None) -> int:  # pragma: needs dir-fd
-    return os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
 
 
 def _open_or_create_sentinel(
