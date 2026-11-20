@@ -160,25 +160,23 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
         # An atomic exchange with a placeholder takes the marker without the lock path ever being empty. No contender
         # can then create a marker while this one is judged, and a live marker goes back the same way.
         fd: Final[int] = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        grabbed: os.stat_result | None = None
         try:
             try:
-                # Not a record any lock writes, so a contender that reads it waits, and one left by a crash ages out.
-                # The PID tells the contender that evicts it whose break names to search for a marker this process left.
-                write_all(fd, f"filelock/break\n{os.getpid()}\n".encode())
-                exchanged = exchange_names(break_path, lock_file)
-            except OSError:
-                exchanged = False
-            if not exchanged:
-                Path(break_path).unlink()
-                return
-            if (grabbed := os.lstat(break_path)).st_mtime == mtime_before and grabbed.st_ino == ino_before:
-                Path(break_path).unlink()
-                # Our descriptor keeps the placeholder's inode allocated, so a matching number at the path is still
-                # ours.
-                if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
-                    Path(lock_file).unlink()
-            else:
-                exchange_back(lock_file, break_path, fd)
+                with suppress(OSError):
+                    write_all(fd, f"filelock/break\n{os.getpid()}\n".encode())
+                    exchange_names(break_path, lock_file)
+                grabbed = os.lstat(break_path)
+            finally:
+                # A signal can interrupt the exchange or the first identity check after the names have moved.
+                if grabbed is None:
+                    grabbed = os.lstat(break_path)
+                if grabbed.st_mtime == mtime_before and grabbed.st_ino == ino_before:
+                    Path(break_path).unlink()
+                    if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
+                        Path(lock_file).unlink()
+                else:
+                    exchange_back(lock_file, break_path, fd)
         finally:
             os.close(fd)
     elif _MOVES_WITHOUT_EXCHANGE:  # pragma: win32 cover

@@ -1,0 +1,2 @@
+On POSIX filesystems with atomic name exchange, :class:`~filelock.SoftFileLock` restores a live holder's marker if a
+signal interrupts the exchange. When an interrupted cleanup finds its own unfinished marker, it removes it.

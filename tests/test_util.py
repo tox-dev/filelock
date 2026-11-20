@@ -710,6 +710,41 @@ def _exchange_call(source: bytes, target: bytes, flags: int) -> int:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @NEEDS_STALE_RECLAIM
+@pytest.mark.parametrize(
+    "expected", [pytest.param({}, id="own-marker"), pytest.param({"test.lock": b"live"}, id="peer-marker")]
+)
+@pytest.mark.parametrize("inspect", [pytest.param(False, id="exchange"), pytest.param(True, id="identity-check")])
+def test_interrupted_rollback_removes_only_its_own_marker(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture, expected: dict[str, bytes], inspect: bool
+) -> None:
+    path = tmp_path / "test.lock"
+    mocker.patch("filelock._soft.os.fchmod", side_effect=OSError(EIO, "cannot set mode"), autospec=True)
+    exchange = filelock._util.exchange_names
+
+    def interrupt_check(_path: str) -> os.stat_result:
+        mocker.stopall()
+        raise KeyboardInterrupt
+
+    def interrupt_after_exchange(source: str, target: str) -> bool:
+        mocker.stopall()
+        if expected:
+            (peer := tmp_path / "peer").write_bytes(b"live")
+            peer.replace(path)
+        assert exchange(source, target)
+        if inspect:
+            mocker.patch("os.lstat", autospec=True, side_effect=interrupt_check)
+            return True
+        raise KeyboardInterrupt
+
+    mocker.patch("filelock._util.exchange_names", autospec=True, side_effect=interrupt_after_exchange)
+    with pytest.raises(KeyboardInterrupt):
+        SoftFileLock(path, mode=0o600).acquire(blocking=False)
+
+    assert {entry.name: entry.read_bytes() for entry in tmp_path.iterdir()} == expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
 def test_stale_take_over_interrupted_before_the_check_puts_the_marker_back(  # pragma: win32 no cover
     stale_lock: Path, mocker: MockerFixture
 ) -> None:
