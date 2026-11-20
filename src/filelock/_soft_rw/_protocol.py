@@ -28,6 +28,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
+from time import sleep
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from filelock._error import SoftFileLockProtocolError  # simplint: ignore[private-import-path]  # internal dependency
@@ -573,6 +574,7 @@ class Participant:
         # A tree that was swapped out leaves no record this participant can reach, so there is nothing to commit out of.
         # Peers may evict this record after its stale threshold, so retrying longer cannot preserve the hold.
         give_up = self._clock() + self._stale_threshold
+        delay = 0.001
         with suppress(TreeReplacedError):
             try:
                 while self.token in (latest := self._log.latest()).members:
@@ -583,9 +585,11 @@ class Participant:
                     )
                     if self._log.commit(successor):
                         break
-                    if self._clock() >= give_up:
+                    if (remaining := give_up - self._clock()) <= 0:
                         msg = "could not withdraw holder from generation log before its stale threshold"
                         raise SoftFileLockProtocolError(self._log.lock_file, None, msg)
+                    sleep(min(delay, remaining))
+                    delay = min(delay * 2, 0.01)
             finally:
                 self._entered = False
                 self.generation = None

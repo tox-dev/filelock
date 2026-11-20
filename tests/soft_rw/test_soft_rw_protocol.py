@@ -289,9 +289,11 @@ def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root:
     assert reader.advance()
     real_commit = GenerationLog.commit
     lost = []
+    pauses: list[float] = []
+    mocker.patch("filelock._soft_rw._protocol.sleep", autospec=True, side_effect=pauses.append)
 
     def commit_after_a_peer(log: GenerationLog, successor: Snapshot) -> bool:
-        if not lost:
+        if len(lost) < 6:
             lost.append(successor)
             (peer := GenerationLog(files, lock_file, root)).latest()
             still_reading = successor.readers | {reader.token}
@@ -301,7 +303,8 @@ def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root:
     mocker.patch.object(GenerationLog, "commit", autospec=True, side_effect=commit_after_a_peer)
     reader.leave()
     latest = GenerationLog(files, lock_file, root).latest()
-    assert (latest.members, latest.generation) == (frozenset(), lost[0].generation + 1)
+    assert (latest.members, latest.generation) == (frozenset(), lost[-1].generation + 1)
+    assert pauses == [0.001, 0.002, 0.004, 0.008, 0.01, 0.01]
 
 
 @pytest.mark.requires_hard_links
