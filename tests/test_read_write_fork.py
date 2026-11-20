@@ -972,10 +972,10 @@ def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: needs f
     assert result == (0, "", "")
 
 
-@NEEDS_FORK
-@_NEEDS_FD_DIRECTORY
+@NEEDS_FORK  # pragma: needs fork
+@_NEEDS_FD_DIRECTORY  # pragma: needs fd-directory
 @pytest.mark.skipif(not CAPABILITIES["posix-hard-link"], reason="cleanup needs private links")
-def test_private_link_sweep_releases_the_inherited_cursor(tmp_path: Path) -> None:  # pragma: needs fork
+def test_private_link_sweep_releases_the_inherited_cursor(tmp_path: Path) -> None:  # pragma: needs posix-hard-link
     result = _run_fork_script(
         textwrap.dedent("""
         import os
