@@ -1848,6 +1848,7 @@ def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(tmp_path:
     real_close = os.close
     real_open_relative = filelock._strict._open_relative
     private_records: dict[int, Path] = {}
+    reclaimed = 0
 
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         fd = real_open_relative(directory_ref, name, flags, mode)
@@ -1856,9 +1857,11 @@ def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(tmp_path:
         return fd
 
     def reclaim_on_close(fd: int) -> None:
+        nonlocal reclaimed
         real_close(fd)
         if (record := private_records.pop(fd, None)) is not None:
             record.unlink()
+            reclaimed += 1
 
     mocker.patch("filelock._strict._open_relative", side_effect=capture_private_record, autospec=True)
     mocker.patch("filelock._strict.os.close", side_effect=reclaim_on_close, autospec=True)
@@ -1868,6 +1871,7 @@ def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(tmp_path:
     assert lock.is_locked is True
     lock.release()
     assert lock.is_locked is False
+    assert reclaimed > 0
 
 
 def test_strict_soft_record_finalization_close_and_unlink_failures_group(tmp_path: Path, mocker: MockerFixture) -> None:
