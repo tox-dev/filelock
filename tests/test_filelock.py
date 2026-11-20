@@ -2029,8 +2029,8 @@ def test_handler_release_inside_acquire_commit_preserves_peer_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "a.lock"
-    lock = SoftFileLock(path, is_singleton=False)
-    peer = SoftFileLock(path, is_singleton=False)
+    lock = SoftFileLock(path, thread_local=False, is_singleton=False)
+    peer = SoftFileLock(path, thread_local=False, is_singleton=False)
     released: list[bool] = []
 
     def release_in_handler(_signum: int, _frame: FrameType | None) -> None:
@@ -2068,7 +2068,7 @@ def test_handler_release_inside_acquire_commit_preserves_peer_registry(
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
 def test_raised_handler_during_acquire_commit_registers_hold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "a.lock"
-    lock = SoftFileLock(path, is_singleton=False)
+    lock = SoftFileLock(path, thread_local=False, is_singleton=False)
     pending = [True]
 
     def interrupt_handler(_signum: int, _frame: FrameType | None) -> None:
