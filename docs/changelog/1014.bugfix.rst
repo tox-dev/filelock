@@ -2,3 +2,5 @@
 marker. This closes a signal window during release that left the marker behind after the lock reported itself unlocked.
 On POSIX, an error unlinking the marker propagates to the caller. A filesystem that refuses to unlink an open marker
 still gets a retry after close.
+A signal handler can force-release a newly published marker and raise :exc:`SystemExit`. The interrupted acquire
+leaves that descriptor closed.

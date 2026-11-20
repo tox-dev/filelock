@@ -165,12 +165,15 @@ class SoftFileLock(BaseFileLock):
         # _mark_descriptor_owned leaves no marker behind.
         identity: tuple[int, int] | None = None
         try:
-            identity = _file_identity(os.fstat(fd))
             self._mark_descriptor_pending(fd)
+            identity = _file_identity(os.fstat(fd))
             self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
             self._mark_descriptor_owned(fd, identity)
         except BaseException:
+            # Publication transfers cleanup to the held descriptor. A signal handler may have released it already.
+            if identity is not None and self._context.pending_lock_file_fd is None:
+                raise
             self._mark_descriptor_released()
             try:
                 if identity is None:
@@ -302,7 +305,7 @@ class SoftFileLock(BaseFileLock):
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         fd: Final[int] = os.open(aside, flags, self._open_mode() & ~_OTHERS_WRITE)
         self._mark_descriptor_pending(fd)
-        exchanged = held = False
+        exchanged = False
         try:
             identity: Final[tuple[int, int]] = _file_identity(os.fstat(fd))
             self._apply_explicit_mode(fd)
@@ -319,9 +322,8 @@ class SoftFileLock(BaseFileLock):
             Path(aside).unlink()
             exchanged = False
             self._mark_descriptor_owned(fd, identity)
-            held = True
         finally:
-            if not held:
+            if self._context.pending_lock_file_fd is not None:
                 self._abandon_take_over(fd, aside, put_back=exchanged)
 
     def _restore_stranded_marker(self, breaker_pid: int, marker: os.stat_result) -> bool:  # pragma: win32 no cover

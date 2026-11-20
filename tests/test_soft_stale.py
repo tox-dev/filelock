@@ -1869,17 +1869,20 @@ def test_release_keeps_marker_cleanup_after_fstat_signal(
         assert peer.is_locked
 
 
+@NEEDS_STALE_RECLAIM
 @NEEDS_POSIX_SIGNALS  # pragma: needs posix-signals
 @NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
-def test_signal_handler_can_release_during_identity_publication(
+def test_signal_handler_can_exit_during_reclaimed_marker_publication(
     lock_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
     lock = SoftFileLock(lock_path, is_singleton=False)
     released: list[bool] = []
 
     def release_in_handler(_signum: int, _frame: FrameType | None) -> None:
         released.append(lock.is_locked)
-        lock.release()
+        lock.release(force=True)
+        raise SystemExit(7)
 
     def signal_after_descriptor(
         context: FileLockContext,
@@ -1894,18 +1897,17 @@ def test_signal_handler_can_release_during_identity_publication(
     previous = signal.signal(signal_number, release_in_handler)
     monkeypatch.setattr(FileLockContext, "__setattr__", signal_after_descriptor)
     try:
-        lock.acquire(timeout=1)
+        with pytest.raises(SystemExit) as exit_info:
+            lock.acquire(timeout=1)
     finally:
         monkeypatch.undo()
         signal.signal(signal_number, previous)
-    assert released == [True]
-    assert lock.is_locked
-    lock.release()
+    assert (exit_info.value.code, released, lock.is_locked, lock.lock_counter) == (7, [True], False, 0)
     with SoftFileLock(lock_path, blocking=False, is_singleton=False) as peer:
         assert peer.is_locked
 
 
-def test_release_during_identity_publication(lock_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_force_release_on_exit_during_identity_publication(lock_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     lock = SoftFileLock(lock_path, is_singleton=False)
     released: list[bool] = []
 
@@ -1917,15 +1919,15 @@ def test_release_during_identity_publication(lock_path: Path, monkeypatch: pytes
         context.__dict__[name] = value
         if context is lock._hold_state() and name == "lock_file_fd" and value is not None and not released:
             released.append(lock.is_locked)
-            lock.release()
+            lock.release(force=True)
+            raise SystemExit(7)
 
     with monkeypatch.context() as patch:
         patch.setattr(FileLockContext, "__setattr__", release_after_descriptor)
-        lock.acquire(timeout=1)
+        with pytest.raises(SystemExit) as exit_info:
+            lock.acquire(timeout=1)
 
-    assert released == [True]
-    assert lock.is_locked
-    lock.release()
+    assert (exit_info.value.code, released, lock.is_locked, lock.lock_counter) == (7, [True], False, 0)
     with SoftFileLock(lock_path, blocking=False, is_singleton=False) as peer:
         assert peer.is_locked
 
