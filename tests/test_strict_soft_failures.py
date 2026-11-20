@@ -253,9 +253,8 @@ def test_strict_soft_claim_scan_does_not_chmod_past_limit(  # pragma: win32 no c
     mocker.patch("filelock._strict._CLAIM_SCAN_LIMIT", 2)
     _initialize_protocol(lock_path)
     claims = Path(f"{lock_path}.filelock") / "claims"
-    for index in range(2):
+    for index in range(3):
         _write_foreign_claim(claims, f"{index:032x}")
-    (claims / "unknown-name").touch()
     claims.chmod(0o777)
 
     with pytest.raises(Timeout):
@@ -305,12 +304,10 @@ def test_strict_soft_claim_scan_reports_private_cleanup_error(  # pragma: win32 
 ) -> None:
     mocker.patch("filelock._strict._CLAIM_SCAN_LIMIT", 2)
     _initialize_protocol(lock_path)
-    claims = Path(f"{lock_path}.filelock") / "claims"
-    private_path = _private_claim_path(lock_path, "0" * 32)
-    private_path.write_bytes(b"abandoned")
-    os.utime(private_path, (0, 0))
-    _write_foreign_claim(claims, "1" * 32)
-    _write_foreign_claim(claims, "2" * 32)
+    for index in range(3):
+        private_path = _private_claim_path(lock_path, f"{index:032x}")
+        private_path.write_bytes(b"abandoned")
+        os.utime(private_path, (0, 0))
     mocker.patch("filelock._strict._unlink_private_record_once", autospec=True, side_effect=OSError(EIO, "I/O error"))
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot reclaim private claim records"):
