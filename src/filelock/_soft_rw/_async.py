@@ -28,10 +28,10 @@ from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
     TASKS_THREAD_ID,
     BackendOutcome,
-    capture_call,
     drain_future,
     future_result,
     raise_cancelled_error,
+    submit_call,
     task_owners_for,
     wait_until_done,
 )
@@ -265,7 +265,7 @@ class AsyncSoftReadWriteLock:
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
     ) -> asyncio.Future[BackendOutcome[_R]]:
         loop = self._loop or asyncio.get_running_loop()
-        return loop.run_in_executor(self._executor, capture_call, functools.partial(func, *args, **kwargs))
+        return submit_call(loop, self._executor, functools.partial(func, *args, **kwargs))
 
     def _leave_backend(self) -> None:
         # Only the tasks' level: a sync user of the same singleton keeps its own.
