@@ -51,6 +51,7 @@ from ._util import (
     exchange_names,
     exchange_supported,
     foreign_owner,
+    open_into,
     pin_inode,
     raise_on_not_writable_file,
     remove_own_file,
@@ -150,27 +151,28 @@ class SoftFileLock(BaseFileLock):
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC
         if (o_nofollow := getattr(os, "O_NOFOLLOW", None)) is not None:  # pragma: needs o-nofollow
             flags |= o_nofollow
-        try:
-            fd = os.open(self._lock_path, flags, self._open_mode() & ~_OTHERS_WRITE)
-        except OSError as exception:
-            if not (
-                exception.errno == EEXIST or (exception.errno == EACCES and sys.platform == "win32")
-            ):  # pragma: win32 no cover
-                raise
-            self._try_break_stale_lock()
-            return
         # Publish held state only once the record is on disk. On failure, cancellation included, close the descriptor
         # and unlink the path only while it still names the file we opened: after an expired lease a successor's
         # marker may sit at the same path. The guard starts at the open, so a signal handler that raises before
         # _mark_descriptor_owned leaves no marker behind.
+        opened: Final[list[int]] = []
         identity: tuple[int, int] | None = None
         try:
-            self._mark_descriptor_pending(fd)
+            fd = self._create_marker(self._lock_path, flags, opened)
             identity = _file_identity(os.fstat(fd))
             self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
             self._mark_descriptor_owned(fd, identity)
-        except BaseException:
+        except BaseException as exception:
+            if not opened:
+                if not (
+                    isinstance(exception, OSError)
+                    and (exception.errno == EEXIST or (exception.errno == EACCES and sys.platform == "win32"))
+                ):  # pragma: win32 no cover
+                    raise
+                self._try_break_stale_lock()
+                return
+            fd = opened[0]
             # Publication transfers cleanup to the held descriptor. A signal handler may have released it already.
             if identity is not None and self._context.pending_lock_file_fd is None:
                 raise
@@ -250,6 +252,28 @@ class SoftFileLock(BaseFileLock):
         # still reaches the marker this hold opened.
         return tuple(dict.fromkeys((self._lock_path, self.lock_file)))
 
+    def _create_marker(self, path: str, flags: int, opened: list[int]) -> int:
+        fd = open_into(opened, path, flags, self._open_mode() & ~_OTHERS_WRITE)
+        self._mark_descriptor_pending(fd)
+        return fd
+
+    def _apply_explicit_mode(self, fd: int) -> None:
+        # os.open filters the mode through the umask, so an explicit mode lands as given only through fchmod, the way
+        # UnixFileLock applies it. Windows maps the mode to a read-only bit that os.open already set.
+        if self.has_explicit_mode and sys.platform != "win32":  # pragma: win32 no cover
+            with suppress(PermissionError):
+                os.fchmod(fd, self._context.mode & ~_OTHERS_WRITE)
+
+    @staticmethod
+    def _write_lock_info(fd: int) -> None:
+        # No suppression: a write failure must reach the acquisition rollback so it never publishes a half-written
+        # marker as held state. The optional third line is this process's start token, absent when the platform
+        # exposes no proven start time, in which case a reader falls back to PID-only liveness.
+        info = f"{os.getpid()}\n{host_name()}\n"
+        if (token := process_start_token(os.getpid())) is not None:
+            info += f"{token}\n"
+        write_all(fd, info.encode())
+
     def _try_break_stale_lock(self) -> None:
         with suppress(OSError, ValueError), pin_inode(self._lock_path) as pinned:
             content, marker = read_lock_file(self._lock_path)
@@ -303,11 +327,12 @@ class SoftFileLock(BaseFileLock):
             return
         aside: Final[str] = f"{self._lock_path}.break.{os.getpid()}.{secrets.token_hex(16)}"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        fd: Final[int] = os.open(aside, flags, self._open_mode() & ~_OTHERS_WRITE)
-        self._mark_descriptor_pending(fd)
+        opened: Final[list[int]] = []
+        identity: tuple[int, int] | None = None
         exchanged = False
         try:
-            identity: Final[tuple[int, int]] = _file_identity(os.fstat(fd))
+            fd: Final[int] = self._create_marker(aside, flags, opened)
+            identity = _file_identity(os.fstat(fd))
             self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
             # The scan and the write take long enough for a peer to have taken the marker since the check above, and an
@@ -323,8 +348,8 @@ class SoftFileLock(BaseFileLock):
             exchanged = False
             self._mark_descriptor_owned(fd, identity)
         finally:
-            if self._context.pending_lock_file_fd is not None:
-                self._abandon_take_over(fd, aside, put_back=exchanged)
+            if opened and (identity is None or self._context.pending_lock_file_fd is not None):
+                self._abandon_take_over(opened[0], aside, put_back=exchanged)
 
     def _restore_stranded_marker(self, breaker_pid: int, marker: os.stat_result) -> bool:  # pragma: win32 no cover
         # A breaker killed between its exchange and the put-back leaves its own marker at the path and the live holder's
@@ -443,23 +468,6 @@ class SoftFileLock(BaseFileLock):
                             Path(name).unlink()
             finally:
                 os.close(fd)
-
-    def _apply_explicit_mode(self, fd: int) -> None:
-        # os.open filters the mode through the umask, so an explicit mode lands as given only through fchmod, the way
-        # UnixFileLock applies it. Windows maps the mode to a read-only bit that os.open already set.
-        if self.has_explicit_mode and sys.platform != "win32":  # pragma: win32 no cover
-            with suppress(PermissionError):
-                os.fchmod(fd, self._context.mode & ~_OTHERS_WRITE)
-
-    @staticmethod
-    def _write_lock_info(fd: int) -> None:
-        # No suppression: a write failure must reach the acquisition rollback so it never publishes a half-written
-        # marker as held state. The optional third line is this process's start token, absent when the platform
-        # exposes no proven start time, in which case a reader falls back to PID-only liveness.
-        info = f"{os.getpid()}\n{host_name()}\n"
-        if (token := process_start_token(os.getpid())) is not None:
-            info += f"{token}\n"
-        write_all(fd, info.encode())
 
     def _unlink_held_marker(self, identity: tuple[int, int] | None) -> None:
         if sys.platform == "win32":  # pragma: win32 cover

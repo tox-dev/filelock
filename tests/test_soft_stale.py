@@ -10,6 +10,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from errno import EACCES, EINTR, EINVAL, EIO, ENODEV, ENOSPC, EPERM
+from functools import partial
 from multiprocessing import get_context
 from pathlib import Path
 from types import FrameType, SimpleNamespace
@@ -40,7 +41,9 @@ from tests.process_helpers import break_then_hang_after_exchange, call_within, c
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
     from contextlib import AbstractContextManager
+    from types import FrameType
 
+    from _typeshed import Unused
     from pytest_mock import MockerFixture, MockType
 
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
@@ -1555,6 +1558,43 @@ def test_transient_identity_failure_still_cleans_the_marker(lock_path: Path, moc
     with pytest.raises(OSError, match="Input/output error"):
         lock.acquire()
     assert (lock.is_locked, lock_path.exists()) == (False, False)
+
+
+@pytest.mark.parametrize("lock_type", [SoftFileLock, MarkerSoftFileLock, SoftFileLease])
+def test_acquire_interrupted_as_create_returns_removes_marker(lock_path: Path, lock_type: type[SoftFileLock]) -> None:
+    lock: Final[SoftFileLock] = lock_type(lock_path)
+    with pytest.raises(KeyboardInterrupt):
+        _interrupted_once(lock_path.exists, lock.acquire)
+    assert (lock.is_locked, lock_path.exists()) == (False, False)
+    with lock_type(lock_path, blocking=False) as peer:
+        assert peer.is_locked
+
+
+def _interrupted_once(created: Callable[[], bool], operation: Callable[[], object]) -> None:
+    pending: Final[list[type[KeyboardInterrupt]]] = [KeyboardInterrupt]
+
+    def interrupt(_frame: FrameType, event: str, _arg: Unused) -> None:  # pragma: no cover  # profiler runs untraced
+        if event == "c_return" and pending and created():
+            raise pending.pop()
+
+    sys.setprofile(interrupt)
+    try:
+        operation()
+    finally:
+        sys.setprofile(None)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+def test_stale_break_interrupted_as_create_returns_removes_marker(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    breaker: Final[SoftFileLock] = lock_type(lock)
+    with pytest.raises(KeyboardInterrupt):
+        _interrupted_once(lambda: any(tmp_path.glob("test.lock.break.*")), partial(breaker.acquire, blocking=False))
+    assert (breaker.is_locked, lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (False, record, [lock])
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
