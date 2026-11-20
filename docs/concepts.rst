@@ -183,9 +183,10 @@ A symlink swapped in for either directory then fails the operation instead of re
 
 An unrelated directory of the locking account can also be renamed to either protocol name where another account can
 write the lock's parent. Outside Windows, acquisition checks that ``<path>.filelock`` holds only a real ``claims``
-directory, and that ``claims`` holds only claim records, their private records or claim probes, before changing either
-mode or creating claims. It checks the names even when the mode already matches. An empty directory at either name, or
-a coordination directory holding a valid-looking claims tree, cannot be distinguished from lock state by its contents.
+directory, and that ``claims`` holds only claim records, their private records, claim probes or temporary ``.nfs``
+files left by NFS while an unlinked claim is open, before changing either mode or creating claims. It checks the names
+even when the mode already matches. An empty directory at either name, or a coordination directory holding a
+valid-looking claims tree, cannot be distinguished from lock state by its contents.
 
 Strict claims require coherent directory reads and atomic no-replace hard links. The class reports a protocol error
 when the filesystem reports that it cannot publish hard links. NFS and SMB remain outside this guarantee until their

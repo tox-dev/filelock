@@ -1714,7 +1714,7 @@ def test_strict_soft_refuses_unopenable_nested_claim_directory(  # pragma: win32
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
-@pytest.mark.parametrize("entry", ["run-1.csv", ".gitkeep"])
+@pytest.mark.parametrize("entry", ["run-1.csv", ".gitkeep", ".nfsgarbage"])
 @pytest.mark.parametrize("mode", [0o775, 0o1700])
 def test_strict_soft_refuses_unrelated_entry_in_claim_directory(  # pragma: win32 no cover
     tmp_path: Path, entry: str, mode: int
@@ -1727,6 +1727,16 @@ def test_strict_soft_refuses_unrelated_entry_in_claim_directory(  # pragma: win3
     with pytest.raises(SoftFileLockProtocolError, match="unknown claim name"):
         StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
     assert (stat.S_IMODE(claims.stat().st_mode), sorted(path.name for path in claims.iterdir())) == (mode, [entry])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no directory mode to settle")
+def test_strict_soft_accepts_nfs_unlinked_open_claim(tmp_path: Path) -> None:  # pragma: win32 no cover
+    lock_path = tmp_path / "resource.lock"
+    (claims := Path(f"{lock_path}.filelock") / "claims").mkdir(parents=True)
+    (silly_rename := claims / ".nfs00000000004c0019000002e4").touch()
+
+    with StrictSoftFileLock(lock_path, mode=0o600, timeout=0):
+        assert (silly_rename.exists(), stat.S_IMODE(claims.stat().st_mode)) == (True, 0o1700)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not inspect directory mode")

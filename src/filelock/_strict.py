@@ -981,6 +981,11 @@ def _refuse_unrelated_claim_entries(lock_file: str, directory: Path, fd: int) ->
                     if _parse_claim_name(name := entry.name) is None
                     and not _is_claim_probe_name(name)
                     and _parse_claim_name(_private_public_name(name) or "") is None
+                    and not (
+                        name.startswith(".nfs")
+                        and len(name) > len(".nfs")
+                        and all(c in "0123456789abcdef" for c in name[4:])
+                    )
                 ),
                 None,
             )
