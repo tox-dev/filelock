@@ -923,9 +923,10 @@ The epoch identifies the log that ``HEAD`` and the participant's memory describe
 the listing, ``HEAD`` or memory can be read, acquisition raises :class:`SoftFileLockProtocolError
 <filelock.SoftFileLockProtocolError>`.
 
-A committer checks the epoch and predecessor before and after linking its snapshot. If the epoch changes, the
-committer retries against the current log. At cold start a peer can build on the first snapshot before its publisher
-finishes those checks. Keeping that slot occupied prevents a delayed writer from claiming the same generation.
+A committer writes a private snapshot, checks its epoch, then links it into the same generation directory. It checks the
+epoch again after the link. If the log was replaced, the committer retries against the current log. At cold start a peer
+can build on the first snapshot before its publisher finishes those checks. Keeping that slot occupied prevents a
+delayed writer from claiming the same generation.
 
 Readers enter as soon as no live writer is named. A writer enters as soon as no live writer is named, which blocks every
 new reader, then waits for the named readers to leave. New readers wait behind the named writer, which gives writers

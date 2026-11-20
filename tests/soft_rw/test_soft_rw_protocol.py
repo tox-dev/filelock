@@ -663,6 +663,29 @@ def test_a_commit_that_lands_in_a_compacted_slot_counts_as_lost(
 
 
 @pytest.mark.requires_hard_links
+def test_compaction_keeps_a_replacement_writer_at_the_same_generation(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    log = _committed(files, lock_file, root, [None] * 3)
+    link, unlink = files.link, files.unlink
+
+    def advance_then_link(source: str, target: str) -> bool:
+        _committed(OsFiles(lock_file), lock_file, root, [None] * 70)
+        return link(source, target)
+
+    def reset_before_compaction(path: str, *, witness: str | None = None) -> None:
+        if witness is not None:
+            Path(root).rename(f"{root}.old")
+            _committed(OsFiles(lock_file), lock_file, root, [None] * 3 + [_SECOND])
+        unlink(path, witness=witness)
+
+    mocker.patch.object(files, "link", autospec=True, side_effect=advance_then_link)
+    mocker.patch.object(files, "unlink", autospec=True, side_effect=reset_before_compaction)
+    assert not log.commit(Snapshot(generation=4, writer=None, readers=frozenset({_FIRST})))
+    assert log.latest() == Snapshot(generation=4, writer=_SECOND, readers=frozenset())
+
+
+@pytest.mark.requires_hard_links
 @pytest.mark.parametrize("witness", ["listing", "head"])
 def test_a_commit_beside_another_late_record_counts_as_lost(
     lock_file: str, files: OsFiles, root: str, head: Path, mocker: MockerFixture, witness: str
@@ -762,23 +785,53 @@ def test_a_cold_start_commit_rechecks_the_initialized_epoch(
 
 
 @pytest.mark.requires_hard_links
-def test_a_record_refused_with_nothing_built_on_it_is_removed(
+@pytest.mark.parametrize("generation", [pytest.param(2, id="adjacent"), pytest.param(5, id="gap")])
+def test_a_replacement_log_keeps_its_writer_when_a_reader_stages_an_old_snapshot(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture, generation: int
+) -> None:
+    old = _committed(files, lock_file, root, [None] * generation)
+    create = files.create
+
+    def reset_then_create(path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
+        Path(root).rename(f"{root}.old")
+        _committed(OsFiles(lock_file), lock_file, root, [None, _SECOND])
+        return create(path, data, durable=durable)
+
+    mocker.patch.object(files, "create", autospec=True, side_effect=reset_then_create)
+    stale = Snapshot(generation=generation + 1, writer=None, readers=frozenset({_FIRST}))
+    assert not old.commit(stale)
+    assert (old.latest(), Path(root, "gen", f"{stale.generation:020d}").exists()) == (
+        Snapshot(generation=2, writer=_SECOND, readers=frozenset()),
+        False,
+    )
+
+
+@pytest.mark.requires_hard_links
+def test_a_staged_snapshot_is_lost_when_its_directory_is_renamed(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:
-    # A peer replaced the log after the epoch check: left behind, gen/6 would pass for the head of the new log.
-    log = _committed(files, lock_file, root, [None] * 5)
-    real_create = files.create
+    old = _committed(files, lock_file, root, [None])
+    link = files.link
 
-    def wipe_then_create(path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
-        shutil.rmtree(root)
+    def reset_then_link(source: str, target: str) -> bool:
+        Path(root).rename(f"{root}.old")
         _committed(OsFiles(lock_file), lock_file, root, [_SECOND])
-        return real_create(path, data, durable=durable)
+        return link(source, target)
 
-    mocker.patch.object(files, "create", autospec=True, side_effect=wipe_then_create)
-    assert (
-        log.commit(Snapshot(generation=6, writer=_FIRST, readers=frozenset())),
-        Path(root, "gen", f"{6:020d}").exists(),
-    ) == (False, False)
+    mocker.patch.object(files, "link", autospec=True, side_effect=reset_then_link)
+    assert not old.commit(Snapshot(generation=2, writer=None, readers=frozenset({_FIRST})))
+    assert old.latest() == Snapshot(generation=1, writer=_SECOND, readers=frozenset())
+
+
+@pytest.mark.requires_hard_links
+def test_a_missing_link_dependency_leaves_the_previous_generation(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:
+    log = _committed(files, lock_file, root, [_SECOND])
+    mocker.patch.object(files, "link", autospec=True, side_effect=FileNotFoundError("link failed"))
+    with pytest.raises(FileNotFoundError, match="link failed"):
+        log.commit(Snapshot(generation=2, writer=None, readers=frozenset({_FIRST})))
+    assert log.latest() == Snapshot(generation=1, writer=_SECOND, readers=frozenset())
 
 
 @pytest.mark.requires_hard_links
@@ -1385,10 +1438,11 @@ class _MemoryFiles:
         self._record()
         return True
 
-    def unlink(self, path: str) -> None:
+    def unlink(self, path: str, *, witness: str | None = None) -> None:
         self._scheduler.yield_turn()
-        self.files.pop(_key(path), None)
-        self._record()
+        if witness is None or _key(witness) in self.files:
+            self.files.pop(_key(path), None)
+            self._record()
 
     def listdir(self, path: str) -> list[str]:
         self._scheduler.yield_turn()

@@ -91,8 +91,8 @@ class _Files(Protocol):
         # so the file must also still start with *header*, the bytes every rewrite keeps.
         ...
 
-    def unlink(self, path: str) -> None:
-        # Remove the file, tolerating one that is already gone.
+    def unlink(self, path: str, *, witness: str | None = None) -> None:
+        # A generation can be pruned only while its newer witness still exists in the same directory.
         ...
 
     def listdir(self, path: str) -> list[str]:
@@ -203,7 +203,7 @@ class GenerationLog:
     def _list(self) -> list[int]:
         listed = self._listed()
         for generation in listed[:-_RETAINED_GENERATIONS]:
-            self._files.unlink(self._path(generation))
+            self._files.unlink(self._path(generation), witness=self._path(listed[-1]))
         return listed[-_RETAINED_GENERATIONS:]
 
     def _listed(self) -> list[int]:
@@ -271,21 +271,19 @@ class GenerationLog:
         #
         # Compaction can free this slot, or a peer can replace the log, while the committer is paused at the link.
         # A surviving predecessor can itself be a delayed write. Check the lead against both the listing and HEAD.
-        if self._files.read(self._epoch_path) != self._epoch or not self._extends_the_log(successor.generation):
+        if not self._extends_the_log(successor.generation):
             return False
-        if not self._publish(
-            self._path(successor.generation), data := successor.encode(), self._files.link, durable=True
-        ):
+        if not self._publish(self._path(successor.generation), data := successor.encode()):
             return False
-        lead = max([*self._listed(), self._head_generation() or 0]) - successor.generation
+        newest = max([*self._listed(), self._head_generation() or 0])
         extends = self._extends_the_log(successor.generation)
-        epoch_changed = self._files.read(self._epoch_path) != self._epoch
-        # After a wipe, an isolated record from the old log could become the head of its replacement.
-        orphan = epoch_changed and successor.generation > 1 and not extends and lead <= 0
-        if orphan or (not epoch_changed and lead >= _RETAINED_GENERATIONS):
-            self._files.unlink(self._path(successor.generation))
+        if self._files.read(self._epoch_path) != self._epoch:
+            # The same generation number may now name the replacement log's record.
             return False
-        if epoch_changed or not extends:
+        if newest - successor.generation >= _RETAINED_GENERATIONS:
+            self._files.unlink(self._path(successor.generation), witness=self._path(newest))
+            return False
+        if not extends:
             # A peer can already have extended this record. Keep its slot occupied until compaction.
             return False
         self._latest = successor
@@ -293,9 +291,9 @@ class GenerationLog:
         # move HEAD back past later commits, so HEAD only ever moves forward.
         with suppress(OSError):
             if (epoch := self._valid_epoch()) is not None and (self._head_generation() or 0) < successor.generation:
-                self._publish(self._head_path, epoch + data, self._files.replace, durable=False)
+                self._publish(self._head_path, epoch + data)
         if (expired := successor.generation - _RETAINED_GENERATIONS - 1) > 0:
-            self._compact_through(expired)
+            self._compact_through(expired, successor.generation)
         return True
 
     def _extends_the_log(self, generation: int) -> bool:
@@ -305,26 +303,38 @@ class GenerationLog:
             return self._files.read(self._path(generation - 1)) is not None
         return self._head_record() is None
 
-    def _publish(self, target: str, data: bytes, place: Callable[[str, str], bool], *, durable: bool) -> bool:
+    def _publish(self, target: str, data: bytes) -> bool:
+        generation = target != self._head_path
         temporary = str(self._directory / f"{_TEMPORARY_PREFIX}{new_token()}")
         try:
-            self._files.create(temporary, data, durable=durable)
+            self._files.create(temporary, data, durable=generation)
         except FileNotFoundError:
             # No gen/: the log was removed, or nobody has prepared it yet. Either way there is nothing to publish into
             # until a participant's prepare() creates it, and the caller re-reads whatever log exists by then.
             return False
         try:
-            return place(temporary, target)
+            if not generation:
+                return self._files.replace(temporary, target)
+            # A reset before staging can leave the private file in a new log. A reset after this check takes the
+            # private name with the old directory, so a link in the new log has no source.
+            if self._files.read(self._epoch_path) != self._epoch:
+                return False
+            try:
+                return self._files.link(temporary, target)
+            except FileNotFoundError:
+                if self._files.read(temporary) is not None:
+                    raise
+                return False
         finally:
             self._files.unlink(temporary)
 
-    def _compact_through(self, expired: int) -> None:
+    def _compact_through(self, expired: int, newest: int) -> None:
         # Oldest first, so survivors stay contiguous: a stalled committer's leftover would otherwise sit below a hole.
         oldest = expired
         while oldest > 1 and self._files.read(self._path(oldest - 1)) is not None:
             oldest -= 1
         for generation in range(oldest, expired + 1):
-            self._files.unlink(self._path(generation))
+            self._files.unlink(self._path(generation), witness=self._path(newest))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
