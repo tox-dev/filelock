@@ -1180,6 +1180,10 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         if (probe := _PROBE_DESCRIPTORS.adopt(database, claimed)) is None:
             probe = _PROBE_DESCRIPTORS.retain(_open_lock_database(database), claimed)
         identity, fd, _ = probe
+        # An idle probe may be reused through a different name whose sticky parent lets another account unlink it.
+        if (foreign := foreign_owner(os.fstat(fd), pathlib.Path(database).parent.stat())) is not None:
+            reason = f"lock database belongs to uid {foreign}, not to this process's account or the directory's owner"
+            raise PermissionError(EACCES, reason, database)
         # Releases a finalizer queued while the table was locked.
         _PROBE_DESCRIPTORS.drain()
         _raise_if_unsupported_sqlite_format(fd, database)
@@ -1460,21 +1464,10 @@ def _open_lock_database(database: str, *, oplock_wait: float = 0) -> int:
             raise PermissionError(msg)
         return fd
     fd = os.open(database, _DB_OPEN_FLAGS, 0o600)  # pragma: win32 no cover
-    if not stat.S_ISREG((found := os.fstat(fd)).st_mode):  # pragma: win32 no cover
+    if not stat.S_ISREG(os.fstat(fd).st_mode):  # pragma: win32 no cover
         os.close(fd)
         msg = f"refusing a non-regular lock database: {database!r}"
         raise OSError(msg)
-    # The owner of a database under a sticky parent may unlink it during a hold. A contender then opens a new database
-    # at the path, and both hold the lock.
-    try:  # pragma: win32 no cover
-        owner: Final[int | None] = foreign_owner(found, pathlib.Path(database).parent.stat())  # pragma: win32 no cover
-    except OSError:
-        os.close(fd)
-        raise
-    if owner is not None:  # pragma: needs foreign-sticky-tmp
-        os.close(fd)
-        reason = f"lock database belongs to uid {owner}, not to this process's account or the directory's owner"
-        raise PermissionError(EACCES, reason, database)
     return fd  # pragma: win32 no cover
 
 
