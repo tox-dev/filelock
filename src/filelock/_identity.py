@@ -326,20 +326,20 @@ else:  # pragma: win32 no cover
 
 if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
 
-    def proc_numbers_tasks_as_here() -> bool:
-        return True
-
     def _owner_runs_elsewhere(pid: int, start_token: int | None) -> bool:
         # Without Linux PID namespaces, a PID that is gone or recycled leaves its owner nowhere else to run.
         del pid, start_token
         return False
 
 
-__all__ = [
-    "host_name",
-    "owner_is_current_process",
-    "owner_is_stale",
-    "proc_numbers_tasks_as_here",
-    "process_alive",
-    "process_start_token",
-]
+if sys.platform in {"linux", "android"}:  # pragma: linux cover
+    __all__ = [
+        "host_name",
+        "owner_is_current_process",
+        "owner_is_stale",
+        "proc_numbers_tasks_as_here",
+        "process_alive",
+        "process_start_token",
+    ]
+else:  # pragma: posix no cover
+    __all__ = ["host_name", "owner_is_current_process", "owner_is_stale", "process_alive", "process_start_token"]

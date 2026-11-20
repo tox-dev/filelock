@@ -58,9 +58,11 @@ from ._error import Timeout
 from ._identity import (
     host_name,
     owner_is_stale,
-    proc_numbers_tasks_as_here,
     process_start_token,
 )
+
+if sys.platform in {"linux", "android"}:  # pragma: linux cover
+    from ._identity import proc_numbers_tasks_as_here
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
