@@ -2573,6 +2573,7 @@ def test_strict_soft_coordination_directory_swapped_for_a_junction_leaves_target
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot open"):
         StrictSoftFileLock(lock_path, timeout=0).acquire()
+    assert coordination.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
     assert list(target.iterdir()) == []
 
 
