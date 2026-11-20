@@ -13,6 +13,7 @@ from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
 from filelock._soft_rw import _storage as storage_mod
+from filelock._soft_rw._protocol import TreeReplacedError
 from filelock._soft_rw._storage import OsFiles
 from tests.capability_marks import NEEDS_FOREIGN_STICKY_TMP
 
@@ -240,6 +241,44 @@ def test_prepare_creates_missing_parents(tmp_path: Path) -> None:
     root = str(tmp_path / "nested" / "deeper" / "x.lock.rw")
     OsFiles(str(tmp_path / "nested" / "deeper" / "x.lock")).prepare(root)
     assert Path(root, "gen").is_dir()
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.parametrize(
+    "level", [pytest.param(".", id="root"), pytest.param("gen", id="gen"), pytest.param("holders", id="holders")]
+)
+@pytest.mark.parametrize("mode", [pytest.param(0o770, id="group"), pytest.param(0o707, id="other")])
+def test_prepare_refuses_writable_tree_under_sticky_parent(
+    lock_path_in_shared_tmp: Path, level: str, mode: int
+) -> None:  # pragma: needs foreign-sticky-tmp
+    root = Path(f"{lock_path_in_shared_tmp}.rw")
+    root.mkdir(mode=0o700)
+    (root / "gen").mkdir(mode=0o700)
+    (root / "holders").mkdir(mode=0o700)
+    (root / level).chmod(mode)
+
+    with pytest.raises(TreeReplacedError, match="writable by other accounts"):
+        OsFiles(str(lock_path_in_shared_tmp)).prepare(str(root))
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.parametrize("name_only", [pytest.param(False, id="descriptors"), pytest.param(True, id="names")])
+def test_replaced_tree_cannot_be_writable_under_sticky_parent(
+    lock_path_in_shared_tmp: Path, mocker: MockerFixture, *, name_only: bool
+) -> None:  # pragma: needs foreign-sticky-tmp
+    mocker.patch.object(storage_mod, "_SUPPORTS_DIR_FD", new=not name_only and storage_mod._SUPPORTS_DIR_FD)
+    root = Path(f"{lock_path_in_shared_tmp}.rw")
+    files = OsFiles(str(lock_path_in_shared_tmp))
+    files.prepare(str(root))
+    root.rename(aside := Path(f"{root}.aside"))
+    try:
+        root.mkdir(mode=0o700)
+        root.chmod(0o770)
+        (root / "holders").mkdir(mode=0o700)
+        with pytest.raises(TreeReplacedError, match="writable by other accounts"):
+            files.listdir(str(root / "holders"))
+    finally:
+        shutil.rmtree(aside)
 
 
 @NEEDS_FOREIGN_STICKY_TMP
