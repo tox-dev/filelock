@@ -151,7 +151,7 @@ _TASK_OWNERS: Final[WeakKeyDictionary[ReadWriteLock | SoftReadWriteLock, _TaskOw
 _TASK_OWNERS_LOCK: Final[Lock] = Lock()
 
 
-def retire_task_holds_at_exit(backend: SoftReadWriteLock) -> bool:
+def retire_task_holds_at_exit(backend: SoftReadWriteLock) -> bool:  # pragma: needs hard-link
     # A published task level already has a table. Shutdown must not wait on fork admission to look it up.
     return _TASK_OWNERS[backend].retire_stopped_loops()
 
@@ -407,7 +407,7 @@ class _TaskOwners:
             self._transitioning = mode is not None or via is None
             return mode, dropped
 
-    def retire_stopped_loops(self) -> bool:
+    def retire_stopped_loops(self) -> bool:  # pragma: needs hard-link
         # Admission checks the backend under this lock. Exit cleanup already holds the backend lock.
         if not self._lock.acquire(blocking=False):
             return False
