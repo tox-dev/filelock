@@ -25,7 +25,12 @@ import string
 
 from filelock import ReadWriteLock, Timeout
 from filelock._read_write import _ForkSafeConnection
-from tests.capability_marks import NEEDS_FIFO, NEEDS_SYMLINK, SKIP_ON_UNRELIABLE_PROCESS_SYNC
+from tests.capability_marks import (
+    NEEDS_FIFO,
+    NEEDS_FOREIGN_STICKY_TMP,
+    NEEDS_SYMLINK,
+    SKIP_ON_UNRELIABLE_PROCESS_SYNC,
+)
 from tests.process_helpers import cleanup_processes
 from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, interrupt_once, writer_gets_in
 
@@ -681,6 +686,36 @@ def test_read_write_lock_refuses_a_non_regular_path(tmp_path: Path) -> None:
     os.mkfifo(lock_path)  # pragma: win32 no cover
     with pytest.raises(OSError, match="non-regular"):  # pragma: win32 no cover
         ReadWriteLock(lock_path, is_singleton=False)
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+@pytest.mark.usefixtures("directories_of_another_account")
+def test_read_write_lock_refuses_a_database_of_another_account(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path,
+) -> None:
+    # Its owner could unlink it during a hold, letting a second process open a new database at the same path.
+    lock_path_in_shared_tmp.touch()
+    with pytest.raises(PermissionError, match="not to this process's account") as raised:
+        ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
+    # The error names the path the lock resolved, and /tmp is a symlink to /private/tmp on macOS.
+    assert (raised.value.filename, lock_path_in_shared_tmp.exists()) == (str(lock_path_in_shared_tmp.resolve()), True)
+
+
+@NEEDS_FOREIGN_STICKY_TMP
+def test_read_write_lock_checks_owner_of_reused_probe(  # pragma: needs foreign-sticky-tmp
+    tmp_path: Path, lock_path_in_shared_tmp: Path, mocker: MockerFixture
+) -> None:
+    source = tmp_path / "source.db"
+    source.touch()
+    os.link(source, lock_path_in_shared_tmp)
+    first = ReadWriteLock(source, is_singleton=False)
+    second = ReadWriteLock(source, is_singleton=False)
+    with first.read_lock():
+        with second.read_lock():
+            pass
+        mocker.patch("filelock._read_write.foreign_owner", autospec=True, return_value=source.stat().st_uid + 1)
+        with pytest.raises(PermissionError, match="not to this process's account"):
+            ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
 
 
 def test_read_write_lock_refuses_a_wal_database(lock_file: str) -> None:

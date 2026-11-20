@@ -16,6 +16,7 @@ __lazy_modules__ = [
     "tempfile",
     f"{__spec__.parent}._error",
     f"{__spec__.parent}._identity",
+    f"{__spec__.parent}._util",
     f"{__spec__.parent}._windows",
 ]
 
@@ -33,6 +34,7 @@ import time
 from collections import deque
 from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field
+from errno import EACCES
 from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
 from weakref import WeakValueDictionary
@@ -60,6 +62,7 @@ from ._identity import (
     owner_is_stale,
     process_start_token,
 )
+from ._util import foreign_owner
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
@@ -1194,6 +1197,11 @@ def _connect_through_descriptor(  # pragma: win32 no cover
         if (probe := _PROBE_DESCRIPTORS.adopt(database, claimed)) is None:
             probe = _PROBE_DESCRIPTORS.retain(_open_lock_database(database), claimed)
         identity, fd, _ = probe
+        # An idle probe may be reused through a different name whose sticky parent lets another account unlink it.
+        foreign: Final[int | None] = foreign_owner(os.fstat(fd), pathlib.Path(database).parent.stat())
+        if foreign is not None:  # pragma: needs foreign-sticky-tmp
+            reason = f"lock database belongs to uid {foreign}, not to this process's account or the directory's owner"
+            raise PermissionError(EACCES, reason, database)
         # Releases a finalizer queued while the table was locked.
         _PROBE_DESCRIPTORS.drain()
         _raise_if_unsupported_sqlite_format(fd, database)
