@@ -5,15 +5,18 @@ import os
 import random
 import shutil
 import threading
+import time
 from errno import EIO
 from itertools import cycle, islice
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
+from filelock._soft_rw import _sync as sync_mod
 from filelock._soft_rw._protocol import (
     _RETAINED_GENERATIONS,
     GenerationLog,
@@ -266,6 +269,7 @@ def _participant(
     *,
     stale_threshold: float = 100,
     clock: Callable[[], float] = lambda: 0.0,
+    lease_clock: Callable[[], float] | None = None,
 ) -> Participant:
     # Each participant gets its own ledger and log, the way separate processes do.
     root = f"{lock_file}.rw"
@@ -275,6 +279,7 @@ def _participant(
         mode,
         stale_threshold=stale_threshold,
         clock=clock,
+        lease_clock=clock if lease_clock is None else lease_clock,
         ledger=Ledger(clock),
         log=GenerationLog(files, lock_file, root),
     )
@@ -383,6 +388,74 @@ def test_sweep_cannot_remove_a_resumed_waiters_hold(
     clock[0] = 12.0
     assert not sweeper.advance()
     assert GenerationLog(files, lock_file, root).latest().writer == waiter.token
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.skipif(not CAPABILITIES["suspend-clock"], reason="needs a clock that counts host suspension")
+def test_host_suspend_renews_a_waiters_token(
+    lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
+) -> None:  # pragma: needs suspend-clock
+    host_elapsed = [0.0]
+    host_monotonic = [0.0]
+    peer_elapsed = [0.0]
+
+    def boot_clock(clock_id: int) -> float:
+        assert clock_id == time.CLOCK_BOOTTIME
+        return host_elapsed[0]
+
+    mocker.patch.object(
+        sync_mod,
+        "time",
+        new=SimpleNamespace(
+            CLOCK_BOOTTIME=time.CLOCK_BOOTTIME,
+            clock_gettime=boot_clock,
+            monotonic=lambda: host_monotonic[0],
+        ),
+    )
+    holder = _participant(
+        files,
+        lock_file,
+        "write",
+        stale_threshold=10,
+        clock=lambda: host_monotonic[0],
+        lease_clock=sync_mod._lease_clock,
+    )
+    holder.publish()
+    assert holder.advance()
+    waiter = _participant(
+        files,
+        lock_file,
+        "write",
+        stale_threshold=10,
+        clock=lambda: host_monotonic[0],
+        lease_clock=sync_mod._lease_clock,
+    )
+    waiter.publish()
+    assert not waiter.advance()
+    sweeper = _participant(files, lock_file, "write", stale_threshold=1, clock=lambda: peer_elapsed[0])
+    sweeper.publish()
+    assert not sweeper.advance()
+    old_token = waiter.token
+    old_path = str(Path(root, "holders", old_token))
+    real_unlink = files.unlink
+    granted: list[bool] = []
+
+    def unlink_after_resume(path: str) -> None:
+        if path == old_path and not granted:
+            granted.append(False)
+            holder.leave()
+            host_elapsed[0] = 11.0
+            host_monotonic[0] = 0.1
+            granted[0] = waiter.advance()
+        real_unlink(path)
+
+    mocker.patch.object(files, "unlink", autospec=True, side_effect=unlink_after_resume)
+    peer_elapsed[0] = 11.0
+    assert not sweeper.advance()
+    assert granted == [True]
+    assert waiter.token != old_token
+    assert Path(root, "holders", waiter.token).exists()
+    assert waiter.heartbeat() == ("ok", None)
 
 
 @pytest.mark.requires_hard_links
@@ -919,7 +992,16 @@ def test_the_sweep_forgets_peers_that_left(lock_file: str, files: OsFiles, root:
 
     def waiter() -> Participant:
         log = GenerationLog(files, lock_file, root)
-        return Participant(files, root, "read", stale_threshold=10, clock=lambda: clock[0], ledger=ledger, log=log)
+        return Participant(
+            files,
+            root,
+            "read",
+            stale_threshold=10,
+            clock=lambda: clock[0],
+            lease_clock=lambda: clock[0],
+            ledger=ledger,
+            log=log,
+        )
 
     writer = _participant(files, lock_file, "write", stale_threshold=10, clock=lambda: clock[0])
     writer.publish()
@@ -1281,6 +1363,7 @@ class _Model:
             outcome.mode,
             stale_threshold=1.0,
             clock=lambda: self.scheduler.clock,
+            lease_clock=lambda: self.scheduler.clock,
             ledger=Ledger(lambda: self.scheduler.clock),
             log=GenerationLog(self.files, "/lock", _ROOT),
         )

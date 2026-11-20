@@ -1150,6 +1150,30 @@ def test_heartbeat_reports_refresh_failures_that_outlast_the_margin(lock_file: s
         lock.close()
 
 
+@pytest.mark.skipif(not CAPABILITIES["suspend-clock"], reason="needs a clock that counts host suspension")
+def test_heartbeat_reports_refresh_failure_after_host_suspend(
+    lock_file: str, mocker: MockerFixture
+) -> None:  # pragma: needs suspend-clock
+    seen: list[LeaseCompromise] = []
+    lock = _make_lock(lock_file, heartbeat_interval=10, stale_threshold=30, on_compromise=seen.append)
+    lock.acquire_write(timeout=2)
+    try:
+        hold = lock._hold
+        assert hold is not None
+        mocker.patch.object(
+            Participant, "heartbeat", autospec=True, return_value=("transient", OSError(EIO, "stale filesystem"))
+        )
+        mocker.patch.object(
+            sync_mod.time, "clock_gettime", autospec=True, return_value=time.clock_gettime(time.CLOCK_BOOTTIME) + 31
+        )
+        assert not lock._refresh(hold.participant, hold)
+        assert [compromise.reason for compromise in seen] == ["refresh-failed"]
+    finally:
+        mocker.stopall()
+        lock.release(force=True)
+        lock.close()
+
+
 @pytest.mark.parametrize("mode", [pytest.param("write", id="write"), pytest.param("read", id="read")])
 def test_acquire_hands_back_the_slot_when_the_heartbeat_cannot_start(
     lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture, mode: Literal["read", "write"]
@@ -1180,7 +1204,7 @@ def test_participant_reads_the_clock_patched_after_construction(lock_file: str, 
     try:
         lock.acquire_write(timeout=2)
         assert lock._hold is not None
-        assert lock._hold.participant._clock is clock
+        assert lock._hold.participant._clocks.observe is clock
     finally:
         mocker.stopall()
         lock.release(force=True)
