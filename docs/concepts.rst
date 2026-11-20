@@ -592,8 +592,8 @@ Native locks are advisory
 :class:`FileLock <filelock.FileLock>`, :class:`UnixFileLock <filelock.UnixFileLock>`, and :class:`WindowsFileLock
 <filelock.WindowsFileLock>` place an OS lock on an open file. The lock is *advisory*: it blocks another acquirer that
 calls the same lock, and it does nothing to a process that opens and writes the protected file without locking. On Unix
-the lock lives on the open file description (``flock``), so a ``fork`` or ``dup`` shares one lock and it releases when the
-last descriptor sharing that description closes or the process exits. Java's ``FileLock`` draws the same advisory
+the lock lives on the open file description (``flock``). At the OS level, a ``fork`` or ``dup`` shares one lock until it
+is unlocked or the last descriptor sharing that description closes. Java's ``FileLock`` draws the same advisory
 boundary and tells callers to hold one channel per file; because filelock's Unix backend locks the open file description
 rather than the POSIX ``fcntl`` process owner, a second ``open`` of the same path in the same process does not silently
 drop the lock, but a caller passing its own descriptor through :func:`lock_descriptor <filelock.lock_descriptor>` still
@@ -611,8 +611,10 @@ Ownership scope per lock
      - Survives / releases
    * - :class:`FileLock <filelock.FileLock>` and the native backends
      - The acquisition object, per open file description
-     - A forked child or a duplicated descriptor shares the same open file description and its one OS lock; unlocking, or
-       the last shared descriptor closing or exiting, releases it for both.
+     - On POSIX, filelock closes its managed descriptor in a forked child and invalidates the inherited instance; the
+       child must construct a new one. The parent keeps the OS lock while its descriptor is open. Unlocking releases it
+       for every duplicate; otherwise it ends when the last descriptor sharing its open file description closes,
+       including on process exit.
    * - :class:`SoftFileLock <filelock.SoftFileLock>`
      - The acquisition object; the marker names the holder's PID, host, and process start token
      - A crash leaves the marker; a contender reclaims it only once the recorded owner is provably gone. A forked child
@@ -635,6 +637,10 @@ Ownership scope per lock
      - A peer evicts a holder whose record has not changed within ``stale_threshold`` and the holder's next heartbeat
        reports the loss through ``on_compromise``. A forked child loses the lock; the inherited instance is
        fork-invalidated and its ``release()`` is a no-op.
+
+Acquire a native lock after daemonizing, in the process that must keep it. A launcher that acquires before ``os.fork()``
+does not hand its managed hold to the child. When the launcher exits, the OS lock ends unless the child holds a
+descriptor the caller duplicated separately.
 
 On POSIX, ``os.fork()`` (``multiprocessing``'s fork start method included) waits up to 30 seconds for any acquire,
 release or construction bookkeeping another thread of the process is running, for every lock type, and threads that
