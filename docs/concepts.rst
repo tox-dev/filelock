@@ -466,7 +466,8 @@ The defense differs by platform:
   ``timeout`` holds.
 - :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` opens ``<path>.filelock`` with ``O_NOFOLLOW`` and reaches
   ``claims`` relative to that descriptor on platforms that support ``dir_fd``. A symlink swapped in for either
-  directory after the check cannot redirect where claims are created, listed or removed.
+  directory after the check cannot redirect where claims are created, listed or removed. A lease (Linux) or oplock
+  (Windows) on the sentinel can delay its read for half a second, then counts as contention under the acquire timeout.
 - :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` opens ``<path>.rw`` and then ``gen`` or ``holders`` without
   following symlinks for every record operation on platforms that support ``dir_fd``. A tree swapped in after an earlier
   acquire cannot redirect its writes. Without ``dir_fd``, Windows holds those directories open for each operation so

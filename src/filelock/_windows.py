@@ -385,7 +385,7 @@ if sys.platform == "win32":  # pragma: win32 cover
 
         return _descriptor_for_non_reparse(handle, path, os.O_RDWR)
 
-    def open_read_without_oplock_wait(path: str) -> int:
+    def open_read_without_oplock_wait(path: str, *, share_delete: bool = True) -> int:
         # Open *path* read-only and return a descriptor, without waiting for an oplock holder to answer its break.
         #
         # ``os.open`` waits inside the system call until the holder of an oplock on the file answers or closes its
@@ -393,6 +393,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         # followed.
         #
         # :param path: the file to read.
+        # :param share_delete: whether the handle allows renaming or deleting the file while it is open.
         #
         # :returns: a read-only file descriptor.
         #
@@ -400,7 +401,8 @@ if sys.platform == "win32":  # pragma: win32 cover
         # :raises FileNotFoundError: if *path* does not exist.
         # :raises OSError: if the open fails for any other reason, or *path* is a reparse point.
         sys.audit("open", path, None, os.O_RDONLY)
-        return _open_existing_without_oplock_wait(path, _GENERIC_READ | _SYNCHRONIZE, os.O_RDONLY)
+        share = _FILE_SHARE_ALL if share_delete else _FILE_SHARE_READ_WRITE
+        return _open_existing_without_oplock_wait(path, _GENERIC_READ | _SYNCHRONIZE, os.O_RDONLY, share)
 
     def open_for_delete_without_oplock_wait(path: str) -> int:
         # Open *path* with delete access and return a descriptor, without waiting for an oplock holder to answer.
@@ -442,8 +444,8 @@ if sys.platform == "win32":  # pragma: win32 cover
         elif status != _STATUS_OPLOCK_BREAK_IN_PROGRESS:
             raise _status_error(status, path)
 
-    def _open_existing_without_oplock_wait(path: str, access: int, flags: int) -> int:
-        handle, status = _nt_create(path, access, _FILE_ATTRIBUTE_NORMAL, _FILE_SHARE_ALL, _FILE_OPEN)
+    def _open_existing_without_oplock_wait(path: str, access: int, flags: int, share: int = _FILE_SHARE_ALL) -> int:
+        handle, status = _nt_create(path, access, _FILE_ATTRIBUTE_NORMAL, share, _FILE_OPEN)
         if status != _STATUS_SUCCESS:
             raise _status_error(status, path)
         return _descriptor_for_non_reparse(handle, path, flags)
