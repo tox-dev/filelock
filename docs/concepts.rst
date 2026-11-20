@@ -795,6 +795,9 @@ keeps a dead owner's marker until ``timeout``, ``lifetime`` or ``break_lock()``.
 container runtimes create, keeps the token. A process that cannot read ``/proc/sys/kernel/random/boot_id`` (systemd's
 ``ProcSubset=pid`` hides it) records ``starttime`` without the boot id. A contender then compares ``starttime`` alone
 whenever either side lacks the boot id.
+The same fallback applies when a file is mounted over the boot-id path, including a file from procfs itself, or when
+``/proc/self/mountinfo`` cannot be read. A process with a separate procfs mount can then compare the holder's
+``starttime`` even if it sees the kernel's boot id instead.
 
 A procfs numbers tasks by the PID namespace of the process that mounted it. A process in a PID namespace that still sees
 an outer ``/proc`` (``unshare --pid`` without ``--mount-proc``, ``nsenter --pid`` without ``--mount``) finds an
