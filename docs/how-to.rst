@@ -932,13 +932,11 @@ Each publication attempt uses a fresh random private-record name. On POSIX, a pr
 removed immediately; an unpublished record abandoned by a crash is removed after a two-second grace period. If a live
 publisher is paused past that grace period, it backs off and retries instead of entering without a public claim.
 
-On Windows, abandoned private records stay in the coordination directory: deleting one during acquisition can wait
-indefinitely for another process's file-system oplock. These hidden records do not count as public claims.
-
-Repeated interrupted publications can accumulate private records on Windows and slow claim scans. To clean them, stop
-all processes using the lock, then inspect and remove stale hidden
-``.*.private-v1-*.tmp`` and ``.probe-v1-*.tmp`` entries in its coordination directory and ``claims`` subdirectory.
-Leave public ``*.claim`` records for ``force_break()``.
+On Windows, acquisition leaves abandoned private records in place because deleting one can wait for a reader's oplock.
+Repeated interruptions can leave enough records to slow claim scans. Stop all processes using the lock before cleaning
+up. Look next to the lock file for its hidden sentinel records (``.<lock-name>.private-v1-*.tmp``). In
+``<lock-name>.filelock/claims/``, remove stale ``.*.private-v1-*.tmp`` and ``.probe-v1-*.tmp`` files. Use ``force_break()``
+for public ``*.claim`` records.
 
 A directory, symlink, or other non-regular node at a private-record name is protocol damage and fails closed without
 following or removing it.

@@ -1,2 +1,2 @@
-A read-handle oplock on an abandoned private record no longer holds :class:`~filelock.StrictSoftFileLock` acquisition
-past its timeout on Windows. Windows retains abandoned private records for manual cleanup.
+On Windows, :class:`~filelock.StrictSoftFileLock` skips deletion of abandoned private records during acquisition.
+This avoids waiting for a reader's oplock. See :ref:`how-to:Use fail-closed soft locks` for cleanup instructions.
