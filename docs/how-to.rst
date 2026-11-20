@@ -448,8 +448,8 @@ and others cannot write there, and none of SQLite's side files (``-journal``, ``
 
 Otherwise, filelock creates a private directory under ``.filelock-*`` and opens a hard link to the database there.
 This keeps SQLite's side files out of the shared directory. The locking account needs write access to the parent and a
-filesystem that supports hard links. If inherited permissions expose the private directory to other accounts, filelock
-raises :class:`PermissionError`.
+filesystem that supports hard links. If inherited permissions expose the private directory, filelock sets mode 0700 and
+checks it. If other accounts still have access or the filesystem refuses the mode change, filelock raises :class:`PermissionError`.
 
 On its first connection to a database in a shared directory, filelock looks for hard links left by dead holders. It
 checks a 50 ms deadline between directory entries. If time runs out, a later connection can try again. A leftover

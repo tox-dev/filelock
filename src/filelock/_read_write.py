@@ -1241,16 +1241,7 @@ def _link_beside(  # pragma: needs posix-hard-link
         # An inherited ACL, such as an NFSv4 one on ZFS, overrides the mode mkdtemp asks for. Only an empty directory
         # is tightened, so one swapped in with contents is still refused above.
         if loose:
-            msg = (
-                f"link directory {os.fspath(path)!r} stays open to other accounts through an inherited ACL"
-                f" that chmod 0700 cannot close; make {os.fspath(parent)!r} writable by its owner only"
-            )
-            try:
-                os.fchmod(fd, 0o700)
-            except PermissionError as exc:  # ZFS with aclmode=restricted refuses a chmod on a non-trivial ACL
-                raise OSError(msg) from exc
-            if os.fstat(fd).st_mode & 0o077:
-                raise OSError(msg)
+            _tighten_link_directory(fd, parent)
         outer: Final[str] = secrets.token_hex(8)
         inner = secrets.token_hex(8)
         link: Final[_LinkDirectory] = _LinkDirectory(path, (made.st_dev, made.st_ino), f"{outer}/{inner}")
@@ -1277,11 +1268,23 @@ def _make_private_link_directories(
     outer_fd = os.open(outer, _DIRECTORY_FLAGS, dir_fd=parent_fd)
     try:
         if os.fstat(outer_fd).st_mode & 0o077:
-            msg = f"inherited permissions expose private link directory in {os.fspath(parent)!r}"
-            raise PermissionError(msg)
+            _tighten_link_directory(outer_fd, parent)
         os.mkdir(inner, 0o700, dir_fd=outer_fd)
     finally:
         os.close(outer_fd)
+
+
+def _tighten_link_directory(fd: int, parent: pathlib.Path) -> None:  # pragma: needs posix-hard-link
+    msg = (
+        "link directory stays open to other accounts through an inherited ACL"
+        f" that chmod 0700 cannot close; make {os.fspath(parent)!r} writable by its owner only"
+    )
+    try:
+        os.fchmod(fd, 0o700)
+    except PermissionError as exc:
+        raise PermissionError(msg) from exc
+    if os.fstat(fd).st_mode & 0o077:
+        raise PermissionError(msg)
 
 
 def _sweep_links_of_the_dead(

@@ -221,7 +221,7 @@ def test_private_link_refuses_a_directory_swapped_in_before_it_opens(
     assert [(directory / "notes.txt").read_text() for directory in swapped_in] == ["keep"]
 
 
-def test_private_link_refuses_inherited_permissions_on_the_nested_directory(
+def test_private_link_repairs_inherited_permissions_on_the_nested_directory(
     database: Path, mocker: MockerFixture
 ) -> None:
     mkdir = os.mkdir
@@ -232,7 +232,12 @@ def test_private_link_refuses_inherited_permissions_on_the_nested_directory(
             os.chmod(path, stat.S_IRWXU | stat.S_IRGRP, dir_fd=dir_fd)
 
     mocker.patch("os.mkdir", autospec=True, side_effect=inherit_permissions)
-    with pytest.raises(PermissionError, match="inherited permissions"):
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        directory = next(database.parent.glob(".filelock-*/*"))
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+    mocker.patch("os.fchmod", autospec=True)
+    with pytest.raises(PermissionError, match="inherited ACL"):
         ReadWriteLock(database, is_singleton=False)
     assert list(database.parent.glob(".filelock-*")) == []
 
