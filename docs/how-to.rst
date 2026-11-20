@@ -850,6 +850,9 @@ That recovery path is not fail closed.
 A contender breaks a stale marker without the lock path ever standing empty. Where it cannot (NFS, SMB and platforms
 without an atomic exchange, other than Windows) it leaves the marker in place; see :ref:`concepts:How does stale lock
 detection work across platforms?` for the details.
+On POSIX, a recovery scan also leaves the marker in place when it sees more than 64 recovery records or 4,096 directory
+entries. Remove unexpected entries from the lock directory before retrying, or use ``break_lock()`` after confirming
+that no holder remains.
 
 ********************************
  Use fail-closed soft locks

@@ -19,7 +19,15 @@ import pytest
 import filelock._soft  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
 from filelock._identity import host_name, process_start_token
-from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, read_lock_file
+from filelock._soft import (
+    _MAX_LOCK_FILE_SIZE,
+    _MAX_STRANDED_RECORDS,
+    _MAX_STRANDED_SCAN_ENTRIES,
+    MALFORMED_LOCK_AGE_THRESHOLD,
+    _begin_claim,
+    _end_claim,
+    read_lock_file,
+)
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
 from filelock._util import exchange_names
 from tests.capability_marks import (
@@ -546,6 +554,56 @@ def test_stale_break_waits_when_a_peer_claimed_the_record_first(  # pragma: win3
 
 def _restore_name(lock: Path, pid: int | str) -> Path:  # pragma: win32 no cover
     return lock.with_name(f"test.lock.restore.{pid}.{'0' * 32}")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+def test_stale_break_reclaims_up_to_record_limit(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    _strand_dead_records(lock, record, _MAX_STRANDED_RECORDS)
+
+    with held_after_reclaim(lock_type(lock)) as held:
+        assert held.is_locked
+
+    assert list(tmp_path.glob("test.lock.restore.*")) == []
+
+
+def _strand_dead_records(lock: Path, record: str, count: int) -> None:  # pragma: win32 no cover
+    for number in range(count):
+        lock.with_name(f"test.lock.restore.{_DEAD_PID}.{number:032x}").write_text(record, encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
+@pytest.mark.parametrize(
+    ("record_count", "unrelated_count"),
+    [
+        pytest.param(_MAX_STRANDED_RECORDS + 1, 0, id="records"),
+        pytest.param(1, _MAX_STRANDED_SCAN_ENTRIES, id="entries"),
+    ],
+)
+def test_stale_break_refuses_scan_over_limit(  # pragma: win32 no cover
+    tmp_path: Path,
+    lock_type: type[SoftFileLock],
+    record: str,
+    record_count: int,
+    unrelated_count: int,
+    mocker: MockerFixture,
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    _strand_dead_records(lock, record, record_count)
+    for number in range(unrelated_count):
+        lock.with_name(f"test.lock.unrelated.{number:08x}").touch()
+    rename = mocker.spy(Path, "rename")
+
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (lock.read_text(encoding="utf-8"), rename.call_count) == (record, 0)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")

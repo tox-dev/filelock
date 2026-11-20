@@ -831,6 +831,10 @@ from the lock path before a displaced holder's marker is put back. The placehold
 carries the same PID, so a contender that evicts a placeholder a killed
 process left finds the same names.
 
+A poll checks at most 4,096 directory entries and 64 recovery records. If either limit is exceeded, it treats the
+marker as held until the directory is cleaned or an operator calls ``break_lock()``. This bounds work caused by
+untrusted names in a shared directory; a private lock directory avoids the limit during ordinary recovery.
+
 The contender holds the judged marker open from before it reads the record until the break ends. ext4 gives a freed
 inode number to the next file created, so a successor's marker could otherwise carry the number of the marker judged
 stale.

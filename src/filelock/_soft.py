@@ -70,6 +70,9 @@ else:  # pragma: win32 no cover
 
 MALFORMED_LOCK_AGE_THRESHOLD: Final[float] = 2.0
 _MAX_LOCK_FILE_SIZE: Final[int] = 1024
+# More than 64 recovery records or 4096 directory entries during one poll requires an operator to inspect the path.
+_MAX_STRANDED_RECORDS: Final[int] = 64
+_MAX_STRANDED_SCAN_ENTRIES: Final[int] = 4096
 #: Contenders act on the record in the marker, so no other account may write it, whatever the mode or umask.
 _OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
 #: All a SoftFileLock before 3.22 writes, and what a current one shows between creating its marker and writing it.
@@ -343,21 +346,23 @@ class SoftFileLock(BaseFileLock):
         claimed: Final[re.Pattern[str]] = re.compile(rf"{re.escape(name)}\.restore\.([0-9]+)\.[0-9a-f]{{32}}")
         candidates: list[tuple[str, bool]] = []
         with os.scandir(directory or os.curdir) as entries:
-            for entry in entries:
+            for index, entry in enumerate(entries):
+                if index == _MAX_STRANDED_SCAN_ENTRIES:
+                    return None
                 if not entry.is_file(follow_symlinks=False):
                     continue
-                path = str(Path(directory) / entry.name)
                 if stranded.fullmatch(entry.name):
-                    # A stale marker may name a recycled PID whose current process is still breaking another marker.
-                    if 1 <= breaker_pid <= 2**31 - 1 and not owner_is_stale(breaker_pid, host_name(), None):
-                        return None
-                    candidates.append((path, False))
+                    ours, owner_pid = False, breaker_pid
                 elif (found := claimed.fullmatch(entry.name)) and 1 <= (recoverer := int(found[1])) <= 2**31 - 1:
-                    # No filelock writes a claim outside the pid range; os.kill would raise OverflowError on one.
-                    ours = recoverer == os.getpid()
-                    if not (ours or owner_is_stale(recoverer, host_name(), None)):
-                        return None
-                    candidates.append((path, ours))
+                    ours, owner_pid = recoverer == os.getpid(), recoverer
+                else:
+                    continue
+                if len(candidates) == _MAX_STRANDED_RECORDS:
+                    return None
+                # A stale marker may name a recycled PID whose current process is still breaking another marker.
+                if 1 <= owner_pid <= 2**31 - 1 and not (ours or owner_is_stale(owner_pid, host_name(), None)):
+                    return None
+                candidates.append((str(Path(directory) / entry.name), ours))
         return sorted(candidates)
 
     def _recover_claimed(
