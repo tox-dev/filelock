@@ -629,6 +629,71 @@ entered.wait()
 
 
 @pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_force_release_keeps_main_thread_atexit_hold(lock_type: type[BaseFileLock], tmp_path: Path) -> None:
+    lock_path = tmp_path / "a.lock"
+    script = f"""
+import atexit, sys, threading
+from filelock import {lock_type.__name__}
+lock = {lock_type.__name__}({str(lock_path)!r})
+release_now = threading.Event()
+released = threading.Event()
+def force_release():
+    release_now.wait()
+    lock.release(force=True)
+    released.set()
+threading.Thread(target=force_release, daemon=True).start()
+def save():
+    with lock:
+        release_now.set()
+        print(released.wait(2), lock.is_locked, flush=True)
+        sys.stdin.readline()
+atexit.register(save)
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline() == "True True\n"
+        with pytest.raises(Timeout):
+            lock_type(lock_path, blocking=False).acquire()
+    finally:
+        stdout, stderr = process.communicate("done\n", timeout=3)
+    assert (process.returncode, stdout, stderr) == (0, "", "")
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_force_release_keeps_main_thread_hold_during_threading_shutdown(
+    lock_type: type[BaseFileLock], tmp_path: Path
+) -> None:
+    lock_path = tmp_path / "a.lock"
+    script = f"""
+import atexit, threading, time
+from filelock import {lock_type.__name__}, Timeout
+lock = {lock_type.__name__}({str(lock_path)!r})
+lock.acquire()
+main = threading.main_thread()
+def release_after_main():
+    while main.is_alive():
+        time.sleep(0.001)
+    lock.release(force=True)
+    try:
+        with {lock_type.__name__}({str(lock_path)!r}, blocking=False):
+            print("contender entered", flush=True)
+    except Timeout:
+        print("held", flush=True)
+threading.Thread(target=release_after_main).start()
+def save():
+    print(lock.is_locked, flush=True)
+    lock.release()
+atexit.register(save)
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=5, check=True)
+
+    assert (result.stdout, result.stderr) == ("held\nTrue\n", "")
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
 @pytest.mark.parametrize(
     "drop",
     [

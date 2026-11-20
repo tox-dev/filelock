@@ -39,7 +39,7 @@ from decimal import Decimal
 from functools import cache, partial
 from itertools import count, starmap
 from numbers import Real
-from threading import TIMEOUT_MAX, Condition, RLock, Thread, active_count, current_thread, get_ident, local
+from threading import TIMEOUT_MAX, Condition, RLock, Thread, active_count, current_thread, get_ident, local, main_thread
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary, ref
 
@@ -1492,8 +1492,14 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         with self._transition_lock:
             own: Final[FileLockContext] = context.current
             for held, thread in self._thread_holds.copy().values():
-                if exited_only and thread.is_alive():
-                    continue
+                if exited_only:
+                    if thread.is_alive():
+                        continue
+                    # threading marks main done before atexit, while its Python frame can still use the lock.
+                    if thread is main_thread() and (
+                        thread.ident in sys._current_frames()  # ruff:ignore[private-member-access]  # documented API
+                    ):
+                        continue
                 context.current = held
                 try:
                     self._release_current(force=True)
