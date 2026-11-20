@@ -302,7 +302,7 @@ _PROBE_DESCRIPTORS: Final[_ProbeDescriptors] = _ProbeDescriptors()
 
 
 class _ForkSafeConnection(sqlite3.Connection):
-    _creator_pid: int
+    creator_pid: int | None
     _decrement_escrow: Callable[[sqlite3.Connection], None] | None
     _database_directory: _LinkDirectory | None
     database_identity: _DatabaseIdentity | None = None
@@ -314,7 +314,7 @@ class _ForkSafeConnection(sqlite3.Connection):
         **_kwargs: _ConnectionParameter,
     ) -> Self:
         connection = super().__new__(cls)
-        connection._creator_pid = _GETPID()
+        connection.creator_pid = _GETPID()
         connection._decrement_escrow = None
         connection._database_directory = None
         return connection
@@ -327,22 +327,21 @@ class _ForkSafeConnection(sqlite3.Connection):
             self.close()
 
     def close(self) -> None:
-        with _sqlite_transition():
-            if _GETPID() != self._creator_pid:  # pragma: needs fork
+        with _sqlite_transition(), fork_transition():
+            if _GETPID() != self.creator_pid:  # pragma: needs fork
                 return
-            with fork_transition():
-                sqlite3.Connection.close(self)
-                try:
-                    if (directory := self._database_directory) is not None:  # pragma: needs posix-hard-link
-                        self._database_directory = None
-                        _remove_link_directory(directory)
-                finally:
-                    if (probe := self._probe) is not None:  # pragma: win32 no cover
-                        self._probe = self.database_identity = None
-                        _PROBE_DESCRIPTORS.release(probe)
-                if (decrement := self._decrement_escrow) is not None:  # pragma: <3.12 cover  # pragma: needs fork
-                    self._decrement_escrow = None
-                    decrement(self)
+            sqlite3.Connection.close(self)
+            try:
+                if (directory := self._database_directory) is not None:  # pragma: needs posix-hard-link
+                    self._database_directory = None
+                    _remove_link_directory(directory)
+            finally:
+                if (probe := self._probe) is not None:  # pragma: win32 no cover
+                    self._probe = self.database_identity = None
+                    _PROBE_DESCRIPTORS.release(probe)
+            if (decrement := self._decrement_escrow) is not None:  # pragma: <3.12 cover  # pragma: needs fork
+                self._decrement_escrow = None
+                decrement(self)
 
     def retain_link(self, directory: _LinkDirectory | None) -> None:  # pragma: win32 cover
         # Keep the private link directory, if there is one, until SQLite no longer uses it.
@@ -1136,7 +1135,9 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
             return False
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
-        if self._con is not None:
+        if (connection := self._con) is not None:
+            # The child can have the same numeric PID as the owner of the private database link.
+            connection.creator_pid = None
             _FORKED_DATABASES.poison_after_fork(self._canonical_path, self._owned_connection.identity)
         self._owned_connection.connection = None
         self._owned_connection.transaction_released = True
