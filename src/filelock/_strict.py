@@ -560,6 +560,9 @@ def _reclaim_private_record(
     if not stat.S_ISREG(private_stat.st_mode):
         msg = f"{Path(directory, private_name)} is not a regular private record"
         raise OSError(msg)
+    if sys.platform == "win32":  # pragma: win32 cover
+        # Closing a delete handle can wait indefinitely for another process's read-handle oplock.
+        return
     private_record_grace: Final[float] = 2.0
     if private_stat.st_nlink == 1 and (
         (current := now()) is None or current - private_stat.st_mtime < private_record_grace

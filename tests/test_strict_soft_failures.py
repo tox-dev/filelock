@@ -587,7 +587,7 @@ def test_strict_soft_reaper_does_not_retry_sharing_error(
     with pytest.raises(Timeout):
         StrictSoftFileLock(lock_path, timeout=0).acquire()
     reaper_unlinks = [Path(os.fsdecode(call.args[0])).name for call in unlink.call_args_list].count(private_path.name)
-    assert (reaper_unlinks, sleep.call_count, private_path.exists()) == (1, 0, True)
+    assert (reaper_unlinks, sleep.call_count, private_path.exists()) == (int(os.name != "nt"), 0, True)
 
 
 def _patch_strict_clock(
@@ -688,7 +688,7 @@ def test_strict_soft_failed_clock_probe_does_not_fail_the_scan(
     fail_probe(mocker)
 
     with StrictSoftFileLock(lock_path, timeout=0):
-        assert private_path.exists() is kept
+        assert private_path.exists() is (kept or os.name == "nt")
 
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
@@ -1479,7 +1479,7 @@ def test_strict_soft_abandoned_claim_probe_is_reclaimed(tmp_path: Path) -> None:
     os.utime(probe, (time.time() - 10, time.time() - 10))
 
     with StrictSoftFileLock(lock_path, timeout=0):
-        assert not probe.exists()
+        assert probe.exists() is (os.name == "nt")
 
 
 def test_strict_soft_stale_claim_read_revalidates_to_gone(tmp_path: Path, mocker: MockerFixture) -> None:
