@@ -181,6 +181,9 @@ as ``/tmp``, acquisition raises :class:`SoftFileLockProtocolError <filelock.Soft
 ``dir_fd``, the lock reaches ``claims`` through a descriptor of ``<path>.filelock`` opened without following symlinks.
 A symlink swapped in for either directory then fails the operation instead of redirecting it.
 
+On POSIX, acquisition also refuses a strict sentinel that another account owns under a sticky parent. That account
+could remove the sentinel during a strict hold and let a legacy soft lock enter despite the strict claims.
+
 An unrelated directory of the locking account can also be renamed to either protocol name where another account can
 write the lock's parent. Outside Windows, acquisition checks that ``<path>.filelock`` holds only a real ``claims``
 directory, and that ``claims`` holds only claim records, their private records, claim probes or temporary ``.nfs``
