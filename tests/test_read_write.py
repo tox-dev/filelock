@@ -651,7 +651,7 @@ def test_read_write_lock_checks_owner_of_reused_probe(  # pragma: needs foreign-
     with first.read_lock():
         with second.read_lock():
             pass
-        mocker.patch("filelock._read_write.foreign_owner", autospec=True, return_value=os.geteuid() + 1)
+        mocker.patch("filelock._read_write.foreign_owner", autospec=True, return_value=source.stat().st_uid + 1)
         with pytest.raises(PermissionError, match="not to this process's account"):
             ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
 
