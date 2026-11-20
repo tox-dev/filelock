@@ -929,7 +929,8 @@ linking into a new one or into a slot compaction freed.
 Cleanup is bounded, because whoever can write ``gen`` or ``holders`` decides how many names they hold, and an acquire
 looks at its deadline only between two polls. One sweep reads at most 256 orphaned holder records and 256 leftover
 commit files, and a listing removes at most 256 generations that fell out of the window; the rest wait for the next
-pass. A listing inspects at most 65,537 names, over twice the members the largest snapshot can name. If ``gen`` holds
+pass. A listing inspects at most 65,537 names, over twice the members the largest snapshot can name. Orphan holder and
+temporary commit records beyond that limit may require operator cleanup. If ``gen`` holds
 more than 65,536 names, the lock raises :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` until
 the extra names are removed, because a partial list may omit the newest generation.
 

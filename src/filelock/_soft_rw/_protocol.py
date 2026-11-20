@@ -525,8 +525,8 @@ class Participant:
         # crashed between creating and unlinking its temporary file leaves that too. Neither blocks anyone, so they are
         # collected on the same unchanged-for-a-threshold rule as a member, and only every half threshold at most.
         #
-        # Each sweep reads one batch of either kind, in listing order. A directory holding more is swept from the front:
-        # what this sweep watches the next one finds again, and collecting it brings up the names behind it.
+        # Each sweep reads one batch of either kind, in listing order. Collecting those names brings up the ones behind
+        # them within the listing limit; names beyond that limit may need operator cleanup.
         if (now := self._clock()) < self._next_sweep:
             return
         self._next_sweep = now + self._stale_threshold / 2
