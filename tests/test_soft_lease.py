@@ -8,6 +8,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # interpreter ex
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from decimal import Decimal
 from errno import EIO, ENOENT
@@ -527,6 +528,73 @@ def test_lease_release_from_the_callback_does_not_join_itself(marker: Path, mock
 
     assert lease.compromise is not None
     assert not lease.is_locked
+
+
+def test_lease_refuses_to_nest_into_a_lost_claim(marker: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    reports = _Reports()
+    lease = _lease(marker, on_compromise=reports)
+
+    with lease:
+        lost = lease.token
+        assert reports.landed.wait(_DEADLINE)
+        with pytest.raises(RuntimeError, match="current claim was lost"):
+            lease.acquire()
+        assert lease.lock_counter == 1
+
+    with lease:
+        assert lease.token not in {None, lost}
+
+
+def test_shared_lease_refuses_another_thread_after_loss(marker: Path, mocker: MockerFixture) -> None:
+    mocker.patch("filelock._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    reports = _Reports()
+    lease = SoftFileLease(
+        str(marker), thread_local=False, lease_duration=_DURATION, heartbeat_interval=_HEARTBEAT, on_compromise=reports
+    )
+
+    with lease:
+        assert reports.landed.wait(_DEADLINE)
+        with (
+            ThreadPoolExecutor(max_workers=1) as other_thread,
+            pytest.raises(RuntimeError, match="current claim was lost"),
+        ):
+            other_thread.submit(lease.acquire).result(_DEADLINE)
+        assert lease.lock_counter == 1
+
+
+def test_lease_accepts_reentry_after_an_old_heartbeat_reports_late(marker: Path, mocker: MockerFixture) -> None:
+    blocked, resume, refreshed = Event(), Event(), Event()
+    real_touch = lease_mod.touch
+    calls = itertools.count()
+
+    def touch(path: str, *, fd: int) -> None:
+        if next(calls):
+            real_touch(path, fd=fd)
+            refreshed.set()
+            return
+        blocked.set()
+        resume.wait(_DEADLINE)
+        msg = "cannot touch the marker"
+        raise OSError(msg)
+
+    mocker.patch("filelock._lease.touch", side_effect=touch, autospec=True)
+    reports = _Reports()
+    lease = SoftFileLease(
+        str(marker), lease_duration=_HEARTBEAT * 1.5, heartbeat_interval=_HEARTBEAT, on_compromise=reports
+    )
+    lease.acquire()
+    old_token = lease.token
+    assert blocked.wait(_DEADLINE)
+    lease.release()
+
+    with lease:
+        resume.set()
+        assert reports.landed.wait(_DEADLINE)
+        assert refreshed.wait(_DEADLINE)
+        with lease:
+            assert lease.lock_counter == 2
+        assert [compromise.token for compromise in reports.seen] == [old_token]
 
 
 def test_lease_records_a_float_subclass_duration_as_a_plain_float(marker: Path) -> None:
