@@ -3153,6 +3153,16 @@ def test_windows_oplock_on_lock_file_does_not_outlast_deadline(
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
+def test_windows_nonblocking_acquire_does_not_wait_for_oplock(tmp_path: Path, mocker: MockerFixture) -> None:
+    nt_open = mocker.patch("filelock._windows._nt_open", return_value=(0, 0x00000108), autospec=True)
+
+    with pytest.raises(Timeout):
+        FileLock(str(tmp_path / "a")).acquire(blocking=False)
+
+    assert nt_open.call_count == 1
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_release_does_not_wait_for_an_oplock_taken_after_the_close(
     tmp_path: Path, hold_oplock: Callable[[Path], Callable[[], None]], mocker: MockerFixture
 ) -> None:
