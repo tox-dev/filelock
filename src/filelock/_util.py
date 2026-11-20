@@ -385,7 +385,8 @@ def _linux_owner_probe() -> Callable[[int], bool] | None:  # pragma: linux cover
         libc = ctypes.CDLL(None, use_errno=True)
     except (ImportError, OSError):
         return None
-    if not getattr(os, "O_NOATIME", 0) or not all(hasattr(libc, name) for name in ("fstatfs", "capget", "fcntl")):
+    noatime = getattr(os, "O_NOATIME", 0)
+    if not noatime or not all(hasattr(libc, name) for name in ("fstatfs", "capget", "fcntl")):
         return None
     statfs = libc.fstatfs
     statfs.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_long)]
@@ -416,7 +417,7 @@ def _linux_owner_probe() -> Callable[[int], bool] | None:  # pragma: linux cover
         # Linux checks the kernel inode owner when O_NOATIME is first set. These descriptors are private until their
         # ownership check completes. Restore the flags before a caller's on_acquired callback can see the descriptor.
         flags = libc.fcntl(fd, 3)  # F_GETFL
-        if flags < 0 or flags & os.O_NOATIME or libc.fcntl(fd, 4, ctypes.c_int(flags | os.O_NOATIME)) < 0:
+        if flags < 0 or flags & noatime or libc.fcntl(fd, 4, ctypes.c_int(flags | noatime)) < 0:
             return False
         if libc.fcntl(fd, 4, ctypes.c_int(flags)) < 0:  # F_SETFL
             raise OSError(error := ctypes.get_errno(), os.strerror(error))
