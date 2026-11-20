@@ -341,10 +341,11 @@ class SoftFileLock(BaseFileLock):
         stranded: Final[re.Pattern[str]] = re.compile(rf"{re.escape(name)}\.break\.{breaker_pid}\.[0-9a-f]{{32}}")
         # [0-9], not \d: a str pattern's \d takes any Unicode digit, and int() reads fullwidth ones as another number.
         claimed: Final[re.Pattern[str]] = re.compile(rf"{re.escape(name)}\.restore\.([0-9]+)\.[0-9a-f]{{32}}")
+        prefix = f"{name}."
         candidates: list[tuple[str, bool]] = []
         with os.scandir(directory or os.curdir) as entries:
             for entry in entries:
-                if not entry.is_file(follow_symlinks=False):
+                if not entry.name.startswith(prefix) or not entry.is_file(follow_symlinks=False):
                     continue
                 path = str(Path(directory) / entry.name)
                 if stranded.fullmatch(entry.name):
