@@ -85,6 +85,8 @@ _CLAIM_MAGIC: Final[str] = "filelock-strict-v1"
 _CLAIM_RECORD_LIMIT: Final[int] = 1024
 # A scan runs within one acquire attempt, so an unbounded claim count can outlast the caller's timeout.
 _CLAIM_SCAN_LIMIT: Final[int] = 1024
+# Private records and probes do not count toward the claim limit, but reading them still costs time within the attempt.
+_CLAIM_ENTRY_LIMIT: Final[int] = 16_384
 _TOKEN_HEX_LENGTH: Final[int] = 32
 _PRIVATE_RECORD_MARKER: Final[str] = ".private-v1-"
 _PRIVATE_RECORD_SUFFIX: Final[str] = ".tmp"
@@ -267,9 +269,15 @@ class StrictSoftFileLock(BaseFileLock):
         return now - seen[1]
 
     def _attempt_doorway(self, claim_directory: Path) -> bool:
-        if _read_existing_claims(self.lock_file, claim_directory):
-            return False
+        try:
+            if _read_existing_claims(self.lock_file, claim_directory):
+                return False
+        except _ClaimEntryLimitError as error:
+            raise SoftFileLockProtocolError(self.lock_file, None, str(error)) from None
 
+        return self._publish_claims(claim_directory)
+
+    def _publish_claims(self, claim_directory: Path) -> bool:
         token = secrets.token_hex(_TOKEN_HEX_LENGTH // 2)
         intent_name = _claim_name("intent", token)
         intent_path = str(claim_directory / intent_name)
@@ -461,14 +469,14 @@ def _read_claims(
 def _list_claim_names(lock_file: str, directory_ref: tuple[str, int | None], *, probe_clock: bool) -> list[str]:
     try:
         with _scandir_relative(directory_ref) as entries:
-            return _public_claim_names(directory_ref, entries, probe_clock=probe_clock)
+            return _public_claim_names(lock_file, directory_ref, entries, probe_clock=probe_clock)
     except OSError as error:
         reason = f"cannot list claim directory: {error.strerror or type(error).__name__}"
         raise SoftFileLockProtocolError(lock_file, None, reason) from error
 
 
 def _public_claim_names(
-    directory_ref: tuple[str, int | None], entries: Iterator[os.DirEntry[str]], *, probe_clock: bool
+    lock_file: str, directory_ref: tuple[str, int | None], entries: Iterator[os.DirEntry[str]], *, probe_clock: bool
 ) -> list[str]:
     names: list[str] = []
     now: Callable[[], float | None] = (
@@ -480,13 +488,17 @@ def _public_claim_names(
         if probe_clock
         else lambda: None
     )
-    reclaims = 0
+    reclaims = hidden = 0
     for scanned, entry in enumerate(entries):
-        if probe_clock and scanned >= _CLAIM_SCAN_LIMIT:
-            raise _ClaimScanLimitError
+        if probe_clock and scanned >= _CLAIM_ENTRY_LIMIT:
+            raise _ClaimEntryLimitError(directory_ref[0], scanned, hidden)
         if not entry.name.startswith("."):
             names.append(entry.name)
-        elif reclaims < _CLAIM_SCAN_LIMIT and _is_reclaimable_private_name(entry.name):
+            if probe_clock and len(names) > _CLAIM_SCAN_LIMIT:
+                _refuse_excess_claims(lock_file, names)
+            continue
+        hidden += 1
+        if reclaims < _CLAIM_SCAN_LIMIT and _is_reclaimable_private_name(entry.name):
             reclaims += 1
             _reclaim_private_record(directory_ref, entry.name, now)
     return sorted(names)
@@ -533,6 +545,13 @@ def _unlink_private_record_once(directory_ref: tuple[str, int | None], private_n
         os.unlink(private_name, dir_fd=directory_fd)
     else:
         Path(directory, private_name).unlink()
+
+
+def _refuse_excess_claims(lock_file: str, names: list[str]) -> None:
+    for name in names:
+        if _parse_claim_name(name) is None:
+            raise SoftFileLockProtocolError(lock_file, name, "unknown claim name or protocol version")
+    raise _ClaimScanLimitError
 
 
 def _is_reclaimable_private_name(name: str) -> bool:
@@ -993,11 +1012,11 @@ def _open_directory(directory: str, dir_fd: int | None = None) -> int:  # pragma
 def _refuse_unrelated_claim_entries(lock_file: str, directory: Path, fd: int) -> None:  # pragma: win32 no cover
     try:
         with _scandir_relative((os.fspath(directory), fd)) as entries:
-            names = [entry.name for entry in itertools.islice(entries, _CLAIM_SCAN_LIMIT + 1)]
+            names = [entry.name for entry in itertools.islice(entries, _CLAIM_ENTRY_LIMIT + 1)]
         foreign = next(
             (
                 name
-                for name in names[:_CLAIM_SCAN_LIMIT]
+                for name in names[:_CLAIM_ENTRY_LIMIT]
                 if _parse_claim_name(name) is None
                 and not _is_claim_probe_name(name)
                 and _parse_claim_name(_private_public_name(name) or "") is None
@@ -1013,7 +1032,12 @@ def _refuse_unrelated_claim_entries(lock_file: str, directory: Path, fd: int) ->
         raise SoftFileLockProtocolError(lock_file, None, f"cannot list {directory}") from error
     if foreign is not None:
         raise SoftFileLockProtocolError(lock_file, foreign, "unknown claim name or protocol version")
-    if len(names) > _CLAIM_SCAN_LIMIT:
+    private = [name for name in names[:_CLAIM_ENTRY_LIMIT] if name.startswith(".")]
+    if len(names) > _CLAIM_ENTRY_LIMIT:
+        raise SoftFileLockProtocolError(
+            lock_file, None, str(_ClaimEntryLimitError(os.fspath(directory), _CLAIM_ENTRY_LIMIT, len(private)))
+        )
+    if len(names) - len(private) > _CLAIM_SCAN_LIMIT:
         directory_ref = os.fspath(directory), fd
         now = functools.cache(
             functools.partial(
@@ -1021,7 +1045,7 @@ def _refuse_unrelated_claim_entries(lock_file: str, directory: Path, fd: int) ->
             )
         )
         try:
-            for name in names[:_CLAIM_SCAN_LIMIT]:
+            for name in private[:_CLAIM_SCAN_LIMIT]:
                 if _is_reclaimable_private_name(name):
                     _reclaim_private_record(directory_ref, name, now)
         except OSError as error:
@@ -1147,10 +1171,6 @@ def _reclaim_sentinel_private_records(lock_file: str, path: Path) -> None:
     except OSError as error:
         reason = f"cannot reclaim sentinel private records: {error.strerror or error}"
         raise SoftFileLockProtocolError(lock_file, None, reason) from error
-
-
-class _ClaimScanLimitError(Exception):
-    pass
 
 
 def _file_identity(st: os.stat_result) -> tuple[int, int]:
@@ -1412,6 +1432,16 @@ def _unlink_error(path: Path) -> OSError | None:  # pragma: win32 cover
     except OSError as error:
         return error
     return None
+
+
+class _ClaimScanLimitError(Exception):
+    pass
+
+
+class _ClaimEntryLimitError(_ClaimScanLimitError):
+    def __str__(self) -> str:
+        directory, read, hidden = self.args
+        return f"{directory} exceeds the scan limit of {read} entries ({hidden} hidden entries in the first {read})"
 
 
 __all__ = [

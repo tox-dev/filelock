@@ -205,11 +205,11 @@ directory or symlink, or a file it cannot parse that stays unchanged for two sec
 :class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` naming it. See :ref:`how-to:Use fail-closed soft
 locks` for inspection and recovery.
 
-Each acquisition scan visits at most 1024 entries in the claims directory. On POSIX, validation reads one more name to
-detect overflow before changing directory permissions. Contenders publish claims only after an empty scan, so a larger
-directory means many contenders reached the doorway together or another process filled it. The attempt counts as lost,
-then follows the caller's ``blocking`` and ``timeout`` settings.
-:attr:`claims <filelock.StrictSoftFileLock.claims>` still lists every claim for inspection.
+An acquisition attempt that sees more than 1024 public claims backs off according to its timeout. Hidden records do
+not count toward that limit. If the scan finds more than 16,384 directory entries before publishing a claim, it raises
+:class:`SoftFileLockProtocolError <filelock.SoftFileLockProtocolError>` with the directory path and the number of hidden
+entries among the first 16,384. If the directory crosses this limit after publication, the attempt withdraws its claims.
+The :attr:`claims <filelock.StrictSoftFileLock.claims>` property still lists every public claim for inspection.
 
 Private publication records are not ownership claims. Each attempt uses a fresh random name. Linked private names are
 discarded immediately, while unlinked records left by a crash receive a two-second grace period before reclamation. A
