@@ -575,10 +575,14 @@ neither learns of it. No check inside the lock can rule that out, because the ow
 in it. Keep locks in a directory that only the lock's users can write, or in a sticky one such as ``/tmp``.
 
 A Linux user namespace or idmapped mount can report several file owners under one overflow UID, usually 65534. Under a
-sticky parent, ``UnixFileLock``, ``StrictSoftFileLock`` and ``SoftReadWriteLock`` can verify the caller's ownership of an
-open file or protocol directory on Btrfs, ext4, tmpfs or XFS when the caller's UID map covers all IDs and the mount
-has no ID mapping. If the configured overflow UID is unreadable, they require the same proof. On a filesystem such as
-OverlayFS, a backing layer can translate ownership. Use a private lock directory when ownership is ambiguous.
+sticky parent, ``UnixFileLock``, ``StrictSoftFileLock`` and ``SoftReadWriteLock`` can ask the kernel whether the caller
+owns an open file or protocol directory on Btrfs, ext2/3/4, OverlayFS, tmpfs or XFS. This works without procfs for a
+process without the ``CAP_FOWNER`` capability, including an unprivileged container running as ``nobody``.
+
+A process with ``CAP_FOWNER`` needs a complete UID map and a Btrfs, ext4, tmpfs or XFS mount without ID mapping to
+verify its own ambiguous UID. When the lock has only a pathname or the file belongs to a different account that owns
+its parent, it needs a readable overflow setting that differs from the reported UID. Use a private lock directory if
+ownership cannot be verified.
 
 A sticky directory protects only the names an account owns. The owner of a lock file there can remove it while another
 account holds its lock, and the next contender then locks a new file at the same path. On Unix,

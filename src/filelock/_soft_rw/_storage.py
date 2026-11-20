@@ -281,7 +281,7 @@ def _raise_if_untrusted_directory(
     if not stat.S_ISDIR(found.st_mode) or getattr(found, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
         msg = f"{path} is not a directory or is a symlink; refusing to use it"
         raise TreeReplacedError(msg)
-    for above in (parent, lock_directory):
+    for above in dict.fromkeys((parent, lock_directory)):
         if (owner := foreign_owner(found, above, fd=fd)) is not None:  # pragma: needs foreign-sticky-tmp
             msg = f"{path} belongs to uid {owner}, not to this process's account or the parent's owner"
             raise TreeReplacedError(msg)

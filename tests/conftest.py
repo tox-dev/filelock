@@ -263,6 +263,7 @@ def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma:
         assert path == Path("/proc/sys/kernel/overflowuid")
         return str(os.geteuid())
 
+    mocker.patch("filelock._util._linux_owner_probe", autospec=True, return_value=lambda _fd: False)
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=read_proc)
     mocker.patch.object(Path, "read_bytes", autospec=True, return_value=b"0 100000 65536")
 
@@ -271,6 +272,7 @@ def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma:
 def sticky_dir_with_mapped_owner(tmp_path: Path, mocker: MockerFixture) -> Path:
     assert sys.platform != "win32"
     tmp_path.chmod(0o1700)
+    mocker.patch("filelock._util._linux_owner_probe", autospec=True, return_value=None)
     sysctl = tmp_path / "overflowuid"
     sysctl.write_text(str(os.geteuid()), encoding="ascii")
     proc = tmp_path / "proc"
