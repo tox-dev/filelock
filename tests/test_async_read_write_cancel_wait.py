@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 import time
+from errno import EWOULDBLOCK
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 import pytest
@@ -14,7 +16,7 @@ from filelock import AsyncReadWriteLock, AsyncSoftReadWriteLock, ReadWriteLock, 
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
     from pathlib import Path
 
     from pytest_mock import MockerFixture
@@ -101,6 +103,53 @@ async def _acquire_within_deadline(
             await getattr(lock, f"acquire_{mode}")(timeout)
     assert not isinstance(info.value, Timeout)
     return time.perf_counter() - start
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="oplocks exist only on Windows")
+@pytest.mark.asyncio
+async def test_async_acquire_oplocked_database_honors_caller_deadline(
+    tmp_path: Path, hold_oplock: Callable[[Path], Callable[[], None]]
+) -> None:  # pragma: win32 cover
+    database = tmp_path / "lock.db"
+    lock = AsyncReadWriteLock(database, is_singleton=False)
+    close_holder = hold_oplock(database)
+    try:
+        elapsed = await _acquire_within_deadline(lock, "write", _HOLD)
+        assert elapsed < _HOLD / 2
+    finally:
+        close_holder()
+        await lock.close()
+
+
+@pytest.mark.asyncio
+async def test_refused_database_open_does_not_spin(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncReadWriteLock(tmp_path / "lock.db")
+    mocker.patch(
+        "filelock._read_write._connect", side_effect=BlockingIOError(EWOULDBLOCK, "leased database"), autospec=True
+    )
+    started, cpu = time.monotonic(), time.process_time()
+
+    with pytest.raises(Timeout):
+        await lock.acquire_write(timeout=0.2)
+
+    elapsed = time.monotonic() - started
+    assert 0.15 <= elapsed < 1
+    assert time.process_time() - cpu < elapsed / 2
+    await lock.close()
+
+
+@pytest.mark.asyncio
+async def test_refused_database_open_obeys_async_cancellation(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncReadWriteLock(tmp_path / "lock.db")
+    mocker.patch.object(threading, "active_count", return_value=1, autospec=True)
+    mocker.patch(
+        "filelock._read_write._connect", side_effect=BlockingIOError(EWOULDBLOCK, "leased database"), autospec=True
+    )
+
+    elapsed = await _acquire_within_deadline(lock, "write", _HOLD)
+
+    assert elapsed < 1
+    await lock.close()
 
 
 @_FAMILIES

@@ -934,6 +934,10 @@ Persistence across process crashes
 
 This makes it the natural choice for read-write locks without adding network dependencies.
 
+A Linux file lease or Windows oplock can delay opening the lock database. Construction allows up to five seconds for
+the open. During acquisition, the same wait counts toward the lock timeout. A nonblocking acquire raises
+:class:`~filelock.Timeout` on the first refusal. Canceling an async acquire stops its worker between open attempts.
+
 The async variant (:class:`AsyncReadWriteLock <filelock.AsyncReadWriteLock>`) wraps the same SQLite-backed
 implementation. Because Python's :mod:`sqlite3` module has no async API, all blocking operations are dispatched to a
 thread pool via ``loop.run_in_executor``. This is the same approach used by :class:`BaseAsyncFileLock

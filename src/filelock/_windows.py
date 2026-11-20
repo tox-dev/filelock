@@ -304,7 +304,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             # The reparse test is bound to the opened handle, so a symlink or junction swapped in cannot defeat it
             # through a check-then-open TOCTOU race.
             try:
-                fd = open_non_reparse_fd(self._lock_path, self._open_mode(), oplock_wait=0)
+                fd = open_non_reparse_fd(self._lock_path, self._open_mode())
             except BlockingIOError:
                 return  # an oplock holder has not answered its break; let the retry loop keep its deadline
             if fd is None:
@@ -334,7 +334,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                 with suppress(OSError):
                     unlink_without_oplock_wait(self._lock_path)
 
-    def open_non_reparse_fd(path: str, mode: int, *, oplock_wait: float) -> int | None:
+    def open_non_reparse_fd(path: str, mode: int) -> int | None:
         # Open *path* for locking while refusing reparse points, bound to the handle actually locked.
         #
         # The file is opened through ``NtCreateFile`` with ``FILE_OPEN_REPARSE_POINT`` so a symlink or junction planted
@@ -360,12 +360,10 @@ if sys.platform == "win32":  # pragma: win32 cover
         #     the entries its directory hands down. Both only take effect when the file is created, not when an existing
         #     one is opened.
         #
-        # :param oplock_wait: seconds to wait for the holder of an oplock on the file to answer its break.
-        #
         # :returns: a file descriptor owning the opened handle, or ``None`` on a sharing violation or a delete-pending
         #     name, which the caller should treat as contention and retry.
         #
-        # :raises BlockingIOError: if an oplock break stays unanswered for *oplock_wait* seconds.
+        # :raises BlockingIOError: if the open needs an oplock holder to acknowledge a break.
         # :raises OSError: if the path resolves to a reparse point, or the open fails for any other reason, raised with
         #     the Win32 error the status maps to. An access denial is raised only once it outlasts a run of probes,
         #     since a peer unlinking the file as it releases can make the open answer ``STATUS_ACCESS_DENIED`` for a
@@ -375,17 +373,8 @@ if sys.platform == "win32":  # pragma: win32 cover
         read_only = not mode & _OWNER_WRITE
         owner_only = not mode & 0o077
         handle, status = _nt_open(path, read_only=read_only, owner_only=owner_only)
-        oplock_deadline = time.monotonic() + oplock_wait
-        denied_probes = 0
-        while True:
-            if status == _STATUS_ACCESS_DENIED:
-                if denied_probes >= _ACCESS_DENIED_PROBES:
-                    break
-                denied_probes += 1
-            elif status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
-                if time.monotonic() >= oplock_deadline:
-                    break
-            else:
+        for _ in range(_ACCESS_DENIED_PROBES):
+            if status != _STATUS_ACCESS_DENIED:
                 break
             time.sleep(_ACCESS_DENIED_RETRY)
             handle, status = _nt_open(path, read_only=read_only, owner_only=owner_only)
