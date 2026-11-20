@@ -590,14 +590,17 @@ Native locks are advisory
 ==========================
 
 :class:`FileLock <filelock.FileLock>`, :class:`UnixFileLock <filelock.UnixFileLock>`, and :class:`WindowsFileLock
-<filelock.WindowsFileLock>` place an OS lock on an open file. The lock is *advisory*: it blocks another acquirer that
-calls the same lock, and it does nothing to a process that opens and writes the protected file without locking. On Unix
-the lock lives on the open file description (``flock``). At the OS level, a ``fork`` or ``dup`` shares one lock until it
-is unlocked or the last descriptor sharing that description closes. Java's ``FileLock`` draws the same advisory
-boundary and tells callers to hold one channel per file; because filelock's Unix backend locks the open file description
-rather than the POSIX ``fcntl`` process owner, a second ``open`` of the same path in the same process does not silently
-drop the lock, but a caller passing its own descriptor through :func:`lock_descriptor <filelock.lock_descriptor>` still
-owns keeping one lock per descriptor.
+<filelock.WindowsFileLock>` place an advisory OS lock on an open file. Processes that take the same lock coordinate
+access. A process that skips the lock can still write the protected file.
+
+On Unix, ``flock`` attaches the lock to the open file description. Descriptors inherited through ``fork`` or copied with
+``dup`` share that lock. Unlocking any of them releases it for all. Otherwise, it lasts until the last descriptor for
+that open file description closes. Opening and closing the same path separately leaves a ``flock`` lock intact. With
+traditional POSIX ``fcntl`` locks, closing any descriptor for the same file releases the process's locks on that file.
+
+With :func:`lock_descriptor <filelock.lock_descriptor>`, the caller manages one lock per descriptor. Java's
+`FileLock <https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/nio/channels/FileLock.html>`_
+recommends treating file locks as advisory and using one channel per file.
 
 Ownership scope per lock
 ========================
