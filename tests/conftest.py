@@ -257,11 +257,11 @@ def directories_of_another_account(mocker: MockerFixture) -> None:  # pragma: ne
 
 @pytest.fixture
 def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma: needs foreign-sticky-tmp
+    assert sys.platform != "win32"  # narrows os.geteuid for the type checker
+
     def read_proc(path: Path, **_: str | None) -> str:
-        return {
-            Path("/proc/sys/kernel/overflowuid"): str(os.geteuid()),
-            Path("/proc/self/uid_map"): "0 1000 1\n",
-        }[path]
+        assert path == Path("/proc/sys/kernel/overflowuid")
+        return str(os.geteuid())
 
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=read_proc)
 

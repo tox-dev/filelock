@@ -16,13 +16,7 @@ import filelock._util  # simplint: ignore[private-import-path]  # tests internal
 from filelock import SoftFileLock, Timeout
 from filelock._identity import host_name
 from filelock._util import break_lock_file
-from tests.capability_marks import (
-    NEEDS_FILE_PERMISSIONS,
-    NEEDS_STALE_RECLAIM,
-    NEEDS_SYMLINK,
-    NEEDS_UNLINK_OPEN_FILE,
-    NEEDS_USER_NAMESPACES,
-)
+from tests.capability_marks import NEEDS_FILE_PERMISSIONS, NEEDS_STALE_RECLAIM, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.conftest import DEAD_HOLDER, STALE_BREAKERS
 from tests.process_helpers import call_within
 
@@ -39,36 +33,6 @@ _SKIP_AS_ROOT: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 _NEEDS_ACCESS_NOFOLLOW: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     not CAPABILITIES["access-nofollow"], reason="os.access cannot refuse to follow a symlink here"
 )
-
-
-@NEEDS_USER_NAMESPACES
-@pytest.mark.parametrize(
-    ("uid", "overflow", "uid_map", "expected"),
-    [
-        pytest.param(1000, "65534", "0 1000 1", False, id="distinct-uid"),
-        pytest.param(65534, "65534", "0 0 4294967295", False, id="initial-namespace"),
-        pytest.param(65534, "65534", "0 1000 1", True, id="unmapped-uid"),
-        pytest.param(65534, "invalid", "0 1000 1", True, id="invalid-overflow-setting"),
-        pytest.param(65534, OSError(), "0 1000 1", True, id="unreadable-overflow-setting"),
-        pytest.param(65534, "65534", OSError(), True, id="unreadable-uid-map"),
-    ],
-)
-def test_overflow_uid_cannot_prove_ownership(
-    uid: int, overflow: str | OSError, uid_map: str | OSError, expected: bool, mocker: MockerFixture
-) -> None:
-    def read_proc(path: Path, **_: str | None) -> str:
-        value = {Path("/proc/sys/kernel/overflowuid"): overflow, Path("/proc/self/uid_map"): uid_map}[path]
-        if isinstance(value, OSError):
-            raise value
-        return value
-
-    mocker.patch.object(Path, "read_text", autospec=True, side_effect=read_proc)
-    assert filelock._util._is_overflow_uid(uid) is expected
-
-
-def test_overflow_uid_check_is_limited_to_linux(mocker: MockerFixture) -> None:
-    mocker.patch.object(sys, "platform", "darwin")
-    assert filelock._util._is_overflow_uid(65534) is False
 
 
 @pytest.fixture

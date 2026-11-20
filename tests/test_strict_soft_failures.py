@@ -1537,6 +1537,23 @@ def test_strict_soft_refuses_coordination_directory_with_an_unmapped_owner(  # p
     assert list(coordination.iterdir()) == []
 
 
+@NEEDS_FOREIGN_STICKY_TMP
+@NEEDS_USER_NAMESPACES
+@pytest.mark.parametrize(
+    "error",
+    [pytest.param(OSError("proc unavailable"), id="unreadable"), pytest.param(ValueError("invalid"), id="invalid")],
+)
+def test_strict_soft_refuses_ownership_when_overflow_uid_is_unknown(  # pragma: needs foreign-sticky-tmp
+    lock_path_in_shared_tmp: Path, mocker: MockerFixture, error: OSError | ValueError
+) -> None:
+    (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()
+    mocker.patch.object(Path, "read_text", autospec=True, side_effect=error)
+
+    with pytest.raises(SoftFileLockProtocolError, match="not to this process's account"):
+        StrictSoftFileLock(lock_path_in_shared_tmp, timeout=0).acquire()
+    assert list(coordination.iterdir()) == []
+
+
 def test_strict_soft_coordination_directory_replaced_in_a_writable_parent_splits_holders(tmp_path: Path) -> None:
     # The documented directory boundary: a process that can rename entries in a non-sticky parent can move even this
     # account's own protocol directory aside and start a fresh one, which the lock cannot tell from a first use.
