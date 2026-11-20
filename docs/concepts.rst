@@ -213,8 +213,8 @@ then follows the caller's ``blocking`` and ``timeout`` settings.
 
 Private publication records are not ownership claims. Each attempt uses a fresh random name. Linked private names are
 discarded immediately, while unlinked records left by a crash receive a two-second grace period before reclamation. A
-scan reclaims at most 1024 abandoned records and leaves the rest untouched. Losing a private name makes the
-publisher retry; it never converts an unpublished record into ownership.
+scan reclaims at most 1024 abandoned records. Later attempts can clear any that remain. Losing a private name makes
+the publisher retry; it never converts an unpublished record into ownership.
 
 .. list-table::
     :header-rows: 1

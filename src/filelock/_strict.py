@@ -216,7 +216,7 @@ class StrictSoftFileLock(BaseFileLock):
                 self.lock_file, lock_path, self._open_mode(), self._occupant_unchanged_for
             )
         except _ClaimScanLimitError:
-            return
+            return  # pragma: win32 no cover
         if sentinel_fd is None:
             return
         try:
@@ -486,13 +486,7 @@ def _public_claim_names(
             raise _ClaimScanLimitError
         if not entry.name.startswith("."):
             names.append(entry.name)
-        elif reclaims < _CLAIM_SCAN_LIMIT and (
-            _is_claim_probe_name(entry.name)
-            or (
-                (public_name := _private_public_name(entry.name)) is not None
-                and _parse_claim_name(public_name) is not None
-            )
-        ):
+        elif reclaims < _CLAIM_SCAN_LIMIT and _is_reclaimable_private_name(entry.name):
             reclaims += 1
             _reclaim_private_record(directory_ref, entry.name, now)
     return sorted(names)
@@ -539,6 +533,12 @@ def _unlink_private_record_once(directory_ref: tuple[str, int | None], private_n
         os.unlink(private_name, dir_fd=directory_fd)
     else:
         Path(directory, private_name).unlink()
+
+
+def _is_reclaimable_private_name(name: str) -> bool:
+    return _is_claim_probe_name(name) or (
+        (public_name := _private_public_name(name)) is not None and _parse_claim_name(public_name) is not None
+    )
 
 
 def _is_claim_probe_name(name: str) -> bool:
@@ -1014,6 +1014,19 @@ def _refuse_unrelated_claim_entries(lock_file: str, directory: Path, fd: int) ->
     if foreign is not None:
         raise SoftFileLockProtocolError(lock_file, foreign, "unknown claim name or protocol version")
     if len(names) > _CLAIM_SCAN_LIMIT:
+        directory_ref = os.fspath(directory), fd
+        now = functools.cache(
+            functools.partial(
+                _filesystem_now, directory_ref, _claim_name("held", secrets.token_hex(_TOKEN_HEX_LENGTH // 2))
+            )
+        )
+        try:
+            for name in names[:_CLAIM_SCAN_LIMIT]:
+                if _is_reclaimable_private_name(name):
+                    _reclaim_private_record(directory_ref, name, now)
+        except OSError as error:
+            reason = f"cannot reclaim private claim records: {error.strerror or type(error).__name__}"
+            raise SoftFileLockProtocolError(lock_file, None, reason) from error
         raise _ClaimScanLimitError
 
 
