@@ -160,6 +160,7 @@ def test_recycled_pid_marker_self_heals(lock_path: Path) -> None:
     _assert_self_heals(lock_path)
 
 
+@pytest.mark.skipif(sys.platform not in {"linux", "android"}, reason="PID namespaces exist only on Linux")
 @_REQUIRES_START_TOKEN
 @pytest.mark.parametrize(
     ("contender_namespace", "reclaimed"),
