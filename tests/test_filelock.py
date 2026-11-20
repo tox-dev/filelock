@@ -3940,6 +3940,62 @@ def test_singleton_after_chdir_locks_the_requested_file(
 
 
 @pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_shared_singleton_refuses_moved_relative_path(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    relative = lock_type("resource.lock", is_singleton=True)
+    absolute = lock_type(first / "resource.lock", is_singleton=True)
+    assert absolute is relative
+
+    monkeypatch.chdir(second)
+    with pytest.raises(RuntimeError, match="singleton lock path changed after sharing"):
+        absolute.acquire(timeout=0)
+
+    assert not (second / "resource.lock").exists()
+    with lock_type(first / "resource.lock", is_singleton=True):
+        assert (first / "resource.lock").exists()
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
+def test_unshared_singleton_follows_chdir(
+    lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    lock = lock_type("resource.lock", is_singleton=True)
+    monkeypatch.chdir(second)
+
+    with lock:
+        assert (second / "resource.lock").exists()
+    assert not (first / "resource.lock").exists()
+
+
+def test_moved_shared_singleton_still_reports_owner(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    lock = MarkerSoftFileLock("resource.lock", is_singleton=True)
+    assert MarkerSoftFileLock(first / "resource.lock", is_singleton=True) is lock
+    monkeypatch.chdir(second)
+
+    assert (lock.pid, lock.is_lock_held_by_us, lock.owner) == (None, False, None)
+
+
+def test_equivalent_relative_singleton_spellings_follow_chdir(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    plain = FileLock("resource.lock", is_singleton=True)
+    dotted = FileLock("./resource.lock", is_singleton=True)
+    assert dotted is plain
+
+    monkeypatch.chdir(second)
+    with dotted:
+        assert (second / "resource.lock").exists()
+    assert not (first / "resource.lock").exists()
+
+
+@pytest.mark.parametrize("lock_type", _RELATIVE_LOCK_TYPES)
 def test_singleton_held_before_chdir_re_enters_by_absolute_path(
     lock_type: type[BaseFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

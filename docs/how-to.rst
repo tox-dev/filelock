@@ -432,6 +432,11 @@ Parameters are frozen when the singleton is first created. Requesting the same p
     lock1 = FileLock("other.lock", is_singleton=True, timeout=10)  # freezes timeout=10
     lock2 = FileLock("other.lock", is_singleton=True, timeout=5)  # ValueError!
 
+Equivalent relative and absolute paths can return the same singleton. If its original spelling resolves to a different
+file after a directory change, an unheld shared singleton raises ``RuntimeError`` rather than locking that other file.
+Construct a new lock from the absolute path after changing directories. A singleton used with only one spelling still
+resolves its relative path when acquisition starts.
+
 *****************************************
  Use shared read / exclusive write locks
 *****************************************

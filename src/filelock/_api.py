@@ -12,6 +12,7 @@ __lazy_modules__ = [
     "inspect",
     "math",
     "numbers",
+    "pathlib",
     "secrets",
     "types",
     "warnings",
@@ -39,6 +40,7 @@ from decimal import Decimal
 from functools import cache, partial
 from itertools import count, starmap
 from numbers import Real
+from pathlib import PurePath
 from threading import TIMEOUT_MAX, Condition, RLock, Thread, active_count, current_thread, get_ident, local
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
 from weakref import WeakKeyDictionary, WeakValueDictionary, ref
@@ -473,6 +475,8 @@ class FileLockMeta(ABCMeta):
         # singleton must reject a different hook object even if it compares equal. Keep it out of the scalar dict above.
         hook_mismatch = on_acquired is not instance.on_acquired
         if not non_matching_params and not hook_mismatch:
+            if str(PurePath(lock_file)) != str(PurePath(instance.lock_file)):
+                instance._singleton_shared = True  # ruff:ignore[private-member-access]  # the metaclass owns the instance it returns
             return instance  # ty: ignore[invalid-explicit-return]  # https://github.com/astral-sh/ty/issues/3231
 
         msg = "Singleton lock instances cannot be initialized with differing arguments"
@@ -790,6 +794,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
     #: The singleton cache key of this instance, or ``None`` outside the cache.
     _singleton_key: str | None = None
+    _singleton_shared: bool = False
 
     def __init_subclass__(cls, **kwargs: _SubclassValue) -> None:
         """Give each lock subclass its own singleton registry and lock."""
@@ -1026,7 +1031,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 raise RuntimeError(msg)
             if self.is_locked:
                 self._raise_if_hold_unusable()
-            canonical_path = canonical(self.lock_file)
+            canonical_path = self._resolve_lock_path()
             # Indexed rather than bound to a local: the record holds this frame, and a local would close a cycle that
             # keeps the lock alive past its last reference.
             depth = len(state.in_flight)
@@ -1126,6 +1131,13 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             msg = f"lock '{self.lock_file}' may have been released; call release() again before acquiring it"
             raise RuntimeError(msg)
 
+    def _resolve_lock_path(self) -> str:
+        resolved = canonical(self.lock_file)
+        if not self.is_locked and self._singleton_shared and path_key(resolved) != self._singleton_key:
+            msg = f"singleton lock path changed after sharing: {self.lock_file}"
+            raise RuntimeError(msg)
+        return resolved
+
     def _raise_if_would_deadlock(self, canonical: str, *, timeout: float, blocking: bool) -> None:
         # Fail fast when a *different* live instance already holds this path in the current deadlock scope.
         #
@@ -1204,7 +1216,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
     def _lock_path(self) -> str:
         # The OS resolves a relative lock_file against the working directory at each call. A chdir during an
         # acquisition or a hold would otherwise make the backend wait on, lock or remove a different file.
-        return self._context.claim_root or self._context.lock_file
+        return self._context.claim_root or self.lock_file
 
     def _try_break_expired_lock(self) -> None:
         # Remove the lock file once it is older than :attr:`lifetime`; only an existence lock accepts one.
