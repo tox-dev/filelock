@@ -180,8 +180,9 @@ else:  # pragma: win32 no cover
                 if path.stat().st_dev != Path("/proc").stat().st_dev:
                     return 0
                 # A bind mount of another procfs file keeps the device ID but has its own mountpoint.
-                with Path("/proc/self/mountinfo").open(encoding="ascii") as mounts:
-                    if any(line.split(" ", 5)[4] == str(path) for line in mounts):
+                mountpoint = bytes(path)
+                with Path("/proc/self/mountinfo").open("rb") as mounts:
+                    if any(line.split(b" ", 5)[4] == mountpoint for line in mounts):
                         return 0
                 return int(path.read_text(encoding="ascii").strip().replace("-", ""), 16)
             except (OSError, ValueError):
