@@ -599,11 +599,11 @@ def test_private_link_sweep_keeps_a_directory_named_like_a_dead_holder(database:
 
 
 @pytest.mark.parametrize(
-    "subdirectories",
-    [pytest.param((), id="empty"), pytest.param(("0123456789abcdef",), id="empty-subdirectory")],
+    ("subdirectories", "retained"),
+    [pytest.param((), False, id="empty"), pytest.param(("0123456789abcdef",), True, id="empty-subdirectory")],
 )
-def test_private_link_sweep_keeps_a_directory_left_without_a_link(
-    database: Path, subdirectories: tuple[str, ...]
+def test_private_link_sweep_removes_only_empty_directories_left_without_a_link(
+    database: Path, subdirectories: tuple[str, ...], retained: bool
 ) -> None:
     left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     left.mkdir(mode=0o700)
@@ -612,7 +612,7 @@ def test_private_link_sweep_keeps_a_directory_left_without_a_link(
     with ReadWriteLock(database, is_singleton=False).read_lock():
         pass
 
-    assert _link_directories(database) == [left]
+    assert left.exists() is retained
     assert all((left / name).is_dir() for name in subdirectories)
 
 

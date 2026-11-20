@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["hashlib", "pathlib", "socket", "typing"]
+__lazy_modules__ = ["contextlib", "hashlib", "pathlib", "socket", "typing"]
 
 import hashlib
 import os
 import socket
 import sys
+from contextlib import suppress
 from errno import EPERM, ESRCH
 from pathlib import Path
 from typing import Final
@@ -57,14 +58,14 @@ def host_name() -> str:
     #
     # An over-long name ends in a digest of the part cut to fit the limit. A bare cut gives every name that shares the
     # kept prefix one identity, and :func:`owner_is_stale` would then probe a local PID for another host's holder.
-    try:
-        namespace = Path("/proc/self/ns/pid").stat().st_ino
-    except OSError:  # only Linux 3.8+ has the file, and a sandbox may hide it; nothing else tells namespaces apart
-        namespace = _INITIAL_PID_NAMESPACE
-    name = "".join(
-        chr(byte) if byte in _HOST_NAME_VERBATIM else f"?{byte:02x}"
-        for byte in socket.gethostname().encode("utf-8", "surrogateescape")
-    ) + ("" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}")
+    namespace = _INITIAL_PID_NAMESPACE
+    if sys.platform in {"linux", "android"}:  # pragma: linux cover
+        # Kernels before Linux 3.8 lack this file, and sandboxes can hide it.
+        with suppress(OSError):
+            namespace = Path("/proc/self/ns/pid").stat().st_ino
+    name = _escape_outside(_HOST_NAME_VERBATIM, socket.gethostname()) + (
+        "" if namespace == _INITIAL_PID_NAMESPACE else f"{_NAMESPACE_MARK}{namespace:x}"
+    )
     # Every marker format in this package caps the hostname at the RFC 1123 limit and reads a longer one as malformed.
     host_name_limit: int = 253
     if len(name) > host_name_limit:
@@ -72,6 +73,17 @@ def host_name() -> str:
         name = f"{name[:keep]}-{hashlib.sha256(name[keep:].encode()).hexdigest()[:_HOST_NAME_DIGEST_LEN]}"
     # An escape is three characters and a kept byte is never '?', so a bare '?' can only mean an empty hostname.
     return name or "?"
+
+
+def _escape_outside(verbatim: frozenset[int], name: str) -> str:
+    return "".join(
+        chr(byte) if byte in verbatim else f"?{byte:02x}" for byte in name.encode("utf-8", "surrogateescape")
+    )
+
+
+def describe_host_name(hostname: str) -> str:
+    # Preserve existing ?xx escapes in hostnames written by filelock.
+    return _escape_outside(_HOST_NAME_VERBATIM | {ord("?")}, hostname) or "?"
 
 
 def _same_start(current: int, recorded: int) -> bool:
@@ -163,6 +175,8 @@ else:  # pragma: win32 no cover
         return True
 
     if sys.platform in {"linux", "android"}:  # pragma: linux cover
+        from io import FileIO
+
         # Termux/Android reports sys.platform == "android" but runs the Linux kernel, so /proc/<pid>/stat and the boot
         # id are the same reliable start-time source; treat it exactly like Linux rather than the tokenless fallback.
         # comm (field 2) is wrapped in parentheses and may itself contain spaces or a ')', so the fixed fields start
@@ -183,6 +197,17 @@ else:  # pragma: win32 no cover
         _BOOT_ID: Final[int] = _read_boot_id()
         #: ``TIME_NS_INIT_INO`` in ``linux/proc_ns.h``, fixed by the kernel ABI like the initial PID namespace's inode.
         _INITIAL_TIME_NAMESPACE: Final[int] = 0xEFFFFFFA
+
+        class _UnshiftedNamespace(FileIO):
+            last: _UnshiftedNamespace | None = None
+
+            def __init__(self, path: Path) -> None:
+                super().__init__(path, "rb")
+                self.identity = os.fstat(self.fileno())
+
+            def __del__(self) -> None:
+                # Replacing the cache entry releases its namespace pin.
+                self.close()
 
         def process_start_token(pid: int) -> int | None:
             # The ``/proc/<pid>/stat`` ``starttime`` folded with the boot id.
@@ -217,24 +242,37 @@ else:  # pragma: win32 no cover
 
         def _starttime_unshifted() -> bool:
             # setns can move this process into another time namespace, so ask on every read.
+            # /proc/self names the group leader, which may have exited while another thread still holds a lock.
             try:
-                namespace: Final[int] = Path("/proc/self/ns/time").stat().st_ino
+                namespace_path = Path("/proc/thread-self/ns/time")
+                namespace = namespace_path.stat()
             except FileNotFoundError:  # no entry means no time namespaces on this kernel
                 return True
             except OSError:  # any other failure leaves the namespace unknown, so starttime is not comparable
                 return False
-            if namespace == _INITIAL_TIME_NAMESPACE:
+            if namespace.st_ino == _INITIAL_TIME_NAMESPACE or (
+                (cached := _UnshiftedNamespace.last) is not None and os.path.samestat(namespace, cached.identity)
+            ):
                 return True
-            # A container runtime may give each container a time namespace without offsets. timens_offsets describes
-            # the namespace this process's children get, its own unless it unshared one since.
+            # timens_offsets describes the namespace for children. Only /proc/<tid> exposes it for a worker that
+            # outlives the group leader. thread-self supplies the TID used by this procfs.
             try:
-                if Path("/proc/self/ns/time_for_children").stat().st_ino != namespace:
+                pin = _UnshiftedNamespace(namespace_path)
+            except OSError:
+                pin = None
+            try:
+                if not os.path.samestat(Path("/proc/thread-self/ns/time_for_children").stat(), namespace):
                     return False
-                offsets: Final[str] = Path("/proc/self/timens_offsets").read_text(encoding="ascii")
+                tid = Path("/proc/thread-self").readlink().name
+                offsets: Final[str] = Path(f"/proc/{tid}/timens_offsets").read_text(encoding="ascii")
             except OSError:
                 return False
             # The clock goes by name since Linux 5.8 and by clock id before.
-            return any(line.split() in (["boottime", "0", "0"], ["7", "0", "0"]) for line in offsets.splitlines())
+            unshifted = any(line.split() in (["boottime", "0", "0"], ["7", "0", "0"]) for line in offsets.splitlines())
+            # An entered namespace has immutable offsets. Keep one namespace alive so inode reuse cannot match it.
+            if unshifted and pin is not None and os.path.samestat(namespace, pin.identity):
+                _UnshiftedNamespace.last = pin
+            return unshifted
 
         def _read_start_token(pid: int) -> int | None:
             try:
@@ -345,6 +383,7 @@ def link_host() -> str | None:  # pragma: needs posix-hard-link
 
 
 __all__ = [
+    "describe_host_name",
     "host_name",
     "link_host",
     "owner_is_current_process",

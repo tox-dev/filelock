@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 from contextlib import suppress
-from errno import EACCES, EEXIST, EPERM
+from errno import EACCES, EBUSY, EEXIST, EPERM
 from itertools import islice
 from pathlib import Path
 from typing import Final, NamedTuple
@@ -37,6 +37,7 @@ from ._api import (
     raise_grouped_errors,
 )
 from ._identity import (
+    describe_host_name,
     host_name,
     owner_is_current_process,
     owner_is_stale,
@@ -165,12 +166,15 @@ class SoftFileLock(BaseFileLock):
         # _mark_descriptor_owned leaves no marker behind.
         identity: tuple[int, int] | None = None
         try:
-            identity = _file_identity(os.fstat(fd))
             self._mark_descriptor_pending(fd)
+            identity = _file_identity(os.fstat(fd))
             self._apply_explicit_mode(fd)
             self._write_lock_info(fd)
             self._mark_descriptor_owned(fd, identity)
         except BaseException:
+            # Publication transfers cleanup to the held descriptor. A signal handler may have released it already.
+            if identity is not None and self._context.pending_lock_file_fd is None:
+                raise
             self._mark_descriptor_released()
             try:
                 if identity is None:
@@ -302,7 +306,7 @@ class SoftFileLock(BaseFileLock):
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         fd: Final[int] = os.open(aside, flags, self._open_mode() & ~_OTHERS_WRITE)
         self._mark_descriptor_pending(fd)
-        exchanged = held = False
+        exchanged = False
         try:
             identity: Final[tuple[int, int]] = _file_identity(os.fstat(fd))
             self._apply_explicit_mode(fd)
@@ -311,17 +315,18 @@ class SoftFileLock(BaseFileLock):
             # exchange now would move that peer's live marker aside.
             if (current := os.lstat(self._lock_path)).st_mtime != marker.st_mtime or current.st_ino != marker.st_ino:
                 return
-            if not exchange_names(aside, self._lock_path):
-                return  # NFS, SMB and the like refuse it; renaming the marker aside would empty the path
+            # A signal can raise after the exchange syscall and before its result reaches this frame.
             exchanged = True
+            if not exchange_names(aside, self._lock_path):
+                exchanged = False
+                return  # NFS, SMB and the like refuse it; renaming the marker aside would empty the path
             if (taken := os.lstat(aside)).st_mtime != marker.st_mtime or taken.st_ino != marker.st_ino:
                 return  # a peer recreated the marker, which the cleanup below swaps back
             Path(aside).unlink()
             exchanged = False
             self._mark_descriptor_owned(fd, identity)
-            held = True
         finally:
-            if not held:
+            if self._context.pending_lock_file_fd is not None:
                 self._abandon_take_over(fd, aside, put_back=exchanged)
 
     def _restore_stranded_marker(self, breaker_pid: int, marker: os.stat_result) -> bool:  # pragma: win32 no cover
@@ -341,10 +346,11 @@ class SoftFileLock(BaseFileLock):
         stranded: Final[re.Pattern[str]] = re.compile(rf"{re.escape(name)}\.break\.{breaker_pid}\.[0-9a-f]{{32}}")
         # [0-9], not \d: a str pattern's \d takes any Unicode digit, and int() reads fullwidth ones as another number.
         claimed: Final[re.Pattern[str]] = re.compile(rf"{re.escape(name)}\.restore\.([0-9]+)\.[0-9a-f]{{32}}")
+        prefix = f"{name}."
         candidates: list[tuple[str, bool]] = []
         with os.scandir(directory or os.curdir) as entries:
             for entry in entries:
-                if not entry.is_file(follow_symlinks=False):
+                if not entry.name.startswith(prefix) or not entry.is_file(follow_symlinks=False):
                     continue
                 path = str(Path(directory) / entry.name)
                 if stranded.fullmatch(entry.name):
@@ -428,7 +434,10 @@ class SoftFileLock(BaseFileLock):
         put_back_done = not put_back
         try:
             if put_back:
-                put_back_done = exchange_back(self._lock_path, aside, fd)
+                put_back_done = exchange_back(self._lock_path, aside, fd, unlink_settled_aside=False)
+                if put_back_done:
+                    with suppress(OSError):
+                        Path(aside).unlink(missing_ok=True)
         finally:
             try:
                 # Whichever name still holds our marker loses it: the descriptor keeps its inode number ours.
@@ -465,7 +474,7 @@ class SoftFileLock(BaseFileLock):
                 self._windows_unlink_if_ours(identity)
         else:  # pragma: win32 no cover
             for name in self._marker_names():
-                with suppress(OSError):
+                with suppress(FileNotFoundError, NotADirectoryError):
                     if _file_identity(os.lstat(name)) == identity:
                         Path(name).unlink()
                         return
@@ -491,7 +500,7 @@ class SoftFileLock(BaseFileLock):
             if (content := read_lock_file(self._lock_path)[0]) == _RECORDLESS_MARKER:
                 return "an owner that recorded no PID (a filelock release before 3.22, or one still writing its record)"
             if (holder := self._recorded_holder(content)) and holder[1] != host_name():
-                return f"pid {holder[0]} on {holder[1]}"
+                return f"pid {holder[0]} on {describe_host_name(holder[1])}"
         return None
 
     def break_lock(self) -> None:
@@ -509,11 +518,10 @@ class SoftFileLock(BaseFileLock):
     def _release(self) -> None:
         fd = self._context.lock_file_fd
         assert fd is not None  # ruff:ignore[assert]  # _release runs only while held, so the descriptor is set
-        # Capture the held file's identity before closing so cleanup can refuse to unlink a successor's marker. A
-        # supported lifetime lease lets a peer break our expired marker and create its own at this path before we
-        # release; unlinking by path alone would then delete the successor's lock.
-        identity: tuple[int, int] | None = None
-        with suppress(OSError):
+        # Normally use the inode saved at acquisition: a handler-raised OSError during fstat must not strand the marker.
+        # A signal handler can release between publishing the descriptor and its identity, so read it there only.
+        identity = self._context.lock_file_fd_identity
+        if identity is None:
             identity = _file_identity(os.fstat(fd))
         if sys.platform == "win32":  # pragma: win32 cover
             self._release_then_unlink(fd, identity)
@@ -532,7 +540,7 @@ class SoftFileLock(BaseFileLock):
                 if not unlinked:
                     self._unlink_held_marker(identity)
 
-    def _release_then_unlink(self, fd: int, identity: tuple[int, int] | None) -> None:  # pragma: win32 cover
+    def _release_then_unlink(self, fd: int, identity: tuple[int, int]) -> None:  # pragma: win32 cover
         # Windows cannot unlink an open file, so the unlink outlives the hold until it lands, here or on a later acquire
         # or release. Only the gate's holder touches the pending record, so two threads never overwrite each other's.
         with self._transition_lock:
@@ -554,32 +562,29 @@ class SoftFileLock(BaseFileLock):
                 raise
             self._finish_marker_cleanup()
 
-    def _unlink_open_marker(self, fd: int, identity: tuple[int, int] | None) -> bool:  # pragma: win32 no cover
-        if identity is None:
-            return True
+    def _unlink_open_marker(self, fd: int, identity: tuple[int, int]) -> bool:  # pragma: win32 no cover
         replaced = False
         for name in self._marker_names():
-            try:
-                if _file_identity(os.lstat(name)) == identity:
-                    Path(name).unlink()
-                    return True
-                replaced = True
-            except FileNotFoundError:
+            if (current := _marker_identity_at(name)) is None:
                 continue
-            except OSError:
-                return False
-        if replaced:
+            if current != identity:
+                replaced = True
+                continue
             try:
-                # A peer's exchange holds our marker under its break name and will put it back. Overwriting the record
-                # lets contenders age it out instead of waiting on this live PID. The write comes before the truncate
-                # so the file is never empty.
-                if sys.platform != "win32":  # pragma: win32 no cover
-                    released: Final[bytes] = b"filelock/released\n"
-                    write_at_start(fd, released)
-                    os.ftruncate(fd, len(released))
-            except OSError:
-                return False
-        return True
+                Path(name).unlink()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as error:
+                # A handler can raise after unlink succeeds. Keep the descriptor pinned until the name is checked.
+                still_ours = _marker_identity_at(name) == identity
+                if error.errno in {EACCES, EBUSY, EPERM}:
+                    return not still_ours
+                if not still_ours:
+                    self._mark_descriptor_released()
+                    self._close_released_fd(fd, default_suppresses=False)
+                raise
+            return True
+        return not replaced or _retire_displaced_marker(fd)
 
 
 def parse_lock_holder(content: str | None) -> _LockHolder | None:
@@ -680,6 +685,26 @@ def _begin_claim(name: str | Path) -> bool:  # pragma: win32 no cover
 def _end_claim(name: str | Path) -> None:  # pragma: win32 no cover
     with _CLAIMS_LOCK:
         _CLAIMS_IN_PROGRESS.discard(Path(name).name)
+
+
+def _marker_identity_at(name: str) -> tuple[int, int] | None:  # pragma: win32 no cover
+    try:
+        return _file_identity(os.lstat(name))
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _retire_displaced_marker(fd: int) -> bool:  # pragma: win32 no cover
+    # A peer may restore this marker after an exchange. Retire its live PID before truncating so it never reads empty.
+    released: Final[bytes] = b"filelock/released\n"
+    try:
+        write_at_start(fd, released)
+        os.ftruncate(fd, len(released))
+    except TimeoutError:
+        raise
+    except OSError:
+        return False
+    return True
 
 
 __all__ = [

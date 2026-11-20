@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 __spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [
+    "filelock._async",
     "filelock._error",
     "filelock._lease",
     "functools",
@@ -20,6 +21,7 @@ __lazy_modules__ = [
 
 import atexit
 import os
+import sys
 import threading
 import time
 from contextlib import contextmanager, suppress
@@ -42,6 +44,10 @@ from filelock._api import (  # simplint: ignore[private-import-path]  # shared p
     resolve_read_write_timeout,
     seconds,
     timeout_behavior,
+)
+from filelock._async import (  # simplint: ignore[private-import-path]  # backend task ownership
+    TASKS_THREAD_ID,
+    retire_task_holds_at_exit,
 )
 from filelock._error import Timeout  # simplint: ignore[private-import-path]  # internal dependency
 from filelock._lease import LeaseCompromise  # simplint: ignore[private-import-path]  # internal dependency
@@ -160,7 +166,8 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
     Each participant also keeps ``foo.lock.rw/holders/<token>``, a record whose nonce a daemon heartbeat thread rewrites
     every ``heartbeat_interval`` seconds. A contender evicts a member whose record has not changed for
     ``stale_threshold`` seconds of the contender's own monotonic clock; no clock is ever compared across hosts, so skew
-    between hosts or against the file server cannot make a live holder look dead.
+    between hosts or against the file server cannot make a live holder look dead. On macOS and systems with
+    ``CLOCK_BOOTTIME``, a waiter counts time spent asleep when it checks its own record.
 
     Writer acquire is writer-preferring: a writer enters the snapshot as soon as no live writer is named, which blocks
     any new reader, then waits for the named readers to leave. Writer starvation is impossible.
@@ -378,6 +385,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         holder: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> AcquireReturnProxy:
+        ensure_current_process()
         if self._creator_pid != os.getpid():  # pragma: forked child
             msg = f"SoftReadWriteLock on {self.lock_file} was invalidated by fork(); construct a new instance"
             raise RuntimeError(msg)
@@ -447,7 +455,9 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         with self._locks.internal:
             if self._hold is not None:
                 return self._validate_reentrant(mode, holder)
-        participant = self._new_participant(mode, stale_threshold=self.stale_threshold, clock=time.monotonic)
+        participant = self._new_participant(
+            mode, stale_threshold=self.stale_threshold, clock=time.monotonic, lease_clock=_lease_clock
+        )
         participant.publish()
         try:
             self._wait_for(participant.advance, deadline=deadline, blocking=blocking, cancel_check=cancel_check)
@@ -472,7 +482,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                 name=f"filelock-heartbeat-{id(self):x}",
             ),
             heartbeat_stop=stop_event,
-            last_refresh=time.monotonic(),
+            last_refresh=_lease_clock(),
         )
         # Publish the hold and start its heartbeat under one internal-lock section, so a concurrent release() never
         # observes a hold whose thread has not started and joins it. If the OS refuses the thread, clear the hold and
@@ -530,12 +540,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
             self._report_compromise(hold, "refresh-failed", failure)
             return False
         if outcome == "ok":
-            hold.last_refresh = time.monotonic()
+            hold.last_refresh = _lease_clock()
             return True
         if outcome == "lost":
             self._report_compromise(hold, "evicted", None)
             return False
-        if time.monotonic() - hold.last_refresh >= self.stale_threshold - self.heartbeat_interval:
+        if _lease_clock() - hold.last_refresh >= self.stale_threshold - self.heartbeat_interval:
             self._report_compromise(hold, "refresh-failed", error)
             return False
         return True
@@ -568,11 +578,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :raises SoftFileLockProtocolError: if peers keep winning generation updates until the holder's stale threshold
 
         """
+        ensure_current_process()
         if self._creator_pid != os.getpid():  # pragma: forked child
             return
         self._release(threading.get_ident(), force=force)
 
-    def _release(self, thread_id: int, *, force: bool) -> None:
+    def _release(self, thread_id: int, *, force: bool, at_exit: bool = False) -> None:
         with self._locks.internal:
             hold = self._hold
             if hold is None:
@@ -580,6 +591,12 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
                     return
                 msg = f"Cannot release a lock on {self.lock_file} (lock id: {id(self)}) that is not held"
                 raise RuntimeError(msg)
+            if at_exit:
+                owners = hold.read_depths if hold.write_thread_id is None else {hold.write_thread_id}
+                if any(thread.ident in owners and thread.ident != thread_id for thread in threading.enumerate()):
+                    return
+                if TASKS_THREAD_ID in owners and not retire_task_holds_at_exit(self):
+                    return
             if force:
                 hold.level = 0
             else:
@@ -681,6 +698,7 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         :class:`RuntimeError`, and so does an acquire another thread is still waiting in, which gives up its claim
         instead of taking the lock. A fork-invalidated instance is closed without raising.
         """
+        ensure_current_process()
         if self._creator_pid != os.getpid():  # pragma: forked child
             return
         # Closed first, under the lock an acquire publishes its hold under: an acquire still waiting then sees the flag
@@ -705,8 +723,16 @@ class SoftReadWriteLock(metaclass=_SoftRWMeta):
         return (hold := self._hold) is not None and (holder == hold.write_thread_id or holder in hold.read_depths)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+        self._creator_pid = -1
         self._locks = _Locks(internal=threading.Lock(), transaction=threading.Lock())
         self._hold = None
+
+    @staticmethod
+    @atexit.register
+    def _cleanup_all_instances() -> None:
+        for instance in list(_ALL_INSTANCES.values()):
+            with suppress(Exception):
+                SoftReadWriteLock._release(instance, threading.get_ident(), force=True, at_exit=True)
 
 
 class _HeartbeatThread(threading.Thread):
@@ -743,6 +769,19 @@ class _Intervals(NamedTuple):
     heartbeat_interval: float
     stale_threshold: float
     poll_interval: float
+
+
+_LEASE_CLOCK_ID: Final[int | None] = getattr(
+    time, "CLOCK_MONOTONIC" if sys.platform == "darwin" else "CLOCK_BOOTTIME", None
+)
+
+
+def _lease_clock() -> float:
+    # A peer can judge a record stale while this host sleeps, so renewal must count that elapsed time.
+    read_clock = getattr(time, "clock_gettime", None)
+    if _LEASE_CLOCK_ID is not None and read_clock is not None:  # pragma: needs suspend-clock
+        return read_clock(_LEASE_CLOCK_ID)
+    return time.monotonic()  # pragma: lacks suspend-clock
 
 
 def _validate_intervals(heartbeat_interval: float, stale_threshold: float | None, poll_interval: float) -> _Intervals:
@@ -805,13 +844,6 @@ class _Hold:
                 self.read_depths[owner] = depth
 
 
-def _cleanup_all_instances() -> None:
-    for instance in list(_ALL_INSTANCES.values()):
-        with suppress(Exception):
-            instance.release(force=True)
-
-
-atexit.register(_cleanup_all_instances)
 register_fork_class(SoftReadWriteLock)
 
 

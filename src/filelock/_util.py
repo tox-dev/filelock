@@ -10,7 +10,7 @@ import stat
 import sys
 import time
 from contextlib import contextmanager, suppress
-from errno import EACCES, EINVAL, EIO, EISDIR, ENOSYS, EXDEV
+from errno import EACCES, EINVAL, EIO, EISDIR, ENOSPC, ENOSYS, EXDEV
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
@@ -103,6 +103,12 @@ def pin_inode(lock_file: str) -> Generator[int | None]:
             os.close(fd)
 
 
+def open_into(opened: list[int], path: str, flags: int, mode: int) -> int:  # pragma: win32 no cover
+    # The C calls record the descriptor before Python can deliver a pending signal.
+    opened.extend(map(os.open, (path,), (flags,), (mode,)))
+    return opened[0]
+
+
 def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
     # Remove *lock_file* while it still names the file open as *fd*; the caller closes the descriptor afterwards.
     #
@@ -113,9 +119,15 @@ def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
     # :raises OSError: if the descriptor cannot be read or the unlink fails.
     own: Final[os.stat_result] = os.fstat(fd)
     with suppress(FileNotFoundError):
-        break_lock_file(lock_file, own.st_mtime, own.st_ino)
-        if os.path.samestat(os.lstat(lock_file), own):
-            Path(lock_file).unlink()
+        try:
+            break_lock_file(lock_file, own.st_mtime, own.st_ino)
+            if os.path.samestat(os.lstat(lock_file), own):
+                Path(lock_file).unlink()
+        except OSError as exc:
+            if exc.errno == ENOSPC:
+                # A sparse byte makes our failed marker reclaimable without allocating a data block.
+                os.ftruncate(fd, 1)
+            raise
 
 
 def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> None:
@@ -154,25 +166,23 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
         # An atomic exchange with a placeholder takes the marker without the lock path ever being empty. No contender
         # can then create a marker while this one is judged, and a live marker goes back the same way.
         fd: Final[int] = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        grabbed: os.stat_result | None = None
         try:
             try:
-                # Not a record any lock writes, so a contender that reads it waits, and one left by a crash ages out.
-                # The PID tells the contender that evicts it whose break names to search for a marker this process left.
-                write_all(fd, f"filelock/break\n{os.getpid()}\n".encode())
-                exchanged = exchange_names(break_path, lock_file)
-            except OSError:
-                exchanged = False
-            if not exchanged:
-                Path(break_path).unlink()
-                return
-            if (grabbed := os.lstat(break_path)).st_mtime == mtime_before and grabbed.st_ino == ino_before:
-                Path(break_path).unlink()
-                # Our descriptor keeps the placeholder's inode allocated, so a matching number at the path is still
-                # ours.
-                if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
-                    Path(lock_file).unlink()
-            else:
-                exchange_back(lock_file, break_path, fd)
+                with suppress(OSError):
+                    write_all(fd, f"filelock/break\n{os.getpid()}\n".encode())
+                    exchange_names(break_path, lock_file)
+                grabbed = os.lstat(break_path)
+            finally:
+                # A signal can interrupt the exchange or the first identity check after the names have moved.
+                if grabbed is None:
+                    grabbed = os.lstat(break_path)
+                if grabbed.st_mtime == mtime_before and grabbed.st_ino == ino_before:
+                    Path(break_path).unlink()
+                    if os.path.samestat(os.lstat(lock_file), os.fstat(fd)):
+                        Path(lock_file).unlink()
+                else:
+                    exchange_back(lock_file, break_path, fd)
         finally:
             os.close(fd)
     elif _MOVES_WITHOUT_EXCHANGE:  # pragma: win32 cover
@@ -289,14 +299,16 @@ def exchange_names(source: str, target: str) -> bool:  # pragma: win32 no cover
     raise OSError(error, os.strerror(error), source, None, target)
 
 
-def exchange_back(lock_file: str, aside: str, fd: int) -> bool:  # pragma: win32 no cover
+def exchange_back(
+    lock_file: str, aside: str, fd: int, *, unlink_settled_aside: bool = True
+) -> bool:  # pragma: win32 no cover
     # Raced breakers nest: each aside holds the prior marker. Returning out of order can strand a live holder's marker.
     # A peer may move the path between our check and exchange, so stalled breakers exchange to open any resulting ring.
     try:
         settled = _exchange_until_aside(lock_file, aside, os.fstat(fd))
     except FileNotFoundError:
         settled = True
-    if settled:
+    if settled and unlink_settled_aside:
         Path(aside).unlink(missing_ok=True)
     return settled
 
@@ -335,7 +347,7 @@ def write_at_start(fd: int, data: bytes) -> None:  # pragma: win32 no cover
         write_all(fd, data)
 
 
-def foreign_owner(node: os.stat_result, parent: os.stat_result) -> int | None:
+def foreign_owner(node: os.stat_result, parent: os.stat_result, *, fd: int | None = None) -> int | None:
     # Return the uid that owns *node* when another account controls it under a sticky parent.
     #
     # A lock relies on its file, or the directory holding its ownership records, staying in place. The sticky bit (a
@@ -350,24 +362,103 @@ def foreign_owner(node: os.stat_result, parent: os.stat_result) -> int | None:
     #
     # :param node: ``lstat`` or ``fstat`` of the file or directory found in place.
     # :param parent: ``stat`` of the directory that holds it.
+    # :param fd: the descriptor used to stat the node, when the caller still holds it.
     #
     # Unmapped accounts in a Linux user namespace or idmapped mount share one reported uid.
     #
     # :returns: the owning uid when another account controls the node, otherwise ``None``.
     if sys.platform != "win32" and parent.st_mode & stat.S_ISVTX:  # pragma: needs foreign-sticky-tmp
         owner = node.st_uid
-        return None if owner in {os.geteuid(), parent.st_uid} and not _ambiguous_owner(owner) else owner
+        euid = os.geteuid()
+        if owner not in {euid, parent.st_uid}:
+            return owner
+        if sys.platform in {"linux", "android"}:  # pragma: win32 no cover  # pragma: darwin no cover
+            if not _linux_uid_is_unambiguous(owner, fd if owner == euid else None):
+                return owner
     return None
 
 
-def _ambiguous_owner(uid: int) -> bool:  # pragma: win32 no cover  # pragma: darwin no cover
-    if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
-        return False
+def _linux_uid_is_unambiguous(owner: int, fd: int | None) -> bool:  # pragma: linux cover
     try:
-        return uid == int(Path("/proc/sys/kernel/overflowuid").read_text(encoding="ascii"))
+        if owner != int(Path("/proc/sys/kernel/overflowuid").read_text(encoding="ascii")):
+            return True
     except (OSError, ValueError):
-        # Without the configured overflow UID, equality from stat cannot prove ownership.
+        pass  # The configured overflow UID could match any owner in the sysctl's range.
+    if fd is None:
+        return False
+    return ((probe := _linux_owner_probe()) is not None and probe(fd)) or _owner_is_mapped(fd)
+
+
+@cache
+def _linux_owner_probe() -> Callable[[int], bool] | None:  # pragma: linux cover
+    try:
+        import ctypes  # ruff:ignore[import-outside-top-level]  # only ambiguous Linux UIDs need these calls
+
+        libc = ctypes.CDLL(None, use_errno=True)
+    except (ImportError, OSError):
+        return None
+    noatime = getattr(os, "O_NOATIME", 0)
+    if not noatime or not all(hasattr(libc, name) for name in ("fstatfs", "capget", "fcntl")):
+        return None
+    statfs = libc.fstatfs
+    statfs.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_long)]
+    libc.fcntl.argtypes = [ctypes.c_int, ctypes.c_int]
+    capget = libc.capget
+    capget.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+
+    # Linux statfs starts with a native word except on s390x, where it starts with a 32-bit int. On little-endian
+    # systems all filesystem magic numbers fit in the first four bytes of either layout.
+    width = 4 if sys.byteorder == "little" or platform.machine() == "s390x" else ctypes.sizeof(ctypes.c_long)
+
+    def caller_owns_fd(fd: int) -> bool:
+        # The buffer includes the unused fields after the filesystem type, whose layout varies by architecture.
+        info = (ctypes.c_long * 64)()
+        if statfs(fd, info) != 0 or int.from_bytes(ctypes.string_at(info, width), sys.byteorder) not in {
+            0x9123683E,  # Btrfs
+            0xEF53,  # ext2, ext3, ext4
+            0x794C7630,  # OverlayFS
+            0x01021994,  # tmpfs
+            0x58465342,  # XFS
+        }:
+            return False
+        # capget version 3 returns two sets of effective, permitted and inheritable bits for the calling thread.
+        header = (ctypes.c_uint32 * 2)(0x20080522, 0)
+        caps = (ctypes.c_uint32 * 6)()
+        if capget(header, caps) != 0 or caps[0] & (1 << 3):  # CAP_FOWNER bypasses the owner check.
+            return False
+        # Linux checks the kernel inode owner when O_NOATIME is first set. These descriptors are private until their
+        # ownership check completes. Restore the flags before a caller's on_acquired callback can see the descriptor.
+        flags = libc.fcntl(fd, 3)  # F_GETFL
+        if flags < 0 or flags & noatime or libc.fcntl(fd, 4, ctypes.c_int(flags | noatime)) < 0:
+            return False
+        if libc.fcntl(fd, 4, ctypes.c_int(flags)) < 0:  # F_SETFL
+            raise OSError(error := ctypes.get_errno(), os.strerror(error))
         return True
+
+    return caller_owns_fd
+
+
+def _owner_is_mapped(fd: int) -> bool:  # pragma: win32 no cover  # pragma: darwin no cover
+    # A descriptor can outlive its mount's entry in mountinfo. Require its own mount ID before trusting the UID.
+    proc = Path("/proc/thread-self")
+    try:
+        if (proc / "uid_map").read_bytes().split() != [b"0", b"0", b"4294967295"]:
+            return False
+        mount = next(
+            line.split()[1]
+            for line in (proc / "fdinfo" / str(fd)).read_bytes().splitlines()
+            if line.startswith(b"mnt_id:")
+        )
+        with (proc / "mountinfo").open("rb") as mounts:
+            # A stacked filesystem can report an owner translated by an idmapped backing mount.
+            return any(
+                line.startswith(mount + b" ")
+                and b"idmapped" not in line.split(None, 6)[5].split(b",")
+                and line.partition(b" - ")[2].partition(b" ")[0] in {b"btrfs", b"ext4", b"tmpfs", b"xfs"}
+                for line in mounts
+            )
+    except (OSError, IndexError, StopIteration):
+        return False
 
 
 if sys.platform == "win32":  # pragma: win32 cover
@@ -428,6 +519,7 @@ __all__ = [
     "exchange_names",
     "exchange_supported",
     "foreign_owner",
+    "open_into",
     "pin_inode",
     "raise_on_not_writable_file",
     "remove_own_file",

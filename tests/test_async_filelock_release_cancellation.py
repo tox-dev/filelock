@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from filelock import AsyncFileLock, BaseAsyncFileLock
+from filelock import AsyncFileLock, BaseAsyncFileLock, FileLock
 from tests.async_filelock_cancellation_helpers import (
     assert_cancellation_message,
     assert_file_lock_state,
@@ -45,6 +45,129 @@ async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: Mo
         await task
     assert (lock.is_locked, lock.lock_counter) == (False, 0)
     assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
+@pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_queued_release_completes_despite_cancellation(tmp_path: Path) -> None:
+    hook_started = asyncio.Event()
+    finish_hook = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def block_hook(_fd: int) -> None:
+        loop.call_soon_threadsafe(hook_started.set)
+        assert finish_hook.wait(timeout=5)
+
+    lock = AsyncFileLock(tmp_path / "a", on_acquired=block_hook)
+    first_acquire = asyncio.create_task(lock.acquire())
+    await hook_started.wait()
+    second_acquire = asyncio.create_task(lock.acquire())
+    release_started = asyncio.Event()
+
+    async def release_lock() -> None:
+        release_started.set()
+        await lock.release()
+
+    release = asyncio.create_task(release_lock())
+    try:
+        await release_started.wait()
+        release.cancel("cancel queued release")
+    finally:
+        finish_hook.set()
+    await first_acquire
+    await second_acquire
+
+    with pytest.raises(asyncio.CancelledError) as info:
+        await release
+    assert_cancellation_message(info.value, "cancel queued release")
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+
+    await lock.release()
+    assert_file_lock_state(str(tmp_path / "a"), available=True)
+
+
+@pytest.mark.asyncio
+@XFAIL_WITHOUT_COROUTINE_CANCELLATION
+async def test_queued_release_cancellation_preserves_backend_error(tmp_path: Path) -> None:
+    backend_error = OSError(EIO, "backend release failed")
+    hook_started = asyncio.Event()
+    finish_hook = threading.Event()
+    loop = asyncio.get_running_loop()
+    fail_release = True
+
+    class Lock(BaseAsyncFileLock):
+        def _acquire(self) -> None:
+            self._context.lock_file_fd = 1
+
+        def _release(self) -> None:
+            nonlocal fail_release
+            if fail_release:
+                fail_release = False
+                raise backend_error
+            self._context.lock_file_fd = None
+
+    def block_hook(_fd: int) -> None:
+        loop.call_soon_threadsafe(hook_started.set)
+        assert finish_hook.wait(timeout=5)
+
+    lock = Lock(tmp_path / "a", on_acquired=block_hook)
+    acquire = asyncio.create_task(lock.acquire())
+    await hook_started.wait()
+    release_started = asyncio.Event()
+
+    async def release_lock() -> None:
+        release_started.set()
+        await lock.release()
+
+    release = asyncio.create_task(release_lock())
+    try:
+        await release_started.wait()
+        release.cancel("cancel queued release")
+    finally:
+        finish_hook.set()
+
+    await acquire
+    with pytest.raises(OSError, match="backend release failed") as info:
+        await release
+    assert info.value is backend_error
+    assert isinstance(info.value.__context__, asyncio.CancelledError)
+    assert_cancellation_message(info.value.__context__, "cancel queued release")
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+
+    await lock.release()
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+
+
+@NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
+@pytest.mark.parametrize("run_in_executor", [True, False])
+async def test_errno_after_async_unix_unlock_refuses_reentrant_acquire(
+    tmp_path: Path, mocker: MockerFixture, run_in_executor: bool
+) -> None:
+    lock_path = tmp_path / "a"
+    lock = AsyncFileLock(lock_path, run_in_executor=run_in_executor)
+    await lock.acquire()
+    await lock.acquire()
+    fcntl = get_fcntl()
+    real_flock = fcntl.flock
+    interrupted = False
+
+    def unlock_then_raise(fd: int, operation: int) -> None:
+        nonlocal interrupted
+        real_flock(fd, operation)
+        if operation == fcntl.LOCK_UN and not interrupted:
+            interrupted = True
+            raise OSError(EIO, "signal handler")
+
+    mocker.patch("filelock._unix.fcntl.flock", side_effect=unlock_then_raise, autospec=True)
+    with pytest.raises(OSError, match="signal handler"):
+        await lock.release(force=True)
+    with FileLock(lock_path), pytest.raises(RuntimeError, match=r"call release\(\) again"):
+        await lock.acquire()
+    await lock.release()
+    await lock.acquire()
+    await lock.release()
+    assert_file_lock_state(str(lock_path), available=True)
 
 
 @NEEDS_FCNTL

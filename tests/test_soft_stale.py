@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import itertools
 import os
+import signal
 import socket
 import sys
 import threading
@@ -11,13 +12,14 @@ from contextlib import contextmanager, suppress
 from errno import EACCES, EINTR, EINVAL, EIO, ENODEV, ENOSPC, EPERM
 from multiprocessing import get_context
 from pathlib import Path
-from types import SimpleNamespace
+from types import FrameType, SimpleNamespace
 from typing import TYPE_CHECKING, Final
 
 import pytest
 
 import filelock._soft  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import CloseErrorPolicy, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
+from filelock._api import FileLockContext
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, read_lock_file
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
@@ -26,6 +28,7 @@ from tests.capability_marks import (
     NEEDS_FIFO,
     NEEDS_FOREIGN_STICKY_TMP,
     NEEDS_POSIX_SIGNALS,
+    NEEDS_PROMPT_SIGNAL_DELIVERY,
     NEEDS_STALE_RECLAIM,
     NEEDS_SYMLINK,
     NEEDS_UNLINK_OPEN_FILE,
@@ -117,8 +120,11 @@ def _assert_times_out(lock_path: Path, *, timeout: float = 0.1) -> None:
 
 
 def test_stale_lock_not_broken_different_hostname(lock_path: Path) -> None:
-    lock_path.write_text(_holder(_DEAD_PID, host="other-host.example.com"), encoding="utf-8")
-    _assert_times_out(lock_path)
+    marker = _holder(_DEAD_PID, host="other-host.example.com")
+    lock_path.write_text(marker, encoding="utf-8")
+    lock = SoftFileLock(lock_path)
+    acquire_after_reclaim(lock)
+    assert (lock.is_locked, lock_path.read_text(encoding="utf-8")) == (False, marker)
 
 
 @pytest.mark.parametrize(
@@ -137,6 +143,26 @@ def test_timeout_names_a_holder_on_another_host(lock_path: Path, lock_type: type
     lock_path.write_text(record, encoding="utf-8")
     with pytest.raises(Timeout, match=f"held by pid {_DEAD_PID} on other-host.example.com, which this host cannot"):
         lock_type(lock_path, timeout=0).acquire()
+
+
+@pytest.mark.parametrize(
+    ("lock_type", "record"),
+    [
+        pytest.param(SoftFileLock, _holder(_DEAD_PID, host="other\x1b[2K\x1b[1A\x7fhost"), id="soft"),
+        pytest.param(
+            MarkerSoftFileLock,
+            f"filelock/2\npid={_DEAD_PID}\nhost=other\x1b[2K\x1b[1A\x7fhost\nmode=exclusive\n",
+            id="marker-v2",
+        ),
+    ],
+)
+def test_timeout_escapes_a_holder_hostname_outside_the_grammar(
+    lock_path: Path, lock_type: type[SoftFileLock], record: str
+) -> None:
+    lock_path.write_text(record, encoding="utf-8")
+    with pytest.raises(Timeout) as caught:
+        lock_type(lock_path, timeout=0).acquire()
+    assert f"held by pid {_DEAD_PID} on other?1b[2K?1b[1A?7fhost, which this host cannot" in str(caught.value)
 
 
 def test_timeout_leaves_out_a_holder_on_this_host(lock_path: Path) -> None:
@@ -160,6 +186,9 @@ def test_recycled_pid_marker_self_heals(lock_path: Path) -> None:
     _assert_self_heals(lock_path)
 
 
+@pytest.mark.skipif(  # pragma: linux cover
+    sys.platform not in {"linux", "android"}, reason="PID namespaces exist only on Linux"
+)
 @_REQUIRES_START_TOKEN
 @pytest.mark.parametrize(
     ("contender_namespace", "reclaimed"),
@@ -881,6 +910,29 @@ def test_stale_break_undoes_an_exchange_that_took_a_peers_marker(  # pragma: win
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
 @STALE_BREAKERS
 @NEEDS_STALE_RECLAIM
+def test_stale_break_restores_a_live_holder_after_interrupted_exchange(  # pragma: win32 no cover
+    tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
+    (holder := tmp_path / "holder").write_text(_live(record), encoding="utf-8")
+
+    def exchange_then_interrupt(aside: str, path: str) -> bool:
+        holder.replace(lock)
+        assert exchange_names(aside, path)
+        raise KeyboardInterrupt
+
+    mocker.patch("filelock._soft.exchange_names", new=exchange_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        lock_type(lock).acquire(blocking=False)
+
+    assert (lock.read_text(encoding="utf-8"), sorted(tmp_path.iterdir())) == (_live(record), [lock])
+    with pytest.raises(Timeout):
+        lock_type(lock).acquire(blocking=False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@STALE_BREAKERS
+@NEEDS_STALE_RECLAIM
 def test_stale_break_exchanges_back_after_the_breaker_that_took_its_marker(  # pragma: win32 no cover
     tmp_path: Path, lock_type: type[SoftFileLock], record: str, mocker: MockerFixture
 ) -> None:
@@ -1001,6 +1053,51 @@ def test_stale_break_drops_what_it_took_when_the_holder_released_the_path(  # pr
         lock_type(lock).acquire(blocking=False)
 
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
+@NEEDS_STALE_RECLAIM
+def test_stale_break_cleans_its_marker_when_the_break_name_becomes_a_directory(  # pragma: win32 no cover
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    (lock := tmp_path / "test.lock").write_text(DEAD_OWNER, encoding="utf-8")
+    (holder := tmp_path / "holder").write_text(_live(DEAD_OWNER), encoding="utf-8")
+    aside: str | None = None
+    missing = 0
+    lstat = os.lstat
+
+    def holder_moves_the_break_name(break_name: str, path: str) -> bool:
+        nonlocal aside
+        aside = break_name
+        mocker.patch("filelock._soft.exchange_names", new=exchange_names)
+        holder.replace(lock)
+        exchange_names(break_name, path)
+        Path(break_name).rename(tmp_path / "taken")
+        return True
+
+    def replace_the_missing_break_name(path: str, *, dir_fd: int | None = None) -> os.stat_result:
+        nonlocal missing
+        try:
+            return lstat(path, dir_fd=dir_fd)
+        except FileNotFoundError:
+            if path == aside:
+                missing += 1
+                if missing == 2:
+                    Path(path).mkdir()
+            raise
+
+    mocker.patch("filelock._soft.exchange_names", new=holder_moves_the_break_name)
+    mocker.patch.object(os, "lstat", new=replace_the_missing_break_name)
+    with pytest.raises(Timeout):
+        MarkerSoftFileLock(lock).acquire(blocking=False)
+
+    assert (missing, lock.exists(), (tmp_path / "taken").read_text(encoding="utf-8")) == (
+        2,
+        False,
+        _live(DEAD_OWNER),
+    )
+    with MarkerSoftFileLock(lock, blocking=False) as acquired:
+        assert acquired.is_locked
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -1436,6 +1533,49 @@ def test_write_failure_rolls_back_acquire(lock_path: Path, mocker: MockerFixture
     assert not lock_path.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX rolls back before closing the descriptor")
+@NEEDS_STALE_RECLAIM
+@pytest.mark.usefixtures("unchanged_past_grace")
+@pytest.mark.parametrize(
+    ("cleanup_errno", "fail_unlink", "record"),
+    [
+        pytest.param(ENOSPC, False, b"\0", id="create-full"),
+        pytest.param(ENOSPC, True, b"\0", id="unlink-full"),
+        pytest.param(EIO, False, b"", id="io-error"),
+    ],
+)
+def test_rollback_on_full_filesystem(
+    lock_path: Path, mocker: MockerFixture, cleanup_errno: int, record: bytes, *, fail_unlink: bool
+) -> None:  # pragma: win32 no cover
+    open_file = os.open
+
+    def open_with_full_directory(path: str, flags: int, mode: int = 0o777) -> int:
+        if not fail_unlink and ".break." in path:
+            raise OSError(cleanup_errno, os.strerror(cleanup_errno))
+        return open_file(path, flags, mode)
+
+    unlink = Path.unlink
+
+    def unlink_on_full_filesystem(path: Path, *, missing_ok: bool = False) -> None:
+        if fail_unlink and path == lock_path:
+            raise OSError(ENOSPC, os.strerror(ENOSPC))
+        unlink(path, missing_ok=missing_ok)
+
+    unlinks = mocker.patch.object(Path, "unlink", side_effect=unlink_on_full_filesystem, autospec=True)
+    opens = mocker.patch("filelock._util.os.open", side_effect=open_with_full_directory, autospec=True)
+    writes = mocker.patch("filelock._util.os.write", side_effect=OSError(ENOSPC, "record write failed"), autospec=True)
+    with pytest.raises(OSError, match="record write failed"):
+        SoftFileLock(lock_path).acquire(timeout=0)
+    mocker.stop(opens)
+    mocker.stop(writes)
+    mocker.stop(unlinks)
+    assert lock_path.read_bytes() == record
+    lock = SoftFileLock(lock_path)
+    acquire_after_reclaim(lock)
+    assert lock.is_locked == (cleanup_errno == ENOSPC)
+    lock.release()
+
+
 def _hold_reports_foreign_identity(mocker: MockerFixture) -> None:
     # Make the held descriptor report a different inode than the file on disk, as if a peer replaced the marker at the
     # path. fstat runs only on our own lock fd, so nothing else in acquire or release is disturbed.
@@ -1594,25 +1734,6 @@ def test_release_under_a_peers_exchange_leaves_the_peers_marker(  # pragma: win3
     )
 
 
-def test_release_without_identity_skips_unlink(lock_path: Path, mocker: MockerFixture) -> None:
-    lock = SoftFileLock(lock_path)
-    lock.acquire()
-    held: Final[os.stat_result] = lock_path.stat()
-    real_fstat = os.fstat
-
-    def no_identity(fd: int) -> os.stat_result:
-        # The held descriptor can no longer be identified, so release cannot prove the path is still ours: it closes
-        # and clears held state without unlinking rather than risk deleting a successor's marker.
-        if os.path.samestat(found := real_fstat(fd), held):
-            raise OSError
-        return found
-
-    mocker.patch("filelock._soft.os.fstat", side_effect=no_identity, autospec=True)
-    lock.release()
-    assert not lock.is_locked
-    assert lock_path.exists()
-
-
 def test_normal_release_removes_own_marker(lock_path: Path) -> None:
     with SoftFileLock(lock_path):
         assert lock_path.exists()
@@ -1646,8 +1767,11 @@ def test_stale_release_spares_a_successor(lock_path: Path) -> None:  # pragma: n
 def test_windows_release_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 cover
     lock = SoftFileLock(lock_path)
     lock.acquire()
-    _hold_reports_foreign_identity(mocker)
+    mocker.patch(
+        "filelock._soft.os.lstat", return_value=os.stat_result((0, 999, 1, 0, 0, 0, 0, 0, 0, 0)), autospec=True
+    )
     lock.release()
+    mocker.stopall()
     assert lock_path.exists()
     lock_path.unlink()
 
@@ -1794,6 +1918,32 @@ def _release_over_a_successor_marker(lock_path: Path) -> SoftFileLock:  # pragma
 
 
 @NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@pytest.mark.parametrize(
+    "operation",
+    [pytest.param("filelock._soft.write_at_start", id="write"), pytest.param("os.ftruncate", id="truncate")],
+)
+def test_displaced_marker_can_retry_release_after_timeout(
+    lock_path: Path, mocker: MockerFixture, operation: str
+) -> None:
+    holder = SoftFileLock(lock_path)
+    holder.acquire()
+    displaced = lock_path.with_suffix(".aside")
+    lock_path.rename(displaced)
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    timeout = mocker.patch(operation, side_effect=TimeoutError("release deadline"), autospec=True)
+
+    with pytest.raises(TimeoutError, match="release deadline"):
+        holder.release()
+    assert holder.is_locked
+
+    mocker.stop(timeout)
+    holder.release()
+    assert not holder.is_locked
+    assert displaced.read_bytes() == b"filelock/released\n"
+    assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
+
+
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 def test_released_record_rewrite_error_spares_successor_marker_without_pwrite(
     lock_path: Path, mocker: MockerFixture
 ) -> None:
@@ -1807,15 +1957,58 @@ def test_released_record_rewrite_error_spares_successor_marker_without_pwrite(
     assert lock_path.read_text(encoding="utf-8") == _holder(_DEAD_PID)
 
 
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+def test_release_finishes_when_marker_disappears_before_unlink(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    unlink = Path.unlink
+
+    def remove_before_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        unlink(path)
+        unlink(path, missing_ok=missing_ok)
+
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=remove_before_unlink)
+    lock.release()
+    assert (lock.is_locked, lock_path.exists()) == (False, False)
+
+
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@pytest.mark.parametrize(
+    "share_refusal", [pytest.param(False, id="before-close"), pytest.param(True, id="after-close")]
+)
+def test_release_propagates_deadline_after_unlink(
+    lock_path: Path, mocker: MockerFixture, *, share_refusal: bool
+) -> None:
+    lock = SoftFileLock(lock_path)
+    lock.acquire()
+    unlink = Path.unlink
+
+    def unlink_then_signal(path: Path, *, missing_ok: bool = False) -> None:
+        nonlocal share_refusal
+        if share_refusal:
+            share_refusal = False
+            raise PermissionError(EACCES, "file in use")
+        unlink(path, missing_ok=missing_ok)
+        raise TimeoutError(EINTR, "deadline")
+
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=unlink_then_signal)
+    with pytest.raises(TimeoutError, match="deadline"):
+        lock.release()
+    assert (lock.is_locked, lock_path.exists()) == (False, False)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows closes the descriptor before it can unlink the marker")
+@pytest.mark.parametrize(
+    "cleanup_error",
+    [pytest.param(RuntimeError("cleanup failed"), id="handler"), pytest.param(OSError(EIO, "cleanup failed"), id="io")],
+)
 def test_marker_cleanup_failure_keeps_the_lock_held_for_a_retry(  # pragma: win32 no cover
-    lock_path: Path, mocker: MockerFixture
+    lock_path: Path, mocker: MockerFixture, cleanup_error: Exception
 ) -> None:
     lock: Final[SoftFileLock] = SoftFileLock(lock_path)
     lock.acquire()
-    cleanup_error: Final[RuntimeError] = RuntimeError("cleanup failed")
     unlink = mocker.patch("filelock._soft.Path.unlink", autospec=True, side_effect=cleanup_error)
-    with pytest.raises(RuntimeError) as info:
+    with pytest.raises(type(cleanup_error)) as info:
         lock.release()
     held: Final[tuple[bool, bool]] = (lock.is_locked, lock_path.exists())
     mocker.stop(unlink)
@@ -1823,6 +2016,87 @@ def test_marker_cleanup_failure_keeps_the_lock_held_for_a_retry(  # pragma: win3
     lock.release()
 
     assert (info.value, held, lock.is_locked, lock_path.exists()) == (cleanup_error, (True, True), False, False)
+
+
+@pytest.mark.parametrize("lock_type", [pytest.param(SoftFileLock, id="soft"), pytest.param(SoftFileLease, id="lease")])
+def test_release_keeps_marker_cleanup_after_fstat_signal(
+    lock_path: Path, mocker: MockerFixture, lock_type: type[SoftFileLock]
+) -> None:
+    lock = lock_type(lock_path, is_singleton=False)
+    lock.acquire()
+    fstat = mocker.patch("filelock._soft.os.fstat", autospec=True, side_effect=TimeoutError("deadline"))
+    lock.release()
+    mocker.stop(fstat)
+
+    with SoftFileLock(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@NEEDS_STALE_RECLAIM
+@NEEDS_POSIX_SIGNALS  # pragma: needs posix-signals
+@NEEDS_PROMPT_SIGNAL_DELIVERY  # pragma: needs prompt-signal-delivery
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_signal_handler_can_exit_during_reclaimed_marker_publication(
+    lock_path: Path, monkeypatch: pytest.MonkeyPatch, *, thread_local: bool
+) -> None:
+    lock_path.write_text(_holder(_DEAD_PID), encoding="utf-8")
+    lock = SoftFileLock(lock_path, is_singleton=False, thread_local=thread_local)
+    released: list[bool] = []
+
+    def release_in_handler(_signum: int, _frame: FrameType | None) -> None:
+        released.append(lock.is_locked)
+        lock.release(force=True)
+        raise SystemExit(7)
+
+    def signal_after_descriptor(
+        context: FileLockContext,
+        name: str,
+        value: object,  # simplint: ignore[imprecise-annotation]  # context fields have different value types
+    ) -> None:
+        super(FileLockContext, context).__setattr__(name, value)
+        if context is lock._hold_state() and name == "lock_file_fd" and value is not None and not released:
+            signal.raise_signal(signal_number)
+
+    signal_number = signal.Signals["SIGUSR1"]
+    previous = signal.signal(signal_number, release_in_handler)
+    monkeypatch.setattr(FileLockContext, "__setattr__", signal_after_descriptor)
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            lock.acquire(timeout=1)
+    finally:
+        monkeypatch.undo()
+        signal.signal(signal_number, previous)
+    assert (exit_info.value.code, released, lock.is_locked, lock.lock_counter) == (7, [True], False, 0)
+    with SoftFileLock(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@pytest.mark.parametrize("thread_local", [pytest.param(True, id="thread_local"), pytest.param(False, id="shared")])
+def test_force_release_on_exit_during_identity_publication(
+    lock_path: Path, monkeypatch: pytest.MonkeyPatch, *, thread_local: bool
+) -> None:
+    lock = SoftFileLock(lock_path, is_singleton=False, thread_local=thread_local)
+    released: list[bool] = []
+
+    def release_after_descriptor(
+        context: FileLockContext,
+        name: str,
+        value: object,  # simplint: ignore[imprecise-annotation]  # context fields have different value types
+    ) -> None:
+        super(FileLockContext, context).__setattr__(name, value)
+        if context is lock._hold_state() and name == "lock_file_fd" and value is not None and not released:
+            released.append(lock.is_locked)
+            lock.release(force=True)
+            raise SystemExit(7)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(FileLockContext, "__setattr__", release_after_descriptor)
+        with pytest.raises(SystemExit) as exit_info:
+            lock.acquire(timeout=1)
+
+    assert (exit_info.value.code, released, lock.is_locked, lock.lock_counter) == (7, [True], False, 0)
+    with SoftFileLock(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows always unlinks the marker after the close")

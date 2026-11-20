@@ -23,6 +23,7 @@ from tests.capability_marks import (
     NEEDS_FORK1,
 )
 from tests.descriptor_helpers import descriptors_on
+from tests.fork_helpers import exit_child, fork_process
 from tests.read_write_helpers import OPPOSITE_MODE, writer_gets_in
 
 if TYPE_CHECKING:
@@ -1006,6 +1007,26 @@ def test_private_link_sweep_releases_the_inherited_cursor(tmp_path: Path) -> Non
         timeout=10,
     )
     assert result == (0, "", "")
+
+
+@NEEDS_FORK  # pragma: needs fork
+@pytest.mark.filterwarnings("ignore:.*multi-threaded, use of fork.*:DeprecationWarning")
+def test_fork_child_leaves_inherited_sqlite_connection_open(tmp_path: Path, mocker: MockerFixture) -> None:
+    import sqlite3
+
+    connect = mocker.spy(sqlite3, "connect")
+    with ReadWriteLock(tmp_path / "held.db", is_singleton=False).read_lock():
+        connection = connect.spy_return
+        mocker.patch("filelock._read_write._GETPID", return_value=os.getpid(), autospec=True)
+
+        def close_in_child() -> NoReturn:  # pragma: forked child
+            # SQLite forbids using an inherited handle, so record whether close reaches the C extension.
+            backend = mocker.patch.object(sqlite3, "Connection", autospec=True)
+            connection.close()
+            exit_child(int(backend.close.called))
+
+        _, status = os.waitpid(fork_process(close_in_child), 0)
+        assert os.waitstatus_to_exitcode(status) == 0
 
 
 @NEEDS_FORK  # pragma: needs fork

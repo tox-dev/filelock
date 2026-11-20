@@ -9,7 +9,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from functools import partial
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
@@ -28,6 +27,7 @@ from filelock._read_write import (
     _MAX_SQLITE_TIMEOUT_MS,
     ReadWriteLock,
     _ForkedDatabaseRegistry,
+    _ForkSafeConnection,
     _track_sqlite_use,
     timeout_for_sqlite,
 )
@@ -95,6 +95,31 @@ def test_singleton_different_files(tmp_path: Path) -> None:
     lock1 = ReadWriteLock(str(tmp_path / "a.db"))
     lock2 = ReadWriteLock(str(tmp_path / "b.db"))
     assert lock1 is not lock2
+
+
+def test_singleton_rejects_directory_change_during_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    spool = tmp_path / "spool"
+    state.mkdir()
+    spool.mkdir()
+
+    class MovingPath:
+        calls = 0
+
+        def __fspath__(self) -> str:
+            self.calls += 1
+            if self.calls == 2:
+                monkeypatch.chdir(spool)
+            return "gate.db"
+
+    monkeypatch.chdir(state)
+    with pytest.raises(RuntimeError, match="path changed during singleton construction"):
+        ReadWriteLock(MovingPath())
+
+    with ReadWriteLock(state / "gate.db").write_lock():
+        assert not writer_gets_in(str(state / "gate.db"))
 
 
 def test_singleton_rejects_different_timeout(lock_file: str) -> None:
@@ -685,13 +710,23 @@ def test_write_lock_context_manager_overrides_defaults(lock_file: str) -> None:
 def test_busy_timeout_recomputed_after_journal_mode(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
-    perf_counter = mocker.create_autospec(time.perf_counter, side_effect=[0.0, 0.0, 0.0, 0.5])
-    mocker.patch("filelock._read_write.time", new=SimpleNamespace(monotonic=time.monotonic, perf_counter=perf_counter))
     lock = ReadWriteLock(lock_file, is_singleton=False)
+    clock = mocker.patch("filelock._read_write.time", autospec=True)
+    clock.perf_counter.return_value = 0.0
+    clock.monotonic.side_effect = time.monotonic
+    execute = _ForkSafeConnection.executescript
+    statements: list[str] = []
+
+    def execute_with_delay(connection: _ForkSafeConnection, script: str) -> sqlite3.Cursor:
+        statements.append(script.split(";", 1)[0])
+        clock.perf_counter.return_value = 0.5
+        return execute(connection, script)
+
+    mocker.patch.object(_ForkSafeConnection, "executescript", new=execute_with_delay)
+    mocker.patch.object(threading, "active_count", autospec=True, return_value=1)
     getattr(lock, f"acquire_{mode}")(timeout=2.0)
     lock.release()
-    # the fourth reading recomputes the remaining wait after the journal mode switch
-    assert perf_counter.call_count == 4
+    assert statements == ["PRAGMA busy_timeout=2000", "PRAGMA busy_timeout=1500"]
 
 
 def test_acquire_converts_connect_lock_error_to_timeout(lock_file: str, mocker: MockerFixture) -> None:

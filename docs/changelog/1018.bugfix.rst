@@ -1,0 +1,2 @@
+A singleton shared between relative and absolute lock paths now refuses acquisition if a directory change makes the
+stored path name a different file. Before, it could report a successful hold on the wrong file.

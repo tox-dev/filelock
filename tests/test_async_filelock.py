@@ -32,6 +32,7 @@ from filelock import (
     ContextErrorPolicy,
     FileLock,
     Timeout,
+    UnixFileLock,
 )
 from tests.capability_marks import (
     NEEDS_FCNTL,
@@ -226,6 +227,60 @@ async def test_acquire_rejects_non_bool_blocking(
     with pytest.raises(TypeError, match="blocking must be a bool"):
         await lock.acquire(blocking=blocking)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
     assert (lock.lock_counter, lock.is_locked) == (0, False)
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.parametrize("interrupted", ["_raise_if_would_deadlock", "_pin_lock_path"])
+@pytest.mark.asyncio
+async def test_early_async_acquire_exception_leaves_no_counted_hold(
+    lock_type: type[BaseAsyncFileLock], interrupted: str, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = lock_type(lock_path)
+    mocker.patch.object(lock, interrupted, side_effect=KeyboardInterrupt, autospec=True)
+
+    with pytest.raises(KeyboardInterrupt):
+        await lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    async with lock:
+        assert lock.lock_counter == 1
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    async with lock_type(lock_path, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_in_executor", [False, True])
+async def test_failed_async_proxy_releases_provisional_hold(
+    tmp_path: Path, mocker: MockerFixture, *, run_in_executor: bool
+) -> None:
+    lock = AsyncSoftFileLock(tmp_path / "proxy.lock", run_in_executor=run_in_executor)
+    mocker.patch("filelock.asyncio.AsyncAcquireReturnProxy", side_effect=MemoryError, autospec=True)
+
+    with pytest.raises(MemoryError):
+        await lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
+    async with AsyncSoftFileLock(lock.lock_file, blocking=False, is_singleton=False) as peer:
+        assert peer.is_locked
+
+
+@pytest.mark.asyncio
+async def test_reentrant_async_proxy_failure_keeps_one_level(tmp_path: Path, mocker: MockerFixture) -> None:
+    lock = AsyncFileLock(str(tmp_path / "a.lock"))
+    await lock.acquire()
+    mocker.patch("filelock.asyncio.AsyncAcquireReturnProxy", side_effect=KeyboardInterrupt, autospec=True)
+
+    with pytest.raises(KeyboardInterrupt):
+        await lock.acquire()
+    mocker.stopall()
+
+    assert (lock.is_locked, lock.lock_counter) == (True, 1)
+    await lock.release()
+    assert (lock.is_locked, lock.lock_counter) == (False, 0)
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -760,6 +815,25 @@ async def test_async_singleton_held_before_chdir_re_enters_by_absolute_path(
     async with lock_type(first / "resource.lock", is_singleton=True) as again:
         assert (again is held, held.lock_counter) == (True, 2)
     await held.release(force=True)
+
+
+@pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
+@pytest.mark.asyncio
+async def test_async_shared_singleton_refuses_moved_relative_path(
+    lock_type: type[BaseAsyncFileLock], working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    relative = lock_type("resource.lock", is_singleton=True)
+    absolute = lock_type(first / "resource.lock", is_singleton=True)
+    assert absolute is relative
+
+    monkeypatch.chdir(second)
+    with pytest.raises(RuntimeError, match="singleton lock path changed after sharing"):
+        await absolute.acquire(timeout=0)
+
+    assert not (second / "resource.lock").exists()
+    async with lock_type(first / "resource.lock", is_singleton=True):
+        assert (first / "resource.lock").exists()
 
 
 @pytest.mark.parametrize("lock_type", [AsyncFileLock, AsyncSoftFileLock])
@@ -1341,6 +1415,27 @@ async def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: M
         await lock.acquire()
     assert not lock.is_locked
     assert type(lock).__name__ == "AsyncUnixFileLock"  # not swapped to the soft class
+
+
+@NEEDS_FCNTL
+@pytest.mark.asyncio  # pragma: needs fcntl
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
+async def test_fallback_to_soft_reprobes_after_chdir(
+    working_directories: tuple[Path, Path], mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    unsupported_flock = mocker.patch(
+        "filelock._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True
+    )
+    lock = AsyncFileLock("a", run_in_executor=False)
+    async with lock:
+        assert (first / "a").read_bytes()
+    mocker.stop(unsupported_flock)
+    monkeypatch.chdir(second)
+
+    async with lock:
+        with pytest.raises(Timeout):
+            UnixFileLock(second / "a").acquire(timeout=0)
 
 
 def test_preserve_lock_file_async_soft_rejects(tmp_path: Path) -> None:
