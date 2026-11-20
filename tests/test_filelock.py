@@ -35,7 +35,6 @@ from capabilities import CAPABILITIES
 
 import filelock
 import filelock._soft  # simplint: ignore[private-import-path]  # tests internal behavior
-import filelock._unix  # simplint: ignore[private-import-path]  # tests internal behavior
 import filelock.version
 from filelock import (
     BaseFileLock,
@@ -2753,7 +2752,7 @@ def test_unix_release_retries_an_errno_after_unlock(tmp_path: Path, mocker: Mock
     path = tmp_path / "a"
     lock = FileLock(str(path), is_singleton=False)
     lock.acquire()
-    real_unlock = filelock._unix.unlock_fd
+    real_unlock = resolve_name("filelock._unix.unlock_fd")
     interrupted: list[int] = []
 
     def unlock_then_raise(fd: int) -> None:
@@ -2763,7 +2762,8 @@ def test_unix_release_retries_an_errno_after_unlock(tmp_path: Path, mocker: Mock
             raise OSError(EIO, "signal after unlock")
 
     mocker.patch("filelock._unix.unlock_fd", side_effect=unlock_then_raise, autospec=True)
-    lock.release()
+    with pytest.raises(OSError, match="signal after unlock"):
+        lock.release()
     assert len(interrupted) == 1
     assert not lock.is_locked
     assert lock.lock_counter == 0
@@ -2786,7 +2786,8 @@ def test_unix_release_retries_an_errno_before_state_change(tmp_path: Path, mocke
         real_mark()
 
     mocker.patch.object(lock, "_mark_descriptor_released", side_effect=mark_or_raise, autospec=True)
-    lock.release()
+    with pytest.raises(OSError, match="signal after unlock"):
+        lock.release()
     assert interrupted == [True]
     assert not lock.is_locked
     assert lock.lock_counter == 0

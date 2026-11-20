@@ -233,7 +233,9 @@ else:  # pragma: win32 no cover
                 # An errno-bearing signal can interrupt the gap between flock and the descriptor state change.
                 if self._context.lock_file_fd is None:
                     raise
-                super()._release_with_fork_tracking()
+                with suppress(Exception):
+                    super()._release_with_fork_tracking()
+                raise
 
         def _release(self) -> None:
             fd = cast("int", self._context.lock_file_fd)
