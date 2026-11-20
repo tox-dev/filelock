@@ -241,7 +241,7 @@ class AsyncSoftReadWriteLock:
         # the cancellation has published its claim and started the heartbeat, which keeps the record fresh so no peer
         # evicts it. Wait the call out and hand the claim back, as AsyncReadWriteLock does.
         abandoned = threading.Event()
-        acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
+        acquire_future = self._submit(acquire, cancel_check=lambda: abandoned.is_set() or self._closed)
         try:
             await wait_until_done(acquire_future)
         except asyncio.CancelledError as cancellation:
@@ -259,7 +259,11 @@ class AsyncSoftReadWriteLock:
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 raise_cancelled_error(cancellation, error)
             raise
-        future_result(acquire_future)
+        try:
+            future_result(acquire_future)
+        except Timeout:
+            self._raise_if_unusable()
+            raise
 
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
@@ -352,6 +356,7 @@ class AsyncSoftReadWriteLock:
         that acquired through another wrapper and synchronous users of the same path keep their holds. The next acquire
         notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
         between that check and the admission still admits the task into the ended hold.
+        A pending acquire through this wrapper stops waiting when close starts.
 
         """
         if self._creator_pid != os.getpid() or self._closed:
