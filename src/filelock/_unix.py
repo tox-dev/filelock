@@ -94,8 +94,6 @@ else:  # pragma: win32 no cover
         same path.
         """
 
-        _flockless_root: str | None = None
-
         @BaseFileLock.lifetime.setter
         def lifetime(self, value: float | None) -> None:
             if self._soft_fallback_for_path():
@@ -108,12 +106,12 @@ else:  # pragma: win32 no cover
 
         def _soft_fallback_for_path(self) -> bool:
             return self._context.soft_fallback and (
-                self._context.claim_root is not None or canonical(self.lock_file) == self._flockless_root
+                self._context.claim_root is not None or canonical(self.lock_file) in self._context.flockless_roots
             )
 
         def _pin_lock_path(self, canonical: str) -> None:
             super()._pin_lock_path(canonical)
-            self._context.soft_fallback = canonical == self._flockless_root
+            self._context.soft_fallback = canonical in self._context.flockless_roots
 
         def _acquire(self) -> None:
             if self._context.soft_fallback:
@@ -260,7 +258,8 @@ else:  # pragma: win32 no cover
         def _fallback_to_soft_lock(self) -> None:
             warnings.warn("flock not supported on this filesystem, falling back to SoftFileLock", stacklevel=2)
             self._context.soft_fallback = True
-            self._flockless_root = self._context.claim_root
+            if (root := self._context.claim_root) is not None:
+                self._context.flockless_roots |= {root}
 
         def _unprobeable_holder(self) -> str | None:
             if not self._context.soft_fallback:

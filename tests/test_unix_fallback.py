@@ -289,6 +289,34 @@ def test_fallback_recovery_does_not_apply_after_chdir(
 
 
 @NEEDS_FCNTL
+@pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")  # pragma: needs fcntl
+@pytest.mark.usefixtures("unsupported_flock")
+def test_fallback_recovery_remembers_earlier_path(
+    working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = working_directories
+    (first / "test.lock").touch()
+    lock = UnixFileLock("test.lock")
+
+    with pytest.raises(Timeout):
+        lock.acquire(timeout=0)
+    monkeypatch.chdir(second)
+    (second / "test.lock").touch()
+    with pytest.raises(Timeout):
+        lock.acquire(timeout=0)
+    monkeypatch.chdir(first)
+
+    lock.break_lock()
+
+    assert not (first / "test.lock").exists()
+    (first / "test.lock").touch()
+    with pytest.warns(SoftFileLockLifetimeWarning):
+        lock.lifetime = 0
+    with lock.acquire(timeout=0):
+        assert SoftFileLock(first / "test.lock").is_lock_held_by_us
+
+
+@NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
 def test_fallback_reentrant_locking(tmp_path: Path) -> None:  # pragma: needs fcntl

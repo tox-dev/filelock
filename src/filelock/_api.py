@@ -1817,6 +1817,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.lock_file_registry = None
         self._context.lease_claim = None
         self._context.soft_fallback = False
+        self._context.flockless_roots = frozenset()
 
     def _descriptors_for_fork(self) -> tuple[tuple[int, tuple[int, int] | None], ...]:  # pragma: needs fork
         descriptors: list[tuple[int, tuple[int, int] | None]] = []
@@ -2078,6 +2079,9 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
 
     #: Whether this acquisition uses the soft protocol after flock returned ENOSYS for its path.
     soft_fallback: bool = False
+
+    #: Resolved paths whose flock returned ENOSYS in this context.
+    flockless_roots: frozenset[str] = frozenset()
 
 
 class ThreadLocalFileContext(FileLockContext, local):
