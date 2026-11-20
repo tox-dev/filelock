@@ -225,6 +225,7 @@ class AsyncReadWriteLock:
             via=self._via,
             enter=enter,
             joinable=joinable,
+            raise_if_unusable=self._raise_if_unusable,
         )
 
     @property
@@ -361,6 +362,8 @@ class AsyncReadWriteLock:
         acquired through another wrapper and synchronous users of the same path keep their holds. The next acquire
         notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
         between that check and the admission still admits the task into the ended hold.
+
+        An acquire granted by the backend after this method starts raises the closed error before entering its block.
 
         """
         ensure_current_process()

@@ -656,6 +656,29 @@ async def _read_and_probe(lock: AsyncSoftReadWriteLock) -> bool:
         return await asyncio.to_thread(_writer_gets_in, Path(lock.lock_file).parent)
 
 
+@pytest.mark.parametrize("is_singleton", [pytest.param(True, id="singleton"), pytest.param(False, id="owned")])
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.asyncio
+async def test_async_soft_acquire_waiting_in_backend_during_close_is_refused(
+    tmp_path: Path, is_singleton: bool, mode: Literal["read", "write"]
+) -> None:
+    holder: Final[SoftReadWriteLock] = _make_sync(tmp_path)
+    holder.acquire_write()
+    lock: Final[AsyncSoftReadWriteLock] = _make(tmp_path, is_singleton=is_singleton)
+    acquiring = asyncio.create_task(getattr(lock, f"acquire_{mode}")(timeout=_TASK_WAIT))
+    await asyncio.sleep(0)
+    closing = asyncio.create_task(lock.close())
+    await asyncio.sleep(0)
+    holder.release()
+
+    with pytest.raises(RuntimeError, match="has been closed"):
+        await acquiring
+    await closing
+
+    assert _writer_gets_in(tmp_path)
+    holder.close()
+
+
 @pytest.mark.asyncio
 async def test_async_soft_read_through_another_wrapper_during_close_holds_the_lock(tmp_path: Path) -> None:
     closing, other = _make(tmp_path, is_singleton=True), _make(tmp_path, is_singleton=True)

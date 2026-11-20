@@ -1012,9 +1012,33 @@ async def test_async_close_waits_out_an_acquire_in_flight_even_when_canceled(loc
     await asyncio.sleep(0)
     holder.release()
 
-    await acquiring
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        await acquiring
     with pytest.raises(asyncio.CancelledError):
         await closing
+
+    assert writer_gets_in(lock_file)
+    holder.close()
+
+
+@pytest.mark.parametrize("is_singleton", [pytest.param(True, id="singleton"), pytest.param(False, id="owned")])
+@pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
+@pytest.mark.asyncio
+async def test_async_acquire_waiting_in_backend_during_close_is_refused(
+    lock_file: str, is_singleton: bool, mode: Literal["read", "write"]
+) -> None:
+    holder: Final[ReadWriteLock] = ReadWriteLock(lock_file, is_singleton=False)
+    holder.acquire_write()
+    lock: Final[AsyncReadWriteLock] = AsyncReadWriteLock(lock_file, is_singleton=is_singleton)
+    acquiring = asyncio.create_task(getattr(lock, f"acquire_{mode}")(timeout=_TASK_WAIT))
+    await asyncio.sleep(0)
+    closing = asyncio.create_task(lock.close())
+    await asyncio.sleep(0)
+    holder.release()
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        await acquiring
+    await closing
 
     assert writer_gets_in(lock_file)
     holder.close()

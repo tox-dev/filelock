@@ -234,6 +234,7 @@ class AsyncSoftReadWriteLock:
             via=self._via,
             enter=enter,
             joinable=joinable,
+            raise_if_unusable=self._raise_if_unusable,
         )
 
     async def _run_acquire(self, acquire: functools.partial[AcquireReturnProxy]) -> None:
@@ -352,6 +353,8 @@ class AsyncSoftReadWriteLock:
         that acquired through another wrapper and synchronous users of the same path keep their holds. The next acquire
         notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
         between that check and the admission still admits the task into the ended hold.
+
+        An acquire granted by the backend after this method starts raises the closed error before entering its block.
 
         """
         if self._creator_pid != os.getpid() or self._closed:
