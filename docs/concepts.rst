@@ -1069,11 +1069,13 @@ fresh ``SoftReadWriteLock(path)`` before it can acquire again. This matches PyMo
 
 **Trust boundary.** The class coordinates cooperating processes. Directory ownership, ACLs, and ``0o600`` / ``0o700``
 permissions can exclude another UID. Under a sticky parent such as ``/tmp``, acquisition raises :class:`RuntimeError`
-when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent. The refusal
-also applies to a lock object that used an earlier tree: it repeats the check whenever a directory it opens is not the
-one it prepared, and on every operation where ``dir_fd`` is unavailable. A process with the same effective UID can alter
-the records. A filesystem that delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a
-holder remains active.
+when ``<path>.rw``, ``gen`` or ``holders`` belongs to an account that owns neither the lock nor the parent, or when any
+of these directories is writable by another account. This also covers a group-writable tree of the lock's account moved
+into place by another account. Remove such a tree so the lock can create private directories. The refusal applies to a
+lock object that used an earlier tree: it repeats the check for every directory it opens, including one with a reused
+inode number or a changed mode. A process with the same effective UID can alter the records. A
+filesystem that delays a rewrite's visibility past ``stale_threshold`` can also trigger expiry while a holder remains
+active.
 
 ****************************
  File permissions and mode
