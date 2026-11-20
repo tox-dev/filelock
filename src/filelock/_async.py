@@ -151,6 +151,11 @@ _TASK_OWNERS: Final[WeakKeyDictionary[ReadWriteLock | SoftReadWriteLock, _TaskOw
 _TASK_OWNERS_LOCK: Final[Lock] = Lock()
 
 
+def retire_task_holds_at_exit(backend: SoftReadWriteLock) -> bool:  # pragma: needs hard-link
+    # A published task level already has a table. Shutdown must not wait on fork admission to look it up.
+    return _TASK_OWNERS[backend].retire_stopped_loops()
+
+
 def task_owners_for(sync_lock: ReadWriteLock | SoftReadWriteLock) -> _TaskOwners:
     # Singleton wrappers share one sync lock, so they must share its task holds too.
     with fork_transition(), _TASK_OWNERS_LOCK:
@@ -402,6 +407,21 @@ class _TaskOwners:
             self._transitioning = mode is not None or via is None
             return mode, dropped
 
+    def retire_stopped_loops(self) -> bool:  # pragma: needs hard-link
+        # Admission checks the backend under this lock. Exit cleanup already holds the backend lock.
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if self._transitioning or any(task.get_loop().is_running() for task in self._holds):
+                return False
+            # A new reader must take its own backend level once exit cleanup has claimed the old one.
+            self._mode = None
+            self._holds.clear()
+            self._notify()
+            return True
+        finally:
+            self._lock.release()
+
 
 def _current_task() -> asyncio.Task[object]:  # simplint: ignore[imprecise-annotation]  # task results vary
     if (task := asyncio.current_task()) is None:
@@ -539,6 +559,7 @@ __all__ = [
     "drain_future",
     "future_result",
     "raise_cancelled_error",
+    "retire_task_holds_at_exit",
     "run_in_executor",
     "submit_call",
     "task_owners_for",

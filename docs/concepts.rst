@@ -644,9 +644,13 @@ half-finished descriptor state, so no ``atexit`` handler or ``finally`` block ru
 finishes delays every later fork by the same 30 seconds.
 
 On normal interpreter exit, an ``atexit`` handler registered when filelock is imported releases every lock the process
-still references, before module teardown can break the release; handlers registered earlier run after it. Daemon
-threads still run while ``atexit`` handlers do, so a hold of one that is alive stays in place, and a lock built with
-``thread_local=False``, which cannot tell whose hold it has, stays held whenever any other thread is alive.
+still references unless another live thread owns a hold. An async soft reader/writer hold stays while its owning event
+loop runs, even if the task has finished. A lock built with ``thread_local=False`` cannot identify its owner, so its
+hold stays while another thread is alive.
+
+An ``atexit`` callback registered before importing filelock runs after this cleanup and must acquire its own lock before
+using the protected resource.
+
 ``os._exit``, a signal that kills the process and a crash skip the handler: native locks still go with the descriptor,
 soft markers stay for contenders to reclaim, and a strict claim stays until
 :meth:`force_break <filelock.StrictSoftFileLock.force_break>`.
