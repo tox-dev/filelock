@@ -1,2 +1,2 @@
-``SoftReadWriteLock`` now recreates a missing generation directory while acquiring a read or write lock. Previously, a
-surviving holder record could make each retry skip directory creation until the acquisition timed out.
+``SoftReadWriteLock`` recreates a missing generation directory during read or write acquisition, even if a holder
+record survives.

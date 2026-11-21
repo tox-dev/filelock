@@ -1,2 +1,2 @@
-Clarify that a forked child closes filelock's native descriptor. A daemon using :class:`~filelock.FileLock` must create
-and acquire a new lock after forking.
+A forked child closes the inherited :class:`~filelock.FileLock` descriptor. Daemons must create and acquire a new lock
+after forking.

@@ -1,2 +1,2 @@
-In a single-threaded process, a synchronous SQLite read or write lock can dispatch Python signals while waiting. A
-pending writer in that process keeps its place ahead of new readers between retries.
+Single-threaded SQLite read and write lock waits allow Python signal handlers to run. Waiting writers keep their place
+ahead of new readers.

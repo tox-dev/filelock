@@ -1,2 +1,1 @@
-``ReadWriteLock`` and ``AsyncReadWriteLock`` refuse an acquisition when SQLite enters WAL mode after the database's
-initial header check.
+``ReadWriteLock`` and ``AsyncReadWriteLock`` reject an acquire if SQLite switches to WAL mode after the header check.

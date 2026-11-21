@@ -1,2 +1,1 @@
-Keep no-follow hard-link publication enabled when its capability probe cannot run. This prevents a writable lock
-directory from exposing a file through a private-record symlink.
+Strict locks publish hard links without following symlinks even when the filesystem capability probe cannot run.

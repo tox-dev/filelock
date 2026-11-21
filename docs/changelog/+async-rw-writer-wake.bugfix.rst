@@ -1,2 +1,2 @@
-Async reader/writer wrappers that share a lock instance in one process grant queued writers access in arrival order.
-Returning writers join the back of the queue, and new readers wait until queued writers have had their turn.
+Async reader/writer wrappers sharing a lock serve waiting writers in arrival order, ahead of new readers. Returning
+writers rejoin at the back.

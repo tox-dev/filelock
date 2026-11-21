@@ -1,2 +1,2 @@
-On macOS and systems with ``CLOCK_BOOTTIME``, :class:`~filelock.SoftReadWriteLock` counts time spent asleep when it
-checks the age of a waiter's token. A waiter that slept past its lease requests a new token before entering.
+On macOS and systems with ``CLOCK_BOOTTIME``, :class:`~filelock.SoftReadWriteLock` includes system sleep when checking
+waiter leases and renews expired tokens before entry.
