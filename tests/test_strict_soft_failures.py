@@ -3243,6 +3243,7 @@ def test_strict_soft_windows_withdraws_after_timeout(lock_path: Path, mocker: Mo
         with pytest.raises(Timeout):
             owner.acquire(timeout=timeout, poll_interval=0.005)
         assert started.wait(5)
+        owner.release_with_timeout(timeout)
         assert (owner.is_locked, sorted(claim.state for claim in owner.claims)) == (False, ["held", "intent"])
         with pytest.raises(Timeout):
             owner.acquire(timeout=0.05, poll_interval=0.005)

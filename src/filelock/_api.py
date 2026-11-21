@@ -78,6 +78,7 @@ if TYPE_CHECKING:
     from ._lease import LeaseClaim
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
+    from ._strict import StrictRelease
 
     class _ForkResettable(Protocol):
         def _reset_after_fork_in_child(self) -> None: ...
@@ -1023,12 +1024,12 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         ):
             # The interrupted acquire cannot run until the handler returns, so a second one here would wait on it
             # forever or take the lock out from under it. Once the lock is held, as in an on_acquired hook, it nests.
-            if not self.is_locked and any(_on_this_stack(each.frame) for each in state.in_flight):
+            if not self.is_locked and any(on_this_stack(each.frame) for each in state.in_flight):
                 msg = f"Deadlock: lock '{self.lock_file}' is acquired again while this thread's acquire of it waits"
                 raise RuntimeError(msg)
             # An interrupted release commits only the hold it started with and ignores a release above it on the
             # stack. A hold taken here would nest into one the OS dropped, or stay held for good.
-            if _on_this_stack(state.releasing):
+            if on_this_stack(state.releasing):
                 msg = f"lock '{self.lock_file}' is acquired again while this thread's release of it runs"
                 raise RuntimeError(msg)
             if self.is_locked:
@@ -1146,7 +1147,20 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         #
         # A handler can acquire a peer between attempts. Waiting on that hold would block the same thread.
         would_block = self._context.lock_counter == 1 and not self.is_locked and timeout < 0 and blocking
-        if would_block and _REGISTRY.held.get(self._registry_key(canonical)) not in {None, self._holder_id}:
+        if would_block and (holder := _REGISTRY.held.get(self._registry_key(canonical))) not in {None, self._holder_id}:
+            if sys.platform == "win32" and (owner := _LIVE_LOCKS.get(holder)) is not None:  # pragma: win32 cover
+                state = owner._hold_state()  # ruff:ignore[private-member-access]  # the registry resolves the other hold
+                if (pending := state.strict_release) is not None and (
+                    state.lock_file_fd is None
+                    or (
+                        not pending.done()
+                        and pending.worker is not current_thread()
+                        and not on_this_stack(state.releasing)
+                    )
+                ):
+                    # The worker can withdraw the claim while this thread waits. A failed withdrawal leaves the
+                    # original registry entry in place, so the next poll detects the deadlock.
+                    return
             msg = (
                 f"Deadlock: lock '{self.lock_file}' is already held by a different {self._deadlock_holder_desc}. "
                 f"Use is_singleton=True to enable reentrant locking across instances."
@@ -1489,13 +1503,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
 
         """
         ensure_current_process()
+        if (pending := self._context.strict_release) is not None and (
+            pending.worker is current_thread() or on_this_stack(self._context.releasing)
+        ):  # pragma: win32 cover
+            return
         release_snapshot: tuple[int, int] | None = None
         transition_entered = False
         try:  # ruff:ignore[too-many-statements-in-try-clause]  # gate-entry signals and release failures need separate recovery
             release_snapshot = (self._context.lock_generation, self._context.lock_counter)
             with (
                 contextlib.nullcontext()
-                if self._settings.thread_local or self._context.lock_file_fd is None
+                if self._settings.thread_local or self._context.lock_file_fd is None or pending is not None
                 else self._transition_lock
             ):
                 try:
@@ -1523,62 +1541,75 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 self._finish_interrupted_release()
             return
         with contextlib.nullcontext() if self._settings.thread_local else self._transition_lock:
-            state: Final[FileLockContext] = self._hold_state()
-            # A signal handler can land between the backend's unlock and its clearing of the descriptor, where a second
-            # release would close the number twice and could close a file that reused it. The flag holds the releasing
-            # frame, so only a release still on this stack stops it, and a flag a cut-short frame left set does not.
-            if self._creator_pid != os.getpid() or state.lock_file_fd is None or _on_this_stack(state.releasing):
-                return
-            record = next((each for each in reversed(state.in_flight) if _on_this_stack(each.frame)), None)
-            if (
-                record is not None
-                and not force
-                and (record.levels_before is None or state.lock_counter <= record.levels_before + 1)
-            ):
-                msg = f"lock '{self.lock_file}' is released while this thread's acquire of it is still running"
-                raise RuntimeError(msg)
-            if record is not None and force:
-                record.rolled_back = True
-            if not force and state.lock_counter > 1 and not state.unlock_uncertain:
-                state.lock_counter -= 1
-                return
-            state.releasing = inspect.currentframe()
-            try:
-                _LOGGER.debug("Attempting to release lock %s on %s", id(self), self.lock_file)
-                self._release_with_fork_tracking()
-            finally:
-                # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
-                # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
-                # A failure with a live descriptor keeps the counter for an explicit unlock retry.
-                if state.lock_file_fd is None:  # pragma: no branch  # a release that returns cleared the descriptor
-                    self._commit_release()
-                    if record is not None and force:
-                        for each in state.in_flight:
-                            each.voided = True
-                state.releasing = None
-            _LOGGER.debug("Lock %s released on %s", id(self), self.lock_file)
+            self._release_held(force=force)
 
     def _finish_interrupted_release(self) -> None:
         # An unheld lock never waits behind an acquirer, whose own commit takes the entry over anyway.
         if not self._transition_lock.acquire(blocking=False):
             return  # pragma: no cover  # only a concurrent acquire of a shared instance holds the gate
         try:
-            if self._context.lock_file_fd is None:  # pragma: no branch  # only a racing acquire fills it
+            if (
+                self._context.lock_file_fd is None and self._context.strict_release is None
+            ):  # pragma: no branch  # a racing transition takes ownership
                 self._commit_release()
         finally:
             self._transition_lock.release()
+
+    def _release_held(self, *, force: bool) -> None:
+        state: Final[FileLockContext] = self._hold_state()
+        # A signal handler can land between the backend's unlock and its clearing of the descriptor, where a second
+        # release would close the number twice and could close a file that reused it. The flag holds the releasing
+        # frame, so only a release still on this stack stops it, and a flag a cut-short frame left set does not.
+        if self._creator_pid != os.getpid() or state.lock_file_fd is None or on_this_stack(state.releasing):
+            return
+        record = next((each for each in reversed(state.in_flight) if on_this_stack(each.frame)), None)
+        if (
+            record is not None
+            and not force
+            and (record.levels_before is None or state.lock_counter <= record.levels_before + 1)
+        ):
+            msg = f"lock '{self.lock_file}' is released while this thread's acquire of it is still running"
+            raise RuntimeError(msg)
+        if record is not None and force:
+            record.rolled_back = True
+        if not force and state.lock_counter > 1 and not state.unlock_uncertain:
+            state.lock_counter -= 1
+            return
+        state.releasing = inspect.currentframe()
+        try:
+            _LOGGER.debug("Attempting to release lock %s on %s", id(self), self.lock_file)
+            self._release_with_fork_tracking()
+        finally:
+            # A failure after the OS unlock (during close or unlink) still released the lock: the backend cleared
+            # its descriptor, so commit the counter and registry to released even as the cleanup error propagates.
+            # A failure with a live descriptor keeps the counter for an explicit unlock retry.
+            if state.lock_file_fd is None:  # pragma: no branch  # a release that returns cleared the descriptor
+                self._commit_release()
+                if record is not None and force:
+                    for each in state.in_flight:
+                        each.voided = True
+            state.releasing = None
+        _LOGGER.debug("Lock %s released on %s", id(self), self.lock_file)
 
     def _retry_interrupted_release(
         self, snapshot: tuple[int, int] | None, release_error: BaseException, *, force: bool, transition_held: bool
     ) -> None:
         # A retry can only touch the original hold; a later acquirer may restore the same recursion depth.
-        if snapshot is None or self._context.lock_file_fd is None or is_system_call_failure(release_error):
+        if (
+            snapshot is None
+            or self._context.lock_file_fd is None
+            or self._context.strict_release is not None
+            or is_system_call_failure(release_error)
+        ):
             return
         with (
             contextlib.suppress(Exception),
             contextlib.nullcontext() if transition_held or self._settings.thread_local else self._transition_lock,
         ):
-            if snapshot == (self._context.lock_generation, self._context.lock_counter):
+            if self._context.strict_release is None and snapshot == (
+                self._context.lock_generation,
+                self._context.lock_counter,
+            ):
                 self._release_current(force=force)
 
     def _release_thread_holds(self, *, exited_only: bool) -> None:
@@ -1831,6 +1862,17 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         ensure_current_process()
         return self._context.lock_counter
 
+    def _release_from_worker(self, state: FileLockContext) -> None:  # pragma: win32 cover
+        # A logging callback on the release worker cannot wait for a claim the worker still has to withdraw.
+        key = state.lock_file_key
+        registry = _REGISTRY.held
+        registry.setdefault(key, self._holder_id)
+        try:
+            self._release_held(force=True)
+        finally:
+            if registry.get(key) == self._holder_id:
+                del registry[key]
+
     @classmethod
     def _reset_class_after_fork(cls) -> None:  # pragma: forked child
         cls._instances = WeakValueDictionary()
@@ -1894,6 +1936,8 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         state.lock_file_fd_identity = None
         if isinstance(self._context, ThreadLocalFileContext):
             self._thread_pending.pop(id(state), None)
+            if state.strict_release is not None:  # pragma: win32 cover
+                return
             self._thread_holds.pop(id(state), None)
 
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
@@ -1918,7 +1962,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.lock_counter = 0
         self._context.releasing = None
         # The forking thread's own acquire continues in the child and removes its record when it ends.
-        self._context.in_flight = [each for each in self._context.in_flight if _on_this_stack(each.frame)]
+        self._context.in_flight = [each for each in self._context.in_flight if on_this_stack(each.frame)]
         self._context.acquiring = self._context.in_flight[-1].frame if self._context.in_flight else None
         self._context.lock_file_key = None
         self._context.lock_file_registry = None
@@ -1971,7 +2015,7 @@ def resolve_timeout(timeout: float, *, blocking: bool) -> float:
     return -1 if timeout == math.inf else timeout
 
 
-def _on_this_stack(frame: FrameType | None) -> bool:
+def on_this_stack(frame: FrameType | None) -> bool:
     if frame is None:
         return False
     caller = inspect.currentframe()
@@ -2184,6 +2228,9 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
 
     #: Completion of a Windows claim withdrawal that outlasted its acquisition.
     claim_withdrawal: Future[tuple[list[str], list[BaseException]]] | None = None
+
+    #: Result of a Windows strict release started with a deadline.
+    strict_release: StrictRelease | None = None
 
     #: Descriptors retained for deleting published Windows claims by handle.
     claim_descriptors: dict[str, int] | None = None
@@ -2513,6 +2560,7 @@ __all__ = [
     "grouped_errors",
     "interpreter_exiting",
     "is_system_call_failure",
+    "on_this_stack",
     "path_key",
     "raise_body_and_release",
     "raise_chained_errors",

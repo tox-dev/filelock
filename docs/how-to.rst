@@ -1011,6 +1011,53 @@ The publication sequence follows the private-claim pattern in `flufl.lock
 `restic <https://github.com/restic/restic/blob/master/internal/repository/lock_file.go>`_.
 Issue :issue:`637` records the race analysis and verification requirements.
 
+****************************************************
+ Limit the wait for strict lock release on Windows
+****************************************************
+
+On Windows, ``StrictSoftFileLock.release()`` waits for the filesystem to withdraw the public claims and close their
+handles. To limit how long the calling thread waits, use :meth:`~filelock.StrictSoftFileLock.release_with_timeout`.
+Like ``release()``, it drops one acquisition. Only the final release starts a worker on Windows. On POSIX, the same
+method calls ``release()`` synchronously, so filesystem I/O can outlast ``timeout``.
+
+.. code-block:: python
+
+    from filelock import ReleasePendingError, StrictSoftFileLock
+
+    lock = StrictSoftFileLock("work.lock")
+    lock.acquire()
+    try:
+        update_shared_resource()
+    finally:
+        try:
+            lock.release_with_timeout(0.1)
+        except ReleasePendingError as pending:
+            report_delayed_release()
+            pending.wait()
+
+:class:`~filelock.ReleasePendingError` identifies the release still in progress. Call
+:meth:`pending.wait() <filelock.ReleasePendingError.wait>` from any thread to get its result, even after another holder
+acquires the same lock instance. For another bounded wait, use ``pending.wait(timeout=0.1)``. If that deadline passes,
+it raises another ``ReleasePendingError`` for the same operation. Calling ``lock.release()`` acts on the current hold,
+which may already belong to another caller on a shared instance.
+
+If withdrawal or handle closure fails, ``pending.wait()`` raises the original filesystem error. If withdrawal failed and
+the lock is still held, retry release on the original lock. With the default thread-local ownership, the acquiring
+thread must make that retry. A plain :exc:`TimeoutError` while waiting for another thread to finish a lock transition
+means release could not start. Interrupting a wait leaves the worker running. Use the receipt to wait again.
+
+Finish using the protected resource before starting release. The owner's ``is_locked`` stays true while the worker runs.
+Once Windows withdraws the public claims, another process can acquire while the worker finishes closing the handles.
+
+An ``acquire()`` that encounters a pending release on the same hold waits according to its own ``timeout`` and
+``cancel_check``. A nonblocking attempt, an expired deadline, or cancellation raises :class:`~filelock.Timeout`.
+Use the pending release's ``wait()`` to retrieve any error from its worker.
+
+The interpreter does not join the daemon worker at shutdown. The release deadline applies to the caller's wait.
+It gives no bound on Windows process exit. If the process exits before withdrawal, public claims can
+remain. Verify that the owner has stopped using the resource before removing its claims with ``force_break()``. See
+:ref:`how-to:Use fail-closed soft locks`.
+
 *****************************************
  Inspect and manage PID locks
 *****************************************

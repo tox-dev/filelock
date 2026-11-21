@@ -47,6 +47,7 @@ from ._descriptor import (
 )
 from ._error import (
     LeaseSettingsMismatch,
+    ReleasePendingError,
     SoftFileLockLifetimeWarning,
     SoftFileLockProtocolError,
     Timeout,
@@ -208,6 +209,7 @@ __all__ = [
     "OwnerMode",
     "OwnerRecord",
     "ReadWriteLock",
+    "ReleasePendingError",
     "SoftFileLease",
     "SoftFileLock",
     "SoftFileLockLifetimeWarning",
