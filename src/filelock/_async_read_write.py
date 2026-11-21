@@ -43,6 +43,7 @@ from ._async import (
     drain_future,
     future_result,
     raise_cancelled_error,
+    shutdown_owned_executor,
     submit_call,
     task_owners_for,
     wait_until_done,
@@ -381,7 +382,7 @@ class AsyncReadWriteLock:
         """
         End the holds of the tasks that acquired through this instance and release the lock once no task holds it.
         A contended backend acquire stops on its next poll after close starts.
-        A successful close wakes tasks waiting for this wrapper's turn in the shared ownership table.
+        Closing wakes tasks waiting to acquire through this wrapper and joins the worker if the wrapper owns it.
 
         After calling this method, the lock instance is no longer usable. With ``is_singleton=False`` it also closes the
         underlying SQLite connection. A singleton wrapper leaves the shared :class:`ReadWriteLock` open, so tasks that
@@ -418,10 +419,8 @@ class AsyncReadWriteLock:
             self._closing = None
             closing.set_result(None)
             self._owners.wake_via(self._via)
-        # Wait for the worker to exit rather than letting it drain in the background: a caller that forks right
-        # after closing deserves a single-threaded process, and os.fork warns about any surviving thread.
         if self._owns_executor:
-            await asyncio.to_thread(functools.partial(self._executor.shutdown, wait=True))
+            await shutdown_owned_executor(self._executor)
 
     def _shutdown_owned_executor(self) -> None:
         if self._owns_executor:

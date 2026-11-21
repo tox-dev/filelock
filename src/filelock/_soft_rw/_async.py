@@ -35,6 +35,7 @@ from filelock._async import (  # simplint: ignore[private-import-path]  # shared
     drain_future,
     future_result,
     raise_cancelled_error,
+    shutdown_owned_executor,
     submit_call,
     task_owners_for,
     wait_until_done,
@@ -423,14 +424,7 @@ class AsyncSoftReadWriteLock:
             closing.set_result(None)
             self._owners.wake_via(self._via)
         if self._owns_executor:
-            # Jobs on the lock's executor may need the loop to finish, even after the loop's default pool shuts down.
-            self._executor.shutdown(wait=False)
-            joiner = ThreadPoolExecutor(max_workers=1)
-            joined = joiner.submit(self._executor.shutdown)
-            try:
-                await asyncio.shield(asyncio.wrap_future(joined))
-            finally:
-                joiner.shutdown(wait=joined.done())
+            await shutdown_owned_executor(self._executor)
 
     # The fork registry calls this method by name.
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child  # simplint: ignore[unused-definition]

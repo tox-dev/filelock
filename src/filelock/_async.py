@@ -37,7 +37,7 @@ from ._error import Timeout
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Hashable
-    from concurrent.futures import Executor
+    from concurrent.futures import Executor, ThreadPoolExecutor
 
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
@@ -589,6 +589,20 @@ def capture_call(func: Callable[[], _T]) -> BackendOutcome[_T]:
         return BackendOutcome(error=error)
 
 
+async def shutdown_owned_executor(executor: Executor) -> None:
+    pool = cast("ThreadPoolExecutor", executor)
+    pool.shutdown(wait=False)
+    if not pool._threads:  # ruff:ignore[private-member-access]  # only the pool tracks its workers
+        return
+    # Jobs on the lock's executor may need the loop to finish, even after the loop's default pool shuts down.
+    joiner = type(pool)(max_workers=1)
+    joined = joiner.submit(pool.shutdown)
+    try:
+        await asyncio.shield(asyncio.wrap_future(joined))
+    finally:
+        joiner.shutdown(wait=joined.done())
+
+
 async def capture_awaitable(awaitable: Awaitable[_T]) -> BackendOutcome[_T]:
     try:
         return BackendOutcome(value=await awaitable)
@@ -608,6 +622,7 @@ __all__ = [
     "raise_cancelled_error",
     "retire_task_holds_at_exit",
     "run_in_executor",
+    "shutdown_owned_executor",
     "submit_call",
     "task_owners_for",
     "wait_until_done",
