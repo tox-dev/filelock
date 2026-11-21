@@ -224,6 +224,7 @@ class OsFiles:
     def write_head(self, path: str, temporary: str, data: bytes) -> None:
         with self._relative(path) as (name, directory):
             stage = temporary if directory is not None else str(Path(path).with_name(temporary))
+            renamed = False
             fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, 0o600, dir_fd=directory)
             try:
                 try:
@@ -231,9 +232,11 @@ class OsFiles:
                 finally:
                     os.close(fd)
                 os.replace(stage, name, src_dir_fd=directory, dst_dir_fd=directory)
+                renamed = True
             finally:
-                with suppress(FileNotFoundError, PermissionError):
-                    os.unlink(stage, dir_fd=directory)
+                if not renamed:
+                    with suppress(FileNotFoundError, PermissionError):
+                        os.unlink(stage, dir_fd=directory)
 
     def overwrite(self, path: str, data: bytes, identity: tuple[int, int], header: bytes) -> bool:
         # O_NONBLOCK keeps an open of a FIFO (a named pipe) at the path from blocking, as in read. The open is for
