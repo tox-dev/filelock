@@ -759,19 +759,20 @@ def test_busy_timeout_recomputed_after_journal_mode(
     clock = mocker.patch("filelock._read_write.time", autospec=True)
     clock.perf_counter.return_value = 0.0
     clock.monotonic.side_effect = time.monotonic
-    execute = _ForkSafeConnection.executescript
+    execute = _ForkSafeConnection.execute
     statements: list[str] = []
 
-    def execute_with_delay(connection: _ForkSafeConnection, script: str) -> sqlite3.Cursor:
-        statements.append(script.split(";", 1)[0])
-        clock.perf_counter.return_value = 0.5
-        return execute(connection, script)
+    def execute_with_delay(connection: _ForkSafeConnection, statement: str) -> sqlite3.Cursor:
+        if statement.startswith("PRAGMA busy_timeout="):
+            statements.append(statement)
+            clock.perf_counter.return_value = 0.02
+        return execute(connection, statement)
 
-    mocker.patch.object(_ForkSafeConnection, "executescript", new=execute_with_delay)
+    mocker.patch.object(_ForkSafeConnection, "execute", new=execute_with_delay)
     mocker.patch.object(threading, "active_count", autospec=True, return_value=1)
-    getattr(lock, f"acquire_{mode}")(timeout=2.0)
+    getattr(lock, f"acquire_{mode}")(timeout=0.08)
     lock.release()
-    assert statements == ["PRAGMA busy_timeout=2000", "PRAGMA busy_timeout=1500"]
+    assert statements == ["PRAGMA busy_timeout=80", "PRAGMA busy_timeout=60"]
 
 
 def test_acquire_converts_connect_lock_error_to_timeout(lock_file: str, mocker: MockerFixture) -> None:

@@ -120,7 +120,7 @@ _DatabaseIdentity: TypeAlias = tuple[int, int]
 
 # sqlite3_busy_timeout() accepts a C int, max 2_147_483_647 on 32-bit. Use a lower value to be safe (~23 days).
 _MAX_SQLITE_TIMEOUT_MS: Final[int] = 2_000_000_000 - 1
-# How long a wait that its caller may abandon runs before it checks whether it should stop.
+# Return to Python between SQLite busy waits to dispatch signals and check for cancellation.
 _CANCEL_POLL_INTERVAL: Final[float] = 0.1
 #: The longest a contended acquisition waits for the database inside one fork transition, in seconds.
 _MAX_TRANSITION_WAIT: Final[float] = 0.05
@@ -780,8 +780,8 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
         while True:
             # A fork waits for the open transitions and admits no new one meanwhile. A wait for the database inside one
             # stalls the forking thread and, behind it, each lock call in the process. With no other thread to fork,
-            # the wait runs in one piece, which keeps SQLite's writer preference. threading does not count a
-            # thread started through _thread, so a fork from one of those still waits.
+            # one connection can keep the writer's place across busy waits. threading does not count a thread
+            # started through _thread, so a fork from one of those still waits.
             final = (
                 not blocking
                 or 0 <= remaining <= _MAX_TRANSITION_WAIT
@@ -1020,15 +1020,24 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 # The write probe changes one header page in memory. Release rolls it back.
                 # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
                 self._execute_waiting(
-                    connection, "PRAGMA journal_mode=MEMORY;", timeout, blocking=blocking, operation=operation
+                    connection, ("PRAGMA journal_mode=MEMORY",), timeout, blocking=blocking, operation=operation
                 )
                 self._raise_if_process_changed(operation.pid)
-                statements = "BEGIN EXCLUSIVE TRANSACTION;" if mode == "write" else "BEGIN TRANSACTION;"
+                statements = ("BEGIN EXCLUSIVE TRANSACTION",)
                 if mode == "read":
-                    # SQLite takes the SHARED lock only when a statement reads; BEGIN alone stays deferred.
-                    # https://www.sqlite.org/lockingv3.html#transaction_control
-                    # sqlite_schema is an alias added in SQLite 3.33.0; sqlite_master works on every version.
-                    statements += " SELECT name FROM sqlite_master LIMIT 1;"
+                    # A deferred read transaction needs a SELECT to acquire its shared lock.
+                    statements = ("BEGIN TRANSACTION", "SELECT name FROM sqlite_master LIMIT 1")
+                elif blocking and operation.cancel_check is None and not 0 <= timeout <= _CANCEL_POLL_INTERVAL:
+                    # Reserve in NORMAL mode so a competing writer can finish. EXCLUSIVE then keeps our reservation
+                    # across the empty rollback and the pending lock across busy retries.
+                    self._execute_waiting(
+                        connection,
+                        ("BEGIN IMMEDIATE", "PRAGMA locking_mode=EXCLUSIVE", "ROLLBACK"),
+                        timeout,
+                        blocking=blocking,
+                        operation=operation,
+                    )
+                    statements += ("PRAGMA locking_mode=NORMAL",)
                 self._execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
                 # SQLite rereads the header while BEGIN waits; a pre-connect check can miss a switch to WAL.
                 with closing(connection.execute("PRAGMA journal_mode;")) as cursor:
@@ -1057,22 +1066,28 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     @staticmethod
     def _execute_waiting(
-        connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
+        connection: _ForkSafeConnection,
+        statements: tuple[str, ...],
+        timeout: float,
+        *,
+        blocking: bool,
+        operation: _Operation,
     ) -> None:
-        # SQLite's busy wait cannot be interrupted. An acquire its caller may abandon waits in bounded slices and asks
-        # between them whether to stop.
+        budget_ms = timeout_for_sqlite(timeout, blocking=blocking, already_waited=0)
         slice_ms = int(_CANCEL_POLL_INTERVAL * 1000)
         while True:
-            busy_ms = timeout_for_sqlite(
-                timeout, blocking=blocking, already_waited=time.perf_counter() - operation.start_time
-            )
-            cancel_check = operation.cancel_check if busy_ms > slice_ms else None
+            remaining_ms = max(0, budget_ms - int((time.perf_counter() - operation.start_time) * 1000))
             try:
-                connection.executescript(
-                    f"PRAGMA busy_timeout={busy_ms if cancel_check is None else slice_ms}; {statements}"
-                ).close()
+                # PyPy can only finalize interrupted statements at close if execute() registered them.
+                connection.execute(f"PRAGMA busy_timeout={min(remaining_ms, slice_ms)}").close()
+                for statement in statements:
+                    connection.execute(statement).close()
             except sqlite3.OperationalError as error:
-                if cancel_check is None or error.sqlite_errorcode != sqlite3.SQLITE_BUSY or cancel_check():
+                if (
+                    remaining_ms <= slice_ms
+                    or error.sqlite_errorcode != sqlite3.SQLITE_BUSY
+                    or (operation.cancel_check is not None and operation.cancel_check())
+                ):
                     raise
                 # A read's BEGIN succeeds before its SELECT waits, so the retry has to start a fresh transaction.
                 if connection.in_transaction:

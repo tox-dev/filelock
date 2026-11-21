@@ -585,6 +585,15 @@ A ``timeout`` of ``-1`` or ``math.inf`` waits up to SQLite's busy-timeout cap of
 :class:`~filelock.Timeout`. A blocking acquire raises :class:`ValueError` for ``nan`` or any other negative ``timeout``,
 on :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` too.
 
+A synchronous SQLite wait returns to Python between busy retries so a single-threaded process can handle signals.
+Once its writer is pending, later readers wait for it. If a handler raises, the interrupted writer gives up its place.
+If the handler waits for the same database through a second lock instance, the pending writer cannot proceed until the
+handler returns. Defer that acquisition until after the handler returns, or use ``blocking=False`` and handle
+:class:`~filelock.Timeout`.
+
+On systems with fork support, a multithreaded process releases the connection between attempts to let other threads
+fork. A reader can enter between those attempts.
+
 Leave the database file in place while any process may hold the lock. The lock lives on the file, not on its name, so
 after an unlink or a replace the next opener creates a fresh file and acquires at once while the old holder keeps its
 lock on the orphan. On POSIX an acquisition that sees the path replaced while it waited raises :class:`OSError` instead
