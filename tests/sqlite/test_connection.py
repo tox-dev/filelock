@@ -94,8 +94,8 @@ def test_closing_every_instance_closes_its_descriptors(lock_file: str) -> None:
             marks=[
                 pytest.mark.requires_hard_links,
                 pytest.mark.skipif(
-                    not CAPABILITIES["posix-hard-link"] and sys.platform != "win32",
-                    reason="private database aliases need POSIX hard links without following symlinks",
+                    not CAPABILITIES["sqlite-private-link"],
+                    reason="SQLite cannot create a private link on this filesystem",
                 ),
             ],
         ),
@@ -158,6 +158,7 @@ def test_read_write_lock_refuses_a_database_of_another_account(  # pragma: needs
     assert (raised.value.filename, lock_path_in_shared_tmp.exists()) == (str(lock_path_in_shared_tmp.resolve()), True)
 
 
+@pytest.mark.requires_hard_links  # pragma: needs hard-link
 @NEEDS_FOREIGN_STICKY_TMP
 def test_read_write_lock_checks_owner_of_reused_probe(  # pragma: needs foreign-sticky-tmp
     tmp_path: Path, lock_path_in_shared_tmp: Path, mocker: MockerFixture

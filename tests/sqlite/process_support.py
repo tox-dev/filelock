@@ -55,7 +55,7 @@ def acquire_lock(
 
 
 @contextmanager
-def holding_reader(database: Path) -> Generator[subprocess.Popen[str]]:
+def holding_reader(database: Path) -> Generator[subprocess.Popen[str]]:  # pragma: needs sqlite-private-link
     script: Final[str] = (
         "import sys, time\n"
         "from filelock import ReadWriteLock\n"

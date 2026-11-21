@@ -116,7 +116,7 @@ class AsyncReadWriteLock(AsyncReadWriteBase[ReadWriteLock]):
     @property
     @override
     def _inherited(self) -> bool:
-        return self._fork_invalidated or os.getpid() != self._creator_pid
+        return self._fork_invalidated or super()._inherited
 
     async def _acquire(self, mode: Literal["read", "write"], timeout: float | None, *, blocking: bool | None) -> None:
         await self._admit(

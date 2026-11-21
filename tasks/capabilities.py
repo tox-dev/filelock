@@ -400,6 +400,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     "posix-subinterpreters": os.name == "posix"
     and find_spec("_interpreters" if sys.version_info >= (3, 13) else "_xxsubinterpreters") is not None,
     "posix-hard-link": sys.platform != "win32" and _LINK_FOLLOW_SYMLINKS,
+    "sqlite-private-link": sys.platform == "win32" or _LINK_FOLLOW_SYMLINKS,
     "tracemalloc-object-traceback": _reports_object_tracebacks(),
     "gc-objects": hasattr(gc, "get_objects"),
     # Only the tox env that installs a released filelock sets this.
