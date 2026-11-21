@@ -5,21 +5,19 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from collections.abc import Generator
     from importlib.machinery import ModuleSpec
-    from typing import BinaryIO
 
     from ._soft import SoftFileLock
 
 __spec__ = cast("ModuleSpec", __spec__)
 
-__lazy_modules__ = ["pathlib", "secrets", "tempfile", "warnings", f"{__spec__.parent}._util"]
+__lazy_modules__ = ["pathlib", "secrets", "warnings", f"{__spec__.parent}._util"]
 
 import os
 import secrets
 import stat
 import sys
-import tempfile
 import warnings
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
 from typing import Final, cast
@@ -182,10 +180,7 @@ else:  # pragma: win32 no cover
             if open_mode & (stat.S_IWGRP | stat.S_IWOTH) and self._allows_soft_fallback():
                 if os.path.lexists(self._lock_path):
                     return self._open_existing_lock_file(existing, open_flags, open_mode)
-                # A later chmod cannot revoke a descriptor opened before flock reports ENOSYS.
-                if self._directory_lacks_flock():
-                    self._fallback_to_soft_lock()
-                    open_mode &= ~(stat.S_IWGRP | stat.S_IWOTH)
+                open_mode = self._probed_create_mode(open_mode)
             try:
                 return open_into(created, self._lock_path, open_flags | os.O_CREAT | os.O_EXCL, open_mode)
             except OSError as exception:
@@ -231,23 +226,53 @@ else:  # pragma: win32 no cover
                     return fd
                 raise
 
-        def _directory_lacks_flock(self) -> bool:
+        def _probed_create_mode(self, open_mode: int) -> int:
+            # A later chmod cannot revoke a descriptor opened before flock reports ENOSYS.
+            missing = self._directory_lacks_flock()
+            if missing is not False:
+                open_mode &= ~(stat.S_IWGRP | stat.S_IWOTH)
+            if missing:
+                self._fallback_to_soft_lock()
+            return open_mode
+
+        def _directory_lacks_flock(self) -> bool | None:
+            opened: list[int] = []
+            probes: dict[int, list[int]] = self.__dict__.setdefault("_flock_probes", {})
+            with ExitStack() as cleanup:
+                cleanup.callback(probes.pop, id(opened), None)
+                cleanup.callback(self._close_probe, opened)
+                probes[id(opened)] = opened
+                directory = Path(self._lock_path).parent
+                if anonymous := getattr(os, "O_TMPFILE", 0):
+                    missing = self._probe_flock(opened, str(directory), anonymous | os.O_RDWR | os.O_EXCL)
+                    if missing is not None:
+                        return missing
+                name = directory / f".filelock-probe-{secrets.token_hex(16)}"
+                cleanup.callback(self._unlink_probe, name, opened)
+                return self._probe_flock(opened, str(name), os.O_RDWR | os.O_CREAT | os.O_EXCL)
+
+        @staticmethod
+        def _close_probe(opened: list[int]) -> None:
+            if opened:
+                # Child reset and normal cleanup may both run. Retire and close once in a chain of C calls.
+                list(map(os.close, map(opened.pop, (0,))))
+
+        @staticmethod
+        def _probe_flock(opened: list[int], path: str, flags: int) -> bool | None:
             try:
-                probe = tempfile.TemporaryFile(  # ruff:ignore[open-file-with-context-handler]  # catch only open errors
-                    dir=str(Path(self._lock_path).parent), buffering=0
-                )
+                fd = open_into(opened, path, flags, 0o600)
             except OSError as exception:
-                if exception.errno is None:
+                if opened or exception.errno is None:
                     raise
-                # A directory policy may allow the lock name alone. Probe that file after opening it.
-                return False
-            with probe:
-                probes: set[BinaryIO] = self.__dict__.setdefault("_flock_probes", set())
-                try:
-                    probes.add(probe)
-                    return _flock_is_missing(probe.fileno())
-                finally:
-                    probes.discard(probe)
+                return None
+            return _flock_is_missing(fd)
+
+        @staticmethod
+        def _unlink_probe(name: Path, opened: list[int]) -> None:
+            if opened:
+                with suppress(FileNotFoundError):
+                    if os.path.samestat(name.lstat(), os.fstat(opened[0])):
+                        name.unlink()
 
         def _fallback_to_soft_lock(self) -> None:
             with self._transition_lock:
@@ -259,8 +284,6 @@ else:  # pragma: win32 no cover
         def _needs_soft_acquire(self, fd: int, created: list[int]) -> bool:
             self._mark_descriptor_pending(fd)
             if not self._context.soft_fallback:
-                if created:
-                    self._apply_explicit_mode(fd)
                 try:
                     locked = lock_fd_nonblocking(fd)
                 except OSError as exception:
@@ -268,6 +291,8 @@ else:  # pragma: win32 no cover
                         raise
                     self._fallback_to_soft_lock()
                 else:
+                    if created:
+                        self._apply_explicit_mode(fd)
                     if locked:
                         self._finalize_locked_fd(fd)
                     return False
@@ -316,8 +341,7 @@ else:  # pragma: win32 no cover
                 soft._take_over_by_exchange(marker, None)  # ruff:ignore[private-member-access]  # same lock state
             finally:
                 if self.is_locked:
-                    # Pop and close in one chain of C calls, so an interrupt cannot leak or double-close the pin.
-                    list(map(os.close, map(created.pop, (0,))))
+                    self._close_probe(created)
 
         def _discard_interrupted_open(self, fd: int) -> None:
             if not self._allows_soft_fallback() or not (self._context.soft_fallback or _flock_is_missing(fd)):
@@ -347,10 +371,9 @@ else:  # pragma: win32 no cover
                         os.close(pin)
 
         def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
-            # Closing the file object keeps its eventual context exit from closing a reused descriptor.
-            for probe in self.__dict__.pop("_flock_probes", ()):
+            for opened in self.__dict__.pop("_flock_probes", {}).values():
                 with suppress(OSError):
-                    probe.close()
+                    self._close_probe(opened)
             super()._reset_after_fork_in_child()
 
         def _unprobeable_holder(self) -> str | None:

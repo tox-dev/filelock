@@ -1,0 +1,2 @@
+A Unix lock can fall back to a soft marker when its directory denies the temporary probe and its filesystem lacks
+atomic exchange. An interrupted probe now closes its descriptor.

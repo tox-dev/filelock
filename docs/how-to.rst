@@ -1525,9 +1525,14 @@ After fallback, ``UnixFileLock`` keeps its class. Use ``pid`` and ``is_lock_held
 
 If the requested mode permits writes by other accounts, filelock probes a private file in the same directory before
 creating the lock file. On a filesystem without ``flock``, the new marker excludes group and other writes from creation.
-Existing lock files need no private probe. If the directory denies the probe or only the target rejects ``flock``,
-filelock needs atomic exchange to replace a writable target. Without exchange it raises :class:`PermissionError`
-and can leave an empty marker.
+Existing lock files need no private probe.
+
+If the directory denies the probe, filelock creates the target without group or other writes and tests ``flock`` there.
+A native lock then applies an explicit ``mode``. With the default mode, the new file keeps the restricted permissions.
+Set ``mode=0o660`` for a group-writable native lock in such a directory.
+
+If a private probe succeeds but only the target rejects ``flock``, filelock needs atomic exchange to replace a writable
+target. Without exchange it raises :class:`PermissionError` and can leave an empty marker.
 
 Where atomic exchange is unavailable, an interrupt during publication may leave an empty marker or the acquiring
 process's PID after the acquire failed. Check that no process holds the lock before clearing that marker with
