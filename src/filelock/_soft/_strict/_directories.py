@@ -47,7 +47,7 @@ from ._claims import (
 )
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import DirectoryPinBlockedError, pin_directory, unpin_directory
+    from filelock._filesystem import DirectoryPinBlockedError, pin_directory, unpin_directory
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

@@ -22,7 +22,7 @@ from filelock import ReadWriteLock, Timeout
 from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import directory_is_private, make_private_directory
+    from filelock._filesystem import directory_is_private, make_private_directory
     from filelock._filesystem._windows._directories import ADVAPI32
     from filelock._identity import host_name
     from filelock._sqlite._links import _host_digest, _remove_link_directory_on_windows

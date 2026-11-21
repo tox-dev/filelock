@@ -13,7 +13,7 @@ from typing import Final, Literal, NamedTuple
 from filelock._filesystem import open_into
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import open_read_without_oplock_wait
+    from filelock._filesystem import open_read_without_oplock_wait
 
 #: Legacy contenders must leave a strict lock under the control of its claims directory.
 STRICT_SOFT_SENTINEL_RECORD: Final[str] = "1\nfilelock-strict-v1\x00\n0\n"

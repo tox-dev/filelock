@@ -73,7 +73,7 @@ def test_pending_release_allows_unbounded_acquire_cancellation(
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_timed_release_with_an_open_windows_reader(lock_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     assert sys.platform == "win32"
-    from filelock._filesystem._windows import _oplocks as oplocks
+    import filelock._filesystem._windows._oplocks as oplocks
 
     lock = StrictSoftFileLock(lock_path)
     lock.acquire()

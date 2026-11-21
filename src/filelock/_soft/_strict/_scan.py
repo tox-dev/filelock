@@ -10,6 +10,7 @@ __spec__ = cast("ModuleSpec", __spec__)
 __lazy_modules__ = [
     "contextlib",
     "filelock._core",
+    "filelock._filesystem",
     "functools",
     "pathlib",
     "secrets",
@@ -61,7 +62,7 @@ from ._directories import (
 from ._publication import link_or_find_committed, unlink_relative
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import is_unlinked, open_deletable_for_reading, open_read_without_oplock_wait
+    from filelock._filesystem import is_unlinked, open_deletable_for_reading, open_read_without_oplock_wait
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

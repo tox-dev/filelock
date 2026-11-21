@@ -29,7 +29,15 @@ if TYPE_CHECKING:
     from ._exclusive import MarkerSoftFileLock, SoftFileLock
     from ._lease import CompromiseReason, LeaseClaim, LeaseCompromise, SoftFileLease
     from ._read_write import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
-    from ._strict import StrictRelease, StrictSoftFileClaim, StrictSoftFileClaimState, StrictSoftFileLock
+    from ._strict import (
+        StrictRelease,
+        StrictSoftFileClaim,
+        StrictSoftFileClaimState,
+        StrictSoftFileLock,
+        link_no_follow,
+        pin_directories,
+        raise_if_hard_links_unsupported,
+    )
 
 _EXPORTS: Final[MappingProxyType[str, str]] = MappingProxyType({
     "SoftFileLock": "._exclusive",
@@ -45,6 +53,9 @@ _EXPORTS: Final[MappingProxyType[str, str]] = MappingProxyType({
     "StrictSoftFileClaim": "._strict",
     "StrictSoftFileClaimState": "._strict",
     "StrictSoftFileLock": "._strict",
+    "link_no_follow": "._strict",
+    "pin_directories": "._strict",
+    "raise_if_hard_links_unsupported": "._strict",
 })
 
 
@@ -74,8 +85,11 @@ __all__ = [
     "StrictSoftFileClaimState",
     "StrictSoftFileLock",
     "encode_marker",
+    "link_no_follow",
     "parse_decimal",
     "parse_lock_holder",
     "parse_marker",
+    "pin_directories",
+    "raise_if_hard_links_unsupported",
     "read_lock_file",
 ]

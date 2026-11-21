@@ -15,7 +15,6 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import LeaseCompromise, SoftReadWriteLock, Timeout
-from filelock._soft._read_write import _storage as storage_mod
 from filelock._soft._read_write._generations import GenerationLog, Snapshot
 from filelock._soft._read_write._heartbeat import HeartbeatThread, lease_clock
 from filelock._soft._read_write._participant import Participant
@@ -229,7 +228,7 @@ def test_heartbeat_survives_a_transient_refresh_error(lock_file: str, mocker: Mo
         hold = lock._hold
         assert hold is not None
         overwrite = mocker.patch.object(
-            storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"), autospec=True
+            OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"), autospec=True
         )
         wait_until(lambda: overwrite.call_count >= 10 or hold.heartbeat_stop.is_set())
         assert hold.heartbeat_thread.is_alive()
@@ -248,9 +247,7 @@ def test_heartbeat_reports_refresh_failures_that_outlast_the_margin(lock_file: s
     try:
         hold = lock._hold
         assert hold is not None
-        mocker.patch.object(
-            storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"), autospec=True
-        )
+        mocker.patch.object(OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"), autospec=True)
         mocker.patch(
             "filelock._soft._read_write._hold.lease_clock",
             autospec=True,

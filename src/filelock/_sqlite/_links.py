@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["collections", "contextlib", "filelock._identity", "hashlib", "secrets", "tempfile", "threading"]
+__lazy_modules__ = [
+    "collections",
+    "contextlib",
+    "filelock._filesystem",
+    "filelock._identity",
+    "hashlib",
+    "secrets",
+    "tempfile",
+    "threading",
+]
 
 import hashlib
 import os
@@ -19,7 +28,7 @@ from filelock._core import ForkResettable, override
 from filelock._identity import host_name, link_host, owner_is_stale, process_start_token
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import directory_is_private, identity_at, make_private_directory, pinned
+    from filelock._filesystem import directory_is_private, identity_at, make_private_directory, pinned
 
 if TYPE_CHECKING:
     from collections.abc import Generator

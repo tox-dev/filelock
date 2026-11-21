@@ -45,7 +45,7 @@ from ._directories import (
 )
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import cancelling_oplock_wait
+    from filelock._filesystem import cancelling_oplock_wait
 
     from ._windows import mark_claim_for_deletion
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import pinned
+    from filelock._filesystem import pinned
 
 if TYPE_CHECKING:
     from collections.abc import Callable

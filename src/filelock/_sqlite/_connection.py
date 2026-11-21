@@ -41,7 +41,7 @@ from ._fork import FORKED_DATABASES, GETPID, sqlite_transition
 from ._links import link_beside, remove_link_directory
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import directory_is_private, identity_of_fd, open_non_reparse_fd
+    from filelock._filesystem import directory_is_private, identity_of_fd, open_non_reparse_fd
 
     from ._links import link_beside_on_windows
 

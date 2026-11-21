@@ -34,7 +34,7 @@ def test_strict_soft_release_with_a_shared_reader_removes_claims(
     initialized_lock_path: Path, mocker: MockerFixture, prepare: Callable[[MockerFixture], None]
 ) -> None:
     assert sys.platform == "win32"
-    from filelock._filesystem._windows import _oplocks as oplocks
+    import filelock._filesystem._windows._oplocks as oplocks
 
     prepare(mocker)
     lock = StrictSoftFileLock(initialized_lock_path, timeout=0)

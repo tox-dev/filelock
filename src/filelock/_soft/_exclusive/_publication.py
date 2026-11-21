@@ -18,16 +18,14 @@ from filelock._filesystem import (
     open_into,
     raise_on_not_writable_file,
     remove_own_file,
+    unlink_path,
     write_all,
     write_at_start,
 )
 from filelock._identity import host_name, process_start_token
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import create_exclusive_non_reparse_fd
-    from filelock._filesystem._windows import unlink_without_oplock_wait as unlink_path
-else:  # pragma: win32 no cover
-    from filelock._filesystem import unlink_path
+    from filelock._filesystem import create_exclusive_non_reparse_fd
 
 _OTHERS_WRITE: Final[int] = stat.S_IWGRP | stat.S_IWOTH
 

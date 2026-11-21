@@ -12,13 +12,13 @@ if sys.platform == "win32":  # pragma: win32 cover
     from typing import TYPE_CHECKING
 
     from filelock._core import raise_cleanup_errors
-    from filelock._filesystem import write_all
-    from filelock._filesystem._windows import (
+    from filelock._filesystem import (
         cancelling_oplock_wait,
         create_deletable_fd,
         mark_delete_disposition,
         oplock_wait_cancelled,
         rename_open_file,
+        write_all,
     )
 
     if TYPE_CHECKING:

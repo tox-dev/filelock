@@ -94,7 +94,7 @@ def mock_legacy_volume(mocker: MockerFixture, failure: str | None = None) -> Non
     assert sys.platform == "win32"
     import ctypes
 
-    from filelock._filesystem._windows import _handles as handles
+    import filelock._filesystem._windows._handles as handles
     from filelock._soft._strict import _windows as strict_windows
 
     set_disposition = handles.try_set_delete_disposition

@@ -3,7 +3,7 @@ from __future__ import annotations
 __lazy_modules__ = [
     "filelock._filesystem",
     "filelock._identity",
-    "filelock._soft._strict",
+    "filelock._soft",
     "itertools",
     "math",
     "pathlib",
@@ -31,7 +31,7 @@ from filelock._filesystem import (
     write_all,
 )
 from filelock._identity import host_name
-from filelock._soft._strict import link_no_follow, pin_directories, raise_if_hard_links_unsupported
+from filelock._soft import link_no_follow, pin_directories, raise_if_hard_links_unsupported
 
 if TYPE_CHECKING:
     from collections.abc import Generator

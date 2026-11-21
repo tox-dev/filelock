@@ -15,8 +15,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     from ctypes import wintypes
     from typing import Final
 
-    from filelock._filesystem import raise_on_not_writable_file
-    from filelock._filesystem._windows import open_non_reparse_fd, unlink_without_oplock_wait
+    from filelock._filesystem import open_non_reparse_fd, raise_on_not_writable_file, unlink_without_oplock_wait
 
     _KERNEL32: Final[ctypes.WinDLL] = ctypes.WinDLL("kernel32", use_last_error=True)
 

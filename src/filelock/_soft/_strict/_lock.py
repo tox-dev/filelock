@@ -70,7 +70,7 @@ from ._scan import read_existing_claims
 from ._sentinel import inspect_lock_path, open_or_create_sentinel
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock._filesystem._windows import oplock_wait_cancelled
+    from filelock._filesystem import oplock_wait_cancelled
 
     from ._windows import publish_deletable_claim
 

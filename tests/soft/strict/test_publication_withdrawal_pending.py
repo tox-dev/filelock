@@ -103,11 +103,7 @@ def test_strict_soft_doorway_claim_unlink_failure_stays_pending(tmp_path: Path, 
         lock.acquire()
     assert (lock.is_locked, sorted(claim.name for claim in lock.claims)) == (False, [competitor_name, intent_name])
     other = write_foreign_claim(Path(f"{lock_path}.filelock") / "claims", "1" * 32)
-    mocker.patch(
-        "filelock._soft._strict._lock.unlink_in_directory",
-        side_effect=deny_only_the_owned_intent_unlink,
-        autospec=True,
-    )
+    mocker.patch("filelock._soft._strict._lock.unlink_in_directory", new=deny_only_the_owned_intent_unlink)
     lock.force_break(other.name)
     assert not other.exists()
     # The competitor still holds the lock while the intent awaits cleanup.

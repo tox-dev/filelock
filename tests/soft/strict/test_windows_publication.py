@@ -30,8 +30,8 @@ def test_windows_directory_pin_retries_after_oplock_break(  # pragma: win32 cove
 ) -> None:
     assert sys.platform == "win32"
 
-    from filelock._filesystem._windows import _directories as directories
-    from filelock._filesystem._windows import _handles as handles
+    import filelock._filesystem._windows._directories as directories
+    import filelock._filesystem._windows._handles as handles
 
     lock = StrictSoftFileLock(tmp_path / "resource.lock", blocking=False)
     create = directories.nt_create
@@ -129,7 +129,7 @@ def test_strict_soft_windows_interrupted_rename_with_a_shared_reader(
     request: pytest.FixtureRequest,
 ) -> None:
     assert sys.platform == "win32"
-    from filelock._filesystem._windows import _oplocks as oplocks
+    import filelock._filesystem._windows._oplocks as oplocks
     from filelock._soft._strict import _windows as strict_windows
 
     lock = StrictSoftFileLock(initialized_lock_path, timeout=0)
@@ -158,7 +158,7 @@ def test_strict_soft_windows_retries_an_interrupted_rename(initialized_lock_path
     assert sys.platform == "win32"
     import ctypes
 
-    from filelock._filesystem._windows import _handles as handles
+    import filelock._filesystem._windows._handles as handles
     from filelock._soft._strict import _windows as strict_windows
 
     lock = StrictSoftFileLock(initialized_lock_path, timeout=0)
