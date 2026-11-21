@@ -9,9 +9,8 @@ if TYPE_CHECKING:
 __spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [
-    "concurrent.futures",
-    "contextlib",
     "functools",
+    "inspect",
     "itertools",
     "pathlib",
     "secrets",
@@ -28,6 +27,7 @@ __lazy_modules__ = [
 import contextlib
 import errno
 import functools
+import inspect
 import itertools
 import os
 import secrets
@@ -35,17 +35,21 @@ import stat
 import sys
 import tempfile
 import time
+from concurrent.futures import Future
 from dataclasses import dataclass
 from errno import EACCES, EEXIST, EINVAL, ENOENT, ENOSYS, EPERM, ESTALE, EXDEV
 from pathlib import Path
+from threading import TIMEOUT_MAX, RLock, Thread
 from typing import TYPE_CHECKING, Final, Literal, NamedTuple, cast
 
 from ._api import (
     BaseFileLock,
     ThreadLocalFileContext,
+    on_this_stack,
     raise_cleanup_errors,
+    seconds,
 )
-from ._error import SoftFileLockProtocolError
+from ._error import ReleasePendingError, SoftFileLockProtocolError, Timeout
 from ._identity import (
     describe_host_name,
     host_name,
@@ -66,8 +70,7 @@ from ._util import (
 )
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from concurrent.futures import Future
-    from threading import Thread
+    from threading import current_thread
 
     from ._windows import (
         DirectoryPinBlockedError,
@@ -83,7 +86,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
 
     from ._api import FileLockContext
 
@@ -192,6 +195,8 @@ class StrictSoftFileLock(BaseFileLock):
     #: Set by the finalizer, after which no retry of a failed cleanup can run.
     _finalizing: bool = False
 
+    _timed_release_supported = True
+
     @property
     def claims(self) -> tuple[StrictSoftFileClaim, ...]:
         """Published claims that block acquisition."""
@@ -222,6 +227,172 @@ class StrictSoftFileLock(BaseFileLock):
             return occupant
         os.close(fd)
         return None
+
+    def release_with_timeout(self, timeout: float) -> None:
+        """
+        Release one acquisition. On Windows, limit how long the caller waits for the final release.
+
+        On POSIX, this calls ``release()`` synchronously. On Windows, the final release runs on a worker.
+        If it is still running at the deadline, call :meth:`~filelock.ReleasePendingError.wait` on the exception
+        to get the result. If withdrawal fails and the lock is still held, retry release on the original lock.
+
+        :param timeout: maximum time in seconds to wait on Windows
+        :raises ReleasePendingError: release started on Windows and is still running at the deadline
+        :raises TimeoutError: a concurrent transition prevented release from starting on Windows by the deadline
+        :raises NotImplementedError: called on an asynchronous strict lock
+        """
+        if not self._timed_release_supported:
+            msg = "release_with_timeout requires a synchronous strict lock"
+            raise NotImplementedError(msg)
+        timeout = _release_timeout(timeout)
+        if sys.platform == "win32":  # pragma: win32 cover
+            self._release_with_timeout(timeout)
+        else:
+            self.release()  # pragma: win32 no cover
+
+    def _release_with_timeout(self, timeout: float) -> None:  # pragma: win32 cover
+        self._raise_if_inherited()
+        deadline = time.perf_counter() + timeout
+        state = self._hold_state()
+        if (
+            ((active := state.strict_release) is not None and active.worker is current_thread())
+            or on_this_stack(state.releasing)
+            or any(on_this_stack(each.frame) for each in state.in_flight)
+        ):
+            msg = "cannot start a timed release during this thread's lock transition"
+            raise RuntimeError(msg)
+        # A worker clears the descriptor before it reports whether close succeeded.
+        held = state.lock_file_fd is not None
+        pending = state.strict_release
+        if pending is None and held:
+            if not self._transition_lock.acquire(timeout=max(0, deadline - time.perf_counter())):
+                msg = f"timed out waiting to start release of {self.lock_file!r}"
+                raise TimeoutError(msg)
+            try:
+                pending = state.strict_release
+                if pending is None and state.lock_file_fd is not None:
+                    if state.lock_counter > 1:
+                        state.lock_counter -= 1
+                        return
+                    pending = self._start_timed_release(state)
+            finally:
+                self._transition_lock.release()
+        if pending is not None:
+            self._observe_release(state, pending, max(0, deadline - time.perf_counter()))
+
+    def _start_timed_release(self, state: FileLockContext) -> StrictRelease:  # pragma: win32 cover
+        pending = StrictRelease()
+
+        def withdraw() -> None:
+            with pending.guard:
+                if pending.done():
+                    return
+            try:
+                if isinstance(self._context, ThreadLocalFileContext):
+                    self._context.current = state
+                # An observer can hold the shared transition gate while it waits for this result.
+                self._release_from_worker(state)
+            except BaseException as error:  # ruff: ignore[blind-except]  # propagate worker failures to the waiting owner
+                pending.set_exception(error)
+            else:
+                self._thread_holds.pop(id(state), None)
+                pending.set_result(None)
+
+        worker = Thread(target=withdraw, name="filelock-strict-release", daemon=True)
+        with pending.guard:
+            state.releasing = inspect.currentframe()
+            try:
+                pending.worker = worker
+                state.strict_release = pending
+                worker.start()
+            except BaseException as error:  # a signal can arrive after the thread started
+                state.strict_release = None
+                pending.set_exception(error)
+                raise
+            finally:
+                state.releasing = None
+        return pending
+
+    if sys.platform == "win32":  # pragma: win32 cover
+
+        @property
+        def is_locked(self) -> bool:
+            """Whether this hold owns a lock or still has a release running."""
+            return super().is_locked or ((pending := self._context.strict_release) is not None and not pending.done())
+
+        @contextlib.contextmanager
+        def _transition_admission(
+            self,
+            *,
+            blocking: bool,
+            cancel_check: Callable[[], bool] | None,
+            timeout: float,
+            poll_interval: float,
+            start_time: float,
+        ) -> Generator[None]:
+            state = self._hold_state()
+            if (active := state.strict_release) is not None and (
+                active.worker is current_thread() or on_this_stack(state.releasing)
+            ):
+                msg = "cannot acquire during this thread's release"
+                raise RuntimeError(msg)
+            with super()._transition_admission(
+                blocking=blocking,
+                cancel_check=cancel_check,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                start_time=start_time,
+            ):
+                if (pending := state.strict_release) is not None:
+                    deadline = None if timeout < 0 else start_time + timeout
+                    while not pending.done():
+                        if self._check_give_up(
+                            blocking=blocking, cancel_check=cancel_check, timeout=timeout, start_time=start_time
+                        ):
+                            raise Timeout(state.lock_file)
+                        wait = poll_interval if deadline is None else min(deadline - time.perf_counter(), poll_interval)
+                        with contextlib.suppress(TimeoutError):
+                            pending.exception(max(0, wait))
+                    if state.lock_file_fd is not None:
+                        msg = "the previous release left the claim held; retry release before acquiring"
+                        raise RuntimeError(msg)
+                    self._forget_release(state, pending)
+                yield
+
+        def _release_current(self, *, force: bool) -> None:
+            state = self._hold_state()
+            held = state.lock_file_fd is not None
+            with self._transition_lock if held and not self.is_thread_local() else contextlib.nullcontext():
+                if (pending := state.strict_release) is None:
+                    if held:
+                        super()._release_current(force=force)
+                    elif state.lock_file_registry is not None:
+                        self._finish_interrupted_release()
+                    return
+            if not self._finalizing or pending.done():
+                self._observe_release(state, pending, None)
+
+    def _forget_release(self, state: FileLockContext, pending: StrictRelease) -> None:  # pragma: win32 cover
+        with pending.guard:
+            if state.strict_release is pending:
+                if isinstance(self._context, ThreadLocalFileContext) and state.lock_file_fd is None:
+                    self._thread_holds.pop(id(state), None)
+                state.strict_release = None
+
+    def _observe_release(
+        self, state: FileLockContext, pending: StrictRelease, timeout: float | None
+    ) -> None:  # pragma: win32 cover
+        if not pending.done() and pending.worker is current_thread():
+            msg = "a release worker cannot wait for its own completion"
+            raise RuntimeError(msg)
+        try:
+            error = pending.exception(None if timeout is None else _release_timeout(timeout))
+        except TimeoutError:
+            msg = f"release of {state.lock_file!r} is still pending"
+            raise ReleasePendingError(msg, functools.partial(self._observe_release, state, pending)) from None
+        self._forget_release(state, pending)
+        if error is not None:
+            raise error
 
     def _acquire(self) -> None:
         # Finish a doorway whose claim cleanup failed before publishing, so this owner never contends with leftovers.
@@ -1073,6 +1244,20 @@ def _describe_soft_marker(content: str) -> tuple[_OccupantState, str]:
     return "held", f"a soft-lock marker held by pid {pid} on {shown}"
 
 
+def _release_timeout(value: float) -> float:
+    if not 0 <= (timeout := seconds("timeout", value)) <= TIMEOUT_MAX:
+        msg = f"timeout must be between 0 and {TIMEOUT_MAX} seconds"
+        raise ValueError(msg)
+    return timeout
+
+
+class StrictRelease(Future[None]):
+    def __init__(self) -> None:  # pragma: win32 cover
+        super().__init__()
+        self.guard = RLock()
+        self.worker: Thread | None = None
+
+
 def _ensure_protocol_directory(lock_file: str, directory: Path, mode: int, parent_fd: int | None = None) -> None:
     try:
         if parent_fd is None:
@@ -1622,6 +1807,7 @@ class _ClaimEntryLimitError(_RetryDoorwayError):
 
 
 __all__ = [
+    "StrictRelease",
     "StrictSoftFileClaim",
     "StrictSoftFileClaimState",
     "StrictSoftFileLock",

@@ -1,0 +1,4 @@
+On Windows, :meth:`~filelock.StrictSoftFileLock.release_with_timeout` limits the caller's wait while a worker withdraws
+claims and closes handles. If the deadline passes, catch :class:`~filelock.ReleasePendingError` and call
+:meth:`~filelock.ReleasePendingError.wait` on the exception to get the result of that release from any thread.
+On POSIX, the method releases synchronously.
