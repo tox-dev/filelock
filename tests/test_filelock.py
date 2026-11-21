@@ -2024,9 +2024,10 @@ def test_interrupted_at_any_call_reports_whether_it_holds(
         hold_first(lock)
         with pytest.raises(KeyboardInterrupt):
             _interrupted_at_call(lock, target, getattr(lock, operation))
-        peer = lock_type(lock_path, blocking=False)
+        peer = lock_type(lock_path, timeout=2)
+        # A free Windows lock can need a retry to publish its claim.
         with suppress(Timeout):
-            peer.acquire()
+            peer.acquire(blocking=not lock.is_locked)
         assert peer.is_locked != lock.is_locked
         # Windows leaves a soft marker's unlink that the interrupt cut short to the instance's next call.
         lock.release()
