@@ -8,8 +8,10 @@ if TYPE_CHECKING:
 __spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [
+    "_thread",
     "collections",
     "hashlib",
+    "importlib",
     "itertools",
     "secrets",
     "tempfile",
@@ -19,6 +21,7 @@ __lazy_modules__ = [
     f"{__spec__.parent}._windows",
 ]
 
+import _thread  # ruff:ignore[import-private-name]  # exposes the current interpreter on CPython 3.12+
 import collections
 import hashlib
 import logging
@@ -35,6 +38,7 @@ from collections import deque
 from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from errno import EACCES
+from importlib import import_module
 from itertools import count
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, NamedTuple, TypeAlias, cast
 from weakref import WeakValueDictionary
@@ -81,6 +85,28 @@ if TYPE_CHECKING:
 
     from _typeshed import Unused  # simplint: ignore[private-import-path]  # precise callback type
 
+
+def _in_subinterpreter() -> bool:
+    if (is_main := getattr(_thread, "_is_main_interpreter", None)) is not None:
+        return not is_main()
+    try:
+        interpreters = import_module("_xxsubinterpreters")
+    except ModuleNotFoundError:
+        # Embedded CPython can create interpreters without building _xxsubinterpreters.
+        if sys.implementation.name != "cpython":
+            return False
+        try:
+            ctypes = import_module("ctypes")
+            state = ctypes.PYFUNCTYPE(ctypes.c_void_p)
+            current = state(("PyInterpreterState_Get", ctypes.pythonapi))
+            main = state(("PyInterpreterState_Main", ctypes.pythonapi))
+        except (ImportError, AttributeError):
+            return False
+        return current() != main()
+    return interpreters.get_current() != interpreters.get_main()
+
+
+_IN_POSIX_SUBINTERPRETER: Final[bool] = os.name == "posix" and _in_subinterpreter()
 _LOGGER: Final[logging.Logger] = logging.getLogger("filelock")
 _GETPID: Final[Callable[[], int]] = os.getpid
 _IS_PYPY: Final[bool] = sys.implementation.name == "pypy"
@@ -504,8 +530,7 @@ class _ReadWriteLockMeta(type):
         blocking: bool = True,
         is_singleton: bool = True,
     ) -> ReadWriteLock:
-        ensure_current_process()
-        resolve_lazy_imports_before_shutdown()
+        cls._prepare_interpreter()
         # Reject a bad default at construction, as FileLock does, rather than at its first acquire.
         check_blocking(blocking)
         timeout = seconds("timeout", timeout)
@@ -552,6 +577,17 @@ class _ReadWriteLockMeta(type):
                 )
                 raise ValueError(msg)
             return instance
+
+    @staticmethod
+    def _prepare_interpreter() -> None:
+        if _IN_POSIX_SUBINTERPRETER:
+            msg = (
+                "ReadWriteLock requires the main interpreter on POSIX; use another process or "
+                "SoftReadWriteLock if the interpreter allows daemon threads"
+            )
+            raise RuntimeError(msg)
+        ensure_current_process()
+        resolve_lazy_imports_before_shutdown()
 
     def _reset_class_after_fork(cls) -> None:  # pragma: forked child
         cls._instances = WeakValueDictionary()

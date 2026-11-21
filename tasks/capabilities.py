@@ -339,6 +339,14 @@ def _lists_every_open_descriptor(view: str | None) -> bool:
     return listed and not Path(view, str(number)).exists()
 
 
+def _exports_interpreter_states() -> bool:
+    try:
+        pythonapi = getattr(import_module("ctypes"), "pythonapi", None)
+    except ImportError:
+        return False
+    return hasattr(pythonapi, "PyInterpreterState_Get") and hasattr(pythonapi, "PyInterpreterState_Main")
+
+
 _FD_VIEW: Final[str | None] = next((view for view in ("/dev/fd", "/proc/self/fd") if Path(view).is_dir()), None)
 _LINK_FOLLOW_SYMLINKS: Final[bool] = _honors_link_follow_symlinks()
 
@@ -386,6 +394,11 @@ CAPABILITIES: Final[dict[str, bool]] = {
     # A source consumer may run the suite unmeasured, and a forked child then has nothing to flush.
     "coverage": find_spec("coverage") is not None,
     "link-follow-symlinks": _LINK_FOLLOW_SYMLINKS,
+    "embedded-interpreter-api": sys.implementation.name == "cpython"
+    and sys.version_info < (3, 12)
+    and _exports_interpreter_states(),
+    "posix-subinterpreters": os.name == "posix"
+    and find_spec("_interpreters" if sys.version_info >= (3, 13) else "_xxsubinterpreters") is not None,
     "posix-hard-link": sys.platform != "win32" and _LINK_FOLLOW_SYMLINKS,
     "tracemalloc-object-traceback": _reports_object_tracebacks(),
     "gc-objects": hasattr(gc, "get_objects"),
