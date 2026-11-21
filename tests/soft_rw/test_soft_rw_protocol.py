@@ -1130,7 +1130,7 @@ def test_a_failed_head_rename_keeps_the_commit(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:
     log = _committed(files, lock_file, root, [None])
-    mocker.patch.object(files, "replace", autospec=True, side_effect=OSError(EIO, "rename failed"))
+    mocker.patch.object(files, "write_head", autospec=True, side_effect=OSError(EIO, "rename failed"))
     assert (
         log.commit(Snapshot(generation=2, writer=_FIRST, readers=frozenset())),
         GenerationLog(OsFiles(lock_file), lock_file, root).latest().writer,
@@ -1142,14 +1142,13 @@ def test_missing_directory_while_staging_head_stays_removed(
     lock_file: str, files: OsFiles, root: str, mocker: MockerFixture
 ) -> None:
     log = _committed(files, lock_file, root, [None])
-    create = files.create
+    write_head = files.write_head
 
-    def remove_before_head(path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
-        if not durable:
-            Path(path).parent.rename(Path(root, "removed"))
-        return create(path, data, durable=durable)
+    def remove_before_head(path: str, temporary: str, data: bytes) -> None:
+        Path(path).parent.rename(Path(root, "removed"))
+        write_head(path, temporary, data)
 
-    mocker.patch.object(files, "create", autospec=True, side_effect=remove_before_head)
+    mocker.patch.object(files, "write_head", autospec=True, side_effect=remove_before_head)
     assert log.commit(Snapshot(generation=2, writer=_FIRST, readers=frozenset()))
     assert not Path(root, "gen").exists()
 
@@ -1770,18 +1769,6 @@ class _MemoryFiles:
         self._scheduler.yield_turn()
         return self.files.get(_key(path))
 
-    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:  # ruff:ignore[unused-method-argument]  # memory has no storage to flush
-        self._scheduler.yield_turn()
-        if _key(path) in self.files:  # pragma: no cover  # every name created here is a fresh token
-            raise FileExistsError(path)
-        self.files[_key(path)] = data
-        self._record()
-        return 0, 0
-
-    def _record(self) -> None:
-        self._history.append(sorted(self.files))
-        del self._history[:-128]
-
     def link(self, source: str, target: str) -> bool:
         self._scheduler.yield_turn()
         if _key(target) in self.files or _key(source) not in self.files:
@@ -1790,11 +1777,24 @@ class _MemoryFiles:
         self._record()
         return True
 
-    def replace(self, source: str, target: str) -> bool:
+    def _record(self) -> None:
+        self._history.append(sorted(self.files))
+        del self._history[:-128]
+
+    def write_head(self, path: str, temporary: str, data: bytes) -> None:
+        stage = str(Path(path).with_name(temporary))
+        self.create(stage, data)
         self._scheduler.yield_turn()
-        self.files[_key(target)] = self.files.pop(_key(source))
+        self.files[_key(path)] = self.files.pop(_key(stage))
         self._record()
-        return True
+
+    def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:  # ruff:ignore[unused-method-argument]  # memory has no storage to flush
+        self._scheduler.yield_turn()
+        if _key(path) in self.files:  # pragma: no cover  # every name created here is a fresh token
+            raise FileExistsError(path)
+        self.files[_key(path)] = data
+        self._record()
+        return 0, 0
 
     def overwrite(self, path: str, data: bytes, identity: tuple[int, int], header: bytes) -> bool:  # ruff:ignore[unused-method-argument]  # nothing here swaps one file for another
         self._scheduler.yield_turn()

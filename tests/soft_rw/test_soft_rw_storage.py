@@ -152,20 +152,38 @@ def test_link_raises_a_fault_that_did_not_land(tmp_path: Path, mocker: MockerFix
         OsFiles(str(tmp_path / "x.lock")).link(str(source), str(tmp_path / "target"))
 
 
-def test_replace_renames_the_source_over_the_target(tmp_path: Path) -> None:
-    (source := tmp_path / "source").write_bytes(b"new")
-    (target := tmp_path / "target").write_bytes(b"old")
-    replaced = OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
-    assert (replaced, target.read_bytes(), source.exists()) == (True, b"new", False)
+def test_write_head_replaces_the_previous_record(tmp_path: Path, mocker: MockerFixture) -> None:
+    unlink = mocker.spy(os, "unlink")
+    (target := tmp_path / "HEAD").write_bytes(b"old")
+    OsFiles(str(tmp_path / "x.lock")).write_head(str(target), "stage", b"new")
+    assert (target.read_bytes(), list(tmp_path.iterdir())) == (b"new", [target])
+    unlink.assert_not_called()
 
 
-def test_replace_keeps_the_target_when_refused(tmp_path: Path, mocker: MockerFixture) -> None:
-    # Windows refuses to rename over a file a reader holds open; the caller keeps the older target.
-    (source := tmp_path / "source").write_bytes(b"new")
-    (target := tmp_path / "target").write_bytes(b"old")
-    mocker.patch.object(storage_mod.os, "replace", autospec=True, side_effect=PermissionError("in use"))
-    replaced = OsFiles(str(tmp_path / "x.lock")).replace(str(source), str(target))
-    assert (replaced, target.read_bytes(), source.exists()) == (False, b"old", True)
+@pytest.mark.parametrize(
+    "operation",
+    [pytest.param("filelock._soft_rw._storage.write_all", id="write"), pytest.param("os.replace", id="rename")],
+)
+def test_write_head_cleans_up_a_failed_update(tmp_path: Path, mocker: MockerFixture, operation: str) -> None:
+    (target := tmp_path / "HEAD").write_bytes(b"old")
+    mocker.patch(operation, autospec=True, side_effect=PermissionError("in use"))
+    with pytest.raises(PermissionError, match="in use"):
+        OsFiles(str(tmp_path / "x.lock")).write_head(str(target), "stage", b"new")
+    assert (target.read_bytes(), list(tmp_path.iterdir())) == (b"old", [target])
+
+
+def test_write_head_keeps_a_rename_that_landed_before_an_error(tmp_path: Path, mocker: MockerFixture) -> None:
+    replace = os.replace
+
+    def rename_then_fail(source: str, target: str, **dir_fds: int | None) -> None:
+        replace(source, target, **dir_fds)
+        raise OSError(EIO, "rename reply lost")
+
+    mocker.patch.object(os, "replace", autospec=True, side_effect=rename_then_fail)
+    (target := tmp_path / "HEAD").write_bytes(b"old")
+    with pytest.raises(OSError, match="rename reply lost"):
+        OsFiles(str(tmp_path / "x.lock")).write_head(str(target), "stage", b"new")
+    assert (target.read_bytes(), list(tmp_path.iterdir())) == (b"new", [target])
 
 
 def test_overwrite_rewrites_the_record_it_created(tmp_path: Path) -> None:
