@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import SoftReadWriteLock, Timeout
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._storage import OsFiles
 
 from .lock_helpers import PROCESS_DEADLINE, make_lock, read_state, writer_gets_in
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock.internal.async_lock import AsyncTransitionGate, AsyncTransitionUnavailableError
+from filelock._async_lock import AsyncTransitionGate, AsyncTransitionUnavailableError
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:

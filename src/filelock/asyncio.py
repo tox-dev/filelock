@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
-__lazy_modules__ = ["filelock.internal.async_lock"]
+from typing import TYPE_CHECKING
 
-from filelock.internal import async_lock
-from filelock.internal.async_lock import (
+if TYPE_CHECKING:
+    assert __spec__ is not None
+
+__lazy_modules__ = [f"{__spec__.parent}._async_lock"]
+
+# Explicit imports also support the context classes and metaclass omitted from __all__.
+from ._async_lock import (  # ruff:ignore[unused-import]
     AsyncAcquireReturnProxy,
+    AsyncFileLockContext,
+    AsyncFileLockMeta,
     AsyncSoftFileLease,
     AsyncSoftFileLock,
     AsyncStrictSoftFileLock,
+    AsyncThreadLocalFileContext,
     AsyncUnixFileLock,
     AsyncWindowsFileLock,
     BaseAsyncFileLock,
 )
-
-AsyncFileLockMeta = async_lock.AsyncFileLockMeta
-AsyncFileLockContext = async_lock.AsyncFileLockContext
-AsyncThreadLocalFileContext = async_lock.AsyncThreadLocalFileContext
 
 
 def __dir__() -> list[str]:

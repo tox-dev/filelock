@@ -361,7 +361,7 @@ async def test_acquire_repeated_cancellation_waits_for_rollback(tmp_path: Path, 
     lock = AsyncFileLock(tmp_path / "a", on_acquired=block_hook)
     task = asyncio.create_task(lock.acquire())
     await hook_started.wait()
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=block_rollback, autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=block_rollback, autospec=True)
     task.cancel("first cancellation")
     finish_hook.set()
     await rollback_started.wait()

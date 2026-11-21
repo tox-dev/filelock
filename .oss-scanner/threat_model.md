@@ -5,25 +5,24 @@
 filelock is a pure Python library for cross-process mutual exclusion through a lock file. Source paths below are
 relative to `src/filelock/`. It ships these locks:
 
-- `UnixFileLock` (`internal/native/_unix.py`): `fcntl.flock` on a lock file opened with `O_NOFOLLOW`. It is what
-  `FileLock` resolves to on Unix. When the filesystem returns `ENOSYS` for `flock`, it falls back to `SoftFileLock`.
-- `WindowsFileLock` (`internal/native/_windows.py`): `LockFileEx` on a handle opened through `NtCreateFile` with
+- `UnixFileLock` (`_native/_unix.py`): `fcntl.flock` on a lock file opened with `O_NOFOLLOW`. It is what `FileLock`
+  resolves to on Unix. When the filesystem returns `ENOSYS` for `flock`, it falls back to `SoftFileLock`.
+- `WindowsFileLock` (`_native/_windows.py`): `LockFileEx` on a handle opened through `NtCreateFile` with
   `FILE_OPEN_REPARSE_POINT`. The handle refuses a symlink or junction at the final path component.
-- `SoftFileLock` (`internal/soft/exclusive/_lock.py`): an existence marker created with `O_CREAT | O_EXCL`. The marker
-  records the holder's PID, host name and process start token. A contender breaks the marker when the recorded owner is
-  provably gone, or when a `lifetime` is configured and the marker is older than it. `MarkerSoftFileLock`
-  (`internal/soft/exclusive/_marker.py`) and `SoftFileLease` (`internal/soft/_lease.py`, a heartbeat lease that may
-  expire) build on it.
-- `StrictSoftFileLock` (`internal/soft/strict/`): immutable per-owner claims published by hard link under
+- `SoftFileLock` (`_soft/_exclusive/_lock.py`): an existence marker created with `O_CREAT | O_EXCL`. The marker records
+  the holder's PID, host name and process start token. A contender breaks the marker when the recorded owner is provably
+  gone, or when a `lifetime` is configured and the marker is older than it. `MarkerSoftFileLock`
+  (`_soft/_exclusive/_marker.py`) and `SoftFileLease` (`_soft/_lease.py`, a heartbeat lease that may expire) build on
+  it.
+- `StrictSoftFileLock` (`_soft/_strict/`): immutable per-owner claims published by hard link under
   `<path>.filelock/claims`. It never reclaims a claim by itself; an operator recovers with `force_break`.
-- `ReadWriteLock` (`internal/sqlite/`): readers and writers coordinated through SQLite transactions on a lock database.
-  On POSIX, SQLite connects through `/proc/self/fd/<n>`, or through a private hard link in a `.filelock-*` directory
-  beside the database, so that SQLite uses the inode filelock checked.
-- `SoftReadWriteLock` (`internal/soft/read_write/`): a read-write lock built on files and hard links, with heartbeats
-  and stale-holder eviction.
-- Async variants of each (`asyncio.py`, `internal/async_lock/`, `internal/sqlite/_async.py`,
-  `internal/soft/read_write/_async.py`), and `lock_descriptor` (`internal/native/_descriptor.py`), which locks a
-  descriptor the caller opened.
+- `ReadWriteLock` (`_sqlite/`): readers and writers coordinated through SQLite transactions on a lock database. On
+  POSIX, SQLite connects through `/proc/self/fd/<n>`, or through a private hard link in a `.filelock-*` directory beside
+  the database, so that SQLite uses the inode filelock checked.
+- `SoftReadWriteLock` (`_soft/_read_write/`): a read-write lock built on files and hard links, with heartbeats and
+  stale-holder eviction.
+- Async variants of each (`asyncio.py`, `_async_lock/`, `_sqlite/_async.py`, `_soft/_read_write/_async.py`), and
+  `lock_descriptor` (`_native/_descriptor.py`), which locks a descriptor the caller opened.
 
 The library takes no network input. Untrusted input comes from the filesystem and from other local users:
 
@@ -32,10 +31,9 @@ The library takes no network input. Untrusted input comes from the filesystem an
   plant a symlink, hard link, FIFO, directory or other node at the lock path or at any name the protocol derives from it
   (`<path>.filelock/`, `<path>.break.*`, the SQLite database, `.filelock-*` link directories, soft read-write state
   files), or swap one in between a check and a use.
-- Lock file contents. Marker files and claim records are parsed (`internal/soft/_records.py`,
-  `internal/soft/strict/_claims.py`, and `internal/soft/read_write/_records.py`). A record can be forged, truncated,
-  oversized, or crafted to name a PID, host or start token that makes a contender believe the owner is gone or alive
-  (`internal/identity/`).
+- Lock file contents. Marker files and claim records are parsed (`_soft/_records.py`, `_soft/_strict/_claims.py`, and
+  `_soft/_read_write/_storage.py`). A record can be forged, truncated, oversized, or crafted to name a PID, host or
+  start token that makes a contender believe the owner is gone or alive (`_identity/`).
 - The lock database. `ReadWriteLock` opens a database file that someone else may have created. It refuses a symlink, a
   non-regular file and a WAL-mode database.
 - File permissions. Without an explicit `mode`, lock files are created with `0o666` filtered through the umask, and the
@@ -55,21 +53,18 @@ marker is read, `O_NONBLOCK` against planted FIFOs, and the symlink refusal at t
 Most:
 
 - Opening, creating and truncating the lock file: `UnixFileLock._open_lock_file` and `_finalize_locked_fd`,
-  `open_non_reparse_fd` in `internal/filesystem/windows/_handles.py`, and the `flock` to soft-lock fallback in
-  `internal/native/_unix.py`.
+  `open_non_reparse_fd` in `_filesystem/_windows/_handles.py`, and the `flock` to soft-lock fallback in
+  `_native/_unix.py`.
 - Helpers that act on paths: `break_lock_file`, `raise_on_not_writable_file`, `touch` and `ensure_directory_exists` in
-  `internal/filesystem/_exchange.py` and `internal/filesystem/_files.py`.
-- The stale-owner verdict and the marker parsers: `internal/identity/` (`owner_is_stale`, `process_start_token`, host
-  names and PID namespaces), `internal/soft/_records.py` (`read_lock_file`, `parse_lock_holder`, `parse_marker`).
-- `StrictSoftFileLock` claim publication, scanning and removal in `internal/soft/strict/`, including `dir_fd` unlinks.
-- `ReadWriteLock` database handling in `internal/sqlite/_connection.py` (`_open_lock_database`,
-  `_connect_through_descriptor`) and `internal/sqlite/_links.py` (`link_beside` and `_LinkSweeps.sweep` for private link
-  directories beside the database).
-- The soft read-write lock storage and protocol: `internal/soft/read_write/_storage.py` (opens, renames, `mkdir(0o700)`
-  with a check after it) and `internal/soft/read_write/_generations.py` and `internal/soft/read_write/_records.py`
-  (snapshot and holder record parsing).
-- Reentrancy, thread, fork and cancellation handling in `internal/core/` and `internal/async_lock/`, where a bug can
-  leave two holders.
+  `_filesystem/_exchange.py` and `_filesystem/_files.py`.
+- The stale-owner verdict and the marker parsers: `_identity/` (`owner_is_stale`, `process_start_token`, host names and
+  PID namespaces), `_soft/_records.py` (`read_lock_file`, `parse_lock_holder`, `parse_marker`).
+- `StrictSoftFileLock` claim publication, scanning and removal in `_soft/_strict/`, including `dir_fd` unlinks.
+- `ReadWriteLock` database handling in `_sqlite/_connection.py` (`_open_lock_database`, `_connect_through_descriptor`)
+  and `_sqlite/_links.py` (`link_beside` and `_LinkSweeps.sweep` for private link directories beside the database).
+- Soft read/write lock storage in `_soft/_read_write/_storage.py` (holder records, opens, renames, and ownership checks
+  after `mkdir(0o700)`) and snapshot parsing in `_soft/_read_write/_generations.py`.
+- Reentrancy, thread, fork and cancellation handling in `_core/` and `_async_lock/`, where a bug can leave two holders.
 
 Least:
 
@@ -92,9 +87,8 @@ attacks must run as the unprivileged accounts `victim` and `attacker`, for examp
   lock type and fails if two holds overlap.
 - A new pytest test, or a pair of scripts run as `victim` and `attacker`, is the best way to show a finding.
 
-The image is Linux. Windows-only code (`internal/native/_windows.py`, `internal/filesystem/windows/`, and the Windows
-branches in `internal/soft/` and `internal/sqlite/`) cannot run here; reason about it from the code and the Windows API
-documentation.
+The image is Linux. Windows-only code (`_native/_windows.py`, `_filesystem/_windows/`, and the Windows branches in
+`_soft/` and `_sqlite/`) cannot run here; reason about it from the code and the Windows API documentation.
 
 ## How you rate severity
 

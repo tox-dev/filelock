@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import StrictSoftFileLock, Timeout
-from filelock.internal.soft.strict._scan import _list_claim_names
+from filelock._soft._strict._scan import _list_claim_names
 from tests.capability_marks import (
     NEEDS_UNLINK_OPEN_FILE,
 )
@@ -100,7 +100,7 @@ def test_strict_soft_force_break_during_doorway_backs_off(
                 claim.unlink()
         return real_list(lock_file, directory_ref, entry_limit=entry_limit)
 
-    mocker.patch("filelock.internal.soft.strict._scan._list_claim_names", side_effect=break_before_scan, autospec=True)
+    mocker.patch("filelock._soft._strict._scan._list_claim_names", side_effect=break_before_scan, autospec=True)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(Timeout):
@@ -126,7 +126,7 @@ def test_strict_soft_force_break_held_during_doorway_backs_off(tmp_path: Path, m
         return real_list(lock_file, directory_ref, entry_limit=entry_limit)
 
     mocker.patch(
-        "filelock.internal.soft.strict._scan._list_claim_names", side_effect=break_held_before_final_scan, autospec=True
+        "filelock._soft._strict._scan._list_claim_names", side_effect=break_held_before_final_scan, autospec=True
     )
     lock = StrictSoftFileLock(lock_path, timeout=0)
 

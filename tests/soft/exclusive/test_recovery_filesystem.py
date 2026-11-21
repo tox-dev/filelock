@@ -89,7 +89,7 @@ def test_socket_lock_file_self_heals(lock_path: Path) -> None:
 def test_stale_detection_errors_suppressed(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(holder_record(os.getpid()), encoding="utf-8")
     mock_read: MockType = mocker.patch(
-        "filelock.internal.soft.exclusive._recovery.read_lock_file", side_effect=OSError("read failed"), autospec=True
+        "filelock._soft._exclusive._recovery.read_lock_file", side_effect=OSError("read failed"), autospec=True
     )
     assert_times_out(lock_path)
     mock_read.assert_called()
@@ -114,9 +114,7 @@ def _fail_open_process(mocker: MockerFixture, captured_error: int, ambient_error
         ctypes.windll.kernel32.SetLastError(ambient_error)
 
     # ctypes function pointers do not expose a Python signature for autospec.
-    mocker.patch(
-        "filelock.internal.identity._process._KERNEL32.OpenProcess", side_effect=fail_open_process, autospec=True
-    )
+    mocker.patch("filelock._identity._process._KERNEL32.OpenProcess", side_effect=fail_open_process, autospec=True)
 
 
 @WINDOWS_ONLY

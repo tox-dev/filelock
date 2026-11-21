@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock.internal.filesystem._exchange  # simplint: ignore[private-import-path]  # wrap the Windows rename pin
+import filelock._filesystem._exchange  # simplint: ignore[private-import-path]  # wrap the Windows rename pin
 from filelock import SoftFileLock, Timeout
-from filelock.internal.filesystem import break_lock_file, exchange_names
+from filelock._filesystem import break_lock_file, exchange_names
 from tests.capability_marks import NEEDS_STALE_RECLAIM, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.conftest import DEAD_HOLDER
 from tests.filesystem.conftest import replace_with_same_mtime, rewrite_in_place
@@ -88,9 +88,7 @@ def test_break_lock_file_restores_a_peer_marker_taken_by_exchange(  # pragma: wi
             stale_lock.write_text("live", encoding="utf-8")
         return exchange(source, target)
 
-    mocker.patch(
-        "filelock.internal.filesystem._exchange.exchange_names", side_effect=replace_before_exchange, autospec=True
-    )
+    mocker.patch("filelock._filesystem._exchange.exchange_names", side_effect=replace_before_exchange, autospec=True)
     break_lock_file(str(stale_lock), stale.st_mtime, stale.st_ino)
 
     assert (stale_lock.read_text(encoding="utf-8"), list(stale_lock.parent.glob("test.lock.break.*"))) == ("live", [])
@@ -170,7 +168,7 @@ def test_break_lock_file_put_back_never_replaces_a_marker_at_the_path(  # pragma
 ) -> None:
     assert sys.platform == "win32"
     rename = Path.rename
-    pin = filelock.internal.filesystem._exchange._pinned_for_rename
+    pin = filelock._filesystem._exchange._pinned_for_rename
 
     def peer_recreates_then_pin(
         path: str,
@@ -184,7 +182,7 @@ def test_break_lock_file_put_back_never_replaces_a_marker_at_the_path(  # pragma
         return result
 
     mocker.patch(
-        "filelock.internal.filesystem._exchange._pinned_for_rename", side_effect=peer_recreates_then_pin, autospec=True
+        "filelock._filesystem._exchange._pinned_for_rename", side_effect=peer_recreates_then_pin, autospec=True
     )
     mocker.patch.object(Path, "rename", autospec=True, side_effect=rename_then_third_creates)
     with pytest.raises(Timeout):

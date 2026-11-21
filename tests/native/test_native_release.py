@@ -44,9 +44,7 @@ def test_forced_release_drops_all_holds(tmp_path: Path) -> None:
 def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
-    mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True
-    )
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
     with pytest.raises(OSError, match="unlock failed"):
         lock.release()
     assert lock.is_locked
@@ -57,9 +55,7 @@ def test_unix_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_unix_context_exit_propagates_unlock_failure(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch(
-        "filelock.internal.native._unix.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True
-    )
+    mocker.patch("filelock._native._unix.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
     lock = FileLock(str(tmp_path / "a"))
     with pytest.raises(OSError, match="unlock failed"), lock:
         assert lock.is_locked
@@ -73,7 +69,7 @@ def test_windows_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocke
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
     mocker.patch(
-        "filelock.internal.native._windows.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True
+        "filelock._native._windows.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True
     )
     with pytest.raises(OSError, match="unlock failed"):
         lock.release()
@@ -88,7 +84,7 @@ def test_windows_close_failure_still_commits_release(tmp_path: Path, mocker: Moc
     lock = FileLock(str(tmp_path / "a"))
     lock.acquire()
     # Close can fail after the OS has already released the lock.
-    mocker.patch("filelock.internal.native._windows.os.close", side_effect=OSError(EIO, "close failed"), autospec=True)
+    mocker.patch("filelock._native._windows.os.close", side_effect=OSError(EIO, "close failed"), autospec=True)
     with pytest.raises(OSError, match="close failed"):
         lock.release()
     assert not lock.is_locked

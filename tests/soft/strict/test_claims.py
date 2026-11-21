@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Final, NoReturn
 import pytest
 
 from filelock import SoftFileLockProtocolError, StrictSoftFileLock
-from filelock.internal.soft.strict._scan import LIMITS, read_existing_claims
+from filelock._soft._strict._directories import LIMITS
+from filelock._soft._strict._scan import read_existing_claims
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -26,7 +27,7 @@ def test_strict_soft_claim_directory_read_error_fails_closed(tmp_path: Path, moc
     lock_path = tmp_path / "resource.lock"
     initialize_protocol(lock_path)
     mocker.patch(
-        "filelock.internal.soft.strict._scan.scandir_relative",
+        "filelock._soft._strict._scan.scandir_relative",
         side_effect=PermissionError(EACCES, "cannot list"),
         autospec=True,
     )

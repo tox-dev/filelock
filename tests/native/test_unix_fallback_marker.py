@@ -79,7 +79,7 @@ def test_fallback_restricts_writable_marker_without_exchange(  # pragma: needs f
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
     assert sys.platform != "win32"
-    mocker.patch("filelock.internal.native._unix.exchange_supported", autospec=True, return_value=False)
+    mocker.patch("filelock._native._unix.exchange_supported", autospec=True, return_value=False)
     lock_path = tmp_path / "test.lock"
     with pytest.warns(UserWarning, match="falling back"), UnixFileLock(lock_path, mode=0o666) as lock:
         assert (lock.pid, stat.S_IMODE(lock_path.stat().st_mode)) == (os.getpid(), 0o644)
@@ -96,7 +96,7 @@ def test_fallback_closes_the_displaced_native_descriptor(  # pragma: needs fcntl
     # A mount can report different flock support for the private probe and the public file.
     assert sys.platform != "win32"
     flock = mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock", autospec=True, side_effect=[None, OSError(ENOSYS, "no flock")]
+        "filelock._native._unix.fcntl.flock", autospec=True, side_effect=[None, OSError(ENOSYS, "no flock")]
     )
 
     with UnixFileLock(tmp_path / "test.lock", mode=0o666) as lock:
@@ -130,7 +130,7 @@ def test_fallback_keeps_the_created_marker_without_unlinking(  # pragma: needs f
     lock_path = tmp_path / "test.lock"
     peer = SoftFileLock(lock_path)
     unlink = mocker.spy(os, "unlink")
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
     lock = UnixFileLock(lock_path)
     try:
         lock.acquire(timeout=1)

@@ -36,8 +36,8 @@ def test_lease_reports_marker_missing_when_a_refresh_cannot_stat_it(marker: Path
     def fstat(fd: int) -> os.stat_result | SimpleNamespace:
         return SimpleNamespace(st_nlink=0) if missing else real_fstat(fd)
 
-    mocker.patch("filelock.internal.soft._lease.os.lstat", autospec=True, side_effect=lstat)
-    mocker.patch("filelock.internal.soft._lease.os.fstat", autospec=True, side_effect=fstat)
+    mocker.patch("filelock._soft._lease.os.lstat", autospec=True, side_effect=lstat)
+    mocker.patch("filelock._soft._lease.os.fstat", autospec=True, side_effect=fstat)
     try:
         missing = True
         # The first miss may be a peer's break in flight, so the report comes a refresh later.
@@ -73,8 +73,8 @@ def test_lease_reports_refresh_failed_when_a_missing_marker_cannot_be_inspected(
             raise OSError(EIO, "Input/output error")
         return real_fstat(fd)
 
-    mocker.patch("filelock.internal.soft._lease.os.lstat", autospec=True, side_effect=lstat)
-    mocker.patch("filelock.internal.soft._lease.os.fstat", autospec=True, side_effect=fstat)
+    mocker.patch("filelock._soft._lease.os.lstat", autospec=True, side_effect=lstat)
+    mocker.patch("filelock._soft._lease.os.fstat", autospec=True, side_effect=fstat)
     try:
         missing = True
         assert reports.landed.wait(DEADLINE)
@@ -101,7 +101,7 @@ def test_lease_rides_out_a_marker_missing_for_one_refresh(marker: Path, mocker: 
         return real_lstat(path)
 
     with lease:
-        mocker.patch("filelock.internal.soft._lease.os.lstat", autospec=True, side_effect=lstat)
+        mocker.patch("filelock._soft._lease.os.lstat", autospec=True, side_effect=lstat)
         for _ in range(4):
             assert refreshes.acquire(timeout=DEADLINE)
     assert (reports.seen, lease.compromise, next(misses, None)) == ([], None, None)
@@ -122,7 +122,7 @@ def test_lease_reports_owner_changed_when_the_marker_identity_shifts(marker: Pat
             return SimpleNamespace(st_dev=st.st_dev, st_ino=st.st_ino + 1)
         return st
 
-    mocker.patch("filelock.internal.soft._lease.os.lstat", side_effect=lstat, autospec=True)
+    mocker.patch("filelock._soft._lease.os.lstat", side_effect=lstat, autospec=True)
     try:
         shifted = True
         assert reports.landed.wait(DEADLINE)

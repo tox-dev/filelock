@@ -9,19 +9,18 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLockProtocolError
-from filelock.internal.soft.read_write import _generations as protocol_mod
-from filelock.internal.soft.read_write import _storage as storage_mod
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._participant import Participant
-from filelock.internal.soft.read_write._records import TreeReplacedError
-from filelock.internal.soft.read_write._storage import OsFiles
-from filelock.internal.soft.read_write._sweep import Ledger
+from filelock._soft._read_write import _generations as protocol_mod
+from filelock._soft._read_write import _storage as storage_mod
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._participant import Participant
+from filelock._soft._read_write._storage import OsFiles, TreeReplacedError
+from filelock._soft._read_write._sweep import Ledger
 
 from .conftest import FIRST, SECOND, make_participant
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
-from filelock.internal.soft.read_write import _sweep as sweep_mod
+from filelock._soft._read_write import _sweep as sweep_mod
 
 pytestmark: Final[pytest.MarkDecorator] = pytest.mark.usefixtures("flushes")
 
@@ -45,7 +44,7 @@ def test_ledger_keeps_large_observations_with_bounded_memory() -> None:
     pytest.importorskip("tracemalloc")
     script = (
         "import tracemalloc\n"
-        "from filelock.internal.soft.read_write._sweep import Ledger\n"
+        "from filelock._soft._read_write._sweep import Ledger\n"
         "ledger = Ledger(lambda: 0.0)\n"
         "tracemalloc.start()\n"
         "baseline = tracemalloc.get_traced_memory()[0]\n"

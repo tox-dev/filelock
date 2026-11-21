@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import AsyncSoftReadWriteLock, SoftReadWriteLock
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write._storage import OsFiles
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from .async_helpers import TASK_WAIT, make_async_lock, make_sync, members, read_and_probe, writer_gets_in

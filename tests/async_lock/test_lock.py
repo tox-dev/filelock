@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import filelock.asyncio
 from filelock import (
     AsyncFileLock,
     AsyncSoftFileLock,
@@ -123,7 +122,3 @@ def test_sync_with_raises_not_implemented_error(lock_type: type[BaseAsyncFileLoc
     # __exit__ must exist so Python can call it after __enter__ raises; without it AttributeError hides the real error
     with pytest.raises(NotImplementedError, match=r"async with"), lock_type(str(tmp_path / "test.lock")):
         pass  # pragma: no cover  # __enter__ raises NotImplementedError, so the body never runs
-
-
-def test_asyncio_module_dir_lists_only_its_public_api() -> None:
-    assert dir(filelock.asyncio) == sorted(filelock.asyncio.__all__)

@@ -10,12 +10,11 @@ import pytest
 @pytest.mark.parametrize(
     "module",
     [
-        pytest.param("filelock.internal.filesystem.windows", id="filesystem"),
-        pytest.param("filelock.internal.filesystem.windows._bindings", id="bindings"),
-        pytest.param("filelock.internal.filesystem.windows._directories", id="directories"),
-        pytest.param("filelock.internal.filesystem.windows._handles", id="handles"),
-        pytest.param("filelock.internal.filesystem.windows._oplocks", id="oplocks"),
-        pytest.param("filelock.internal.soft.strict._windows", id="strict"),
+        pytest.param("filelock._filesystem._windows", id="filesystem"),
+        pytest.param("filelock._filesystem._windows._directories", id="directories"),
+        pytest.param("filelock._filesystem._windows._handles", id="handles"),
+        pytest.param("filelock._filesystem._windows._oplocks", id="oplocks"),
+        pytest.param("filelock._soft._strict._windows", id="strict"),
     ],
 )
 def test_windows_modules_export_nothing_off_windows(module: str) -> None:  # pragma: win32 no cover

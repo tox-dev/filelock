@@ -15,7 +15,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import BaseFileLock, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
-from filelock.internal.identity import host_name, process_alive
+from filelock._identity import host_name, process_alive
 from tests.descriptor_helpers import descriptors_on
 from tests.fork_helpers import exit_child
 
@@ -150,7 +150,7 @@ def close_failure(
 def break_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
     # Run the test with the platform's own stale break, then as where no atomic exchange of two names exists.
     if request.param == "no-exchange":
-        mocker.patch("filelock.internal.filesystem._exchange._rename_call", return_value=None, autospec=True)
+        mocker.patch("filelock._filesystem._exchange._rename_call", return_value=None, autospec=True)
 
 
 @pytest.fixture
@@ -172,7 +172,7 @@ def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None
                 action()
             return found
 
-        mocker.patch("filelock.internal.identity._process.process_alive", side_effect=judged, autospec=True)
+        mocker.patch("filelock._identity._process.process_alive", side_effect=judged, autospec=True)
         mocker.patch.object(os, "lstat", new=lstat_then_act)
 
     return schedule
@@ -247,7 +247,7 @@ def lock_path_in_shared_tmp() -> Iterator[Path]:  # pragma: needs foreign-sticky
 def directories_of_another_account(mocker: MockerFixture) -> None:  # pragma: needs foreign-sticky-tmp
     # Directories this process creates then look, to the lock, like ones another account created first.
     assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
-    mocker.patch("filelock.internal.filesystem._files.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+    mocker.patch("filelock._filesystem._files.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
 
 
 @pytest.fixture  # pragma: darwin no cover
@@ -258,9 +258,7 @@ def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma:
         assert path == Path("/proc/sys/kernel/overflowuid")
         return str(os.geteuid())
 
-    mocker.patch(
-        "filelock.internal.filesystem._ownership._linux_owner_probe", autospec=True, return_value=lambda _fd: False
-    )
+    mocker.patch("filelock._filesystem._ownership._linux_owner_probe", autospec=True, return_value=lambda _fd: False)
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=read_proc)
     mocker.patch.object(Path, "read_bytes", autospec=True, return_value=b"0 100000 65536")
 
@@ -269,7 +267,7 @@ def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma:
 def sticky_dir_with_mapped_owner(tmp_path: Path, mocker: MockerFixture) -> Path:
     assert sys.platform != "win32"
     tmp_path.chmod(0o1700)
-    mocker.patch("filelock.internal.filesystem._ownership._linux_owner_probe", autospec=True, return_value=None)
+    mocker.patch("filelock._filesystem._ownership._linux_owner_probe", autospec=True, return_value=None)
     sysctl = tmp_path / "overflowuid"
     sysctl.write_text(str(os.geteuid()), encoding="ascii")
     proc = tmp_path / "proc"
@@ -287,7 +285,7 @@ def sticky_dir_with_mapped_owner(tmp_path: Path, mocker: MockerFixture) -> Path:
     mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=read_fd_info)
     paths = {"/proc/thread-self": proc, "/proc/sys/kernel/overflowuid": sysctl}
     mocker.patch(
-        "filelock.internal.filesystem._ownership.Path",
+        "filelock._filesystem._ownership.Path",
         autospec=True,
         side_effect=lambda name: paths.get(name, Path(name)),
     )
@@ -413,7 +411,7 @@ def oplocked_lock_path(
 @pytest.fixture
 def soft_create_path() -> str:
     return (
-        "filelock.internal.soft.exclusive._publication.create_exclusive_non_reparse_fd"
+        "filelock._soft._exclusive._publication.create_exclusive_non_reparse_fd"
         if sys.platform == "win32"
         else "os.open"
     )

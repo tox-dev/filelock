@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from filelock import OwnerRecord, SoftFileLease
-from filelock.internal.soft import encode_marker
+from filelock._soft import encode_marker
 
 if TYPE_CHECKING:
     from pathlib import Path

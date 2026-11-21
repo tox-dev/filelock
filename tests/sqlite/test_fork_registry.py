@@ -9,7 +9,7 @@ pytest.importorskip("sqlite3")
 from pathlib import Path
 
 from filelock import ReadWriteLock
-from filelock.internal.sqlite._fork import (
+from filelock._sqlite._fork import (
     FORKED_DATABASES,
     _ForkedDatabaseRegistry,
     _in_subinterpreter,
@@ -25,7 +25,7 @@ pytestmark: Final[pytest.MarkDecorator] = pytest.mark.usefixtures("clear_sqlite_
 
 def test_subinterpreter_refusal_precedes_database_access(tmp_path: Path, mocker: MockerFixture) -> None:
     path = tmp_path / "lock.db"
-    mocker.patch("filelock.internal.sqlite._singleton.IN_POSIX_SUBINTERPRETER", new=True)
+    mocker.patch("filelock._sqlite._fork._IN_POSIX_SUBINTERPRETER", new=True)
     with pytest.raises(RuntimeError, match="main interpreter"):
         ReadWriteLock(path)
     assert not path.exists()
@@ -33,15 +33,15 @@ def test_subinterpreter_refusal_precedes_database_access(tmp_path: Path, mocker:
 
 @pytest.mark.parametrize("main", [True, False])
 def test_thread_interpreter_identity(mocker: MockerFixture, *, main: bool) -> None:
-    mocker.patch("filelock.internal.sqlite._fork._thread", new=SimpleNamespace(_is_main_interpreter=lambda: main))
+    mocker.patch("filelock._sqlite._fork._thread", new=SimpleNamespace(_is_main_interpreter=lambda: main))
     assert _in_subinterpreter() is not main
 
 
 @pytest.mark.parametrize("current", [0, 1])
 def test_legacy_interpreter_identity(mocker: MockerFixture, current: int) -> None:
-    mocker.patch("filelock.internal.sqlite._fork._thread", new=SimpleNamespace())
+    mocker.patch("filelock._sqlite._fork._thread", new=SimpleNamespace())
     mocker.patch(
-        "filelock.internal.sqlite._fork.import_module",
+        "filelock._sqlite._fork.import_module",
         autospec=True,
         return_value=SimpleNamespace(get_current=lambda: current, get_main=lambda: 0),
     )
@@ -50,30 +50,24 @@ def test_legacy_interpreter_identity(mocker: MockerFixture, current: int) -> Non
 
 @pytest.mark.parametrize("implementation", ["cpython", "pypy"])
 def test_runtime_without_interpreter_ids(mocker: MockerFixture, implementation: str) -> None:
-    mocker.patch("filelock.internal.sqlite._fork._thread", new=SimpleNamespace())
-    mocker.patch(
-        "filelock.internal.sqlite._fork.sys", new=SimpleNamespace(implementation=SimpleNamespace(name=implementation))
-    )
-    mocker.patch("filelock.internal.sqlite._fork.import_module", autospec=True, side_effect=ModuleNotFoundError)
+    mocker.patch("filelock._sqlite._fork._thread", new=SimpleNamespace())
+    mocker.patch("filelock._sqlite._fork.sys", new=SimpleNamespace(implementation=SimpleNamespace(name=implementation)))
+    mocker.patch("filelock._sqlite._fork.import_module", autospec=True, side_effect=ModuleNotFoundError)
     assert not _in_subinterpreter()
 
 
 def test_embedded_cpython_without_the_interpreters_module(mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.sqlite._fork._thread", new=SimpleNamespace())
-    mocker.patch(
-        "filelock.internal.sqlite._fork.sys", new=SimpleNamespace(implementation=SimpleNamespace(name="cpython"))
-    )
+    mocker.patch("filelock._sqlite._fork._thread", new=SimpleNamespace())
+    mocker.patch("filelock._sqlite._fork.sys", new=SimpleNamespace(implementation=SimpleNamespace(name="cpython")))
     api = object()
     states = {("PyInterpreterState_Get", api): lambda: 7, ("PyInterpreterState_Main", api): lambda: 4}
     library = SimpleNamespace(PYFUNCTYPE=lambda _result: states.__getitem__, c_void_p=int, pythonapi=api)
-    mocker.patch(
-        "filelock.internal.sqlite._fork.import_module", autospec=True, side_effect=[ModuleNotFoundError, library]
-    )
+    mocker.patch("filelock._sqlite._fork.import_module", autospec=True, side_effect=[ModuleNotFoundError, library])
     assert _in_subinterpreter()
 
 
 def test_note_sqlite_use_records_use_on_pypy(mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.sqlite._fork._IS_PYPY", True)
+    mocker.patch("filelock._sqlite._fork._IS_PYPY", True)
     registry = _ForkedDatabaseRegistry()
     registry.note_sqlite_use()
     assert registry._sqlite_used is True

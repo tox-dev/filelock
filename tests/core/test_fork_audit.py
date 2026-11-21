@@ -8,7 +8,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import BaseFileLock, has_fcntl
-from filelock.internal.core import override
+from filelock._core import override
 from tests.capability_marks import (
     NEEDS_AUDIT_EVENTS,
     NEEDS_FORK,

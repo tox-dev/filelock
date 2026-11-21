@@ -15,7 +15,7 @@ pytest.importorskip("sqlite3")
 
 
 from filelock import AsyncReadWriteLock, AsyncSoftReadWriteLock, ReadWriteLock, SoftReadWriteLock, Timeout
-from filelock.internal.core import override
+from filelock._core import override
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
@@ -127,7 +127,7 @@ async def test_async_acquire_oplocked_database_honors_caller_deadline(
 async def test_refused_database_open_does_not_spin(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncReadWriteLock(tmp_path / "lock.db")
     mocker.patch(
-        "filelock.internal.sqlite._transactions.connect",
+        "filelock._sqlite._transactions.connect",
         side_effect=BlockingIOError(EWOULDBLOCK, "leased database"),
         autospec=True,
     )
@@ -147,7 +147,7 @@ async def test_refused_database_open_obeys_async_cancellation(tmp_path: Path, mo
     lock = AsyncReadWriteLock(tmp_path / "lock.db")
     mocker.patch.object(threading, "active_count", return_value=1, autospec=True)
     mocker.patch(
-        "filelock.internal.sqlite._transactions.connect",
+        "filelock._sqlite._transactions.connect",
         side_effect=BlockingIOError(EWOULDBLOCK, "leased database"),
         autospec=True,
     )

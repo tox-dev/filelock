@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLockProtocolError
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._storage import OsFiles
 
 from .conftest import FIRST, SECOND, committed
 

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock, Timeout
-from filelock.internal.filesystem import exchange_names
+from filelock._filesystem import exchange_names
 from tests.capability_marks import NEEDS_STALE_RECLAIM
 from tests.conftest import DEAD_HOLDER, STALE_BREAKERS
 from tests.filesystem.conftest import rewrite_in_place
@@ -40,9 +40,7 @@ def test_stale_break_spares_a_successor_on_the_freed_inode_number(  # pragma: wi
         reuse_inode(lock, stale)
         raise ProcessLookupError(ESRCH, f"no process {pid} for signal {signal}")
 
-    mocker.patch(
-        "filelock.internal.identity._process.os.kill", side_effect=owner_gone_and_successor_acquired, autospec=True
-    )
+    mocker.patch("filelock._identity._process.os.kill", side_effect=owner_gone_and_successor_acquired, autospec=True)
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
     mocker.stopall()
@@ -177,9 +175,7 @@ def test_remove_own_file_placeholder_names_this_process(
         placeholders.append(Path(source).read_bytes())
         return exchange(source, target)
 
-    mocker.patch(
-        "filelock.internal.filesystem._exchange.exchange_names", side_effect=record_the_placeholder, autospec=True
-    )
+    mocker.patch("filelock._filesystem._exchange.exchange_names", side_effect=record_the_placeholder, autospec=True)
     with pytest.raises(OSError, match="Input/output error"):
         SoftFileLock(tmp_path / "test.lock", mode=0o600).acquire()
 
@@ -250,7 +246,7 @@ def test_break_lock_file_leaves_the_marker_where_the_exchange_fails(  # pragma: 
 ) -> None:
     # On NFS and SMB, renaming instead of exchanging could expose an empty lock path.
     renamer = mocker.create_autospec(_exchange_call, return_value=error)
-    mocker.patch("filelock.internal.filesystem._exchange._rename_call", return_value=(renamer, 2), autospec=True)
+    mocker.patch("filelock._filesystem._exchange._rename_call", return_value=(renamer, 2), autospec=True)
     with pytest.raises(Timeout):
         SoftFileLock(stale_lock).acquire(blocking=False)
 
@@ -297,9 +293,7 @@ def test_interrupted_rollback_removes_only_its_own_marker(  # pragma: win32 no c
             return True
         raise KeyboardInterrupt
 
-    mocker.patch(
-        "filelock.internal.filesystem._exchange.exchange_names", autospec=True, side_effect=interrupt_after_exchange
-    )
+    mocker.patch("filelock._filesystem._exchange.exchange_names", autospec=True, side_effect=interrupt_after_exchange)
     with pytest.raises(KeyboardInterrupt):
         SoftFileLock(path, mode=0o600).acquire(blocking=False)
 

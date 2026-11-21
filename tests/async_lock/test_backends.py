@@ -89,7 +89,7 @@ async def test_async_lease_reports_compromise_when_the_marker_vanishes(marker: P
 
 @pytest.mark.asyncio
 async def test_async_lease_refuses_a_task_joining_a_lost_claim(marker: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    mocker.patch("filelock._soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
     reported = asyncio.Event()
     loop = asyncio.get_running_loop()
 

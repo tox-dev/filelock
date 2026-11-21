@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLockProtocolError, StrictSoftFileLock, Timeout
-from filelock.internal.soft.strict._claims import _PRIVATE_RECORD_MARKER
-from filelock.internal.soft.strict._directories import scandir_relative
+from filelock._soft._strict._claims import _PRIVATE_RECORD_MARKER
+from filelock._soft._strict._directories import scandir_relative
 from tests.capability_marks import (
     NEEDS_FOREIGN_STICKY_TMP,
     NEEDS_SYMLINK,
@@ -232,7 +232,7 @@ def test_strict_soft_refuses_unlistable_coordination_directory(  # pragma: win32
 ) -> None:
     lock_path = tmp_path / "resource.lock"
     mocker.patch(
-        "filelock.internal.soft.strict._directories.scandir_relative",
+        "filelock._soft._strict._directories.scandir_relative",
         autospec=True,
         side_effect=PermissionError(EACCES, "denied"),
     )
@@ -270,7 +270,7 @@ def test_strict_soft_refuses_unopenable_nested_claim_directory(  # pragma: win32
     (coordination / "claims").mkdir()
     coordination.chmod(0o755)
     mocker.patch(
-        "filelock.internal.soft.strict._directories.open_directory",
+        "filelock._soft._strict._directories.open_directory",
         autospec=True,
         side_effect=PermissionError(EACCES, "denied"),
     )
@@ -322,9 +322,7 @@ def test_strict_soft_refuses_unlistable_claim_directory_before_chmod(  # pragma:
             raise PermissionError(EACCES, "denied")
         return real_scandir(directory_ref)
 
-    mocker.patch(
-        "filelock.internal.soft.strict._directories.scandir_relative", autospec=True, side_effect=fail_claim_scan
-    )
+    mocker.patch("filelock._soft._strict._directories.scandir_relative", autospec=True, side_effect=fail_claim_scan)
 
     with pytest.raises(SoftFileLockProtocolError, match="cannot list"):
         StrictSoftFileLock(lock_path, mode=0o600, timeout=0).acquire()
@@ -393,7 +391,7 @@ def test_strict_soft_refuses_ownership_when_overflow_uid_is_unknown(  # pragma: 
     lock_path_in_shared_tmp: Path, mocker: MockerFixture, error: OSError | ValueError
 ) -> None:
     (coordination := Path(f"{lock_path_in_shared_tmp}.filelock")).mkdir()
-    mocker.patch("filelock.internal.filesystem._ownership._linux_owner_probe", autospec=True, return_value=None)
+    mocker.patch("filelock._filesystem._ownership._linux_owner_probe", autospec=True, return_value=None)
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=error)
     mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=OSError("no UID map"))
 

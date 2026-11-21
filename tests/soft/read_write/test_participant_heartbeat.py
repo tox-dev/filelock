@@ -9,8 +9,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock.internal.soft.read_write._records import TreeReplacedError
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write._storage import OsFiles, TreeReplacedError
 
 from .conftest import make_participant
 

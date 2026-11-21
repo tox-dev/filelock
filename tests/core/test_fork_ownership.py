@@ -20,7 +20,7 @@ from filelock import (
     SoftReadWriteLock,
     Timeout,
 )
-from filelock.internal.core import override
+from filelock._core import override
 from tests.capability_marks import NEEDS_FORK
 from tests.fork_helpers import exit_child, fork_process
 
@@ -338,7 +338,7 @@ sys.exit(os.waitstatus_to_exitcode(status))
 def test_fork_child_exits_when_another_threads_transition_never_drains(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: win32 no cover
-    mocker.patch("filelock.internal.core._fork._FORK_DRAIN_TIMEOUT", 0.1)
+    mocker.patch("filelock._core._fork._FORK_DRAIN_TIMEOUT", 0.1)
     entered: Final[threading.Event] = threading.Event()
     never: Final[threading.Event] = threading.Event()
 

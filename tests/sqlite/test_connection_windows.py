@@ -5,7 +5,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only fixed-arg
 import sys
 import threading
 import time
-from contextlib import ExitStack, closing
+from contextlib import closing
 from errno import EWOULDBLOCK
 from functools import partial
 from pathlib import Path
@@ -22,10 +22,10 @@ from filelock import ReadWriteLock, Timeout
 from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from filelock.internal.filesystem.windows import directory_is_private, make_private_directory, pinned
-    from filelock.internal.filesystem.windows._bindings import ADVAPI32
-    from filelock.internal.identity import host_name
-    from filelock.internal.sqlite._links import _host_digest, _remove_link_directory_on_windows
+    from filelock._filesystem._windows import directory_is_private, make_private_directory
+    from filelock._filesystem._windows._directories import ADVAPI32
+    from filelock._identity import host_name
+    from filelock._sqlite._links import _host_digest, _remove_link_directory_on_windows
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,25 +40,14 @@ pytestmark: Final[pytest.MarkDecorator] = SKIP_ON_UNRELIABLE_PROCESS_SYNC
 def test_windows_read_write_rejects_changed_database_link(tmp_path: Path, mocker: MockerFixture) -> None:
     database = tmp_path / "database.db"
     mocker.patch(
-        "filelock.internal.sqlite._connection.directory_is_private",
+        "filelock._sqlite._connection.directory_is_private",
         side_effect=lambda path: path != os.fspath(tmp_path),
         autospec=True,
     )
-    mocker.patch("filelock.internal.sqlite._links.identity_at", return_value=(-1, -1), autospec=True)
+    mocker.patch("filelock._sqlite._links.identity_at", return_value=(-1, -1), autospec=True)
     with pytest.raises(OSError, match="lock database changed"):
         ReadWriteLock(database, is_singleton=False)
     assert [entry.name for entry in tmp_path.iterdir()] == [database.name]
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles enforce rename sharing")
-def test_windows_private_link_pin_blocks_rename(tmp_path: Path) -> None:  # pragma: win32 cover
-    directory = tmp_path / "link"
-    directory.mkdir()
-
-    with pinned(os.fspath(directory)), pytest.raises(PermissionError) as error:
-        directory.rename(tmp_path / "moved")
-
-    assert getattr(error.value, "winerror", None) == 32
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles enforce rename sharing")
@@ -95,19 +84,6 @@ def test_windows_read_write_keeps_private_link_pinned_until_sqlite_opens(  # pra
 
     assert opened
     assert not opened[-1].exists()
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory handles can reject junctions")
-def test_windows_private_link_pin_rejects_junction(  # pragma: win32 cover
-    tmp_path: Path, create_junction: Callable[[Path, Path], None]
-) -> None:
-    target = tmp_path / "target"
-    target.mkdir()
-    link = tmp_path / "link"
-    create_junction(link, target)
-
-    with pytest.raises(NotADirectoryError), ExitStack() as stack:
-        stack.enter_context(pinned(os.fspath(link)))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="share modes exist only on Windows")
@@ -158,7 +134,7 @@ def test_read_write_lock_waits_for_an_oplock_holder_that_answers(
 def test_read_write_lock_open_blocked_by_an_oplock_is_a_timeout(tmp_path: Path, mocker: MockerFixture) -> None:
     with closing(ReadWriteLock(tmp_path / "lock.db", is_singleton=False)) as lock:
         mocker.patch(
-            "filelock.internal.sqlite._transactions.connect",
+            "filelock._sqlite._transactions.connect",
             side_effect=BlockingIOError(EWOULDBLOCK, "oplock break"),
             autospec=True,
         )
@@ -261,7 +237,7 @@ def test_windows_shared_directory_removes_the_link_after_a_failure(  # pragma: w
 def test_windows_shared_directory_refuses_a_link_directory_others_can_write(  # pragma: win32 cover
     everyone_writable_database: Path, mocker: MockerFixture
 ) -> None:
-    mocker.patch("filelock.internal.sqlite._links.directory_is_private", autospec=True, return_value=False)
+    mocker.patch("filelock._sqlite._links.directory_is_private", autospec=True, return_value=False)
 
     with pytest.raises(OSError, match="replaced while opening"):
         ReadWriteLock(everyone_writable_database, is_singleton=False)
@@ -285,7 +261,7 @@ def test_windows_shared_directory_release_keeps_a_directory_renamed_onto_the_lin
         remove()
 
     mocker.patch(
-        "filelock.internal.sqlite._links._remove_link_directory_on_windows",
+        "filelock._sqlite._links._remove_link_directory_on_windows",
         autospec=True,
         side_effect=lambda link: replace_directory(link.path, partial(_remove_link_directory_on_windows, link)),
     )

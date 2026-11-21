@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock.internal.soft._lease as lease_mod
+import filelock._soft._lease as lease_mod
 from filelock import (
     LeaseCompromise,
     SoftFileLease,
@@ -130,7 +130,7 @@ def test_lease_release_records_loss_after_the_first_heartbeat_miss(  # pragma: n
                     first_miss.set()
                 return result
 
-            mocker.patch("filelock.internal.soft._lease.os.lstat", side_effect=signal_first_miss, autospec=True)
+            mocker.patch("filelock._soft._lease.os.lstat", side_effect=signal_first_miss, autospec=True)
             marker.unlink()
             peer.acquire()
             assert first_miss.wait(5)
@@ -171,7 +171,7 @@ def test_lease_release_does_not_report_a_rolled_back_break(  # pragma: win32 no 
     with lease:
         marker.rename(aside)
         marker.write_text("peer", encoding="utf-8")
-        mocker.patch("filelock.internal.soft._lease.os.fstat", side_effect=restore, autospec=True)
+        mocker.patch("filelock._soft._lease.os.fstat", side_effect=restore, autospec=True)
 
     assert lease.compromise is None
     assert not marker.exists()
@@ -205,7 +205,7 @@ def test_lease_release_does_not_report_a_restored_directory(  # pragma: win32 no
 
     with lease:
         marker.parent.rename(moved)
-        mocker.patch("filelock.internal.soft._lease.os.fstat", side_effect=restore, autospec=True)
+        mocker.patch("filelock._soft._lease.os.fstat", side_effect=restore, autospec=True)
 
     assert lease.compromise is None
     assert not marker.exists()
@@ -225,7 +225,7 @@ def test_lease_release_does_not_report_an_unreadable_marker(
         return lstat(path, dir_fd=dir_fd)
 
     with lease:
-        mocker.patch("filelock.internal.soft._lease.os.lstat", side_effect=fail_once, autospec=True)
+        mocker.patch("filelock._soft._lease.os.lstat", side_effect=fail_once, autospec=True)
 
     assert lease.compromise is None
     assert not marker.exists()
@@ -250,7 +250,7 @@ def _count_refreshes(mocker: MockerFixture) -> Semaphore:
         real(name, fd=fd)
         refreshes.release()
 
-    mocker.patch("filelock.internal.soft._lease.touch", side_effect=touch_and_count, autospec=True)
+    mocker.patch("filelock._soft._lease.touch", side_effect=touch_and_count, autospec=True)
     return refreshes
 
 
@@ -307,7 +307,7 @@ def test_lease_release_from_the_callback_needs_a_shared_context(marker: Path) ->
 
 def test_lease_records_a_compromise_without_a_callback_deterministically(marker: Path, mocker: MockerFixture) -> None:
     # A failed refresh drives loss on platforms that forbid deleting an open marker.
-    mocker.patch("filelock.internal.soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    mocker.patch("filelock._soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
     lease = make_lease(marker)
 
     with lease:
@@ -319,7 +319,7 @@ def test_lease_records_a_compromise_without_a_callback_deterministically(marker:
 
 def test_lease_release_from_the_callback_does_not_join_itself(marker: Path, mocker: MockerFixture) -> None:
     # The callback runs on the thread that release normally joins.
-    mocker.patch("filelock.internal.soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    mocker.patch("filelock._soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
     holder: list[SoftFileLease] = []
 
     released: Final[Event] = Event()

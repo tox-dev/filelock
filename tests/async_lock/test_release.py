@@ -31,7 +31,7 @@ async def test_non_executor_release_interrupted_before_the_backend_completes(
     lock = lock_type(str(tmp_path / "a"), run_in_executor=False)
     await lock.acquire()
     mocker.patch(
-        "filelock.internal.async_lock._release._LOGGER.debug",
+        "filelock._async_lock._release._LOGGER.debug",
         autospec=True,
         side_effect=[KeyboardInterrupt, None, None],
     )
@@ -59,7 +59,7 @@ async def test_non_executor_release_interrupted_by_a_signal_before_the_backend_c
         pending.clear()
         list(map(signal.raise_signal, signals))
 
-    mocker.patch("filelock.internal.async_lock._release._LOGGER.debug", autospec=True, side_effect=signal_once)
+    mocker.patch("filelock._async_lock._release._LOGGER.debug", autospec=True, side_effect=signal_once)
     previous = signal.signal(signal.SIGINT, signal.default_int_handler)
     try:
         with pytest.raises(KeyboardInterrupt):
@@ -119,9 +119,7 @@ async def test_release_nonzero_counter_exit(
 async def test_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(str(tmp_path / "a"))
     await lock.acquire()
-    mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True
-    )
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
     with pytest.raises(OSError, match="unlock failed"):
         await lock.release()
     assert lock.is_locked
@@ -132,7 +130,7 @@ async def test_release_keeps_lock_held_when_unlock_fails(tmp_path: Path, mocker:
 
 @pytest.mark.asyncio
 async def test_async_zero_write_rolls_back_acquire(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.filesystem._files.os.write", return_value=0, autospec=True)
+    mocker.patch("filelock._filesystem._files.os.write", return_value=0, autospec=True)
 
     lock = AsyncSoftFileLock(str(tmp_path / "a"))
     with pytest.raises(OSError, match="0 bytes"):

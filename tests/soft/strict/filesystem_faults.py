@@ -57,7 +57,7 @@ def patch_strict_clock(
     wall: Callable[[], float] = time.time,
 ) -> None:
     mocker.patch(
-        f"filelock.internal.soft.strict.{module}.time", new=SimpleNamespace(monotonic=monotonic, sleep=sleep, time=wall)
+        f"filelock._soft._strict.{module}.time", new=SimpleNamespace(monotonic=monotonic, sleep=sleep, time=wall)
     )
 
 
@@ -79,12 +79,12 @@ def route_record_opens_through_os_open(mocker: MockerFixture, *, claims: bool = 
     if sys.platform == "win32":  # pragma: win32 cover
         if claims:
             mocker.patch(
-                "filelock.internal.soft.strict._files.open_deletable_for_reading",
+                "filelock._soft._strict._scan.open_deletable_for_reading",
                 side_effect=lambda path: os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)),
                 autospec=True,
             )
         mocker.patch(
-            "filelock.internal.soft.strict._files.open_read_without_oplock_wait",
+            "filelock._soft._strict._scan.open_read_without_oplock_wait",
             side_effect=lambda path, **_: os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)),
             autospec=True,
         )
@@ -94,8 +94,8 @@ def mock_legacy_volume(mocker: MockerFixture, failure: str | None = None) -> Non
     assert sys.platform == "win32"
     import ctypes
 
-    from filelock.internal.filesystem.windows import _handles as handles
-    from filelock.internal.soft.strict import _windows as strict_windows
+    from filelock._filesystem._windows import _handles as handles
+    from filelock._soft._strict import _windows as strict_windows
 
     set_disposition = handles.try_set_delete_disposition
 

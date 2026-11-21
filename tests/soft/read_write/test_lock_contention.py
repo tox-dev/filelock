@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import AsyncSoftReadWriteLock, SoftReadWriteLock, Timeout
-from filelock.internal.soft.read_write import _lock as sync_mod
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write import _lock as sync_mod
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._storage import OsFiles
 from tests.capability_marks import (
     SKIP_ON_UNRELIABLE_PROCESS_SYNC,
 )
@@ -297,7 +297,7 @@ def test_contention_obeys_acquisition_policy(
 
     sleep_mock = mocker.create_autospec(time.sleep, side_effect=sleep)
     mocker.patch(
-        "filelock.internal.soft.read_write._lock.time",
+        "filelock._soft._read_write._lock.time",
         new=SimpleNamespace(
             monotonic=time.monotonic,
             perf_counter=mocker.create_autospec(time.perf_counter, side_effect=(reading / 100 for reading in count())),

@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLockProtocolError, StrictSoftFileLock, Timeout
-from filelock.internal.soft.strict._files import SUPPORTS, relative_identity
-from filelock.internal.soft.strict._publication import open_relative
+from filelock._soft._strict._directories import SUPPORTS, relative_identity
+from filelock._soft._strict._publication import open_relative
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -44,9 +44,7 @@ def test_strict_soft_publication_record_replaced_aborts(
             return identity[0], identity[1] + 1
         return identity
 
-    mocker.patch(
-        "filelock.internal.soft.strict._publication.relative_identity", side_effect=mismatch_public, autospec=True
-    )
+    mocker.patch("filelock._soft._strict._publication.relative_identity", side_effect=mismatch_public, autospec=True)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
     with pytest.raises(Timeout):
@@ -74,9 +72,9 @@ def test_strict_soft_publication_record_reclaimed_aborts(
         # Only the dot-prefixed private record is inspected in this flow, so this passthrough never runs.
         return real_identity(directory_ref, name)  # pragma: no cover
 
-    mocker.patch("filelock.internal.soft.strict._publication.relative_identity", side_effect=source_gone, autospec=True)
+    mocker.patch("filelock._soft._strict._publication.relative_identity", side_effect=source_gone, autospec=True)
     mocker.patch(
-        "filelock.internal.soft.strict._files._link_relative",
+        "filelock._soft._strict._publication._link_relative",
         side_effect=FileNotFoundError(ENOENT, "source vanished"),
         autospec=True,
     )
@@ -115,12 +113,10 @@ def test_strict_soft_private_inspection_failure_unlinks_vanished_record(
             raise OSError(EIO, "private inspection failed")
         return real_fstat(fd)
 
-    mocker.patch(
-        "filelock.internal.soft.strict._publication.open_relative", side_effect=capture_private_record, autospec=True
-    )
+    mocker.patch("filelock._soft._strict._publication.open_relative", side_effect=capture_private_record, autospec=True)
     mocker.patch("os.fstat", side_effect=fail_private_inspection, autospec=True)
     mocker.patch(
-        "filelock.internal.soft.strict._publication.unlink_relative",
+        "filelock._soft._strict._publication.unlink_relative",
         side_effect=FileNotFoundError(ENOENT, "record gone"),
         autospec=True,
     )
@@ -161,9 +157,7 @@ def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(
             record.unlink()
             reclaimed += 1
 
-    mocker.patch(
-        "filelock.internal.soft.strict._publication.open_relative", side_effect=capture_private_record, autospec=True
-    )
+    mocker.patch("filelock._soft._strict._publication.open_relative", side_effect=capture_private_record, autospec=True)
     mocker.patch("os.close", side_effect=reclaim_on_close, autospec=True)
     lock = StrictSoftFileLock(lock_path, timeout=0)
 
@@ -204,12 +198,10 @@ def test_strict_soft_record_finalization_close_and_unlink_failures_group(
             private_fd = None  # the cleanup that follows opens a directory under the same number
             raise OSError(EIO, "private close failed")
 
-    mocker.patch(
-        "filelock.internal.soft.strict._publication.open_relative", side_effect=capture_private_record, autospec=True
-    )
+    mocker.patch("filelock._soft._strict._publication.open_relative", side_effect=capture_private_record, autospec=True)
     mocker.patch("os.close", side_effect=fail_private_close, autospec=True)
     mocker.patch(
-        "filelock.internal.soft.strict._publication.unlink_relative",
+        "filelock._soft._strict._publication.unlink_relative",
         side_effect=PermissionError(EACCES, "unlink denied"),
         autospec=True,
     )
@@ -317,7 +309,7 @@ def test_strict_soft_force_break_retries_a_transient_unlink_denial(
 
     mocker.patch("os.unlink", side_effect=deny_once, autospec=True)
     sleep = mocker.create_autospec(time.sleep)
-    patch_strict_clock(mocker, "_files", sleep=sleep)
+    patch_strict_clock(mocker, "_publication", sleep=sleep)
     lock.force_break(claim)
     lock.release()
 

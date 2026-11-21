@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock.internal.soft.exclusive._marker  # simplint: ignore[private-import-path]  # tests internal behavior
+import filelock._soft._exclusive._marker  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import MarkerSoftFileLock, OwnerRecord, SoftFileLease, Timeout
-from filelock.internal.identity import host_name, process_start_token
-from filelock.internal.soft import MALFORMED_LOCK_AGE_THRESHOLD, encode_marker
+from filelock._identity import host_name, process_start_token
+from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD, encode_marker
 from tests.capability_marks import NEEDS_STALE_RECLAIM
 from tests.process_helpers import cleanup_processes
 
@@ -38,8 +38,8 @@ def test_held_lease_records_the_process_start_token(tmp_path: Path) -> None:
 def test_marker_without_start_token_omits_it(tmp_path: Path, mocker: MockerFixture) -> None:
     # A platform without a proven start time publishes no start field, and the record still reads back cleanly.
     mocker.patch(
-        "filelock.internal.soft.exclusive._marker.process_start_token",
-        new=mocker.create_autospec(filelock.internal.soft.exclusive._marker.process_start_token, return_value=None),
+        "filelock._soft._exclusive._marker.process_start_token",
+        new=mocker.create_autospec(filelock._soft._exclusive._marker.process_start_token, return_value=None),
     )
     marker = tmp_path / "a.lock"
     with SoftFileLease(str(marker), lease_duration=5) as lease:
@@ -76,7 +76,7 @@ def test_lease_never_ages_out_an_unknown_contract(tmp_path: Path) -> None:
 def test_lease_ages_out_a_malformed_record(tmp_path: Path, mocker: MockerFixture) -> None:
     # The self-heal still applies to a record that states no contract at all, so corruption cannot wedge contenders.
     mocker.patch(
-        "filelock.internal.soft.exclusive._recovery.time",
+        "filelock._soft._exclusive._recovery.time",
         new=SimpleNamespace(
             monotonic=mocker.create_autospec(
                 time.monotonic, side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD)
@@ -224,7 +224,7 @@ def test_marker_lock_reclaims_dead_owner_before_its_process_is_closed(marker: Pa
 @NEEDS_STALE_RECLAIM
 def test_marker_lock_reclaims_malformed_record(marker: Path, record: str, mocker: MockerFixture) -> None:
     mocker.patch(
-        "filelock.internal.soft.exclusive._recovery.time",
+        "filelock._soft._exclusive._recovery.time",
         new=SimpleNamespace(
             monotonic=mocker.create_autospec(
                 time.monotonic, side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD)

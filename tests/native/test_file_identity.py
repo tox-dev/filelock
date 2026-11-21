@@ -148,7 +148,7 @@ def test_preserve_lock_file_unix_keeps_pathname(tmp_path: Path) -> None:
 
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_preserve_lock_file_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
     lock = FileLock(str(tmp_path / "a"), preserve_lock_file=True)
     with pytest.raises(OSError, match="no flock"):
         lock.acquire()

@@ -14,7 +14,7 @@ pytest.importorskip("sqlite3")
 import sqlite3
 
 from filelock import ReadWriteLock, Timeout
-from filelock.internal.sqlite._connection import ForkSafeConnection
+from filelock._sqlite._connection import ForkSafeConnection
 
 if TYPE_CHECKING:
     from types import BuiltinFunctionType, FrameType
@@ -36,8 +36,8 @@ def test_busy_timeout_recomputed_after_journal_mode(
     lock_file: str, mocker: MockerFixture, mode: Literal["read", "write"]
 ) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
-    clock = mocker.patch("filelock.internal.sqlite._lock.time", autospec=True)
-    mocker.patch("filelock.internal.sqlite._transactions.time", clock)
+    clock = mocker.patch("filelock._sqlite._lock.time", autospec=True)
+    mocker.patch("filelock._sqlite._transactions.time", clock)
     clock.perf_counter.return_value = 0.0
     clock.monotonic.side_effect = time.monotonic
     execute = ForkSafeConnection.execute
@@ -60,7 +60,7 @@ def test_acquire_converts_connect_lock_error_to_timeout(lock_file: str, mocker: 
     lock = ReadWriteLock(lock_file, is_singleton=False)
     busy = sqlite3.OperationalError("database is locked")
     busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
-    mocker.patch("filelock.internal.sqlite._transactions.connect", side_effect=busy, autospec=True)
+    mocker.patch("filelock._sqlite._transactions.connect", side_effect=busy, autospec=True)
 
     with pytest.raises(Timeout):
         lock.acquire_read(timeout=0.1)
@@ -175,7 +175,7 @@ def test_connection_close_from_another_process_leaves_it_open(lock_file: str, mo
     lock.acquire_read()
     connection = lock._con
     assert connection is not None
-    mocker.patch("filelock.internal.sqlite._connection.GETPID", return_value=-1, autospec=True)
+    mocker.patch("filelock._sqlite._connection.GETPID", return_value=-1, autospec=True)
 
     connection.close()
 

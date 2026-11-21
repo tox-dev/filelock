@@ -174,7 +174,7 @@ async def test_async_release_and_close_skip_when_pid_differs(tmp_path: Path, moc
     lock = make_async_lock(tmp_path)
     await lock.acquire_write(timeout=2)
     try:
-        mocker.patch("filelock.internal.soft.read_write._async.os.getpid", return_value=os.getpid() + 1, autospec=True)
+        mocker.patch("filelock._soft._read_write._async.os.getpid", return_value=os.getpid() + 1, autospec=True)
         await lock.release(force=True)
         await lock.close()
         mocker.stopall()

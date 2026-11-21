@@ -13,7 +13,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 pytest.importorskip("sqlite3")
-import filelock.internal.sqlite._links  # simplint: ignore[private-import-path]  # isolate sweep state
+import filelock._sqlite._links  # simplint: ignore[private-import-path]  # isolate sweep state
 from filelock import ReadWriteLock
 from tests.pid_namespace_helpers import pin_pid_namespace, pin_proc_pid_namespace
 from tests.read_write_helpers import assert_read_write_lock_state
@@ -83,9 +83,9 @@ def test_private_link_sweep_resumes_after_its_cooldown(shared_database: Path, mo
             yield iter(sorted(entries, key=lambda entry: entry.name == left.name))
 
     scans = mocker.patch("os.scandir", autospec=True, side_effect=dead_link_last)
-    clock = mocker.patch("filelock.internal.sqlite._links.time", autospec=True).monotonic
+    clock = mocker.patch("filelock._sqlite._links.time", autospec=True).monotonic
     clock.return_value = 100
-    mocker.patch("filelock.internal.sqlite._links._SWEEP_BUDGET", 0)
+    mocker.patch("filelock._sqlite._links._SWEEP_BUDGET", 0)
     lock = ReadWriteLock(shared_database, is_singleton=False)
     for _ in range(4):
         with lock.read_lock(blocking=False):
@@ -111,14 +111,14 @@ def test_private_link_sweep_closes_abandoned_scans(shared_database: Path, mocker
                 open_scans.remove(id(entries))
 
     mocker.patch("os.scandir", autospec=True, side_effect=track_handles)
-    clock = mocker.patch("filelock.internal.sqlite._links.time", autospec=True).monotonic
+    clock = mocker.patch("filelock._sqlite._links.time", autospec=True).monotonic
     clock.return_value = 100
-    mocker.patch("filelock.internal.sqlite._links._SWEEP_BUDGET", 0)
+    mocker.patch("filelock._sqlite._links._SWEEP_BUDGET", 0)
     for index in range(17):
         ReadWriteLock(shared_database.with_suffix(f".{index}"), is_singleton=False).close()
     assert len(open_scans) == 16
     clock.return_value += 61
-    mocker.patch("filelock.internal.sqlite._links._SWEEP_BUDGET", 1)
+    mocker.patch("filelock._sqlite._links._SWEEP_BUDGET", 1)
     for index in range(17):
         ReadWriteLock(shared_database.with_suffix(f".{index}"), is_singleton=False).close()
     assert not open_scans
@@ -126,8 +126,8 @@ def test_private_link_sweep_closes_abandoned_scans(shared_database: Path, mocker
 
 def test_private_link_sweep_forgets_old_databases(shared_database: Path, mocker: MockerFixture) -> None:
     digest = host_digest(shared_database)
-    mocker.patch("filelock.internal.sqlite._links._MAX_REMEMBERED_SWEEPS", 2)
-    mocker.patch("filelock.internal.sqlite._links.LINK_SWEEPS", new=filelock.internal.sqlite._links._LinkSweeps())
+    mocker.patch("filelock._sqlite._links._MAX_REMEMBERED_SWEEPS", 2)
+    mocker.patch("filelock._sqlite._links.LINK_SWEEPS", new=filelock._sqlite._links._LinkSweeps())
     ReadWriteLock(shared_database, is_singleton=False).close()
     left = shared_database.parent / f".filelock-{2**31 - 1}--{digest}-left"
     left.mkdir(mode=0o700)
@@ -141,7 +141,7 @@ def test_private_link_sweep_forgets_old_databases(shared_database: Path, mocker:
 
 def test_private_link_sweep_restarts_in_a_replaced_parent(shared_database: Path, mocker: MockerFixture) -> None:
     digest = host_digest(shared_database)
-    mocker.patch("filelock.internal.sqlite._links._SWEEP_BUDGET", 0)
+    mocker.patch("filelock._sqlite._links._SWEEP_BUDGET", 0)
     ReadWriteLock(shared_database, is_singleton=False).close()
     previous = shared_database.parent.with_name("previous")
     shared_database.parent.rename(previous)
@@ -152,7 +152,7 @@ def test_private_link_sweep_restarts_in_a_replaced_parent(shared_database: Path,
     left.mkdir(mode=0o700)
     (left / "lock.db").hardlink_to(shared_database)
 
-    mocker.patch("filelock.internal.sqlite._links._SWEEP_BUDGET", 1)
+    mocker.patch("filelock._sqlite._links._SWEEP_BUDGET", 1)
     ReadWriteLock(shared_database, is_singleton=False).close()
     assert not left.exists()
 
@@ -171,9 +171,9 @@ def test_private_link_sweep_retries_an_invalid_iterator(shared_database: Path, m
             yield invalidated(entries)
 
     scans = mocker.patch("os.scandir", autospec=True, side_effect=interrupted)
-    clock = mocker.patch("filelock.internal.sqlite._links.time", autospec=True).monotonic
+    clock = mocker.patch("filelock._sqlite._links.time", autospec=True).monotonic
     clock.return_value = 100
-    mocker.patch("filelock.internal.sqlite._links._SWEEP_BUDGET", 0)
+    mocker.patch("filelock._sqlite._links._SWEEP_BUDGET", 0)
     ReadWriteLock(shared_database, is_singleton=False).close()
     left = shared_database.parent / f".filelock-{2**31 - 1}--{digest}-left"
     left.mkdir(mode=0o700)
@@ -184,7 +184,7 @@ def test_private_link_sweep_retries_an_invalid_iterator(shared_database: Path, m
 
     scans.side_effect = scandir
     clock.return_value += 61
-    mocker.patch("filelock.internal.sqlite._links._SWEEP_BUDGET", 1)
+    mocker.patch("filelock._sqlite._links._SWEEP_BUDGET", 1)
     ReadWriteLock(shared_database, is_singleton=False).close()
     assert not left.exists()
 

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock.internal.filesystem import exchange_supported
+from filelock._filesystem import exchange_supported
 
 if TYPE_CHECKING:
     from typing import Final

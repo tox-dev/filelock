@@ -141,9 +141,7 @@ def _failing_on_acquired(_fd: int) -> None:
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_on_acquired_and_release_failure_group(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = FileLock(str(tmp_path / "a"), on_acquired=_failing_on_acquired)
-    mocker.patch(
-        "filelock.internal.native._unix.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True
-    )
+    mocker.patch("filelock._native._unix.unlock_fd", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
     with pytest.raises(BaseExceptionGroup) as info:
         lock.acquire()
     assert {type(error) for error in info.value.exceptions} == {RuntimeError, OSError}
@@ -179,7 +177,7 @@ def test_on_acquired_rollback_group_detaches_release_context(
 
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_on_acquired_fails_closed_on_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
     calls: list[int] = []
     lock = FileLock(str(tmp_path / "a"), on_acquired=calls.append)
     with pytest.raises(OSError, match="no flock"):
@@ -276,7 +274,7 @@ def test_balanced_acquire_in_hook(tmp_path: Path) -> None:
 
 def test_failed_proxy_releases_provisional_hold(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = SoftFileLock(tmp_path / "proxy.lock")
-    mocker.patch("filelock.internal.core._lock.AcquireReturnProxy", side_effect=MemoryError, autospec=True)
+    mocker.patch("filelock._core._lock.AcquireReturnProxy", side_effect=MemoryError, autospec=True)
 
     with pytest.raises(MemoryError):
         lock.acquire()

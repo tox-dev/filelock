@@ -263,7 +263,7 @@ import threading
 from queue import Queue
 
 from filelock import BaseFileLock
-from filelock.internal.core._fork import _FORK_STATE, _pin_fork_objects, _resume_parent_after_fork
+from filelock._core._fork import _FORK_STATE, _pin_fork_objects, _resume_parent_after_fork
 
 admission_waiting = threading.Event()
 real_condition_wait = threading.Condition.wait

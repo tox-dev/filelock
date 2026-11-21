@@ -12,9 +12,9 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
-from filelock.internal.soft.read_write import _heartbeat as heartbeat_mod
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write import _heartbeat as heartbeat_mod
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._storage import OsFiles
 
 from .conftest import make_participant
 
@@ -42,7 +42,7 @@ def test_leave_retries_a_commit_a_peer_won(lock_file: str, files: OsFiles, root:
     real_commit = GenerationLog.commit
     lost = []
     pauses: list[float] = []
-    mocker.patch("filelock.internal.soft.read_write._participant.sleep", autospec=True, side_effect=pauses.append)
+    mocker.patch("filelock._soft._read_write._participant.sleep", autospec=True, side_effect=pauses.append)
 
     def commit_after_a_peer(log: GenerationLog, successor: Snapshot) -> bool:
         if len(lost) < 6:

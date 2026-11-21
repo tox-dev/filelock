@@ -8,11 +8,11 @@ from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 
-from filelock.internal.core import override
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._participant import Participant
-from filelock.internal.soft.read_write._records import RecordFiles
-from filelock.internal.soft.read_write._sweep import Ledger
+from filelock._core import override
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._participant import Participant
+from filelock._soft._read_write._storage import RecordFiles
+from filelock._soft._read_write._sweep import Ledger
 
 from .conftest import SECOND
 

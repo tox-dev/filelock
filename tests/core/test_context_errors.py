@@ -13,7 +13,7 @@ from filelock import (
     FileLock,
     SoftFileLock,
 )
-from filelock.internal.core import append_exception_context, raise_grouped_errors
+from filelock._core import append_exception_context, raise_grouped_errors
 from tests.capability_marks import (
     NEEDS_FCNTL,
     WINDOWS_ONLY,
@@ -311,9 +311,7 @@ def test_close_not_reached_when_unlock_fails(tmp_path: Path, mocker: MockerFixtu
     lock = FileLock(str(tmp_path / "a"), close_error_policy="raise")
     lock.acquire()
     fd = lock._context.lock_file_fd
-    mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True
-    )
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=[OSError(EIO, "unlock failed"), None], autospec=True)
     real_close = os.close
     closed: list[int] = []
     mocker.patch(

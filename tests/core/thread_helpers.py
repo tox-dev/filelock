@@ -5,7 +5,7 @@ import threading
 from types import TracebackType
 from typing import TYPE_CHECKING, Final
 
-from filelock.internal.core import override
+from filelock._core import override
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -10,14 +10,14 @@ from typing import TYPE_CHECKING, Final, Protocol
 
 import pytest
 
-import filelock.internal.soft._lease as lease_mod
+import filelock._soft._lease as lease_mod
 from filelock import (
     SoftFileLease,
     Timeout,
 )
-from filelock.internal.filesystem import exchange_names
-from filelock.internal.identity import host_name
-from filelock.internal.soft import MALFORMED_LOCK_AGE_THRESHOLD
+from filelock._filesystem import exchange_names
+from filelock._identity import host_name
+from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD
 from tests.capability_marks import (
     NEEDS_STALE_RECLAIM,
     NEEDS_UNLINK_OPEN_FILE,
@@ -83,7 +83,7 @@ def test_lease_heartbeat_survives_directory_rename(
 @NEEDS_STALE_RECLAIM
 def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) -> None:
     # A wedged holder: its marker stays on disk, but no refresh ever lands on it again, so the claim ages out.
-    mocker.patch("filelock.internal.soft._lease.touch", new=mocker.create_autospec(lease_mod.touch))
+    mocker.patch("filelock._soft._lease.touch", new=mocker.create_autospec(lease_mod.touch))
     holder = make_lease(marker)
     holder.acquire()
 
@@ -99,7 +99,7 @@ def test_lease_peer_takes_an_expired_claim(marker: Path, mocker: MockerFixture) 
 @NEEDS_STALE_RECLAIM
 def test_lease_self_heals_a_malformed_marker(marker: Path, mocker: MockerFixture) -> None:
     # The pytest timeout bounds recovery while the mocked clock controls marker expiry.
-    clock = mocker.patch("filelock.internal.soft.exclusive._recovery.time", autospec=True)
+    clock = mocker.patch("filelock._soft._exclusive._recovery.time", autospec=True)
     clock.monotonic.side_effect = itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD)
     marker.write_text("not a protocol 2 record\n", encoding="utf-8")
 
@@ -167,7 +167,7 @@ def test_lease_retries_when_missing_markers_parent_cannot_be_read(tmp_path: Path
             raise OSError(EIO, "Input/output error")
         return real_lstat(path)
 
-    mocker.patch("filelock.internal.soft._lease.os.lstat", autospec=True, side_effect=lstat)
+    mocker.patch("filelock._soft._lease.os.lstat", autospec=True, side_effect=lstat)
     try:
         assert reports.landed.wait(DEADLINE)
     finally:
@@ -201,7 +201,7 @@ def test_lease_reports_refresh_failure_after_junction_removed(
             raise OSError(parent_errno, os.strerror(parent_errno), str(junction))
         return real_lstat(path)
 
-    mocker.patch("filelock.internal.soft._lease.os.lstat", autospec=True, side_effect=lstat)
+    mocker.patch("filelock._soft._lease.os.lstat", autospec=True, side_effect=lstat)
 
     try:
         junction.rmdir()
@@ -235,7 +235,7 @@ def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None: 
 def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: MockerFixture) -> None:
     reports = Reports()
     failure = OSError("cannot touch the marker")
-    mocker.patch("filelock.internal.soft._lease.touch", side_effect=failure, autospec=True)
+    mocker.patch("filelock._soft._lease.touch", side_effect=failure, autospec=True)
     lease = make_lease(marker, on_compromise=reports)
 
     with lease:
@@ -270,7 +270,7 @@ def test_lease_tolerates_a_transient_refresh_error(
             if marked:
                 refreshes.release()
 
-    mocker.patch(f"filelock.internal.soft._lease.{target}", side_effect=flaky, autospec=True)
+    mocker.patch(f"filelock._soft._lease.{target}", side_effect=flaky, autospec=True)
     reports = Reports()
     # A long lease keeps a slow runner's two failed ticks inside the window; the deadline has its own test above.
     lease: Final[SoftFileLease] = make_lease(marker, lease_duration=30, on_compromise=reports)

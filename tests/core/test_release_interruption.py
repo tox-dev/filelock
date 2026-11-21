@@ -64,7 +64,7 @@ def test_reentered_release_keeps_the_outer_hold_until_unlock(tmp_path: Path, moc
             with pytest.raises(Timeout):
                 peer.acquire(blocking=False)
 
-    mocker.patch("filelock.internal.core._release._LOGGER.debug", autospec=True, side_effect=release_after_reentry)
+    mocker.patch("filelock._core._release._LOGGER.debug", autospec=True, side_effect=release_after_reentry)
     lock.release()
     assert (observed, lock.is_locked) == ([True], False)
     with peer:
@@ -255,7 +255,7 @@ def test_release_interrupted_by_a_signal_before_the_backend_completes(
         pending.clear()
         list(map(signal.raise_signal, signals))
 
-    mocker.patch("filelock.internal.core._release._LOGGER.debug", autospec=True, side_effect=signal_once)
+    mocker.patch("filelock._core._release._LOGGER.debug", autospec=True, side_effect=signal_once)
     previous = signal.signal(signal.SIGINT, signal.default_int_handler)
     try:
         with pytest.raises(KeyboardInterrupt):

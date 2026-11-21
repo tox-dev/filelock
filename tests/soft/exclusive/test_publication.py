@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from filelock import SoftFileLock, Timeout
-from filelock.internal.identity import process_start_token
+from filelock._identity import process_start_token
 from tests.capability_marks import (
     NEEDS_SYMLINK,
 )
@@ -117,7 +117,7 @@ def test_marker_cleanup_denied_closes_its_handles(lock_path: Path, mocker: Mocke
             return sys.maxsize * 2 + 1
         return reopen(handle, access, share, flags)
 
-    mocker.patch("filelock.internal.filesystem.windows._oplocks.KERNEL32.ReOpenFile", autospec=True, side_effect=deny)
+    mocker.patch("filelock._filesystem._windows._oplocks.KERNEL32.ReOpenFile", autospec=True, side_effect=deny)
     conversion = mocker.patch("msvcrt.open_osfhandle", autospec=True, side_effect=ValueError("descriptor refused"))
     with pytest.raises(ValueError, match="descriptor refused"):
         SoftFileLock(lock_path).acquire(timeout=0)

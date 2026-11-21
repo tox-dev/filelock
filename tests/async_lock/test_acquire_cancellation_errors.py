@@ -166,7 +166,7 @@ async def test_acquire_cancellation_chains_rollback_error(
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
     lock, task = await _cancel_acquire_in_hook(tmp_path, "chain", None, hook_started, finish_hook)
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=[rollback_error, None], autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=[rollback_error, None], autospec=True)
     finish_hook.set()
     with pytest.raises(OSError, match="rollback failed") as info:
         await task
@@ -195,7 +195,7 @@ async def test_acquire_cancellation_groups_rollback_error(
     hook_started = asyncio.Event()
     finish_hook = threading.Event()
     lock, task = await _cancel_acquire_in_hook(tmp_path, "group", None, hook_started, finish_hook)
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=[rollback_error, None], autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=[rollback_error, None], autospec=True)
     finish_hook.set()
     with pytest.raises(BaseExceptionGroup) as info:
         await task
@@ -226,7 +226,7 @@ async def test_acquire_cancellation_chains_attempt_and_rollback_errors(tmp_path:
     finish_hook = threading.Event()
     lock, task = await _cancel_acquire_in_hook(tmp_path, "chain", callback_error, hook_started, finish_hook)
     mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock",
+        "filelock._native._unix.fcntl.flock",
         side_effect=[first_rollback_error, second_rollback_error, None],
         autospec=True,
     )
@@ -270,7 +270,7 @@ async def test_acquire_cancellation_groups_attempt_and_rollback_errors(tmp_path:
     finish_hook = threading.Event()
     lock, task = await _cancel_acquire_in_hook(tmp_path, "group", callback_error, hook_started, finish_hook)
     mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock",
+        "filelock._native._unix.fcntl.flock",
         side_effect=[first_rollback_error, second_rollback_error, None],
         autospec=True,
     )

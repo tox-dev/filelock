@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("sqlite3")
 from filelock import ReadWriteLock
-from filelock.internal.identity import host_name
+from filelock._identity import host_name
 
 if TYPE_CHECKING:
     from pathlib import Path

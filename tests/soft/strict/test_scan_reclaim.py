@@ -11,7 +11,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError, StrictSoftFileLock, Timeout
-from filelock.internal.soft.strict._claims import _PRIVATE_RECORD_MARKER
+from filelock._soft._strict._claims import _PRIVATE_RECORD_MARKER
 
 if TYPE_CHECKING:
     from collections.abc import Callable

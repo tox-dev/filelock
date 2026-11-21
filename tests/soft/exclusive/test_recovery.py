@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
-from filelock.internal.identity import host_name, process_start_token
-from filelock.internal.soft._records import (
+from filelock._identity import host_name, process_start_token
+from filelock._soft._records import (
     _MAX_LOCK_FILE_SIZE,
 )
 from tests.capability_marks import (
@@ -47,13 +47,13 @@ from tests.soft.exclusive.recovery_helpers import (
 @NEEDS_STALE_RECLAIM
 def test_stale_lock_broken_when_process_dead(lock_path: Path, mocker: MockerFixture, content: str) -> None:
     lock_path.write_text(content, encoding="utf-8")
-    mocker.patch("filelock.internal.identity._process.process_alive", return_value=False, autospec=True)
+    mocker.patch("filelock._identity._process.process_alive", return_value=False, autospec=True)
     assert_self_heals(lock_path)
 
 
 def test_stale_lock_not_broken_when_process_alive(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(holder_record(os.getpid()), encoding="utf-8")
-    mocker.patch("filelock.internal.identity._process.process_alive", return_value=True, autospec=True)
+    mocker.patch("filelock._identity._process.process_alive", return_value=True, autospec=True)
     assert_times_out(lock_path)
 
 
@@ -161,9 +161,7 @@ def test_live_process_without_start_token_falls_back_to_pid(lock_path: Path) -> 
 )
 def test_stale_lock_not_broken_on_kill_error(lock_path: Path, mocker: MockerFixture, errno: int) -> None:
     lock_path.write_text(holder_record(99999), encoding="utf-8")
-    mocker.patch(
-        "filelock.internal.identity._process.os.kill", side_effect=OSError(errno, "kill failed"), autospec=True
-    )
+    mocker.patch("filelock._identity._process.os.kill", side_effect=OSError(errno, "kill failed"), autospec=True)
     assert_times_out(lock_path)
 
 

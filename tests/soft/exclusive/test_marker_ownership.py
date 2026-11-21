@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import filelock.internal.soft.exclusive._publication  # simplint: ignore[private-import-path]  # tests internal behavior
+import filelock._soft._exclusive._publication  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import (
     SoftFileLock,
 )
@@ -81,9 +81,9 @@ def test_soft_windows_unlink_stops_on_non_permission_error(tmp_path: Path, mocke
     lock = SoftFileLock(str(path))
     st = os.lstat(path)
     mocker.patch(
-        "filelock.internal.soft.exclusive._publication.unlink_path",
+        "filelock._soft._exclusive._publication.unlink_path",
         new=mocker.create_autospec(
-            filelock.internal.soft.exclusive._publication.unlink_path, side_effect=OSError(ENOSYS, "boom")
+            filelock._soft._exclusive._publication.unlink_path, side_effect=OSError(ENOSYS, "boom")
         ),
     )
 
@@ -94,10 +94,8 @@ def test_soft_windows_unlink_stops_on_non_permission_error(tmp_path: Path, mocke
 
 def test_soft_marker_omits_start_line_without_a_start_token(tmp_path: Path, mocker: MockerFixture) -> None:
     mocker.patch(
-        "filelock.internal.soft.exclusive._publication.process_start_token",
-        new=mocker.create_autospec(
-            filelock.internal.soft.exclusive._publication.process_start_token, return_value=None
-        ),
+        "filelock._soft._exclusive._publication.process_start_token",
+        new=mocker.create_autospec(filelock._soft._exclusive._publication.process_start_token, return_value=None),
     )
     lock = SoftFileLock(str(tmp_path / "a"))
     with lock:

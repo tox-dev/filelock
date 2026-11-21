@@ -7,7 +7,7 @@ import threading
 from typing import TYPE_CHECKING, NoReturn
 
 from filelock import BaseFileLock
-from filelock.internal.core import override
+from filelock._core import override
 from tests.capability_marks import (
     NEEDS_FORK,
 )

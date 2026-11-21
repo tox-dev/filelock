@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock
-from filelock.internal.filesystem import exchange_names
+from filelock._filesystem import exchange_names
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -48,7 +48,7 @@ def break_then_hang_after_exchange(
             time.sleep(_REAP_DEADLINE)  # simplint: ignore[sleep-in-test]  # a blocked lock wait can swallow SIGTERM
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr("filelock.internal.soft.exclusive._recovery.exchange_names", exchange_then_hang)
+        patch.setattr("filelock._soft._exclusive._recovery.exchange_names", exchange_then_hang)
         SoftFileLock(lock_file).acquire(blocking=False)
 
 

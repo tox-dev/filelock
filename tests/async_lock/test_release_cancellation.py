@@ -36,7 +36,7 @@ async def test_release_completes_despite_cancellation(tmp_path: Path, mocker: Mo
         loop.call_soon_threadsafe(release_started.set)
         assert finish_release.wait(timeout=5)
 
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=block_unlock, autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=block_unlock, autospec=True)
     task = asyncio.create_task(lock.release())
     await release_started.wait()
     task.cancel("cancel release")
@@ -159,7 +159,7 @@ async def test_errno_after_async_unix_unlock_refuses_reentrant_acquire(
             interrupted = True
             raise OSError(EIO, "signal handler")
 
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=unlock_then_raise, autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=unlock_then_raise, autospec=True)
     with pytest.raises(OSError, match="signal handler"):
         await lock.release(force=True)
     with FileLock(lock_path), pytest.raises(RuntimeError, match=r"call release\(\) again"):
@@ -191,7 +191,7 @@ async def test_acquire_proceeds_after_queued_release_is_canceled(tmp_path: Path,
             assert finish_release.wait(timeout=5)
         real_flock(fd, operation)
 
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=block_first_unlock, autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=block_first_unlock, autospec=True)
     first_release = asyncio.create_task(lock.release())
     await release_started.wait()
     second_release = asyncio.create_task(lock.release())
@@ -312,7 +312,7 @@ async def _cancel_release_after_failed_unlock(  # pragma: needs fcntl
             assert finish_release.wait(timeout=5)
             raise release_error
 
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
     task = asyncio.create_task(lock.release())
     await release_started.wait()
     task.cancel("cancel release")

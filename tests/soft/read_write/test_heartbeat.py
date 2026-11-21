@@ -15,11 +15,11 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import LeaseCompromise, SoftReadWriteLock, Timeout
-from filelock.internal.soft.read_write import _storage as storage_mod
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._heartbeat import HeartbeatThread, lease_clock
-from filelock.internal.soft.read_write._participant import Participant
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write import _storage as storage_mod
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._heartbeat import HeartbeatThread, lease_clock
+from filelock._soft._read_write._participant import Participant
+from filelock._soft._read_write._storage import OsFiles
 from tests.capability_marks import (
     NEEDS_POSIX_SIGNALS,
     SKIP_ON_UNRELIABLE_PROCESS_SYNC,
@@ -252,7 +252,7 @@ def test_heartbeat_reports_refresh_failures_that_outlast_the_margin(lock_file: s
             storage_mod.OsFiles, "overwrite", side_effect=OSError(EIO, "Input/output error"), autospec=True
         )
         mocker.patch(
-            "filelock.internal.soft.read_write._hold.lease_clock",
+            "filelock._soft._read_write._hold.lease_clock",
             autospec=True,
             side_effect=lambda: hold.last_refresh + lock.stale_threshold,
         )
@@ -278,7 +278,7 @@ def test_heartbeat_reports_refresh_failure_after_host_suspend(
             Participant, "heartbeat", autospec=True, return_value=("transient", OSError(EIO, "stale filesystem"))
         )
         mocker.patch(
-            "filelock.internal.soft.read_write._heartbeat.time.clock_gettime",
+            "filelock._soft._read_write._heartbeat.time.clock_gettime",
             autospec=True,
             return_value=lease_clock() + 31,
         )
@@ -309,7 +309,7 @@ def test_participant_reads_the_clock_patched_after_construction(lock_file: str, 
     lock = make_lock(lock_file)
     clock = mocker.create_autospec(time.monotonic, side_effect=time.monotonic)
     mocker.patch(
-        "filelock.internal.soft.read_write._lock.time",
+        "filelock._soft._read_write._lock.time",
         new=SimpleNamespace(monotonic=clock, perf_counter=time.perf_counter, sleep=time.sleep),
     )
     try:

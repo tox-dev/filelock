@@ -12,7 +12,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import StrictSoftFileLock, Timeout
-from filelock.internal.soft.strict._publication import unlink_in_directory
+from filelock._soft._strict._publication import unlink_in_directory
 from tests.capability_marks import (
     NEEDS_COLLECTED_FINALIZATION,
 )
@@ -39,7 +39,7 @@ def test_strict_soft_release_claim_unlink_failures_group(tmp_path: Path, mocker:
     lock = StrictSoftFileLock(tmp_path / "resource.lock")
     lock.acquire()
     unlink_mock = mocker.patch(
-        "filelock.internal.soft.strict._publication.unlink_in_directory",
+        "filelock._soft._strict._publication.unlink_in_directory",
         side_effect=PermissionError(EACCES, "claim unlink denied"),
         autospec=True,
     )
@@ -93,7 +93,7 @@ def test_strict_soft_doorway_claim_unlink_failure_stays_pending(tmp_path: Path, 
     mocker.patch("secrets.token_hex", return_value=owner_token, autospec=True)
     scandir_mock = mocker.patch("os.scandir", side_effect=add_competitor_once_intent_is_published, autospec=True)
     unlink_mock = mocker.patch(
-        "filelock.internal.soft.strict._publication.unlink_in_directory",
+        "filelock._soft._strict._publication.unlink_in_directory",
         side_effect=deny_only_the_owned_intent_unlink,
         autospec=True,
     )
@@ -104,7 +104,7 @@ def test_strict_soft_doorway_claim_unlink_failure_stays_pending(tmp_path: Path, 
     assert (lock.is_locked, sorted(claim.name for claim in lock.claims)) == (False, [competitor_name, intent_name])
     other = write_foreign_claim(Path(f"{lock_path}.filelock") / "claims", "1" * 32)
     mocker.patch(
-        "filelock.internal.soft.strict._lock.unlink_in_directory",
+        "filelock._soft._strict._lock.unlink_in_directory",
         side_effect=deny_only_the_owned_intent_unlink,
         autospec=True,
     )
@@ -281,7 +281,7 @@ def _fail_the_doorway(mocker: MockerFixture) -> None:
         raise OSError(EIO, "held link failed")
 
     if sys.platform == "win32":  # pragma: win32 cover
-        from filelock.internal.soft.strict._windows import publish_deletable_claim
+        from filelock._soft._strict._windows import publish_deletable_claim
 
         real_publish = publish_deletable_claim
 
@@ -297,10 +297,10 @@ def _fail_the_doorway(mocker: MockerFixture) -> None:
             return real_publish(private_path, public_path, record, descriptors, deadline)
 
         mocker.patch(
-            "filelock.internal.soft.strict._lock.publish_deletable_claim", autospec=True, side_effect=fail_held_publish
+            "filelock._soft._strict._lock.publish_deletable_claim", autospec=True, side_effect=fail_held_publish
         )
     else:  # pragma: win32 no cover
-        mocker.patch("filelock.internal.soft.strict._lock.link_no_replace", autospec=True, side_effect=fail_held_link)
+        mocker.patch("filelock._soft._strict._lock.link_no_replace", autospec=True, side_effect=fail_held_link)
     mocker.patch(
-        "filelock.internal.soft.strict._publication.unlink_in_directory", autospec=True, side_effect=deny_intent_unlink
+        "filelock._soft._strict._publication.unlink_in_directory", autospec=True, side_effect=deny_intent_unlink
     )

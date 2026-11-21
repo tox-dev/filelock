@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 from filelock import LeaseCompromise, SoftReadWriteLock, Timeout
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._records import encode_holder, new_token
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._storage import OsFiles, encode_holder, new_token
 
 if TYPE_CHECKING:
     from collections.abc import Callable

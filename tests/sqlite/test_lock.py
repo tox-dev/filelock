@@ -34,7 +34,7 @@ pytestmark: Final[pytest.MarkDecorator] = SKIP_ON_UNRELIABLE_PROCESS_SYNC
 def test_refused_database_open_waits_without_spinning(lock_file: str, mocker: MockerFixture) -> None:
     lock = ReadWriteLock(lock_file, is_singleton=False)
     mocker.patch(
-        "filelock.internal.sqlite._transactions.connect",
+        "filelock._sqlite._transactions.connect",
         side_effect=BlockingIOError(EWOULDBLOCK, "leased database"),
         autospec=True,
     )
@@ -66,11 +66,11 @@ def test_refused_database_open_preserves_deadline_after_a_slow_refusal(lock_file
         raise BlockingIOError(EWOULDBLOCK, "leased database")
 
     mocker.patch.object(threading, "active_count", autospec=True, return_value=1)
-    clock = mocker.patch("filelock.internal.sqlite._lock.time", autospec=True)
-    mocker.patch("filelock.internal.sqlite._transactions.time", clock)
+    clock = mocker.patch("filelock._sqlite._lock.time", autospec=True)
+    mocker.patch("filelock._sqlite._transactions.time", clock)
     clock.perf_counter.side_effect = clock.monotonic.side_effect = lambda: now
     clock.sleep.side_effect = sleep
-    mocker.patch("filelock.internal.sqlite._transactions.connect", autospec=True, side_effect=refused)
+    mocker.patch("filelock._sqlite._transactions.connect", autospec=True, side_effect=refused)
 
     with pytest.raises(Timeout):
         lock.acquire_write(timeout=0.3)

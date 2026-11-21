@@ -12,7 +12,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import SoftReadWriteLock, Timeout
-from filelock.internal.soft.read_write import _storage as storage_mod
+from filelock._soft._read_write import _storage as storage_mod
 from tests.capability_marks import (
     NEEDS_FILE_MODE,
     NEEDS_FOREIGN_STICKY_TMP,
@@ -185,7 +185,7 @@ def test_live_lock_refuses_a_tree_another_account_planted_after_a_recovery(  # p
             for name in ("gen", "holders"):
                 (root / name).mkdir(parents=True)
             assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
-            mocker.patch("filelock.internal.filesystem._files.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+            mocker.patch("filelock._filesystem._files.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
             with pytest.raises(RuntimeError, match="not to this process's account"):
                 lock.acquire_write(timeout=0.5)
             assert list((root / "holders").iterdir()) == []
@@ -226,7 +226,7 @@ def test_stray_files_in_the_protocol_directories_are_ignored(lock_file: str, loc
 
 
 def test_record_zero_write_rolls_back(lock_file: str, mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.filesystem._files.os.write", return_value=0, autospec=True)
+    mocker.patch("filelock._filesystem._files.os.write", return_value=0, autospec=True)
 
     lock = SoftReadWriteLock(lock_file, is_singleton=False)
     with pytest.raises(OSError, match="0 bytes"):

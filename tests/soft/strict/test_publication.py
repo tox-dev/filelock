@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import StrictSoftFileLock, Timeout
-from filelock.internal.soft.strict._claims import _CLAIM_MAGIC
+from filelock._soft._strict._claims import _CLAIM_MAGIC
 
 from .claim_records import initialize_protocol
 
@@ -87,7 +87,7 @@ def _patch_claim_publication(
     mocker: MockerFixture, effect: Callable[[str, Callable[[], int | None]], int | None]
 ) -> None:
     if sys.platform == "win32":  # pragma: win32 cover
-        from filelock.internal.soft.strict._windows import publish_deletable_claim
+        from filelock._soft._strict._windows import publish_deletable_claim
 
         real_publish = publish_deletable_claim
 
@@ -102,7 +102,7 @@ def _patch_claim_publication(
             assert result is not None
             return result
 
-        mocker.patch("filelock.internal.soft.strict._lock.publish_deletable_claim", side_effect=publish, autospec=True)
+        mocker.patch("filelock._soft._strict._lock.publish_deletable_claim", side_effect=publish, autospec=True)
     else:  # pragma: win32 no cover
         real_link = os.link
 

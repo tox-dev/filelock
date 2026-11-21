@@ -41,7 +41,7 @@ def test_windows_oplock_on_lock_file_does_not_outlast_deadline(
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_nonblocking_acquire_does_not_wait_for_oplock(tmp_path: Path, mocker: MockerFixture) -> None:
     nt_open = mocker.patch(
-        "filelock.internal.filesystem.windows._handles._nt_open", return_value=(0, 0x00000108), autospec=True
+        "filelock._filesystem._windows._handles._nt_open", return_value=(0, 0x00000108), autospec=True
     )
 
     with pytest.raises(Timeout):
@@ -72,7 +72,7 @@ def test_windows_release_does_not_wait_for_an_oplock_taken_after_the_close(
 @pytest.mark.parametrize("name", [pytest.param("missing", id="name"), pytest.param("missing/a", id="path")])
 def test_windows_unlink_without_oplock_wait_reports_a_missing_file(tmp_path: Path, name: str) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import unlink_without_oplock_wait
+    from filelock._filesystem._windows import unlink_without_oplock_wait
 
     with pytest.raises(FileNotFoundError):
         unlink_without_oplock_wait(str(tmp_path / name))
@@ -81,7 +81,7 @@ def test_windows_unlink_without_oplock_wait_reports_a_missing_file(tmp_path: Pat
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_unlink_without_oplock_wait_reports_a_file_held_without_delete_sharing(tmp_path: Path) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import unlink_without_oplock_wait
+    from filelock._filesystem._windows import unlink_without_oplock_wait
 
     (path := tmp_path / "a").touch()
     fd = os.open(path, os.O_RDONLY)
@@ -97,7 +97,7 @@ def test_windows_unlink_without_oplock_wait_leaves_an_oplocked_file(
     tmp_path: Path, hold_oplock: Callable[[Path], Callable[[], None]]
 ) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import unlink_without_oplock_wait
+    from filelock._filesystem._windows import unlink_without_oplock_wait
 
     (path := tmp_path / "a").touch()
     hold_oplock(path)
@@ -109,7 +109,7 @@ def test_windows_unlink_without_oplock_wait_leaves_an_oplocked_file(
 @NEEDS_SYMLINK  # pragma: needs symlink
 def test_windows_unlink_without_oplock_wait_deletes_a_symlink_not_its_target(tmp_path: Path) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import unlink_without_oplock_wait
+    from filelock._filesystem._windows import unlink_without_oplock_wait
 
     (target := tmp_path / "target").touch()
     (link := tmp_path / "link").symlink_to(target)
@@ -122,7 +122,7 @@ def test_windows_unlink_without_oplock_wait_deletes_a_symlink_not_its_target(tmp
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_open_read_without_oplock_wait_reads_the_file(tmp_path: Path) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import open_read_without_oplock_wait
+    from filelock._filesystem._windows import open_read_without_oplock_wait
 
     (path := tmp_path / "a").write_bytes(b"marker")
     fd = open_read_without_oplock_wait(str(path))
@@ -135,7 +135,7 @@ def test_windows_open_read_without_oplock_wait_reads_the_file(tmp_path: Path) ->
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_open_read_without_oplock_wait_can_refuse_delete_sharing(tmp_path: Path) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import open_read_without_oplock_wait
+    from filelock._filesystem._windows import open_read_without_oplock_wait
 
     (path := tmp_path / "a").touch()
     fd = open_read_without_oplock_wait(str(path), share_delete=False)
@@ -149,7 +149,7 @@ def test_windows_open_read_without_oplock_wait_can_refuse_delete_sharing(tmp_pat
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_open_read_without_oplock_wait_reports_a_missing_file(tmp_path: Path) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import open_read_without_oplock_wait
+    from filelock._filesystem._windows import open_read_without_oplock_wait
 
     with pytest.raises(FileNotFoundError):
         open_read_without_oplock_wait(str(tmp_path / "missing"))
@@ -159,7 +159,7 @@ def test_windows_open_read_without_oplock_wait_reports_a_missing_file(tmp_path: 
 @NEEDS_SYMLINK  # pragma: needs symlink
 def test_windows_open_read_without_oplock_wait_refuses_a_symlink(tmp_path: Path) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import open_read_without_oplock_wait
+    from filelock._filesystem._windows import open_read_without_oplock_wait
 
     (target := tmp_path / "target").touch()
     (link := tmp_path / "link").symlink_to(target)
@@ -173,7 +173,7 @@ def test_windows_open_read_without_oplock_wait_refuses_a_symlink(tmp_path: Path)
 def test_windows_open_without_oplock_wait_reports_the_break_as_contention(
     oplocked_lock_path: Path, opener: str
 ) -> None:
-    from filelock.internal.filesystem import windows
+    from filelock._filesystem import _windows as windows
 
     finished, error = call_within(lambda: getattr(windows, opener)(str(oplocked_lock_path)), 5)
 
@@ -183,7 +183,7 @@ def test_windows_open_without_oplock_wait_reports_the_break_as_contention(
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_windows_cancelling_oplock_wait_ends_a_call_that_still_waits() -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import cancelling_oplock_wait
+    from filelock._filesystem._windows import cancelling_oplock_wait
 
     reader, writer = os.pipe()
 

@@ -14,8 +14,8 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import MarkerSoftFileLock, SoftFileLock, SoftFileLockProtocolError, StrictSoftFileLock, Timeout
-from filelock.internal.identity import host_name
-from filelock.internal.soft.strict._sentinel import publish_record
+from filelock._identity import host_name
+from filelock._soft._strict._sentinel import publish_record
 from tests.capability_marks import (
     NEEDS_SYMLINK,
 )
@@ -322,7 +322,7 @@ def test_strict_soft_sentinel_removed_after_publication_backs_off(tmp_path: Path
         return cleanup_error
 
     mocker.patch(
-        "filelock.internal.soft.strict._sentinel.publish_record",
+        "filelock._soft._strict._sentinel.publish_record",
         autospec=True,
         side_effect=legacy_break_lock_after_publication,
     )

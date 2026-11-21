@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from filelock import BaseAsyncFileLock
-from filelock.internal.core import override
+from filelock._core import override
 from tests.capability_marks import NEEDS_FORK, NEEDS_GENERATOR_EXCEPTION_CONTEXT
 
 if TYPE_CHECKING:

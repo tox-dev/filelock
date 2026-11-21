@@ -72,7 +72,7 @@ def write_denied_lock_file(
 @pytest.fixture
 def unsupported_flock(mocker: MockerFixture) -> MockType:  # pragma: needs fcntl
     return mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock",
+        "filelock._native._unix.fcntl.flock",
         side_effect=OSError(ENOSYS, "Function not implemented"),
         autospec=True,
     )

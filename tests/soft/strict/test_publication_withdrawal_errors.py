@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import StrictSoftFileLock
-from filelock.internal.soft.strict._files import SUPPORTS
+from filelock._soft._strict._directories import SUPPORTS
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

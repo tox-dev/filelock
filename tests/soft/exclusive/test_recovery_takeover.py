@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
-from filelock.internal.filesystem import exchange_names
-from filelock.internal.identity import process_start_token
-from filelock.internal.soft import STRICT_SOFT_SENTINEL_RECORD
+from filelock._filesystem import exchange_names
+from filelock._identity import process_start_token
+from filelock._soft import STRICT_SOFT_SENTINEL_RECORD
 from tests.capability_marks import (
     NEEDS_FOREIGN_STICKY_TMP,
     NEEDS_STALE_RECLAIM,
@@ -43,7 +43,7 @@ _PROCESS_DEADLINE: Final[int] = 30
 @pytest.mark.parametrize("break_route", ["no-exchange"], indirect=True)
 def test_stale_lock_rename_race(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(holder_record(DEAD_PID), encoding="utf-8")
-    mocker.patch("filelock.internal.identity._process.process_alive", return_value=False, autospec=True)
+    mocker.patch("filelock._identity._process.process_alive", return_value=False, autospec=True)
     mocker.patch.object(Path, "rename", side_effect=FileNotFoundError("already gone"), autospec=True)
     assert_times_out(lock_path)
 
@@ -190,7 +190,7 @@ def test_stale_break_leaves_a_marker_taken_since_its_first_look_on_the_path(  # 
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     (holder := tmp_path / "holder").write_text(live_record(record), encoding="utf-8")
     exchange = mocker.patch(
-        "filelock.internal.soft.exclusive._recovery.exchange_names", side_effect=exchange_names, autospec=True
+        "filelock._soft._exclusive._recovery.exchange_names", side_effect=exchange_names, autospec=True
     )
 
     def peer_takes_the_marker() -> None:
@@ -308,7 +308,7 @@ def test_stale_break_leaves_a_break_name_it_cannot_exchange(  # pragma: win32 no
     lock_path.write_text(holder_record(DEAD_PID), encoding="utf-8")
     recovery_name(lock_path).write_text(holder_record(os.getpid()), encoding="utf-8")
     mocker.patch(
-        "filelock.internal.filesystem._exchange._rename_call",
+        "filelock._filesystem._exchange._rename_call",
         return_value=(mocker.create_autospec(_exchange_call, return_value=error), 2),
         autospec=True,
     )

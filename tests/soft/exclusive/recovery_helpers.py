@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock
-from filelock.internal.identity import host_name, process_start_token
+from filelock._identity import host_name, process_start_token
 from tests.conftest import held_after_reclaim
 
 if TYPE_CHECKING:

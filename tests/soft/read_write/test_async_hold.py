@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import AsyncSoftReadWriteLock, SoftReadWriteLock, Timeout
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._storage import OsFiles
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 from .async_helpers import TASK_WAIT, BackendGate, make_async_lock, make_sync, read_and_probe, writer_gets_in

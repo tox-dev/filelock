@@ -102,7 +102,7 @@ def patch_connection(
         )
         return cast("sqlite3.Connection", connection)
 
-    mocker.patch("filelock.internal.sqlite._transactions.connect", side_effect=connect, autospec=True)
+    mocker.patch("filelock._sqlite._transactions.connect", side_effect=connect, autospec=True)
 
 
 def fail_rollback(

@@ -11,14 +11,14 @@ from typing import TYPE_CHECKING, Final, cast
 
 import pytest
 
-import filelock.internal.soft._lease as lease_mod
+import filelock._soft._lease as lease_mod
 from filelock import (
     FileLock,
     SoftFileLease,
     StrictSoftFileLock,
     Timeout,
 )
-from filelock.internal.identity import host_name
+from filelock._identity import host_name
 from tests.capability_marks import (
     NEEDS_STALE_RECLAIM,
 )
@@ -94,11 +94,11 @@ def test_lease_drops_lifetime_with_a_warning(marker: Path) -> None:
 def test_lease_supersedes_a_live_holder_once_its_claim_ages_out(marker: Path, mocker: MockerFixture) -> None:
     # Windows forbids removing a live holder's open marker.
     mocker.patch(
-        "filelock.internal.soft._lease.owner_is_stale",
+        "filelock._soft._lease.owner_is_stale",
         new=mocker.create_autospec(lease_mod.owner_is_stale, return_value=False),
     )
     mocker.patch(
-        "filelock.internal.soft.exclusive._recovery.time",
+        "filelock._soft._exclusive._recovery.time",
         new=SimpleNamespace(
             monotonic=mocker.create_autospec(time.monotonic, side_effect=itertools.count(step=DURATION)),
             sleep=time.sleep,
@@ -126,11 +126,11 @@ def test_native_lock_rejects_a_lease_duration(marker: Path) -> None:
 def test_lease_does_not_age_out_a_live_exclusive_owner(marker: Path, mocker: MockerFixture) -> None:
     # An exclusive owner never agreed to expire, so only proof of death may reclaim it, however long it sits unchanged.
     mocker.patch(
-        "filelock.internal.soft._lease.owner_is_stale",
+        "filelock._soft._lease.owner_is_stale",
         new=mocker.create_autospec(lease_mod.owner_is_stale, return_value=False),
     )
     mocker.patch(
-        "filelock.internal.soft.exclusive._recovery.time",
+        "filelock._soft._exclusive._recovery.time",
         new=SimpleNamespace(
             monotonic=mocker.create_autospec(time.monotonic, side_effect=itertools.count(step=DURATION)),
             sleep=time.sleep,
@@ -147,7 +147,7 @@ def test_lease_does_not_age_out_a_live_exclusive_owner(marker: Path, mocker: Moc
 def test_lease_keeps_a_claim_refreshed_by_a_host_whose_clock_lags(marker: Path, mocker: MockerFixture) -> None:
     # Clock skew makes a refreshed remote marker look old to this host.
     mocker.patch(
-        "filelock.internal.soft._lease.owner_is_stale",
+        "filelock._soft._lease.owner_is_stale",
         new=mocker.create_autospec(lease_mod.owner_is_stale, return_value=False),
     )
     marker.write_text(

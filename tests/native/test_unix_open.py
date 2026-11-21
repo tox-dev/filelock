@@ -119,7 +119,7 @@ def test_release_suppresses_eio_on_close(tmp_path: Path, mocker: MockerFixture) 
         if fd == fd_to_fail:  # pragma: no branch  # only the lock's own descriptor closes while the patch is live
             raise OSError(EIO, "Input/output error")
 
-    mocker.patch("filelock.internal.native._unix.os.close", side_effect=_close_eio, autospec=True)
+    mocker.patch("filelock._native._unix.os.close", side_effect=_close_eio, autospec=True)
     lock.release()
     assert not lock.is_locked
 
@@ -128,7 +128,7 @@ def test_release_suppresses_eio_on_close(tmp_path: Path, mocker: MockerFixture) 
 def test_acquire_flock_error_clears_pending_descriptor(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = UnixFileLock(tmp_path / "test.lock")
     failed_flock = mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock", side_effect=OSError(EIO, "Input/output error"), autospec=True
+        "filelock._native._unix.fcntl.flock", side_effect=OSError(EIO, "Input/output error"), autospec=True
     )
 
     with pytest.raises(OSError, match="Input/output error"):

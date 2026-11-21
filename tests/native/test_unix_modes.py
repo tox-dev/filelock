@@ -78,7 +78,7 @@ def test_creator_that_loses_the_flock_applies_mode(tmp_path: Path, mocker: Mocke
     lock_path = tmp_path / "resource.lock"
     # A peer may win the flock first, and only the creator may set the mode.
     mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock",
+        "filelock._native._unix.fcntl.flock",
         side_effect=OSError(EWOULDBLOCK, "Resource temporarily unavailable"),
         autospec=True,
     )

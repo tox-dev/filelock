@@ -8,11 +8,11 @@ from typing import TYPE_CHECKING, Final, Literal
 import pytest
 
 from filelock import SoftReadWriteLock
-from filelock.internal.soft.read_write import _storage as storage_mod
-from filelock.internal.soft.read_write._generations import GenerationLog, Snapshot
-from filelock.internal.soft.read_write._participant import Participant
-from filelock.internal.soft.read_write._storage import OsFiles
-from filelock.internal.soft.read_write._sweep import Ledger
+from filelock._soft._read_write import _storage as storage_mod
+from filelock._soft._read_write._generations import GenerationLog, Snapshot
+from filelock._soft._read_write._participant import Participant
+from filelock._soft._read_write._storage import OsFiles
+from filelock._soft._read_write._sweep import Ledger
 
 from .lock_helpers import make_lock
 
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 @pytest.fixture
 def flushes(mocker: MockerFixture) -> MockType:
     # Flushing hundreds of commits can stall Windows test runners.
-    return mocker.patch("filelock.internal.soft.read_write._storage.os.fsync", autospec=True)
+    return mocker.patch("filelock._soft._read_write._storage.os.fsync", autospec=True)
 
 
 @pytest.fixture

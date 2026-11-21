@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock.internal.soft.read_write import _generations as protocol_mod
-from filelock.internal.soft.read_write._generations import Snapshot
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write import _generations as protocol_mod
+from filelock._soft._read_write._generations import Snapshot
+from filelock._soft._read_write._storage import OsFiles
 
 from .conftest import FIRST, SECOND, committed, make_participant
 

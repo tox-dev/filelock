@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final, Literal, NoReturn
 
 import pytest
 
-import filelock.internal.sqlite._connection  # simplint: ignore[private-import-path]  # tests internal behavior
+import filelock._sqlite._connection  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import ReadWriteLock
 from tests.capability_marks import (
     NEEDS_AUDIT_EVENTS,
@@ -181,18 +181,18 @@ def test_read_write_lock_release_interrupted_once_its_probe_release_applies(
     lock.acquire_read()
     for peer in peers:
         peer.acquire_read()
-    release_locked = filelock.internal.sqlite._connection._ProbeDescriptors._release_locked
+    release_locked = filelock._sqlite._connection._ProbeDescriptors._release_locked
 
     # A signal handler runs once the release returns, before the drain dequeues it.
     def apply_then_interrupt(
-        descriptors: filelock.internal.sqlite._connection._ProbeDescriptors,
-        probe: filelock.internal.sqlite._connection._Probe,
+        descriptors: filelock._sqlite._connection._ProbeDescriptors,
+        probe: filelock._sqlite._connection._Probe,
     ) -> NoReturn:
         release_locked(descriptors, probe)
         raise KeyboardInterrupt
 
     mocker.patch.object(
-        filelock.internal.sqlite._connection._ProbeDescriptors,
+        filelock._sqlite._connection._ProbeDescriptors,
         "_release_locked",
         autospec=True,
         side_effect=apply_then_interrupt,
@@ -223,18 +223,18 @@ def test_read_write_lock_connect_interrupted_once_it_leases_a_probe_releases_it(
     for _ in range(idle_connections):
         with ReadWriteLock(lock_path, is_singleton=False).read_lock():
             pass
-    real = getattr(filelock.internal.sqlite._connection._ProbeDescriptors, taking)
+    real = getattr(filelock._sqlite._connection._ProbeDescriptors, taking)
 
     def lease_then_interrupt(
-        descriptors: filelock.internal.sqlite._connection._ProbeDescriptors,
+        descriptors: filelock._sqlite._connection._ProbeDescriptors,
         fd_or_database: int | str,
-        claimed: list[filelock.internal.sqlite._connection._Probe],
+        claimed: list[filelock._sqlite._connection._Probe],
     ) -> NoReturn:
         real(descriptors, fd_or_database, claimed)
         raise KeyboardInterrupt
 
     mocker.patch.object(
-        filelock.internal.sqlite._connection._ProbeDescriptors, taking, autospec=True, side_effect=lease_then_interrupt
+        filelock._sqlite._connection._ProbeDescriptors, taking, autospec=True, side_effect=lease_then_interrupt
     )
     with pytest.raises(KeyboardInterrupt):
         ReadWriteLock(lock_path, is_singleton=False).acquire_read()
@@ -250,9 +250,9 @@ def test_read_write_lock_finalized_while_probes_are_recorded_does_not_deadlock( 
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
     # The collector runs on whichever allocation trips it, here the one made while the probe table is locked.
-    real_probes = filelock.internal.sqlite._connection._InodeProbes
+    real_probes = filelock._sqlite._connection._InodeProbes
 
-    def collect_then_build() -> filelock.internal.sqlite._connection._InodeProbes:
+    def collect_then_build() -> filelock._sqlite._connection._InodeProbes:
         gc.collect()
         return real_probes()
 
@@ -262,7 +262,7 @@ def test_read_write_lock_finalized_while_probes_are_recorded_does_not_deadlock( 
         cycle.lock.acquire_read()
         cycle.itself = cycle
         del cycle
-        mocker.patch("filelock.internal.sqlite._connection._InodeProbes", autospec=True, side_effect=collect_then_build)
+        mocker.patch("filelock._sqlite._connection._InodeProbes", autospec=True, side_effect=collect_then_build)
         ReadWriteLock(tmp_path / "other.db", is_singleton=False).close()
     finally:
         gc.enable()

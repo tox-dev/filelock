@@ -10,7 +10,7 @@ pytest.importorskip("sqlite3")
 import sqlite3
 
 from filelock import ReadWriteLock, Timeout
-from filelock.internal.sqlite._connection import ForkSafeConnection
+from filelock._sqlite._connection import ForkSafeConnection
 from tests.capability_marks import SKIP_ON_UNRELIABLE_PROCESS_SYNC
 from tests.process_helpers import cleanup_processes
 from tests.read_write_helpers import Interrupt, assert_read_write_lock_state, interrupt_once

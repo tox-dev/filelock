@@ -166,8 +166,8 @@ def test_timeout_at_exact_deadline_with_virtual_clock(
     lock_path = tmp_path / "test.lock"
     with lock_type(lock_path):
         clock = mocker.create_autospec(time, perf_counter=lambda: elapsed, sleep=advance_clock)
-        mocker.patch("filelock.internal.core._context.time", new=clock)
-        mocker.patch("filelock.internal.core._acquire.time", new=clock)
+        mocker.patch("filelock._core._state.time", new=clock)
+        mocker.patch("filelock._core._acquire.time", new=clock)
         with pytest.raises(Timeout):
             lock_type(lock_path).acquire(timeout=1, poll_interval=0.25)
     assert elapsed == 1

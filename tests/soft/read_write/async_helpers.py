@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Concatenate, Final, Generic, ParamSpec, TypeVar
 
 from filelock import AsyncSoftReadWriteLock, SoftReadWriteLock, Timeout
-from filelock.internal.soft.read_write._generations import GenerationLog
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write._generations import GenerationLog
+from filelock._soft._read_write._storage import OsFiles
 
 if TYPE_CHECKING:
     from collections.abc import Callable

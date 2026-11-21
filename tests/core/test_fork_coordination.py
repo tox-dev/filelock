@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Literal
 import pytest
 
 from filelock import BaseFileLock, Timeout
-from filelock.internal.core import fork_transition, override
-from filelock.internal.core._fork import _FORK_STATE
+from filelock._core import fork_transition, override
+from filelock._core._fork import _FORK_STATE
 from tests.capability_marks import (
     NEEDS_FORK,
 )
@@ -249,7 +249,7 @@ import threading
 from types import FrameType
 
 from filelock import FileLock
-from filelock.internal.core._fork import _pin_fork_objects
+from filelock._core._fork import _pin_fork_objects
 
 fired = False
 

@@ -17,7 +17,7 @@ from filelock import (
     SoftReadWriteLock,
     Timeout,
 )
-from filelock.internal.core._fork import _FORK_STATE, _pid_namespace
+from filelock._core._fork import _FORK_STATE, _pid_namespace
 from tests.capability_marks import NEEDS_FORK
 from tests.fork_helpers import exit_child, fork_process
 
@@ -38,7 +38,7 @@ def test_child_with_matching_numeric_pid_preserves_parent_lock(
     path = str(tmp_path / "parent.lock")
     lock = lock_type(path, is_singleton=False)
     proxy = lock.acquire()
-    pid_mock = mocker.patch("filelock.internal.core._fork.os.getpid", return_value=os.getpid(), autospec=True)
+    pid_mock = mocker.patch("filelock._core._fork.os.getpid", return_value=os.getpid(), autospec=True)
 
     def cleanup_child() -> NoReturn:
         with pytest.raises(RuntimeError, match="inherited across fork"):
@@ -87,7 +87,7 @@ def early_child_callback():
 os.register_at_fork(after_in_child=early_child_callback)
 
 from filelock import FileLock, Timeout
-from filelock.internal.core._fork import _FORK_STATE
+from filelock._core._fork import _FORK_STATE
 
 parent = FileLock(parent_path, is_singleton=False)
 parent.acquire()
@@ -98,8 +98,8 @@ parent_namespace = _FORK_STATE.process_identity[1]
 def namespace():
     return parent_namespace if real_pid() == parent_pid else (-1, -1)
 
-with patch("filelock.internal.core._fork._pid_namespace", side_effect=namespace), patch(
-    "filelock.internal.core._fork.os.getpid", return_value=parent_pid
+with patch("filelock._core._fork._pid_namespace", side_effect=namespace), patch(
+    "filelock._core._fork.os.getpid", return_value=parent_pid
 ):
     child_pid = os.fork()
     if child_pid == 0:
@@ -143,7 +143,7 @@ def test_parent_keeps_hold_during_fork(
     lock = SoftFileLock(tmp_path / "parent.lock", is_singleton=False)
     with lock:
         mocker.patch.dict(_FORK_STATE.fork_owner_depths, {threading.get_ident() + thread_offset: 1})
-        mocker.patch("filelock.internal.core._fork._pid_namespace", return_value=namespace, autospec=True)
+        mocker.patch("filelock._core._fork._pid_namespace", return_value=namespace, autospec=True)
         with lock.acquire(timeout=0):
             assert lock.lock_counter == 2
 
@@ -158,8 +158,8 @@ def test_parent_keeps_hold_during_fork(
 def test_pid_namespace_identity(
     mocker: MockerFixture, result: os.stat_result | OSError, expected: tuple[int, int] | None
 ) -> None:
-    mocker.patch("filelock.internal.core._fork.sys.platform", "linux")
-    mocker.patch("filelock.internal.core._fork.pathlib.Path.stat", side_effect=[result], autospec=True)
+    mocker.patch("filelock._core._fork.sys.platform", "linux")
+    mocker.patch("filelock._core._fork.pathlib.Path.stat", side_effect=[result], autospec=True)
 
     assert _pid_namespace() == expected
 
@@ -173,7 +173,7 @@ def test_soft_read_write_child_with_matching_pid(
     path = str(tmp_path / "parent.lock")
     lock = SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5)
     lock.acquire_write()
-    pid_mock = mocker.patch("filelock.internal.core._fork.os.getpid", return_value=os.getpid(), autospec=True)
+    pid_mock = mocker.patch("filelock._core._fork.os.getpid", return_value=os.getpid(), autospec=True)
 
     def inherited_child() -> NoReturn:
         with pytest.raises(RuntimeError, match="invalidated by fork"):
@@ -226,7 +226,7 @@ def early_child_callback():
 os.register_at_fork(after_in_child=early_child_callback)
 
 from filelock import SoftReadWriteLock, Timeout
-from filelock.internal.core._fork import _FORK_STATE
+from filelock._core._fork import _FORK_STATE
 
 parent = SoftReadWriteLock(path, is_singleton=False, heartbeat_interval=0.1, stale_threshold=0.5)
 parent.acquire_write()
@@ -237,8 +237,8 @@ parent_namespace = _FORK_STATE.process_identity[1]
 def namespace():
     return parent_namespace if real_pid() == parent_pid else (-1, -1)
 
-with patch("filelock.internal.core._fork._pid_namespace", side_effect=namespace), patch(
-    "filelock.internal.core._fork.os.getpid", return_value=parent_pid
+with patch("filelock._core._fork._pid_namespace", side_effect=namespace), patch(
+    "filelock._core._fork.os.getpid", return_value=parent_pid
 ):
     child_pid = os.fork()
     if child_pid == 0:
@@ -282,7 +282,7 @@ def test_async_soft_read_write_child_with_matching_pid(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: needs hard-link
     lock = AsyncSoftReadWriteLock(str(tmp_path / "parent.lock"), is_singleton=False)
-    pid_mock = mocker.patch("filelock.internal.core._fork.os.getpid", return_value=os.getpid(), autospec=True)
+    pid_mock = mocker.patch("filelock._core._fork.os.getpid", return_value=os.getpid(), autospec=True)
 
     def inherited_child() -> NoReturn:
         with pytest.raises(RuntimeError, match="inherited across fork"):

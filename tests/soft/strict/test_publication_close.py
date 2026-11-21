@@ -10,9 +10,8 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import StrictSoftFileLock, Timeout
-from filelock.internal.soft.strict._files import _link_relative, _probe_link_follow_symlinks
-from filelock.internal.soft.strict._publication import open_relative
-from filelock.internal.soft.strict._sentinel import _open_sentinel
+from filelock._soft._strict._publication import _link_relative, _probe_link_follow_symlinks, open_relative
+from filelock._soft._strict._sentinel import _open_sentinel
 from tests.capability_marks import (
     NEEDS_SYMLINK,
     NEEDS_UNLINK_OPEN_FILE,
@@ -60,9 +59,7 @@ def test_strict_soft_private_close_failure_preserves_publication(
             private_fd = None  # the cleanup that follows opens a directory under the same number
             raise OSError(EIO, "private close failed")
 
-    mocker.patch(
-        "filelock.internal.soft.strict._publication.open_relative", side_effect=capture_private_record, autospec=True
-    )
+    mocker.patch("filelock._soft._strict._publication.open_relative", side_effect=capture_private_record, autospec=True)
     mocker.patch("os.close", side_effect=fail_private_close, autospec=True)
     lock = StrictSoftFileLock(lock_path)
 
@@ -135,7 +132,7 @@ def test_strict_soft_private_record_swap_does_not_link_target(tmp_path: Path, mo
     )
     supports_no_follow = _probe_link_follow_symlinks()
     mocker.stop(probe)
-    mocker.patch("filelock.internal.soft.strict._files._LINK_HONORS_FOLLOW_SYMLINKS", supports_no_follow)
+    mocker.patch("filelock._soft._strict._publication._LINK_HONORS_FOLLOW_SYMLINKS", supports_no_follow)
     real_link = _link_relative
 
     def swap_then_link(directory_ref: tuple[str, int | None], source_name: str, destination_name: str) -> None:
@@ -143,7 +140,7 @@ def test_strict_soft_private_record_swap_does_not_link_target(tmp_path: Path, mo
         source.symlink_to(target)
         real_link(directory_ref, source_name, destination_name)
 
-    mocker.patch("filelock.internal.soft.strict._files._link_relative", autospec=True, side_effect=swap_then_link)
+    mocker.patch("filelock._soft._strict._publication._link_relative", autospec=True, side_effect=swap_then_link)
 
     with pytest.raises(Timeout):
         StrictSoftFileLock(lock_path, timeout=0).acquire()
@@ -175,7 +172,7 @@ def test_strict_soft_sentinel_inspection_and_close_failure_group(tmp_path: Path,
         # Besides the sentinel this flow closes only the descriptor the lock creates the claim directory against.
         real_close(fd)  # pragma: needs dir-fd
 
-    mocker.patch("filelock.internal.soft.strict._sentinel._open_sentinel", side_effect=capture_sentinel, autospec=True)
+    mocker.patch("filelock._soft._strict._sentinel._open_sentinel", side_effect=capture_sentinel, autospec=True)
     mocker.patch("os.fstat", side_effect=fail_sentinel_inspection, autospec=True)
     mocker.patch("os.close", side_effect=fail_sentinel_close, autospec=True)
     lock = StrictSoftFileLock(lock_path)

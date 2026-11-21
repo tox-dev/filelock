@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import filelock.internal.soft.exclusive._publication  # simplint: ignore[private-import-path]  # tests internal behavior
-from filelock.internal.soft import MALFORMED_LOCK_AGE_THRESHOLD
+import filelock._soft._exclusive._publication  # simplint: ignore[private-import-path]  # tests internal behavior
+from filelock._soft import MALFORMED_LOCK_AGE_THRESHOLD
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,7 +26,7 @@ def lock_path(tmp_path: Path) -> Path:
 @pytest.fixture
 def soft_open_spy(mocker: MockerFixture) -> MockType:
     if sys.platform == "win32":  # pragma: win32 cover
-        return mocker.spy(filelock.internal.soft.exclusive._publication, "create_exclusive_non_reparse_fd")
+        return mocker.spy(filelock._soft._exclusive._publication, "create_exclusive_non_reparse_fd")
     return mocker.spy(os, "open")  # pragma: win32 no cover
 
 
@@ -34,7 +34,7 @@ def soft_open_spy(mocker: MockerFixture) -> MockType:
 def unchanged_past_grace(mocker: MockerFixture) -> None:
     # Each poll advances the observer's clock by one grace period.
     mocker.patch(
-        "filelock.internal.soft.exclusive._recovery.time",
+        "filelock._soft._exclusive._recovery.time",
         new=SimpleNamespace(
             monotonic=mocker.create_autospec(
                 time.monotonic, side_effect=itertools.count(step=MALFORMED_LOCK_AGE_THRESHOLD)

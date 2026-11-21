@@ -96,7 +96,7 @@ def _crash_during_private_publication(stage: str) -> str:
         from filelock import StrictSoftFileLock
 
         if os.name == "nt":
-            from filelock.internal.soft.strict import _windows as strict_windows
+            from filelock._soft._strict import _windows as strict_windows
 
             rename_claim = strict_windows.rename_open_file
 

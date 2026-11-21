@@ -12,9 +12,8 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
-from filelock.internal.soft.read_write import _storage as storage_mod
-from filelock.internal.soft.read_write._records import TreeReplacedError
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._soft._read_write import _storage as storage_mod
+from filelock._soft._read_write._storage import OsFiles, TreeReplacedError
 from tests.capability_marks import NEEDS_FOREIGN_STICKY_TMP
 
 if TYPE_CHECKING:
@@ -162,7 +161,7 @@ def test_write_head_replaces_the_previous_record(tmp_path: Path, mocker: MockerF
 @pytest.mark.parametrize(
     "operation",
     [
-        pytest.param("filelock.internal.soft.read_write._storage.write_all", id="write"),
+        pytest.param("filelock._soft._read_write._storage.write_all", id="write"),
         pytest.param("os.replace", id="rename"),
     ],
 )
@@ -375,7 +374,7 @@ def test_live_tree_rechecks_owner_with_same_inode(
     files = OsFiles(str(lock_path_in_shared_tmp))
     files.prepare(str(root))
     assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
-    mocker.patch("filelock.internal.filesystem._files.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+    mocker.patch("filelock._filesystem._files.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
 
     with pytest.raises(TreeReplacedError, match="not to this process's account"):
         files.listdir(str(root / "holders"))
@@ -403,7 +402,7 @@ def test_record_operations_recheck_the_owner_of_a_replaced_directory(  # pragma:
         for name in ("gen", "holders"):
             Path(root, name).mkdir(parents=True)
         assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
-        mocker.patch("filelock.internal.filesystem._files.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+        mocker.patch("filelock._filesystem._files.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
         with pytest.raises(RuntimeError, match="not to this process's account"):
             call(files, str(Path(root, "holders", "record")))
         assert list(Path(root, "holders").iterdir()) == []

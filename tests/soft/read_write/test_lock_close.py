@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftReadWriteLock
-from filelock.internal.soft.read_write._participant import Participant
+from filelock._soft._read_write._participant import Participant
 
 from .lock_helpers import holders, make_lock, read_state, writer_gets_in
 

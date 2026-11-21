@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from filelock import AsyncFileLock, FileLock, SoftFileLock, StrictSoftFileLock
-from filelock.internal.core import UNSET_FILE_MODE, BaseFileLock
+from filelock._core import UNSET_FILE_MODE, BaseFileLock
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -151,9 +151,7 @@ def test_strict_wide_directories_are_narrowed_only_when_owned(  # pragma: win32 
     for directory in (coordination, coordination / "claims"):
         directory.chmod(0o777)
     assert sys.platform != "win32"  # narrows os.geteuid for the type checker
-    mocker.patch(
-        "filelock.internal.soft.strict._lock.os.geteuid", autospec=True, return_value=os.geteuid() + int(not owned)
-    )
+    mocker.patch("filelock._soft._strict._lock.os.geteuid", autospec=True, return_value=os.geteuid() + int(not owned))
 
     with StrictSoftFileLock(tmp_path / "a.lock", mode=0o600):
         pass

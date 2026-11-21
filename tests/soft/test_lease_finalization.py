@@ -13,12 +13,12 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock.internal.soft.exclusive._publication as soft_mod
+import filelock._soft._exclusive._publication as soft_mod
 from filelock import (
     LeaseCompromise,
     SoftFileLease,
 )
-from filelock.internal.identity import host_name
+from filelock._identity import host_name
 from tests.capability_marks import (
     NEEDS_COLLECTED_FINALIZATION,
     NEEDS_PROMPT_FINALIZATION,
@@ -145,8 +145,8 @@ def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
         # The collected lease has closed its descriptor by the time the heartbeat inspects it.
         return SimpleNamespace(st_nlink=0, st_dev=0, st_ino=0) if fd == lease_fd else real_fstat(fd)
 
-    mocker.patch("filelock.internal.soft._lease.os.lstat", autospec=True, side_effect=lstat)
-    mocker.patch("filelock.internal.soft._lease.os.fstat", autospec=True, side_effect=fstat)
+    mocker.patch("filelock._soft._lease.os.lstat", autospec=True, side_effect=lstat)
+    mocker.patch("filelock._soft._lease.os.fstat", autospec=True, side_effect=fstat)
     for heartbeat in heartbeats:
         heartbeat.join(timeout=DURATION * 20)
 
@@ -179,7 +179,7 @@ def test_lease_takes_over_a_dead_owners_marker_with_its_own_lease_record(  # pra
 @NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
 def test_lease_dropped_on_its_heartbeat_thread_is_released_there(marker: Path, mocker: MockerFixture) -> None:
     # A finalizer on the heartbeat thread cannot wait for that same thread to stop.
-    mocker.patch("filelock.internal.soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    mocker.patch("filelock._soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
     holder: list[SoftFileLease] = []
     heartbeats: list[Thread] = []
 

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import MarkerSoftFileLock, SoftFileLock, Timeout
-from filelock.internal.filesystem import exchange_names
+from filelock._filesystem import exchange_names
 from tests.capability_marks import (
     NEEDS_STALE_RECLAIM,
 )
@@ -36,11 +36,11 @@ def test_stale_break_undoes_an_exchange_that_took_a_peers_marker(  # pragma: win
     exchange = exchange_names
 
     def peer_takes_the_path_then_exchange(first: str, second: str) -> bool:
-        mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", new=exchange)
+        mocker.patch("filelock._soft._exclusive._recovery.exchange_names", new=exchange)
         peer.replace(lock)
         return exchange(first, second)
 
-    mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", new=peer_takes_the_path_then_exchange)
+    mocker.patch("filelock._soft._exclusive._recovery.exchange_names", new=peer_takes_the_path_then_exchange)
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
 
@@ -65,7 +65,7 @@ def test_stale_break_restores_a_live_holder_after_interrupted_exchange(  # pragm
         assert exchange_names(aside, path)
         raise KeyboardInterrupt
 
-    mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", new=exchange_then_interrupt)
+    mocker.patch("filelock._soft._exclusive._recovery.exchange_names", new=exchange_then_interrupt)
     with pytest.raises(KeyboardInterrupt):
         lock_type(lock).acquire(blocking=False)
 
@@ -89,7 +89,7 @@ def test_stale_break_exchanges_back_after_the_breaker_that_took_its_marker(  # p
 
     _lose_to_a_live_holder(lock, live_record(record), mocker, lambda _aside, path: exchange_names(str(peer), path))
     mocker.patch(
-        "filelock.internal.filesystem._exchange.time",
+        "filelock._filesystem._exchange.time",
         autospec=True,
         wraps=time,
         monotonic=mocker.create_autospec(time.monotonic, side_effect=time.monotonic),
@@ -107,13 +107,13 @@ def _lose_to_a_live_holder(  # pragma: win32 no cover
     (holder := lock.with_name("holder")).write_text(live, encoding="utf-8")
 
     def exchange_after_the_holder_won(aside: str, path: str) -> bool:
-        mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", new=exchange_names)
+        mocker.patch("filelock._soft._exclusive._recovery.exchange_names", new=exchange_names)
         holder.replace(lock)
         exchange_names(aside, path)
         then(aside, path)
         return True
 
-    mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", new=exchange_after_the_holder_won)
+    mocker.patch("filelock._soft._exclusive._recovery.exchange_names", new=exchange_after_the_holder_won)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")
@@ -137,7 +137,7 @@ def test_stale_break_opens_a_ring_of_breakers_holding_each_others_markers(  # pr
 
     _lose_to_a_live_holder(lock, live_record(record), mocker, peer_then_our_exchange_out_of_turn)
     mocker.patch(
-        "filelock.internal.filesystem._exchange.time",
+        "filelock._filesystem._exchange.time",
         autospec=True,
         wraps=time,
         monotonic=mocker.create_autospec(time.monotonic, side_effect=time.monotonic),
@@ -174,7 +174,7 @@ def test_stale_break_keeps_its_marker_when_exchange_back_is_refused(  # pragma: 
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     _lose_to_a_live_holder(lock, live_record(record), mocker, lambda _aside, _path: None)
     mocker.patch(
-        "filelock.internal.filesystem._exchange.exchange_names",
+        "filelock._filesystem._exchange.exchange_names",
         side_effect=[False, AssertionError("retried refused exchange")],
         autospec=True,
     )
@@ -215,7 +215,7 @@ def test_stale_break_cleans_its_marker_when_the_break_name_becomes_a_directory( 
     def holder_moves_the_break_name(break_name: str, path: str) -> bool:
         nonlocal aside
         aside = break_name
-        mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", new=exchange_names)
+        mocker.patch("filelock._soft._exclusive._recovery.exchange_names", new=exchange_names)
         holder.replace(lock)
         exchange_names(break_name, path)
         Path(break_name).rename(tmp_path / "taken")
@@ -232,7 +232,7 @@ def test_stale_break_cleans_its_marker_when_the_break_name_becomes_a_directory( 
                     Path(path).mkdir()
             raise
 
-    mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", new=holder_moves_the_break_name)
+    mocker.patch("filelock._soft._exclusive._recovery.exchange_names", new=holder_moves_the_break_name)
     mocker.patch.object(os, "lstat", new=replace_the_missing_break_name)
     with pytest.raises(Timeout):
         MarkerSoftFileLock(lock).acquire(blocking=False)

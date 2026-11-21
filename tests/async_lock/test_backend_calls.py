@@ -95,7 +95,7 @@ async def test_coroutine_acquire_without_holding_polls_and_skips_on_acquired(tmp
 @NEEDS_FCNTL
 @pytest.mark.asyncio  # pragma: needs fcntl
 async def test_fallback_to_soft_disabled_raises_enosys(tmp_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
     lock = AsyncFileLock(str(tmp_path / "a"), fallback_to_soft=False)
     with pytest.raises(OSError, match="no flock"):
         await lock.acquire()
@@ -111,7 +111,7 @@ async def test_fallback_to_soft_reprobes_after_chdir(
 ) -> None:
     first, second = working_directories
     unsupported_flock = mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True
+        "filelock._native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True
     )
     lock = AsyncFileLock("a", run_in_executor=False)
     async with lock:

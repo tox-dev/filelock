@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock, Timeout
-from filelock.internal.filesystem import exchange_names
-from filelock.internal.soft import read_lock_file
-from filelock.internal.soft.exclusive._recovery import _begin_claim, _end_claim
+from filelock._filesystem import exchange_names
+from filelock._soft import read_lock_file
+from filelock._soft._exclusive._recovery import _begin_claim, _end_claim
 from tests.capability_marks import (
     NEEDS_STALE_RECLAIM,
 )
@@ -64,7 +64,7 @@ def test_stale_break_restores_under_an_exclusive_claim(  # pragma: win32 no cove
         rival.join()
         unlink(path, missing_ok=missing_ok)
 
-    mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", new=exchange_with_rival)
+    mocker.patch("filelock._soft._exclusive._recovery.exchange_names", new=exchange_with_rival)
     mocker.patch.object(Path, "unlink", new=unlink_after_the_rival_finished)
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
@@ -187,7 +187,7 @@ def test_stale_break_retries_a_claim_whose_return_failed(  # pragma: win32 no co
     recovery_name(lock).write_text(foreign, encoding="utf-8")
     _refuse_returning_a_claim(mocker)
     mocker.patch(
-        "filelock.internal.soft.exclusive._recovery.exchange_names",
+        "filelock._soft._exclusive._recovery.exchange_names",
         autospec=True,
         return_value=False,
     )
@@ -229,7 +229,7 @@ def test_stale_break_finishes_a_claim_an_unreadable_record_interrupted(  # pragm
         return read(path)
 
     _refuse_returning_a_claim(mocker)
-    mocker.patch("filelock.internal.soft.exclusive._recovery.read_lock_file", new=read_unless_claimed)
+    mocker.patch("filelock._soft._exclusive._recovery.read_lock_file", new=read_unless_claimed)
     with pytest.raises(Timeout):
         lock_type(lock).acquire(blocking=False)
     left: Final[list[Path]] = list(tmp_path.glob(f"test.lock.restore.{os.getpid()}.*"))
@@ -256,7 +256,7 @@ def test_stale_break_waits_for_a_claim_another_thread_is_working(  # pragma: win
         release.wait(5)
         return exchange(first, second)
 
-    mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", new=exchange_when_released)
+    mocker.patch("filelock._soft._exclusive._recovery.exchange_names", new=exchange_when_released)
     worker: Final[threading.Thread] = threading.Thread(target=_acquire, args=(lock_type, lock))
     worker.start()
     assert working.wait(5)
@@ -332,7 +332,7 @@ def test_stale_break_stops_when_the_claim_is_already_registered(  # pragma: win3
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     foreign: Final[str] = record.replace(HOST, "elsewhere")
     recovery_name(lock).write_text(foreign, encoding="utf-8")
-    mocker.patch("filelock.internal.soft.exclusive._recovery.secrets.token_hex", return_value="a" * 32, autospec=True)
+    mocker.patch("filelock._soft._exclusive._recovery.secrets.token_hex", return_value="a" * 32, autospec=True)
     registered: Final[str] = f"{lock!s}.restore.{os.getpid()}.{'a' * 32}"
     assert _begin_claim(registered)
     try:
@@ -352,7 +352,7 @@ def test_stale_break_claim_identity_ignores_path_spelling(  # pragma: win32 no c
     (lock := tmp_path / "test.lock").write_text(record, encoding="utf-8")
     foreign: Final[str] = record.replace(HOST, "elsewhere")
     recovery_name(lock).write_text(foreign, encoding="utf-8")
-    mocker.patch("filelock.internal.soft.exclusive._recovery.secrets.token_hex", return_value="a" * 32, autospec=True)
+    mocker.patch("filelock._soft._exclusive._recovery.secrets.token_hex", return_value="a" * 32, autospec=True)
     registered: Final[Path] = Path(f"{lock}.restore.{os.getpid()}.{'a' * 32}")
     assert _begin_claim(registered)
     monkeypatch.chdir(tmp_path)
@@ -391,8 +391,8 @@ def test_stale_break_releases_the_registration_when_recovery_is_interrupted(  # 
 
     target, interruption = {
         "rename": ("pathlib.Path.rename", rename_then_interrupt),
-        "read": ("filelock.internal.soft.exclusive._recovery.read_lock_file", read_the_claim_then_interrupt),
-        "exchange": ("filelock.internal.soft.exclusive._recovery.exchange_names", exchange_then_interrupt),
+        "read": ("filelock._soft._exclusive._recovery.read_lock_file", read_the_claim_then_interrupt),
+        "exchange": ("filelock._soft._exclusive._recovery.exchange_names", exchange_then_interrupt),
     }[interrupted]
     mocker.patch(target, new=interruption)
     with pytest.raises(KeyboardInterrupt):

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import AsyncFileLock, AsyncSoftFileLock, BaseAsyncFileLock, Timeout
-from filelock.internal.async_lock import AsyncTransitionGate
+from filelock._async_lock import AsyncTransitionGate
 from tests.async_lock.cancellation import (
     assert_cancellation_message,
     assert_file_lock_state,

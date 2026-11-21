@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Final, NoReturn
 import pytest
 
 from filelock import StrictSoftFileLock, Timeout
-from filelock.internal.soft.strict._publication import unlink_in_directory
-from filelock.internal.soft.strict._scan import reclaim_private_record
+from filelock._soft._strict._directories import reclaim_private_record
+from filelock._soft._strict._publication import unlink_in_directory
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,7 +34,7 @@ def test_strict_soft_release_with_a_shared_reader_removes_claims(
     initialized_lock_path: Path, mocker: MockerFixture, prepare: Callable[[MockerFixture], None]
 ) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import _oplocks as oplocks
+    from filelock._filesystem._windows import _oplocks as oplocks
 
     prepare(mocker)
     lock = StrictSoftFileLock(initialized_lock_path, timeout=0)
@@ -53,10 +53,10 @@ def test_strict_soft_release_with_a_shared_reader_removes_claims(
     [
         pytest.param(
             lambda _: None,
-            "filelock.internal.filesystem.windows._handles.try_set_delete_disposition",
+            "filelock._filesystem._windows._handles.try_set_delete_disposition",
             id="posix-disposition",
         ),
-        pytest.param(mock_legacy_volume, "filelock.internal.soft.strict._windows.rename_open_file", id="legacy-rename"),
+        pytest.param(mock_legacy_volume, "filelock._soft._strict._windows.rename_open_file", id="legacy-rename"),
     ],
 )
 def test_strict_soft_release_waits_for_windows_io(
@@ -154,7 +154,7 @@ def test_strict_soft_windows_claim_collision_keeps_peer(
 ) -> None:
     assert sys.platform == "win32"
     token = "f" * 32
-    from filelock.internal.soft.strict._windows import publish_deletable_claim
+    from filelock._soft._strict._windows import publish_deletable_claim
 
     real_publish = publish_deletable_claim
     claims = Path(f"{initialized_lock_path}.filelock") / "claims"
@@ -172,7 +172,7 @@ def test_strict_soft_windows_claim_collision_keeps_peer(
         return real_publish(private_path, public_path, record, descriptors, deadline)
 
     mocker.patch("secrets.token_hex", return_value=token, autospec=True)
-    mocker.patch("filelock.internal.soft.strict._lock.publish_deletable_claim", side_effect=collide, autospec=True)
+    mocker.patch("filelock._soft._strict._lock.publish_deletable_claim", side_effect=collide, autospec=True)
     lock = StrictSoftFileLock(initialized_lock_path, timeout=0)
     with pytest.raises(error_type):
         lock.acquire()
@@ -191,7 +191,7 @@ def test_strict_soft_windows_coordination_directory_stays_in_place(initialized_l
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_strict_soft_windows_failed_claim_publication_removes_private(tmp_path: Path) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.soft.strict._windows import publish_deletable_claim
+    from filelock._soft._strict._windows import publish_deletable_claim
 
     private = tmp_path / "private.claim"
     public = tmp_path / "public.claim"
@@ -206,7 +206,7 @@ def test_strict_soft_windows_failed_claim_publication_removes_private(tmp_path: 
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_strict_soft_windows_private_name_collision_preserves_peer(tmp_path: Path) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.soft.strict._windows import publish_deletable_claim
+    from filelock._soft._strict._windows import publish_deletable_claim
 
     private = tmp_path / "private.claim"
     private.write_bytes(b"peer")
@@ -234,7 +234,7 @@ def test_strict_soft_scan_tolerates_disappearing_private_record(
         reclaim(directory_ref, name, now)
 
     mocker.patch(
-        "filelock.internal.soft.strict._scan.reclaim_private_record",
+        "filelock._soft._strict._scan.reclaim_private_record",
         side_effect=remove_before_inspection,
         autospec=True,
     )
@@ -261,7 +261,7 @@ def test_strict_soft_release_accepts_a_claim_already_removed(
         raise FileNotFoundError(ENOENT, "claim gone")
 
     removal = mocker.patch(
-        "filelock.internal.soft.strict._publication.unlink_in_directory", side_effect=removed, autospec=True
+        "filelock._soft._strict._publication.unlink_in_directory", side_effect=removed, autospec=True
     )
     lock.release()
     mocker.stop(removal)

@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock.internal.identity._process  # simplint: ignore[private-import-path]  # tests internal behavior
-from filelock.internal.identity import host_name, owner_is_stale, process_alive, process_start_token
+import filelock._identity._process  # simplint: ignore[private-import-path]  # tests internal behavior
+from filelock._identity import host_name, owner_is_stale, process_alive, process_start_token
 from tests.pid_namespace_helpers import (
     INITIAL_PID_NAMESPACE,
     INITIAL_TIME_NAMESPACE,
@@ -57,7 +57,7 @@ def test_process_alive_false_for_exited_child_still_referenced() -> None:
 @_POSIX_ONLY
 def test_process_alive_reads_permission_denied_as_alive(mocker: MockerFixture) -> None:  # pragma: win32 no cover
     mocker.patch(
-        "filelock.internal.identity._process.os.kill",
+        "filelock._identity._process.os.kill",
         side_effect=OSError(EPERM, "operation not permitted"),
         autospec=True,
     )
@@ -66,9 +66,7 @@ def test_process_alive_reads_permission_denied_as_alive(mocker: MockerFixture) -
 
 @_POSIX_ONLY
 def test_process_alive_reraises_unexpected_errno(mocker: MockerFixture) -> None:  # pragma: win32 no cover
-    mocker.patch(
-        "filelock.internal.identity._process.os.kill", side_effect=OSError(ENODEV, "no such device"), autospec=True
-    )
+    mocker.patch("filelock._identity._process.os.kill", side_effect=OSError(ENODEV, "no such device"), autospec=True)
     with pytest.raises(OSError, match="no such device"):  # pragma: win32 no cover
         process_alive(_DEAD_PID)
 
@@ -164,7 +162,7 @@ def test_zero_offset_cache_requires_the_same_pinned_namespace(
         f"/proc/{Path('/proc/thread-self').readlink().name}/timens_offsets": offsets,
     }
     mocker.patch(
-        "filelock.internal.identity._process.Path", autospec=True, side_effect=lambda name: mapped.get(name, Path(name))
+        "filelock._identity._process.Path", autospec=True, side_effect=lambda name: mapped.get(name, Path(name))
     )
     pid = os.getpid()
     assert (token := process_start_token(pid)) is not None
@@ -197,7 +195,7 @@ def test_process_start_token_read_only_from_a_proc_of_this_pid_namespace(
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS sysctl probe")
 def test_darwin_sysctl_probe_failure_reads_no_token(mocker: MockerFixture) -> None:  # pragma: darwin cover
-    mocker.patch("filelock.internal.identity._process._LIBC.sysctl", return_value=-1, autospec=True)
+    mocker.patch("filelock._identity._process._LIBC.sysctl", return_value=-1, autospec=True)
     assert process_start_token(os.getpid()) is None
 
 
@@ -278,7 +276,7 @@ def test_owner_is_stale_live_process_with_boot_id_mounted_over_for_holder_held(
     mount_over_boot_id(same_device)
     token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
-    importlib.reload(filelock.internal.identity._process)
+    importlib.reload(filelock._identity._process)
     assert owner_is_stale(os.getpid(), host_name(), token) is False
 
 
@@ -292,12 +290,12 @@ if sys.platform in {"linux", "android"}:  # pragma: linux cover
         mounts.parent.mkdir()
         mounts.write_text("1 0 0:10 / /mnt/café rw - tmpfs tmpfs rw\n", encoding="utf-8")
         mocker.patch.object(
-            filelock.internal.identity._process,
+            filelock._identity._process,
             "Path",
             autospec=True,
             side_effect=lambda path: tmp_path / path.lstrip("/"),
         )
-        assert filelock.internal.identity._process._read_boot_id() == 42
+        assert filelock._identity._process._read_boot_id() == 42
 
 
 @_LINUX_ONLY  # pragma: linux cover
@@ -305,12 +303,12 @@ def test_unreadable_mountinfo_keeps_only_starttime(mocker: MockerFixture) -> Non
     token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     blocked = mocker.patch.object(Path, "open", autospec=True, side_effect=PermissionError(EACCES, "denied"))
-    importlib.reload(filelock.internal.identity._process)
+    importlib.reload(filelock._identity._process)
     mocker.stop(blocked)
     try:
         assert process_start_token(os.getpid()) == token % 2**64
     finally:
-        importlib.reload(filelock.internal.identity._process)
+        importlib.reload(filelock._identity._process)
 
 
 @_LINUX_ONLY  # pragma: linux cover
@@ -421,7 +419,7 @@ def test_owner_is_stale_task_name_shaped_like_a_namespace_line_reclaimed(
 )
 def test_owner_is_stale_dead_owner_by_start_token_reclaimed(boot_flip: int, scans: int, mocker: MockerFixture) -> None:
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
-    scandir = mocker.patch("filelock.internal.identity._process.os.scandir", autospec=True, side_effect=os.scandir)
+    scandir = mocker.patch("filelock._identity._process.os.scandir", autospec=True, side_effect=os.scandir)
     token: Final[int | None] = process_start_token(os.getpid())
     assert token is not None
     assert (owner_is_stale(_DEAD_PID, host_name(), token ^ boot_flip), scandir.call_count) == (True, scans)
@@ -431,7 +429,7 @@ def test_owner_is_stale_dead_owner_by_start_token_reclaimed(boot_flip: int, scan
 def test_owner_is_stale_without_a_readable_proc_reclaimed(mocker: MockerFixture) -> None:  # pragma: linux cover
     pin_pid_namespace(mocker, INITIAL_PID_NAMESPACE)
     mocker.patch(
-        "filelock.internal.identity._process.os.scandir", autospec=True, side_effect=PermissionError(EACCES, "hidepid")
+        "filelock._identity._process.os.scandir", autospec=True, side_effect=PermissionError(EACCES, "hidepid")
     )
     assert owner_is_stale(_DEAD_PID, host_name(), process_start_token(os.getpid())) is True
 
@@ -450,5 +448,5 @@ def test_owner_is_stale_sibling_pid_namespace_never_reclaimed(mocker: MockerFixt
 
 def test_owner_is_stale_live_process_unreadable_token_held(mocker: MockerFixture) -> None:
     # A live PID whose current start token cannot be read is indistinguishable from the recorded owner, so it holds.
-    mocker.patch("filelock.internal.identity._process.process_start_token", return_value=None, autospec=True)
+    mocker.patch("filelock._identity._process.process_start_token", return_value=None, autospec=True)
     assert owner_is_stale(os.getpid(), host_name(), 987654) is False

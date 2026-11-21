@@ -12,14 +12,22 @@ A platform independent file lock that supports the with-statement.
 
 from __future__ import annotations
 
-__lazy_modules__ = ["filelock.internal.core", "importlib"]
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    assert __spec__ is not None
+
+__lazy_modules__ = ["importlib", f"{__spec__.parent}._core"]
 
 import sys
 import warnings
 from importlib import import_module
 from typing import TYPE_CHECKING, Final
 
-from filelock.internal.core import (
+# Keeps ``filelock.version`` the string 4.0.12 exposed rather than the submodule.
+from filelock.version import version
+
+from ._core import (
     AcquireReturnProxy,
     BaseFileLock,
     CloseErrorPolicy,
@@ -31,16 +39,13 @@ from filelock.internal.core import (
     SoftFileLockProtocolError,
     Timeout,
 )
-from filelock.internal.native import (
+from ._native import (
     UnixFileLock,
     WindowsFileLock,
     lock_descriptor,
     unlock_descriptor,
 )
-from filelock.internal.native import has_fcntl as unix_has_fcntl
-
-# Keeps ``filelock.version`` the string 4.0.12 exposed rather than the submodule.
-from filelock.version import version
+from ._native import has_fcntl as unix_has_fcntl
 
 if TYPE_CHECKING:
     from filelock import asyncio
@@ -53,7 +58,8 @@ if TYPE_CHECKING:
         AsyncWindowsFileLock,
         BaseAsyncFileLock,
     )
-    from filelock.internal.soft import (
+
+    from ._soft import (
         AsyncAcquireSoftReadWriteReturnProxy,
         AsyncSoftReadWriteLock,
         CompromiseReason,
@@ -68,7 +74,7 @@ if TYPE_CHECKING:
         StrictSoftFileClaimState,
         StrictSoftFileLock,
     )
-    from filelock.internal.sqlite import (
+    from ._sqlite import (
         AsyncAcquireReadWriteReturnProxy,
         AsyncReadWriteLock,
         ReadWriteLock,
@@ -90,7 +96,7 @@ else:  # pragma: win32 no cover # ruff:ignore[collapsible-else-if]  # the else c
     if has_fcntl:
         _FileLock: type[BaseFileLock] = UnixFileLock
     else:
-        from filelock.internal.soft import SoftFileLock
+        from ._soft import SoftFileLock
 
         _FileLock = SoftFileLock
         warnings.warn("only soft file lock is available", stacklevel=2)
@@ -106,30 +112,30 @@ else:
 
 # Importing asyncio and sqlite3 costs more than the rest of the package, so names that need them load on first access.
 _LAZY_ATTRIBUTES: Final[dict[str, str]] = {
-    "AsyncAcquireReadWriteReturnProxy": ".internal.sqlite",
+    "AsyncAcquireReadWriteReturnProxy": "._sqlite",
     "AsyncAcquireReturnProxy": ".asyncio",
-    "AsyncAcquireSoftReadWriteReturnProxy": ".internal.soft",
+    "AsyncAcquireSoftReadWriteReturnProxy": "._soft",
     "AsyncFileLock": ".asyncio",
-    "AsyncReadWriteLock": ".internal.sqlite",
+    "AsyncReadWriteLock": "._sqlite",
     "AsyncSoftFileLease": ".asyncio",
     "AsyncSoftFileLock": ".asyncio",
-    "AsyncSoftReadWriteLock": ".internal.soft",
+    "AsyncSoftReadWriteLock": "._soft",
     "AsyncStrictSoftFileLock": ".asyncio",
     "AsyncUnixFileLock": ".asyncio",
     "AsyncWindowsFileLock": ".asyncio",
     "BaseAsyncFileLock": ".asyncio",
-    "CompromiseReason": ".internal.soft",
-    "LeaseCompromise": ".internal.soft",
-    "MarkerSoftFileLock": ".internal.soft",
-    "OwnerMode": ".internal.soft",
-    "OwnerRecord": ".internal.soft",
-    "ReadWriteLock": ".internal.sqlite",
-    "SoftFileLease": ".internal.soft",
-    "SoftFileLock": ".internal.soft",
-    "SoftReadWriteLock": ".internal.soft",
-    "StrictSoftFileClaim": ".internal.soft",
-    "StrictSoftFileClaimState": ".internal.soft",
-    "StrictSoftFileLock": ".internal.soft",
+    "CompromiseReason": "._soft",
+    "LeaseCompromise": "._soft",
+    "MarkerSoftFileLock": "._soft",
+    "OwnerMode": "._soft",
+    "OwnerRecord": "._soft",
+    "ReadWriteLock": "._sqlite",
+    "SoftFileLease": "._soft",
+    "SoftFileLock": "._soft",
+    "SoftReadWriteLock": "._soft",
+    "StrictSoftFileClaim": "._soft",
+    "StrictSoftFileClaimState": "._soft",
+    "StrictSoftFileLock": "._soft",
     "asyncio": ".asyncio",
 }
 
@@ -150,7 +156,7 @@ def __getattr__(
         # Only a missing sqlite3 module (the package, CPython's _sqlite3, PyPy's _sqlite3_cffi) leaves the read-write
         # locks None; a frozen application that left out a filelock module gets the error that names it.
         sqlite_missing = (error.name or "").startswith(("sqlite3", "_sqlite3"))
-        if module_name != ".internal.sqlite" or not sqlite_missing:
+        if module_name != "._sqlite" or not sqlite_missing:
             raise
         value = None  # pragma: lacks sqlite3
     globals()[name] = value

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from filelock import SoftFileLock, UnixFileLock
-from filelock.internal.filesystem import exchange_names
+from filelock._filesystem import exchange_names
 from tests.capability_marks import NEEDS_FCNTL, NEEDS_STALE_RECLAIM
 from tests.native.conftest import interrupt_unix_create
 
@@ -66,7 +66,7 @@ def test_named_probe_is_unlinked_before_flock(tmp_path: Path, mocker: MockerFixt
         links.append(os.fstat(fd).st_nlink)
         raise OSError(ENOSYS, "no flock")
 
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", autospec=True, side_effect=unsupported)
+    mocker.patch("filelock._native._unix.fcntl.flock", autospec=True, side_effect=unsupported)
     with pytest.warns(UserWarning, match="falling back"), UnixFileLock(tmp_path / "test.lock") as lock:
         assert lock.pid == os.getpid()
     assert links == [0]
@@ -118,7 +118,7 @@ def test_interrupted_probe_leaves_a_replacement_alone(
         return fd
 
     mocker.patch("os.open", autospec=True, side_effect=replace_after_open)
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", autospec=True, side_effect=KeyboardInterrupt)
+    mocker.patch("filelock._native._unix.fcntl.flock", autospec=True, side_effect=KeyboardInterrupt)
     with pytest.raises(KeyboardInterrupt):
         UnixFileLock(tmp_path / "test.lock").acquire(timeout=0)
     (probe,) = tmp_path.iterdir()
@@ -130,7 +130,7 @@ def test_interrupted_probe_leaves_a_replacement_alone(
 def test_interrupted_unix_create_marks_fallback_placeholder(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: needs fcntl
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
     lock_path = tmp_path / "test.lock"
     interrupt_unix_create(UnixFileLock(lock_path, mode=0o600))
     assert lock_path.read_bytes().startswith(b"filelock/break\n")
@@ -140,7 +140,7 @@ def test_interrupted_unix_create_marks_fallback_placeholder(
 def test_interrupted_unix_create_honors_disabled_fallback(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: needs fcntl
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=OSError(ENOSYS, "no flock"), autospec=True)
     lock_path = tmp_path / "test.lock"
     interrupt_unix_create(UnixFileLock(lock_path, fallback_to_soft=False))
     assert lock_path.exists()
@@ -210,7 +210,7 @@ def test_interrupted_publication_keeps_replacement(
 def test_interrupted_open_preserves_marker_when_exchange_fails(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    mocker.patch("filelock.internal.native._unix.exchange_names", autospec=True, return_value=False)
+    mocker.patch("filelock._native._unix.exchange_names", autospec=True, return_value=False)
     lock_path = tmp_path / "test.lock"
     interrupt_unix_create(UnixFileLock(lock_path, mode=0o600))
     assert (list(tmp_path.iterdir()), lock_path.read_bytes()) == ([lock_path], b"")
@@ -226,7 +226,7 @@ def test_interrupted_exchange_keeps_the_recovery_marker(  # pragma: needs fcntl
         assert exchange_names(source, target)
         raise KeyboardInterrupt
 
-    mocker.patch("filelock.internal.native._unix.exchange_names", side_effect=exchange_then_interrupt, autospec=True)
+    mocker.patch("filelock._native._unix.exchange_names", side_effect=exchange_then_interrupt, autospec=True)
     lock_path = tmp_path / "test.lock"
     interrupt_unix_create(UnixFileLock(lock_path, mode=0o600))
     assert (list(tmp_path.iterdir()), lock_path.read_bytes()) == (
@@ -256,12 +256,10 @@ def test_interrupted_open_keeps_existing_private_name(  # pragma: needs fcntl
 def test_writable_target_requires_exchange_when_its_flock_differs(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture, *, exchange: bool
 ) -> None:
-    mocker.patch(
-        "filelock.internal.native._unix.fcntl.flock", autospec=True, side_effect=[None, OSError(ENOSYS, "no flock")]
-    )
-    mocker.patch("filelock.internal.native._unix.exchange_supported", autospec=True, return_value=exchange)
-    mocker.patch("filelock.internal.native._unix.exchange_names", autospec=True, return_value=False)
-    mocker.patch("filelock.internal.soft.exclusive._recovery.exchange_names", autospec=True, return_value=False)
+    mocker.patch("filelock._native._unix.fcntl.flock", autospec=True, side_effect=[None, OSError(ENOSYS, "no flock")])
+    mocker.patch("filelock._native._unix.exchange_supported", autospec=True, return_value=exchange)
+    mocker.patch("filelock._native._unix.exchange_names", autospec=True, return_value=False)
+    mocker.patch("filelock._soft._exclusive._recovery.exchange_names", autospec=True, return_value=False)
     lock = UnixFileLock(tmp_path / "test.lock", mode=0o666)
     with pytest.raises(PermissionError, match="soft fallback needs a private marker"):
         lock.acquire(timeout=0)
@@ -273,7 +271,7 @@ def test_writable_target_requires_exchange_when_its_flock_differs(  # pragma: ne
 def test_private_probe_propagates_handler_timeout(  # pragma: needs fcntl
     tmp_path: Path, mocker: MockerFixture, operation: str
 ) -> None:
-    mocker.patch(f"filelock.internal.native._unix.{operation}", autospec=True, side_effect=TimeoutError("deadline"))
+    mocker.patch(f"filelock._native._unix.{operation}", autospec=True, side_effect=TimeoutError("deadline"))
     with pytest.raises(TimeoutError, match="deadline"):
         UnixFileLock(tmp_path / "test.lock").acquire(timeout=0)
     assert list(tmp_path.iterdir()) == []
@@ -331,7 +329,7 @@ def test_target_rejects_flock_after_a_denied_probe(  # pragma: needs fcntl
     mocker: MockerFixture,
 ) -> None:
     assert sys.platform != "win32"
-    mocker.patch("filelock.internal.native._unix.exchange_supported", autospec=True, return_value=False)
+    mocker.patch("filelock._native._unix.exchange_supported", autospec=True, return_value=False)
     lock_path = tmp_path / "test.lock"
     with pytest.warns(UserWarning, match="falling back"), make_lock(lock_path) as lock:
         assert (lock.pid, restricted_creation_modes, stat.S_IMODE(lock_path.stat().st_mode)) == (

@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLock
-from filelock.internal.identity import process_start_token
-from filelock.internal.soft._records import (
+from filelock._identity import process_start_token
+from filelock._soft._records import (
     _MAX_LOCK_FILE_SIZE,
 )
 
@@ -78,7 +78,7 @@ def test_is_lock_held_by_us_checks_start_token(lock_path: Path, offset: int, *, 
 
 def test_is_lock_held_by_us_fails_closed_without_own_start_token(lock_path: Path, mocker: MockerFixture) -> None:
     lock_path.write_text(holder_record(os.getpid(), start=1), encoding="utf-8")
-    mocker.patch("filelock.internal.identity._process.process_start_token", return_value=None, autospec=True)
+    mocker.patch("filelock._identity._process.process_start_token", return_value=None, autospec=True)
     assert SoftFileLock(lock_path).is_lock_held_by_us is False
 
 

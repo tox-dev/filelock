@@ -32,8 +32,8 @@ def test_private_link_sweep_releases_the_inherited_cursor(tmp_path: Path) -> Non
         from pathlib import Path
 
         from filelock import ReadWriteLock
-        from filelock.internal.sqlite import _links
-        from filelock.internal.core import ensure_current_process
+        from filelock._sqlite import _links
+        from filelock._core import ensure_current_process
         from tests.descriptor_helpers import descriptors_on
 
         parent = Path(sys.argv[1])
@@ -65,7 +65,7 @@ def test_fork_child_leaves_inherited_sqlite_connection_open(tmp_path: Path, mock
     connect = mocker.spy(sqlite3, "connect")
     with ReadWriteLock(tmp_path / "held.db", is_singleton=False).read_lock():
         connection = connect.spy_return
-        mocker.patch("filelock.internal.sqlite._connection.GETPID", return_value=os.getpid(), autospec=True)
+        mocker.patch("filelock._sqlite._connection.GETPID", return_value=os.getpid(), autospec=True)
 
         def close_in_child() -> NoReturn:  # pragma: forked child
             # SQLite forbids using an inherited handle, so record whether close reaches the C extension.

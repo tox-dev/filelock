@@ -13,8 +13,8 @@ from filelock import (
     SoftFileLock,
     Timeout,
 )
-from filelock.internal.core import override
-from filelock.internal.core._registry import REGISTRY
+from filelock._core import override
+from filelock._core._registry import REGISTRY
 from tests.capability_marks import (
     NEEDS_PARENT_SYMLINK_COLLAPSE,
 )

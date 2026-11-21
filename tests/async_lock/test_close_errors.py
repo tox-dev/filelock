@@ -195,7 +195,7 @@ def _fail_close_of(mocker: MockerFixture, lock: BaseAsyncFileLock, error: OSErro
             raise error
         real_close(target)  # pragma: no cover  # only an unrelated __del__ close during the mock window reaches here
 
-    mocker.patch("filelock.internal.core._lock.os.close", side_effect=close, autospec=True)
+    mocker.patch("filelock._core._lock.os.close", side_effect=close, autospec=True)
 
 
 @NEEDS_FCNTL

@@ -108,7 +108,7 @@ async def test_failed_async_proxy_releases_provisional_hold(
     tmp_path: Path, mocker: MockerFixture, *, run_in_executor: bool
 ) -> None:
     lock = AsyncSoftFileLock(tmp_path / "proxy.lock", run_in_executor=run_in_executor)
-    mocker.patch("filelock.internal.async_lock._lock.AsyncAcquireReturnProxy", side_effect=MemoryError, autospec=True)
+    mocker.patch("filelock._async_lock._lock.AsyncAcquireReturnProxy", side_effect=MemoryError, autospec=True)
 
     with pytest.raises(MemoryError):
         await lock.acquire()
@@ -123,9 +123,7 @@ async def test_failed_async_proxy_releases_provisional_hold(
 async def test_reentrant_async_proxy_failure_keeps_one_level(tmp_path: Path, mocker: MockerFixture) -> None:
     lock = AsyncFileLock(str(tmp_path / "a.lock"))
     await lock.acquire()
-    mocker.patch(
-        "filelock.internal.async_lock._lock.AsyncAcquireReturnProxy", side_effect=KeyboardInterrupt, autospec=True
-    )
+    mocker.patch("filelock._async_lock._lock.AsyncAcquireReturnProxy", side_effect=KeyboardInterrupt, autospec=True)
 
     with pytest.raises(KeyboardInterrupt):
         await lock.acquire()

@@ -11,9 +11,10 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLockProtocolError, StrictSoftFileLock, Timeout
-from filelock.internal.soft.strict._claims import _PRIVATE_RECORD_MARKER
-from filelock.internal.soft.strict._lock import open_or_create_sentinel
-from filelock.internal.soft.strict._scan import LIMITS, scandir_relative
+from filelock._soft._strict._claims import _PRIVATE_RECORD_MARKER
+from filelock._soft._strict._directories import LIMITS
+from filelock._soft._strict._lock import open_or_create_sentinel
+from filelock._soft._strict._scan import scandir_relative
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -60,7 +61,7 @@ def test_strict_soft_claim_flood_after_preflight(
         return open_sentinel(lock_file, path, mode, unchanged_for)
 
     mocker.patch(
-        "filelock.internal.soft.strict._lock.open_or_create_sentinel", autospec=True, side_effect=plant_after_preflight
+        "filelock._soft._strict._lock.open_or_create_sentinel", autospec=True, side_effect=plant_after_preflight
     )
     lock = StrictSoftFileLock(initialized_lock_path, blocking=False)
     with pytest.raises(error):
@@ -119,7 +120,7 @@ def test_strict_soft_claim_directory_growing_after_publication_withdraws(
                 (claims / f".nfs{index:04x}").touch()
         return real_scandir(directory_ref)
 
-    mocker.patch("filelock.internal.soft.strict._scan.scandir_relative", autospec=True, side_effect=grow_after_intent)
+    mocker.patch("filelock._soft._strict._scan.scandir_relative", autospec=True, side_effect=grow_after_intent)
     lock = StrictSoftFileLock(initialized_lock_path, blocking=False)
     with pytest.raises(Timeout):
         lock.acquire()
@@ -138,7 +139,7 @@ def test_strict_soft_first_scan_names_overfull_directory(initialized_lock_path: 
         return open_sentinel(lock_file, path, mode, unchanged_for)
 
     mocker.patch.object(type(LIMITS), "entries", 6)
-    mocker.patch("filelock.internal.soft.strict._lock.open_or_create_sentinel", autospec=True, side_effect=add_probes)
+    mocker.patch("filelock._soft._strict._lock.open_or_create_sentinel", autospec=True, side_effect=add_probes)
     with pytest.raises(SoftFileLockProtocolError, match="2 hidden entries") as caught:
         StrictSoftFileLock(initialized_lock_path, blocking=False).acquire()
     assert str(claims) in str(caught.value)
@@ -204,7 +205,7 @@ def test_strict_soft_claim_scan_reports_private_cleanup_error(  # pragma: win32 
         os.utime(private_path, (0, 0))
         write_foreign_claim(private_path.parent, f"{index:032x}")
     mocker.patch(
-        "filelock.internal.soft.strict._scan.unlink_private_record_once",
+        "filelock._soft._strict._directories.unlink_private_record_once",
         autospec=True,
         side_effect=OSError(EIO, "I/O error"),
     )

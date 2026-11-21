@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import SoftFileLease, SoftFileLock, StrictSoftFileLock
-from filelock.internal.identity import describe_host_name, host_name
+from filelock._identity import describe_host_name, host_name
 from tests.pid_namespace_helpers import INITIAL_PID_NAMESPACE, pin_pid_namespace
 
 if TYPE_CHECKING:

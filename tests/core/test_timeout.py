@@ -16,7 +16,7 @@ from filelock import (
     SoftFileLock,
     Timeout,
 )
-from filelock.internal.core import acquire_thread_lock
+from filelock._core import acquire_thread_lock
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -137,8 +137,8 @@ def steady_clock(mocker: MockerFixture) -> MockType:
         perf_counter=mocker.create_autospec(time.perf_counter, side_effect=(reading / 100 for reading in count())),
         sleep=sleep_mock,
     )
-    mocker.patch("filelock.internal.core._context.time", new=clock)
-    mocker.patch("filelock.internal.core._acquire.time", new=clock)
+    mocker.patch("filelock._core._state.time", new=clock)
+    mocker.patch("filelock._core._acquire.time", new=clock)
     return sleep_mock
 
 
@@ -266,7 +266,7 @@ def test_cancel_check_after_n_polls(lock_type: type[BaseFileLock], tmp_path: Pat
         return call_count >= 2
 
     mocker.patch(
-        "filelock.internal.core._acquire.time",
+        "filelock._core._acquire.time",
         new=SimpleNamespace(perf_counter=time.perf_counter, sleep=mocker.create_autospec(time.sleep)),
     )
     with pytest.raises(Timeout):

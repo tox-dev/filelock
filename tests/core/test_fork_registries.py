@@ -15,9 +15,9 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import pytest
 
 from filelock import BaseFileLock, SoftReadWriteLock
-from filelock.internal.core import override
-from filelock.internal.soft.read_write._generations import GenerationLog
-from filelock.internal.soft.read_write._storage import OsFiles
+from filelock._core import override
+from filelock._soft._read_write._generations import GenerationLog
+from filelock._soft._read_write._storage import OsFiles
 from tests.capability_marks import NEEDS_CLASS_COLLECTION, NEEDS_FORK
 from tests.core.fork_probes import FORK_WARNING
 from tests.fork_helpers import exit_child, fork_process

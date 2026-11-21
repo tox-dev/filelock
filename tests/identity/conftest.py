@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock.internal.identity import process_alive
+from filelock._identity import process_alive
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

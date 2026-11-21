@@ -12,7 +12,7 @@ import pytest
 from capabilities import CAPABILITIES
 
 from filelock import SoftFileLock, Timeout
-from filelock.internal.identity import host_name
+from filelock._identity import host_name
 from tests.capability_marks import NEEDS_FILE_PERMISSIONS
 
 if TYPE_CHECKING:

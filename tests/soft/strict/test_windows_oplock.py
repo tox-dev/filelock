@@ -12,7 +12,7 @@ from filelock import (
     StrictSoftFileLock,
     Timeout,
 )
-from filelock.internal.soft.strict._claims import _PRIVATE_RECORD_MARKER
+from filelock._soft._strict._claims import _PRIVATE_RECORD_MARKER
 from tests.process_helpers import call_within
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ def test_strict_soft_claim_publication_oplock_keeps_deadline(  # pragma: win32 c
     tmp_path: Path, hold_oplock: OplockHolder, mocker: MockerFixture, phase: str, timeout: float
 ) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.soft.strict import _windows as strict_windows
+    from filelock._soft._strict import _windows as strict_windows
 
     rename = strict_windows.rename_open_file
     holders: list[Callable[[], None]] = []
@@ -62,9 +62,7 @@ def test_strict_soft_claim_publication_oplock_keeps_deadline(  # pragma: win32 c
             rename_started = time.perf_counter()
         rename(fd, public_path)
 
-    mocker.patch(
-        "filelock.internal.soft.strict._windows.rename_open_file", side_effect=hold_claim_rename, autospec=True
-    )
+    mocker.patch("filelock._soft._strict._windows.rename_open_file", side_effect=hold_claim_rename, autospec=True)
     lock = StrictSoftFileLock(tmp_path / "resource.lock", timeout=timeout)
     try:
         finished, error = call_within(lock.acquire, 5)

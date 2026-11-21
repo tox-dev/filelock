@@ -126,7 +126,7 @@ def _shutdown_with_failed_release(  # pragma: needs fcntl
             raise release_error
         real_flock(fd, operation)
 
-    mocker.patch("filelock.internal.native._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
+    mocker.patch("filelock._native._unix.fcntl.flock", side_effect=fail_first_unlock, autospec=True)
     runner, task, cancellation_seen = _start_unawaited_context_failure(lock, body_error, release_started)
     try:
         assert release_started.wait(timeout=5)

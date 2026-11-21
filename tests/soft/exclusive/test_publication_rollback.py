@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from filelock import MarkerSoftFileLock, SoftFileLease, SoftFileLock
-from filelock.internal.filesystem import pin_inode
-from filelock.internal.soft import read_lock_file
+from filelock._filesystem import pin_inode
+from filelock._soft import read_lock_file
 from tests.capability_marks import (
     NEEDS_STALE_RECLAIM,
 )
@@ -31,7 +31,7 @@ from tests.soft.exclusive.recovery_helpers import HOST, hold_reports_foreign_ide
 
 def test_write_failure_rolls_back_acquire(lock_path: Path, mocker: MockerFixture) -> None:
     mocker.patch(
-        "filelock.internal.filesystem._files.os.write",
+        "filelock._filesystem._files.os.write",
         side_effect=OSError(ENOSPC, "No space left on device"),
         autospec=True,
     )
@@ -72,11 +72,9 @@ def test_rollback_on_full_filesystem(
         unlink(path, missing_ok=missing_ok)
 
     unlinks = mocker.patch.object(Path, "unlink", side_effect=unlink_on_full_filesystem, autospec=True)
-    opens = mocker.patch(
-        "filelock.internal.filesystem._files.os.open", side_effect=open_with_full_directory, autospec=True
-    )
+    opens = mocker.patch("filelock._filesystem._files.os.open", side_effect=open_with_full_directory, autospec=True)
     writes = mocker.patch(
-        "filelock.internal.filesystem._files.os.write",
+        "filelock._filesystem._files.os.write",
         side_effect=OSError(ENOSPC, "record write failed"),
         autospec=True,
     )
@@ -95,7 +93,7 @@ def test_rollback_on_full_filesystem(
 def test_short_writes_still_write_the_whole_record(lock_path: Path, mocker: MockerFixture) -> None:
     real_write = os.write
     mocker.patch(
-        "filelock.internal.filesystem._files.os.write",
+        "filelock._filesystem._files.os.write",
         side_effect=lambda fd, data: real_write(fd, bytes(data[:1])),
         autospec=True,
     )
@@ -106,7 +104,7 @@ def test_short_writes_still_write_the_whole_record(lock_path: Path, mocker: Mock
 
 
 def test_zero_write_rolls_back_acquire(lock_path: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.filesystem._files.os.write", return_value=0, autospec=True)
+    mocker.patch("filelock._filesystem._files.os.write", return_value=0, autospec=True)
 
     lock = SoftFileLock(lock_path)
     with pytest.raises(OSError, match="0 bytes"):
@@ -129,7 +127,7 @@ def test_failed_acquire_spares_a_successor_on_the_freed_inode_number(  # pragma:
         raise OSError(ENOSPC, f"No space left on device for {len(data)} bytes")
 
     mocker.patch(
-        "filelock.internal.filesystem._files.os.write",
+        "filelock._filesystem._files.os.write",
         side_effect=evicted_and_succeeded_then_write_fails,
         autospec=True,
     )
@@ -167,7 +165,7 @@ def test_failed_acquire_spares_a_file_that_replaced_its_placeholder(  # pragma: 
 
 def test_failed_acquire_cleanup_spares_a_replacement(lock_path: Path, mocker: MockerFixture) -> None:
     mocker.patch(
-        "filelock.internal.filesystem._files.os.write",
+        "filelock._filesystem._files.os.write",
         side_effect=OSError(ENOSPC, "No space left on device"),
         autospec=True,
     )

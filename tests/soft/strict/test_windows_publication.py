@@ -30,8 +30,8 @@ def test_windows_directory_pin_retries_after_oplock_break(  # pragma: win32 cove
 ) -> None:
     assert sys.platform == "win32"
 
-    from filelock.internal.filesystem.windows import _bindings as bindings
-    from filelock.internal.filesystem.windows import _directories as directories
+    from filelock._filesystem._windows import _directories as directories
+    from filelock._filesystem._windows import _handles as handles
 
     lock = StrictSoftFileLock(tmp_path / "resource.lock", blocking=False)
     create = directories.nt_create
@@ -42,13 +42,13 @@ def test_windows_directory_pin_retries_after_oplock_break(  # pragma: win32 cove
         attributes: int,
         share: int,
         disposition: int,
-        options: int = bindings.CREATE_OPTIONS,
+        options: int = handles.CREATE_OPTIONS,
         *,
         descriptor: ctypes.c_void_p | None = None,
         raw: wintypes.HANDLE | None = None,
     ) -> tuple[int, int]:
-        if Path(path).name == directory and options & bindings.FILE_COMPLETE_IF_OPLOCKED:
-            return 0, bindings.STATUS_OPLOCK_BREAK_IN_PROGRESS
+        if Path(path).name == directory and options & handles.FILE_COMPLETE_IF_OPLOCKED:
+            return 0, handles.STATUS_OPLOCK_BREAK_IN_PROGRESS
         return create(path, access, attributes, share, disposition, options, descriptor=descriptor, raw=raw)
 
     refusal = mocker.patch.object(directories, "nt_create", side_effect=refuse_pin, autospec=True)
@@ -67,7 +67,7 @@ def test_strict_soft_windows_pin_failure_leaves_no_pending_cleanup(
     assert sys.platform == "win32"
     lock = StrictSoftFileLock(initialized_lock_path, blocking=False)
     failure = mocker.patch(
-        "filelock.internal.soft.strict._lock.pin_claim_directory",
+        "filelock._soft._strict._lock.pin_claim_directory",
         side_effect=PermissionError(EACCES, "cannot pin"),
         autospec=True,
     )
@@ -83,7 +83,7 @@ def test_strict_soft_windows_pin_failure_leaves_no_pending_cleanup(
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_strict_soft_windows_failed_private_cleanup_reports_both_errors(tmp_path: Path, mocker: MockerFixture) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.soft.strict import _windows as strict_windows
+    from filelock._soft._strict import _windows as strict_windows
 
     private, public = tmp_path / "private", tmp_path / "public"
     public.write_bytes(b"peer")
@@ -129,8 +129,8 @@ def test_strict_soft_windows_interrupted_rename_with_a_shared_reader(
     request: pytest.FixtureRequest,
 ) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.filesystem.windows import _oplocks as oplocks
-    from filelock.internal.soft.strict import _windows as strict_windows
+    from filelock._filesystem._windows import _oplocks as oplocks
+    from filelock._soft._strict import _windows as strict_windows
 
     lock = StrictSoftFileLock(initialized_lock_path, timeout=0)
     claims = Path(f"{initialized_lock_path}.filelock") / "claims"
@@ -158,8 +158,8 @@ def test_strict_soft_windows_retries_an_interrupted_rename(initialized_lock_path
     assert sys.platform == "win32"
     import ctypes
 
-    from filelock.internal.filesystem.windows import _handles as handles
-    from filelock.internal.soft.strict import _windows as strict_windows
+    from filelock._filesystem._windows import _handles as handles
+    from filelock._soft._strict import _windows as strict_windows
 
     lock = StrictSoftFileLock(initialized_lock_path, timeout=0)
     rename = strict_windows.rename_open_file
@@ -193,7 +193,7 @@ def test_strict_soft_windows_interrupted_publication_removes_claim(
     initialized_lock_path: Path, mocker: MockerFixture
 ) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.soft.strict._windows import publish_deletable_claim
+    from filelock._soft._strict._windows import publish_deletable_claim
 
     publish = publish_deletable_claim
 
@@ -209,7 +209,7 @@ def test_strict_soft_windows_interrupted_publication_removes_claim(
 
     lock = StrictSoftFileLock(initialized_lock_path, timeout=0)
     interruption = mocker.patch(
-        "filelock.internal.soft.strict._lock.publish_deletable_claim", side_effect=interrupt, autospec=True
+        "filelock._soft._strict._lock.publish_deletable_claim", side_effect=interrupt, autospec=True
     )
     with pytest.raises(KeyboardInterrupt):
         lock.acquire()
@@ -222,7 +222,7 @@ def test_strict_soft_windows_interrupted_publication_removes_claim(
 @WINDOWS_ONLY  # pragma: win32 cover
 def test_strict_soft_windows_reclaimed_private_claim_closes_handle(tmp_path: Path, mocker: MockerFixture) -> None:
     assert sys.platform == "win32"
-    from filelock.internal.soft.strict import _windows as strict_windows
+    from filelock._soft._strict import _windows as strict_windows
 
     private = tmp_path / "private.claim"
     public = tmp_path / "public.claim"
@@ -232,7 +232,7 @@ def test_strict_soft_windows_reclaimed_private_claim_closes_handle(tmp_path: Pat
         raise OSError(EIO, "claim publication failed")
 
     rename = mocker.patch(
-        "filelock.internal.soft.strict._windows.rename_open_file", side_effect=reclaim_then_fail, autospec=True
+        "filelock._soft._strict._windows.rename_open_file", side_effect=reclaim_then_fail, autospec=True
     )
     with pytest.raises(OSError, match="claim publication failed"):
         strict_windows.publish_deletable_claim(lambda: str(private), str(public), b"first", {})
@@ -260,7 +260,7 @@ def test_strict_soft_windows_collision_reports_pin_close_error(
         protection.callback(fail_close)  # inject cleanup fault
         raise FileExistsError(EEXIST, "peer claim exists")
 
-    mocker.patch("filelock.internal.soft.strict._lock.publish_deletable_claim", side_effect=collide, autospec=True)
+    mocker.patch("filelock._soft._strict._lock.publish_deletable_claim", side_effect=collide, autospec=True)
     with pytest.raises(OSError, match="pin close failed"):
         lock.acquire()
     assert lock.is_locked is False

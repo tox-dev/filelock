@@ -15,7 +15,7 @@ pytest.importorskip("sqlite3")
 import sqlite3
 
 from filelock import ReadWriteLock
-from filelock.internal.sqlite._connection import ForkSafeConnection
+from filelock._sqlite._connection import ForkSafeConnection
 from tests.capability_marks import (
     NEEDS_FIFO,
     NEEDS_FOREIGN_STICKY_TMP,
@@ -171,9 +171,7 @@ def test_read_write_lock_checks_owner_of_reused_probe(  # pragma: needs foreign-
     with first.read_lock():
         with second.read_lock():
             pass
-        mocker.patch(
-            "filelock.internal.sqlite._connection.foreign_owner", autospec=True, return_value=source.stat().st_uid + 1
-        )
+        mocker.patch("filelock._sqlite._connection.foreign_owner", autospec=True, return_value=source.stat().st_uid + 1)
         with pytest.raises(PermissionError, match="not to this process's account"):
             ReadWriteLock(lock_path_in_shared_tmp, is_singleton=False)
 

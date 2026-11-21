@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Final, Literal, NoReturn, cast
 
 import pytest
 
-import filelock.internal.soft._lease as lease_mod
+import filelock._soft._lease as lease_mod
 from filelock import (
     AsyncSoftFileLease,
     LeaseCompromise,
@@ -20,7 +20,7 @@ from filelock import (
     SoftFileLease,
     Timeout,
 )
-from filelock.internal.identity import host_name
+from filelock._identity import host_name
 from tests.capability_marks import (
     NEEDS_FORK,
 )
@@ -112,7 +112,7 @@ def test_lease_token_names_no_claim_after_an_acquire_that_raises(tmp_path: Path)
 
 
 def test_lease_refuses_to_nest_into_a_lost_claim(marker: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    mocker.patch("filelock._soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
     reports = Reports()
     lease = make_lease(marker, on_compromise=reports)
 
@@ -128,7 +128,7 @@ def test_lease_refuses_to_nest_into_a_lost_claim(marker: Path, mocker: MockerFix
 
 
 def test_shared_lease_refuses_another_thread_after_loss(marker: Path, mocker: MockerFixture) -> None:
-    mocker.patch("filelock.internal.soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
+    mocker.patch("filelock._soft._lease.touch", side_effect=OSError("cannot touch the marker"), autospec=True)
     reports = Reports()
     lease = SoftFileLease(
         str(marker), thread_local=False, lease_duration=DURATION, heartbeat_interval=HEARTBEAT, on_compromise=reports
@@ -159,7 +159,7 @@ def test_lease_accepts_reentry_after_an_old_heartbeat_reports_late(marker: Path,
         msg = "cannot touch the marker"
         raise OSError(msg)
 
-    mocker.patch("filelock.internal.soft._lease.touch", side_effect=touch, autospec=True)
+    mocker.patch("filelock._soft._lease.touch", side_effect=touch, autospec=True)
     reports = Reports()
     lease = SoftFileLease(
         str(marker), lease_duration=HEARTBEAT * 1.5, heartbeat_interval=HEARTBEAT, on_compromise=reports

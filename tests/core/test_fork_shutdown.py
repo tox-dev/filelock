@@ -26,7 +26,7 @@ def test_lock_finalized_at_exit_skips_fork_bookkeeping_a_frozen_daemon_thread_ho
     script: Final[str] = """
 import sys, threading, types
 from filelock import FileLock
-from filelock.internal.core._fork import _FORK_STATE
+from filelock._core._fork import _FORK_STATE
 
 inside = threading.Event()
 
@@ -60,7 +60,7 @@ import atexit, os, sys, threading
 exiting, forked = threading.Event(), threading.Event()
 atexit.register(lambda: (exiting.set(), forked.wait(10)))
 from filelock import FileLock
-from filelock.internal.core._fork import _OWNED_DESCRIPTORS
+from filelock._core._fork import _OWNED_DESCRIPTORS
 
 def fork_during_exit():
     exiting.wait()
@@ -94,7 +94,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from filelock.internal.core import _fork
+from filelock._core import _fork
 
 class LateAudit:
     def __del__(self, object_id: Callable[[LateAudit], int] = id) -> None:

@@ -12,7 +12,7 @@ pytest.importorskip("sqlite3")
 from pathlib import Path
 
 from filelock import ReadWriteLock, SoftReadWriteLock
-from filelock.internal.sqlite._transactions import _timeout_for_sqlite
+from filelock._sqlite._transactions import _timeout_for_sqlite
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -171,7 +171,7 @@ def test_meta_raises_when_pid_changes_during_singleton_construction(lock_file: s
         pass
 
     pid_box = [os.getpid()]
-    mocker.patch("filelock.internal.sqlite._singleton.GETPID", side_effect=lambda: pid_box[0], autospec=True)
+    mocker.patch("filelock._sqlite._fork.GETPID", side_effect=lambda: pid_box[0], autospec=True)
     original_init = _Sub.__init__
 
     def _init_then_fork(

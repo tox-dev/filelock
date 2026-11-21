@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import filelock.internal.filesystem._ownership  # simplint: ignore[private-import-path]  # bypass the UID probe cache
-from filelock.internal.filesystem import foreign_owner
+import filelock._filesystem._ownership  # simplint: ignore[private-import-path]  # bypass the UID probe cache
+from filelock._filesystem import foreign_owner
 
 if TYPE_CHECKING:
     import ctypes
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 def test_foreign_owner_refuses_ambiguous_uid(  # pragma: win32 no cover  # pragma: darwin no cover
     mocker: MockerFixture, overflowuid: str, expected: int | None
 ) -> None:
-    mocker.patch("filelock.internal.filesystem._ownership.os.geteuid", autospec=True, return_value=65534)
+    mocker.patch("filelock._filesystem._ownership.os.geteuid", autospec=True, return_value=65534)
     mocker.patch.object(Path, "read_text", autospec=True, return_value=overflowuid)
     owner = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 0, 65534, 0, 0, 0, 0, 0))
     parent = os.stat_result((stat.S_IFDIR | 0o1777, 0, 0, 0, 0, 0, 0, 0, 0, 0))
@@ -45,7 +45,7 @@ def test_foreign_owner_refuses_ambiguous_uid(  # pragma: win32 no cover  # pragm
 def test_foreign_owner_refuses_uid_when_overflowuid_is_unreadable(  # pragma: win32 no cover  # pragma: darwin no cover
     mocker: MockerFixture,
 ) -> None:
-    mocker.patch("filelock.internal.filesystem._ownership.os.geteuid", autospec=True, return_value=65534)
+    mocker.patch("filelock._filesystem._ownership.os.geteuid", autospec=True, return_value=65534)
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=OSError("unreadable"))
     owner = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 0, 65534, 0, 0, 0, 0, 0))
     parent = os.stat_result((stat.S_IFDIR | 0o1777, 0, 0, 0, 0, 0, 0, 0, 0, 0))
@@ -72,13 +72,13 @@ def test_foreign_owner_refuses_uid_when_overflowuid_is_unreadable(  # pragma: wi
 def test_open_file_with_unknown_overflow_uid(  # pragma: win32 no cover  # pragma: darwin no cover
     tmp_path: Path, mocker: MockerFixture, uid_map: bytes, fdinfo: bytes, mountinfo: bytes, allow: bool
 ) -> None:
-    mocker.patch("filelock.internal.filesystem._ownership._linux_owner_probe", autospec=True, return_value=None)
+    mocker.patch("filelock._filesystem._ownership._linux_owner_probe", autospec=True, return_value=None)
     proc = tmp_path / "thread-self"
     (proc / "fdinfo").mkdir(parents=True)
     (proc / "uid_map").write_bytes(uid_map)
     (proc / "mountinfo").write_bytes(mountinfo)
     paths = {"/proc/thread-self": proc, "/proc/sys/kernel/overflowuid": tmp_path / "missing"}
-    mocker.patch("filelock.internal.filesystem._ownership.Path", autospec=True, side_effect=paths.__getitem__)
+    mocker.patch("filelock._filesystem._ownership.Path", autospec=True, side_effect=paths.__getitem__)
     tmp_path.chmod(0o1700)
     with (tmp_path / "lock").open("xb") as marker:
         fd = marker.fileno()
@@ -100,9 +100,9 @@ def reported_owner(  # pragma: linux cover
 ) -> Callable[[], int | None]:
     # Each test changes the native bindings, which production looks up once.
     mocker.patch.object(
-        filelock.internal.filesystem._ownership,
+        filelock._filesystem._ownership,
         "_linux_owner_probe",
-        new=filelock.internal.filesystem._ownership._linux_owner_probe.__wrapped__,
+        new=filelock._filesystem._ownership._linux_owner_probe.__wrapped__,
     )
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=FileNotFoundError)
     mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=FileNotFoundError)
