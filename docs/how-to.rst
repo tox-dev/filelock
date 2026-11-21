@@ -1402,6 +1402,11 @@ thread returns without doing anything, and the interrupted release finishes the 
 while the interrupted code is still acquiring that lock raises :class:`RuntimeError`: the interrupted acquire cannot go
 on until the handler returns.
 
+On Windows, :class:`~filelock.SoftFileLock` can report ``is_locked == False`` while ``release()`` is still trying to
+delete the marker. If a signal handler calls ``acquire()`` on another instance for that path, it can block waiting
+for the marker to disappear. Cleanup cannot resume until the handler returns, so the default blocking call can wait forever.
+Have the handler set a flag and return. Check the flag after the ``with`` block exits, then acquire the lock if needed.
+
 If a handler raises ``KeyboardInterrupt`` during release, the lock finishes releasing before the exception propagates.
 A handler that fires as ``release()`` begins can leave the hold for the next call.
 
