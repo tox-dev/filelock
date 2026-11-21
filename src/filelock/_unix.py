@@ -243,7 +243,7 @@ else:  # pragma: win32 no cover
                 cleanup.callback(self._close_probe, opened)
                 probes[id(opened)] = opened
                 directory = Path(self._lock_path).parent
-                if anonymous := getattr(os, "O_TMPFILE", 0):
+                if anonymous := getattr(os, "O_TMPFILE", 0):  # pragma: linux cover
                     missing = self._probe_flock(opened, str(directory), anonymous | os.O_RDWR | os.O_EXCL)
                     if missing is not None:
                         return missing

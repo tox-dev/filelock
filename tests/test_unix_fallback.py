@@ -844,7 +844,7 @@ def test_fallback_lstat_error_closes_pending_descriptor(
 ) -> None:  # pragma: needs fcntl
     lock_path = tmp_path / "test.lock"
     mocker.patch("os.lstat", side_effect=OSError(EIO, "lstat failed"), autospec=True)
-    lock = UnixFileLock(lock_path)
+    lock = UnixFileLock(lock_path, mode=0o600)
 
     with pytest.raises(OSError, match="lstat failed"):
         lock.acquire(timeout=0)
