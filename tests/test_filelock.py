@@ -2319,7 +2319,7 @@ def test_acquire_from_a_signal_handler_during_a_release_is_refused(
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_stale_inode_retry_on_unlinked_lock(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
-    lock = FileLock(str(lock_path), is_singleton=False)
+    lock = FileLock(lock_path, mode=0o600, is_singleton=False)
 
     real_fstat = os.fstat
     call_count = 0
@@ -2328,8 +2328,7 @@ def test_stale_inode_retry_on_unlinked_lock(tmp_path: Path, mocker: MockerFixtur
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            Path(lock_path).unlink()
-            return real_fstat(fd)
+            lock_path.unlink()
         return real_fstat(fd)
 
     mocker.patch("os.fstat", side_effect=fstat_unlinked_once, autospec=True)
