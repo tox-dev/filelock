@@ -2399,6 +2399,7 @@ def test_lock_file_of_another_account_under_sticky_parent_is_refused(  # pragma:
 
 @NEEDS_FCNTL  # pragma: needs fcntl
 def test_callback_lock_retries_after_the_link_count_returns_to_one(tmp_path: Path, mocker: MockerFixture) -> None:
+    tmp_path.chmod(0o1777)
     lock_path = tmp_path / "test.lock"
     lock_path.write_bytes(b"holder metadata")
     calls: list[int] = []
@@ -2415,6 +2416,45 @@ def test_callback_lock_retries_after_the_link_count_returns_to_one(tmp_path: Pat
     with lock:
         (fd,) = calls
         assert os.path.samestat(os.fstat(fd), lock_path.stat())
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+@pytest.mark.requires_hard_links  # pragma: needs hard-link
+def test_hard_link_in_a_shared_directory_is_kept_from_the_callback(tmp_path: Path) -> None:
+    # Another account can link a file of ours to the lock path where the kernel allows it; the callback must not get it.
+    tmp_path.chmod(0o1777)
+    (victim := tmp_path / "victim").write_bytes(b"keep me")
+    os.link(victim, lock_path := tmp_path / "test.lock")
+    calls: list[int] = []
+    lock = FileLock(lock_path, timeout=0, is_singleton=False, on_acquired=calls.append)
+    with pytest.raises(PermissionError, match="another hard link") as raised:
+        lock.acquire()
+    assert (raised.value.filename, lock.is_locked, calls, victim.read_bytes()) == (
+        str(lock_path.resolve()),
+        False,
+        [],
+        b"keep me",
+    )
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+@pytest.mark.requires_hard_links  # pragma: needs hard-link
+@pytest.mark.parametrize(
+    ("directory_mode", "on_acquired"),
+    [
+        pytest.param(0o700, os.fsync, id="private-directory"),
+        pytest.param(0o1777, None, id="no-callback"),
+    ],
+)
+def test_hard_link_is_locked_where_no_other_account_can_misdirect_a_callback(
+    tmp_path: Path, directory_mode: int, on_acquired: Callable[[int], None] | None
+) -> None:
+    # A snapshot or an alias of the lock file, or a link another account made elsewhere, must not stop the lock.
+    tmp_path.chmod(directory_mode)
+    (lock_path := tmp_path / "test.lock").touch()
+    os.link(lock_path, tmp_path / "alias.lock")
+    with FileLock(lock_path, timeout=0, is_singleton=False, on_acquired=on_acquired) as lock:
+        assert lock.is_locked
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl

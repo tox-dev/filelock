@@ -493,9 +493,17 @@ The defense differs by platform:
 
 - On Unix, filelock opens lock files with ``O_NOFOLLOW``, so a symlink at the lock path makes the open fail.
   :class:`UnixFileLock <filelock.UnixFileLock>` leaves the contents and mode of an existing file intact, including
-  when the file has another hard link. If you supply ``on_acquired``, acquisition raises :class:`PermissionError`
-  before the callback receives a descriptor for a file with another hard link. Keep callback lock files in a directory
-  you control. A file renamed to the lock path can have a single link.
+  when the file has another hard link.
+
+  If you supply ``on_acquired`` and another account can write the lock's directory, acquisition raises
+  :class:`PermissionError` before the callback receives a descriptor for a file with another hard link: that account
+  may have linked one of your files to the lock path. In a sticky directory such as ``/tmp`` it cannot remove the link
+  again, so the check holds; where it can remove names, it can race the check, as with every protection in such a
+  directory. Removing the lock file clears the refusal.
+
+  The check reads the directory's owner and mode bits: it also fires for a group-writable directory whose group holds
+  only you, and it misses write access granted only through an ACL. Keep callback lock files in a directory only you
+  can write, where a hard-linked lock file is locked as found. A file renamed to the lock path can have a single link.
 - Windows has no ``O_NOFOLLOW``. :class:`WindowsFileLock <filelock.WindowsFileLock>` opens the file without following
   reparse points and rejects a symlink or junction by inspecting the handle it locks, so a swap between check and use
   cannot redirect it. Only the last path component is guarded; the lock directory must not be writable by untrusted
