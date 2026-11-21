@@ -68,6 +68,7 @@ CloseErrorPolicy = Literal["default", "raise", "suppress"]
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping
+    from concurrent.futures import Future
     from threading import Lock
     from types import FrameType, TracebackType
     from typing import Protocol
@@ -1179,6 +1180,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         poll_interval: float,
         start_time: float,
     ) -> None:
+        self._set_claim_deadline(start_time, timeout if blocking else 0.0)
         lock_id = id(self)
         lock_filename = self.lock_file
         attempt = 0
@@ -1213,6 +1215,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
                 delay = min(delay, max(start_time + timeout - time.perf_counter(), 0.0))
             _LOGGER.debug("Lock %s not acquired on %s, waiting %s seconds ...", lock_id, lock_filename, delay)
             time.sleep(delay)
+
+    def _set_claim_deadline(self, start_time: float, timeout: float) -> None:
+        self._context.claim_deadline = None if timeout < 0 else start_time + timeout
 
     @property
     def _lock_path(self) -> str:
@@ -1902,6 +1907,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self._context.soft_fallback = False
         self._flockless_roots = frozenset()
         self._context.owner_claim_paths = ()
+        self._context.claim_protection = None
         self._context.claim_root = None
         self._context.lock_file_fd = None
         self._context.unlock_uncertain = False
@@ -2172,6 +2178,18 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
 
     #: Claim pathnames this owner published, removed by name on release so no holder ever unlinks a peer's claim.
     owner_claim_paths: tuple[str, ...] = ()
+
+    #: Deadline of the current acquire attempt, used while publishing Windows strict claims.
+    claim_deadline: float | None = None
+
+    #: Completion of a Windows claim withdrawal that outlasted its acquisition.
+    claim_withdrawal: Future[tuple[list[str], list[BaseException]]] | None = None
+
+    #: Descriptors retained for deleting published Windows claims by handle.
+    claim_descriptors: dict[str, int] | None = None
+
+    #: Directory and claim handles retained while Windows strict claims are owned.
+    claim_protection: contextlib.ExitStack[bool | None] | None = None
 
     #: The frame of the :meth:`BaseFileLock.release` tearing this hold down, so a re-entrant call from a signal handler
     #: on the same thread returns instead of closing the descriptor a second time.

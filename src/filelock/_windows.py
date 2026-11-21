@@ -14,16 +14,17 @@ import struct
 import sys
 import threading
 import time
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, contextmanager, nullcontext, suppress
 from errno import EEXIST, ENOENT, ENOTDIR, EWOULDBLOCK
 from functools import cache
 from typing import TYPE_CHECKING, Final, cast
 
-from ._api import BaseFileLock
-from ._util import raise_on_not_writable_file
+from ._api import BaseFileLock, raise_cleanup_errors
+from ._util import raise_on_not_writable_file, write_all
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
+    from contextlib import AbstractContextManager
 
 if sys.platform == "win32":  # pragma: win32 cover
     import ctypes
@@ -48,6 +49,8 @@ if sys.platform == "win32":  # pragma: win32 cover
     _FILE_ATTRIBUTE_NORMAL: Final[int] = 0x00000080
     _FILE_ATTRIBUTE_REPARSE_POINT: Final[int] = 0x00000400
     _FILE_DISPOSITION_INFO_CLASS: Final[int] = 4
+    _FILE_DISPOSITION_INFO_EX: Final[int] = 21
+    _DELETE_POSIX: Final[int] = 0x01 | 0x02  # DELETE | POSIX_SEMANTICS
     # CreateOptions: keep the handle synchronous (the CRT and msvcrt.locking rely on a maintained file position),
     # refuse a directory, return at once instead of waiting for an oplock holder to answer the break, and open a
     # reparse point rather than following it so the check below acts on the link itself.
@@ -82,6 +85,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     _ERROR_ACCESS_DENIED: Final[int] = 5
     _ERROR_LOCK_VIOLATION: Final[int] = 33  # another handle holds the byte range
     _ERROR_NOT_LOCKED: Final[int] = 158  # the byte range is not locked
+    _ERROR_OPERATION_ABORTED: Final[int] = 995
     _DUPLICATE_SAME_ACCESS: Final[int] = 0x00000002
 
     # NtCreateFile returns the raw NTSTATUS as its value, where CreateFileW collapses several of these into one
@@ -159,6 +163,23 @@ if sys.platform == "win32":  # pragma: win32 cover
             ("nFileIndexLow", wintypes.DWORD),
         )
 
+    class _FILE_STANDARD_INFO(ctypes.Structure):  # ruff:ignore[invalid-class-name]  # mirrors the Win32 struct name
+        _fields_ = (
+            ("AllocationSize", ctypes.c_longlong),
+            ("EndOfFile", ctypes.c_longlong),
+            ("NumberOfLinks", wintypes.DWORD),
+            ("DeletePending", ctypes.c_ubyte),
+            ("Directory", ctypes.c_ubyte),
+        )
+
+    class _FILE_RENAME_INFO(ctypes.Structure):  # ruff:ignore[invalid-class-name]  # mirrors the Win32 struct name
+        _fields_ = (
+            ("ReplaceIfExists", wintypes.BOOL),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", wintypes.WCHAR * 1),
+        )
+
     _NTDLL.NtCreateFile.restype = wintypes.LONG  # NTSTATUS
     _NTDLL.NtCreateFile.argtypes = [
         ctypes.POINTER(wintypes.HANDLE),
@@ -201,6 +222,8 @@ if sys.platform == "win32":  # pragma: win32 cover
     _KERNEL32.CancelSynchronousIo.restype = wintypes.BOOL
     _KERNEL32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION)]
     _KERNEL32.GetFileInformationByHandle.restype = wintypes.BOOL
+    _KERNEL32.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    _KERNEL32.GetFileInformationByHandleEx.restype = wintypes.BOOL
     _KERNEL32.WriteFile.argtypes = [
         wintypes.HANDLE,
         ctypes.c_void_p,
@@ -464,10 +487,7 @@ if sys.platform == "win32":  # pragma: win32 cover
                     deletes.extend(map(_KERNEL32.ReOpenFile, pins, (_DELETE,), (_FILE_SHARE_ALL,), (0,)))
                     if deletes[0] != _INVALID_HANDLE_VALUE:
                         sys.audit("os.remove", path, None)
-                        delete = ctypes.c_byte(1)
-                        _KERNEL32.SetFileInformationByHandle(
-                            deletes[0], _FILE_DISPOSITION_INFO_CLASS, ctypes.byref(delete), ctypes.sizeof(delete)
-                        )
+                        _set_delete_disposition(deletes[0])
         finally:
             for owned in (*deletes, *pins):
                 if owned != _INVALID_HANDLE_VALUE:
@@ -489,7 +509,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         return _open_existing_without_oplock_wait(path, _DELETE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE, os.O_RDONLY)
 
     @contextmanager
-    def cancelling_oplock_wait() -> Generator[None]:
+    def cancelling_oplock_wait(deadline: float | None = None) -> Generator[None]:
         # A rename has no FILE_COMPLETE_IF_OPLOCKED. Cancel its wait if a read-handle oplock holder stays silent.
         # Repeat because the first cancellation can precede the rename.
         thread = wintypes.HANDLE()
@@ -507,7 +527,13 @@ if sys.platform == "win32":  # pragma: win32 cover
         done = threading.Event()
 
         def cancel_until_done() -> None:
-            while not done.wait(_ACCESS_DENIED_GRACE):
+            while True:
+                interval = _ACCESS_DENIED_GRACE
+                if deadline is not None:
+                    # Leave a nonblocking attempt time to enter the syscall before trying to cancel it.
+                    interval = max(0.01, min(interval, deadline - time.perf_counter()))
+                if done.wait(interval):
+                    return
                 _KERNEL32.CancelSynchronousIo(thread)
 
         watchdog = threading.Thread(target=cancel_until_done, name="filelock-oplock-wait", daemon=True)
@@ -594,7 +620,10 @@ if sys.platform == "win32":  # pragma: win32 cover
             _KERNEL32.CloseHandle(handle)
             raise
 
-    def pin_directory(path: str) -> int:
+    class DirectoryPinBlockedError(BlockingIOError):
+        pass
+
+    def pin_directory(path: str, *, wait_for_oplock: bool = True) -> int:
         # Open the directory at *path* so that no process can rename or remove it until :func:`unpin_directory`.
         #
         # Windows has no ``dir_fd``, so an operation resolves every path component by name again. A handle on each
@@ -605,7 +634,10 @@ if sys.platform == "win32":  # pragma: win32 cover
         sys.audit("open", path, None, os.O_RDONLY)
         # GetFileInformationByHandle needs FILE_READ_ATTRIBUTES; listing access is what takes part in share checks.
         access = _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
-        handle, status = _nt_create(path, access, 0, _FILE_SHARE_READ_WRITE, _FILE_OPEN, _DIRECTORY_OPTIONS)
+        options = _DIRECTORY_OPTIONS if wait_for_oplock else _DIRECTORY_OPTIONS | _FILE_COMPLETE_IF_OPLOCKED
+        handle, status = _nt_create(path, access, 0, _FILE_SHARE_READ_WRITE, _FILE_OPEN, options)
+        if status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+            raise DirectoryPinBlockedError(EWOULDBLOCK, "directory oplock break in progress", path)
         if status != _STATUS_SUCCESS:
             winerror = _NTDLL.RtlNtStatusToDosError(status)
             raise OSError(None, ctypes.FormatError(winerror).strip(), path, winerror)
@@ -643,6 +675,106 @@ if sys.platform == "win32":  # pragma: win32 cover
         return _nt_create(
             path, _DESIRED_ACCESS, attributes, _FILE_SHARE_READ_WRITE, _FILE_OPEN_IF, descriptor=descriptor
         )
+
+    def oplock_wait_cancelled(error: BaseException) -> bool:
+        return isinstance(error, OSError) and getattr(error, "winerror", None) == _ERROR_OPERATION_ABORTED
+
+    def publish_deletable_claim(
+        private_name: Callable[[], str],
+        public_path: str,
+        record: bytes,
+        descriptors: dict[str, int],
+        deadline: float | None = None,
+    ) -> int:
+        private_path = private_name()
+        handle, status = _nt_create(
+            private_path,
+            _DESIRED_ACCESS | _DELETE,
+            _FILE_ATTRIBUTE_NORMAL,
+            _FILE_SHARE_ALL,
+            _FILE_CREATE,
+        )
+        if status != _STATUS_SUCCESS:
+            raise _status_error(status, private_path)
+        fd = _descriptor_for_non_reparse(handle, private_path, os.O_RDWR | os.O_BINARY)
+        try:
+            descriptors[public_path] = fd
+            write_all(fd, record)
+            with cancelling_oplock_wait(deadline):
+                _rename_open_claim(fd, public_path)
+        except BaseException as error:
+            aborted = oplock_wait_cancelled(error)
+            try:
+                # An interruption can arrive after the rename commits. Withdraw any public name before closing.
+                if cleanup := mark_claim_for_deletion(
+                    fd, private_path, None if aborted else private_name, cancel_wait=cancelling_oplock_wait(deadline)
+                ):
+                    raise cleanup
+            except OSError as cleanup_error:
+                # The same oplock can also block deletion of the unpublished private record.
+                if not aborted or not oplock_wait_cancelled(cleanup_error):
+                    raise_cleanup_errors("strict publication cleanup failed", error, cleanup_error)
+            descriptors.pop(public_path, None)
+            os.close(fd)
+            if aborted:
+                raise BlockingIOError(EWOULDBLOCK, "claim publication deferred by oplock", public_path) from error
+            raise
+        return fd
+
+    def mark_claim_for_deletion(
+        fd: int,
+        path: str,
+        private_name: Callable[[], str] | None = None,
+        *,
+        cancel_wait: AbstractContextManager[None] | None = None,
+    ) -> OSError | None:
+        sys.audit("os.remove", path, None)
+        handle = msvcrt.get_osfhandle(fd)
+        with cancel_wait or nullcontext():
+            try:
+                _mark_delete_disposition(handle, published=private_name is not None)
+            except OSError as error:
+                # Older volumes can rename an open claim but refuse POSIX disposition.
+                if private_name is None or getattr(error, "winerror", None) not in {1, 50, 87}:
+                    raise
+                _rename_open_claim(fd, private_name())
+                try:
+                    _mark_delete_disposition(handle, published=False)
+                except OSError as cleanup_error:
+                    return cleanup_error  # the rename already withdrew the public claim
+        return None
+
+    def _mark_delete_disposition(handle: int, *, published: bool) -> None:
+        if _set_delete_disposition(handle, published=published):
+            return
+        error = ctypes.get_last_error()
+        if error == _ERROR_ACCESS_DENIED:
+            # A peer's force_break may already have removed this exact file.
+            info = _FILE_STANDARD_INFO()
+            if _KERNEL32.GetFileInformationByHandleEx(handle, 1, ctypes.byref(info), ctypes.sizeof(info)) and (
+                info.DeletePending
+            ):
+                return
+        raise ctypes.WinError(error)
+
+    def _set_delete_disposition(handle: int, *, published: bool = False) -> bool:
+        disposition = wintypes.DWORD(_DELETE_POSIX) if published else ctypes.c_byte(1)
+        return bool(
+            _KERNEL32.SetFileInformationByHandle(
+                handle,
+                _FILE_DISPOSITION_INFO_EX if published else _FILE_DISPOSITION_INFO_CLASS,
+                ctypes.byref(disposition),
+                ctypes.sizeof(disposition),
+            )
+        )
+
+    def _rename_open_claim(fd: int, public_path: str) -> None:
+        name = public_path.encode("utf-16-le")
+        buffer = ctypes.create_string_buffer(ctypes.sizeof(_FILE_RENAME_INFO) + len(name))
+        _FILE_RENAME_INFO.from_buffer(buffer).FileNameLength = len(name)
+        ctypes.memmove(ctypes.addressof(buffer) + _FILE_RENAME_INFO.FileName.offset, name, len(name))
+        if not _KERNEL32.SetFileInformationByHandle(msvcrt.get_osfhandle(fd), 3, buffer, len(buffer)):
+            raise ctypes.WinError(ctypes.get_last_error())
 
     @cache
     def _owner_only_descriptor() -> ctypes.c_void_p:
@@ -855,6 +987,7 @@ else:  # pragma: win32 no cover
 
 
 __all__ = [
+    "DirectoryPinBlockedError",
     "WindowsFileLock",
     "cancelling_oplock_wait",
     "create_exclusive_non_reparse_fd",
@@ -864,12 +997,15 @@ __all__ = [
     "is_unlinked",
     "lock_fd_nonblocking",
     "make_private_directory",
+    "mark_claim_for_deletion",
     "open_deletable_for_reading",
     "open_for_delete_without_oplock_wait",
     "open_non_reparse_fd",
     "open_read_without_oplock_wait",
+    "oplock_wait_cancelled",
     "pin_directory",
     "pinned",
+    "publish_deletable_claim",
     "unlink_without_oplock_wait",
     "unlock_fd",
     "unpin_directory",

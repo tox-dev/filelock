@@ -962,11 +962,15 @@ Each publication attempt uses a fresh random private-record name. On POSIX, a pr
 removed immediately; an unpublished record abandoned by a crash is removed after a two-second grace period. If a live
 publisher is paused past that grace period, it backs off and retries instead of entering without a public claim.
 
-On Windows, acquisition leaves abandoned private records in place because deleting one can wait for a reader's oplock.
-Repeated interruptions can leave enough records to slow claim scans. Stop all processes using the lock before cleaning
-up. Look next to the lock file for its hidden sentinel records (``.<lock-name>.private-v1-*.tmp``). In
-``<lock-name>.filelock/claims/``, remove stale ``.*.private-v1-*.tmp`` and ``.probe-v1-*.tmp`` files. Use ``force_break()``
-for public ``*.claim`` records.
+On Windows, acquisition leaves abandoned private records in place. Before publication, more than 16,380 existing
+directory entries trigger a protocol error that names the directory. The contender reserves the remaining four slots
+for its own records and a clock probe. After publication, growth beyond 16,384 entries makes the attempt withdraw.
+Only public claims count toward the separate 1,024-claim limit.
+
+Stop all processes using this lock before cleaning up. Next to the lock file, remove its abandoned
+``.<lock-name>.private-v1-*.tmp`` sentinel records. Under ``<lock-name>.filelock/claims/``, remove abandoned
+``.*.private-v1-*.tmp`` and ``.probe-v1-*.tmp`` records. Leave the permanent lock-file sentinel in place. For public
+``*.claim`` records, verify the owner has stopped and use ``force_break()`` as shown above.
 
 A directory, symlink, or other non-regular node at a private-record name is protocol damage and fails closed without
 following or removing it.

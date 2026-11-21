@@ -13,12 +13,11 @@ from filelock import StrictSoftFileLock, Timeout
 if TYPE_CHECKING:
     from pathlib import Path
 
-# The crash points are hit through sys.addaudithook on os.link and os.remove events, which only CPython emits. PyPy
-# runs the audit hook but never fires those events, so the child would finish the acquisition instead of crashing.
+# POSIX crash injection uses CPython's os.link and os.remove audit events; Windows hooks handle rename in the child.
 pytestmark: Final[list[pytest.MarkDecorator]] = [
     pytest.mark.skipif(
-        sys.implementation.name != "cpython",
-        reason="crash injection needs the os.link and os.remove audit events CPython emits",
+        sys.platform != "win32" and sys.implementation.name != "cpython",
+        reason="POSIX crash injection needs the os.link and os.remove audit events CPython emits",
     ),
     pytest.mark.requires_hard_links,
 ]
@@ -97,6 +96,21 @@ def _crash_during_private_publication(stage: str) -> str:
 
         from filelock import StrictSoftFileLock
 
+        if os.name == "nt":
+            from filelock import _windows
+
+            rename_claim = _windows._rename_open_claim
+
+            def exit_at_claim_rename(fd: int, path: str) -> None:
+                intent = os.path.basename(path).startswith("intent-")
+                if intent and {stage!r} == "before-link":
+                    os._exit({_CRASH_STATUS})
+                rename_claim(fd, path)
+                if intent and {stage!r} == "after-link":
+                    os._exit({_CRASH_STATUS})
+
+            _windows._rename_open_claim = exit_at_claim_rename
+
         def exit_at_publication_stage(event: str, args: tuple[str | int, ...]) -> None:
             if event not in {{"os.link", "os.remove"}}:
                 return
@@ -134,7 +148,7 @@ def test_strict_soft_reclaims_crash_after_private_publication(tmp_path: Path) ->
         _CRASH_STATUS,
         "",
         "",
-        1,
+        0 if sys.platform == "win32" else 1,
         1,
     )
     assert tuple(tmp_path.glob("**/.*.private-v1-*.tmp")) == (private_records if os.name == "nt" else ())

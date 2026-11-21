@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from errno import EIO
@@ -9,10 +10,13 @@ from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 
+import filelock._strict  # simplint: ignore[private-import-path]  # tests internal publication
 from filelock import StrictSoftFileLock, Timeout
 from filelock._strict import _CLAIM_MAGIC
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pytest_mock import MockerFixture
 
 
@@ -26,16 +30,8 @@ def test_strict_soft_lower_intent_delayed_until_higher_selects(tmp_path: Path, m
     higher_held_attempted = threading.Event()
     lower_held_linked = threading.Event()
     higher_held_linked = threading.Event()
-    real_link = os.link
 
-    def ordered_link(
-        source: str,
-        destination: str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
+    def ordered_publication(destination: str, publish: Callable[[], int | None]) -> int | None:
         name = Path(destination).name
         if threading.current_thread().name == "lower" and name.startswith("intent-"):
             lower_intent_waiting.set()
@@ -43,20 +39,15 @@ def test_strict_soft_lower_intent_delayed_until_higher_selects(tmp_path: Path, m
         if threading.current_thread().name == "higher" and name.startswith("held-"):
             higher_held_attempted.set()
             assert lower_held_linked.wait(timeout=2)
-        real_link(
-            source,
-            destination,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
+        result = publish()
         if threading.current_thread().name == "lower" and name.startswith("held-"):
             lower_held_linked.set()
             assert higher_held_linked.wait(timeout=2)
         elif threading.current_thread().name == "higher" and name.startswith("held-"):
             higher_held_linked.set()
+        return result
 
-    mocker.patch("filelock._strict.os.link", side_effect=ordered_link, autospec=True)
+    _patch_claim_publication(mocker, ordered_publication)
     mocker.patch(
         "filelock._strict.secrets.token_hex",
         side_effect=lambda _size: "0" * 32 if threading.current_thread().name == "lower" else "f" * 32,
@@ -91,6 +82,49 @@ def _initialize_protocol(lock_path: Path) -> None:
         pass
 
 
+def _patch_claim_publication(
+    mocker: MockerFixture, effect: Callable[[str, Callable[[], int | None]], int | None]
+) -> None:
+    if sys.platform == "win32":  # pragma: win32 cover
+        real_publish = filelock._strict.publish_deletable_claim
+
+        def publish(
+            private_path: Callable[[], str],
+            public_path: str,
+            record: bytes,
+            descriptors: dict[str, int],
+            deadline: float | None,
+        ) -> int:
+            result = effect(public_path, lambda: real_publish(private_path, public_path, record, descriptors, deadline))
+            assert result is not None
+            return result
+
+        mocker.patch("filelock._strict.publish_deletable_claim", side_effect=publish, autospec=True)
+    else:  # pragma: win32 no cover
+        real_link = os.link
+
+        def link(
+            source: str,
+            destination: str,
+            *,
+            src_dir_fd: int | None = None,
+            dst_dir_fd: int | None = None,
+            follow_symlinks: bool = True,
+        ) -> None:
+            effect(
+                destination,
+                lambda: real_link(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                    follow_symlinks=follow_symlinks,
+                ),
+            )
+
+        mocker.patch("filelock._strict.os.link", side_effect=link, autospec=True)
+
+
 def _join_threads(*threads: threading.Thread) -> None:
     for thread in threads:
         thread.join(timeout=3)
@@ -103,28 +137,14 @@ def test_strict_soft_lower_intent_delayed_until_higher_enters(tmp_path: Path, mo
     lower_intent_waiting = threading.Event()
     higher_entered = threading.Event()
     release_higher = threading.Event()
-    real_link = os.link
 
-    def delayed_link(
-        source: str,
-        destination: str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
+    def delayed_publication(destination: str, publish: Callable[[], int | None]) -> int | None:
         if threading.current_thread().name == "lower" and Path(destination).name.startswith("intent-"):
             lower_intent_waiting.set()
             assert higher_entered.wait(timeout=2)
-        real_link(
-            source,
-            destination,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
+        return publish()
 
-    mocker.patch("filelock._strict.os.link", side_effect=delayed_link, autospec=True)
+    _patch_claim_publication(mocker, delayed_publication)
     mocker.patch(
         "filelock._strict.secrets.token_hex",
         side_effect=lambda _size: "0" * 32 if threading.current_thread().name == "lower" else "f" * 32,
@@ -195,27 +215,13 @@ def test_strict_soft_shared_instance_waits_for_failed_doorway(tmp_path: Path, mo
     fail_first = threading.Event()
     second_entered = threading.Event()
     first_errors: list[OSError] = []
-    real_link = os.link
 
-    def pause_first_intent(
-        source: str,
-        destination: str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
+    def pause_first_intent(destination: str, publish: Callable[[], int | None]) -> int | None:
         if threading.current_thread().name == "first" and Path(destination).name.startswith("intent-"):
             first_doorway.set()
             assert fail_first.wait(timeout=30)
             raise OSError(EIO, "doorway failed")
-        real_link(
-            source,
-            destination,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
+        return publish()
 
     def acquire_first() -> None:
         try:
@@ -227,7 +233,7 @@ def test_strict_soft_shared_instance_waits_for_failed_doorway(tmp_path: Path, mo
         with lock:
             second_entered.set()
 
-    mocker.patch("filelock._strict.os.link", side_effect=pause_first_intent, autospec=True)
+    _patch_claim_publication(mocker, pause_first_intent)
     first = threading.Thread(target=acquire_first, name="first")
     second = threading.Thread(target=acquire_second, name="second")
     first.start()
@@ -262,32 +268,18 @@ def test_strict_soft_shared_instance_transition_respects_admission(
     first_doorway = threading.Event()
     continue_first = threading.Event()
     release_first = threading.Event()
-    real_link = os.link
 
-    def pause_first_intent(
-        source: str,
-        destination: str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
+    def pause_first_intent(destination: str, publish: Callable[[], int | None]) -> int | None:
         if threading.current_thread().name == "first" and Path(destination).name.startswith("intent-"):
             first_doorway.set()
             assert continue_first.wait(timeout=2)
-        real_link(
-            source,
-            destination,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
+        return publish()
 
     def acquire_first() -> None:
         with lock:
             assert release_first.wait(timeout=2)
 
-    mocker.patch("filelock._strict.os.link", side_effect=pause_first_intent, autospec=True)
+    _patch_claim_publication(mocker, pause_first_intent)
     first = threading.Thread(target=acquire_first, name="first")
     first.start()
     assert first_doorway.wait(timeout=2)
