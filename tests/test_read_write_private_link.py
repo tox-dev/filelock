@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import hashlib
 import os
 import shutil
 import stat
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # runs this test's own interpreter
 import sys
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
+from urllib.parse import unquote, urlsplit
 
 import pytest
 from capabilities import CAPABILITIES
@@ -18,12 +24,15 @@ pytest.importorskip("sqlite3")
 
 import sqlite3
 
+import filelock._read_write  # simplint: ignore[private-import-path]  # isolate sweep state
 from filelock import AsyncReadWriteLock, ReadWriteLock
+from filelock._identity import host_name
 from tests.capability_marks import NEEDS_FILE_PERMISSIONS
+from tests.pid_namespace_helpers import pin_pid_namespace, pin_proc_pid_namespace
 from tests.read_write_helpers import assert_read_write_lock_state
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Generator, Iterator
 
     from pytest_mock import MockerFixture
 
@@ -45,17 +54,26 @@ async def test_private_link_connects_through_the_validated_inode(
     lock: Final[AsyncReadWriteLock] = AsyncReadWriteLock(database, is_singleton=False)
     try:
         async with getattr(lock, f"{mode}_lock")():
-            opened: Final[Path] = Path(connect.call_args.args[0])
-            link_directory: Final[Path] = opened.parent.parent
+            opened: Final[Path] = Path(unquote(urlsplit(connect.call_args.args[0]).path))
+            link_directory: Final[Path] = opened.parents[2]
             assert (
+                (connect.call_args.kwargs["uri"], urlsplit(connect.call_args.args[0]).query),
                 opened.name,
                 link_directory.parent,
                 stat.S_IMODE(link_directory.stat().st_mode),
                 await asyncio.to_thread(opened.samefile, database),
-            ) == ("lock.db", database.parent, 0o700, True)
+            ) == ((True, "mode=rw"), "lock.db", database.parent, 0o700, True)
             await asyncio.to_thread(assert_read_write_lock_state, str(database), "write", available=False)
     finally:
         await lock.close()
+
+
+def test_private_link_opens_when_its_directory_needs_uri_quoting(database: Path) -> None:
+    parent = database.parent.with_name("shared? #%")
+    database.parent.rename(parent)
+    database = parent / database.name
+    with ReadWriteLock(database, is_singleton=False).write_lock():
+        assert_read_write_lock_state(str(database), "write", available=False)
 
 
 @pytest.mark.parametrize("mode", [pytest.param("read", id="read"), pytest.param("write", id="write")])
@@ -75,6 +93,38 @@ def test_private_link_failure_preserves_a_peer_lock(database: Path, mocker: Mock
             ReadWriteLock(database, is_singleton=False)
         assert_read_write_lock_state(str(database), "write", available=False)
     assert list(database.parent.glob(".filelock-*")) == []
+
+
+def test_private_link_removed_before_sqlite_open_cannot_grant_a_second_writer(
+    database: Path, mocker: MockerFixture, created_directories: list[Path]
+) -> None:
+    with ReadWriteLock(database, is_singleton=False).write_lock():
+        connect = sqlite3.connect
+
+        def remove_then_connect(
+            target: str,
+            *,
+            check_same_thread: bool,
+            factory: type[sqlite3.Connection],
+            cached_statements: int,
+            timeout: float,
+            uri: bool = False,
+        ) -> sqlite3.Connection:
+            next(created_directories[-1].glob("*/*/lock.db")).unlink()
+            return connect(
+                target,
+                check_same_thread=check_same_thread,
+                factory=factory,
+                cached_statements=cached_statements,
+                timeout=timeout,
+                uri=uri,
+            )
+
+        patched = mocker.patch("sqlite3.connect", autospec=True, side_effect=remove_then_connect)
+        with pytest.raises(sqlite3.OperationalError, match="unable to open database file"):
+            ReadWriteLock(database, is_singleton=False)
+        mocker.stop(patched)
+        assert_read_write_lock_state(str(database), "write", available=False)
 
 
 @pytest.mark.asyncio
@@ -174,6 +224,27 @@ def test_private_link_refuses_a_directory_swapped_in_before_it_opens(
     assert [(directory / "notes.txt").read_text() for directory in swapped_in] == ["keep"]
 
 
+def test_private_link_repairs_inherited_permissions_on_the_nested_directory(
+    database: Path, mocker: MockerFixture
+) -> None:
+    mkdir = os.mkdir
+
+    def inherit_permissions(path: str, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        mkdir(path, mode, dir_fd=dir_fd)
+        if dir_fd is not None:
+            os.chmod(path, stat.S_IRWXU | stat.S_IRGRP, dir_fd=dir_fd)
+
+    mocker.patch("os.mkdir", autospec=True, side_effect=inherit_permissions)
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        directory = next(database.parent.glob(".filelock-*/*"))
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+    mocker.patch("os.fchmod", autospec=True)
+    with pytest.raises(PermissionError, match="inherited ACL"):
+        ReadWriteLock(database, is_singleton=False)
+    assert list(database.parent.glob(".filelock-*")) == []
+
+
 def test_private_link_closes_a_mode_an_inherited_acl_opened(database: Path, loosened_directories: list[Path]) -> None:
     lock: Final[ReadWriteLock] = ReadWriteLock(database, is_singleton=False)
     with lock.read_lock():
@@ -211,6 +282,7 @@ def test_private_link_opens_nothing_through_a_swapped_link_directory(
         factory: type[sqlite3.Connection],
         cached_statements: int,
         timeout: float,
+        uri: bool = False,
     ) -> sqlite3.Connection:
         created_directories[-1].rename(tmp_path / "aside")
         created_directories[-1].mkdir()
@@ -221,12 +293,59 @@ def test_private_link_opens_nothing_through_a_swapped_link_directory(
             factory=factory,
             cached_statements=cached_statements,
             timeout=timeout,
+            uri=uri,
         )
 
     mocker.patch("sqlite3.connect", autospec=True, side_effect=swap_then_connect)
     with pytest.raises(sqlite3.OperationalError, match="unable to open database file"):
         ReadWriteLock(database, is_singleton=False)
     assert (target.exists(), (created_directories[-1] / "lock.db").is_symlink()) == (False, True)
+
+
+def test_private_link_refuses_a_watched_swapped_directory(
+    database: Path, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    target = tmp_path / "target.db"
+    watched = database.parent / "results"
+    watched.mkdir(mode=0o755)
+    adopted: list[Path] = []
+    mkdtemp = tempfile.mkdtemp
+    connect = sqlite3.connect
+
+    def create_then_swap(*, prefix: str, dir: Path) -> str:  # ruff:ignore[builtin-argument-shadowing]  # mirrors mkdtemp
+        directory = Path(mkdtemp(prefix=prefix, dir=dir))
+        watched.rename(directory)
+        adopted.append(directory)
+        return str(directory)
+
+    def swap_then_connect(
+        database: str,
+        *,
+        check_same_thread: bool,
+        factory: type[sqlite3.Connection],
+        cached_statements: int,
+        timeout: float,
+        uri: bool,
+    ) -> sqlite3.Connection:
+        reported = [entry.name for entry in adopted[-1].iterdir()]
+        adopted[-1].rename(watched)
+        for name in reported:
+            (adopted[-1] / name).mkdir(parents=True)
+            (adopted[-1] / name / "lock.db").symlink_to(target)
+        return connect(
+            database,
+            check_same_thread=check_same_thread,
+            factory=factory,
+            cached_statements=cached_statements,
+            timeout=timeout,
+            uri=uri,
+        )
+
+    mocker.patch("tempfile.mkdtemp", autospec=True, side_effect=create_then_swap)
+    mocker.patch("sqlite3.connect", autospec=True, side_effect=swap_then_connect)
+    with pytest.raises(sqlite3.OperationalError, match="unable to open database file"):
+        ReadWriteLock(database, is_singleton=False)
+    assert target.exists() is False
 
 
 def test_private_link_release_keeps_a_directory_renamed_onto_the_link(database: Path, tmp_path: Path) -> None:
@@ -255,25 +374,210 @@ def test_private_link_sweeps_the_link_of_a_killed_holder(database: Path, holder:
     assert (len(left), _link_directories(database), database.stat().st_nlink) == (1, [], 1)
 
 
-def test_private_link_sweep_removes_a_link_left_by_an_earlier_release(database: Path) -> None:
-    # Releases up to 4.2.0 linked the database right inside the directory.
+def test_private_link_sweep_bounds_a_crowded_directory(database: Path, mocker: MockerFixture) -> None:
+    for number in range(300):
+        (database.parent / f".filelock-{number}").mkdir()
+    scandir = os.scandir
+
+    @contextmanager
+    def slow_scandir(path: str | os.PathLike[str] | int) -> Generator[Iterator[os.DirEntry[str]]]:
+        with scandir(path) as entries:
+
+            def delayed_entry(entry: os.DirEntry[str]) -> os.DirEntry[str]:
+                time.sleep(0.005)
+                return entry
+
+            yield map(delayed_entry, entries)
+
+    mocker.patch("os.scandir", autospec=True, side_effect=slow_scandir)
+    started = time.monotonic()
+    with ReadWriteLock(database, is_singleton=False).write_lock(blocking=False):
+        assert database.exists()
+    assert time.monotonic() - started < 0.5
+
+
+@pytest.mark.parametrize("link", ["lock.db", "0123456789abcdef/lock.db"])
+def test_private_link_sweep_resumes_after_its_cooldown(database: Path, mocker: MockerFixture, link: str) -> None:
     database.touch()
-    left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
-    left.mkdir(mode=0o700)
-    (left / "lock.db").hardlink_to(database)
-    with ReadWriteLock(database, is_singleton=False).read_lock():
-        pass
+    left = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    (left / link).parent.mkdir(mode=0o700, parents=True)
+    (left / link).hardlink_to(database)
+    scandir = os.scandir
 
-    assert (_link_directories(database), database.stat().st_nlink) == ([], 1)
+    @contextmanager
+    def dead_link_last(path: str | os.PathLike[str] | int) -> Generator[Iterator[os.DirEntry[str]]]:
+        with scandir(path) as entries:
+            yield iter(sorted(entries, key=lambda entry: entry.name == left.name))
+
+    scans = mocker.patch("os.scandir", autospec=True, side_effect=dead_link_last)
+    clock = mocker.patch("filelock._read_write.time", autospec=True).monotonic
+    clock.return_value = 100
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 0)
+    lock = ReadWriteLock(database, is_singleton=False)
+    for _ in range(4):
+        with lock.read_lock(blocking=False):
+            assert (left / link).samefile(database)
+    assert scans.call_count == 1
+
+    clock.return_value += 61
+    with lock.read_lock(blocking=False):
+        assert not left.exists()
 
 
-def _host_digest(database: Path) -> str:
+def _host_digest(database: Path, *, legacy: bool = False) -> str:
+    if legacy:  # pragma: linux cover
+        return hashlib.sha256(host_name().encode()).hexdigest()[:16]
     # Taken from a link of another database, so the sweep for this one has not run yet.
     seed: Final[Path] = database.parent.with_name("seed")
     seed.mkdir(mode=0o777)
     seed.chmod(0o777)
     with ReadWriteLock(seed / "lock.db", is_singleton=False).read_lock():
         return next(seed.glob(".filelock-*")).name.rsplit("-", 2)[1]
+
+
+def test_private_link_sweep_closes_abandoned_scans(database: Path, mocker: MockerFixture) -> None:
+    open_scans: set[int] = set()
+    scandir = os.scandir
+
+    @contextmanager
+    def track_handles(path: Path) -> Generator[Iterator[os.DirEntry[str]]]:
+        with scandir(path) as entries:
+            open_scans.add(id(entries))
+            try:
+                yield entries
+            finally:
+                open_scans.remove(id(entries))
+
+    mocker.patch("os.scandir", autospec=True, side_effect=track_handles)
+    clock = mocker.patch("filelock._read_write.time", autospec=True).monotonic
+    clock.return_value = 100
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 0)
+    for index in range(17):
+        ReadWriteLock(database.with_suffix(f".{index}"), is_singleton=False).close()
+    assert len(open_scans) == 16
+    clock.return_value += 61
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 1)
+    for index in range(17):
+        ReadWriteLock(database.with_suffix(f".{index}"), is_singleton=False).close()
+    assert not open_scans
+
+
+def test_private_link_sweep_forgets_old_databases(database: Path, mocker: MockerFixture) -> None:
+    digest = _host_digest(database)
+    mocker.patch("filelock._read_write._MAX_REMEMBERED_SWEEPS", 2)
+    mocker.patch("filelock._read_write._LINK_SWEEPS", new=filelock._read_write._LinkSweeps())
+    ReadWriteLock(database, is_singleton=False).close()
+    left = database.parent / f".filelock-{2**31 - 1}--{digest}-left"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(database)
+    for suffix in (".b", ".c"):
+        ReadWriteLock(database.with_suffix(suffix), is_singleton=False).close()
+    assert (left / "lock.db").samefile(database)
+    ReadWriteLock(database, is_singleton=False).close()
+    assert not left.exists()
+
+
+def test_private_link_sweep_restarts_in_a_replaced_parent(database: Path, mocker: MockerFixture) -> None:
+    digest = _host_digest(database)
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 0)
+    ReadWriteLock(database, is_singleton=False).close()
+    previous = database.parent.with_name("previous")
+    database.parent.rename(previous)
+    database.parent.mkdir()
+    database.parent.chmod(0o777)
+    database.hardlink_to(previous / database.name)
+    left = database.parent / f".filelock-{2**31 - 1}--{digest}-left"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(database)
+
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 1)
+    ReadWriteLock(database, is_singleton=False).close()
+    assert not left.exists()
+
+
+def test_private_link_sweep_retries_an_invalid_iterator(database: Path, mocker: MockerFixture) -> None:
+    digest = _host_digest(database)
+    scandir = os.scandir
+
+    def invalidated(entries: Iterator[os.DirEntry[str]]) -> Generator[os.DirEntry[str]]:
+        yield next(entries)
+        raise OSError(errno.EIO, "directory iterator invalidated")
+
+    @contextmanager
+    def interrupted(path: Path) -> Generator[Iterator[os.DirEntry[str]]]:
+        with scandir(path) as entries:
+            yield invalidated(entries)
+
+    scans = mocker.patch("os.scandir", autospec=True, side_effect=interrupted)
+    clock = mocker.patch("filelock._read_write.time", autospec=True).monotonic
+    clock.return_value = 100
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 0)
+    ReadWriteLock(database, is_singleton=False).close()
+    left = database.parent / f".filelock-{2**31 - 1}--{digest}-left"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(database)
+    clock.return_value += 61
+    ReadWriteLock(database, is_singleton=False).close()
+    assert (left / "lock.db").samefile(database)
+
+    scans.side_effect = scandir
+    clock.return_value += 61
+    mocker.patch("filelock._read_write._MAX_TRANSITION_WAIT", 1)
+    ReadWriteLock(database, is_singleton=False).close()
+    assert not left.exists()
+
+
+def test_private_link_sweep_skips_a_busy_iterator(database: Path, mocker: MockerFixture) -> None:
+    digest = _host_digest(database)
+    scandir = os.scandir
+    scanning, release = threading.Event(), threading.Event()
+
+    @contextmanager
+    def paused(path: Path) -> Generator[Iterator[os.DirEntry[str]]]:
+        scanning.set()
+        assert release.wait(5)
+        with scandir(path) as entries:
+            yield entries
+
+    scans = mocker.patch("os.scandir", autospec=True, side_effect=paused)
+    other = database.with_suffix(".other")
+    other.touch()
+    left = other.parent / f".filelock-{2**31 - 1}--{digest}-left"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(other)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        first = worker.submit(ReadWriteLock, database, is_singleton=False)
+        try:
+            assert scanning.wait(5)
+            ReadWriteLock(other, is_singleton=False).close()
+            assert (left / "lock.db").samefile(other)
+            assert scans.call_count == 1
+        finally:
+            release.set()
+        first.result(timeout=5).close()
+
+    ReadWriteLock(other, is_singleton=False).close()
+    assert not left.exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux PID namespaces need procfs to identify their owners")
+@pytest.mark.parametrize("procfs", [pytest.param("hidden", id="hidden"), pytest.param("foreign", id="foreign")])
+@pytest.mark.parametrize("legacy", [pytest.param(False, id="current"), pytest.param(True, id="legacy")])
+def test_private_link_sweep_keeps_a_holder_when_pid_namespace_is_unknown(  # pragma: linux cover
+    database: Path, mocker: MockerFixture, procfs: str, *, legacy: bool
+) -> None:
+    if procfs == "hidden":  # simplint: ignore[conditional-in-test]  # distinct procfs states
+        pin_pid_namespace(mocker, PermissionError(errno.EACCES, "procfs hidden"))
+    else:
+        pin_proc_pid_namespace(mocker, "{pid}", "NSpid:\t{pid}\t{pid}\n")
+    database.touch()
+    left: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database, legacy=legacy)}-x"
+    left.mkdir(mode=0o700)
+    (left / "lock.db").hardlink_to(database)
+    with ReadWriteLock(database, is_singleton=False).read_lock():
+        pass
+
+    assert (left / "lock.db").samefile(database)
 
 
 @pytest.mark.parametrize(
@@ -354,21 +658,36 @@ def test_private_link_sweep_skips_a_symlink_under_a_dead_holder_name(database: P
     database.touch()
     named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
     named.mkdir()
-    (named / "inner").symlink_to(database.parent)
+    (named / "0123456789abcdef").symlink_to(database.parent)
     ReadWriteLock(database, is_singleton=False).close()
 
-    assert (database.exists(), (named / "inner").is_symlink()) == (True, True)
+    assert (database.exists(), (named / "0123456789abcdef").is_symlink()) == (True, True)
 
 
-def test_private_link_sweep_skips_a_symlink_to_a_live_holder(database: Path, holder: subprocess.Popen[str]) -> None:
-    (held,) = _link_directories(database)
-    (inner,) = list(held.iterdir())
+def test_private_link_sweep_keeps_a_link_under_an_unrelated_directory(database: Path) -> None:
+    database.touch()
     named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
-    named.mkdir()
-    (named / "inner").symlink_to(inner)
+    (named / "project").mkdir(parents=True)
+    (named / "project" / "lock.db").hardlink_to(database)
     ReadWriteLock(database, is_singleton=False).close()
 
-    assert ((inner / "lock.db").exists(), holder.poll()) == (True, None)
+    assert ((named / "project" / "lock.db").exists(), database.stat().st_nlink) == (True, 2)
+
+
+@pytest.mark.parametrize("depth", [1, 2])
+def test_private_link_sweep_skips_a_symlink_to_a_live_holder(
+    database: Path, holder: subprocess.Popen[str], depth: int
+) -> None:
+    (held,) = _link_directories(database)
+    (outer,) = list(held.iterdir())
+    (inner,) = list(outer.iterdir())
+    named: Final[Path] = database.parent / f".filelock-{2**31 - 1}--{_host_digest(database)}-x"
+    planted: Final[Path] = named / "/".join(["0123456789abcdef"] * depth)
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.symlink_to((outer, inner)[depth - 1])
+    ReadWriteLock(database, is_singleton=False).close()
+
+    assert ((inner / "lock.db").exists(), planted.is_symlink(), holder.poll()) == (True, True, None)
 
 
 @pytest.mark.usefixtures("holder")

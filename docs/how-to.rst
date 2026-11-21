@@ -450,26 +450,33 @@ write hold.
 SQLite loads the schema before it can honor the acquire timeout. filelock limits each row to 1,024 bytes during this
 load and interrupts long-running schema queries. A lock database that exceeds either limit raises :class:`ValueError`.
 
-On POSIX, SQLite opens the database by name. It also uses the names ``<database>-journal``, ``<database>-wal`` and
-``<database>-shm`` beside it, so a file placed under one of those names changes what SQLite does. filelock therefore
-names the database directly only when no process of another account can create names in its directory and none of those
-three side files exists. The directory must belong to the locking account or root and must not be writable by its group
-or by others. Otherwise, filelock opens SQLite through a hard link (a second name for the same file) inside a
-``.filelock-*`` directory that only the locking account can read. A side file left before the directory was made private
-still selects this route. The directory must be writable by the locking account, and the filesystem must support hard
-links; when the link cannot be made, the lock raises :class:`OSError`.
+On POSIX, filelock opens the database directly when its directory belongs to the locking account or root, its group
+and others cannot write there, and none of SQLite's side files (``-journal``, ``-wal`` or ``-shm``) exist.
+
+Otherwise, filelock creates a private directory under ``.filelock-*`` and opens a hard link to the database there.
+This keeps SQLite's side files out of the shared directory. The locking account needs write access to the parent and a
+filesystem that supports hard links. If inherited permissions expose the private directory, filelock sets mode 0700 and
+checks it. If other accounts still have access or the filesystem refuses the mode change, filelock raises :class:`PermissionError`.
+
+Each process checks shared directories for links left by dead holders. It checks a 50 ms deadline between entries.
+If time runs out, connections to that database skip cleanup for one minute. The next connection then continues from
+the last entry. Each process keeps up to 16 unfinished scans. An evicted scan starts over when its database is next
+eligible. After visiting 1,024 databases, filelock can forget an older scan and check that database again. A leftover
+link does not keep the lock held.
+
+On POSIX, SQLite refuses to create a database if its private link disappears before the connection opens. On Linux,
+when procfs cannot establish the process's PID namespace, filelock leaves private links from other processes in place.
+Upgrade all processes that share the database together. Older releases can create a separate database if their private
+link disappears. Stop all users of the database before removing any stale ``.filelock-*`` directories by hand.
 
 Both routes assume that no process of another account can replace the database directory or any directory above it.
 That holds when every directory above belongs to the locking account or root and is either not writable by others or
 has the sticky bit (a directory flag that lets only a file's owner rename or remove it).
 
-A process that can rename an entry in a directory above owns every name below it, and can put a replacement at the
-database path between the lock's checks. filelock compares the name with the file it checked before it runs any SQL statement, and raises
-:class:`OSError` instead of reporting the lock held, and leaves the replacement's files as they were, except that
-SQLite's open creates an empty ``lock.db`` there when the name is missing, following a symlink at that name. A swap that lands after that
-comparison and before SQLite's first statement still makes SQLite look up ``-journal`` and ``-wal`` under the
-replacement: it deletes both, and beside a non-empty lock database it first replays the journal into that database and
-unlinks the file the journal names.
+Keep the database under directories trusted by the locking account. If another account can replace a directory above
+the database, it can change which files SQLite sees between the identity check and the first SQL statement. SQLite
+can then delete a journal or WAL in the replacement directory. With a nonempty database, SQLite can replay the journal
+into that database and unlink the file named by the journal.
 
 On Windows the lock makes the same choice from the directory's access control list (ACL). It connects by the database
 name only when the directory's owner and every entry that allows adding files, adding subdirectories or deleting entries

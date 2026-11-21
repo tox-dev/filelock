@@ -378,9 +378,22 @@ if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma
         return False
 
 
+def link_host() -> str | None:  # pragma: needs posix-hard-link
+    if sys.platform in {"linux", "android"}:  # pragma: darwin no cover
+        try:
+            Path("/proc/self/ns/pid").stat()
+        except OSError:
+            # An unreadable procfs gives different PID namespaces the same hostname; none can prove a peer dead.
+            return None
+        if not _proc_numbers_tasks_as_here():
+            return None
+    return host_name()
+
+
 __all__ = [
     "describe_host_name",
     "host_name",
+    "link_host",
     "owner_is_current_process",
     "owner_is_stale",
     "process_alive",
