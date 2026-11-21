@@ -11,6 +11,7 @@ __spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [
     "asyncio",
+    "concurrent.futures",
     "filelock._async",
     "filelock._error",
     "functools",
@@ -22,6 +23,9 @@ import asyncio
 import functools
 import os
 import threading
+from concurrent.futures import Future as ConcurrentFuture
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import thread as executor_threads
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 
@@ -45,7 +49,7 @@ from ._sync import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable
+    from collections.abc import AsyncGenerator, Callable, MutableMapping
     from concurrent import futures
     from types import TracebackType
 
@@ -78,7 +82,9 @@ class AsyncSoftReadWriteLock:
     :param on_compromise: called from the heartbeat thread with a :class:`~filelock.LeaseCompromise` when the hold is
         lost
     :param loop: event loop for ``run_in_executor``; ``None`` uses the running loop
-    :param executor: executor for ``run_in_executor``; ``None`` uses the default executor
+    :param executor: executor for ``run_in_executor``. When ``None`` this lock creates and owns a dedicated
+        single-thread executor and shuts it down in :meth:`close`. A caller-supplied executor is not shut down and
+        needs enough workers for each concurrent wait and release.
 
     .. versionadded:: 3.27.0
 
@@ -100,6 +106,7 @@ class AsyncSoftReadWriteLock:
     ) -> None:
         self._creator_pid = os.getpid()
         self._closed = False
+        self._closing: ConcurrentFuture[None] | None = None
         self._owns_backend = not is_singleton
         #: Marks the task holds taken through this wrapper, which its close() ends.
         self._via: Final = object()
@@ -115,8 +122,14 @@ class AsyncSoftReadWriteLock:
         )
         self._owners = task_owners_for(self._lock)
         self._loop = loop
-        self._executor = executor
+        self._owns_executor = executor is None
+        self._executor = ThreadPoolExecutor(max_workers=1) if executor is None else executor
         register_fork_object(self)
+
+    def __del__(self, _getpid: Callable[[], int] = os.getpid) -> None:
+        # Keep getpid available after module globals are cleared during interpreter shutdown.
+        if _getpid() == getattr(self, "_creator_pid", None) and getattr(self, "_owns_executor", False):
+            self._executor.shutdown(wait=False)
 
     @property
     def timeout(self) -> float:
@@ -144,8 +157,8 @@ class AsyncSoftReadWriteLock:
         return self._loop
 
     @property
-    def executor(self) -> futures.Executor | None:
-        """The executor used for ``run_in_executor``, or ``None`` for the default executor."""
+    def executor(self) -> futures.Executor:
+        """The executor used for ``run_in_executor`` (a dedicated single-thread one if none was supplied)."""
         return self._executor
 
     @asynccontextmanager
@@ -230,6 +243,22 @@ class AsyncSoftReadWriteLock:
                 raise lost_hold_error(self.lock_file, mode, compromise)
             return self._backend_holds()
 
+        async def check_after_enter() -> None:
+            cancellation: asyncio.CancelledError | None = None
+            while self._closed and (closing := self._closing) is not None:
+                try:
+                    await wait_until_done(asyncio.wrap_future(closing))
+                except asyncio.CancelledError as error:
+                    cancellation = error
+            if cancellation is not None:
+                if not self._closed:
+                    try:
+                        await self.release(force=True)
+                    except BaseException as error:  # ruff:ignore[blind-except]  # preserve cleanup errors with cancellation
+                        raise_cancelled_error(cancellation, error)
+                raise cancellation
+            self._raise_if_unusable()
+
         await self._owners.acquire(
             mode,
             timeout=self._lock.timeout if timeout is None else timeout,
@@ -238,6 +267,8 @@ class AsyncSoftReadWriteLock:
             via=self._via,
             enter=enter,
             joinable=joinable,
+            raise_if_unusable=self._raise_if_unusable,
+            check_after_enter=check_after_enter,
         )
 
     async def _run_acquire(self, acquire: functools.partial[AcquireReturnProxy]) -> None:
@@ -245,7 +276,7 @@ class AsyncSoftReadWriteLock:
         # the cancellation has published its claim and started the heartbeat, which keeps the record fresh so no peer
         # evicts it. Wait the call out and hand the claim back, as AsyncReadWriteLock does.
         abandoned = threading.Event()
-        acquire_future = self._submit(acquire, cancel_check=abandoned.is_set)
+        acquire_future = self._submit(acquire, cancel_check=lambda: abandoned.is_set() or self._closed)
         try:
             await wait_until_done(acquire_future)
         except asyncio.CancelledError as cancellation:
@@ -263,7 +294,11 @@ class AsyncSoftReadWriteLock:
             except BaseException as error:  # ruff:ignore[blind-except]  # reported with the cancellation below
                 raise_cancelled_error(cancellation, error)
             raise
-        future_result(acquire_future)
+        try:
+            future_result(acquire_future)
+        except Timeout:
+            self._raise_if_unusable()
+            raise
 
     def _submit(
         self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
@@ -351,18 +386,24 @@ class AsyncSoftReadWriteLock:
     async def close(self) -> None:
         """
         End the holds of the tasks that acquired through this instance and release the lock once no task holds it.
+        Closing wakes tasks waiting to acquire through this wrapper and joins the worker if the wrapper owns it.
 
         Idempotent. After calling this method the instance can no longer acquire locks. With ``is_singleton=False`` it
         also closes the underlying :class:`SoftReadWriteLock`. A singleton wrapper leaves the shared one open, so tasks
         that acquired through another wrapper and synchronous users of the same path keep their holds. The next acquire
         notices a synchronous ``close()`` or forced release of that shared lock. One that lands in the few bytecodes
         between that check and the admission still admits the task into the ended hold.
+        An acquire polling in the soft backend stops at its next contended poll when close starts.
+
+        An acquire granted by the backend after this method starts raises the closed error if close succeeds. If close
+        fails with the backend still held, the acquire retains its hold.
 
         """
         ensure_current_process()
         if self._creator_pid != os.getpid() or self._closed:
             return
         # Refuse acquires from here on, so none is admitted into a hold the backend is letting go of.
+        closing = self._closing = ConcurrentFuture()
         self._closed = True
         try:
             await self._owners.retire(
@@ -374,10 +415,34 @@ class AsyncSoftReadWriteLock:
             # Only a failed backend call can leave the level held, and then a retried close() has to find it.
             if not isinstance(error, asyncio.CancelledError) and self._backend_holds():
                 self._closed = False
+            elif self._owns_executor:
+                self._executor.shutdown(wait=False)
             raise
+        finally:
+            self._closing = None
+            closing.set_result(None)
+            self._owners.wake_via(self._via)
+        if self._owns_executor:
+            # Jobs on the lock's executor may need the loop to finish, even after the loop's default pool shuts down.
+            self._executor.shutdown(wait=False)
+            joiner = ThreadPoolExecutor(max_workers=1)
+            joined = joiner.submit(self._executor.shutdown)
+            try:
+                await asyncio.shield(asyncio.wrap_future(joined))
+            finally:
+                joiner.shutdown(wait=joined.done())
 
-    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child
+    # The fork registry calls this method by name.
+    def _reset_after_fork_in_child(self) -> None:  # pragma: forked child  # simplint: ignore[unused-definition]
         self._creator_pid = -1
+        if self._owns_executor:
+            # The worker did not survive the fork, but older runtimes still try to wake it at child exit.
+            registry = cast(
+                "MutableMapping[threading.Thread, object]",
+                executor_threads._threads_queues,  # ruff:ignore[private-member-access]  # the exit hook's registry
+            )
+            for worker in cast("ThreadPoolExecutor", self._executor)._threads:  # ruff:ignore[private-member-access]  # only the executor lists its workers
+                registry.pop(worker, None)
 
 
 class AsyncAcquireSoftReadWriteReturnProxy:

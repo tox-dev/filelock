@@ -803,7 +803,8 @@ time of the call rather than at construction:
 
 With the default ``is_singleton=True`` every wrapper on a path shares one lock, so ``close()`` ends only the holds of
 tasks that acquired through that wrapper. Tasks holding through another wrapper, and synchronous ``ReadWriteLock`` users
-of the same path, keep their locks.
+of the same path, keep their locks. An acquire waiting for another async wrapper's hold wakes and raises the closed
+error.
 
 Low-level ``acquire_read``/``acquire_write``/``release`` methods are also available:
 
@@ -831,11 +832,17 @@ For a shared filesystem whose marker and cache behavior has been verified, use
     async with rw.read_lock():
         data = await get_shared_data()
 
-It takes the same tuning as its synchronous peer plus the async pair, so the full signature is
-``AsyncSoftReadWriteLock(lock_file, timeout=-1, *, blocking=True, is_singleton=True, heartbeat_interval=30.0,
-stale_threshold=None, poll_interval=0.25, on_compromise=None, loop=None, executor=None)``. It has no SQLite thread affinity to respect, so
-``executor=None`` means the loop's default executor: it creates nothing and owns nothing, and its ``close()`` only
-delegates to the synchronous lock.
+By default, each wrapper starts a worker thread on its first backend call. Call ``await rw.close()`` when you finish
+with the wrapper to shut down its executor. If you pass an executor, reserve capacity for releases while acquires are
+waiting, and shut it down yourself.
+
+When async wrappers share a lock instance in one process, they serve queued writers in arrival order before admitting
+new readers. If the first writer's event loop pauses, later writers and new readers wait until that loop runs again.
+
+Closing a wrapper wakes tasks waiting through it and interrupts its own contended backend acquire on the next poll.
+A singleton wrapper can close while another wrapper waits to acquire the backend. If an acquire obtains the lock while
+its wrapper is closing, it waits for the outcome. A successful close releases the hold. If close fails with the lock
+still held, the acquiring task keeps it and can release it.
 
 **************************************
  Detect stale locks (soft locks only)
